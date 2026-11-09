@@ -92,6 +92,8 @@ struct Set final
     uint32 ResourceCount = 0;
     uint32 SamplerCount = 0;
     RasterLayout Description;
+    /// Buffer slot per storage entry; raster draws transition these for shader reads.
+    StaticArray<usize, RASTER_BINDINGS> BufferSlots{};
 };
 struct Submission final
 {
@@ -767,11 +769,16 @@ RasterStatus RasterCreateLayout(usize slot, const RasterLayout& layout, uint32) 
         const RasterBinding& binding = layout.Entries[entry];
         const bool isStorage =
             binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite;
+        // Structured reads also serve fragment stages as SRVs (the deferred lighting resolve reads
+        // its light and LTC tables there); structured writes stay in compute, as the portable
+        // contract requires (D6c).
+        const bool isStorageVisible =
+            binding.Visibility == RasterVisibility::Compute ||
+            (binding.Kind == RasterBindingKind::StorageRead && binding.Visibility == RasterVisibility::Fragment);
         constexpr usize MAX_PORTABLE_STORAGE_STRIDE = sizeof(uint32) * 4;
         if (binding.Count != 1 || binding.HasDynamicOffset == true ||
-            (isStorage == true &&
-             (binding.Visibility != RasterVisibility::Compute || binding.MinSize > MAX_PORTABLE_STORAGE_STRIDE ||
-              (MAX_PORTABLE_STORAGE_STRIDE % binding.MinSize) != 0)) ||
+            (isStorage == true && (isStorageVisible == false || binding.MinSize > MAX_PORTABLE_STORAGE_STRIDE ||
+                                   (MAX_PORTABLE_STORAGE_STRIDE % binding.MinSize) != 0)) ||
             (binding.Kind != RasterBindingKind::UniformBuffer && binding.Kind != RasterBindingKind::Sampler &&
              TextureBinding(binding.Kind) == false && isStorage == false))
         {
@@ -883,6 +890,7 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
                 return RasterStatus::InvalidDescription;
             }
             ID3D12Resource* resource = gBuffers[resourceSlot].Resource.Get();
+            candidate.BufferSlots[entry] = resourceSlot;
             const uint64 firstElement = offset / stride;
             const uint32 elementCount = static_cast<uint32>(size / stride);
             const uint32 elementStride = static_cast<uint32>(stride);
@@ -1161,6 +1169,18 @@ Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept
 void BindSet(ID3D12GraphicsCommandList* commands, usize slot, ShaderStage stage) noexcept
 {
     const Set& set = gSets[slot];
+    if (stage != ShaderStage::Compute)
+    {
+        // The ordered graph transitions the buffers a dispatch declares. A raster draw binds its
+        // storage reads through the set alone, so make each readable by the pixel shader here.
+        for (usize entry = 0; entry < set.Description.Count; ++entry)
+        {
+            if (set.Description.Entries[entry].Kind == RasterBindingKind::StorageRead)
+            {
+                ComputeBufferBarrier(set.BufferSlots[entry], GraphAccessMode::StorageRead);
+            }
+        }
+    }
     constexpr usize MAX_BOUND_HEAPS = 2;
     StaticArray<ID3D12DescriptorHeap*, MAX_BOUND_HEAPS> heaps{};
     uint32 count = 0;

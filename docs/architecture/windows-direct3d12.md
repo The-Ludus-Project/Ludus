@@ -403,9 +403,12 @@ Windows hardware or the production MSVC toolchain.
   reflected `MinSize` supplies the native element stride (4, 8, or 16 bytes).
   Use a 256-byte-aligned offset and a range that contains a whole number of
   elements. Storage buffers can also serve as vertex or indexed indirect inputs
-  when created with the corresponding role. Descriptor arrays, dynamic offsets,
-  sampled depth/stencil, storage textures, fragment storage, and ray bindings are
-  outside the Direct3D 12 compute profile.
+  when created with the corresponding role. A fragment stage may read a
+  structured buffer through the same `StorageRead` binding (D6c); raster draws
+  transition it to a shader-readable state before binding the set, as the
+  ordered graph does before a dispatch. Descriptor arrays, dynamic offsets,
+  sampled depth/stencil, storage textures, raster storage writes, and ray
+  bindings are outside the Direct3D 12 compute profile.
 - **Ordering and lifetime.** The shared graph compiler validates versions and
   packet uses before acquiring a frame. The direct command list orders dispatch
   and raster work with UAV barriers between dependent writes and state
@@ -571,7 +574,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
 | D6a | Renderer, content and playable runtime | Shared authored project renders, accepts input, loads/saves and shuts down on a physical Windows GPU |
 | D6b (Development MSVC WARP verified) | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys. Runtime SDK consumers and IDE journeys passed at `29ea91b6` ([run 42164873456](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456)); other runtime SDK flavors and interactive IDE sessions pending |
-| D6c (in progress) | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests. The named-pipe shader worker emits signed DXIL, GameHost loads, reloads and retires DLLs whose PDBs match under socket supervision, and Behavior builds with MSVC; their suites run in the MSVC Ninja lane. Editor live-play tooling, script SDK/debugging, file delivery and embedded editors remain open |
+| D6c (in progress) | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests. The named-pipe shader worker emits signed DXIL, GameHost loads, reloads and retires DLLs whose PDBs match under socket supervision, and Behavior builds with MSVC; their suites run in the MSVC Ninja lane, as do the RG2/RG3, RG4 pool and default-graph pixel suites on Direct3D 12. Editor live-play tooling, script SDK/debugging, producer-driven rebuilds and embedded editors remain open |
 | D6d | Interactive Windows editor and hosted viewport | Current project World/camera, navigation/edit/resize; GPU producer/consumer ownership and pending/failure publication tests |
 | D7 | Profile qualification and continuous validation | All required coverage rows verified at one candidate commit; hardware, lifecycle, performance and both build workflows recorded |
 | D8 | Release packaging and distribution | Clean-machine install/launch, upgrades/data preservation, dependency/license inventory and matching symbols |
@@ -896,10 +899,19 @@ with optional tooling absent.
   RG4 pool suite now run in that executable too, on fixtures cooked for `dxil`
   alone. On Direct3D 12 this covers cooked draws, offscreen color and depth exports
   read through depth views, bound uniforms, LUSL callbacks and composite stages,
-  masked coverage, runtime activation and independent entry points. Still open:
-  the default-graph suite (clustered deferred, forward-lit, upscaling and mesh area
-  lights in `render_graph_default_render_tests.cpp`) and producer-driven Windows
-  rebuilds (`ludus_shader_reload_gpu`).
+  masked coverage, runtime activation and independent entry points. The
+  default-graph suite (`render_graph_default_render_tests.cpp`) runs there as
+  well: the clustered deferred default graph against its clustered-forward
+  control with and without the depth prepass, the forward-lit template, bilinear
+  upscaling, deferred mesh area lights and directional/mesh-light shadows. Its
+  deferred lighting resolve reads the mesh-light words and LTC table as structured
+  SRVs from the fragment stage, which the Direct3D 12 layout now admits for
+  `StorageRead` (writes stay in compute); the DXIL profile in `compile_raster.py`
+  and `ludus_compile_shader` accept the same fragment storage reads. The default
+  graph's manifest lists `dxil` on Windows, so the installed template cooks for
+  Direct3D 12. MetalFX cases skip through the capability query. Still open:
+  producer-driven Windows rebuilds (`ludus_shader_reload_gpu`), and a WARP pass
+  of the default-graph suite is pending until the Windows lane runs this change.
 - **D6d (editor):** port Qt host integration and hosted-window transport plus
   D3D12 native interop/shared presentation with explicit handle ownership,
   adapter identity, producer/consumer synchronization and teardown fencing.
@@ -961,7 +973,7 @@ these rows remain pending.
 | RHI / transfers and lifetime | D4a | verified (Clang/WARP) | Production MSVC baseline and physical-GPU evidence still pending | PR #622 | `5b56bea2`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878) |
 | RHI / compute and ordered mixed graph | D4b | verified (Clang/MSVC WARP) | D7 physical-GPU qualification | PR #992 | `9858bdb4`, [Windows CI](https://github.com/The-Ludus-Project/Ludus/actions/runs/41951508494) |
 | GPU timing / PIX / DRED | frame/pass duration, external GPU capture, DRED logs | implemented | D5b | PIX replay and physical adapter evidence pending | Windows RHI `[d5b]` and `[ordered-compute]` conformance |
-| Renderer / graph | D6a, D6c | World raster preset; DXIL graph packages; RG2/RG3 and RG4 pool pixel suites on WARP | Default-graph pixel suite on Direct3D 12; physical GPU | pending | Packed World and renderer pixel tests; `ludus_render_graph_dxil_tests` in the MSVC Ninja lane |
+| Renderer / graph | D6a, D6c | World raster preset; DXIL graph packages; RG2/RG3, RG4 pool and default-graph pixel suites on WARP | Producer-driven Windows rebuilds; physical GPU | pending | Packed World and renderer pixel tests; `ludus_render_graph_dxil_tests` in the MSVC Ninja lane |
 | Text / localization / UI | D6a | Source targets in runtime preset | Validate MSVC shaping, atlas, localization and UI tests | pending | Windows runtime CI targets |
 | Content / resources | D6a | Packed room loader, Content saves, scene cooker and `ludus-cook` | Run the cooker suites on a physical Windows host | pending | Packed/loose replay and bounded publication tests; cooker goldens and saved-level suites in the MSVC Ninja lane |
 | Runtime / game host | D6a, D6c | Static host; DLL load, reload, PDB checks and socket supervision | Editor live-play tooling on Windows (D6d) | [PR #1021](https://github.com/The-Ludus-Project/Ludus/pull/1021) | Static lifecycle, loader, reload, session, supervisor and PDB tests in the MSVC Ninja lane |

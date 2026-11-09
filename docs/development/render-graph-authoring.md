@@ -7264,15 +7264,20 @@ What each fixture establishes:
   `dxil` build stops with `dxil requires --dxc-path`. The two libraries join each
   DXIL stage's cache identity only, so changing them recompiles DXIL alone. DXIL
   stages accept the bindings the Direct3D 12 raster profile allows: one resource
-  per binding, uniform buffers and sampled color or depth textures in raster
-  stages, and storage only in compute. Ray traversal programs are refused for
-  `dxil`. On the Windows lane, `ludus_render_graph_dxil_tests` builds the rg2 pixel fixtures for `dxil`
+  per binding, uniform buffers, sampled color or depth textures and structured
+  buffer reads in raster stages, and storage writes only in compute. Ray traversal
+  programs are refused for `dxil`. On the Windows lane,
+  `ludus_render_graph_dxil_tests` builds the rg2 pixel fixtures for `dxil`
   alone, cooks them, and checks that each `surface` and `bound` color stage decodes
   to a signed DXIL container with its entry. The same executable runs the portable
-  RG2/RG3 pixel suite and the RG4 pool suite on those packages, headlessly on
-  Direct3D 12 (WARP in CI); depth exports are read through depth-aspect views.
-  Graphs whose stages need ray traversal, descriptor arrays or fragment storage
-  do not build for `dxil`.
+  RG2/RG3 pixel suite, the RG4 pool suite and the default-graph suite (clustered
+  deferred against clustered forward, the forward-lit template, bilinear
+  upscaling, mesh area lights and shadows) on packages cooked for `dxil`,
+  headlessly on Direct3D 12 (WARP in CI); depth exports are read through
+  depth-aspect views, and the deferred lighting resolve reads its light tables as
+  fragment-stage structured SRVs. On Windows the default graph's manifest lists
+  `dxil` alone. Graphs whose stages need ray traversal, descriptor arrays or
+  storage writes outside compute do not build for `dxil`.
 - The cooked-fixture `[render-graph][activation]` test decodes the CMake-cooked
   `rg2_surface.lurgrt` and compares it with its compiled header: plan records,
   CPU interface identity and every stage artifact (SPIR-V words, DXIL bytes,
