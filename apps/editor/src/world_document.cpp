@@ -232,12 +232,12 @@ bool Fields(const QJsonObject& object, const QStringList& allowed)
     }
     return true;
 }
-bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& out, QString& error)
+bool ValidateEncodedObject(const QByteArray& bytes, foundation::int64 limit, QString& outError)
 {
     namespace parsing = foundation::parsing;
     if (bytes.isEmpty() || bytes.size() > limit)
     {
-        return Fail(error, QStringLiteral("Document exceeds its byte limit or is empty."));
+        return Fail(outError, QStringLiteral("Document exceeds its byte limit or is empty."));
     }
     // The Ludus parser supplies bounded depth and duplicate-key rejection before
     // private Qt presentation values are created; Qt alone collapses duplicates.
@@ -253,9 +253,17 @@ bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& out, 
             parsing::ParseStatus::Ok ||
         document.Root().Object() == false)
     {
-        return Fail(error, QStringLiteral("Invalid JSON, duplicate keys, or document limits exceeded."));
+        return Fail(outError, QStringLiteral("Invalid JSON, duplicate keys, or document limits exceeded."));
     }
-    out = QJsonDocument::fromJson(bytes).object();
+    return true;
+}
+bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& outObject, QString& outError)
+{
+    if (ValidateEncodedObject(bytes, limit, outError) == false)
+    {
+        return false;
+    }
+    outObject = QJsonDocument::fromJson(bytes).object();
     return true;
 }
 bool Value(const QJsonObject& p, const QJsonValue& value, QString& error)
@@ -688,8 +696,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         return Fail(error, QStringLiteral("A version-2 World needs a nonnil version-4 document UUID."));
     }
     const auto entities = candidate.value(QStringLiteral("entities")).toArray();
-    if (entities.size() > MAX_ENTITIES ||
-        QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MAX_BYTES)
+    const QByteArray encoded =
+        entities.size() <= MAX_ENTITIES ? QJsonDocument(candidate).toJson(QJsonDocument::Compact) : QByteArray{};
+    if (entities.size() > MAX_ENTITIES || encoded.size() + 1 > MAX_BYTES)
     {
         return Fail(error,
                     QStringLiteral("World supports at most %1 entities and %2 KiB.")
@@ -761,6 +770,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         labels.insert(label);
     }
     const QString terrainComponent = GetTerrainComponentId();
+    bool hasAuthoredTerrainPayload = false;
     for (const auto value : entities)
     {
         const auto e = value.toObject();
@@ -849,7 +859,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     }
                 }
             }
-            if (recognizedPropertyCount != props.size())
+            const qsizetype terrainPayloads =
+                HasBuiltInTerrain() == true && c.key() == terrainComponent ? CountTerrainPayloadFields(props) : 0;
+            hasAuthoredTerrainPayload = hasAuthoredTerrainPayload == true || terrainPayloads != 0;
+            if (recognizedPropertyCount + terrainPayloads != props.size())
             {
                 return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
             }
@@ -1044,6 +1057,14 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             seen.insert(parent);
             parent = ancestor.value(QStringLiteral("scene")).toObject().value(QStringLiteral("parent")).toString();
         }
+    }
+    // A single heightfield fits the per-array limit. Many embedded grids can still
+    // exceed the aggregate parser budget, so reject before committing an unreadable World.
+    if (hasAuthoredTerrainPayload == true && ValidateEncodedObject(encoded, MAX_BYTES, error) == false)
+    {
+        return Fail(error,
+                    QStringLiteral("This World exceeds its terrain document budget. Use smaller heightmaps "
+                                   "or split the terrain between Worlds before retrying."));
     }
     error.clear();
     return true;

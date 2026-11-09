@@ -552,7 +552,8 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     // Offscreen has no presented GPU image. Enable the input proxy to exercise its picking coordinates.
     viewportOrNull->GetObjectInteraction().SetActive(true);
     REQUIRE(viewportOrNull->layout()->count() >= 2);
-    const QPoint frameCenter = viewportOrNull->layout()->itemAt(1)->geometry().center();
+    const QLayout* viewportLayout = viewportOrNull->layout();
+    const QPoint frameCenter = viewportLayout->itemAt(viewportLayout->count() - 1)->geometry().center();
     QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, frameCenter);
     REQUIRE(menuOrNull->isVisible() == true);
     REQUIRE(entitiesOrNull->selectedItems().size() == 1);
@@ -2120,7 +2121,7 @@ TEST_CASE("Move plane handles follow the camera: an oblique view shows all three
     preview.Orbit(70, 90);
     interaction.BuildOverlay(frame, overlay);
     // Three arrowheads, three planes with their casings, and the pivot marker.
-    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_HANDLE_FILLS);
+    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_TRANSFORM_HANDLE_FILLS);
     ludus::foundation::StaticArray<bool, ViewportObjectInteraction::AXIS_COUNT> hasNormal{};
     ludus::foundation::usize normalCount = 0;
     for (ludus::foundation::usize plane = 0;

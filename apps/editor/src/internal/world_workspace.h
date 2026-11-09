@@ -9,6 +9,7 @@
 #include "internal/world_document.h"
 #include "internal/world_lighting_coverage.h"
 
+#include <QJsonArray>
 #include <QMap>
 #include <QStringList>
 #include <QTimer>
@@ -43,6 +44,7 @@ class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
 class WorldLightsPanel;
+class WorldTerrainPanel;
 struct WorldLightChange;
 enum class PlacementValidationResult : foundation::uint8;
 struct ToolingPaths;
@@ -221,7 +223,26 @@ private:
     void SceneVerified(bool accepted);
     void Render();
     void RenderInspector();
-    void showTerrainGenerator(const QString& key = {});
+    void initializeTerrainAuthoring();
+    void showTerrainAuthoring(const QString& key = {});
+    void updateTerrainActions();
+    void queueTerrainPreview();
+    void prepareTerrainPreview();
+    void terrainBoundLoaded(bool isAccepted);
+    void finishTerrainPreview(bool isAccepted, const QString& error = {});
+    void cancelTerrainRequest();
+    void closeTerrainAuthoring(bool shouldRestoreWorld);
+    void restoreTerrainWorld();
+    void checkTerrainBase();
+    void refreshTerrainBase();
+    void commitTerrainDraft();
+    void queueTerrainStroke(const QJsonArray& points);
+    void frameTerrainDraft();
+    [[nodiscard]] bool isTerrainAuthoringOpen() const;
+    [[nodiscard]] bool canEditTerrain(const QString& key) const;
+    [[nodiscard]] bool tryPlaceTerrainDraft(const QString& id, const QJsonObject& placement);
+    void applyTerrainInteraction();
+    WorldTerrainPanel* mTerrainPanelOrNull = nullptr;
     /// Refresh the light list from the World and the presented scene.
     void renderLights();
     /// Apply a light switch, Solo or Enable All from the light list as one undo step.

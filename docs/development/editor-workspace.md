@@ -638,28 +638,64 @@ down. Only render graphs that read luminaires, such as the
 are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
 panel and its emission direction in the viewport.
 
-Choose **Add Geometry / Light → Generate Terrain…** to create a heightfield in a
-default World. Pick Rolling Hills, Ridges, or Flat, then set a seed, width and
-depth, elevation bounds, feature size, roughness, and samples per side. Width and
-depth extend along the entity's local X and Z axes. Elevation is measured in
-metres along local Y. Flat uses the minimum elevation for the whole surface.
+Choose **Add Geometry / Light → Add Terrain…** or right-click the World
+viewport and choose **Add Terrain…**. The Terrain panel opens beside the
+viewport with a Rolling Hills draft. Use **Flat** for a level surface or
+**Generate** for Rolling Hills and Ridges. Set the footprint and relief in
+metres. **Randomize** chooses another seed. **Advanced** exposes the seed,
+base elevation, feature size, roughness and samples per side. Width and depth
+follow local X and Z, and elevation follows local Y.
 
-**Preview** frames the candidate in the World viewport. **Create Terrain** adds
-and selects it as one undoable edit. Select the entity and use **Edit Generation…**
-in Properties to preview and apply a new recipe. Cancel restores the applied World
-view. The entity keeps its transform when regenerated and can be moved, copied,
-or deleted using the same commands as other World entities. Press **F** in the
-viewport to frame the selected terrain again.
+The preview updates as you edit. In an empty World the editor frames the first
+ready draft. In an occupied World it keeps the camera, and **Frame Preview**
+fits the draft on request. Use the native viewport's dashed footprint handles
+to change width and depth and the move gizmo to place the draft. The browser
+canvas uses the numeric fields for sizing. **Create Terrain** adds and selects
+the ready terrain in one undo step. **Cancel** returns to the committed World.
 
-Save World keeps the seed, settings, and recipe version. The editor rebuilds the
-bounded indexed mesh when it extracts the World, including after reopening.
-The terrain uses the current viewport shading and authored lights. In an unlit
-World, the default raster graph displays the terrain's surface colour without
-adding it to the scene's mesh lights. Each terrain uses a single mesh of at most
-64 samples per side. Collision, sculpting, erosion, and streamed terrain are
-future work.
-See the [proposed viewport authoring workflow](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
-for the planned docked tools and source editing.
+Select terrain and choose **Edit Terrain…** in the viewport toolbar, its
+right-click menu, or Properties. The **Source** panel opens the stored recipe.
+**Compare with committed** shows the original surface at the same camera
+pose. Switch back and choose **Apply Source Changes** to keep the ready
+recipe as one undoable edit. This preserves the terrain's entity and transform.
+**Save World** keeps the source, settings and recipe version.
+
+In the native editor, choose **Import → Choose Heightmap…** to open an 8- or
+16-bit grayscale PNG. Each axis must have 2 to 64 samples and the file must fit
+within 64 KiB. Black maps to **Base elevation** and white maps to base plus
+**Relief**, in local metres. The top-left pixel starts at local negative X and
+negative Z. Use **Flip X** and **Flip Z** to align the raster against the World
+in the preview. The saved World embeds the sample grid and orientation, so it
+can reopen in the native or browser editor without the original PNG.
+
+To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
+brush**. Set the radius in terrain-local metres, then drag on the ground and
+release to apply one undoable stroke. The brush has full strength in the inner
+half of the radius and fades to zero at the edge.
+
+- **Flatten** moves the surface toward an absolute local height. Enter the
+  height or use **Pick from surface** to sample it.
+- **Raise / Lower** adds a signed local height change. A positive value raises
+  the surface, and a negative value lowers it.
+- **Smooth** blends heights toward neighboring samples from the surface before
+  the stroke. **Strength** controls how much to blend on each pass. The
+  smoothing distance depends on how far apart the terrain samples are.
+
+Choose **Off** to return to ordinary viewport editing. Press Escape or move
+focus away during a drag to cancel it. A terrain can keep up to 16 strokes.
+**Save World** keeps the strokes and replays them in order after a compatible
+source change. If shrinking the footprint would clip a stroke, the
+confirmation names how many strokes the edit removes. Replacing an embedded
+heightmap also requires confirmation.
+
+The editor extracts a single indexed mesh of at most 64 samples per side,
+including after reopening the World. The terrain uses the current viewport
+shading and authored lights. In an unlit World, the default raster graph
+shows the terrain's surface colour without adding mesh lights. Terrain
+collision, material paint, erosion and streaming are
+future work. See the
+[viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
+for delivery boundaries.
 
 The geometry and default schema ship inside the editor, so this workflow needs
 no model import or project asset files. Imported scenes and these objects can
