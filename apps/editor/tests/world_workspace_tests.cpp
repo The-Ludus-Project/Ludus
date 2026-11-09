@@ -4528,7 +4528,6 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.IsEnabled == false);
     CHECK(scene.AtmosphereStatus.contains(QStringLiteral("directional light")) == true);
     CHECK(scene.ShouldUseEmptyWorldView() == false);
-    const QByteArray assetsIdentity = scene.AssetsIdentity;
 
     QString sunId;
     const WorldSunPlacement placement
@@ -4537,6 +4536,8 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
         .IlluminanceLux = 10,
     };
     REQUIRE(CreateWorldSun(document, entropy, placement, sunId, error) == true);
+    REQUIRE(RenderScene::Load(directory.path(), document, scene, error) == true);
+    const QByteArray assetsIdentity = scene.AssetsIdentity;
     const QString atmosphereComponent = GetWorldAtmosphereComponentId();
     const QJsonObject atmosphere = document.Entity(atmosphereId);
     QJsonObject components = atmosphere.value(QStringLiteral("components")).toObject();
