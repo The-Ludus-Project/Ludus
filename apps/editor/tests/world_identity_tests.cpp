@@ -21,10 +21,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTreeWidget>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -160,13 +160,13 @@ QString WriteStarterProject(const QTemporaryDir& directory, const QByteArray& wo
 }
 void Select(WorldWorkspace& inoutView, const QString& key)
 {
-    QListWidget* list = inoutView.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(list != nullptr);
-    for (ludus::foundation::int32 row = 0; row < list->count(); ++row)
+    QTreeWidget* listOrNull = inoutView.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    for (ludus::foundation::int32 row = 0; row < listOrNull->topLevelItemCount(); ++row)
     {
-        if (list->item(row)->data(Qt::UserRole).toString() == key)
+        if (listOrNull->topLevelItem(row)->data(0, Qt::UserRole).toString() == key)
         {
-            list->setCurrentRow(row, QItemSelectionModel::ClearAndSelect);
+            listOrNull->setCurrentItem(listOrNull->topLevelItem(row), 0, QItemSelectionModel::ClearAndSelect);
             return;
         }
     }

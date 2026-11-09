@@ -9,7 +9,9 @@
 #include <new>
 
 #if defined(LUDUS_RENDERER_ATMOSPHERE_SHADERS)
+#    include "renderer_atmosphere_deferred.h"
 #    include "renderer_atmosphere_display.h"
+#    include "renderer_atmosphere_multiple.h"
 #    include "renderer_atmosphere_sky.h"
 #    include "renderer_atmosphere_transmittance.h"
 #endif
@@ -19,7 +21,7 @@ namespace ludus::graphics::renderer
 using namespace foundation;
 namespace
 {
-constexpr float64 METRES_PER_KILOMETRE = 1000;
+constexpr float64 METRES_PER_KILOMETRE = LUDUS_ATMOSPHERE_METRES_PER_KILOMETRE;
 constexpr float64 GROUND_RADIUS_METRES = LUDUS_ATMOSPHERE_GROUND_KILOMETRES * METRES_PER_KILOMETRE;
 
 // Work in a local frame whose origin is the anchor. Rationalizing r - R
@@ -76,6 +78,13 @@ float64 GetAtmosphereTopAltitude() noexcept
 namespace internal
 {
 using Status = rhi::RasterStatus;
+bool TryGetAtmosphereObserver(const AtmosphereDescription& atmosphere,
+                              math::Vector3 eyeWorld,
+                              float64& outAltitudeMetres,
+                              math::Vector3& outUpWorld) noexcept
+{
+    return TryResolveObserver(atmosphere, eyeWorld, outAltitudeMetres, outUpWorld);
+}
 namespace
 {
 constexpr usize CLIP_ROWS = 4;
@@ -86,8 +95,9 @@ constexpr uint32 SKY_HEIGHT = 2 * LUDUS_ATMOSPHERE_SKY_HALF_HEIGHT;
 constexpr uint32 UNIFORM_SLOT = 0;
 constexpr uint32 TRANSMITTANCE_SLOT = 1;
 constexpr uint32 SKY_SLOT = 2;
-constexpr usize SKY_BINDING_COUNT = 2;
-constexpr usize DISPLAY_BINDING_COUNT = SKY_BINDING_COUNT + 1;
+constexpr uint32 MULTIPLE_SLOT = 3;
+constexpr usize TABLE_BINDING_COUNT = 3;
+constexpr usize MULTIPLE_BINDING_COUNT = 1;
 
 bool IsAccepted(Status status) noexcept
 {
@@ -102,6 +112,7 @@ struct AtmosphereViewUniform final
     math::Vector4 DirectionToSunWorld{};
     math::Vector4 SolarIlluminance{};
     math::Vector4 CameraForwardWorld{};
+    math::Vector4 Lighting{};
     math::Vector4 Output{};
 };
 
@@ -114,6 +125,7 @@ struct AtmosphereSkyTable final
     float32 SolarZenithCosine = 0;
     usize References = 1;
     bool HasView = false;
+    bool HasMultiple = false;
 };
 
 RenderGraphAtmosphereProgram::~RenderGraphAtmosphereProgram() noexcept
@@ -124,6 +136,9 @@ RenderGraphAtmosphereProgram::~RenderGraphAtmosphereProgram() noexcept
         static_cast<void>(rhi::Destroy(mDevice, pass.Layout));
         static_cast<void>(rhi::Destroy(mDevice, pass.Shader));
     }
+    static_cast<void>(rhi::Destroy(mDevice, mMultipleBindings));
+    static_cast<void>(rhi::Destroy(mDevice, mMultipleView));
+    static_cast<void>(rhi::Destroy(mDevice, mMultiple));
     static_cast<void>(rhi::Destroy(mDevice, mTransmittanceBindings));
     static_cast<void>(rhi::Destroy(mDevice, mTransmittanceView));
     static_cast<void>(rhi::Destroy(mDevice, mTransmittance));
@@ -140,13 +155,16 @@ Status RenderGraphAtmosphereProgram::Prepare(rhi::DeviceHandle device) noexcept
         mDevice = device;
         const StaticArray<rhi::RasterShaderDescription, static_cast<usize>(Stage::Count)> descriptions{
             {shaders::renderer_atmosphere_transmittance::Fragment(),
+             shaders::renderer_atmosphere_multiple::Fragment(),
              shaders::renderer_atmosphere_sky::Fragment(),
-             shaders::renderer_atmosphere_display::Fragment()}};
+             shaders::renderer_atmosphere_display::Fragment(),
+             shaders::renderer_atmosphere_deferred::Fragment()}};
         Status status = rhi::CreateRasterShader(device, shaders::renderer_atmosphere_transmittance::Vertex(), mVertex);
         for (usize index = 0; index < mPasses.GetSize() && IsAccepted(status) == true; ++index)
         {
             PassResources& pass = mPasses[index];
             const rhi::RasterShaderDescription& description = descriptions[index];
+            pass.Bindings = description.Bindings;
             status = rhi::CreateRasterShader(device, description, pass.Shader);
             if (IsAccepted(status) == true)
             {
@@ -160,6 +178,14 @@ Status RenderGraphAtmosphereProgram::Prepare(rhi::DeviceHandle device) noexcept
                                    {TRANSMITTANCE_WIDTH, TRANSMITTANCE_HEIGHT, rhi::RasterFormat::Rgba16Float, true},
                                    {},
                                    mTransmittance);
+        }
+        if (IsAccepted(status) == true)
+        {
+            constexpr uint32 MULTIPLE_SIZE = LUDUS_ATMOSPHERE_MULTIPLE_SIZE;
+            status = rhi::CreateTexture(device,
+                                        {MULTIPLE_SIZE, MULTIPLE_SIZE, rhi::RasterFormat::Rgba16Float, true},
+                                        {},
+                                        mMultiple);
         }
         mPhase = IsAccepted(status) == true ? Phase::Dependencies : Phase::Failed;
         mStatus = status;
@@ -190,6 +216,10 @@ Status RenderGraphAtmosphereProgram::pollDependencies() noexcept
         {
             status = rhi::GetStatus(mDevice, mTransmittance);
         }
+        if (status == Status::Ready)
+        {
+            status = rhi::GetStatus(mDevice, mMultiple);
+        }
         for (const PassResources& pass : mPasses)
         {
             if (status == Status::Ready)
@@ -218,6 +248,20 @@ Status RenderGraphAtmosphereProgram::pollDependencies() noexcept
         {
             return status;
         }
+        status = rhi::CreateTextureView(mDevice, mMultiple, {}, mMultipleView);
+        if (IsAccepted(status) == false)
+        {
+            return status;
+        }
+        const rhi::RasterBindingResource transmittance{ .Binding = TRANSMITTANCE_SLOT, .Texture = mTransmittanceView };
+        status = rhi::CreateBindingSet(mDevice,
+                                       mPasses[static_cast<usize>(Stage::Multiple)].Layout,
+                                       {&transmittance, MULTIPLE_BINDING_COUNT},
+                                       mMultipleBindings);
+        if (IsAccepted(status) == false)
+        {
+            return status;
+        }
         const StaticArray<rhi::RasterVertexStream, 1> streams{{{sizeof(math::Vector4), false}}};
         const StaticArray<rhi::RasterVertexAttribute, 1> attributes{{{0, 0, 0, rhi::RasterVertexFormat::Float4}}};
         for (usize index = 0; index < mPasses.GetSize(); ++index)
@@ -228,8 +272,12 @@ Status RenderGraphAtmosphereProgram::pollDependencies() noexcept
                                                        pass.Layout,
                                                        streams.AsSpan(),
                                                        attributes.AsSpan()};
-            description.Target = index == static_cast<usize>(Stage::Display) ? rhi::RasterTarget::Rgba8Unorm
-                                                                             : rhi::RasterTarget::Rgba16Float;
+            const Stage stage = static_cast<Stage>(index);
+            description.Target = stage == Stage::Display || stage == Stage::Surface ? rhi::RasterTarget::Rgba8Unorm
+                                                                                    : rhi::RasterTarget::Rgba16Float;
+            // The surface resolve copies covered G-buffer depth into the graph output, as the ordinary resolve does.
+            description.Depth = stage == Stage::Surface;
+            description.DepthCompare = rhi::RasterDepthCompare::Always;
             status = rhi::CreateRasterPipeline(mDevice, description, pass.Pipeline);
             if (IsAccepted(status) == false)
             {
@@ -242,6 +290,14 @@ Status RenderGraphAtmosphereProgram::pollDependencies() noexcept
     if (status == Status::Ready)
     {
         status = rhi::GetStatus(mDevice, mTransmittanceBindings);
+    }
+    if (status == Status::Ready)
+    {
+        status = rhi::GetStatus(mDevice, mMultipleView);
+    }
+    if (status == Status::Ready)
+    {
+        status = rhi::GetStatus(mDevice, mMultipleBindings);
     }
     for (const PassResources& pass : mPasses)
     {
@@ -280,7 +336,8 @@ Status RenderGraphAtmosphereProgram::acquireSky(const AtmosphereViewUniform& uni
          tableOrNull = tableOrNull->NextOrNull)
     {
         if (tableOrNull->Altitude == uniform.RadialUpWorld.W &&
-            tableOrNull->SolarZenithCosine == uniform.DirectionToSunWorld.W)
+            tableOrNull->SolarZenithCosine == uniform.DirectionToSunWorld.W &&
+            tableOrNull->HasMultiple == (uniform.Lighting.X > 0))
         {
             ++tableOrNull->References;
             outTableOrNull = tableOrNull;
@@ -303,6 +360,7 @@ Status RenderGraphAtmosphereProgram::acquireSky(const AtmosphereViewUniform& uni
     }
     tableOrNull->Altitude = uniform.RadialUpWorld.W;
     tableOrNull->SolarZenithCosine = uniform.DirectionToSunWorld.W;
+    tableOrNull->HasMultiple = uniform.Lighting.X > 0;
     tableOrNull->NextOrNull = mSkyTablesOrNull;
     mSkyTablesOrNull = tableOrNull;
     outTableOrNull = tableOrNull;
@@ -411,6 +469,7 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
             return Status::InvalidDescription;
         }
         uniform.CameraForwardWorld = {forwardWorld.X, forwardWorld.Y, forwardWorld.Z, diskScale};
+        uniform.Lighting.X = atmosphere.ShouldLightScene == true ? 1.0F : 0.0F;
         uniform.Output = {static_cast<float32>(width),
                           static_cast<float32>(height),
                           exposure,
@@ -456,15 +515,18 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
     {
         return status;
     }
-    const StaticArray<rhi::RasterBindingResource, DISPLAY_BINDING_COUNT> resources{
+    StaticArray<rhi::RasterBindingResource, TABLE_BINDING_COUNT> resources{
         {{ .Binding = UNIFORM_SLOT, .Buffer = mUniform, .Size = sizeof(AtmosphereViewUniform) },
          { .Binding = TRANSMITTANCE_SLOT, .Texture = inoutProgram.mTransmittanceView },
-         { .Binding = SKY_SLOT, .Texture = sky.View }}};
+         {
+             .Binding = MULTIPLE_SLOT,
+             .Texture = sky.HasMultiple == true ? inoutProgram.mMultipleView : inoutProgram.mTransmittanceView,
+         }}};
     if (mHasSkyBindings == false)
     {
         status = rhi::CreateBindingSet(device,
                                        inoutProgram.mPasses[static_cast<usize>(Stage::Sky)].Layout,
-                                       {resources.GetData(), SKY_BINDING_COUNT},
+                                       resources.AsSpan(),
                                        mSkyBindings);
         if (IsAccepted(status) == false)
         {
@@ -474,6 +536,7 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
     }
     if (mHasDisplayBindings == false)
     {
+        resources[TABLE_BINDING_COUNT - 1] = { .Binding = SKY_SLOT, .Texture = sky.View };
         status = rhi::CreateBindingSet(device,
                                        inoutProgram.mPasses[static_cast<usize>(Stage::Display)].Layout,
                                        resources.AsSpan(),
@@ -486,6 +549,24 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
     }
     status = rhi::GetStatus(device, mSkyBindings);
     return status == Status::Ready ? rhi::GetStatus(device, mDisplayBindings) : status;
+}
+
+bool RenderGraphAtmosphereView::TryGetLightingResources(AtmosphereLightingResources& outResources) const noexcept
+{
+    using Stage = RenderGraphAtmosphereProgram::Stage;
+    if (mSkyOrNull == nullptr || mSkyOrNull->HasMultiple == false)
+    {
+        return false;
+    }
+    const RenderGraphAtmosphereProgram& program = *mProgramOrNull;
+    const RenderGraphAtmosphereProgram::PassResources& pass = program.mPasses[static_cast<usize>(Stage::Surface)];
+    outResources = {pass.Layout,
+                    pass.Pipeline,
+                    pass.Bindings,
+                    program.mTransmittanceView,
+                    program.mMultipleView,
+                    mSkyOrNull->View};
+    return true;
 }
 
 Status RenderGraphAtmosphereView::RecordTables(const rhi::RasterVertexSlice& vertices,
@@ -514,9 +595,12 @@ Status RenderGraphAtmosphereView::RecordTables(const rhi::RasterVertexSlice& ver
         status = rhi::BeginRasterPass(program.mDevice, pass);
         return status == Status::Ready ? program.draw(stage, bindings, vertices, indices) : status;
     };
-    const Status transmittance =
-        drawTable(Stage::Transmittance, program.mTransmittance, program.mTransmittanceBindings);
-    return transmittance == Status::Ready ? drawTable(Stage::Sky, mSkyOrNull->Texture, mSkyBindings) : transmittance;
+    Status status = drawTable(Stage::Transmittance, program.mTransmittance, program.mTransmittanceBindings);
+    if (status == Status::Ready && mSkyOrNull->HasMultiple == true)
+    {
+        status = drawTable(Stage::Multiple, program.mMultiple, program.mMultipleBindings);
+    }
+    return status == Status::Ready ? drawTable(Stage::Sky, mSkyOrNull->Texture, mSkyBindings) : status;
 }
 
 Status RenderGraphAtmosphereView::RecordSky(const rhi::RasterVertexSlice& vertices,

@@ -939,7 +939,8 @@ void LevelWorkspace::CommitCandidate()
     ApplyPendingProject();
     startPlacementValidation();
 }
-void LevelWorkspace::Rollback(const QString& error)
+// The copy is the contract: error may alias RenderPreview's status, which SetScene below clears.
+void LevelWorkspace::Rollback(QString error) // NOLINT(performance-unnecessary-value-param)
 {
     const bool hasPreviousFrame = Viewport_->HasRetainedGraphFrame();
     AwaitingViewport_ = false;
@@ -1056,7 +1057,15 @@ void LevelWorkspace::Publish()
     }
     AwaitingViewport_ = true;
     Preview_.SetNeedsValidationFrame(true);
-    if (Preview_.Start() == false)
+    const bool isStarting = Preview_.Start();
+    if (AwaitingViewport_ == false)
+    {
+        // The viewport finished the operation while starting: a device that cannot start (the browser
+        // viewport with neither WebGPU nor WebGL 2) emits Failed, and Rollback already named that cause.
+        // Rolling back again would replace it with the status the restored scene cleared.
+        return;
+    }
+    if (isStarting == false)
     {
         Rollback(Preview_.Status());
         return;

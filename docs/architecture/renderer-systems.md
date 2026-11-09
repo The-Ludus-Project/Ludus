@@ -1568,15 +1568,35 @@ top of the atmosphere. The scattering term uses a directional Sun
 approximation. Keep the disk out of the sky-view texture and apply exposure
 once to the result.
 
-The first milestone is a background feature of the ordinary raster viewport.
-Its boundary contains the solar disk and otherwise zero radiance. Authored
-surface lighting, shadow maps and environment lighting continue to use their
-existing inputs. Report the background-only profile so an artist can distinguish
-a visible sky from sky illumination. Report a requested atmosphere on an
-unsupported profile explicitly, with the supported raster profile named as a
-repair. If a camera moves outside the admitted altitude range, render the
-World with its ordinary clear and show the current altitude and supported
-range so the user can navigate back.
+### Opaque raster lighting
+
+The default World enables atmospheric lighting for its Atmosphere entity. The
+SDK's `ShouldLightScene` setting defaults to false for background-only views.
+For atmospheric lighting, pass the linked directional light's stable
+`SunSourceId` alongside the same direction and top-of-atmosphere illuminance
+used for the sky. The deferred resolve attenuates that light at each receiver
+and applies its existing shadow visibility. Other lights retain their authored
+inputs.
+
+A 32 × 32 table stores isotropic multiple scattering by altitude and solar
+zenith. The raster model follows Hillaire §5.5 with 32 angular samples and 24
+steps per ray. It estimates the higher orders by repeatedly returning the
+locally averaged fraction of scattered radiance, using a black ground boundary.
+The sky-view integral adds this source to single scattering. Opaque materials
+use cosine quadrature for diffuse sky irradiance and a roughness-dependent GGX
+filter for specular sky radiance, both sampled from the observer's sky view.
+This replaces the authored environment contribution while the atmosphere is
+active. The sky lighting table omits the solar disk, which is already represented
+by the linked direct light.
+
+The deferred resolve integrates extinction and in-scattering over the finite
+camera-to-surface segment, clipped to the shell or ground. It applies that
+result to lit surface radiance before exposure and tone mapping. The
+renderer-owned resolve reuses texture slots after the G-buffer pass and keeps
+the graph package interface intact. Transparent surfaces, other renderer
+profiles, and reference path tracing remain outside this integration. If the
+camera leaves the admitted altitude range, the World uses its ordinary
+background and lighting and reports the altitude and supported range.
 
 ### Milestones and acceptance
 

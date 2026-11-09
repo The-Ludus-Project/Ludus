@@ -106,12 +106,17 @@ selectable items in the focused view; Escape clears that view's selection. Arrow
 keys navigate and Shift+arrow extends selection. Text fields keep their own
 native selection, clipboard and undo shortcuts.
 
-Use **Search entities** above the World entity list to filter names, labels and
-stable IDs without changing the document. Matching ignores case and surrounding
-spaces; the count shows how many entities match. Clear the search to show all
-entities. Filtering deselects hidden entities, so Duplicate and Delete act only
-on visible selections. Picking a hidden entity in the viewport clears the search
-and reveals its selection. Search pauses while inspector edits need Apply or Reset.
+The World entity list nests children under their authored scene parents.
+Expand or collapse a branch with its disclosure arrow. Selecting a child from
+the viewport expands its branch.
+
+Use **Search entities** to filter names, labels and stable IDs without changing
+the document. Matching ignores case and surrounding spaces. The count shows
+how many entities match. Ancestors of matches stay visible for context and
+can be selected when they also match the query. Filtering and collapsing
+deselect rows that are no longer available for group edits. Picking a
+filtered-out entity in the viewport clears the search and reveals its
+selection. Search pauses while inspector edits need Apply or Reset.
 
 In the World entity list, Ctrl+D / Command+D duplicates the selected group;
 Delete (also Backspace on macOS) asks to delete the group. Each group operation
@@ -1171,6 +1176,12 @@ and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
 **Save World** to keep the spawn. Duplicate the entity to keep multiple starting
 points.
 
+Select a player to see its upright collision box in the World viewport. Press
+**F** with the viewport focused or double-click the player in the hierarchy to
+frame the box. The box measures 0.48 × 1.75 × 0.48 m, and its base sits 1.60 m
+below the spawn eye. Rotation aims the view and scale leaves the box at its fixed
+size.
+
 Apply or cancel any open Terrain draft. Select a player in the hierarchy and
 click **Explore as Player**. Hold the right
 mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
@@ -1261,7 +1272,8 @@ reasons and how a shader names its own.
 ### Select and transform objects in the World viewport
 
 Click a visible object's triangles to select it. The hierarchy and Properties
-follow the same stable entity ID; clicking empty space clears the selection.
+follow the same stable entity ID. Click empty space or press **Escape** in the
+idle viewport to clear the selection.
 The selected object is marked by its silhouette: a two-pixel line in the selection
 amber of the design tokens with a dark casing, drawn over the rendered image so it
 stays legible against both bright and dark surfaces. The outline follows the object's
@@ -1814,6 +1826,20 @@ has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting wit
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
 
+### Per-light raster shadows
+
+In a built-in World, select a light and clear **Light → Raster Shadows** in
+**Properties** to keep its direct light without allocating a raster shadow map.
+Apply the edit and save the World to keep the setting. The checkbox is on by
+default, including for older Worlds.
+
+The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
+one map to the eligible directional light with the lowest source ID. In that
+graph, point and spot lights illuminate without shadow maps. The native Lit
+preview also supports shadow maps for point and spot lights. Reference path
+tracing and baked lighting compute visibility from scene geometry independently
+of this setting.
+
 ### Celestial directional lights
 
 Select a directional light and set **Light → Celestial Role** in **Properties**.
@@ -1868,11 +1894,12 @@ The Earth preset sets the physical radii. Use the Sun's Transform or celestial
 driver to move from daylight through sunset into early twilight.
 
 The default clustered deferred raster graph shows the sky and solar disk behind
-World geometry. Surface lighting still comes from the World’s authored lights
-and environment. If the Sun reference is empty or missing, pick a directional
-light in Properties. Moving the camera below the ground or above the shell also
-uses the graph's ordinary background. Delete the Atmosphere to restore that
-background at every altitude. Save and Undo work through the normal World
+World geometry. It attenuates the linked Sun at opaque surfaces, lights them
+with the clear sky, and adds haze along the camera-to-surface path. Other
+authored lights still contribute. If the Sun reference is empty or missing,
+pick a directional light in Properties. Moving the camera below the ground
+or above the shell restores the graph's ordinary background and lighting.
+Delete the Atmosphere to restore both at every altitude. Save and Undo work through the normal World
 commands. A World can have one Atmosphere.
 [Renderer contract](../architecture/renderer-systems.md#clear-sky-atmosphere-design)
 
@@ -1912,10 +1939,25 @@ Browser and packaged game hosts continue to use their existing inputs.
 ### Baking probe GI for moving objects
 
 Create a **GI Probe Volume** from **Add World Preset** in a default World.
-Set its Transform position to the volume's minimum corner. Set **Probe spacing**
-in metres and the number of points along each axis, including the endpoints.
-The volume follows the World axes. The native Lit viewport supports one volume,
-with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.
+Select it to see the grid's wire box before baking. Double-click its name in
+the entity list or press **F** in the viewport to frame the box. With **Move**
+selected, drag the arrows or plane handles to position it, or drag a coloured
+square on a face to resize along that axis. Resizing keeps the opposite face
+fixed and adds or removes whole probe intervals at the current spacing. The
+drag readout shows the new count and length.
+
+Switch to **Scale (R)** and drag the white center square to scale the entire
+volume. Drag up and right to enlarge it or down and left to shrink it. This
+changes spacing on all three axes while keeping the minimum corner and probe
+counts fixed. Hold **Shift** to snap the scale factor. The colored face handles
+still resize one axis at the current spacing. Releasing the pointer applies one
+undoable edit. Press **Escape** during a drag to discard it.
+
+For precise values, set the Transform position to the volume's minimum corner
+and set **Probe spacing** in metres and the number of points along each axis,
+including both endpoints. The box follows the World axes. The native Lit
+viewport supports one volume, with 2 to 12 points on each axis and spacing from
+0.1 to 100 metres.
 
 Opt one or more static lights into [always-on baking](#baking-always-on-lights),
 then select the volume and click **Bake GI**. Attach **GI Probe Receiver** to

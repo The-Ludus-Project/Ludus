@@ -918,6 +918,18 @@ also re-evaluate selection against the new device's enabled capabilities. Pendin
 or failed replacements keep the last completed image until the new renderer
 presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
+When a raytracing graph is too slow to navigate, the viewport offers the raster
+graph itself. After three consecutive frames that each take at least one second,
+from the camera update before submission to presentation, a **Slow viewport**
+message names the measured frame time and asks whether to switch. The first
+frame of every generation is not counted, because it includes cold preparation
+such as pipeline and acceleration-structure builds. **Switch to raster** turns on
+**Force raster**, exactly as the toolbar button does; **Keep current renderer**
+(Escape) changes nothing. Either way the message is not shown again for that
+runtime package until the editor restarts, so turning **Force raster** back off
+keeps the raytracing graph without asking again. The message never appears for
+a raster graph, while **Force raster** is on, or while the viewport is hidden.
+
 #### See which nodes cannot run here
 
 The graph canvas compares each enabled node with the viewport device's enabled
@@ -6134,7 +6146,12 @@ record widths or older role IDs; older packages remain readable.
 ### Directional shadows
 
 The default shadows the directional light with the lowest source identity among
-lights with positive intensity and a nonblack color. The renderer fits one
+lights that request raster shadows and have positive intensity and a nonblack
+color. In the built-in World inspector, clear **Light → Raster Shadows** to
+exclude a light while keeping its illumination. SDK callers set
+`DirectLight::ShouldCastRasterShadows`. The resource report's
+`DirectionalShadowLightSourceId` identifies the light assigned a map and is zero
+when no light qualifies. The renderer fits one
 1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
 with a one-texel atlas gutter. It snaps the projection to the texel grid and uses
 the existing four-tap depth comparison with a receiver bias of 0.001 in
