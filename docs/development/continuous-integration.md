@@ -23,9 +23,10 @@ job checks that each source compiles once, builds every default target with the
 Editor and shader worker and warnings as errors, and analyzes the Editor document
 sources, without running its tests or journeys. Both **Clang static analysis**
 shards analyze every translation unit, and shard 0 checks changed lines with the
-naming and magic-number rules. These jobs restore the Conan and compiler caches
-the batch saves on `main` and never save their own, so they cannot evict that
-baseline. Measured batch runs took about 25 minutes for the Editor compile and
+naming and magic-number rules. These jobs restore Conan and compiler caches
+without saving their own, so they cannot evict a shared baseline. The Editor job
+restores the cache that [develop compiler cache](#develop-compiler-cache) saves
+for the latest `develop` commit, and falls back to the batch's cache on `main`. Measured batch runs took about 25 minutes for the Editor compile and
 4 minutes per analysis shard with warm caches.
 
 From 2026-10-19 to 2026-11-08 integration PRs compiled nothing. Between 2026-10-27
@@ -583,6 +584,33 @@ hashes, so entries left behind by a toolchain or lockfile change are removed too
 Caches on other refs and action-managed caches (`setup-python-`, `node-cache-`)
 are left alone. Promotion does not depend on this job; a deletion that fails is
 reported as a warning, and the next batch retries it.
+
+### Develop compiler cache
+
+`main` moves only when a batch passes, so the batch's caches can trail `develop`
+by many changes; pull-request Editor compiles took 27-38 minutes with `main` 60
+commits behind. `.github/workflows/develop-cache.yml` runs on every push to
+`develop` except documentation-only pushes, and on manual dispatch. Its `editor`
+job prepares, configures and builds exactly as the pull-request **Editor, shader
+worker and unit tests** job does, with the same preset, cache variant, configure
+flags and build command. It then saves the compiler cache and, when no exact
+match exists, the `linux-clang-development` Conan cache in `develop`'s scope. A
+regression test keeps the two jobs' compile inputs identical.
+
+A pull request may restore caches from its base branch, so pull requests targeting
+`develop` start from the newest `develop` commit's objects and recompile little
+beyond their own change. The batch, which runs on `main`, cannot read `develop`'s
+caches and keeps its own.
+
+Runs are serialized without cancelling: a newer push replaces a pending run, and
+a running one always finishes and saves. A compile failure on `develop` is reported
+as a warning and still saves the objects that compiled, since the next pull
+request, often the fix, reuses them. A failure before the build (for example in
+the native setup's initial Editor build) saves nothing for that commit. The
+**Prune superseded develop caches** job then keeps the newest entry of each family
+on `develop`, with the same rules and `actions: write` scope as the batch's
+pruning job, so `develop` holds about one Editor compiler cache (about 830 MB) and
+one Conan cache. The workflow validates nothing and reports no required check.
 
 ## Analysis and timing
 

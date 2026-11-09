@@ -350,8 +350,14 @@ class RequiredGateTests(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 # Promotion alone updates main; no merge queue or push validates it.
                 workflow = path.read_text()
-                self.assertNotRegex(workflow.split("\npermissions:", 1)[0], r"(?m)^  (push|merge_group):")
+                triggers = workflow.split("\npermissions:", 1)[0]
                 self.assertNotIn("merge_group", workflow)
+                if path.name == "develop-cache.yml":
+                    # The cache warmer reacts to develop only and validates nothing.
+                    self.assertIn("\n  push:\n    branches: [develop]\n", triggers)
+                    self.assertNotRegex(triggers, r"(?m)^  (pull_request|pull_request_target|merge_group|workflow_call):")
+                    continue
+                self.assertNotRegex(triggers, r"(?m)^  (push|merge_group):")
         for name in ("ci.yml", "wiki.yml", "project-sdk.yml"):
             triggers = root.joinpath(name).read_text().split("\npermissions:", 1)[0]
             self.assertNotIn("labeled", triggers)
@@ -676,6 +682,71 @@ class CancelledRunTests(unittest.TestCase):
                     "  cancel-in-progress: ${{ github.event_name == 'pull_request' && "
                     "github.event.action == 'synchronize' }}\n",
                     workflow)
+
+
+class DevelopCompilerCacheTests(unittest.TestCase):
+    """Develop's cache warmer must compile exactly like the pull-request Editor job."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    @staticmethod
+    def job(workflow: str, name: str) -> str:
+        return workflow.split(f"\n  {name}:\n", 1)[1].split("\n\n  ", 1)[0]
+
+    @staticmethod
+    def setup_inputs(job: str) -> dict:
+        block = job.split("      - uses: ./.github/actions/native-setup\n        with:\n", 1)[1]
+        block = block.split("\n      - ", 1)[0]
+        return dict(re.findall(r"(?m)^          ([a-z-]+): (.*)$", block))
+
+    @staticmethod
+    def runs(job: str) -> list[str]:
+        return [line.strip() for line in job.splitlines()
+                if line.strip().startswith(("out/host-tools/venv/bin/cmake ", "./scripts/shader-probe ",
+                                            "run: out/host-tools/venv/bin/cmake "))]
+
+    def test_warm_job_compiles_with_the_pull_request_editor_inputs(self):
+        ci = (self.ROOT / ".github/workflows/ci.yml").read_text()
+        warm = (self.ROOT / ".github/workflows/develop-cache.yml").read_text()
+        editor = self.job(ci, "editor")
+        cache = self.job(warm, "editor")
+        pull_request = self.setup_inputs(editor)
+        develop = self.setup_inputs(cache)
+        writers = {"conan-cache-writer", "compiler-cache-writer"}
+        self.assertEqual({key: value for key, value in pull_request.items() if key not in writers},
+                         {key: value for key, value in develop.items() if key not in writers})
+        self.assertEqual(develop["compiler-cache-writer"], "'true'")
+        self.assertEqual(develop["conan-cache-writer"], "'true'")
+        # Shader-tool bootstrap, configure flags and the build command are identical
+        # to the steps a pull request runs before the batch-only tests and journeys.
+        compile_steps = editor.split("      - name: Verify unit and Editor tests", 1)[0]
+        configure_and_build = self.runs(compile_steps)
+        self.assertEqual(self.runs(cache), configure_and_build)
+        self.assertEqual(len(configure_and_build), 3)
+        self.assertIn('LUDUS_EDITOR_PRECOMPILED_HEADERS: "0"', editor)
+        self.assertIn('LUDUS_EDITOR_PRECOMPILED_HEADERS: "0"', cache)
+        for name in ("CI", "LUDUS_DIAGNOSTIC_INTERACTIVE", "CMAKE_BUILD_PARALLEL_LEVEL"):
+            value = re.search(rf'(?m)^  {name}: (.*)$', ci)
+            self.assertIsNotNone(value, name)
+            self.assertIn(f"  {name}: {value.group(1)}\n", warm)
+
+    def test_warm_runs_one_at_a_time_on_develop_and_prunes_only_with_cache_privilege(self):
+        warm = (self.ROOT / ".github/workflows/develop-cache.yml").read_text()
+        self.assertIn("\nconcurrency:\n  group: develop-compiler-cache\n  cancel-in-progress: false\n", warm)
+        self.assertIn("\npermissions:\n  contents: read\n\n", warm)
+        cache = self.job(warm, "editor")
+        self.assertIn("    if: github.ref == 'refs/heads/develop'\n", cache)
+        self.assertNotIn("actions: write", cache)
+        # A develop compile failure still saves the objects that compiled.
+        self.assertRegex(cache, r"id: build\n        continue-on-error: true\n")
+        prune = warm.split("\n  prune:\n", 1)[1]
+        self.assertIn("    needs: editor\n", prune)
+        self.assertIn("    if: always() && github.ref == 'refs/heads/develop'\n", prune)
+        self.assertIn("    permissions:\n      contents: read\n      actions: write\n", prune)
+        self.assertIn("run: python3 scripts/python/batch_ci.py prune-caches", prune)
+        # It reports no required check name.
+        for name in ("Ubuntu Clang", "Develop health", "Editor, shader worker and unit tests"):
+            self.assertNotIn(f"name: {name}\n", warm)
 
 
 if __name__ == "__main__":
