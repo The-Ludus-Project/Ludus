@@ -259,14 +259,13 @@ Status RenderGraphAtmosphereProgram::pollDependencies() noexcept
 
 Status RenderGraphAtmosphereProgram::draw(Stage stage,
                                           rhi::BindingSetHandle bindings,
-                                          rhi::BufferHandle vertices,
+                                          const rhi::RasterVertexSlice& vertices,
                                           rhi::BufferHandle indices) const noexcept
 {
-    const StaticArray<rhi::RasterVertexSlice, 1> slices{{{vertices, 0, VERTEX_COUNT * sizeof(math::Vector4)}}};
     return rhi::DrawIndexed(mDevice,
                             {mPasses[static_cast<usize>(stage)].Pipeline,
                              bindings,
-                             slices.AsSpan(),
+                             {&vertices, 1},
                              indices,
                              0,
                              INDEX_COUNT,
@@ -489,7 +488,8 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
     return status == Status::Ready ? rhi::GetStatus(device, mDisplayBindings) : status;
 }
 
-Status RenderGraphAtmosphereView::RecordTables(rhi::BufferHandle vertices, rhi::BufferHandle indices) const noexcept
+Status RenderGraphAtmosphereView::RecordTables(const rhi::RasterVertexSlice& vertices,
+                                               rhi::BufferHandle indices) const noexcept
 {
     using Stage = RenderGraphAtmosphereProgram::Stage;
     if (mSkyOrNull == nullptr)
@@ -499,9 +499,9 @@ Status RenderGraphAtmosphereView::RecordTables(rhi::BufferHandle vertices, rhi::
     const RenderGraphAtmosphereProgram& program = *mProgramOrNull;
     // A cancelled frame never makes an undefined table reusable. RHI publishes
     // ColorDefined with the accepted queue submission and retains its dependencies.
-    const auto drawTable = [&program, vertices, indices](Stage stage,
-                                                         rhi::TextureHandle texture,
-                                                         rhi::BindingSetHandle bindings) noexcept {
+    const auto drawTable = [&program, &vertices, indices](Stage stage,
+                                                          rhi::TextureHandle texture,
+                                                          rhi::BindingSetHandle bindings) noexcept {
         rhi::RasterTextureState state;
         Status status = rhi::GetTextureState(program.mDevice, texture, state);
         if (status != Status::Ready || state.ColorDefined == true)
@@ -519,7 +519,8 @@ Status RenderGraphAtmosphereView::RecordTables(rhi::BufferHandle vertices, rhi::
     return transmittance == Status::Ready ? drawTable(Stage::Sky, mSkyOrNull->Texture, mSkyBindings) : transmittance;
 }
 
-Status RenderGraphAtmosphereView::RecordSky(rhi::BufferHandle vertices, rhi::BufferHandle indices) const noexcept
+Status RenderGraphAtmosphereView::RecordSky(const rhi::RasterVertexSlice& vertices,
+                                            rhi::BufferHandle indices) const noexcept
 {
     using Stage = RenderGraphAtmosphereProgram::Stage;
     return mSkyOrNull == nullptr ? Status::Ready

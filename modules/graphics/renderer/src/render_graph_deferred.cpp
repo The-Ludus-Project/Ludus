@@ -522,7 +522,8 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
     }
     RenderGraphDeferredTargets& targets = *mTargetsOrNull;
     RenderGraphDeferredProgram& program = *targets.mProgramOrNull;
-    const Status tables = mAtmosphere.RecordTables(program.mVertices, program.mIndices);
+    const rhi::RasterVertexSlice fullscreenVertices{program.mVertices, 0, QUAD_VERTEX_BYTES};
+    const Status tables = mAtmosphere.RecordTables(fullscreenVertices, program.mIndices);
     if (tables != Status::Ready)
     {
         return tables;
@@ -571,7 +572,7 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
         }
         if (status == Status::Ready)
         {
-            status = mAtmosphere.RecordSky(program.mVertices, program.mIndices);
+            status = mAtmosphere.RecordSky(fullscreenVertices, program.mIndices);
         }
         if (status == Status::Ready && mMaterial.HasMaterial == true)
         {

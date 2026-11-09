@@ -49,7 +49,7 @@ private:
     [[nodiscard]] rhi::RasterStatus pollDependencies() noexcept;
     [[nodiscard]] rhi::RasterStatus draw(Stage stage,
                                          rhi::BindingSetHandle bindings,
-                                         rhi::BufferHandle vertices,
+                                         const rhi::RasterVertexSlice& vertices,
                                          rhi::BufferHandle indices) const noexcept;
     [[nodiscard]] rhi::RasterStatus acquireSky(const AtmosphereViewUniform& uniform,
                                                AtmosphereSkyTable*& outTableOrNull) noexcept;
@@ -83,8 +83,10 @@ public:
                                             foundation::uint32 height,
                                             foundation::float32 exposure,
                                             foundation::uint32 curve) noexcept;
-    [[nodiscard]] rhi::RasterStatus RecordTables(rhi::BufferHandle vertices, rhi::BufferHandle indices) const noexcept;
-    [[nodiscard]] rhi::RasterStatus RecordSky(rhi::BufferHandle vertices, rhi::BufferHandle indices) const noexcept;
+    [[nodiscard]] rhi::RasterStatus RecordTables(const rhi::RasterVertexSlice& vertices,
+                                                 rhi::BufferHandle indices) const noexcept;
+    [[nodiscard]] rhi::RasterStatus RecordSky(const rhi::RasterVertexSlice& vertices,
+                                              rhi::BufferHandle indices) const noexcept;
 
 private:
     RenderGraphAtmosphereProgram* mProgramOrNull = nullptr;
