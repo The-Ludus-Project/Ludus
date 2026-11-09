@@ -1,32 +1,39 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 class QLabel;
 class QLineEdit;
-class QListWidget;
+class QTreeWidget;
 
 namespace ludus::editor
 {
-/// Private hierarchy search controls. The owner keeps the borrowed list alive during use.
-/// Filtering only changes view state and deselects hidden rows to keep group edits visible.
+class WorldDocument;
+
+/// Builds and filters the World entity tree. The workspace owns the borrowed tree and document.
 class WorldEntitySearch final : public QWidget
 {
     Q_OBJECT
 public:
-    WorldEntitySearch(QListWidget& inoutEntities, QWidget* parentOrNull);
-    /// Reapply the current query after the owner rebuilds the entity rows.
-    void Refresh();
-    /// Clear a query hiding an entity requested by viewport picking or diagnostic navigation.
+    WorldEntitySearch(QTreeWidget& inoutEntities, QWidget* parentOrNull);
+    /// Rebuild rows from the validated draft, retaining expansion and selection by entity key.
+    void Rebuild(const WorldDocument& document, const QStringList& selection, const QString& current);
+    /// Update displayed names in place so applying inspector edits preserves focus.
+    void UpdateLabels(const WorldDocument& document);
+    /// Reveal an entity requested by viewport picking or diagnostic navigation.
     void RevealEntity(const QString& id);
 
 Q_SIGNALS:
-    /// Filtering removed selected rows or the current row; read the list once after the update.
+    /// Filtering or collapsing hid selected rows or the current row.
     void SelectionChanged();
 
 private:
-    QListWidget& mEntities;
+    void refresh();
+    void deselectCollapsedRows();
+
+    QTreeWidget& mEntities;
     QLineEdit* mSearch;
     QLabel* mCount;
 };

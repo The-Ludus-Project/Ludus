@@ -106,12 +106,17 @@ selectable items in the focused view; Escape clears that view's selection. Arrow
 keys navigate and Shift+arrow extends selection. Text fields keep their own
 native selection, clipboard and undo shortcuts.
 
-Use **Search entities** above the World entity list to filter names, labels and
-stable IDs without changing the document. Matching ignores case and surrounding
-spaces; the count shows how many entities match. Clear the search to show all
-entities. Filtering deselects hidden entities, so Duplicate and Delete act only
-on visible selections. Picking a hidden entity in the viewport clears the search
-and reveals its selection. Search pauses while inspector edits need Apply or Reset.
+The World entity list nests children under their authored scene parents.
+Expand or collapse a branch with its disclosure arrow. Selecting a child from
+the viewport expands its branch.
+
+Use **Search entities** to filter names, labels and stable IDs without changing
+the document. Matching ignores case and surrounding spaces. The count shows
+how many entities match. Ancestors of matches stay visible for context and
+can be selected when they also match the query. Filtering and collapsing
+deselect rows that are no longer available for group edits. Picking a
+filtered-out entity in the viewport clears the search and reveals its
+selection. Search pauses while inspector edits need Apply or Reset.
 
 In the World entity list, Ctrl+D / Command+D duplicates the selected group;
 Delete (also Backspace on macOS) asks to delete the group. Each group operation
@@ -1261,7 +1266,8 @@ reasons and how a shader names its own.
 ### Select and transform objects in the World viewport
 
 Click a visible object's triangles to select it. The hierarchy and Properties
-follow the same stable entity ID; clicking empty space clears the selection.
+follow the same stable entity ID. Click empty space or press **Escape** in the
+idle viewport to clear the selection.
 The selected object is marked by its silhouette: a two-pixel line in the selection
 amber of the design tokens with a dark casing, drawn over the rendered image so it
 stays legible against both bright and dark surfaces. The outline follows the object's
@@ -1813,6 +1819,20 @@ that selects it; set its intensity, colour and Transform rotation in
 has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting with
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
+
+### Per-light raster shadows
+
+In a built-in World, select a light and clear **Light → Raster Shadows** in
+**Properties** to keep its direct light without allocating a raster shadow map.
+Apply the edit and save the World to keep the setting. The checkbox is on by
+default, including for older Worlds.
+
+The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
+one map to the eligible directional light with the lowest source ID. In that
+graph, point and spot lights illuminate without shadow maps. The native Lit
+preview also supports shadow maps for point and spot lights. Reference path
+tracing and baked lighting compute visibility from scene geometry independently
+of this setting.
 
 ### Celestial directional lights
 

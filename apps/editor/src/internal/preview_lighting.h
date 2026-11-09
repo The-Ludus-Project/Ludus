@@ -423,6 +423,10 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
     for (usize i = 0; i < result.Lights.Count; ++i)
     {
         const rr::DirectLight& light = result.Lights.Lights[i];
+        if (scene.RasterUnshadowedLightIds.contains(light.SourceId) == true)
+        {
+            continue;
+        }
         const bool isCube = light.Kind == rr::LightKind::Point || light.Kind == rr::LightKind::AreaOneSided ||
                             light.Kind == rr::LightKind::AreaTwoSided;
         const uint32 count = isCube == true ? rr::POINT_SHADOW_FACES : 1;
