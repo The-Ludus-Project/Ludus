@@ -236,6 +236,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/offscreen_frame_reader.h src/offscreen_frame_reader.cpp)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
+        src/internal/render_graph_device_profile.h src/render_graph_device_profile.cpp
         src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
         src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
         src/internal/graph_comparison_run.h src/graph_comparison_run.cpp
@@ -608,6 +609,7 @@ target_link_libraries(ludus_editor_geometry_model PUBLIC
 ludus_editor_add_objects(ludus_editor_render_graph_canvas
     src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
+    src/internal/render_graph_availability.h src/render_graph_availability.cpp
     src/internal/theme_preferences.h src/theme_preferences.cpp
     src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
     src/internal/render_graph_minimap.h src/render_graph_minimap.cpp
@@ -637,6 +639,7 @@ target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::Found
 # configuration and is not part of this library.
 ludus_editor_add_objects(ludus_editor_render_graph_authoring
     src/renderer_workspace_selection.cpp src/renderer_workspace_node_details.cpp
+    src/renderer_workspace_availability.cpp
     src/internal/render_graph_luminaire_coverage.h src/render_graph_luminaire_coverage.cpp
     src/internal/world_lighting_coverage.h src/world_lighting_coverage.cpp
     src/renderer_workspace_resolution.cpp
@@ -1485,6 +1488,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
         tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_luminaire_coverage_tests.cpp tests/world_lighting_coverage_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_minimap_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
+        tests/render_graph_availability_tests.cpp
         # The workspace class and default graph compile here without the GPU preview; the
         # shared render-graph objects below are the same objects the editor links.
         src/internal/renderer_workspace.h src/renderer_workspace.cpp

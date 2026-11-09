@@ -44,6 +44,7 @@
 #include <QNativeGestureEvent>
 #include <QPaintEvent>
 #include <QPainterPath>
+#include <QPalette>
 #include <QPen>
 #include <QPointingDevice>
 #include <QResizeEvent>
@@ -631,6 +632,14 @@ struct RenderGraphCanvas::NodeView final
     QHash<QString, QGraphicsEllipseItem*> OutputItems;
     QGraphicsSimpleTextItem* TitleLabelOrNull = nullptr;
     QString Title;
+    /// Scene-owned header strip; its brush greys out when the node cannot run here.
+    QGraphicsRectItem* HeaderOrNull = nullptr;
+    QColor HeaderColour;
+    /// Badge below the card naming why the node cannot run here; hidden when it can.
+    QGraphicsRectItem* AvailabilityBadgeOrNull = nullptr;
+    QGraphicsSimpleTextItem* AvailabilityLabelOrNull = nullptr;
+    QString AvailabilityText;
+    bool IsUnavailable = false;
     QHash<QString, QGraphicsSimpleTextItem*> InputLabels;
     QHash<QString, QGraphicsSimpleTextItem*> OutputLabels;
     QGraphicsSimpleTextItem* ActivityLabelOrNull = nullptr;
@@ -676,7 +685,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
       mFitSelectionAction(new QAction(QStringLiteral("Fit Selection"), this)),
       mAutoLayoutAction(new QAction(QStringLiteral("Auto Layout"), this)),
       mMinimapAction(new QAction(QStringLiteral("Minimap"), this)), mZoomLabel(new QLabel(this)),
-      mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
+      mAvailabilityNotice(new QLabel(viewport())), mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
 {
     setObjectName(QStringLiteral("renderGraphCanvas"));
     setAccessibleName(QStringLiteral("Render graph canvas"));
@@ -735,6 +744,19 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mZoomLabel->setObjectName(QStringLiteral("renderGraphZoomLabel"));
     mZoomLabel->setAccessibleName(QStringLiteral("Canvas zoom"));
     mFramingToolbar->addWidget(mZoomLabel);
+    mAvailabilityNotice->setObjectName(QStringLiteral("renderGraphAvailabilityNotice"));
+    mAvailabilityNotice->setAccessibleName(QStringLiteral("Render graph availability"));
+    mAvailabilityNotice->setWordWrap(true);
+    mAvailabilityNotice->setTextFormat(Qt::PlainText);
+    mAvailabilityNotice->setAutoFillBackground(true);
+    mAvailabilityNotice->setMargin(design::SPACING_SMALL);
+    {
+        QPalette palette = mAvailabilityNotice->palette();
+        palette.setColor(QPalette::Window, GetNodeBackground());
+        palette.setColor(QPalette::WindowText, GetWarningColour());
+        mAvailabilityNotice->setPalette(palette);
+    }
+    mAvailabilityNotice->hide();
     connect(mFitGraphAction, &QAction::triggered, this, &RenderGraphCanvas::FitGraph);
     connect(mFitSelectionAction, &QAction::triggered, this, &RenderGraphCanvas::FitSelection);
     connect(mAutoLayoutAction, &QAction::triggered, this, [this]() { static_cast<void>(AutoLayout()); });
@@ -915,6 +937,7 @@ void RenderGraphCanvas::resizeEvent(QResizeEvent* event)
     mHistoryOrNull->setGeometry(frameWidth(), frameWidth(), toolbarWidth, historyHeight);
     mFramingToolbar->setGeometry(frameWidth(), frameWidth() + historyHeight, toolbarWidth, framingHeight);
     placeMinimap();
+    placeAvailabilityNotice();
 }
 
 void RenderGraphCanvas::placeMinimap()
@@ -926,6 +949,26 @@ void RenderGraphCanvas::placeMinimap()
     mMinimapOrNull->move(viewport()->width() - mMinimapOrNull->width() - design::SPACING_MEDIUM,
                          viewport()->height() - mMinimapOrNull->height() - design::SPACING_MEDIUM);
     mMinimapOrNull->raise();
+}
+
+void RenderGraphCanvas::placeAvailabilityNotice()
+{
+    const int32 width = viewport()->width() - 2 * design::SPACING_MEDIUM;
+    mAvailabilityNotice->setFixedWidth(math::Max(int32{0}, width));
+    mAvailabilityNotice->adjustSize();
+    mAvailabilityNotice->move(design::SPACING_MEDIUM, design::SPACING_MEDIUM);
+    mAvailabilityNotice->raise();
+}
+
+void RenderGraphCanvas::SetDeviceProfile(const RenderGraphDeviceProfile& profile)
+{
+    mDeviceProfile = profile;
+    refreshFeedback();
+}
+
+RenderGraphAvailabilityFeedback RenderGraphCanvas::GetNodeAvailability(const QString& node) const
+{
+    return mAvailability.Nodes.value(node);
 }
 
 RenderGraphMinimap& RenderGraphCanvas::GetMinimap() noexcept
@@ -1166,6 +1209,21 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
             view->PlanBadgeOrNull->setPos(0, -badgeHeight - NODE_PADDING);
             view->PlanLabelOrNull->setPos(NODE_PADDING, NODE_PADDING / 2);
         }
+        if (view->AvailabilityBadgeOrNull != nullptr && view->AvailabilityLabelOrNull != nullptr)
+        {
+            view->AvailabilityBadgeOrNull->setVisible(view->IsUnavailable == true && hasReadableCards == true);
+            SetScaledLabel(*view->AvailabilityLabelOrNull,
+                           view->AvailabilityText,
+                           viewScale,
+                           CanvasLabelRole::Annotation,
+                           NODE_WIDTH - 2 * NODE_PADDING);
+            const float64 badgeHeight =
+                view->AvailabilityLabelOrNull->boundingRect().height() * view->AvailabilityLabelOrNull->scale() +
+                NODE_PADDING;
+            view->AvailabilityBadgeOrNull->setRect(0, 0, NODE_WIDTH, badgeHeight);
+            view->AvailabilityBadgeOrNull->setPos(0, view->Frame->rect().height() + NODE_PADDING);
+            view->AvailabilityLabelOrNull->setPos(NODE_PADDING, NODE_PADDING / 2);
+        }
         if (view->TitleLabelOrNull != nullptr)
         {
             QGraphicsSimpleTextItem& title = *view->TitleLabelOrNull;
@@ -1347,6 +1405,8 @@ void RenderGraphCanvas::Rebuild()
         QGraphicsRectItem* header = new QGraphicsRectItem(QRectF(0, 0, NODE_WIDTH, HEADER_HEIGHT), view->Frame);
         header->setBrush(GetDomainColor(domain));
         header->setPen(Qt::NoPen);
+        view->HeaderOrNull = header;
+        view->HeaderColour = GetDomainColor(domain);
         QGraphicsSimpleTextItem* label = new QGraphicsSimpleTextItem(title, header);
         view->TitleLabelOrNull = label;
         view->Title = title;
@@ -1397,6 +1457,13 @@ void RenderGraphCanvas::Rebuild()
         view->PlanLabelOrNull = new QGraphicsSimpleTextItem(view->PlanBadgeOrNull);
         view->PlanLabelOrNull->setBrush(GetLabelColour());
         view->PlanBadgeOrNull->hide();
+        view->AvailabilityBadgeOrNull = new QGraphicsRectItem(view->Frame);
+        view->AvailabilityBadgeOrNull->setBrush(GetNodeBackground());
+        view->AvailabilityBadgeOrNull->setPen(QPen(GetWarningColour()));
+        view->AvailabilityBadgeOrNull->setData(0, QStringLiteral("#availability-badge:") + identity);
+        view->AvailabilityLabelOrNull = new QGraphicsSimpleTextItem(view->AvailabilityBadgeOrNull);
+        view->AvailabilityLabelOrNull->setBrush(GetWarningColour());
+        view->AvailabilityBadgeOrNull->hide();
         view->ActivityLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
         view->SizeLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
         for (QGraphicsSimpleTextItem* annotation : {view->ActivityLabelOrNull, view->SizeLabelOrNull})
@@ -1587,6 +1654,12 @@ void RenderGraphCanvas::refreshFeedback()
     const QJsonObject record = configuration();
     const QHash<QString, RenderGraphActivityFeedback> activity =
         InspectRenderGraphActivity(mDocument, mFile, mConfiguration);
+    mAvailability = mFile.isEmpty() == true
+                        ? RenderGraphConfigurationAvailability{}
+                        : InspectRenderGraphAvailability(mDocument, mFile, mConfiguration, mDeviceProfile);
+    mAvailabilityNotice->setText(mAvailability.Summary);
+    mAvailabilityNotice->setVisible(mAvailability.Summary.isEmpty() == false);
+    placeAvailabilityNotice();
     const auto findSource = [&record](const QString& endpoint) {
         if (endpoint.startsWith(GetOutputsNode() + QLatin1Char('.')) == true)
         {
@@ -1612,12 +1685,24 @@ void RenderGraphCanvas::refreshFeedback()
     {
         const RenderGraphActivityFeedback state = activity.value(view->Id);
         const bool isInterface = view->Domain == RenderGraphDomain::Interface;
-        view->ActivityOpacity =
-            (state.Activity == RenderGraphActivity::Inactive || state.Activity == RenderGraphActivity::Disabled) &&
-                    isInterface == false
-                ? INACTIVE_OPACITY
-                : 1;
+        const RenderGraphAvailabilityFeedback availability = mAvailability.Nodes.value(view->Id);
+        view->IsUnavailable = availability.Availability != RenderGraphAvailability::Available;
+        view->AvailabilityText = availability.Label;
+        view->ActivityOpacity = (state.Activity == RenderGraphActivity::Inactive ||
+                                 state.Activity == RenderGraphActivity::Disabled || view->IsUnavailable == true) &&
+                                        isInterface == false
+                                    ? INACTIVE_OPACITY
+                                    : 1;
         view->Frame->setOpacity(view->ActivityOpacity);
+        if (view->HeaderOrNull != nullptr)
+        {
+            view->HeaderOrNull->setBrush(view->IsUnavailable == true ? GetDomainColor(RenderGraphDomain::Interface)
+                                                                     : view->HeaderColour);
+        }
+        if (view->AvailabilityBadgeOrNull != nullptr)
+        {
+            view->AvailabilityBadgeOrNull->setToolTip(availability.Explanation);
+        }
         QString explanation = isInterface == true
                                   ? QStringLiteral("Configuration interface. Library inspection assumes all exposed "
                                                    "outputs are requested; caller instances can use fewer.")
@@ -1729,6 +1814,10 @@ void RenderGraphCanvas::refreshFeedback()
                                             "accumulation, or inside a clustered deferred lighting resolve. "
                                             "Disable for clamped linear RGB.")
                                  .arg(curve));
+        }
+        if (view->IsUnavailable == true)
+        {
+            resources.prepend(availability.Explanation);
         }
         view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + QStringLiteral("\n") + explanation +
                                 QLatin1Char('\n') + resources.join(QLatin1Char('\n')));
@@ -2185,8 +2274,13 @@ void RenderGraphCanvas::updateConnectionHighlight()
         view->Frame->setOpacity(activityOpacity * (hasTrace == true && trace.Nodes.contains(view->Id) == false
                                                        ? UNRELATED_NODE_OPACITY
                                                        : 1));
-        view->Frame->setPen(QPen(isHighlighted == true ? GetSelectionColour() : GetNodeBorder(),
-                                 isHighlighted == true ? FOCUSED_EDGE_WIDTH : NODE_BORDER_WIDTH));
+        QPen framePen(isHighlighted == true ? GetSelectionColour() : GetNodeBorder(),
+                      isHighlighted == true ? FOCUSED_EDGE_WIDTH : NODE_BORDER_WIDTH);
+        if (view->IsUnavailable == true)
+        {
+            framePen.setStyle(Qt::DashLine);
+        }
+        view->Frame->setPen(framePen);
         for (bool isOutput : {true, false})
         {
             const QHash<QString, QGraphicsEllipseItem*>& ports =
