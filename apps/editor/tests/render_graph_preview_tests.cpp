@@ -86,7 +86,6 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QObject>
@@ -102,6 +101,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QWidget>
 
 using namespace ludus::editor;
@@ -2198,14 +2198,14 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
     const QByteArray identity = world.GetRenderPreview().Scene().Identity;
     const QImage initial = graphView->GetImage();
-    QListWidget* entities = world.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(entities != nullptr);
+    QTreeWidget* entitiesOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
     const QString player = world.Document().FindEntityKey(QStringLiteral("player-start"));
-    for (int32 row = 0; row < entities->count(); ++row)
+    for (int32 row = 0; row < entitiesOrNull->topLevelItemCount(); ++row)
     {
-        if (entities->item(row)->data(Qt::UserRole).toString() == player)
+        if (entitiesOrNull->topLevelItem(row)->data(0, Qt::UserRole).toString() == player)
         {
-            entities->setCurrentRow(row);
+            entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(row));
         }
     }
     QLineEdit* position = world.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));
@@ -4052,6 +4052,77 @@ TEST_CASE("Force raster switches the live hardware renderer and restores automat
     CHECK(preview.GetReport().ActiveRenderer == automatic);
     CHECK(preview.GetPresentedRevision() == 1);
     preview.Detach();
+}
+
+TEST_CASE("A slow ray renderer suggests its raster fallback until a viewport claims it",
+          "[editor][render-graph][selection][slow-frames]")
+{
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    if (automatic == renderer::RenderGraphRenderer::Raster)
+    {
+        SKIP("The ray fixture falls back to raster on this host");
+    }
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    // Every frame counts as slow, so the streak is reached without a slow GPU.
+    preview.SetSlowFrameMilliseconds(0);
+    RenderGraphExtraction extraction = MakeExtraction({1, 0, 0, 1}, 1);
+    extraction.View.OrthographicCamera = true;
+    preview.SetExtraction(extraction);
+    QSignalSpy presented(&preview, &RenderGraphPreview::FramePresented);
+    QSignalSpy slow(&preview, &RenderGraphPreview::SlowFramesDetected);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE), GetDefaultRenderGraphRuntime()) ==
+            RenderGraphPreviewLoad::Staged);
+    // Each camera update draws one more frame, as navigating does.
+    uint64 revision = 1;
+    const auto presentUntil = [&](auto predicate) {
+        return TickUntil(preview, [&]() {
+            if (preview.GetPresentedRevision() == revision)
+            {
+                ++revision;
+                preview.SetCamera(extraction.View, revision);
+            }
+            return predicate();
+        });
+    };
+    REQUIRE(presentUntil([&]() { return presented.count() >= 1; }) == true);
+    CHECK(slow.count() == 0); // The cold first frame never counts.
+    REQUIRE(preview.CanSwitchToRasterFallback() == true);
+    const qsizetype firstStreak = static_cast<qsizetype>(1 + ViewportSlowFrameMonitor::SLOW_FRAME_STREAK);
+    REQUIRE(presentUntil([&]() { return slow.count() >= 1; }) == true);
+    CHECK(presented.count() == firstStreak);
+    CHECK(slow.takeFirst().at(0).toDouble() >= 0);
+    // Unclaimed (no visible viewport), the suggestion is announced again after the next streak.
+    REQUIRE(presentUntil([&]() { return slow.count() >= 1; }) == true);
+    slow.clear();
+    CHECK(preview.TakeSlowFrameSuggestion() == true);
+    CHECK(preview.TakeSlowFrameSuggestion() == false); // The second viewport does not ask again.
+    const qsizetype claimedAt = presented.count();
+    const qsizetype laterFrames = static_cast<qsizetype>(2 * ViewportSlowFrameMonitor::SLOW_FRAME_STREAK);
+    REQUIRE(presentUntil([&]() { return presented.count() >= claimedAt + laterFrames; }) == true);
+    CHECK(slow.count() == 0);
+    // Switching (the suggestion's action) selects the raster fallback, which nothing can replace.
+    const uint64 rayGeneration = preview.GetPresentedGeneration();
+    preview.SetForceRaster(true);
+    REQUIRE(presentUntil([&]() { return preview.GetPresentedGeneration() != rayGeneration; }) == true);
+    CHECK(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    CHECK(preview.CanSwitchToRasterFallback() == false);
+    CHECK(preview.TakeSlowFrameSuggestion() == false);
+    const qsizetype rasterAt = presented.count();
+    REQUIRE(presentUntil([&]() { return presented.count() >= rasterAt + laterFrames; }) == true);
+    CHECK(slow.count() == 0);
+    preview.Detach();
+    CHECK(preview.CanSwitchToRasterFallback() == false);
 }
 
 TEST_CASE("Runtime activation selects the authored hardware or raster package", "[editor][render-graph][selection]")

@@ -1,6 +1,8 @@
 #include "internal/world_probe_volume.h"
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 namespace ludus::editor
 {
@@ -9,6 +11,12 @@ namespace
 using namespace foundation;
 namespace rr = graphics::renderer;
 constexpr int32 DEFAULT_PROBES_PER_AXIS = 4;
+constexpr StaticArray<char, rr::GI_PROBE_DIMENSIONS> POSITION_AXES{'x', 'y', 'z'};
+
+QString GetProbeCountKey(char axis)
+{
+    return QStringLiteral("count") + QChar::fromLatin1(axis).toUpper();
+}
 } // namespace
 
 QString GetGiProbeVolumeComponentId()
@@ -19,6 +27,13 @@ QString GetGiProbeVolumeComponentId()
 QString GetGiProbeReceiverComponentId()
 {
     return QStringLiteral("giProbeReceiver");
+}
+
+bool IsStandaloneWorldGiProbeVolume(const QJsonObject& entity, const QJsonObject& components)
+{
+    return components.size() == 2 && components.contains(GetGiProbeVolumeComponentId()) == true &&
+           components.contains(QStringLiteral("transform")) == true &&
+           entity.contains(QStringLiteral("scene")) == false;
 }
 
 void AppendGiProbeComponents(QJsonArray& inoutComponents)
@@ -39,11 +54,11 @@ void AppendGiProbeComponents(QJsonArray& inoutComponents)
                     {QStringLiteral("max"), rr::MAX_GI_PROBE_SPACING_METRES},
                     {QStringLiteral("help"), QStringLiteral("Distance between neighbouring probes.")}},
     };
-    for (const QChar axis : {QLatin1Char('X'), QLatin1Char('Y'), QLatin1Char('Z')})
+    for (const char axis : POSITION_AXES)
     {
         properties.append(QJsonObject{
-            {QStringLiteral("id"), QStringLiteral("count") + axis},
-            {QStringLiteral("label"), QStringLiteral("Probes along ") + axis},
+            {QStringLiteral("id"), GetProbeCountKey(axis)},
+            {QStringLiteral("label"), QStringLiteral("Probes along ") + QChar::fromLatin1(axis).toUpper()},
             {QStringLiteral("type"), QStringLiteral("integer")},
             {QStringLiteral("default"), DEFAULT_PROBES_PER_AXIS},
             {QStringLiteral("unit"), QString()},
@@ -58,7 +73,7 @@ void AppendGiProbeComponents(QJsonArray& inoutComponents)
         {QStringLiteral("required"), false},
         {QStringLiteral("help"),
          QStringLiteral("Transform position is the minimum corner, in metres. "
-                        "The grid follows the World axes. Bake GI uses always-on baked lights.")},
+                        "Use Move for placement, face handles for counts, and Scale for spacing.")},
         {QStringLiteral("properties"), properties},
     });
     inoutComponents.append(QJsonObject{
@@ -72,7 +87,10 @@ void AppendGiProbeComponents(QJsonArray& inoutComponents)
     });
 }
 
-bool ReadWorldGiProbeGrid(const QJsonObject& components, rr::GiProbeGrid& outGrid, QString& outError)
+bool ReadWorldGiProbeGrid(const QJsonObject& components,
+                          rr::GiProbeGrid& outGrid,
+                          QString& outError,
+                          bool shouldIncludeDisabled)
 {
     const QJsonObject volume = components.value(GetGiProbeVolumeComponentId()).toObject();
     if (volume.isEmpty() == true)
@@ -80,22 +98,81 @@ bool ReadWorldGiProbeGrid(const QJsonObject& components, rr::GiProbeGrid& outGri
         outGrid = {};
         return true;
     }
-    const QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    const QJsonArray origin = ReadWorldGiProbeOrigin(components);
     rr::GiProbeGrid grid;
-    grid.OriginWorld = {static_cast<float32>(transform.value(QStringLiteral("x")).toDouble()),
-                        static_cast<float32>(transform.value(QStringLiteral("y")).toDouble()),
-                        static_cast<float32>(transform.value(QStringLiteral("z")).toDouble())};
+    grid.OriginWorld = {static_cast<float32>(origin[0].toDouble()),
+                        static_cast<float32>(origin[1].toDouble()),
+                        static_cast<float32>(origin[2].toDouble())};
     grid.Spacing = static_cast<float32>(volume.value(QStringLiteral("spacing")).toDouble());
-    grid.Counts = {static_cast<uint32>(volume.value(QStringLiteral("countX")).toInt()),
-                   static_cast<uint32>(volume.value(QStringLiteral("countY")).toInt()),
-                   static_cast<uint32>(volume.value(QStringLiteral("countZ")).toInt())};
+    for (usize axis = 0; axis < POSITION_AXES.GetSize(); ++axis)
+    {
+        grid.Counts[axis] = static_cast<uint32>(volume.value(GetProbeCountKey(POSITION_AXES[axis])).toInt());
+    }
     if (rr::IsGiProbeGridValid(grid) == false || grid.Counts[0] == 0)
     {
         outError = QStringLiteral("GI Probe Volume exceeds the World bounds. Move its Transform or reduce probe count "
                                   "or spacing.");
         return false;
     }
-    outGrid = volume.value(QStringLiteral("enabled")).toBool() == true ? grid : rr::GiProbeGrid{};
+    outGrid = shouldIncludeDisabled == true || volume.value(QStringLiteral("enabled")).toBool() == true
+                  ? grid
+                  : rr::GiProbeGrid{};
     return true;
+}
+
+math::Aabb3 ComputeWorldGiProbeBounds(const rr::GiProbeGrid& grid) noexcept
+{
+    const math::Vector3 extentWorld{static_cast<float32>(grid.Counts[0] - 1) * grid.Spacing,
+                                    static_cast<float32>(grid.Counts[1] - 1) * grid.Spacing,
+                                    static_cast<float32>(grid.Counts[2] - 1) * grid.Spacing};
+    return {grid.OriginWorld, grid.OriginWorld + extentWorld};
+}
+
+QJsonArray ReadWorldGiProbeOrigin(const QJsonObject& components)
+{
+    const QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    QJsonArray origin;
+    for (const char axis : POSITION_AXES)
+    {
+        origin.append(transform.value(QString(QLatin1Char(axis))));
+    }
+    return origin;
+}
+
+void WriteWorldGiProbeOrigin(QJsonObject& inoutComponents, const QJsonArray& origin)
+{
+    const QString key = QStringLiteral("transform");
+    QJsonObject transform = inoutComponents.value(key).toObject();
+    for (usize axis = 0; axis < POSITION_AXES.GetSize(); ++axis)
+    {
+        transform.insert(QString(QLatin1Char(POSITION_AXES[axis])), origin[static_cast<qsizetype>(axis)]);
+    }
+    inoutComponents.insert(key, transform);
+}
+
+void WriteWorldGiProbeSpacing(QJsonObject& inoutComponents, float64 spacingMetres)
+{
+    const QString component = GetGiProbeVolumeComponentId();
+    QJsonObject volume = inoutComponents.value(component).toObject();
+    volume.insert(QStringLiteral("spacing"), spacingMetres);
+    inoutComponents.insert(component, volume);
+}
+
+void ResizeWorldGiProbeAxis(QJsonObject& inoutComponents, usize axis, uint32 count, bool isMinimumFace)
+{
+    const QString component = GetGiProbeVolumeComponentId();
+    QJsonObject volume = inoutComponents.value(component).toObject();
+    const QString countKey = GetProbeCountKey(POSITION_AXES[axis]);
+    if (isMinimumFace == true)
+    {
+        const qsizetype positionIndex = static_cast<qsizetype>(axis);
+        const float64 intervals = volume.value(countKey).toDouble() - static_cast<float64>(count);
+        QJsonArray origin = ReadWorldGiProbeOrigin(inoutComponents);
+        origin[positionIndex] =
+            origin[positionIndex].toDouble() + intervals * volume.value(QStringLiteral("spacing")).toDouble();
+        WriteWorldGiProbeOrigin(inoutComponents, origin);
+    }
+    volume.insert(countKey, static_cast<int32>(count));
+    inoutComponents.insert(component, volume);
 }
 } // namespace ludus::editor

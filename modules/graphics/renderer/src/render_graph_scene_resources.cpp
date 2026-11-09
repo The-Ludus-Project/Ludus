@@ -57,8 +57,8 @@ Status BuildDirectionalShadowRegion(BorrowedView<const DirectLight> lights,
     for (usize index = 0; index < lights.GetSize(); ++index)
     {
         const DirectLight& light = lights[index];
-        if (light.Kind == LightKind::Directional && light.Intensity > 0 && light.Color != math::Vector3{} &&
-            (selectedOrNull == nullptr || light.SourceId < selectedOrNull->SourceId))
+        if (light.Kind == LightKind::Directional && light.ShouldCastRasterShadows == true && light.Intensity > 0 &&
+            light.Color != math::Vector3{} && (selectedOrNull == nullptr || light.SourceId < selectedOrNull->SourceId))
         {
             selectedOrNull = &light;
         }
@@ -576,6 +576,23 @@ rhi::RasterBindingResource ForwardSceneGeneration::GetMeshLights() const noexcep
 uint32 ForwardSceneGeneration::GetMeshLightCount() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightCount;
+}
+uint32 ForwardSceneGeneration::FindDirectionalLightIndex(uint64 sourceId) const noexcept
+{
+    if (sourceId == 0 || mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    const State& state = *mState;
+    for (usize index = 0; index < state.Lights.GetSize(); ++index)
+    {
+        const DirectLight& light = state.Lights[index];
+        if (light.SourceId == sourceId && light.Kind == LightKind::Directional)
+        {
+            return static_cast<uint32>(index + 1);
+        }
+    }
+    return 0;
 }
 uint32 ForwardSceneGeneration::GetMeshLightGridWord() const noexcept
 {
@@ -1159,6 +1176,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         owner.Report.MeshLightShadowCasters = static_cast<uint32>(candidate.MeshLightShadowCasters.GetSize());
         owner.Report.UnshadowedMeshLights = shadows.UnshadowedRecords;
         owner.Report.MeshLightShadowFaces = shadows.Faces;
+        owner.Report.DirectionalShadowLightSourceId = candidate.Shadows.Directional.Light.SourceId;
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

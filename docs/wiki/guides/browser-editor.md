@@ -41,8 +41,8 @@ than opening a guide.
   document, inspect inherited values, edit/reset preferences, and download sparse
   preference overrides.
 - Import a scene into a World and navigate its GPU viewport with orbit, pan, zoom
-  and focus. The viewport requires WebGPU over HTTPS or localhost; the rest of the
-  workspace requires WebGL. See the [viewport profile and limits](../../development/browser-editor.md#scene-import-and-viewport).
+  and focus. The viewport uses WebGPU over HTTPS or localhost, or WebGL 2 when
+  WebGPU cannot start; the rest of the workspace requires WebGL. See the [viewport profile and limits](../../development/browser-editor.md#scene-import-and-viewport).
 - Arrange the existing panels and inspect output and workflow status.
 - Browse and filter `content/catalog.json` in **Content**, import or reimport
   WAV/FLAC sources with stable IDs, then create and edit sound/music definitions
