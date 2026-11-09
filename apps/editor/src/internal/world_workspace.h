@@ -236,7 +236,14 @@ private:
     void checkTerrainBase();
     void refreshTerrainBase();
     void commitTerrainDraft();
+    /// Preview the dragged stroke on the terrain while the button is held; only release commits it.
+    void previewTerrainStroke(const QJsonArray& points);
     void queueTerrainStroke(const QJsonArray& points);
+    /// Discard a live stroke and show the surface it started from again.
+    void abandonTerrainStroke();
+    void cancelTerrainBrushGesture();
+    /// A brush drag is previewing on the terrain. Workspace refreshes then keep the gesture alive.
+    [[nodiscard]] bool isTerrainStrokeLive() const;
     void frameTerrainDraft();
     [[nodiscard]] bool isTerrainAuthoringOpen() const;
     [[nodiscard]] bool canEditTerrain(const QString& key) const;

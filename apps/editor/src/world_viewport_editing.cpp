@@ -84,6 +84,12 @@ void WorldWorkspace::showEntityMenu(const QPoint& positionGlobal, const QString&
 }
 void WorldWorkspace::updateViewportInteraction()
 {
+    if (isTerrainStrokeLive() == true)
+    {
+        // SetWorld cancels gestures, and a live stroke's scene preparation reports the World as busy.
+        // The stroke's release, cancellation or failure refreshes the interaction.
+        return;
+    }
     const bool canEdit =
         Document_.Loaded() == true && Pending_ == false && SceneBusy() == false && mSelectedEntities.size() == 1;
     Render_->GetViewport().GetObjectInteraction().SetWorld(Document_, Selected_, canEdit);

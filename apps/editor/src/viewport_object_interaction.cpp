@@ -678,7 +678,7 @@ bool ViewportObjectInteraction::updateTerrainBrush(QPointF positionPixel, const 
     }
     return hasHit;
 }
-void ViewportObjectInteraction::appendTerrainStrokePoint()
+bool ViewportObjectInteraction::appendTerrainStrokePoint()
 {
     const QJsonArray point{static_cast<float64>(mTerrainBrushHitMesh.X), static_cast<float64>(mTerrainBrushHitMesh.Z)};
     if (mTerrainStroke.isEmpty() == false)
@@ -690,15 +690,16 @@ void ViewportObjectInteraction::appendTerrainStrokePoint()
         const float32 spacing = mTerrainBrushRadius * MINIMUM_POINT_SPACING_FRACTION;
         if (math::LengthSquared(differenceMesh) < spacing * spacing)
         {
-            return;
+            return false;
         }
     }
     if (mTerrainStroke.size() == MAX_TERRAIN_STROKE_POINTS)
     {
         mHasTerrainStrokeOverflowed = true;
-        return;
+        return false;
     }
     mTerrainStroke.append(point);
+    return true;
 }
 math::Affine3 ViewportObjectInteraction::makeTransform(const QJsonObject& placement) const
 {
@@ -1103,8 +1104,9 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
                 mTerrainStrokeFramePixel = outerFramePixel;
                 mHasTerrainStrokeGap = false;
                 mHasTerrainStrokeOverflowed = false;
-                appendTerrainStrokePoint();
+                static_cast<void>(appendTerrainStrokePoint());
                 Q_EMIT Changed();
+                Q_EMIT TerrainStrokeChanged(mTerrainStroke);
             }
         }
         return true;
@@ -1281,9 +1283,10 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
         {
             mHasTerrainStrokeGap = true;
         }
-        else if (mHasTerrainStrokeGap == false && mHasTerrainStrokeOverflowed == false)
+        else if (mHasTerrainStrokeGap == false && mHasTerrainStrokeOverflowed == false &&
+                 appendTerrainStrokePoint() == true)
         {
-            appendTerrainStrokePoint();
+            Q_EMIT TerrainStrokeChanged(mTerrainStroke);
         }
         return true;
     }
@@ -1373,11 +1376,16 @@ void ViewportObjectInteraction::Cancel()
     ClearHover();
     if (IsDragging() == true)
     {
+        const bool hasTerrainStroke = mTerrainStroke.isEmpty() == false;
         mDragTarget = {};
         mTerrainStroke = {};
         mCandidate = {};
         mReadoutText.clear();
         Q_EMIT Changed();
+        if (hasTerrainStroke == true)
+        {
+            Q_EMIT TerrainStrokeCancelled();
+        }
     }
 }
 void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, ViewportObjectOverlay& outOverlay)

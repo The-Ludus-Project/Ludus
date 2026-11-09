@@ -674,9 +674,11 @@ in the preview. The saved World embeds the sample grid and orientation, so it
 can reopen in the native or browser editor without the original PNG.
 
 To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
-brush**. Set the radius in terrain-local metres, then drag on the ground and
-release to apply one undoable stroke. The brush has full strength in the inner
-half of the radius and fades to zero at the edge.
+brush**. Set the radius in terrain-local metres, then drag on the ground. The
+viewport reshapes the terrain while you drag, and the update rate follows how
+quickly the viewport can prepare the World. Release to keep the stroke as one
+undoable edit. The World document changes only on release. The brush has full
+strength in the inner half of the radius and fades to zero at the edge.
 
 - **Flatten** moves the surface toward an absolute local height. Enter the
   height or use **Pick from surface** to sample it.

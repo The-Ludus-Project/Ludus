@@ -187,6 +187,9 @@ public:
         layout->addLayout(footer);
         Timer.setSingleShot(true);
         Timer.setInterval(TERRAIN_PREVIEW_DELAY_MILLISECONDS);
+        // A dragged stroke previews as soon as the event loop is free; the busy pipeline paces it.
+        LiveTimer.setSingleShot(true);
+        LiveTimer.setInterval(0);
         hide();
     }
 
@@ -442,11 +445,19 @@ public:
         }
     }
 
+    void ClearStroke()
+    {
+        StrokeRecipe = {};
+        StrokeBaseScene = {};
+        IsStrokeLive = false;
+        LiveTimer.stop();
+        SetStrokePending(false);
+    }
+
     void AcceptStroke(const QJsonObject& recipe)
     {
         RebaseRecipe(recipe);
-        StrokeRecipe = {};
-        SetStrokePending(false);
+        ClearStroke();
     }
 
     void RandomizeSeed()
@@ -499,6 +510,7 @@ public:
     QCheckBox* ShowSlope;
     QMap<QString, QLineEdit*> Fields;
     QTimer Timer;
+    QTimer LiveTimer;
 
     // The existing renderer and World document own the derived frame and the undo stack.
     QJsonObject Base;
@@ -506,9 +518,13 @@ public:
     WorldDocument ReadyWorld;
     QJsonObject ReadyRecipe;
     QJsonObject StrokeRecipe;
+    /// The ready committed view a live stroke started from; failure and cancellation show it again.
+    RenderScene StrokeBaseScene;
     qsizetype RemovedStrokes = 0;
     WorldDocument Candidate;
     RenderScene PreviousScene;
+    /// The scene the viewport presented when the request in flight began.
+    QByteArray PriorIdentity;
     QByteArray DrawingIdentity;
     QString Target;
     QString ReadyKey;
@@ -517,6 +533,9 @@ public:
     uint64 Sequence = 0;
     uint64 RequestedSequence = 0;
     uint64 ReadySequence = 0;
+    // A live stroke's points advance LiveSequence without invalidating the ready committed view.
+    uint64 LiveSequence = 0;
+    uint64 RequestedLiveSequence = 0;
     Request Stage = Request::Idle;
     bool IsOpen = false;
     bool IsComparing = false;
@@ -525,6 +544,10 @@ public:
     bool IsCancellingScene = false;
     bool ShouldRestore = false;
     bool HasConflict = false;
+    /// StrokeRecipe holds the stroke still being dragged. Its previews are shown but never committed.
+    bool IsStrokeLive = false;
+    /// The request in flight previews a live stroke.
+    bool IsRequestLive = false;
 
 private:
     void addField(const QString& key, const QString& label)
@@ -584,6 +607,7 @@ void WorldWorkspace::initializeTerrainAuthoring()
     mTerrainPanelOrNull = panel;
     Split_->setCollapsible(Split_->indexOf(panel), false);
     connect(&panel->Timer, &QTimer::timeout, this, &WorldWorkspace::prepareTerrainPreview);
+    connect(&panel->LiveTimer, &QTimer::timeout, this, &WorldWorkspace::prepareTerrainPreview);
     connect(panel->Cancel, &QPushButton::clicked, this, [this]() { closeTerrainAuthoring(true); });
     connect(panel->Commit, &QPushButton::clicked, this, &WorldWorkspace::commitTerrainDraft);
     connect(panel->Frame, &QPushButton::clicked, this, &WorldWorkspace::frameTerrainDraft);
@@ -623,10 +647,7 @@ void WorldWorkspace::initializeTerrainAuthoring()
         changeSource();
     });
 #endif
-    const auto cancelBrushGesture = [this]() {
-        Render_->GetViewport().GetObjectInteraction().Cancel();
-        Scene_->GetViewport().GetObjectInteraction().Cancel();
-    };
+    const auto cancelBrushGesture = [this]() { cancelTerrainBrushGesture(); };
     connect(panel->Sculpt, &QComboBox::currentIndexChanged, this, [this, panel, cancelBrushGesture]() {
         cancelBrushGesture();
         const QSignalBlocker blocker(panel->PickHeight);
@@ -640,15 +661,15 @@ void WorldWorkspace::initializeTerrainAuthoring()
                 break;
             case TerrainBrush::Flatten:
                 panel->Status->setText(
-                    QStringLiteral("Drag to flatten to the target height. Release applies the stroke."));
+                    QStringLiteral("Drag to flatten to the target height. Release keeps the stroke."));
                 break;
             case TerrainBrush::RaiseLower:
                 panel->Status->setText(QStringLiteral("Enter a positive amount to raise terrain or a negative amount "
-                                                      "to lower it. Drag and release to apply."));
+                                                      "to lower it. Drag to sculpt, and release to keep the stroke."));
                 break;
             case TerrainBrush::Smooth:
                 panel->Status->setText(
-                    QStringLiteral("Drag to blend the terrain toward nearby heights. Release applies the stroke."));
+                    QStringLiteral("Drag to blend the terrain toward nearby heights. Release keeps the stroke."));
                 break;
         }
     });
@@ -687,11 +708,29 @@ void WorldWorkspace::initializeTerrainAuthoring()
         });
         ViewportObjectInteraction& interaction = viewport->GetObjectInteraction();
         connect(&interaction,
+                &ViewportObjectInteraction::TerrainStrokeChanged,
+                this,
+                &WorldWorkspace::previewTerrainStroke);
+        connect(&interaction,
                 &ViewportObjectInteraction::TerrainStrokeFinished,
                 this,
                 &WorldWorkspace::queueTerrainStroke);
-        connect(&interaction, &ViewportObjectInteraction::TerrainStrokeRejected, this, [panel](const QString& message) {
-            panel->Status->setText(message);
+        connect(&interaction,
+                &ViewportObjectInteraction::TerrainStrokeRejected,
+                this,
+                [this, panel](const QString& message) {
+                    if (panel->IsStrokeLive == true)
+                    {
+                        abandonTerrainStroke();
+                    }
+                    panel->Status->setText(message);
+                });
+        connect(&interaction, &ViewportObjectInteraction::TerrainStrokeCancelled, this, [this, panel]() {
+            if (panel->IsStrokeLive == true)
+            {
+                abandonTerrainStroke();
+                panel->Status->setText(QStringLiteral("Stroke cancelled. The surface is unchanged."));
+            }
         });
         connect(&interaction, &ViewportObjectInteraction::TerrainHeightPicked, this, [panel](float32 height) {
             panel->BrushHeight->setValue(static_cast<float64>(height));
@@ -747,6 +786,17 @@ bool WorldWorkspace::isTerrainAuthoringOpen() const
     return mTerrainPanelOrNull != nullptr && mTerrainPanelOrNull->IsOpen == true;
 }
 
+bool WorldWorkspace::isTerrainStrokeLive() const
+{
+    return isTerrainAuthoringOpen() == true && mTerrainPanelOrNull->IsStrokeLive == true;
+}
+
+void WorldWorkspace::cancelTerrainBrushGesture()
+{
+    Render_->GetViewport().GetObjectInteraction().Cancel();
+    Scene_->GetViewport().GetObjectInteraction().Cancel();
+}
+
 bool WorldWorkspace::canEditTerrain(const QString& key) const
 {
     return key.isEmpty() == false && Document_.HasBuiltInTerrain() == true &&
@@ -795,8 +845,7 @@ void WorldWorkspace::showTerrainAuthoring(const QString& key)
     panel.IsOpen = true;
     panel.IsComparing = false;
     panel.HasConflict = false;
-    panel.StrokeRecipe = {};
-    panel.SetStrokePending(false);
+    panel.ClearStroke();
     panel.ShouldFrame = key.isEmpty() == true && panel.Base.value(QStringLiteral("entities")).toArray().isEmpty();
     panel.Begin(Document_.Component(GetTerrainComponentId()),
                 entity.value(QStringLiteral("components")).toObject().value(GetTerrainComponentId()).toObject(),
@@ -810,6 +859,12 @@ void WorldWorkspace::queueTerrainPreview()
     if (panel.IsOpen == false)
     {
         return;
+    }
+    if (panel.IsStrokeLive == true)
+    {
+        // A source or comparison change replaces the drag's base surface.
+        panel.ClearStroke();
+        cancelTerrainBrushGesture();
     }
     ++panel.Sequence;
     panel.Commit->setEnabled(false);
@@ -847,6 +902,11 @@ void WorldWorkspace::prepareTerrainPreview()
         panel.Refresh->show();
         return;
     }
+    if (panel.IsStrokeLive == true && panel.RequestedLiveSequence == panel.LiveSequence)
+    {
+        // The newest dragged points are already shown or in flight.
+        return;
+    }
     if (panel.Stage != WorldTerrainPanel::Request::Idle || isSceneWorkerActive() == true)
     {
         panel.Timer.start();
@@ -866,16 +926,28 @@ void WorldWorkspace::prepareTerrainPreview()
         EditWorldTerrain(panel.Candidate, mEntropy, panel.Target, recipe, panel.CandidateKey, error, panel.Transform) ==
             false)
     {
-        panel.StrokeRecipe = {};
-        panel.SetStrokePending(false);
+        if (panel.IsStrokeLive == true)
+        {
+            abandonTerrainStroke();
+        }
+        else
+        {
+            panel.ClearStroke();
+        }
         panel.Status->setText(error);
         return;
     }
     panel.RequestedSequence = panel.Sequence;
+    panel.IsRequestLive = panel.IsStrokeLive;
+    panel.RequestedLiveSequence = panel.LiveSequence;
     if (panel.Candidate.SceneLevel().isEmpty() == true)
     {
         panel.Stage = WorldTerrainPanel::Request::LoadingWorld;
-        panel.PreviousScene = Render_->Preview().Scene();
+        panel.PriorIdentity = Render_->Preview().Scene().Identity;
+        // Stroke previews fall back to the surface the stroke started from, not to an earlier partial stroke.
+        panel.PreviousScene = panel.StrokeRecipe.isEmpty() == false && panel.StrokeBaseScene.Identity.isEmpty() == false
+                                  ? panel.StrokeBaseScene
+                                  : Render_->Preview().Scene();
         Render_->PreviewTerrainDraft(panel.Candidate);
         return;
     }
@@ -903,8 +975,8 @@ void WorldWorkspace::terrainBoundLoaded(bool isAccepted)
         finishTerrainPreview(false, Render_->GetLoadError());
         return;
     }
-    if (PreviewViewport::CanPresent() == false || (Render_->Preview().FrameAvailable() == true &&
-                                                   Render_->Preview().Scene().Identity == panel.PreviousScene.Identity))
+    if (PreviewViewport::CanPresent() == false ||
+        (Render_->Preview().FrameAvailable() == true && Render_->Preview().Scene().Identity == panel.PriorIdentity))
     {
         finishTerrainPreview(true);
         return;
@@ -923,27 +995,43 @@ void WorldWorkspace::finishTerrainPreview(bool isAccepted, const QString& error)
 {
     WorldTerrainPanel& panel = *mTerrainPanelOrNull;
     const WorldTerrainPanel::Request stage = panel.Stage;
+    const bool isLiveRequest = panel.IsRequestLive;
     panel.Stage = WorldTerrainPanel::Request::Idle;
+    panel.IsRequestLive = false;
     panel.IsCancellingScene = false;
     if (stage == WorldTerrainPanel::Request::DrawingWorld)
     {
         Render_->Preview().SetNeedsValidationFrame(false);
     }
-    const bool isCurrent = panel.IsOpen == true && panel.HasConflict == false &&
-                           panel.RequestedSequence == panel.Sequence && panel.WorldGeneration == DocumentGeneration_ &&
-                           panel.Base == Document_.Draft();
+    const bool isBaseCurrent = panel.IsOpen == true && panel.HasConflict == false &&
+                               panel.WorldGeneration == DocumentGeneration_ && panel.Base == Document_.Draft();
+    const bool isCurrent = isBaseCurrent == true && panel.RequestedSequence == panel.Sequence;
     if (isCurrent == false)
     {
         if (panel.ShouldRestore == true)
         {
             QTimer::singleShot(0, this, &WorldWorkspace::restoreTerrainWorld);
         }
+        else if (isLiveRequest == true && isBaseCurrent == true && panel.StrokeRecipe.isEmpty() == false)
+        {
+            // Release superseded this partial stroke. Show it while the released stroke prepares.
+            if (isAccepted == true && stage == WorldTerrainPanel::Request::DrawingWorld)
+            {
+                Render_->GetViewport().ShowFrame();
+            }
+            panel.LiveTimer.start();
+        }
         return;
     }
     if (isAccepted == false)
     {
-        panel.StrokeRecipe = {};
-        panel.SetStrokePending(false);
+        const bool hasLiveStroke = panel.IsStrokeLive;
+        panel.ClearStroke();
+        if (hasLiveStroke == true)
+        {
+            cancelTerrainBrushGesture();
+            updateViewportInteraction();
+        }
         if (stage == WorldTerrainPanel::Request::DrawingWorld || stage == WorldTerrainPanel::Request::LoadingWorld)
         {
             Render_->CancelTerrainDraft();
@@ -963,6 +1051,15 @@ void WorldWorkspace::finishTerrainPreview(bool isAccepted, const QString& error)
     {
         Render_->GetViewport().ShowFrame();
     }
+    if (isLiveRequest == true)
+    {
+        // A dragged stroke's preview is never ready to commit; the committed view stays the ready one.
+        if (panel.IsStrokeLive == true && panel.RequestedLiveSequence != panel.LiveSequence)
+        {
+            panel.LiveTimer.start();
+        }
+        return;
+    }
     panel.ReadySequence = panel.RequestedSequence;
     panel.ReadyKey = panel.CandidateKey;
     panel.HasDraftView = panel.IsComparing == false;
@@ -973,6 +1070,12 @@ void WorldWorkspace::finishTerrainPreview(bool isAccepted, const QString& error)
                             .value(GetTerrainComponentId())
                             .toObject();
     panel.PreviousScene = {};
+    if (panel.IsStrokeLive == true)
+    {
+        // A drag began while this view prepared; preview its points next.
+        panel.LiveTimer.start();
+        return;
+    }
     if (panel.StrokeRecipe.isEmpty() == false)
     {
         const uint64 sequence = panel.Sequence;
@@ -1027,6 +1130,7 @@ void WorldWorkspace::cancelTerrainRequest()
             static_cast<void>(Render_->Preview().SetScene(panel.PreviousScene));
         }
         panel.Stage = WorldTerrainPanel::Request::Idle;
+        panel.IsRequestLive = false;
         Render_->GetViewport().ShowFrame();
     }
 }
@@ -1046,8 +1150,7 @@ void WorldWorkspace::closeTerrainAuthoring(bool shouldRestoreWorld)
     cancelTerrainRequest();
     Render_->CancelTerrainDraft();
     panel.HasDraftView = false;
-    panel.StrokeRecipe = {};
-    panel.SetStrokePending(false);
+    panel.ClearStroke();
     panel.ReadyWorld = {};
     panel.ReadyRecipe = {};
     panel.Candidate = {};
@@ -1098,8 +1201,12 @@ void WorldWorkspace::checkTerrainBase()
         return;
     }
     panel.HasConflict = true;
-    panel.StrokeRecipe = {};
-    panel.SetStrokePending(false);
+    const bool hasLiveStroke = panel.IsStrokeLive;
+    panel.ClearStroke();
+    if (hasLiveStroke == true)
+    {
+        cancelTerrainBrushGesture();
+    }
     panel.Sculpt->setEnabled(false);
     ++panel.Sequence;
     panel.Timer.stop();
@@ -1137,9 +1244,105 @@ void WorldWorkspace::refreshTerrainBase()
     queueTerrainPreview();
 }
 
+void WorldWorkspace::previewTerrainStroke(const QJsonArray& points)
+{
+    WorldTerrainPanel& panel = *mTerrainPanelOrNull;
+    // Only a press on the ready committed view starts a live stroke; later points extend it.
+    if (panel.IsStrokeLive == false &&
+        (points.size() != 1 || panel.IsOpen == false || panel.Sculpt->isEnabled() == false ||
+         panel.GetBrush() == TerrainBrush::Off || panel.ReadySequence != panel.Sequence ||
+         panel.ReadyRecipe != panel.GetCommittedRecipe() || panel.Target != Selected_))
+    {
+        return;
+    }
+    QJsonObject recipe = panel.ReadyRecipe;
+    QString error;
+    if (AppendTerrainStroke(recipe,
+                            points,
+                            static_cast<float32>(panel.BrushRadius->value()),
+                            panel.GetBrush(),
+                            panel.GetBrushValue(),
+                            error) == false)
+    {
+        // Release reports the same problem; the surface keeps the last previewed points until then.
+        panel.Status->setText(error);
+        return;
+    }
+    if (panel.IsStrokeLive == false)
+    {
+        panel.IsStrokeLive = true;
+        if (Document_.SceneLevel().isEmpty() == true)
+        {
+            panel.StrokeBaseScene = Render_->Preview().Scene();
+        }
+        panel.SetStrokePending(true);
+        panel.Status->setText(QStringLiteral("Sculpting… Release keeps the stroke."));
+    }
+    panel.StrokeRecipe = Move(recipe);
+    ++panel.LiveSequence;
+    if (panel.Stage == WorldTerrainPanel::Request::Idle)
+    {
+        panel.LiveTimer.start();
+    }
+}
+
+void WorldWorkspace::abandonTerrainStroke()
+{
+    WorldTerrainPanel& panel = *mTerrainPanelOrNull;
+    const RenderScene base = panel.StrokeBaseScene;
+    panel.ClearStroke();
+    cancelTerrainBrushGesture();
+    if (Document_.SceneLevel().isEmpty() == false || base.Identity.isEmpty() == true)
+    {
+        // An assembled scene has no retained base view; assemble the committed terrain again.
+        queueTerrainPreview();
+        return;
+    }
+    cancelTerrainRequest();
+    // The viewport's World draft is the committed document again, matching the ready view.
+    Render_->CancelTerrainDraft();
+    if (Render_->Preview().Scene().Identity != base.Identity)
+    {
+        static_cast<void>(Render_->Preview().SetScene(base));
+    }
+    Render_->GetViewport().ShowFrame();
+    updateViewportInteraction();
+}
+
 void WorldWorkspace::queueTerrainStroke(const QJsonArray& points)
 {
     WorldTerrainPanel& panel = *mTerrainPanelOrNull;
+    if (panel.IsStrokeLive == true)
+    {
+        // The surface already shows the stroke. Prepare it once more as the edit to commit.
+        QJsonObject recipe = panel.ReadyRecipe;
+        QString error;
+        if (AppendTerrainStroke(recipe,
+                                points,
+                                static_cast<float32>(panel.BrushRadius->value()),
+                                panel.GetBrush(),
+                                panel.GetBrushValue(),
+                                error) == false)
+        {
+            abandonTerrainStroke();
+            panel.Status->setText(error);
+            return;
+        }
+        panel.IsStrokeLive = false;
+        panel.StrokeRecipe = Move(recipe);
+        ++panel.Sequence;
+        panel.Commit->setEnabled(false);
+        panel.Compare->setEnabled(false);
+        panel.Sculpt->setEnabled(false);
+        applyTerrainInteraction();
+        panel.Status->setText(QStringLiteral("Applying stroke…"));
+        // A partial stroke still in flight starts this request when it finishes.
+        if (panel.Stage == WorldTerrainPanel::Request::Idle)
+        {
+            panel.LiveTimer.start();
+        }
+        return;
+    }
     if (panel.IsOpen == false || panel.Sculpt->isEnabled() == false || panel.GetBrush() == TerrainBrush::Off ||
         panel.ReadySequence != panel.Sequence || panel.ReadyRecipe != panel.GetCommittedRecipe() ||
         panel.Target != Selected_)
@@ -1167,7 +1370,7 @@ void WorldWorkspace::commitTerrainDraft()
 {
     WorldTerrainPanel& panel = *mTerrainPanelOrNull;
     checkTerrainBase();
-    if (panel.IsOpen == false || panel.HasConflict == true || panel.IsComparing == true ||
+    if (panel.IsOpen == false || panel.HasConflict == true || panel.IsComparing == true || panel.IsStrokeLive == true ||
         panel.ReadySequence != panel.Sequence)
     {
         return;
@@ -1225,8 +1428,7 @@ void WorldWorkspace::commitTerrainDraft()
     QString error;
     if (Document_.Restore(panel.ReadyWorld.Draft(), error) == false)
     {
-        panel.StrokeRecipe = {};
-        panel.SetStrokePending(false);
+        panel.ClearStroke();
         panel.Status->setText(error);
         return;
     }
