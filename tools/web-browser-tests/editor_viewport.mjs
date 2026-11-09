@@ -1,4 +1,4 @@
-// Test-only acceptance for the actual Qt/Wasm editor and engine WebGPU renderer.
+// Test-only acceptance for the actual Qt/Wasm editor and engine WebGPU/WebGL 2 renderer.
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
@@ -49,9 +49,9 @@ async function click(page, x, y) {
   // Qt consumes input and relayouts its canvas on the event-loop/animation turn.
   await page.waitForTimeout(200);
 }
-async function open(page) {
+async function open(page, query = '') {
   page.on('pageerror', error => report.errors.push(error.message));
-  await page.goto(base, {waitUntil: 'domcontentloaded'});
+  await page.goto(base + '/' + query, {waitUntil: 'domcontentloaded'});
   await page.waitForFunction(() => document.body.dataset.editorState === 'ready', null, {timeout: 60000});
   // A fresh profile has no stored keymap, so the editor first asks for one in a modal
   // window. Its title is DOM text; Enter accepts the default Ludus keymap.
@@ -260,16 +260,54 @@ try {
   assert.equal(await page.locator('body').getAttribute('data-editor-state'), 'ready');
   report.cases.push('Actual GPU device destruction reports a viewport failure while editor stays available');
   await page.close();
+  // Without WebGPU the viewport starts WebGL 2 on a fresh canvas: same shaders as GLSL ES, shadows included.
+  const fallback = await browser.newPage({viewport: {width: 1440, height: 1000}});
+  activePage = fallback;
+  await fallback.addInitScript(() => Object.defineProperty(navigator, 'gpu', {value: undefined}));
+  await open(fallback);
+  await importScene(fallback);
+  await rendered(fallback);
+  assert.equal(await canvas(fallback).getAttribute('data-api'), 'webgl2');
+  const fallbackSolid = await waitForPixels(fallback, 'webgl2-solid',
+    image => image.lit > 100 && isNeutral(image.geometry));
+  assert.ok(fallbackSolid.lit > 100 && isNeutral(fallbackSolid.geometry));
+  const beforeFallbackLit = await frames(fallback);
+  await selectShading(fallback, 'lit');
+  await rendered(fallback, beforeFallbackLit);
+  const fallbackLit = await waitForPixels(fallback, 'webgl2-lit', image => image.warm > 50 && isWarm(image.geometry));
+  assert.ok(fallbackLit.warm > 50 && isWarm(fallbackLit.geometry), 'WebGL 2 Lit must shade the authored material');
+  report.cases.push('Missing WebGPU falls back to WebGL 2 with Solid and shadowed Lit pixels');
+  await fallback.close();
+  // The page address can force WebGL 2 even where WebGPU works.
+  const forced = await browser.newPage({viewport: {width: 1440, height: 1000}});
+  activePage = forced;
+  await open(forced, '?viewport-backend=webgl2');
+  await importScene(forced);
+  await rendered(forced);
+  assert.equal(await canvas(forced).getAttribute('data-api'), 'webgl2');
+  assert.ok(isNeutral((await waitForPixels(forced, 'forced-webgl2-solid',
+    image => image.lit > 100 && isNeutral(image.geometry))).geometry));
+  report.cases.push('viewport-backend=webgl2 forces the WebGL 2 viewport');
+  await forced.close();
+  // With neither API the viewport names both and the editor stays usable; no CPU rendering fallback.
   const unavailable = await browser.newPage({viewport: {width: 1440, height: 1000}});
   activePage = unavailable;
-  await unavailable.addInitScript(() => Object.defineProperty(navigator, 'gpu', {value: undefined}));
+  await unavailable.addInitScript(() => {
+    Object.defineProperty(navigator, 'gpu', {value: undefined});
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
+      return this.id.startsWith('ludus-gpu-viewport') && /webgl/.test(type) ? null : getContext.call(this, type, ...rest);
+    };
+  });
   await open(unavailable);
   await importScene(unavailable);
   await unavailable.waitForFunction(() => document.querySelector('#screen').dataset.viewportError, null, {timeout: 10000});
-  assert.match(await unavailable.locator('#screen').getAttribute('data-viewport-error'), /WebGPU/);
+  const unavailableError = await unavailable.locator('#screen').getAttribute('data-viewport-error');
+  assert.match(unavailableError, /WebGPU/);
+  assert.match(unavailableError, /WebGL 2/);
   assert.equal(await unavailable.locator('body').getAttribute('data-editor-state'), 'ready');
   await unavailable.screenshot({path: resolve(output, 'unavailable.png')});
-  report.cases.push('Missing WebGPU reports failure without a CPU rendering fallback');
+  report.cases.push('Missing WebGPU and WebGL 2 report both causes without a CPU rendering fallback');
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {

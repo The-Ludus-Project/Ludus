@@ -128,6 +128,9 @@ struct ViewportStatistics final
     /// Per-scope GPU time, measured only while the overlay is visible.
     ViewportPassStatistics Passes;
     ViewportPassTimeState PassState = ViewportPassTimeState::Waiting;
+    /// Graphics API note shown first when nonempty, for example "WebGL 2 (WebGPU unavailable: ...)".
+    /// Empty on desktop builds, whose overlay is unchanged.
+    QString Api;
 };
 
 /// Completed graph-output measurements, independent of the device timing owner.

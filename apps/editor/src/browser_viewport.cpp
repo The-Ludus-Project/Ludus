@@ -1,6 +1,7 @@
 #include "internal/browser_viewport.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <QApplication>
@@ -17,6 +18,8 @@ using namespace foundation;
 namespace
 {
 constexpr int32 SERVICE_INTERVAL_MILLISECONDS = 16;
+/// Longest page query read for the viewport-backend override, including the terminator.
+constexpr usize MAX_PAGE_QUERY_BYTES = 2048;
 uint32 NextCanvasIdentity = 1;
 // Thanks to Qt Group, "Qt for WebAssembly", OpenGL and Windowing:
 // https://doc.qt.io/qt-6.10/wasm.html
@@ -38,7 +41,8 @@ EM_JS(int32, CreateViewportCanvas, (const char* selector), {
     return 1;
 });
 EM_JS(void, SyncViewportCanvas, (const char* selector, int32 x, int32 y, int32 width, int32 height,
-                                int32 screenWidth, int32 screenHeight, int32 isVisible, float64 presentedFrames), {
+                                int32 screenWidth, int32 screenHeight, int32 isVisible, float64 presentedFrames,
+                                int32 drawableWidth, int32 drawableHeight), {
     const canvas = document.querySelector(UTF8ToString(selector));
     const screen = document.getElementById('screen');
     if (canvas == null || screen == null) return;
@@ -50,6 +54,12 @@ EM_JS(void, SyncViewportCanvas, (const char* selector, int32 x, int32 y, int32 w
     canvas.style.width = (width * scaleX) + 'px';
     canvas.style.height = (height * scaleY) + 'px';
     canvas.style.display = isVisible ? 'block' : 'none';
+    // WebGL draws into the canvas's own width/height (WebGPU's surface configuration sets them).
+    // Platform does not own this canvas, so its owner matches them to the requested drawable.
+    if (canvas.dataset.api === 'webgl2' && (canvas.width !== drawableWidth || canvas.height !== drawableHeight)) {
+        canvas.width = drawableWidth;
+        canvas.height = drawableHeight;
+    }
     const frameCount = String(presentedFrames);
     if (presentedFrames > 0 && canvas.dataset.frames != frameCount) {
         delete canvas.dataset.error;
@@ -67,6 +77,13 @@ EM_JS(void, ReportViewportFailure, (const char* selector, const char* message), 
 EM_JS(void, RemoveViewportCanvas, (const char* selector), {
     document.querySelector(UTF8ToString(selector))?.remove();
 });
+EM_JS(void, MarkViewportApi, (const char* selector, int32 isWebGl2), {
+    const canvas = document.querySelector(UTF8ToString(selector));
+    if (canvas != null) canvas.dataset.api = isWebGl2 ? 'webgl2' : 'webgpu';
+});
+EM_JS(int32, ReadPageQuery, (char* buffer, int32 capacity), {
+    return stringToUTF8(location.search, buffer, capacity);
+});
 // clang-format on
 } // namespace
 BrowserViewport::BrowserViewport(RenderPreview& inoutPreview, QWidget* parentOrNull)
@@ -79,6 +96,25 @@ BrowserViewport::BrowserViewport(RenderPreview& inoutPreview, QWidget* parentOrN
     connect(&mService, &QTimer::timeout, this, [this]() { service(); });
     connect(&inoutPreview, &RenderPreview::ResettingFrames, this, [this]() { releaseFrame(); });
     connect(&inoutPreview, &RenderPreview::Stopped, this, [this]() { ClearFrame(); });
+    connect(&inoutPreview,
+            &RenderPreview::BrowserApiFailed,
+            this,
+            [this](BrowserViewportApi api, const QString& reason) {
+                RemoveViewportCanvas(mSelector.constData());
+                if (recordStartupFailure(api, reason) == true && mPreview.isNull() == false)
+                {
+                    // Continue through the ordinary start path; RenderPreview stopped the failed device.
+                    mIsRetrying = true;
+                    QTimer::singleShot(0, this, [this]() {
+                        if (mPreview.isNull() == false && mPreview->Start() == false)
+                        {
+                            // The retry could not even request a device; surface why instead of waiting.
+                            mIsRetrying = false;
+                            mPreview->ReportBrowserUnavailable(mPreview->Status());
+                        }
+                    });
+                }
+            });
     connect(&inoutPreview, &RenderPreview::Failed, this, [this](const QString& error) {
         const QByteArray message = error.toUtf8();
         ReportViewportFailure(mSelector.constData(), message.constData());
@@ -100,20 +136,59 @@ bool BrowserViewport::Start()
     {
         return false;
     }
-    RemoveViewportCanvas(mSelector.constData());
-    if (CreateViewportCanvas(mSelector.constData()) == 0)
+    if (mIsRetrying == false)
     {
-        return false;
+        core::StaticArray<char, MAX_PAGE_QUERY_BYTES> query{};
+        const int32 written = ReadPageQuery(query.GetData(), static_cast<int32>(query.GetSize()));
+        mRequested = ParseBrowserViewportBackend(QString::fromUtf8(query.GetData(), math::Max(0, written)));
+        mNextApi = GetFirstBrowserViewportApi(mRequested);
+        mWebGpuFailure.clear();
+        mWebGl2Failure.clear();
     }
-    mHasPresentedImage = false;
-    service();
-    if (mPreview->AdmitBrowserDevice(mSelector.constData()) == false)
+    mIsRetrying = false;
+    for (;;)
     {
+        // Every attempt gets a canvas no graphics API has claimed: WebGPU's commits it.
         RemoveViewportCanvas(mSelector.constData());
-        return false;
+        if (CreateViewportCanvas(mSelector.constData()) == 0)
+        {
+            return false;
+        }
+        mHasPresentedImage = false;
+        const BrowserViewportApi api = mNextApi;
+        // Mark before the first sync: a WebGL 2 canvas is sized there, and resizing clears it.
+        MarkViewportApi(mSelector.constData(), api == BrowserViewportApi::WebGl2 ? 1 : 0);
+        service();
+        RenderPreview::BrowserDeviceRequest request;
+        request.CanvasSelectorOrNull = mSelector.constData();
+        request.Api = api;
+        request.ApiNote = DescribeBrowserViewportApi(api, mWebGpuFailure);
+        if (mPreview->AdmitBrowserDevice(request) == true)
+        {
+            mService.start();
+            return true;
+        }
+        if (recordStartupFailure(api, mPreview->GetBrowserStartupFailure()) == false)
+        {
+            RemoveViewportCanvas(mSelector.constData());
+            return false;
+        }
     }
-    mService.start();
-    return true;
+}
+bool BrowserViewport::recordStartupFailure(BrowserViewportApi api, const QString& reason)
+{
+    (api == BrowserViewportApi::WebGl2 ? mWebGl2Failure : mWebGpuFailure) = reason;
+    if (ShouldFallBackToWebGl2(mRequested, api, false) == true)
+    {
+        mNextApi = BrowserViewportApi::WebGl2;
+        return true;
+    }
+    if (mPreview.isNull() == false)
+    {
+        mPreview->ReportBrowserUnavailable(
+            DescribeBrowserViewportUnavailable(mRequested, mWebGpuFailure, mWebGl2Failure));
+    }
+    return false;
 }
 void BrowserViewport::ShowFrame()
 {
@@ -193,6 +268,8 @@ void BrowserViewport::service()
                        rectangleScreenLogical.width(),
                        rectangleScreenLogical.height(),
                        isVisible == true && mCanPresent == true && mHasPresentedImage == true ? 1 : 0,
-                       static_cast<float64>(mPresentedFrames));
+                       static_cast<float64>(mPresentedFrames),
+                       mRequestedWidth,
+                       mRequestedHeight);
 }
 } // namespace ludus::editor

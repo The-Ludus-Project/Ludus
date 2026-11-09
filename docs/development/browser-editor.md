@@ -105,7 +105,8 @@ runs on the UI thread after the status text has painted; large scenes block
 input until the cook finishes.
 
 The interactive viewport renders imported scenes through the engine's GPU raster
-renderer on a separate **WebGPU** canvas. Qt retains its own canvas for widgets. Scene meshes, textures and materials use the same GPU generation and
+renderer on a separate **WebGPU** or **WebGL 2** canvas (see
+[Viewport graphics API](#viewport-graphics-api)). Qt retains its own canvas for widgets. Scene meshes, textures and materials use the same GPU generation and
 camera path as the native editor; the renderer tone-maps its display image and
 composites it to the browser surface in one submission, without CPU pixel
 readback or image upload. Orbit, pan, zoom, focus, shading and resize update the
@@ -114,17 +115,33 @@ current scene. Output is bounded to 1024 physical pixels on its longest side.
 **Solid** is the neutral navigation visualization; **Albedo** shows unlit surface
 colors; **Lit** uses admitted authored direct lights, emission and environment.
 Authored raster shadows use the shared shadow atlas path. Shadow preparation
-records offscreen WebGPU submissions without acquiring or clearing the visible
-canvas, so pending candidates retain the last presented view. The browser
+records offscreen submissions without acquiring or clearing the visible
+canvas (WebGL 2 leaves the canvas drawing buffer untouched), so pending candidates retain the last presented view. The browser
 profile does not run the native worker-based static lighting bake. Emissive geometry does not imply real-time indirect lighting.
 Pending resource preparation retains the last presented view; rejected candidates
 report a failure without replacing it. A completed image is required before an
 import is published.
 
-WebGPU requires a supported browser/device and a secure context (HTTPS or
-localhost). If device admission fails, the viewport explains that WebGPU is
-unavailable and document editing remains usable; it does not silently rasterize
-on the CPU. Device loss stops the GPU session and preserves documents. Reopen the
+### Viewport graphics API
+
+The viewport starts **WebGPU** first. WebGPU needs a supported browser and device
+and a secure context (HTTPS or localhost). When WebGPU cannot start (no `navigator.gpu`,
+no compatible adapter or device, or a canvas or limit failure), the viewport creates a
+fresh canvas and starts **WebGL 2** instead, with the same shaders compiled to GLSL ES
+3.00 by the browser build. The statistics overlay's first line names the API in use,
+for example `API: WebGL 2 (WebGPU unavailable: no compatible GPU adapter)`.
+Only startup failures fall back: a device that started and later fails or is lost
+reports that failure instead of switching APIs.
+
+To pick the API yourself, add `viewport-backend` to the page address:
+`?viewport-backend=webgl2` forces WebGL 2, `?viewport-backend=webgpu` forces WebGPU
+(with no fallback), and `auto` or no value lets the editor choose. A forced API that
+cannot start is reported with the step to remove the override.
+
+If neither API can start, the viewport names each one with its reason and the next
+step (turn on hardware acceleration, use a browser with WebGPU or WebGL 2, or use the
+desktop editor), and document editing remains usable. It never rasterizes on the CPU.
+Device loss stops the GPU session and preserves documents. Reopen the
 scene or restart the preview to request a fresh device. The separate canvas
 follows the Qt viewport rectangle and hides with its tab, popups and modal dialogs;
 mouse and keyboard navigation continue through Qt.
