@@ -662,8 +662,12 @@ bool RenderPreview::Start()
     Status_ = mIsProjectGraphEnabled == true ? QStringLiteral("Preparing the project renderer…")
                                              : QStringLiteral("Preparing the shared Qt GPU device…");
     Q_EMIT DeviceRequested();
-    Q_EMIT Changed();
-    return mIsStarting == true || OwnsDevice_ == true;
+    // A synchronous failure may already have reported its cause and rolled the scene back.
+    if (Running() == true)
+    {
+        Q_EMIT Changed();
+    }
+    return Running();
 #else
     Status_ = QStringLiteral("3D preview requires the native editor built with LUDUS_EDITOR_RENDER_PREVIEW and pinned "
                              "shader tools. World data remains editable.");
