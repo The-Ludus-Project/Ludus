@@ -186,7 +186,9 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         (void)Start(QStringLiteral("assemble"));
     });
     connect(&Preview_, &RenderPreview::Changed, this, [this]() {
-        if (Busy_ == false)
+        // Restoring an empty scene clears the preview status. A later notification
+        // must preserve the scene operation's diagnostic.
+        if (Busy_ == false && Preview_.Status().isEmpty() == false)
         {
             Status_->setText(Preview_.Status());
         }

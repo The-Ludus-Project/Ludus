@@ -258,6 +258,12 @@ To manage Qt yourself, install it once (names vary by distribution) and use
   Homebrew Qt and records `Qt6_DIR` only in the local build cache. A manual Qt
   installation can be selected with CMake `-DQt6_DIR=/path/to/lib/cmake/Qt6`.
 
+For **Use my location**, install the optional Qt Positioning module before
+configuring the desktop editor. On Ubuntu use `qt6-positioning-dev`. On macOS
+use `brew install qtpositioning`. With a split Homebrew installation you can
+pass `-DQt6Positioning_DIR="$(brew --prefix qtpositioning)/lib/cmake/Qt6Positioning"`
+to CMake if needed.
+
 Only the editor configure/build uses Qt. A default configure
 (`LUDUS_BUILD_EDITOR=OFF`) and default engine browser builds never search for Qt. The separate
 [browser editor build](browser-editor.md) explicitly prepares WebAssembly Qt.
@@ -1849,12 +1855,25 @@ Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
 
 Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
 rotation, including rotation supplied by a game. Choose **Earth Sun** or
-**Earth Moon** to sample an approximate sky direction using **Earth Time**,
-**Observer Latitude**, and **Observer Longitude**. Use the same values on both lights
-to preview a single observer and moment. Earth Time is fractional UTC days
-since noon on January 1, 2000. For example, `0.5` is the following midnight.
-North latitude and east longitude are positive. The World frame is +X east,
-+Y up, and −Z north.
+**Earth Moon** to sample an approximate sky direction at **Date & Time (UTC)**
+and the observer's coordinates. Open the calendar to pick a date or type into
+the date and time field. **Use Now** copies the current instant into the draft.
+The World stores fractional UTC days since January 1, 2000 at 12:00 UTC, so
+existing Earth Time values open at the same instant. The supported dates span
+approximately 1950–2050.
+
+Use **Choose Earth Location…** to search for a city, landmark, or address.
+Clicking **Search** sends the query to Photon, which uses OpenStreetMap data.
+Select a result to review its latitude and longitude. **Use my location**
+requests the device's position once with permission. On desktop this action
+requires Qt Positioning and a system location provider. On the web it requires
+a secure browser context and location access. Choose **Use Coordinates** to
+copy the selected result into the inspector, then **Apply Changes** to apply
+the draft. Saved Worlds store the coordinates. Manual entry works offline and
+when device location is unavailable. North latitude and east longitude are
+positive. Use the same date, time, and coordinates on both lights to preview
+the sky at a single place and moment. The World frame is +X east, +Y up, and
+−Z north.
 
 The editor samples the authored time and preserves the entity's saved
 Transform rotation as a fallback. A sampled body at or below the geometric
