@@ -131,6 +131,14 @@ constexpr usize UNIFORM_MEMBER_ALIGNMENT_BYTES = 4;
 /// A SPIR-V module starts with its magic number and four further header words.
 constexpr uint32 SPIRV_MAGIC = 0x07230203U;
 constexpr usize SPIRV_HEADER_WORDS = 5;
+/// Indices summarized by one precomputed maximum. Draw validation reads one maximum per whole block and
+/// scans at most two partial blocks, instead of every index of every draw on every frame.
+constexpr usize INDEX_MAXIMUM_BLOCK_INDICES = 256;
+/// The 16-bit primitive-restart value; the 32-bit restart value is the largest uint32.
+constexpr uint32 INDEX16_RESTART = 0xffffU;
+/// Recorded maximum of a block holding a restart value. Like an out-of-range index, it never satisfies
+/// index < VertexCount, so one range comparison rejects both.
+constexpr uint32 RESTART_INDEX_MAXIMUM = 0xffffffffU;
 struct CpuTextureRecord final
 {
     StorageArray<uint8> Bytes;
@@ -183,6 +191,9 @@ struct Record final
     RasterSet Set;
     RasterPipelineInfo Pipeline;
     StorageArray<uint8> Indices;
+    /// Largest index (restart values as RESTART_INDEX_MAXIMUM) in each INDEX_MAXIMUM_BLOCK_INDICES block of
+    /// Indices. Index buffers are immutable after creation, so the maxima stay valid for the record's life.
+    StorageArray<uint32> IndexBlockMaxima;
     uint64 StorageBytes = 0;
     usize AuxiliaryHostBytes = 0;
 };
@@ -899,6 +910,93 @@ bool ShaderFits(const RasterShaderInfo& shader, const RasterLayout& layout) noex
     }
     return true;
 }
+/// Reads index i of native-endian index bytes of the given width, mapping a 16-bit restart value to
+/// RESTART_INDEX_MAXIMUM. Byte copies avoid alignment assumptions; index upload uses native-endian unsigned
+/// integers, as do the selected native/browser graphics APIs.
+LUDUS_INLINE uint32 ReadValidationIndex(const uint8* bytes, usize width, usize i) noexcept
+{
+    if (width == sizeof(uint16))
+    {
+        uint16 value = 0;
+        std::memcpy(&value, bytes + i * width, width);
+        return value == INDEX16_RESTART ? RESTART_INDEX_MAXIMUM : value;
+    }
+    uint32 value = 0;
+    std::memcpy(&value, bytes + i * width, width);
+    return value;
+}
+/// Returns whether width is the byte width of a 16-bit or 32-bit index.
+LUDUS_INLINE bool IsIndexWidth(usize width) noexcept
+{
+    return width == sizeof(uint16) || width == sizeof(uint32);
+}
+/// Returns the number of validation blocks that cover count indices.
+LUDUS_INLINE usize CountIndexBlocks(usize count) noexcept
+{
+    return (count + INDEX_MAXIMUM_BLOCK_INDICES - 1) / INDEX_MAXIMUM_BLOCK_INDICES;
+}
+/// Fills outMaxima with the per-block maxima of an index record's bytes. Returns false for a width other than
+/// 2 or 4 bytes, or when host storage cannot hold the maxima; the caller then abandons the record.
+bool BuildIndexBlockMaxima(const StorageArray<uint8>& indices, usize width, StorageArray<uint32>& outMaxima) noexcept
+{
+    if (IsIndexWidth(width) == false)
+    {
+        return false;
+    }
+    const usize count = indices.GetSize() / width;
+    const usize blocks = CountIndexBlocks(count);
+    if (outMaxima.TryResize(blocks) == false)
+    {
+        return false;
+    }
+    for (usize block = 0; block < blocks; ++block)
+    {
+        const usize first = block * INDEX_MAXIMUM_BLOCK_INDICES;
+        const usize end = math::Min(first + INDEX_MAXIMUM_BLOCK_INDICES, count);
+        uint32 maximum = 0;
+        for (usize i = first; i < end; ++i)
+        {
+            maximum = math::Max(maximum, ReadValidationIndex(indices.GetData(), width, i));
+        }
+        outMaxima[block] = maximum;
+    }
+    return true;
+}
+/// Returns the largest index (restart values as RESTART_INDEX_MAXIMUM) in [first, first + count) of an
+/// index record whose maxima BuildIndexBlockMaxima built. Returns RESTART_INDEX_MAXIMUM, which no vertex count
+/// admits, for an unsupported width, a range outside the record's indices or maxima that do not cover them.
+uint32 ComputeIndexRangeMaximum(const StorageArray<uint8>& indices,
+                                const StorageArray<uint32>& maxima,
+                                usize width,
+                                usize first,
+                                usize count) noexcept
+{
+    if (IsIndexWidth(width) == false)
+    {
+        return RESTART_INDEX_MAXIMUM;
+    }
+    const usize indexCount = indices.GetSize() / width;
+    if (first > indexCount || count > indexCount - first || maxima.GetSize() != CountIndexBlocks(indexCount))
+    {
+        return RESTART_INDEX_MAXIMUM;
+    }
+    const usize end = first + count;
+    uint32 maximum = 0;
+    usize i = first;
+    for (; i < end && i % INDEX_MAXIMUM_BLOCK_INDICES != 0; ++i)
+    {
+        maximum = math::Max(maximum, ReadValidationIndex(indices.GetData(), width, i));
+    }
+    for (; end - i >= INDEX_MAXIMUM_BLOCK_INDICES; i += INDEX_MAXIMUM_BLOCK_INDICES)
+    {
+        maximum = math::Max(maximum, maxima[i / INDEX_MAXIMUM_BLOCK_INDICES]);
+    }
+    for (; i < end; ++i)
+    {
+        maximum = math::Max(maximum, ReadValidationIndex(indices.GetData(), width, i));
+    }
+    return maximum;
+}
 } // namespace
 RasterStatus GetRasterCapabilities(DeviceHandle device, RasterCapabilities& output) noexcept
 {
@@ -953,6 +1051,10 @@ RasterStatus CreateBuffer(DeviceHandle device,
                     return StorageFailure();
                 }
                 std::memcpy(record.Indices.GetData(), bytes.data(), bytes.size());
+                if (BuildIndexBlockMaxima(record.Indices, alignment, record.IndexBlockMaxima) == false)
+                {
+                    return StorageFailure();
+                }
             }
             return backend::RasterCreateBuffer(slot, description, bytes, record.Request);
         },
@@ -2175,25 +2277,14 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
     {
         return RasterStatus::InvalidDescription;
     }
-    for (usize i = 0; i < draw.IndexCount; ++i)
+    // Every index must address a vertex and none may be a restart value (mapped to RESTART_INDEX_MAXIMUM).
+    if (ComputeIndexRangeMaximum(indices->Indices,
+                                 indices->IndexBlockMaxima,
+                                 width,
+                                 draw.IndexOffset / width,
+                                 draw.IndexCount) >= draw.VertexCount)
     {
-        // Byte copies avoid alignment assumptions; index upload uses native-endian
-        // unsigned integers, as do the selected native/browser graphics APIs.
-        uint32 index = 0;
-        if (width == 2)
-        {
-            uint16 value = 0;
-            std::memcpy(&value, indices->Indices.GetData() + draw.IndexOffset + i * width, width);
-            index = value;
-        }
-        else
-        {
-            std::memcpy(&index, indices->Indices.GetData() + draw.IndexOffset + i * width, width);
-        }
-        if (index >= draw.VertexCount || index == (width == 2 ? 0xffffU : 0xffffffffU))
-        {
-            return RasterStatus::InvalidDescription;
-        }
+        return RasterStatus::InvalidDescription;
     }
     if (RasterAccess::Owner(draw.Indirect) != 0)
     {
