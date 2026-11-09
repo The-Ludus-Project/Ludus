@@ -17,15 +17,29 @@ Acceptance into `develop` does not establish full platform qualification.
 
 Pull requests targeting `develop` run source formatting, source-policy and workflow
 syntax checks, tooling regressions, the installed host-tooling tests, and public
-API/documentation validation. Drafts retain these inexpensive checks. They do not
-install the native toolchain or compile engine, Editor or shader-worker targets.
+API/documentation validation. Drafts retain these checks. When the change is not
+documentation-only, they also compile: the **Editor, shader worker and unit tests**
+job checks that each source compiles once, builds every default target with the
+Editor and shader worker and warnings as errors, and analyzes the Editor document
+sources, without running its tests or journeys. Both **Clang static analysis**
+shards analyze every translation unit, and shard 0 checks changed lines with the
+naming and magic-number rules. These jobs restore the Conan and compiler caches
+the batch saves on `main` and never save their own, so they cannot evict that
+baseline. Measured batch runs took about 25 minutes for the Editor compile and
+4 minutes per analysis shard with warm caches.
+
+From 2026-10-19 to 2026-11-08 integration PRs compiled nothing. Between 2026-10-27
+and 2026-11-08, 2 of about 38 batches that ran their suites passed: build-graph,
+analysis and compile failures merged into `develop`, each failed a 2-hour batch
+within 3-13 minutes, and the next change could not be validated until a fix merged.
 Source policy also rejects direct nested build commands inside changed
 `add_executable`, `add_library` and `target_sources` source lists. This catches
 merge damage that leaves a build command inside another command's arguments.
 Comments, literals and expansions are ignored; this lexical guard does not
 evaluate CMake or establish source existence and target dependency correctness.
-The `Ubuntu Clang` gate requires the source/tooling job for non-documentation
-changes and verifies that every deferred native job is skipped. The installed
+The `Ubuntu Clang` gate requires the source/tooling, Editor compile and analysis
+jobs for non-documentation changes and verifies that every deferred native job is
+skipped. The installed
 host-tooling and public API checks remain separate required checks. No label
 expands an integration PR into a full run; dispatch a batch on `main` when
 earlier platform qualification is needed. A pull request targeting any other
@@ -54,13 +68,12 @@ failure to fix. Promotion is unchanged: the `Ubuntu Clang` gate still requires
 the source/tooling job to succeed. Like every coordinator edit, this takes effect
 for batches only after it reaches `main`.
 
-Cheap PR checks establish source/tooling admission, not build readiness. A compile
-or runtime regression can enter `develop`; the batch must reject it before
-`main` advances. Inspect failed batch diagnostics and submit a focused fix or
+PR checks establish that the Linux development configuration with the Editor
+compiles and passes analysis, not test or platform readiness. Another platform's
+compile failure, a test failure or a runtime regression can still enter `develop`;
+the batch must reject it before `main` advances. Inspect failed batch diagnostics and submit a focused fix or
 revert through a `develop` PR, as described in [recovery](#recover-a-failed-batch).
-Do not bypass full qualification to clear a backlog. The expected PR critical
-path is the remaining source/tooling and documentation checks; actual savings
-must be measured after this policy is active.
+Do not bypass full qualification to clear a backlog.
 
 `.github/workflows/batch-ci.yml` wakes at minutes 13 and 43 of each hour. When
 `BATCH_CI_ENABLED` is `true`, it captures the current `main` and `develop` commit SHAs.
@@ -103,6 +116,26 @@ recovery additionally runs when its workflow, persistence implementation, recove
 probe or recovery drivers changed anywhere in the complete batch diff. Invalid
 metadata, failed/cancelled checks and unexpectedly skipped required jobs cannot
 promote. No new changes means no full run.
+
+### Stop a failed batch early
+
+Any failed suite job rejects the candidate, so the batch's remaining jobs only add
+diagnostics. The **Watch for failed suites** job runs trusted `main` code beside the
+suites and polls the run's jobs every minute. When a suite job (`native / ...`,
+`windows / ...` and so on) fails, times out or fails to start, the jobs still
+running get 30 minutes from that first failure to report (`STOP_GRACE_SECONDS` in
+`scripts/python/batch_ci.py`). Then **Cancel failed batch** cancels the run, so the
+next tick can validate a candidate containing the fix instead of waiting for the
+longest sanitizer and macOS jobs. In measured batches, deterministic failures
+appeared within 3-13 minutes and every job except the sanitizers and macOS native
+backends ended within about 45, so most failures still appear in one run.
+
+A stopped run shows as cancelled. Its failed jobs, not the jobs cancelled to stop
+it, are the batch failures: [develop health](#develop-health) treats it as red and
+fix PRs name those jobs. Jobs that had not started, such as the SDK and wiki suites
+waiting for native validation, report only on a later candidate. The watcher
+fails open: if job listings stay unavailable or it reaches its 330-minute limit,
+the batch finishes normally. **Prune superseded caches** still runs after a stop.
 
 After validation, a separate job checks out the original trusted `main` revision
 and mints a fresh repository-scoped GitHub App credential. The trusted snapshot
@@ -216,7 +249,9 @@ behind the existing failure until the batch can no longer be repaired in one ste
 The **Develop health** job in `ci.yml` runs on every pull request targeting
 `develop`. It reads completed `Batched integration and promotion` runs on `main`,
 newest first, and uses the latest *validated* batch: one whose suites ran. Ticks
-that captured nothing, failed captures and cancelled runs are skipped. A batch
+that captured nothing, failed captures and cancelled runs are skipped, except a
+batch [stopped early](#stop-a-failed-batch-early) by **Cancel failed batch**: it is
+red, and its failed (not cancelled) suite jobs are the jobs to fix. A batch
 whose suites all passed is green even if its promotion then failed. If no
 validated batch appears within the scan bound, develop is treated as open.
 Because the gate reads run history rather than coordinator state, it applies as

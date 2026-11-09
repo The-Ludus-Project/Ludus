@@ -82,6 +82,30 @@ class HealthTests(unittest.TestCase):
         capture_failed = [job("Capture develop candidate", "failure"), job("native / Classify changes", "skipped")]
         self.assertIsNone(develop_health.classify_batch({"id": 4, "conclusion": "failure"}, capture_failed))
 
+    def test_batch_stopped_after_a_failure_is_red_without_its_cancelled_jobs(self):
+        jobs = [job("Capture develop candidate", "success"), job("Watch for failed suites", "success"),
+                job("native / Clang static analysis (0)", "failure"),
+                job("windows / MSVC host and D3D12 / MSBuild", "timed_out"),
+                job("native / ASan and UBSan (1/4)", "cancelled"),
+                job("native / Development and SDK", "success"),
+                job(batch_ci.STOP_JOB, "cancelled"), job("Promote validated candidate", "skipped")]
+        run = {"id": 7, "conclusion": "cancelled", "html_url": "https://example.test/runs/7"}
+        health = develop_health.classify_batch(run, jobs)
+        self.assertTrue(health.is_red)
+        self.assertEqual(health.failed_jobs,
+                         ("native / Clang static analysis (0)", "windows / MSVC host and D3D12 / MSBuild"))
+        # The stop job also proves nothing when it never ran or nothing had failed.
+        for stop in ("skipped", None):
+            stopped = [dict(entry, conclusion=stop) if entry["name"] == batch_ci.STOP_JOB else entry
+                       for entry in jobs]
+            self.assertIsNone(develop_health.classify_batch(run, stopped))
+        only_cancelled = [entry for entry in jobs if entry["conclusion"] not in {"failure", "timed_out"}]
+        self.assertIsNone(develop_health.classify_batch(run, only_cancelled))
+        # A stopped batch is the latest validated one, ahead of an older green run.
+        client = FakeGitHub()
+        client.add_batches((7, "cancelled", jobs), (5, "success", validated_jobs(failed=(), promoted=True)))
+        self.assertEqual(develop_health.read_health(client).run_id, 7)
+
     def test_passing_suites_are_green_even_when_promotion_failed(self):
         jobs = validated_jobs(failed=())
         jobs[-1] = job("Promote validated candidate", "failure")
