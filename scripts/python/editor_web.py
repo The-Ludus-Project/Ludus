@@ -87,7 +87,7 @@ def qt_build(cmake, ninja, source, build, prefix, host, env):
             f"-DCMAKE_TOOLCHAIN_FILE={ROOT / 'out/host-tools/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake'}",
             f"-DQT_HOST_PATH={host}", f"-DCMAKE_INSTALL_PREFIX={prefix}", "-DCMAKE_BUILD_TYPE=MinSizeRel",
             "-DBUILD_SHARED_LIBS=OFF", "-DQT_BUILD_TESTS=OFF", "-DQT_BUILD_EXAMPLES=OFF",
-            "-DFEATURE_thread=OFF", "-DFEATURE_exceptions=OFF", "-DFEATURE_sql=OFF", "-DFEATURE_network=OFF",
+            "-DFEATURE_thread=OFF", "-DFEATURE_exceptions=OFF", "-DFEATURE_sql=OFF", "-DFEATURE_network=ON",
             "-DFEATURE_dbus=OFF", "-DFEATURE_concurrent=OFF", "-DFEATURE_testlib=OFF", "-DFEATURE_printsupport=OFF",
             "-DQT_QMAKE_DEVICE_OPTIONS=QT_EMSCRIPTEN_ASYNCIFY=1"]
     run(argv, env=env)
@@ -250,7 +250,7 @@ def main() -> int:
         run([sys.executable, ROOT / "scripts/script-provider", "bootstrap"])
         run([sys.executable, ROOT / "scripts/shader-probe", "bootstrap"])
         run([sys.executable, ROOT / "scripts/bootstrap-spirv-cross"])
-    identity = {"qt": qt_lock, "web": web_lock}
+    identity = {"qt": qt_lock, "web": web_lock, "qt_network": True}
     stamp = prefix / "ludus-build.json"
     if args.rebuild_qt or not stamp.exists() or json.loads(stamp.read_text()) != identity:
         qt_build(cmake, ninja, source, build, prefix, host, env)

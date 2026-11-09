@@ -7,6 +7,8 @@
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
 #include "internal/world_celestial_light.h"
+#include "internal/world_earth_location.h"
+#include "internal/world_earth_time_field.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_probe_volume.h"
 
@@ -150,6 +152,21 @@ void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows
                 celestialRows.append({group, fieldOrNull});
             }
         }
+    }
+    QLineEdit* latitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LATITUDE)));
+    QLineEdit* longitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LONGITUDE)));
+    if (latitudeOrNull != nullptr && longitudeOrNull != nullptr)
+    {
+        QPushButton* location = new QPushButton(QStringLiteral("Choose Earth Location…"), &inoutGroup);
+        location->setObjectName(QStringLiteral("worldEarthChooseLocation"));
+        foundation::int32 longitudeRow = 0;
+        QFormLayout::ItemRole longitudeRole = QFormLayout::FieldRole;
+        inoutRows.getWidgetPosition(longitudeOrNull, &longitudeRow, &longitudeRole);
+        inoutRows.insertRow(longitudeRow + 1, location);
+        celestialRows.append({WorldCelestialFieldGroup::Earth, location});
+        QObject::connect(location, &QPushButton::clicked, location, [location, latitudeOrNull, longitudeOrNull]() {
+            OpenWorldEarthLocation(*location, *latitudeOrNull, *longitudeOrNull);
+        });
     }
     const auto updateRows = [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, celestialRows]() {
         const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
@@ -2252,6 +2269,15 @@ void WorldWorkspace::RenderInspector()
             const QJsonValue authored = values.value(pid);
             const QJsonValue current = authored.isUndefined() == true ? p.value(QStringLiteral("default")) : authored;
             QWidget* field = nullptr;
+            if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light") && pid == WORLD_CELESTIAL_TIME)
+            {
+                WorldEarthTimeField* time = new WorldEarthTimeField(current.toDouble(), *group);
+                time->setObjectName(QStringLiteral("worldField:") + FieldKey(cid, pid));
+                connect(time, &WorldEarthTimeField::Edited, this, [this]() { markInspectorPending(); });
+                Fields_.insert(FieldKey(cid, pid), time);
+                rows->addRow(time);
+                continue;
+            }
             if (type == QStringLiteral("boolean"))
             {
                 auto* check = new QCheckBox(group);
@@ -2759,6 +2785,11 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             else if (QComboBox* choiceOrNull = qobject_cast<QComboBox*>(fieldOrNull); choiceOrNull != nullptr)
             {
                 candidate = choiceOrNull->currentData().toString();
+            }
+            else if (WorldEarthTimeField* timeOrNull = qobject_cast<WorldEarthTimeField*>(fieldOrNull);
+                     timeOrNull != nullptr)
+            {
+                candidate = timeOrNull->GetDaysSinceEpoch();
             }
             else if (QLineEdit* textOrNull = qobject_cast<QLineEdit*>(fieldOrNull); textOrNull != nullptr)
             {

@@ -16,6 +16,8 @@
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_document.h"
+#include "internal/world_earth_location.h"
+#include "internal/world_earth_time_field.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
@@ -29,6 +31,7 @@
 #include <QImage>
 #include <QMenu>
 #include <QPainter>
+#include <QPointF>
 #include <cmath>
 #include <ludus/foundation/base/compiler.h>
 
@@ -37,9 +40,15 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
+#include <QDate>
+#include <QDateTime>
+#include <QDateTimeEdit>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -62,6 +71,8 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTime>
+#include <QTimeZone>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -3082,11 +3093,13 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     QComboBox* kindOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/kind"));
     QComboBox* roleOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
     QComboBox* driverOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
-    QLineEdit* timeOrNull = reopened.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialTime"));
+    QWidget* timeOrNull = reopened.findChild<QWidget*>(QStringLiteral("worldField:light/celestialTime"));
+    QDateTimeEdit* dateTimeOrNull = reopened.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
     REQUIRE(kindOrNull != nullptr);
     REQUIRE(roleOrNull != nullptr);
     REQUIRE(driverOrNull != nullptr);
     REQUIRE(timeOrNull != nullptr);
+    REQUIRE(dateTimeOrNull != nullptr);
     CHECK(roleOrNull->currentText() == QStringLiteral("None"));
     CHECK(driverOrNull->isHidden() == true);
     kindOrNull->setCurrentText(QStringLiteral("point"));
@@ -3127,15 +3140,11 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
     CHECK(scene.AuthoredLights.Lights[0].Direction != solarNoonDirectionWorld);
 
-    timeOrNull->selectAll();
-    QTest::keyClicks(timeOrNull, QStringLiteral("invalid"));
-    CHECK(reopened.Apply() == false);
     roleOrNull->setCurrentText(QStringLiteral("Static Moon"));
     REQUIRE(reopened.Apply() == true);
     roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
     driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
-    timeOrNull->selectAll();
-    QTest::keyClicks(timeOrNull, QStringLiteral("0.5"));
+    dateTimeOrNull->setDateTime(QDateTime(QDate(2000, 1, 2), QTime(0, 0), QTimeZone::utc()));
     REQUIRE(reopened.Apply() == true);
     REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
     CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
@@ -3154,6 +3163,120 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     reopened.StopPreview();
 }
 
+TEST_CASE("Earth preview time preserves the saved offset and copies the UTC clock", "[editor][world][celestial]")
+{
+    QWidget parent;
+    constexpr ludus::foundation::float64 LEGACY_DAYS = -0.5000000001;
+    WorldEarthTimeField time(LEGACY_DAYS, parent);
+    QDateTimeEdit* dateTimeOrNull = time.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    QPushButton* nowOrNull = time.findChild<QPushButton*>(QStringLiteral("worldEarthUseNow"));
+    REQUIRE(dateTimeOrNull != nullptr);
+    REQUIRE(nowOrNull != nullptr);
+    CHECK(dateTimeOrNull->dateTime() == QDateTime(QDate(2000, 1, 1), QTime(0, 0), QTimeZone::utc()));
+    CHECK(time.GetDaysSinceEpoch() == LEGACY_DAYS);
+    CHECK(dateTimeOrNull->calendarPopup() == true);
+
+    QSignalSpy edited(&time, &WorldEarthTimeField::Edited);
+    const QDateTime before = QDateTime::currentDateTimeUtc();
+    nowOrNull->click();
+    const QDateTime after = QDateTime::currentDateTimeUtc();
+    CHECK(edited.count() == 1);
+    CHECK(dateTimeOrNull->dateTime().offsetFromUtc() == 0);
+    CHECK(dateTimeOrNull->dateTime() >= before);
+    CHECK(dateTimeOrNull->dateTime() <= after);
+}
+
+TEST_CASE("Earth place results decode longitude first and skip invalid points", "[editor][world][celestial]")
+{
+    const QByteArray response = QByteArrayLiteral(R"({"features": [
+        {"geometry":{"type":"Point","coordinates":[-79.38,43.65]},
+         "properties":{"name":"Toronto","city":"Toronto","state":"Ontario","country":"Canada"}},
+        {"geometry":{"type":"Point","coordinates":[3,91]},"properties":{"name":"Invalid latitude"}},
+        {"geometry":{"type":"Point","coordinates":["1",2]},"properties":{"name":"Invalid number"}}
+    ]})");
+    QList<EarthPlace> places;
+    REQUIRE(TryReadEarthPlaces(response, places) == true);
+    REQUIRE(places.size() == 1);
+    CHECK(places.first().Label == QStringLiteral("Toronto, Ontario, Canada"));
+    CHECK(places.first().LatitudeDegrees == 43.65);
+    CHECK(places.first().LongitudeDegrees == -79.38);
+    CHECK(TryReadEarthPlaces(QByteArrayLiteral("{}"), places) == false);
+    CHECK(places.size() == 1);
+}
+
+TEST_CASE("Earth location selection fills one World draft and cancel preserves it", "[editor][world][celestial]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("earth-location.world.json"))) == true);
+    QAction* sunOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(sunOrNull != nullptr);
+    sunOrNull->trigger();
+
+    QComboBox* roleOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    QPushButton* locationOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldEarthChooseLocation"));
+    QLineEdit* latitudeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialLatitude"));
+    QLineEdit* longitudeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialLongitude"));
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(locationOrNull != nullptr);
+    REQUIRE(latitudeOrNull != nullptr);
+    REQUIRE(longitudeOrNull != nullptr);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Custom Orbit"));
+    CHECK(locationOrNull->isHidden() == true);
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    CHECK(locationOrNull->isHidden() == false);
+    REQUIRE(workspace.Apply() == true);
+
+    const QJsonObject original = workspace.Document().Draft();
+    const auto openWithResult = [&workspace, locationOrNull]() {
+        locationOrNull->click();
+        QDialog* dialogOrNull = workspace.findChild<QDialog*>(QStringLiteral("worldEarthLocationDialog"));
+        REQUIRE(dialogOrNull != nullptr);
+        QListWidget* resultsOrNull = dialogOrNull->findChild<QListWidget*>(QStringLiteral("worldEarthLocationResults"));
+        REQUIRE(resultsOrNull != nullptr);
+        QListWidgetItem* result = new QListWidgetItem(QStringLiteral("Fixture location"), resultsOrNull);
+        result->setData(Qt::UserRole, QPointF(-79.5, 43.5));
+        resultsOrNull->setCurrentRow(0);
+        return dialogOrNull;
+    };
+
+    QDialog* cancelledOrNull = openWithResult();
+    REQUIRE(cancelledOrNull != nullptr);
+    cancelledOrNull->reject();
+    QCoreApplication::sendPostedEvents(cancelledOrNull, QEvent::DeferredDelete);
+    CHECK(latitudeOrNull->text() == QStringLiteral("0"));
+    CHECK(longitudeOrNull->text() == QStringLiteral("0"));
+    CHECK(workspace.Document().Draft() == original);
+
+    QDialog* acceptedOrNull = openWithResult();
+    REQUIRE(acceptedOrNull != nullptr);
+    QPushButton* chooseOrNull = acceptedOrNull->findChild<QPushButton*>(QStringLiteral("worldEarthUseCoordinates"));
+    REQUIRE(chooseOrNull != nullptr);
+    chooseOrNull->click();
+    CHECK(latitudeOrNull->text() == QStringLiteral("43.5"));
+    CHECK(longitudeOrNull->text() == QStringLiteral("-79.5"));
+    CHECK(workspace.Document().Draft() == original);
+    REQUIRE(workspace.Apply() == true);
+    const QJsonObject light = workspace.Document()
+                                  .Draft()
+                                  .value(QStringLiteral("entities"))
+                                  .toArray()
+                                  .last()
+                                  .toObject()
+                                  .value(QStringLiteral("components"))
+                                  .toObject()
+                                  .value(QStringLiteral("light"))
+                                  .toObject();
+    CHECK(light.value(WORLD_CELESTIAL_LATITUDE).toDouble() == 43.5);
+    CHECK(light.value(WORLD_CELESTIAL_LONGITUDE).toDouble() == -79.5);
+    workspace.StopPreview();
+}
+
 TEST_CASE("Custom celestial orbits use an authored world spin and survive a World reload", "[editor][world][celestial]")
 {
     QTemporaryDir directory;
@@ -3168,7 +3291,7 @@ TEST_CASE("Custom celestial orbits use an authored world spin and survive a Worl
 
     QComboBox* roleOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
     QComboBox* driverOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
-    QLineEdit* earthTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialTime"));
+    QWidget* earthTimeOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldField:light/celestialTime"));
     QLineEdit* orbitTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialOrbitTime"));
     QLineEdit* spinOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialObserverSpin"));
     QLineEdit* rateOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialOrbitRate"));
