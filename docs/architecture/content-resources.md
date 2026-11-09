@@ -562,6 +562,16 @@ then gain absent tangents, version 3 parts dropping their stored bake UVs.
 
 ### Typed source materials (LUSCN v7)
 
+LUSCN v11 admits [closure programs](scene-source-format.md#closure-program).
+A program material keeps the v7 record with default scattering fields.
+A 656-byte `MaterialProgram` record follows its extension; no other material
+has one. The record holds the version, the constant, instruction and lobe
+counts, eight float4 constants, 32 eight-byte instructions and eight 32-byte
+lobes, in little-endian field order. Unused slots and padding are zero, so
+equal programs cook to equal bytes. The decoder validates the record
+completely. Editor World import of program materials is not available yet;
+the import names the repair instead.
+
 LUSCN v10 admits the version-1 [project BRDF program](scene-source-format.md#project-brdf-program)
 using the v7 record width. For its tag, the two three-float vectors hold the
 lobe weights and powers. The coating-thickness field holds the declared

@@ -4,6 +4,8 @@
 #include "import_test_support.h"
 
 #include <ludus/content/scene_cook/best_effort_import.h>
+#include <ludus/content/scene_format/luscn.h>
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/runtime/resources/scene.h>
@@ -12,6 +14,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -272,6 +275,99 @@ TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[
     CHECK(error.Result == ludus::content::Status::Invalid);
     CHECK(ReportHasCode(failed, codes::MALFORMED_INPUT) == true);
     CHECK(GetReport(failed).find("objects[0].material: names no declared material") != std::string_view::npos);
+}
+
+TEST_CASE("Ludus scene import cooks closure programs into LUSCN version 11", "[scene_cook][ludus-scene][program]")
+{
+    namespace format = ludus::content::scene_format;
+    ScratchDirectory scratch;
+    const fs::path entry = scratch.Path / "program.luscene.json";
+    WriteFile(entry, R"({"format": "ludus.scene", "version": 1, "name": "Program room",
+        "materials": [
+          {"name": "Floor", "model": "diffuse", "base_color": [0.25, 0.5, 0.75]},
+          {"name": "Rust", "model": "program", "base_color": [0.6, 0.3, 0.1], "metallic": 0.7, "roughness": 0.4,
+           "program": {"version": 1,
+             "parameters": [{"name": "metal", "input": "metallic"}, {"name": "rust", "one_minus": "metal"},
+                            {"name": "rough", "input": "roughness"}],
+             "lobes": [{"operation": "diffuse", "weight": "rust"},
+                       {"operation": "conductor", "weight": "metal", "roughness": "rough",
+                        "eta": [0.2, 0.9, 1.1], "k": [3.9, 2.4, 2.2]}]}}],
+        "objects": [
+          {"name": "Floor", "material": "Floor", "positions": [[-1, 0, 1], [1, 0, 1], [1, 0, -1], [-1, 0, -1]],
+           "polygons": [[0, 1, 2, 3]]},
+          {"name": "Block", "material": "Rust", "positions": [[0, 0, 0], [0.5, 0, 0], [0, 0.5, 0]],
+           "polygons": [[0, 1, 2]]}]})");
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(entry.string(), {}, result, error) == true);
+    uint32 version = 0;
+    REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
+                {result.Bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                version) == true);
+    CHECK(version == format::VERSION_11);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    const ludus::resources::SceneMaterial* programOrNull = nullptr;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        if (material.Scattering.Model == format::MaterialModel::Program)
+        {
+            programOrNull = &material;
+        }
+        else
+        {
+            CHECK(material.Program.LobeCount == 0);
+        }
+    }
+    REQUIRE(programOrNull != nullptr);
+    // The surface inputs are also the raster approximation.
+    CHECK(programOrNull->Metallic == .7F);
+    CHECK(programOrNull->Roughness == .4F);
+    CHECK(programOrNull->Reflectance == math::Vector3{.6F, .3F, .1F});
+    const format::MaterialProgram& program = programOrNull->Program;
+    REQUIRE(format::IsMaterialProgramValid(program) == true);
+    CHECK(program.InstructionCount == 3);
+    REQUIRE(program.LobeCount == 2);
+    CHECK(program.Lobes[0].Operation == format::MaterialLobeOperation::Diffuse);
+    CHECK(program.Lobes[1].Operation == format::MaterialLobeOperation::Conductor);
+    CHECK(program.Lobes[1].Eta[2] == 1.1F);
+    CHECK(program.Lobes[1].K[0] == 3.9F);
+
+    // Locate the record by its leading version and counts, then corrupt one opcode and one
+    // padding byte; the decoder rejects both and preserves its output.
+    const ludus::foundation::StaticArray<uint32, format::MATERIAL_PROGRAM_HEADER_FIELDS> header{
+        {program.Version, program.ConstantCount, program.InstructionCount, program.LobeCount}};
+    std::string bytes(reinterpret_cast<const char*>(result.Bundle.GetData()), result.Bundle.GetSize());
+    std::string pattern;
+    for (const uint32 field : header)
+    {
+        for (usize byte = 0; byte < sizeof(uint32); ++byte)
+        {
+            pattern += static_cast<char>((field >> (8 * byte)) & 0xFFU);
+        }
+    }
+    const usize record = bytes.find(pattern);
+    REQUIRE(record != std::string::npos);
+    REQUIRE(bytes.find(pattern, record + 1) == std::string::npos);
+    const usize firstInstruction = record + offsetof(format::MaterialProgram, Instructions);
+    for (const usize offset : {firstInstruction + offsetof(format::MaterialProgramInstruction, Opcode),
+                               firstInstruction + offsetof(format::MaterialProgramInstruction, Reserved)})
+    {
+        std::string corrupted = bytes;
+        corrupted[offset] = static_cast<char>(200);
+        ludus::resources::SceneDefinition rejected;
+        CHECK(ludus::resources::SceneDefinition::Decode(
+                  reinterpret_cast<const ludus::foundation::uint8*>(corrupted.data()),
+                  corrupted.size(),
+                  rejected) == ludus::resources::Status::Failed);
+        CHECK(rejected.Materials.IsEmpty() == true);
+    }
+    // A truncated record fails too.
+    ludus::resources::SceneDefinition truncated;
+    CHECK(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(),
+                                                    record + format::MATERIAL_PROGRAM_BYTES / 2,
+                                                    truncated) == ludus::resources::Status::Failed);
 }
 
 TEST_CASE("Scene detection tells Ludus scene sources from glTF JSON", "[scene_cook][ludus-scene]")

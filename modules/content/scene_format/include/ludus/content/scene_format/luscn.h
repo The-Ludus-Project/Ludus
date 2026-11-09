@@ -4,6 +4,7 @@
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 
 #include <cstddef>
 #include <string_view>
@@ -36,6 +37,9 @@
 /// vertices (VertexRecordV6 adds a tangent frame), within the same import profile.
 /// Version 7 appends MaterialExtensionV7 after each MaterialRecordV6 to preserve
 /// source names, reflectance and typed optical parameters; other v6 records remain unchanged.
+/// Versions 8 to 10 admit further material models in the same layout. Version 11 appends a
+/// MaterialProgram record (material_program.h) after the extension of every material whose
+/// model is MaterialModel::Program, and only there.
 ///
 /// The record structs document the exact wire layout and are checked with
 /// static_asserts; serialise them field by field in little-endian order rather
@@ -73,10 +77,13 @@ inline constexpr uint32 VERSION_8 = 8;
 inline constexpr uint32 VERSION_9 = 9;
 /// Version 10 admits project BRDF programs using the version-7 record layout.
 inline constexpr uint32 VERSION_10 = 10;
+/// Version 11 admits closure programs: a MaterialProgram record follows each program material's extension.
+inline constexpr uint32 VERSION_11 = 11;
 /// Earliest typed bundle version that can store a validated material model.
 [[nodiscard]] constexpr uint32 GetMaterialModelBundleVersion(MaterialModel model) noexcept
 {
-    return model == MaterialModel::ProjectBrdf           ? VERSION_10
+    return model == MaterialModel::Program               ? VERSION_11
+           : model == MaterialModel::ProjectBrdf         ? VERSION_10
            : model == MaterialModel::Unresolved          ? VERSION_9
            : model == MaterialModel::DiffuseConductorMix ? VERSION_8
                                                          : VERSION_7;
@@ -149,7 +156,7 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1 through VERSION_10.
+    uint32 Version;       ///< VERSION_1 through VERSION_11.
     uint32 MeshCount;     ///< 1..BundleLimits::Meshes of the version.
     uint32 MaterialCount; ///< 1..BundleLimits::Materials of the version.
     uint32 TextureCount;  ///< 0..BundleLimits::Textures of the version.
@@ -444,10 +451,10 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// True for a version this header describes.
 [[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
 {
-    return version >= VERSION_1 && version <= VERSION_10;
+    return version >= VERSION_1 && version <= VERSION_11;
 }
 /// True when the version carries version 3 material emission terms, object source
-/// IDs and the lighting trailer (versions 3 through 10).
+/// IDs and the lighting trailer (versions 3 through 11).
 [[nodiscard]] constexpr bool HasLightingRecords(uint32 version) noexcept
 {
     return version >= VERSION_3;
@@ -476,7 +483,7 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
     return version >= VERSION_6;
 }
 /// Admission ceilings for a supported version: the import profile for versions 5
-/// through 10, otherwise the resident reference profile.
+/// through 11, otherwise the resident reference profile.
 [[nodiscard]] constexpr const BundleLimits& GetBundleLimits(uint32 version) noexcept
 {
     return version >= VERSION_5 ? IMPORT_LIMITS : RESIDENT_REFERENCE_LIMITS;

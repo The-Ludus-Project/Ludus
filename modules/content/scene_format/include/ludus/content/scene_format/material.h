@@ -34,6 +34,8 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX = 6;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_UNRESOLVED = 7;
 /// Project-authored cosine-power BRDF program, version 1.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROJECT_BRDF = 8;
+/// Bounded closure program (material_program.h): a weighted mixture of leaf lobes.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROGRAM = 9;
 /// Maximum authored cosine exponent before applying perceptual roughness.
 static const MaterialScalar LUDUS_PROJECT_BRDF_MAX_POWER = 32;
 /// Minimum total lobe weight, to keep normalization bounded in binary32.
@@ -83,6 +85,9 @@ enum class MaterialModel : foundation::uint32
     Unresolved = LUDUS_MATERIAL_MODEL_UNRESOLVED,
     /// Project-authored continuous reflection program with up to three cosine-power lobes.
     ProjectBrdf = LUDUS_MATERIAL_MODEL_PROJECT_BRDF,
+    /// Closure program stored beside the material (material_program.h). Its capabilities come from
+    /// the program, and its MaterialScattering fields keep their defaults.
+    Program = LUDUS_MATERIAL_MODEL_PROGRAM,
 };
 /// Report whether the model uses the complex-IOR GGX lobe and its authored alpha.
 [[nodiscard]] constexpr bool HasRoughConductorLobe(MaterialModel model) noexcept
@@ -91,7 +96,8 @@ enum class MaterialModel : foundation::uint32
 }
 /// Report the scattering capabilities a built-in model guarantees for every parameter value.
 /// A project BRDF's fixed-dimension sampler is its own declaration; the MaterialScattering
-/// overload adds it. The unresolved import marker offers nothing.
+/// overload adds it. A closure program declares its own capabilities (GetMaterialProgramCapabilities),
+/// and the unresolved import marker offers nothing.
 /// @return A mask of LUDUS_MATERIAL_CAPABILITY_* bits.
 [[nodiscard]] constexpr MaterialCapabilityBits GetMaterialCapabilities(MaterialModel model) noexcept
 {
@@ -110,6 +116,7 @@ enum class MaterialModel : foundation::uint32
         case MaterialModel::ProjectBrdf:
             return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION;
         case MaterialModel::Unresolved:
+        case MaterialModel::Program:
             break;
     }
     return 0;
@@ -205,7 +212,8 @@ struct MaterialScattering final
 }
 /// Number of scalar float32 fields in the explicit MaterialScattering wire schema.
 inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHANNELS + MATERIAL_RGB_CHANNELS + 2 + 2;
-/// Validate finite bounded optical parameters. Unsupported model tags reject.
+/// Validate finite bounded optical parameters. Unsupported model tags reject, including the
+/// unresolved marker and closure programs, which no evaluator admits yet.
 /// An evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
@@ -244,9 +252,23 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
     }
     return true;
 }
-/// Validate cooked optical storage, including the import-only unresolved marker.
+/// Validate cooked optical storage, including the import-only unresolved marker and a closure
+/// program's default scattering fields. The program itself is validated by IsMaterialProgramValid.
 [[nodiscard]] constexpr bool IsStoredMaterialScatteringValid(MaterialScattering scattering) noexcept
 {
+    if (scattering.Model == MaterialModel::Program)
+    {
+        const MaterialScattering defaults;
+        for (foundation::usize channel = 0; channel < MATERIAL_RGB_CHANNELS; ++channel)
+        {
+            if (scattering.Eta[channel] != defaults.Eta[channel] || scattering.K[channel] != defaults.K[channel])
+            {
+                return false;
+            }
+        }
+        return scattering.AlphaU == defaults.AlphaU && scattering.AlphaV == defaults.AlphaV &&
+               scattering.CoatingEta == defaults.CoatingEta && scattering.CoatingThickness == defaults.CoatingThickness;
+    }
     if (scattering.Model == MaterialModel::Unresolved)
     {
         scattering.Model = MaterialModel::MetallicRoughness;

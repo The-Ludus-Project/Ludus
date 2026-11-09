@@ -11,6 +11,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/content/content.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -144,6 +145,8 @@ enum class SourceMaterialModel : uint8
     Mix,
     /// Authored cosine-power reflection program (`"model": "project_brdf"`).
     ProjectBrdf,
+    /// Weighted mixture of leaf lobes with computed parameters (`"model": "program"`).
+    Program,
 };
 
 /// Constant rough conductor lobe of a source Mix. RGB channels use the engine's optical proxy.
@@ -170,7 +173,8 @@ struct SourceMaterial final
 {
     /// Unique, nonempty name that objects refer to.
     foundation::String Name;
-    /// Reflection model; roughness also applies to project BRDF programs.
+    /// Reflection model; roughness also applies to project BRDF programs, and closure programs read
+    /// base colour, metallic and roughness as surface inputs.
     SourceMaterialModel Model = SourceMaterialModel::Diffuse;
     /// Linear Rec. 709 reflectance, each channel in [0, 1].
     foundation::math::Vector3d BaseColor{0.5, 0.5, 0.5};
@@ -184,6 +188,9 @@ struct SourceMaterial final
     SourceRoughConductor Conductor;
     /// Authored program for ProjectBrdf materials.
     SourceProjectBrdf Brdf;
+    /// Compiled closure program for Program materials, valid by scene_format::IsMaterialProgramValid.
+    /// BaseColor, Metallic and Roughness are its surface inputs and the raster approximation.
+    scene_format::MaterialProgram Program{};
     /// Constant emitted linear Rec. 709 radiance in W/(sr m^2) per channel, finite and
     /// nonnegative; all zero for a material that does not emit.
     foundation::math::Vector3d EmittedRadiance{};

@@ -997,6 +997,46 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
     }
 }
 
+TEST_CASE("Editor import names the repair for closure-program materials", "[scene_assets][program]")
+{
+    const std::filesystem::path work = MakeWorkDirectory();
+    const std::filesystem::path project = work / "project";
+    const std::filesystem::path source = work / "source";
+    std::filesystem::create_directories(project);
+    std::filesystem::create_directories(source);
+    {
+        std::ofstream file(source / "room.luscene.json", std::ios::binary);
+        file << R"({"format": "ludus.scene", "version": 1, "name": "Program room",
+            "materials": [{"name": "Rust", "model": "program", "base_color": [0.6, 0.3, 0.1],
+              "program": {"version": 1, "lobes": [{"operation": "diffuse", "weight": 1}]}}],
+            "objects": [{"name": "Block", "material": "Rust", "positions": [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                         "polygons": [[0, 1, 2]]}]})";
+    }
+    SequentialUuids counter;
+    UuidSource uuids{&SequentialUuids::Generate, &counter};
+    AssetOptions options;
+    options.UuidsOrNull = &uuids;
+    options.SourceOrigin = VIRTUAL_ORIGIN;
+    options.SourceEntry = "room.luscene.json";
+    AssetError error;
+    Array<uint8> level;
+    REQUIRE(CreateLevel("Imported", options, level, error));
+    const std::string root = project.string();
+    const std::string sourceText = source.string();
+    EditorSceneRequest request;
+    request.Root = root;
+    request.Source = sourceText;
+    request.Level = ToSpan(level);
+    request.Operation = EditorSceneOperation::Import;
+    EditorSceneResult imported;
+    CHECK(OperateEditorScene(request, options, imported, error) == false);
+    INFO(Describe(error));
+    CHECK(std::string(error.Message.View()).find("closure-program materials") != std::string::npos);
+    CHECK(std::string(error.Message.View()).find("Assign a built-in model") != std::string::npos);
+    std::error_code ignored;
+    std::filesystem::remove_all(work, ignored);
+}
+
 TEST_CASE("local smoke test: a licensed scene imports through the editor catalog and assembles",
           "[scene_assets][licensed]")
 {

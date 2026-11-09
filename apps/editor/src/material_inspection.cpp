@@ -62,6 +62,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Diffuse / rough conductor Mix");
         case format::MaterialModel::ProjectBrdf:
             return QStringLiteral("Project BRDF");
+        case format::MaterialModel::Program:
+            return QStringLiteral("Closure program");
         case format::MaterialModel::Unresolved:
             return QStringLiteral("Unsupported imported material");
     }
