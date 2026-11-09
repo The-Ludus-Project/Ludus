@@ -1068,16 +1068,18 @@ struct RenderGraph::State final
                 return Status::OutOfMemory;
             }
             inoutPass = core::UniquePtr<internal::RenderGraphDeferredPass>{allocationOrNull};
-            const Status status = inoutPass->Initialize(inoutTargets,
-                                                        GetContext(format::Technique::ColorAndDepth),
-                                                        view,
-                                                        camera,
-                                                        lighting.GetMeshLights(),
-                                                        lighting.GetMeshLightCount(),
-                                                        lighting.GetMeshLightGridWord(),
-                                                        lighting.HasShadowAtlas(),
-                                                        lighting.GetShadowAtlasView(),
-                                                        operation);
+            const Status status =
+                inoutPass->Initialize(inoutTargets,
+                                      GetContext(format::Technique::ColorAndDepth),
+                                      view,
+                                      camera,
+                                      lighting.GetMeshLights(),
+                                      lighting.GetMeshLightCount(),
+                                      lighting.GetMeshLightGridWord(),
+                                      lighting.HasShadowAtlas(),
+                                      lighting.GetShadowAtlasView(),
+                                      operation,
+                                      lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId));
             if (IsAccepted(status) == false)
             {
                 return status;

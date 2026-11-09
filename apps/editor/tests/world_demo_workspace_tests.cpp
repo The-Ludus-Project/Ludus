@@ -15,11 +15,11 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTreeWidget>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -48,13 +48,13 @@ QString WorldFile(QTemporaryDir& directory)
 }
 void Select(WorldWorkspace& view, const QString& id)
 {
-    auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(list != nullptr);
-    for (ludus::foundation::int32 row = 0; row < list->count(); ++row)
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    for (ludus::foundation::int32 row = 0; row < listOrNull->topLevelItemCount(); ++row)
     {
-        if (list->item(row)->data(Qt::UserRole).toString() == id)
+        if (listOrNull->topLevelItem(row)->data(0, Qt::UserRole).toString() == id)
         {
-            list->setCurrentRow(row, QItemSelectionModel::ClearAndSelect);
+            listOrNull->setCurrentItem(listOrNull->topLevelItem(row), 0, QItemSelectionModel::ClearAndSelect);
             return;
         }
     }
@@ -87,7 +87,7 @@ TEST_CASE("World demo uses World fields history save recovery and runtime data",
     REQUIRE(boundViewport != nullptr);
     CHECK(boundViewport->isHidden() == false);
     // Five gameplay entities and six scatter entities.
-    CHECK(view.findChild<QListWidget*>(QStringLiteral("worldEntities"))->count() == 11);
+    CHECK(view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"))->topLevelItemCount() == 11);
     Select(view, QStringLiteral("player-start"));
     const auto original = view.Document().Draft();
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("-"));

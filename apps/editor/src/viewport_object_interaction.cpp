@@ -1440,6 +1440,10 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
     Q_EMIT SelectionRequested(Pick(positionPixel, framePixel));
     return true;
 }
+void ViewportObjectInteraction::RequestClearSelection()
+{
+    Q_EMIT SelectionRequested({});
+}
 void ViewportObjectInteraction::RequestFrameAt(QPointF positionPixel, const QRectF& framePixel)
 {
     if (mTerrainBrushKey.isEmpty() == false || IsDragging() == true)

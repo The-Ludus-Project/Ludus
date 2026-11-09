@@ -145,6 +145,8 @@ public:
         return mDragTarget;
     }
     [[nodiscard]] bool Press(QPointF positionPixel, const QRectF& framePixel);
+    /// Request the same selection change as clicking empty space.
+    void RequestClearSelection();
     /// Request framing for the visible entity under a double-click in the edit view.
     void RequestFrameAt(QPointF positionPixel, const QRectF& framePixel);
     /// Frame the selected probe grid, including one whose bake is disabled.

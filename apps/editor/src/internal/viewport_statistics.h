@@ -128,6 +128,9 @@ struct ViewportStatistics final
     /// Per-scope GPU time, measured only while the overlay is visible.
     ViewportPassStatistics Passes;
     ViewportPassTimeState PassState = ViewportPassTimeState::Waiting;
+    /// Graphics API note shown first when nonempty, for example "WebGL 2 (WebGPU unavailable: ...)".
+    /// Empty on desktop builds, whose overlay is unchanged.
+    QString Api;
 };
 
 /// Completed graph-output measurements, independent of the device timing owner.
@@ -179,6 +182,39 @@ private:
     foundation::uint64 mLastFrameNanoseconds = 0;
     bool mHasFrame = false;
     bool mIsInspectionEnabled = true;
+};
+
+/// Recognizes a viewport renderer too slow to navigate: SLOW_FRAME_STREAK consecutive presented frames, each taking
+/// at least the threshold from the start of its submission to its presentation. The first frame of each generation
+/// is excluded, because it includes cold preparation (pipelines, acceleration structures) rather than the cost of
+/// drawing. Owner-thread value type; never allocates.
+class ViewportSlowFrameMonitor final
+{
+public:
+    /// Frame time at which navigation becomes unbearable (one frame per second), in milliseconds.
+    static constexpr foundation::float64 DEFAULT_SLOW_FRAME_MILLISECONDS = 1000;
+    /// Consecutive slow frames that confirm the renderer, rather than one stall, is slow.
+    static constexpr foundation::usize SLOW_FRAME_STREAK = 3;
+    /// Record one presented frame.
+    /// @param generation Nonzero identity of the graph generation that drew the frame; a change starts over.
+    /// @param milliseconds Submission-to-presentation time; negative or non-finite values end the streak.
+    /// @return True exactly when this frame completes a streak; the streak then starts over, so a renderer that
+    /// stays slow is reported again after another SLOW_FRAME_STREAK frames.
+    [[nodiscard]] bool AddFrame(foundation::uint64 generation, foundation::float64 milliseconds) noexcept;
+    /// Forget the generation and streak, as on device replacement.
+    void Reset() noexcept;
+    /// Replace the threshold; non-finite or negative values preserve it. Zero treats every frame as slow (tests).
+    void SetThresholdMilliseconds(foundation::float64 milliseconds) noexcept;
+    [[nodiscard]] foundation::float64 GetThresholdMilliseconds() const noexcept;
+    /// Mean frame time of the most recently completed streak in milliseconds, or zero before one.
+    [[nodiscard]] foundation::float64 GetStreakMilliseconds() const noexcept;
+
+private:
+    foundation::float64 mThresholdMilliseconds = DEFAULT_SLOW_FRAME_MILLISECONDS;
+    foundation::uint64 mGeneration = 0;
+    foundation::usize mStreak = 0;
+    foundation::float64 mStreakSumMilliseconds = 0;
+    foundation::float64 mReportedMilliseconds = 0;
 };
 
 /// Graph overlay: delivered-image FPS, active CPU work, device GPU time, and elapsed readback.

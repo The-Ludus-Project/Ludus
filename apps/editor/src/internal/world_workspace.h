@@ -23,7 +23,7 @@ class QComboBox;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
-class QListWidget;
+class QTreeWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QVBoxLayout;
@@ -367,7 +367,7 @@ private:
     bool Rendering_ = false;
     bool RecoveryFailed_ = false;
     QMap<QString, QWidget*> Fields_;
-    QListWidget* Entities_;
+    QTreeWidget* mEntities;
     WorldEntitySearch* mEntitySearch;
     QLabel* Status_;
     QLabel* PathLabel_;

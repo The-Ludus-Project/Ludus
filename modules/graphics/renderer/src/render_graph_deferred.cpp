@@ -1,4 +1,6 @@
 #include "internal/render_graph_deferred.h"
+
+#include "../shaders/renderer_atmosphere_layout.h"
 #include "internal/camera_inverse.h"
 #include "internal/ltc_table_data.h"
 
@@ -8,6 +10,8 @@
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
+
+#include <cstddef>
 
 namespace ludus::graphics::renderer::internal
 {
@@ -32,6 +36,10 @@ struct ViewParameters final
     math::Vector4 EyeWorld;
     math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
     math::Vector4 Options;
+    math::Vector4 AtmosphereRadialUpWorld{};
+    math::Vector4 AtmosphereSunWorld{};
+    math::Vector4 AtmosphereIlluminance{};
+    math::Vector4 AtmosphereCameraWorld{};
 };
 math::Matrix4 MakeTranslation(math::Vector3 offsetWorld) noexcept
 {
@@ -108,7 +116,7 @@ bool TryMakeCameraClipToWorld(const ViewDescription& camera, math::Matrix4& outC
 }
 namespace
 {
-static_assert(sizeof(ViewParameters) == VIEW_BYTES);
+static_assert(offsetof(ViewParameters, AtmosphereRadialUpWorld) == VIEW_BYTES);
 bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
@@ -385,7 +393,8 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                            uint32 meshLightGridWord,
                                            bool hasShadowAtlas,
                                            rhi::TextureViewHandle shadowAtlas,
-                                           const content::render_graph_format::Pass& operation) noexcept
+                                           const content::render_graph_format::Pass& operation,
+                                           uint32 atmosphereSunIndex) noexcept
 {
     if (mTargetsOrNull != nullptr || inoutTargets.mStatus != Status::Ready)
     {
@@ -438,9 +447,35 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         mExposure,
         static_cast<float32>(mToneCurve),
     };
+    const AtmosphereDescription& atmosphere = camera.Atmosphere;
+    if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
+    {
+        constexpr float64 METRES_PER_KILOMETRE = LUDUS_ATMOSPHERE_METRES_PER_KILOMETRE;
+        math::Vector3 upWorld;
+        math::Vector3 sunWorld;
+        float64 altitude = 0;
+        if (TryGetAtmosphereObserver(atmosphere, camera.CameraPosition, altitude, upWorld) == false ||
+            math::TryNormalize(atmosphere.DirectionToSunWorld, sunWorld) != math::MathStatus::Success)
+        {
+            return mStatus = Status::InvalidDescription;
+        }
+        parameters.AtmosphereRadialUpWorld = {upWorld.X,
+                                              upWorld.Y,
+                                              upWorld.Z,
+                                              static_cast<float32>(altitude / METRES_PER_KILOMETRE)};
+        parameters.AtmosphereSunWorld = {sunWorld.X, sunWorld.Y, sunWorld.Z, static_cast<float32>(atmosphereSunIndex)};
+        parameters.AtmosphereIlluminance = {atmosphere.SolarIlluminance.X,
+                                            atmosphere.SolarIlluminance.Y,
+                                            atmosphere.SolarIlluminance.Z,
+                                            0};
+        parameters.AtmosphereCameraWorld = {camera.CameraPosition.X,
+                                            camera.CameraPosition.Y,
+                                            camera.CameraPosition.Z,
+                                            camera.OrthographicCamera == true ? 1.0F : 0.0F};
+    }
     status = rhi::CreateBuffer(inoutTargets.mProgramOrNull->mDevice,
-                               {rhi::BufferRole::Uniform, VIEW_BYTES},
-                               {reinterpret_cast<const uint8*>(&parameters), VIEW_BYTES},
+                               {rhi::BufferRole::Uniform, sizeof(parameters)},
+                               {reinterpret_cast<const uint8*>(&parameters), sizeof(parameters)},
                                mParameters);
     mStatus = status;
     return IsAccepted(status) == true ? Poll() : status;
@@ -503,7 +538,39 @@ Status RenderGraphDeferredPass::Poll() noexcept
             .Buffer = mParameters,
             .Size = VIEW_BYTES,
         };
-        const Status status = rhi::CreateBindingSet(program.mDevice, program.mLayout, bindings.AsSpan(), mBindings);
+        AtmosphereLightingResources atmosphereResources;
+        rhi::BindingLayoutHandle layout = program.mLayout;
+        mLightingPipeline = program.mPipeline;
+        usize bindingCount = bindings.GetSize();
+        if (mAtmosphere.TryGetLightingResources(atmosphereResources) == true)
+        {
+            constexpr uint32 MULTIPLE_SLOT = LUDUS_ATMOSPHERE_DEFERRED_MULTIPLE_SLOT;
+            constexpr uint32 SKY_SLOT = LUDUS_ATMOSPHERE_DEFERRED_SKY_SLOT;
+            constexpr uint32 TRANSMITTANCE_SLOT = LUDUS_ATMOSPHERE_DEFERRED_TRANSMITTANCE_SLOT;
+            bindings[MULTIPLE_SLOT] = { .Binding = MULTIPLE_SLOT, .Texture = atmosphereResources.Multiple };
+            bindings[SKY_SLOT] = { .Binding = SKY_SLOT, .Texture = atmosphereResources.Sky };
+            bindings[TRANSMITTANCE_SLOT] =
+            {
+                .Binding = TRANSMITTANCE_SLOT,
+                .Texture = atmosphereResources.Transmittance,
+            };
+            bindings[DEFERRED_VIEW_BINDING].Size = sizeof(ViewParameters);
+            StaticArray<rhi::RasterBindingResource, DEFERRED_BINDING_COUNT> selected{};
+            bindingCount = 0;
+            for (const rhi::RasterBinding& binding : atmosphereResources.Bindings)
+            {
+                if (bindingCount == selected.GetSize() || binding.Binding >= bindings.GetSize())
+                {
+                    return mStatus = Status::InvalidDescription;
+                }
+                selected[bindingCount++] = bindings[binding.Binding];
+            }
+            bindings = selected;
+            layout = atmosphereResources.Layout;
+            mLightingPipeline = atmosphereResources.Pipeline;
+        }
+        const Status status =
+            rhi::CreateBindingSet(program.mDevice, layout, {bindings.GetData(), bindingCount}, mBindings);
         if (IsAccepted(status) == false)
         {
             return mStatus = status;
@@ -576,7 +643,7 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
         }
         if (status == Status::Ready && mMaterial.HasMaterial == true)
         {
-            status = program.draw(program.mPipeline, mBindings);
+            status = program.draw(mLightingPipeline, mBindings);
         }
     }
     if (status != Status::Ready)
