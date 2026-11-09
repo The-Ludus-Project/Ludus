@@ -186,6 +186,10 @@ bool ViewportWalkCollision::build(const RenderScene& scene) noexcept
     usize triangleCount = 0;
     for (const PreviewObject& object : scene.Objects)
     {
+        if (scene.StaticColliderEntityIds.contains(object.Id) == false)
+        {
+            continue;
+        }
         if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size())
         {
             return false;
@@ -204,6 +208,10 @@ bool ViewportWalkCollision::build(const RenderScene& scene) noexcept
     }
     for (const PreviewObject& object : scene.Objects)
     {
+        if (scene.StaticColliderEntityIds.contains(object.Id) == false)
+        {
+            continue;
+        }
         const BorrowedView<const math::Vector3> positionsMesh = GetRenderSceneMeshPositions(scene, object.Mesh);
         const BorrowedView<const uint32> indices = GetRenderSceneMeshIndices(scene, object.Mesh);
         for (usize index = 0; index < indices.GetSize(); index += TRIANGLE_CORNER_COUNT)

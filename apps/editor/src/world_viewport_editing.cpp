@@ -19,6 +19,7 @@
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
+#include <QSet>
 #include <QShortcut>
 #include <QString>
 #include <QTreeWidget>
@@ -147,6 +148,25 @@ void WorldWorkspace::updateViewportInteraction()
     mExploreFirstPersonButton->setVisible(hasSelectedPlayer);
     mExploreFirstPersonButton->setEnabled(canEdit == true && hasSelectedPlayer == true);
 }
+QStringList WorldWorkspace::getStaticColliderTargets() const
+{
+    QStringList targets;
+    if (Document_.HasBuiltInSchema() == false)
+    {
+        return targets;
+    }
+    const QSet<QString> selected(mSelectedEntities.cbegin(), mSelectedEntities.cend());
+    for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject entity = value.toObject();
+        const QString id = Document_.GetEntityKey(entity);
+        if (selected.contains(id) == true && CanAttachWorldStaticCollider(entity) == true)
+        {
+            targets.append(id);
+        }
+    }
+    return targets;
+}
 void WorldWorkspace::exploreFirstPerson()
 {
     if (isTerrainAuthoringOpen() == true)
@@ -167,9 +187,16 @@ void WorldWorkspace::exploreFirstPerson()
         Changed(QStringLiteral("Enable the rendered World viewport to explore from the player."));
         return;
     }
-    if (GetRenderPreview().Running() == false)
+    const RenderPreview& preview = GetRenderPreview();
+    if (preview.Running() == false)
     {
         Changed(QStringLiteral("Resume the World viewport, then choose Explore as Player."));
+        return;
+    }
+    if (preview.Scene().StaticColliderEntityIds != GetWorldStaticColliderEntityIds(Document_))
+    {
+        Changed(QStringLiteral("The World viewport has not published the Static Collider changes. Let it finish "
+                               "or repair the viewport error, then try again."));
         return;
     }
     const bool hasImportedScene = Document_.Draft().contains(QStringLiteral("scene"));

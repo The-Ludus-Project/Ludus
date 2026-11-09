@@ -102,6 +102,7 @@ void AddCollisionQuad(PreviewMesh& inoutMesh,
 RenderScene MakeWalkingScene()
 {
     RenderScene scene = MakeNavigationScene();
+    scene.StaticColliderEntityIds.insert(scene.Objects[0].Id);
     PreviewMesh& mesh = scene.Meshes[0];
     mesh.Positions.clear();
     AddCollisionQuad(mesh, {-5, 0, -5}, {-5, 0, 5}, {5, 0, -5}, {5, 0, 5});

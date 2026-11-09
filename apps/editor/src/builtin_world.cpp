@@ -4,6 +4,7 @@
 #include "internal/world_aperture.h"
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
+#include "internal/world_terrain.h"
 
 #include "internal/world_celestial_light.h"
 
@@ -101,6 +102,37 @@ bool HasWorldFirstPersonPlayer(const WorldDocument& world, const QString& id)
                                                 .value(QStringLiteral("components"))
                                                 .toObject()
                                                 .contains(QStringLiteral("firstPersonPlayer"));
+}
+QString GetStaticColliderComponentId()
+{
+    return QStringLiteral("staticCollider");
+}
+bool CanAttachWorldStaticCollider(const QJsonObject& entity)
+{
+    const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    return components.contains(GetStaticColliderComponentId()) == false &&
+           (components.contains(QStringLiteral("renderable")) == true ||
+            components.contains(GetTerrainComponentId()) == true ||
+            components.contains(GetApertureComponentId()) == true ||
+            entity.value(QStringLiteral("scene")).isObject() == true);
+}
+QSet<QString> GetWorldStaticColliderEntityIds(const WorldDocument& world)
+{
+    QSet<QString> ids;
+    if (world.HasBuiltInSchema() == false)
+    {
+        return ids;
+    }
+    const QString component = GetStaticColliderComponentId();
+    for (const QJsonValue value : world.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject entity = value.toObject();
+        if (entity.value(QStringLiteral("components")).toObject().contains(component) == true)
+        {
+            ids.insert(world.GetEntityKey(entity));
+        }
+    }
+    return ids;
 }
 bool ReadWorldFirstPersonPlayer(const WorldDocument& world,
                                 const QString& id,

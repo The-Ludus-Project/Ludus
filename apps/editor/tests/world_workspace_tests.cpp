@@ -2907,6 +2907,47 @@ TEST_CASE("First Person Player preset persists a spawn and uses the imported sta
     CHECK(forwardWorld.Z == Catch::Approx(0).margin(1e-6));
 }
 
+TEST_CASE("World Properties attaches Static Collider to selected meshes in one edit", "[editor][world][first-person]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("colliders.world.json"))) == true);
+    QAction* cubeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"));
+    QAction* planeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreatePlane"));
+    QAction* playerOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    REQUIRE(cubeOrNull != nullptr);
+    REQUIRE(planeOrNull != nullptr);
+    REQUIRE(playerOrNull != nullptr);
+    cubeOrNull->trigger();
+    planeOrNull->trigger();
+    playerOrNull->trigger();
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    QComboBox* choicesOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
+    QPushButton* attachOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAttach"));
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(choicesOrNull != nullptr);
+    REQUIRE(attachOrNull != nullptr);
+    const QString component = GetStaticColliderComponentId();
+    CHECK(choicesOrNull->findData(component) == -1);
+    const QJsonObject before = workspace.Document().Draft();
+    entitiesOrNull->selectAll();
+    REQUIRE(choicesOrNull->currentData().toString() == component);
+    REQUIRE(attachOrNull->isEnabled() == true);
+    attachOrNull->click();
+    for (const QJsonValue value : workspace.Document().Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject components = value.toObject().value(QStringLiteral("components")).toObject();
+        CHECK(components.contains(component) == components.contains(QStringLiteral("renderable")));
+    }
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == before);
+    workspace.StopPreview();
+}
+
 TEST_CASE("A meshless First Person Player shows its collision box and can be framed",
           "[editor][world][first-person][framing][overlay]")
 {
@@ -2945,6 +2986,7 @@ TEST_CASE("A meshless First Person Player shows its collision box and can be fra
     SECTION("frame the player from the hierarchy")
     {
         const QPoint rowPixel = entitiesOrNull->visualItemRect(playerOrNull).center();
+        QTest::mouseClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
         tests::DoubleClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
     }
 
@@ -3051,6 +3093,12 @@ TEST_CASE("Explore as Player moves the rendered staircase2 World camera", "[.fir
     REQUIRE(document.LoadSchema(schema, error) == true);
     REQUIRE(document.New(error) == true);
     REQUIRE(document.ImportScene(level, error) == true);
+    QStringList colliderIds;
+    for (const QJsonValue value : level.value(QStringLiteral("objects")).toArray())
+    {
+        colliderIds.append(value.toObject().value(QStringLiteral("id")).toString());
+    }
+    REQUIRE(document.AttachToEntities(colliderIds, error, GetStaticColliderComponentId()) == true);
     const QString path = QDir(root).filePath(QStringLiteral("staircase2.world.json"));
     Write(path, document.Encode());
 
