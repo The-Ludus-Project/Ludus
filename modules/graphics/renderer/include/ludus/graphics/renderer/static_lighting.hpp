@@ -59,7 +59,7 @@ struct StaticLightingBakeDescription final
     /// Optional nonzero IDs of enabled analytic lights in the scene. A nonempty view bakes only those
     /// sources, including direct and bounced diffuse, with zero environment and emissive radiance.
     /// Initialize and Submit copy the selection before returning. The chart augments live environment lighting.
-    foundation::BorrowedView<const foundation::uint64> AnalyticLightIds{};
+    foundation::BorrowedView<const foundation::uint64> AnalyticLightIds;
 };
 /// Borrowed completed chart payload; caller uploads it on the RHI owner thread.
 /// No GPU readback, texture owner or display image is produced by the bake.
