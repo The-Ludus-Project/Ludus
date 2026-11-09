@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/scene_shader_layout.h>
@@ -57,6 +58,14 @@ struct SceneShaderMaterial final
     /// Set false to display Emission on the surface without registering it as a raster mesh light.
     bool ShouldRegisterRasterMeshLight = true;
 };
+/// One ready irradiance chart for the triangle order of a render-graph placement.
+struct SceneSurfaceChart final
+{
+    foundation::uint64 SourceId = 0;         ///< Matching RenderGraphItem identity; zero denotes an empty slot.
+    foundation::math::Affine3 MeshToWorld{}; ///< Placement at bake time; mismatches select realtime.
+    rhi::TextureCpuContent Irradiance{};     ///< Linear RGBA8 chart in the shared triangle layout, copied on update.
+    foundation::math::Vector3 Scale{};       ///< Per-channel multiplier that decodes the stored texels.
+};
 /// Optional shared scene inputs. Empty material assignments use the neutral default;
 /// malformed references use diagnostic magenta only under DiagnosticColor admission.
 /// Analytic lights have no required geometry. Raster area proxy records are rejected:
@@ -75,6 +84,11 @@ struct SceneShaderInputs final
     /// Environment, each channel must fit MAX_ENVIRONMENT_RADIANCE, the same
     /// source-radiance bound as EnvironmentMap. Preparation copies these samples.
     foundation::BorrowedView<const foundation::math::Vector3> EnvironmentPixels;
+    /// Optional charts parallel to RenderGraphItem order. Submit only data verified against the current geometry,
+    /// materials and lights. Forward passes with a connected Baked Lighting input copy accepted charts on update.
+    foundation::BorrowedView<const SceneSurfaceChart> SurfaceCharts{};
+    /// Analytic light identities whose diffuse contributions the supplied charts replace. Copied on update.
+    foundation::BorrowedView<const foundation::uint64> BakedLightIds{};
 };
 /// Ray preparation byte ceiling that rejected a candidate; independent of allocator failure.
 enum class SceneMemoryBudget : foundation::uint8

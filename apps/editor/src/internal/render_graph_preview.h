@@ -17,6 +17,7 @@
 #include "internal/texture_inspection.h"
 #include "internal/viewport_statistics.h"
 #include "internal/viewport_trace.h"
+#include "internal/world_surface_bake.h"
 
 #include <QByteArray>
 #include <QImage>
@@ -55,6 +56,8 @@ struct RenderGraphExtraction final
     QVector<graphics::renderer::PanelLuminaire> Luminaires;
     QVector<QImage> MaterialImages;
     QVector<foundation::uint32> MaterialOverrides;
+    QSharedPointer<const WorldSurfaceBake> SurfaceBake;
+    QVector<graphics::renderer::SceneSurfaceChart> SurfaceCharts;
     graphics::renderer::SceneShaderInputs ShaderInputs;
     graphics::renderer::ViewDescription View{};
     /// Nonzero caller revision; a changed revision makes the preview prepare again.
@@ -77,7 +80,8 @@ struct RenderGraphExtraction final
                                              const graphics::renderer::ViewDescription& view,
                                              foundation::uint64 revision,
                                              RenderGraphExtraction& outExtraction,
-                                             QString& outError);
+                                             QString& outError,
+                                             const QSharedPointer<const WorldSurfaceBake>& surfaceBake = {});
 
 /// Optional authoring provenance for a cooked package. The preview admits it only when
 /// Generation and RuntimeIdentity match the decoded build generation and exact package bytes.
@@ -323,6 +327,7 @@ public:
     /// graph's failure colour, it names the pass, the pixel count and the main failure reason, after any progress
     /// text (the active graph keeps drawing while its first frame is presented or a replacement prepares).
     [[nodiscard]] QString GetDisplayStatus() const;
+    [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
     {

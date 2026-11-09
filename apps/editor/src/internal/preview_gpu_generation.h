@@ -29,11 +29,12 @@
 #include "internal/render_scene_limits.h"
 
 #include <QByteArray>
+#include <QSharedPointer>
 #include <QString>
 
 namespace ludus::editor
 {
-class StaticLightingJob;
+struct WorldSurfaceBake;
 
 inline constexpr foundation::usize PREVIEW_MESH_CAPACITY = MAX_PREVIEW_MESHES;
 inline constexpr foundation::usize PREVIEW_TEXTURE_CAPACITY = MAX_PREVIEW_TEXTURES;
@@ -102,6 +103,7 @@ public:
     }
     /// Lighting summary for a Lit frame or its pending replacement.
     [[nodiscard]] QString DescribeBake() const;
+    void SetSurfaceBake(const QSharedPointer<const WorldSurfaceBake>& bake, const QString& failure);
     [[nodiscard]] LUDUS_INLINE bool HasPublishedBake() const noexcept
     {
         return mHasPublishedBake;
@@ -199,8 +201,7 @@ private:
                            graphics::renderer::MaterialVersion& outMaterial) noexcept;
     void advanceBake() noexcept;
     void discardBakeCharts() noexcept;
-    foundation::threading::JobSystem mBakeJobs;
-    foundation::UniquePtr<StaticLightingJob> mBakeJob;
+    QSharedPointer<const WorldSurfaceBake> mSurfaceBake;
     foundation::Array<graphics::renderer::BakedLighting> mBakeCharts;
     foundation::Array<graphics::renderer::MaterialVersion> mBakedMaterials;
     foundation::usize mBakedMaterialCursor = 0;

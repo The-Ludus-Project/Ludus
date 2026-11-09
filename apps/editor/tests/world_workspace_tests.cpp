@@ -19,6 +19,7 @@
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_surface_bake.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
 #include <QCheckBox>
@@ -3132,6 +3133,30 @@ TEST_CASE("The World inspector offers an explicit always-on bake for a static li
     REQUIRE(rows.size() == 1);
     CHECK(rows[0].IsBakedAlwaysOn == true);
     CHECK(MakeWorldLightToggle(rows, {}, 0, false).WorldLights.isEmpty() == true);
+
+    WorldSurfaceBakeState writer;
+    writer.SetWorldPath(path);
+    writer.SetScene(baked);
+    QElapsedTimer bakeWait;
+    bakeWait.start();
+    while (writer.GetReady().isNull() == true && writer.GetFailure().isEmpty() == true && bakeWait.elapsed() < 30000)
+    {
+        writer.Poll(baked);
+        QTest::qWait(1);
+    }
+    INFO(writer.GetFailure().toStdString());
+    REQUIRE(writer.GetReady().isNull() == false);
+    REQUIRE(writer.Save() == true);
+    WorldSurfaceBakeState reader;
+    reader.SetWorldPath(path);
+    reader.SetScene(baked);
+    REQUIRE(reader.GetReady().isNull() == false);
+    REQUIRE(reader.GetReady()->Charts.size() == 1);
+    CHECK(reader.GetReady()->Charts.front().Pixels == writer.GetReady()->Charts.front().Pixels);
+    RenderScene moved = baked;
+    moved.Objects[0].Transform.Translation.X += 1;
+    reader.SetScene(moved);
+    CHECK(reader.GetReady().isNull() == true);
 
     REQUIRE(findStatic() != nullptr);
     findStatic()->setChecked(false);

@@ -1,5 +1,6 @@
 #include "internal/render_graph_preview.h"
 #include "internal/light_transformer_preview_setup.h"
+#include "internal/preview_lighting.h"
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "renderer_light_transformer_encoder.h"
@@ -143,7 +144,8 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                const renderer::ViewDescription& view,
                                uint64 revision,
                                RenderGraphExtraction& outExtraction,
-                               QString& outError)
+                               QString& outError,
+                               const QSharedPointer<const WorldSurfaceBake>& surfaceBake)
 {
     if (revision == 0 || scene.Objects.isEmpty() == true)
     {
@@ -380,6 +382,29 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                                      definitionOrNull->Environment.Pixels.GetSize()};
     }
     // Moving keeps the shared geometry storage the borrowed pointers name.
+    if (surfaceBake.isNull() == false && surfaceBake->Charts.size() == extraction.Items.size() &&
+        extraction.Scene.AlwaysOnLightIds.isEmpty() == false &&
+        surfaceBake->LightingKey == preview_lighting::MakeKey(scene))
+    {
+        extraction.SurfaceBake = surfaceBake;
+        extraction.SurfaceCharts.reserve(extraction.Items.size());
+        for (qsizetype index = 0; index < extraction.Items.size(); ++index)
+        {
+            const renderer::RenderGraphItem& item = extraction.Items.at(index);
+            const WorldSurfaceChart& source = surfaceBake->Charts.at(index);
+            renderer::SceneSurfaceChart chart;
+            chart.SourceId = item.SourceId;
+            chart.MeshToWorld = item.MeshToWorld;
+            chart.Scale = source.Scale;
+            chart.Irradiance = {reinterpret_cast<const uint8*>(source.Pixels.constData()),
+                                static_cast<usize>(source.Pixels.size()),
+                                static_cast<usize>(source.Width) * content::scene_format::TEXEL_BYTES,
+                                source.Width,
+                                source.Height,
+                                rhi::RasterFormat::Rgba8Unorm};
+            extraction.SurfaceCharts.append(chart);
+        }
+    }
     outExtraction = Move(extraction);
     return true;
 }
@@ -1423,6 +1448,10 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         QVector<renderer::ViewDescription> cameras(static_cast<qsizetype>(cameraCount), state.Extraction.View);
         renderer::RenderGraphReport graphReport;
         renderer::SceneShaderInputs shaderInputs = state.Extraction.ShaderInputs;
+        shaderInputs.SurfaceCharts = {state.Extraction.SurfaceCharts.constData(),
+                                      static_cast<usize>(state.Extraction.SurfaceCharts.size())};
+        shaderInputs.BakedLightIds = {state.Extraction.Scene.AlwaysOnLightIds.constData(),
+                                      static_cast<usize>(state.Extraction.Scene.AlwaysOnLightIds.size())};
         shaderInputs.Lights = {state.Extraction.Scene.AuthoredLights.Lights,
                                state.Extraction.Scene.AuthoredLights.Count};
         shaderInputs.Luminaires = {state.Extraction.Scene.Luminaires.Luminaires,
@@ -1900,6 +1929,12 @@ void RenderGraphPreview::setStatus(const QString& text)
         mStatus = text;
         Q_EMIT Changed();
     }
+}
+
+usize RenderGraphPreview::GetSurfaceChartDrawCount() const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.SurfaceChartDraws : 0;
 }
 
 QString RenderGraphPreview::GetDisplayStatus() const

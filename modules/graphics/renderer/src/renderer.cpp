@@ -681,6 +681,7 @@ struct Renderer::State final
         bool Clustered = false;
         bool HasSurfaceMapProfile = false;
         bool HasAuthoredProfile = false;
+        bool IsBakeBindingOmitted = false;
         uint32 VariantCount = 6;
         static constexpr usize REQUEST_CAPACITY = PROGRAM_VARIANT_COUNT + 2 + 2 * GBUFFER_PIPELINE_COUNT;
         StaticArray<rhi::PipelineRequest, REQUEST_CAPACITY> Requests{};
@@ -2440,6 +2441,9 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                 : isLit == true     ? LIT_BINDING_COUNT + (hasSurfaceMapProfile == true ? 1 : 0)
                                                     : PLAIN_BINDING_COUNT) +
                                (hasAuthoredProfile == true ? AUTHORED_BINDING_COUNT : 0);
+    const bool isBakeBindingOmitted = isLit == true && isClustered == false && hasAuthoredProfile == true &&
+                                      fragment.Bindings.size() == bindingCount - 1;
+    const usize actualBindingCount = bindingCount - (isBakeBindingOmitted == true ? 1 : 0);
     const usize memberCount = (isClustered == true ? CLUSTER_MEMBER_COUNT
                                : isLit == true     ? LIT_MEMBER_COUNT
                                                    : PLAIN_MEMBER_COUNT) +
@@ -2456,7 +2460,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
         vertex.Inputs.size() != (isLit == true ? LIT_VERTEX_ATTRIBUTE_COUNT : PLAIN_VERTEX_ATTRIBUTE_COUNT) ||
         vertex.Bindings.empty() == false || vertex.UniformMembers.empty() == false ||
-        fragment.Inputs.empty() == false || fragment.Bindings.size() != bindingCount ||
+        fragment.Inputs.empty() == false || fragment.Bindings.size() != actualBindingCount ||
         fragment.UniformMembers.size() != memberCount)
     {
         return Status::InvalidDescription;
@@ -2494,6 +2498,10 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
         {10, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0}};
     for (usize i = 0; i < bindingCount; ++i)
     {
+        if (isBakeBindingOmitted == true && i == BAKE_TEXTURE_BINDING)
+        {
+            continue;
+        }
         bool found = false;
         rhi::RasterBinding& required = expected[i];
         if (hasAuthoredProfile && i >= bindingCount - 3)
@@ -2643,6 +2651,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     p.HasOpaqueGBuffer = opaqueGBufferOrNull != nullptr;
     p.HasSurfaceMapProfile = hasSurfaceMapProfile;
     p.HasAuthoredProfile = hasAuthoredProfile;
+    p.IsBakeBindingOmitted = isBakeBindingOmitted;
     p.Hdr = isLit == true && s.Hdr;
     p.VariantCount = isLit == true && p.Hdr == false ? LDR_LIT_PROGRAM_VARIANT_COUNT : PROGRAM_VARIANT_COUNT;
     status = rhi::CreateRasterShader(s.Device, vertex, p.Vertex);
@@ -2656,7 +2665,14 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     }
     if (Accepted(status))
     {
-        status = rhi::CreateBindingLayout(s.Device, {expected, bindingCount}, p.Layout);
+        if (isBakeBindingOmitted == true)
+        {
+            for (usize index = BAKE_TEXTURE_BINDING; index < actualBindingCount; ++index)
+            {
+                expected[index] = expected[index + 1];
+            }
+        }
+        status = rhi::CreateBindingLayout(s.Device, {expected, actualBindingCount}, p.Layout);
     }
     if (Accepted(status) == true && depthOrNull != nullptr)
     {
@@ -3216,8 +3232,19 @@ Status Renderer::GetStatus(MaterialVersion handle) noexcept
                                         m->EnvironmentOrNull != nullptr ? m->EnvironmentOrNull->Sampler : m->Sampler};
             values[bindingCount - 1] = {static_cast<uint32>(bindingCount - 1), {}, 0, 0, m->EmissionTexture, {}};
         }
-        const Status created =
-            rhi::CreateBindingSet(s.Device, s.Programs[m->ProgramSlot].Layout, {values, bindingCount}, m->Bindings);
+        const bool isBakeBindingOmitted = s.Programs[m->ProgramSlot].IsBakeBindingOmitted;
+        const usize actualBindingCount = bindingCount - (isBakeBindingOmitted == true ? 1 : 0);
+        if (isBakeBindingOmitted == true)
+        {
+            for (usize index = BAKE_TEXTURE_BINDING; index < actualBindingCount; ++index)
+            {
+                values[index] = values[index + 1];
+            }
+        }
+        const Status created = rhi::CreateBindingSet(s.Device,
+                                                     s.Programs[m->ProgramSlot].Layout,
+                                                     {values, actualBindingCount},
+                                                     m->Bindings);
         if (Accepted(created) == false)
         {
             return m->Setup = created;
@@ -4626,8 +4653,9 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     {
         return Status::InvalidDescription;
     }
-    const auto& bake = description.Bake;
-    if (description.BakedDirectLightIds.IsValid() == false ||
+    const BakedLighting& bake = description.Bake;
+    if ((p->IsBakeBindingOmitted == true && rhi::IsNull(bake.Texture) == false) ||
+        description.BakedDirectLightIds.IsValid() == false ||
         description.BakedDirectLightIds.GetSize() > MAX_DIRECT_LIGHTS ||
         (description.BakedDirectLightIds.IsEmpty() == false && rhi::IsNull(bake.Texture) == true))
     {

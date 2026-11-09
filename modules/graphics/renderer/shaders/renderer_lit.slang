@@ -52,7 +52,9 @@ StructuredBuffer<float4> meshLightWords LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_DEFE
 #    define LUDUS_LTC_TABLE_BINDING LUDUS_DEFERRED_LTC_BINDING
 #    include "ltc_table.slang"
 #else
+#    ifndef LUDUS_GRAPH_REALTIME
 LUDUS_SHADER_BINDING(3) Texture2D<float4> bakeTexture : register(t3);
+#    endif
 LUDUS_SHADER_BINDING(4) Texture2D<float4> shadowTexture : register(t4);
 #endif
 LUDUS_SHADER_BINDING(5) SamplerState shadowSampler : register(s5);
@@ -533,8 +535,10 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
         specularEnvironment = radiance * (f0 * dfg.x + dfg.y);
     }
 #endif
-#ifndef LUDUS_DEFERRED_MESH_LIGHTS
+#if !defined(LUDUS_DEFERRED_MESH_LIGHTS) && !defined(LUDUS_GRAPH_REALTIME)
+#    ifndef LUDUS_GRAPH_SURFACE_CHART
     if (input.IsBakeValid > 0.5)
+#    endif
     {
         float3 bakedIrradiance =
             bakeTexture.SampleLevel(colorSampler, saturate(input.BakeUv) * material.BakeUv.xy + material.BakeUv.zw, 0)
@@ -624,13 +628,20 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
                 attenuation *= color.w == 4 ? abs(emitterCosine) : max(emitterCosine, 0);
             }
         }
+#if defined(LUDUS_GRAPH_REALTIME)
+        const bool shouldReplaceDiffuse = false;
+#elif defined(LUDUS_GRAPH_SURFACE_CHART)
+        const bool shouldReplaceDiffuse = extra.y > 0.5;
+#else
+    const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
+#endif
         float3 contribution = EvaluateBrdf(baseColor.rgb,
                                            normalWorld,
                                            viewDirectionWorld,
                                            lightDirectionWorld,
                                            metallic,
                                            roughness,
-                                           input.IsBakeValid > 0.5 && extra.y > 0.5) *
+                                           shouldReplaceDiffuse) *
                               color.rgb * attenuation * ComputeShadowVisibility(i, input);
         result += contribution;
 #ifdef LUDUS_DEBUG_VIEW

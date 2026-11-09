@@ -4,7 +4,7 @@
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
 #include "internal/render_scene_limits.h"
-#include "internal/static_lighting_job.h"
+#include "internal/world_surface_bake.h"
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -200,7 +200,6 @@ PreviewGpuGeneration::PreviewGpuGeneration(rhi::DeviceHandle device,
 }
 PreviewGpuGeneration::~PreviewGpuGeneration() noexcept
 {
-    mBakeJob.Reset();
     Viewport.Reset();
     Renderer.Reset();
     discardBakeCharts();
@@ -765,11 +764,23 @@ QString PreviewGpuGeneration::DescribeBake() const
     {
         return QStringLiteral("always-on lighting baked");
     }
-    if (mBakeJob.Get() != nullptr || mBakeCharts.IsEmpty() == false)
+    if (shouldBakeLighting() == true)
     {
         return QStringLiteral("baking always-on lighting…");
     }
     return QStringLiteral("direct lighting");
+}
+
+void PreviewGpuGeneration::SetSurfaceBake(const QSharedPointer<const WorldSurfaceBake>& bake, const QString& failure)
+{
+    if (bake.isNull() == false && bake->LightingKey == LightingKey)
+    {
+        mSurfaceBake = bake;
+    }
+    if (mBakeFailure.isEmpty() == true)
+    {
+        mBakeFailure = failure;
+    }
 }
 
 void PreviewGpuGeneration::discardBakeCharts() noexcept
@@ -786,57 +797,35 @@ rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
 #if defined(LUDUS_EDITOR_GPU_PREVIEW) && !defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     if (mBakeCharts.IsEmpty() == true)
     {
-        if (mBakeJob.Get() == nullptr)
+        if (mSurfaceBake.isNull() == true)
         {
-            renderer::StaticLightingBakeDescription description;
-            description.SceneRevision = Lighting.SceneRevision;
-            description.DependencyRevision = Lighting.DependencyRevision;
-            description.Surfaces = {Lighting.Surfaces.GetData(), Lighting.Surfaces.GetSize()};
-            description.AnalyticLightIds = {Source.AlwaysOnLightIds.constData(),
-                                            static_cast<usize>(Source.AlwaysOnLightIds.size())};
-            if (mBakeJobs.Initialize({ .WorkerCount = STATIC_LIGHTING_WORKER_COUNT }) != threading::JobStatus::Ok)
-            {
-                return rhi::RasterStatus::Failed;
-            }
-            mBakeJob.Reset(new (std::nothrow) StaticLightingJob(Source, description));
-            if (mBakeJob.Get() == nullptr)
-            {
-                return rhi::RasterStatus::OutOfMemory;
-            }
-            return mBakeJob->Start(mBakeJobs);
+            return rhi::RasterStatus::Pending;
         }
-        const rhi::RasterStatus status = mBakeJob->Poll();
-        if (status != rhi::RasterStatus::Ready)
+        if (static_cast<usize>(mSurfaceBake->Charts.size()) != Source.Definition->Objects.GetSize())
         {
-            return status;
+            return rhi::RasterStatus::InvalidDescription;
         }
-        UniquePtr<renderer::StaticLightingBake> bake = mBakeJob->TakeBake();
-        mBakeJob.Reset();
-        static_cast<void>(mBakeJobs.Shutdown());
         if (mBakeCharts.TryResize(Source.Definition->Objects.GetSize()) == false)
         {
             return rhi::RasterStatus::OutOfMemory;
         }
         for (usize i = 0; i < mBakeCharts.GetSize(); ++i)
         {
-            renderer::StaticLightingChart chart;
-            if (bake->GetChart(i, chart) != rhi::RasterStatus::Ready)
-            {
-                return rhi::RasterStatus::Failed;
-            }
+            const WorldSurfaceChart& chart = mSurfaceBake->Charts.at(static_cast<qsizetype>(i));
+            const resources::SceneObject& object = Source.Definition->Objects[i];
             renderer::BakedLighting& material = mBakeCharts[i];
             material.Scale = chart.Scale;
-            material.UvTransform = chart.UvTransform;
-            material.SourceId = chart.SourceId;
-            material.SceneRevision = chart.SceneRevision;
-            material.DependencyRevision = chart.DependencyRevision;
-            material.Transform = chart.Transform;
+            material.UvTransform = {1, 1, 0, 0};
+            material.SourceId = object.SourceId;
+            material.SceneRevision = Lighting.SceneRevision;
+            material.DependencyRevision = Lighting.DependencyRevision;
+            material.Transform = Source.Objects.at(static_cast<qsizetype>(i)).Transform;
             material.AreTriangleChartsEnabled = true;
             material.ShouldAddToEnvironment = true;
             const rhi::RasterStatus uploaded = rhi::CreateTexture(
                 Device,
                 { .Width = chart.Width, .Height = chart.Height, .Format = rhi::RasterFormat::Rgba8Unorm },
-                {{chart.Pixels.GetDataOrNull(), chart.Pixels.GetSize()},
+                {{reinterpret_cast<const uint8*>(chart.Pixels.constData()), static_cast<usize>(chart.Pixels.size())},
                  usize{chart.Width} * content::scene_format::TEXEL_BYTES},
                 material.Texture);
             if (IsAccepted(uploaded) == false)
@@ -873,8 +862,6 @@ void PreviewGpuGeneration::advanceBake() noexcept
     }
     if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::Pending)
     {
-        mBakeJob.Reset();
-        static_cast<void>(mBakeJobs.Shutdown());
         for (renderer::MaterialVersion& material : mBakedMaterials)
         {
             static_cast<void>(Renderer.Release(material));

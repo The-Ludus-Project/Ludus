@@ -735,6 +735,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/editor_camera_controller.cpp
     src/static_lighting_job.cpp
     src/internal/static_lighting_job.h
+    src/world_surface_bake.cpp
+    src/internal/world_surface_bake.h
     src/preview_area_lights.cpp
     src/internal/preview_area_lights.h
     src/render_panel.cpp

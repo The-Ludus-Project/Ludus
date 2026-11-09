@@ -586,7 +586,7 @@ class _Library:
         if kind in ("Accumulate", "ToneMap", "Denoise"):
             return {"color": "ColorTexture"}, {"color": "ColorTexture"}
         if kind == "Scene":
-            return {}, {"scene": "Scene", **scene_bundle.TYPES}
+            return {}, {"scene": "Scene", **scene_bundle.TYPES, "bakedLighting": scene_bundle.BAKED_LIGHTING}
         if kind == "Camera":
             return {"target": node["target_type"]}, {"view": "View"}
         if kind in ("Buffer", "StructuredBuffer"):
@@ -711,6 +711,8 @@ class _Library:
             ports = self.node_ports(node)
             required = ({p["id"] for p in node["inputs"] if p["required"]}
                         if node["kind"] in pipeline.KINDS else set(ports[0]))
+            if node['kind'] == 'Subgraph':
+                required -= {identity for identity, kind in ports[0].items() if kind == scene_bundle.BAKED_LIGHTING}
             if node["kind"] == "Camera" and not node["active"]:
                 required.clear()
             if node['kind'] in pipeline.KINDS:
@@ -844,11 +846,14 @@ class _Compiler:
         self.activity.append({'instance': prefix, 'source': self.library.label(path),
                               'configuration': config['id'], 'retained': [node['id'] for node in order]})
         values = {"input." + key: value for key, value in bindings.items()}
+        optional_inputs = {"input." + port['id'] for port in config['inputs']
+                           if port['type'] == scene_bundle.BAKED_LIGHTING}
         for node in order:
             self.expanded += 1
             where = prefix + "/" + node["id"]
             _require(self.expanded <= MAX_EXPANDED_NODES, "Capacity", where, "expanded node capacity exceeded")
-            inputs = {key: values[endpoint] for key, endpoint in incoming[node["id"]].items()}
+            inputs = {key: values[endpoint] for key, endpoint in incoming[node["id"]].items()
+                      if endpoint in values or endpoint not in optional_inputs}
             outputs = {}
             kind = node["kind"]
             authored_pipeline = None
@@ -859,12 +864,13 @@ class _Compiler:
                 inputs = scene_bundle.resolve(node, inputs, where, sys.modules[__name__])
                 authored_pipeline = node
                 node, input_mapping, output_mapping = _lower_pipeline(node, where)
-                _require(set(input_mapping.values()) <= inputs.keys(), 'UnboundInput', where,
-                         'the selected graphics invocation requires all mapped inputs')
-                inputs = {name: inputs[port] for name, port in input_mapping.items()}
+                _require(all(port in inputs or name == 'baked_lighting' for name, port in input_mapping.items()),
+                         'UnboundInput', where, 'the selected graphics invocation requires all mapped inputs')
+                inputs = {name: inputs[port] for name, port in input_mapping.items() if port in inputs}
                 kind = node['kind']
             if kind == "Scene":
                 outputs["scene"] = _Value("Scene", origin=where)
+                outputs["bakedLighting"] = _Value(scene_bundle.BAKED_LIGHTING, origin=where)
                 outputs.update({part: _Value(kind, origin=where, scene_data=1 << scene_bundle.PARTS.index(part))
                                 for part, kind in scene_bundle.TYPES.items()})
             elif kind == 'StructuredBuffer':
@@ -1129,6 +1135,10 @@ class _Compiler:
                             "output_version": value.version, "defined": value.defined,
                             "load": node[aspect + "_load"], "store": node[aspect + "_store"]}
                             for aspect, value in outputs.items()}}
+                if 'baked_lighting' in inputs:
+                    _require(inputs['baked_lighting'].origin == inputs['scene'].origin, 'SceneBundle', where,
+                             'Connect Baked Lighting from the same Scene that supplies the raster geometry.')
+                    entry['baked_lighting'] = True
                 if authored_pipeline is not None:
                     for port in authored_pipeline['outputs']:
                         resource = self.resources[inputs[next(aspect for aspect, name in output_mapping.items() if name == port['id'])].resource]

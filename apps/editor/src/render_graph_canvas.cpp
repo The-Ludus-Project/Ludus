@@ -1369,7 +1369,11 @@ void RenderGraphCanvas::Rebuild()
                 QStringLiteral(
                     "%1.%2 : %3\nRight-click to connect or disconnect. Dropping a new wire replaces the input source.")
                     .arg(view->Id, port.Id, port.Type));
-            QGraphicsSimpleTextItem* name = new QGraphicsSimpleTextItem(port.Id, view->Frame);
+            const QString portLabel =
+                port.Type == QStringLiteral("SceneBakedLighting") && port.Id == QStringLiteral("bakedLighting")
+                    ? QStringLiteral("Baked Lighting")
+                    : port.Id;
+            QGraphicsSimpleTextItem* name = new QGraphicsSimpleTextItem(portLabel, view->Frame);
             QFont small = name->font();
             small.setPointSize(LABEL_POINT_SIZE);
             name->setFont(small);
