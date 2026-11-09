@@ -369,7 +369,9 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                          static_cast<usize>(extraction.Materials.size())};
     for (uint32 i = 0; i < extraction.Scene.AuthoredLights.Count; ++i)
     {
-        extraction.Lights.append(extraction.Scene.AuthoredLights.Lights[i]);
+        graphics::renderer::DirectLight light = extraction.Scene.AuthoredLights.Lights[i];
+        light.ShouldCastRasterShadows = scene.RasterUnshadowedLightIds.contains(light.SourceId) == false;
+        extraction.Lights.append(light);
     }
     extraction.ShaderInputs.Lights = {extraction.Lights.constData(), static_cast<usize>(extraction.Lights.size())};
     for (uint32 i = 0; i < extraction.Scene.Luminaires.Count; ++i)
@@ -1535,8 +1537,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                                       static_cast<usize>(state.Extraction.SurfaceCharts.size())};
         shaderInputs.BakedLightIds = {state.Extraction.Scene.AlwaysOnLightIds.constData(),
                                       static_cast<usize>(state.Extraction.Scene.AlwaysOnLightIds.size())};
-        shaderInputs.Lights = {state.Extraction.Scene.AuthoredLights.Lights,
-                               state.Extraction.Scene.AuthoredLights.Count};
+        shaderInputs.Lights = {state.Extraction.Lights.constData(), static_cast<usize>(state.Extraction.Lights.size())};
         shaderInputs.Luminaires = {state.Extraction.Scene.Luminaires.Luminaires,
                                    state.Extraction.Scene.Luminaires.Count};
         const rhi::RasterStatus updated = state.Activation.Update(

@@ -136,6 +136,19 @@ bool ClipAxis(math::Vector3d axisWorld,
 }
 } // namespace
 
+math::Aabb3 ViewportWalkCollision::ComputeBodyBounds(math::Vector3d eyeWorld) noexcept
+{
+    const math::Vector3d centerWorld = eyeWorld - CENTER_TO_EYE_METRES;
+    const math::Vector3d minimumWorld = centerWorld - BODY_HALF_EXTENT_METRES;
+    const math::Vector3d maximumWorld = centerWorld + BODY_HALF_EXTENT_METRES;
+    return {{static_cast<float32>(minimumWorld.X),
+             static_cast<float32>(minimumWorld.Y),
+             static_cast<float32>(minimumWorld.Z)},
+            {static_cast<float32>(maximumWorld.X),
+             static_cast<float32>(maximumWorld.Y),
+             static_cast<float32>(maximumWorld.Z)}};
+}
+
 ViewportWalkCollision::StartStatus ViewportWalkCollision::Start(const RenderScene& scene,
                                                                 math::Vector3d eyeWorld) noexcept
 {

@@ -9,10 +9,12 @@
 #include "internal/material_inspection.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_graph_preview.h"
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
+#include "internal/selection_outline_request.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_document.h"
@@ -49,6 +51,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
+#include <QLineF>
 #include <QLockFile>
 #include <QMessageBox>
 #include <QProcess>
@@ -2892,6 +2895,75 @@ TEST_CASE("First Person Player preset persists a spawn and uses the imported sta
     CHECK(forwardWorld.Z == Catch::Approx(0).margin(1e-6));
 }
 
+TEST_CASE("A meshless First Person Player shows its collision box and can be framed",
+          "[editor][world][first-person][framing][overlay]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("player-bounds.world.json"))) == true);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(createOrNull != nullptr);
+    REQUIRE(viewportOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    createOrNull->trigger();
+    REQUIRE(entitiesOrNull->topLevelItemCount() == 1);
+    REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave() == true; }) == true);
+    const QTreeWidgetItem* playerOrNull = entitiesOrNull->topLevelItem(0);
+    REQUIRE(playerOrNull != nullptr);
+    const QString id = playerOrNull->data(0, Qt::UserRole).toString();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    math::Aabb3 boundsWorld;
+    CHECK(preview.Scene().TryGetBounds(id, boundsWorld) == false);
+    const QJsonObject draft = workspace.Document().Draft();
+
+    SECTION("frame the player from the viewport keyboard")
+    {
+        QTest::keyClick(viewportOrNull, Qt::Key_F);
+    }
+    SECTION("frame the player from the hierarchy")
+    {
+        const QPoint rowPixel = entitiesOrNull->visualItemRect(playerOrNull).center();
+        tests::DoubleClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
+    }
+
+    PreviewStartView view;
+    REQUIRE(preview.TryDescribeStartView(view) == true);
+    // The default eye is 1.65 m above the World origin and 1.60 m above the box base.
+    constexpr float64 TARGET_HEIGHT_METRES = 0.925;
+    constexpr float64 FRAME_TOLERANCE_METRES = 0.001;
+    CHECK(view.TargetWorld.X == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
+    CHECK(view.TargetWorld.Y == Catch::Approx(TARGET_HEIGHT_METRES).margin(FRAME_TOLERANCE_METRES));
+    CHECK(view.TargetWorld.Z == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
+
+    ViewportObjectInteraction& interaction = viewportOrNull->GetObjectInteraction();
+    // Offscreen has no presented GPU image. Exercise the production overlay geometry.
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    interaction.SetGpuOutlineEnabled(true);
+    const QRectF framePixel{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    constexpr usize COLLISION_BOX_EDGES = 12;
+    CHECK(overlay.OutlineLinesPixel.GetSize() == COLLISION_BOX_EDGES);
+    SelectionOutlineRequest meshOutline;
+    CHECK(interaction.TryGetGpuOutlineRequest(meshOutline) == false);
+
+    entitiesOrNull->clearSelection();
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.OutlineLinesPixel.IsEmpty() == true);
+    CHECK(workspace.Document().Draft() == draft);
+}
+
 TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity list visible",
           "[editor][world][first-person]")
 {
@@ -3370,6 +3442,89 @@ TEST_CASE("Default World creation preserves drafts on entropy and validation fai
     CHECK(document.Draft() == legacy);
 }
 
+TEST_CASE("The World inspector saves raster shadow eligibility separately from light visibility",
+          "[editor][world][lighting][raster-shadows]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString cube;
+    QString light;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), cube, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), light, error) == true);
+
+    const QJsonObject entity = document.Entity(light);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject values = components.value(QStringLiteral("light")).toObject();
+    values.remove(WORLD_RASTER_SHADOWS);
+    components.insert(QStringLiteral("light"), values);
+    REQUIRE(document.Edit(light, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("shadows.world.json"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(light) == true);
+    QCheckBox* shadowsOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:light/rasterShadows"));
+    REQUIRE(shadowsOrNull != nullptr);
+    CHECK(shadowsOrNull->isChecked() == true);
+
+    RenderScene before;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), before, error) == true);
+    const QByteArray lightingKey = preview_lighting::MakeKey(before);
+    preview_lighting::Inputs shadowed;
+    REQUIRE(preview_lighting::BuildInputs(before, lightingKey, shadowed, preview_lighting::InputsTarget::Raster) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    CHECK(shadowed.ShadowCount == ludus::graphics::renderer::POINT_SHADOW_FACES);
+
+    shadowsOrNull->setChecked(false);
+    REQUIRE(workspace.Apply() == true);
+    REQUIRE(workspace.Save() == true);
+
+    WorldWorkspace reopened;
+    reopened.SetProject(root, 1);
+    REQUIRE(reopened.Open(path) == true);
+    REQUIRE(reopened.SelectEntity(light) == true);
+    QCheckBox* savedShadowsOrNull = reopened.findChild<QCheckBox*>(QStringLiteral("worldField:light/rasterShadows"));
+    REQUIRE(savedShadowsOrNull != nullptr);
+    CHECK(savedShadowsOrNull->isChecked() == false);
+
+    RenderScene after;
+    REQUIRE(RenderScene::Load(root, reopened.Document(), after, error) == true);
+    REQUIRE(after.Definition != nullptr);
+    LightSwitchReport switchReport;
+    REQUIRE(ApplyLightSwitches({}, after, switchReport) == true);
+    CHECK(preview_lighting::MakeKey(after) == lightingKey);
+    preview_lighting::Inputs unshadowed;
+    REQUIRE(preview_lighting::BuildInputs(after, lightingKey, unshadowed, preview_lighting::InputsTarget::Raster) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    CHECK(unshadowed.ShadowCount == 0);
+    REQUIRE(unshadowed.Lights.Count == 1);
+    CHECK(unshadowed.Lights.Lights[0].SourceId == ComputeEntitySourceId(light));
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(after, {}, 1, extraction, error) == true);
+    REQUIRE(extraction.ShaderInputs.Lights.GetSize() == 1);
+    CHECK(extraction.ShaderInputs.Lights[0].ShouldCastRasterShadows == false);
+#endif
+
+    preview_lighting::Inputs reference;
+    REQUIRE(preview_lighting::BuildInputs(after, lightingKey, reference, preview_lighting::InputsTarget::Reference) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    REQUIRE(reference.Lights.Count == 1);
+    CHECK(reference.Lights.Lights[0].SourceId == ComputeEntitySourceId(light));
+    CHECK(reference.Lights.Lights[0].Intensity == unshadowed.Lights.Lights[0].Intensity);
+}
+
 TEST_CASE("The World inspector offers an explicit always-on bake for a static light", "[editor][world][lighting]")
 {
     QTemporaryDir directory;
@@ -3528,7 +3683,182 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
     workspace.StopPreview();
 }
 
-TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation]")
+TEST_CASE("World viewport moves, resizes and scales an unbaked GI probe volume with the inspector hidden",
+          "[editor][world][object-interaction][probe-gi]")
+{
+    namespace math = ludus::foundation::math;
+    namespace renderer = ludus::graphics::renderer;
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    using ludus::foundation::uint32;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString mesh;
+    QString volume;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), mesh, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("probe-gizmo.world.json"));
+    Write(path, document.Encode());
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    RenderPanel* panelOrNull = workspace.findChild<RenderPanel*>();
+    REQUIRE(panelOrNull != nullptr);
+
+    const auto readGrid = [&workspace, &volume, &error]() {
+        const QJsonObject components =
+            workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject();
+        renderer::GiProbeGrid grid;
+        REQUIRE(ReadWorldGiProbeGrid(components, grid, error, true) == true);
+        return grid;
+    };
+    const renderer::GiProbeGrid original = readGrid();
+    const math::Aabb3 boundsWorld = ComputeWorldGiProbeBounds(original);
+    const math::Vector3 centerWorld = (boundsWorld.Min + boundsWorld.Max) * 0.5F;
+    RenderScene scene = MakeInteractionScene();
+    scene.Cameras[0].Sample.Pose.Position = {static_cast<float64>(centerWorld.X),
+                                             static_cast<float64>(centerWorld.Y),
+                                             10};
+    RenderPreview& preview = workspace.GetRenderPreview();
+    ConfigureInteractionPreview(preview, scene);
+
+    ViewportObjectInteraction& interaction = panelOrNull->GetViewport().GetObjectInteraction();
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Move);
+    const QRectF framePixel{0, 0, 800, 600};
+    renderer::ViewDescription view;
+    REQUIRE(preview.DescribeView(static_cast<uint32>(framePixel.width()),
+                                 static_cast<uint32>(framePixel.height()),
+                                 view,
+                                 error) == true);
+    const auto project = [&view, &framePixel](math::Vector3 positionWorld) {
+        const math::Vector4 clip =
+            view.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+        return QPointF((static_cast<float64>(clip.X / clip.W) + 1) * framePixel.width() * 0.5,
+                       (1 - static_cast<float64>(clip.Y / clip.W)) * framePixel.height() * 0.5);
+    };
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.OutlineLinesPixel.GetSize() == 12);
+    REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
+    const QJsonObject before = workspace.Document().Draft();
+
+    SECTION("In Scale mode the maximum face still grows the count without moving the origin")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
+        const QPointF handlePixel = project(faceWorld);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(project(faceWorld + math::Vector3{2 * original.Spacing, 0, 0}), false) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("6 probes")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid resized = readGrid();
+        CHECK(resized.OriginWorld == original.OriginWorld);
+        CHECK(resized.Counts[0] == original.Counts[0] + 2);
+        CHECK(resized.Counts[1] == original.Counts[1]);
+        CHECK(resized.Counts[2] == original.Counts[2]);
+        CHECK(resized.Spacing == original.Spacing);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readGrid().Counts[0] == resized.Counts[0]);
+    }
+
+    SECTION("The minimum face keeps the far corner fixed and clamps to the probe limit")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT) * original.Spacing;
+        REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid resized = readGrid();
+        CHECK(resized.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        CHECK(resized.OriginWorld.X < original.OriginWorld.X);
+        CHECK(ComputeWorldGiProbeBounds(resized).Max == boundsWorld.Max);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+
+    SECTION("Cancelling a face drag leaves the World and bake unchanged")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        REQUIRE(interaction.Move(project(faceWorld + math::Vector3{original.Spacing, 0, 0}), false) == true);
+        interaction.Cancel();
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == before);
+        CHECK(interaction.FrameProbeVolume() == true);
+    }
+
+    SECTION("The Scale handle previews uniform spacing and commits one undoable edit")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        interaction.BuildOverlay(framePixel, overlay);
+        REQUIRE(overlay.HandleFills.GetSize() >= 2);
+        const QPointF handlePixel = project(centerWorld);
+        const ViewportHandleFill& scaleFill = overlay.HandleFills[overlay.HandleFills.GetSize() - 1];
+        CHECK(QLineF((scaleFill.CornersPixel[0] + scaleFill.CornersPixel[2]) * 0.5, handlePixel).length() < 0.01);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeSpacing);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        const QPointF enlargedPixel = handlePixel + QPointF(56, -56);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("2.00 m spacing")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        interaction.Cancel();
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == before);
+
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid scaled = readGrid();
+        CHECK(scaled.Spacing == 2 * original.Spacing);
+        CHECK(scaled.OriginWorld == original.OriginWorld);
+        CHECK(scaled.Counts == original.Counts);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readGrid().Spacing == scaled.Spacing);
+    }
+
+    SECTION("Move handles translate the volume without resizing it")
+    {
+        const QPointF handlePixel = overlay.HandleStrokes[0].LinePixel.pointAt(0.5);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::Axis);
+        REQUIRE(interaction.Move(handlePixel + QPointF(40, 0), true) == true);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid moved = readGrid();
+        CHECK(moved.OriginWorld.X > original.OriginWorld.X);
+        CHECK(moved.Counts == original.Counts);
+        CHECK(moved.Spacing == original.Spacing);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+    workspace.StopPreview();
+}
+
+TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation][framing]")
 {
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
@@ -3548,6 +3878,9 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     const QJsonObject level =
         QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
     REQUIRE(document.ImportScene(level, error) == true);
+    const QString importedId =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    REQUIRE(document.Attach(importedId, error, QStringLiteral("firstPersonPlayer")) == true);
     const QString path = QDir(root).filePath(QStringLiteral("mixed.world.json"));
     Write(path, document.Encode());
     ToolingPaths tools;
@@ -3569,6 +3902,20 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     CHECK(scene->PreviewScene().Objects.size() == 2);
     CHECK(scene->PreviewScene().AuthoredLights.Count == 1);
     CHECK(workspace.Document().Draft() == document.Draft());
+
+    // Imported placement supplies the mesh bounds even when the player lacks a Transform.
+    REQUIRE(HasWorldFirstPersonPlayer(workspace.Document(), importedId) == true);
+    REQUIRE(workspace.Document()
+                .Entity(importedId)
+                .value(QStringLiteral("components"))
+                .toObject()
+                .contains(QStringLiteral("transform")) == false);
+    RenderPreview& preview = workspace.GetRenderPreview();
+    preview.FrameAll();
+    preview.SetFocusDistance(preview.GetFocusDistance() * 3);
+    const ludus::foundation::float32 distanceBefore = preview.GetFocusDistance();
+    scene->GetViewport().GetObjectInteraction().FrameRequested(importedId);
+    CHECK(preview.GetFocusDistance() < distanceBefore);
     workspace.StopPreview();
 }
 
