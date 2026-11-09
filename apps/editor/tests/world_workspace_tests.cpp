@@ -9,6 +9,7 @@
 #include "internal/material_inspection.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_graph_preview.h"
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
@@ -3368,6 +3369,89 @@ TEST_CASE("Default World creation preserves drafts on entropy and validation fai
                                          {QStringLiteral("components"), QJsonObject{}}}});
     REQUIRE(document.Load(QJsonDocument(legacy).toJson(), error) == true);
     CHECK(document.Draft() == legacy);
+}
+
+TEST_CASE("The World inspector saves raster shadow eligibility separately from light visibility",
+          "[editor][world][lighting][raster-shadows]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString cube;
+    QString light;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), cube, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), light, error) == true);
+
+    const QJsonObject entity = document.Entity(light);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject values = components.value(QStringLiteral("light")).toObject();
+    values.remove(WORLD_RASTER_SHADOWS);
+    components.insert(QStringLiteral("light"), values);
+    REQUIRE(document.Edit(light, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("shadows.world.json"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(light) == true);
+    QCheckBox* shadowsOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:light/rasterShadows"));
+    REQUIRE(shadowsOrNull != nullptr);
+    CHECK(shadowsOrNull->isChecked() == true);
+
+    RenderScene before;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), before, error) == true);
+    const QByteArray lightingKey = preview_lighting::MakeKey(before);
+    preview_lighting::Inputs shadowed;
+    REQUIRE(preview_lighting::BuildInputs(before, lightingKey, shadowed, preview_lighting::InputsTarget::Raster) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    CHECK(shadowed.ShadowCount == ludus::graphics::renderer::POINT_SHADOW_FACES);
+
+    shadowsOrNull->setChecked(false);
+    REQUIRE(workspace.Apply() == true);
+    REQUIRE(workspace.Save() == true);
+
+    WorldWorkspace reopened;
+    reopened.SetProject(root, 1);
+    REQUIRE(reopened.Open(path) == true);
+    REQUIRE(reopened.SelectEntity(light) == true);
+    QCheckBox* savedShadowsOrNull = reopened.findChild<QCheckBox*>(QStringLiteral("worldField:light/rasterShadows"));
+    REQUIRE(savedShadowsOrNull != nullptr);
+    CHECK(savedShadowsOrNull->isChecked() == false);
+
+    RenderScene after;
+    REQUIRE(RenderScene::Load(root, reopened.Document(), after, error) == true);
+    REQUIRE(after.Definition != nullptr);
+    LightSwitchReport switchReport;
+    REQUIRE(ApplyLightSwitches({}, after, switchReport) == true);
+    CHECK(preview_lighting::MakeKey(after) == lightingKey);
+    preview_lighting::Inputs unshadowed;
+    REQUIRE(preview_lighting::BuildInputs(after, lightingKey, unshadowed, preview_lighting::InputsTarget::Raster) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    CHECK(unshadowed.ShadowCount == 0);
+    REQUIRE(unshadowed.Lights.Count == 1);
+    CHECK(unshadowed.Lights.Lights[0].SourceId == ComputeEntitySourceId(light));
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(after, {}, 1, extraction, error) == true);
+    REQUIRE(extraction.ShaderInputs.Lights.GetSize() == 1);
+    CHECK(extraction.ShaderInputs.Lights[0].ShouldCastRasterShadows == false);
+#endif
+
+    preview_lighting::Inputs reference;
+    REQUIRE(preview_lighting::BuildInputs(after, lightingKey, reference, preview_lighting::InputsTarget::Reference) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    REQUIRE(reference.Lights.Count == 1);
+    CHECK(reference.Lights.Lights[0].SourceId == ComputeEntitySourceId(light));
+    CHECK(reference.Lights.Lights[0].Intensity == unshadowed.Lights.Lights[0].Intensity);
 }
 
 TEST_CASE("The World inspector offers an explicit always-on bake for a static light", "[editor][world][lighting]")

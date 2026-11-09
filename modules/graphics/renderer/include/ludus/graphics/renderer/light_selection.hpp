@@ -55,6 +55,9 @@ struct DirectLight final
     ludus::foundation::float32 InnerCos = DEFAULT_SPOT_INNER_COSINE;
     /// Spot outer half-angle cosine, distinct from InnerCos.
     ludus::foundation::float32 OuterCos = DEFAULT_SPOT_OUTER_COSINE;
+    /// Allows automatic shadow-map assignment in raster graphs that support this light kind.
+    /// The graph's shadow budget and selection rule still apply. Ray visibility is independent.
+    bool ShouldCastRasterShadows = true;
 };
 /// Stable bounded forward list; entries sorted by SourceId, not brightness or opaque depth.
 struct LightSelection final
