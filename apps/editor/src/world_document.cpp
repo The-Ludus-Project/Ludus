@@ -431,6 +431,17 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                     properties.append(property);
                 }
                 properties.append(QJsonObject{
+                    {QStringLiteral("id"), QString(WORLD_RASTER_SHADOWS)},
+                    {QStringLiteral("label"), QStringLiteral("Raster Shadows")},
+                    {QStringLiteral("type"), QStringLiteral("boolean")},
+                    {QStringLiteral("default"), true},
+                    {QStringLiteral("unit"), QString()},
+                    {QStringLiteral("help"),
+                     QStringLiteral("Allow this light to receive a raster shadow map. The default Raster graph "
+                                    "assigns one map to the eligible directional light with the lowest source ID. "
+                                    "Ray-traced visibility and baked lighting use scene geometry.")},
+                });
+                properties.append(QJsonObject{
                     {QStringLiteral("id"), QStringLiteral("staticTransform")},
                     {QStringLiteral("label"), QStringLiteral("Static Transform")},
                     {QStringLiteral("type"), QStringLiteral("boolean")},
@@ -895,7 +906,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     // Older Worlds may omit fields added by the built-in schema extensions.
                     if (isBuiltInLight == true &&
                         (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
-                         property == QStringLiteral("bakeAlwaysOn")))
+                         property == QStringLiteral("bakeAlwaysOn") || property == WORLD_RASTER_SHADOWS))
                     {
                         continue;
                     }

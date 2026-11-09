@@ -155,6 +155,9 @@ struct RenderScene final
     QString LogicalId;
     bool Lit = false;
     graphics::renderer::LightSelection AuthoredLights{};
+    /// Source IDs of enabled authored lights excluded from raster shadow-map assignment.
+    /// Kept with the World snapshot when cooked lighting is composed or switched.
+    QVector<foundation::uint64> RasterUnshadowedLightIds;
     /// Enabled authored analytic sources that opted into the shared always-on bake.
     QVector<foundation::uint64> AlwaysOnLightIds;
     graphics::renderer::AtmosphereDescription Atmosphere{};

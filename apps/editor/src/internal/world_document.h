@@ -14,12 +14,14 @@
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLatin1StringView>
 #include <QString>
 #include <QStringList>
 #include <QVector>
 
 namespace ludus::editor
 {
+inline constexpr QLatin1StringView WORLD_RASTER_SHADOWS{"rasterShadows"};
 // Private, declarative authoring boundary. IDs persist as strings; runtime
 // EntityId handles and component layout remain owned by each game's adapter.
 // Whole candidates validate before publication. No project code is executed.
