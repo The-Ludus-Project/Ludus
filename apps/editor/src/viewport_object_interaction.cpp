@@ -1,7 +1,9 @@
 #include "internal/viewport_object_interaction.h"
 #include "design_tokens.h"
+#include "internal/builtin_world.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_gizmo_readout.h"
+#include "internal/viewport_walk_collision.h"
 #include "internal/world_document.h"
 #include "internal/world_terrain.h"
 
@@ -13,6 +15,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
+#include <ludus/gameplay/camera/camera.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 
 #include <QColor>
@@ -29,8 +32,8 @@ namespace
 {
 constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
 constexpr usize TRIANGLE_VERTICES = ViewportObjectOverlay::TRIANGLE_VERTICES;
-/// Corners of a mesh's bounding box, as the combinations of its three axis bits.
-constexpr usize BOX_CORNERS = 8;
+/// Corners of a box, as the combinations of its three axis bits.
+constexpr usize BOX_CORNERS = usize{1} << AXIS_COUNT;
 constexpr usize MAX_OUTLINE_LINES = ViewportObjectOverlay::MAX_OUTLINE_LINES;
 /// A luminaire's outline: the panel square, its two diagonals and the emission direction.
 constexpr usize LUMINAIRE_OUTLINE_CORNERS = 4;
@@ -239,6 +242,12 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     }
     mSelected = selected;
     mPlacement = world.ScenePlacement(world.Entity(selected));
+    gameplay::camera::CameraSample spawn;
+    float32 speed = 0;
+    QString spawnError;
+    mHasPlayerSpawn = ReadWorldFirstPersonPlayer(world, selected, spawn, speed, spawnError);
+    mPlayerEyeWorld = spawn.Pose.Position;
+    mShouldPreviewPlayerMove = false;
     mLuminaireHalfExtentWorld = 0;
     const QJsonObject luminaireBinding = mPreviewOrNull->Scene().LuminaireBinding;
     if (luminaireBinding.isEmpty() == false)
@@ -269,6 +278,9 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
         const QJsonObject properties = binding.value(QStringLiteral("properties")).toObject();
         if (binding.isEmpty() == false && values.isEmpty() == false)
         {
+            // An imported mesh's placement can be edited separately from its player component's Transform.
+            mShouldPreviewPlayerMove =
+                mHasPlayerSpawn == true && binding.value(QStringLiteral("component")) == QStringLiteral("transform");
             mPlacement.insert(QStringLiteral("basis"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1});
             mPlacement.insert(QStringLiteral("parent"), QString());
             const TransformPropertyNames keys{QStringLiteral("position"),
@@ -510,32 +522,11 @@ void ViewportObjectInteraction::appendObjectOutline(const PreviewObject& object,
     if (hasSilhouette == false)
     {
         // A mesh too large for adjacency, or without a usable triangle, is marked by its bounding box.
-        mOutlineSegments.Clear();
-        if (refreshMeshBounds() == false || math::IsEmpty(mMeshBoundsMesh[static_cast<usize>(object.Mesh)]) == true)
+        if (refreshMeshBounds() == true)
         {
-            return;
+            appendBoxOutline(mMeshBoundsMesh[static_cast<usize>(object.Mesh)], meshToClip, inoutOverlay);
         }
-        const math::Aabb3& bounds = mMeshBoundsMesh[static_cast<usize>(object.Mesh)];
-        StaticArray<math::Vector4, BOX_CORNERS> cornersClip{};
-        for (usize corner = 0; corner < BOX_CORNERS; ++corner)
-        {
-            const math::Vector4 cornerMesh{(corner & 1U) != 0 ? bounds.Max.X : bounds.Min.X,
-                                           (corner & 2U) != 0 ? bounds.Max.Y : bounds.Min.Y,
-                                           (corner & 4U) != 0 ? bounds.Max.Z : bounds.Min.Z,
-                                           1};
-            cornersClip[corner] = meshToClip * cornerMesh;
-        }
-        // Each pair of corners that differ in exactly one axis bit is a box edge.
-        for (usize first = 0; first < BOX_CORNERS; ++first)
-        {
-            for (usize bit = 1; bit < BOX_CORNERS; bit <<= 1U)
-            {
-                if ((first & bit) == 0)
-                {
-                    mOutlineSegments.Add({cornersClip[first], cornersClip[first | bit]});
-                }
-            }
-        }
+        return;
     }
     for (const SilhouetteSegment& segment : mOutlineSegments)
     {
@@ -546,6 +537,58 @@ void ViewportObjectInteraction::appendObjectOutline(const PreviewObject& object,
             inoutOverlay.OutlineLinesPixel.Add(linePixel);
         }
     }
+}
+void ViewportObjectInteraction::appendBoxOutline(const math::Aabb3& bounds,
+                                                 const math::Matrix4& boundsToClip,
+                                                 ViewportObjectOverlay& inoutOverlay) const
+{
+    if (math::IsEmpty(bounds) == true)
+    {
+        return;
+    }
+    constexpr usize X_BIT = 1;
+    constexpr usize Y_BIT = X_BIT << 1U;
+    constexpr usize Z_BIT = Y_BIT << 1U;
+    StaticArray<math::Vector4, BOX_CORNERS> cornersClip{};
+    for (usize corner = 0; corner < BOX_CORNERS; ++corner)
+    {
+        const math::Vector4 cornerPosition{(corner & X_BIT) != 0 ? bounds.Max.X : bounds.Min.X,
+                                           (corner & Y_BIT) != 0 ? bounds.Max.Y : bounds.Min.Y,
+                                           (corner & Z_BIT) != 0 ? bounds.Max.Z : bounds.Min.Z,
+                                           1};
+        cornersClip[corner] = boundsToClip * cornerPosition;
+    }
+    // Each pair of corners that differ in exactly one axis bit is a box edge.
+    for (usize first = 0; first < BOX_CORNERS; ++first)
+    {
+        for (usize bit = 1; bit < BOX_CORNERS; bit <<= 1U)
+        {
+            QLineF linePixel;
+            if ((first & bit) == 0 && inoutOverlay.OutlineLinesPixel.GetSize() < MAX_OUTLINE_LINES &&
+                projectSegment({cornersClip[first], cornersClip[first | bit]}, linePixel) == true)
+            {
+                inoutOverlay.OutlineLinesPixel.Add(linePixel);
+            }
+        }
+    }
+}
+void ViewportObjectInteraction::appendPlayerOutline(ViewportObjectOverlay& inoutOverlay) const
+{
+    if (mHasPlayerSpawn == false)
+    {
+        return;
+    }
+    math::Vector3d eyeWorld = mPlayerEyeWorld;
+    // The player uses the authored Transform position as its eye. Its body stays upright and at a fixed size.
+    if (mShouldPreviewPlayerMove == true && mTool == Tool::Move && mDragTarget.IsValid() == true)
+    {
+        const QJsonArray position = mCandidate.value(QStringLiteral("position")).toArray();
+        if (position.size() == AXIS_COUNT)
+        {
+            eyeWorld = {position[0].toDouble(), position[1].toDouble(), position[2].toDouble()};
+        }
+    }
+    appendBoxOutline(ViewportWalkCollision::ComputeBodyBounds(eyeWorld), mWorldToClip, inoutOverlay);
 }
 bool ViewportObjectInteraction::refreshMeshBounds()
 {
@@ -1196,6 +1239,15 @@ void ViewportObjectInteraction::RequestFrameAt(QPointF positionPixel, const QRec
         Q_EMIT FrameRequested(id);
     }
 }
+bool ViewportObjectInteraction::TryRequestFramePlayer()
+{
+    if (mHasPlayerSpawn == false)
+    {
+        return false;
+    }
+    Q_EMIT FrameRequested(mSelected);
+    return true;
+}
 bool ViewportObjectInteraction::dragAxis(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues)
 {
     const int32 axis = mDragTarget.Index;
@@ -1496,6 +1548,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         outOverlay.ReadoutText = mReadoutText;
         outOverlay.ReadoutAnchorPixel = mReadoutAnchorPixel;
     }
+    appendPlayerOutline(outOverlay);
     const RenderScene& scene = mPreviewOrNull->Scene();
     for (const PreviewObject& object : scene.Objects)
     {

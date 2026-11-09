@@ -5,6 +5,7 @@
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/viewport_object_interaction.h"
+#include "internal/viewport_walk_collision.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/gameplay/camera/camera.hpp>
@@ -76,6 +77,21 @@ void WorldWorkspace::frameEntity(const QString& id)
     if (Pending_ == true || SceneBusy() == true || IsPlayingInViewport() == true ||
         preview.IsExploringFirstPerson() == true || preview.IsRayPathInspection() == true)
     {
+        return;
+    }
+    if (HasWorldFirstPersonPlayer(Document_, id) == true)
+    {
+        gameplay::camera::CameraSample spawn;
+        float32 speed = 0;
+        QString error;
+        if (ReadWorldFirstPersonPlayer(Document_, id, spawn, speed, error) == false)
+        {
+            Changed(error);
+        }
+        else if (preview.FrameBounds(ViewportWalkCollision::ComputeBodyBounds(spawn.Pose.Position)) == false)
+        {
+            Changed(QStringLiteral("Cannot frame this player. Use Frame all, then try framing the player again."));
+        }
         return;
     }
     if (preview.FrameEntity(id) == false)
