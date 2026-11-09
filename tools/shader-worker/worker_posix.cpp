@@ -128,6 +128,7 @@ struct ConnectionLane final
 {
     compiler::Compiler OwnedCompiler;
     compiler::Compiler* CompilerOrNull = nullptr;
+    /// Concurrency this connection's reply reports: the lane limit when the connection was assigned.
     uint32 Lanes = 1;
     int32 Peer = -1;
     bool IsBusy = false;
@@ -201,11 +202,10 @@ ConnectionLane& AcquireLane(StaticArray<ConnectionLane, MAX_CONNECTION_LANES>& i
                 added.Queue.Initialize() == threading::WorkerQueueStatus::Ready)
             {
                 added.CompilerOrNull = &added.OwnedCompiler;
-                added.Lanes = inoutLanes[0].Lanes;
                 ++inoutReadyLanes;
                 return added;
             }
-            // Requests beyond the running lanes wait; the advertised concurrency still bounds how many.
+            // Later replies advertise only the running lanes, so clients stop sending more at once.
             inoutLaneLimit = inoutReadyLanes;
         }
         const timespec wait{0, SATURATED_WAIT_NANOSECONDS};
@@ -302,7 +302,6 @@ int32 ServeEndpoint(compiler::Compiler& inoutCompiler, std::string_view endpoint
         return EXIT_FAILURE_STATUS;
     }
     connectionLanes[0].CompilerOrNull = &inoutCompiler;
-    connectionLanes[0].Lanes = laneLimit;
     uint32 readyLanes = 1;
     while (true)
     {
@@ -321,6 +320,8 @@ int32 ServeEndpoint(compiler::Compiler& inoutCompiler, std::string_view endpoint
             continue;
         }
         ConnectionLane& lane = AcquireLane(connectionLanes, readyLanes, laneLimit);
+        // Read after AcquireLane, which lowers the limit when a lane fails to start.
+        lane.Lanes = laneLimit;
         lane.Peer = peer;
         lane.IsBusy = true;
         if (lane.Queue.Submit(ServeLaneConnection, ReleaseLane, &lane) != threading::WorkerQueueStatus::Ready)

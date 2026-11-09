@@ -9022,7 +9022,8 @@ A socket endpoint compiles several connections at once: half the online CPUs, at
 most four, each on its own thread with its own Slang session (Slang compiles
 concurrently only through separate global sessions). The first session starts with
 the worker; the others start on first use. Every reply reports the endpoint's
-`concurrency`, and graph builds keep no more requests outstanding than that, so a
+`concurrency`: the sessions it can run, which drops to the running ones if a further
+session cannot start. Graph builds keep no more requests outstanding than that, so a
 queued request never waits behind more compiles than the worker runs. `--stdio`
 serves one request at a time and reports a concurrency of one.
 
