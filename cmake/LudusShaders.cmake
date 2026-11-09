@@ -62,8 +62,8 @@ function(ludus_compile_shader)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         # Direct3D 12 consumes DXIL that the pinned DXC compiles and signs on the
         # Windows host (docs/architecture/windows-direct3d12.md#dxil-artifacts).
-        if(is_translated_compute OR SH_NATIVE_BINDING_ARRAYS OR SH_FRAGMENT_STORAGE)
-            message(FATAL_ERROR "ludus_compile_shader on Windows supports scalar fullscreen, RASTER and COMPUTE stages without ray queries or fragment storage")
+        if(is_translated_compute OR SH_NATIVE_BINDING_ARRAYS)
+            message(FATAL_ERROR "ludus_compile_shader on Windows supports scalar fullscreen, RASTER and COMPUTE stages without ray queries")
         endif()
         if(NOT CMAKE_HOST_WIN32)
             message(FATAL_ERROR "DXIL shader compilation requires a Windows host; cross-compiled Windows builds cannot run the pinned DXC")

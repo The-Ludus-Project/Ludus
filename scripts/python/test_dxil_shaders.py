@@ -137,6 +137,13 @@ class DxilDriverTests(unittest.TestCase):
                         "kind": "vector", "elementType": {"scalarType": "float32"}}}}],
                     "entryPoints": [{"stage": "fragment", "bindings": [{"name": "image", "binding": {"used": 1}}]}]}
         self.assertEqual(raster_interface(document, "fragment", dxil=True)["entries"][0]["kind"], "Texture2D")
+        # D6c: the deferred lighting resolve reads its light and LTC tables as structured SRVs.
+        storage = copy.deepcopy(document)
+        storage["parameters"][0]["type"] = {"kind": "resource", "baseShape": "structuredBuffer", "access": "read",
+                                            "resultType": {"kind": "vector", "elementCount": 4,
+                                                           "elementType": {"kind": "scalar", "scalarType": "float32"}}}
+        entry = raster_interface(storage, "fragment", dxil=True)["entries"][0]
+        self.assertEqual((entry["kind"], entry["size"]), ("StorageRead", 16))
         for mutation in ("space", "collision", "array", "storage"):
             changed = copy.deepcopy(document)
             resource = changed["parameters"][0]
@@ -147,7 +154,7 @@ class DxilDriverTests(unittest.TestCase):
             elif mutation == "array":
                 resource["type"] = {"kind": "array", "elementCount": 2, "elementType": resource["type"]}
             else:
-                resource["type"] = {"kind": "resource", "baseShape": "structuredBuffer", "resultType": {"kind": "scalar", "scalarType": "float32"}}
+                resource["type"] = {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite", "resultType": {"kind": "scalar", "scalarType": "float32"}}
             with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
                 raster_interface(changed, "fragment", dxil=True)
 

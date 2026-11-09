@@ -115,6 +115,55 @@ TEST_CASE("D6c attachment depth is sampled through a depth view; stencil loads s
     CHECK(rhi::Destroy(owner.Device, texture) == rhi::RasterStatus::Ready);
 }
 
+TEST_CASE("D6c fragment stages read structured storage buffers while storage writes stay in compute",
+          "[rhi][windows][d6c]")
+{
+    // The deferred lighting resolve reads its mesh-light words and LTC table as structured SRVs
+    // from a fragment stage. The portable contract admits that read; writes remain compute-only.
+    rhi::Shutdown();
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Required.Compute = true;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    REQUIRE(rhi::CreateDevice({},
+                              {
+                                  .Width = 8,
+                                  .Height = 8,
+                              },
+                              description,
+                              device,
+                              surface) == rhi::DeviceStatus::Ready);
+    constexpr usize ELEMENT_BYTES = sizeof(uint32) * 4;
+    constexpr usize ELEMENT_COUNT = 4;
+    constexpr uint32 STORAGE_BINDING = 3;
+    StaticArray<uint8, ELEMENT_BYTES * ELEMENT_COUNT> bytes{};
+    rhi::BufferHandle buffer;
+    REQUIRE(rhi::CreateBuffer(device,
+                              { .Role = rhi::BufferRole::Storage, .Size = bytes.GetSize() },
+                              bytes.AsSpan(),
+                              buffer) == rhi::RasterStatus::Ready);
+    const rhi::RasterBinding read
+    {
+        .Binding = STORAGE_BINDING,
+        .Kind = rhi::RasterBindingKind::StorageRead,
+        .Visibility = rhi::RasterVisibility::Fragment,
+        .MinSize = ELEMENT_BYTES,
+    };
+    rhi::BindingLayoutHandle layout;
+    REQUIRE(rhi::CreateBindingLayout(device, {&read, 1}, layout) == rhi::RasterStatus::Ready);
+    const rhi::RasterBindingResource resource{ .Binding = STORAGE_BINDING, .Buffer = buffer, .Size = bytes.GetSize() };
+    rhi::BindingSetHandle set;
+    REQUIRE(rhi::CreateBindingSet(device, layout, {&resource, 1}, set) == rhi::RasterStatus::Ready);
+    rhi::RasterBinding write = read;
+    write.Kind = rhi::RasterBindingKind::StorageReadWrite;
+    rhi::BindingLayoutHandle rejected;
+    CHECK(rhi::CreateBindingLayout(device, {&write, 1}, rejected) == rhi::RasterStatus::InvalidDescription);
+    REQUIRE(rhi::Destroy(device, set) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, layout) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, buffer) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}
 TEST_CASE("D3a binding snapshots retain native buffers and descriptors within configured limits", "[rhi][windows][d3a]")
 {
     rhi::StorageLimits limits;

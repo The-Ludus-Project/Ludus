@@ -521,8 +521,8 @@ def main():
         raise RuntimeError("Raster/fullscreen compilation requires vertex and fragment entries")
     if args.dxil:
         if (args.metal or args.spirv_cross or args.validator or args.worker_socket or args.native_binding_arrays or
-                args.fragment_storage or args.native_ray_queries or args.native_ray_pipeline or args.graph_software_rays):
-            raise RuntimeError('DXIL builds support scalar fullscreen, raster and compute stages without ray queries or fragment storage')
+                args.native_ray_queries or args.native_ray_pipeline or args.graph_software_rays):
+            raise RuntimeError('DXIL builds support scalar fullscreen, raster and compute stages without ray queries')
         compile_dxil(args, lock)
         return
     if args.raster or args.compute:

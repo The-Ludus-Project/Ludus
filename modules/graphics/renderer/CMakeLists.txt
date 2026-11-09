@@ -130,6 +130,8 @@ if(EMSCRIPTEN)
     set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"wgsl\"]")
 elseif(APPLE)
     set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"metal\", \"wgsl\"]")
+elseif(WIN32)
+    set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"dxil\"]")
 else()
     set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"spirv\", \"wgsl\"]")
 endif()
@@ -455,13 +457,78 @@ function(ludus_add_render_graph_pixel_fixtures target)
     target_link_libraries(${target} PRIVATE Ludus::FoundationFilesystem)
 endfunction()
 
+# The default graph ends in a ToneMap that only a clustered deferred resolve can apply. The parity tests compare
+# linear radiance, so their copies of the default graph disable it, which exports clamped linear colour.
+function(ludus_stage_linear_default_render_graph staged)
+    foreach(file IN LISTS default_render_graph_files)
+        configure_file("${default_render_graph}/${file}" "${staged}/${file}" COPYONLY)
+    endforeach()
+    file(READ "${staged}/main.lurender.json" graph)
+    string(JSON configuration_count LENGTH "${graph}" configurations)
+    math(EXPR last_configuration "${configuration_count} - 1")
+    foreach(configuration RANGE ${last_configuration})
+        string(JSON node_count LENGTH "${graph}" configurations ${configuration} nodes)
+        math(EXPR last_node "${node_count} - 1")
+        foreach(node RANGE ${last_node})
+            string(JSON kind GET "${graph}" configurations ${configuration} nodes ${node} kind)
+            if(kind STREQUAL "ToneMap")
+                string(JSON graph SET "${graph}" configurations ${configuration} nodes ${node} enabled false)
+            endif()
+        endforeach()
+    endforeach()
+    file(WRITE "${staged}/main.lurender.json" "${graph}\n")
+endfunction()
+
+# The default-graph pixel suite (tests/render_graph_default_render_tests.cpp) draws the forward-lit
+# template, a clustered-forward control and the clustered deferred default graph with and without
+# its depth prepass. Cook the template for the profile RG2_TEST_PROFILES names in the calling scope;
+# the default-graph copies keep the host family's configured profiles. Publish the runtime package
+# directories the suite loads.
+function(ludus_add_default_render_graph_fixtures target)
+    set(forward_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/forward_lit")
+    set(forward_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/forward_lit")
+    foreach(file main.lurender.json rasterize.lurender.json main_shaders/geometry.slang main_shaders/color.slang)
+        configure_file("${forward_source}/${file}" "${forward_staged}/${file}" COPYONLY)
+    endforeach()
+    set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "${RG2_TEST_PROFILES}")
+    configure_file("${forward_source}/main.lushader.json.in" "${forward_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ${target} NAME rg2_forward_lit
+        MANIFEST "${forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    # A cooked clustered-forward control shares the exact default material and geometry callbacks.
+    set(clustered_forward_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/clustered_forward")
+    ludus_stage_linear_default_render_graph("${clustered_forward_staged}")
+    file(READ "${default_render_graph}/main.lushader.json" clustered_forward_manifest)
+    string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" techniques 0 scene_interface profile "\"ClusteredForward\"")
+    string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" programs 1 function "\"ForwardMain\"")
+    string(JSON clustered_forward_manifest REMOVE "${clustered_forward_manifest}" programs 3)
+    file(WRITE "${clustered_forward_staged}/main.lushader.json" "${clustered_forward_manifest}\n")
+    ludus_compile_render_graph(TARGET ${target} NAME rg2_clustered_forward_control
+        MANIFEST "${clustered_forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_clustered_forward_control_RUNTIME_PACKAGE PARENT_PATH clustered_forward_package_directory)
+    target_compile_definitions(${target} PRIVATE
+        LUDUS_RG3_CLUSTERED_FORWARD_DIRECTORY="${clustered_forward_package_directory}")
+    set(clustered_deferred_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/clustered_deferred")
+    ludus_stage_linear_default_render_graph("${clustered_deferred_staged}")
+    foreach(configuration Default ZPrepass)
+        ludus_compile_render_graph(TARGET ${target} NAME rg2_clustered_${configuration}
+            MANIFEST "${clustered_deferred_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_clustered_${configuration}_RUNTIME_PACKAGE PARENT_PATH clustered_package_directory)
+        string(TOUPPER "${configuration}" configuration_constant)
+        target_compile_definitions(${target} PRIVATE
+            LUDUS_RG3_CLUSTERED_${configuration_constant}_DIRECTORY="${clustered_package_directory}")
+    endforeach()
+    cmake_path(GET rg2_forward_lit_RUNTIME_PACKAGE PARENT_PATH forward_package_directory)
+    target_compile_definitions(${target} PRIVATE LUDUS_RG3_FORWARD_DIRECTORY="${forward_package_directory}")
+    target_link_libraries(${target} PRIVATE Ludus::FoundationFilesystem Ludus::ShaderDevelopment)
+endfunction()
+
 # Windows: rg2 graphs authored for the dxil profile compile through the pinned DXC, cook into
 # runtime packages whose stages decode to signed DXIL, and draw on Direct3D 12 (D6c). The
-# portable RG2/RG3 and RG4 pool pixel suites run here on WARP in CI.
+# portable RG2/RG3, RG4 pool and default-graph pixel suites run here on WARP in CI.
 if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND LUDUS_SLANG_COMPILER)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_render_graph_dxil_tests tests/render_graph_dxil_tests.cpp tests/render_graph_render_tests.cpp
-        tests/render_graph_pool_render_tests.cpp)
+        tests/render_graph_pool_render_tests.cpp tests/render_graph_default_render_tests.cpp)
     target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationContainers
         Ludus::FoundationMath Catch2::Catch2WithMain)
     target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE LUDUS_TEST_DXIL=1)
@@ -471,6 +538,7 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
     ludus_compile_renderer_shaders(TARGET ludus_render_graph_dxil_tests SHADERS renderer_composite)
     set(RG2_TEST_PROFILES "[\"dxil\"]")
     ludus_add_render_graph_pixel_fixtures(ludus_render_graph_dxil_tests)
+    ludus_add_default_render_graph_fixtures(ludus_render_graph_dxil_tests)
     # The same surface graph with a green color callback: an interface-compatible reload candidate.
     set(green "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/surface_green")
     ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/surface" "${green}")
@@ -485,7 +553,8 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
         LUDUS_RG2_SURFACE_GREEN_PACKAGE="${rg2_surface_green_RUNTIME_PACKAGE}"
         LUDUS_RG2_BOUND_PACKAGE="${rg2_bound_RUNTIME_PACKAGE}")
     add_test(NAME ludus_render_graph_dxil_tests COMMAND ludus_render_graph_dxil_tests)
-    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu" TIMEOUT 300)
+    # WARP compiles the clustered deferred, mesh-light and shadow pipelines cold in this one process.
+    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu" TIMEOUT 600)
 endif()
 
 if(TARGET ludus_renderer_render_tests)
@@ -494,63 +563,7 @@ if(TARGET ludus_renderer_render_tests)
         set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
     endif()
     ludus_add_render_graph_pixel_fixtures(ludus_renderer_render_tests)
-    set(forward_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/forward_lit")
-    set(forward_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/forward_lit")
-    foreach(file main.lurender.json rasterize.lurender.json main_shaders/geometry.slang main_shaders/color.slang)
-        configure_file("${forward_source}/${file}" "${forward_staged}/${file}" COPYONLY)
-    endforeach()
-    set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "${RG2_TEST_PROFILES}")
-    configure_file("${forward_source}/main.lushader.json.in" "${forward_staged}/main.lushader.json" @ONLY)
-    ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_forward_lit
-        MANIFEST "${forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
-    # The default graph ends in a ToneMap that only a clustered deferred resolve can apply. The parity tests compare
-    # linear radiance, so their copies of the default graph disable it, which exports clamped linear colour.
-    function(ludus_stage_linear_default_render_graph staged)
-        foreach(file IN LISTS default_render_graph_files)
-            configure_file("${default_render_graph}/${file}" "${staged}/${file}" COPYONLY)
-        endforeach()
-        file(READ "${staged}/main.lurender.json" graph)
-        string(JSON configuration_count LENGTH "${graph}" configurations)
-        math(EXPR last_configuration "${configuration_count} - 1")
-        foreach(configuration RANGE ${last_configuration})
-            string(JSON node_count LENGTH "${graph}" configurations ${configuration} nodes)
-            math(EXPR last_node "${node_count} - 1")
-            foreach(node RANGE ${last_node})
-                string(JSON kind GET "${graph}" configurations ${configuration} nodes ${node} kind)
-                if(kind STREQUAL "ToneMap")
-                    string(JSON graph SET "${graph}" configurations ${configuration} nodes ${node} enabled false)
-                endif()
-            endforeach()
-        endforeach()
-        file(WRITE "${staged}/main.lurender.json" "${graph}\n")
-    endfunction()
-    # A cooked clustered-forward control shares the exact default material and geometry callbacks.
-    set(clustered_forward_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/clustered_forward")
-    ludus_stage_linear_default_render_graph("${clustered_forward_staged}")
-    file(READ "${default_render_graph}/main.lushader.json" clustered_forward_manifest)
-    string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" techniques 0 scene_interface profile "\"ClusteredForward\"")
-    string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" programs 1 function "\"ForwardMain\"")
-    string(JSON clustered_forward_manifest REMOVE "${clustered_forward_manifest}" programs 3)
-    file(WRITE "${clustered_forward_staged}/main.lushader.json" "${clustered_forward_manifest}\n")
-    ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_clustered_forward_control
-        MANIFEST "${clustered_forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
-    cmake_path(GET rg2_clustered_forward_control_RUNTIME_PACKAGE PARENT_PATH clustered_forward_package_directory)
-    target_compile_definitions(ludus_renderer_render_tests PRIVATE
-        LUDUS_RG3_CLUSTERED_FORWARD_DIRECTORY="${clustered_forward_package_directory}")
-    set(clustered_deferred_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/clustered_deferred")
-    ludus_stage_linear_default_render_graph("${clustered_deferred_staged}")
-    foreach(configuration Default ZPrepass)
-        ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_clustered_${configuration}
-            MANIFEST "${clustered_deferred_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
-        cmake_path(GET rg2_clustered_${configuration}_RUNTIME_PACKAGE PARENT_PATH clustered_package_directory)
-        string(TOUPPER "${configuration}" configuration_constant)
-        target_compile_definitions(ludus_renderer_render_tests PRIVATE
-            LUDUS_RG3_CLUSTERED_${configuration_constant}_DIRECTORY="${clustered_package_directory}")
-    endforeach()
-    cmake_path(GET rg2_forward_lit_RUNTIME_PACKAGE PARENT_PATH forward_package_directory)
-    target_compile_definitions(ludus_renderer_render_tests PRIVATE
-        LUDUS_RG3_FORWARD_DIRECTORY="${forward_package_directory}")
-    target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationFilesystem Ludus::ShaderDevelopment)
+    ludus_add_default_render_graph_fixtures(ludus_renderer_render_tests)
     # The reload journey builds SPIR-V/WGSL/Metal graph packages; producer-driven Windows rebuilds are open (D6c).
     if(TARGET ludus-shader-worker AND NOT WIN32)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
