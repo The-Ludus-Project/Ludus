@@ -25,6 +25,7 @@
 #include "internal/environment_data.h"
 #include "internal/gpu_preview_data.h"
 #include "internal/ltc_table_data.h"
+#include "internal/probe_volume.h"
 #include "internal/raster_mesh_light_shadows.h"
 #include "internal/reference_data.h"
 #include "internal/render_graph_deferred.h"
@@ -3016,7 +3017,10 @@ Status Renderer::CreateMaterialData(MaterialProgram program,
     }
     if (Accepted(status) && lighting != nullptr)
     {
-        const auto bakeSource = m.HasBake ? lighting->Bake.Texture : s.Programs[m.ProgramSlot].White;
+        const rhi::TextureHandle probeTexture = lighting->ProbeVolume.Texture;
+        const rhi::TextureHandle bakeSource =
+            m.HasBake == true ? lighting->Bake.Texture
+                              : (rhi::IsNull(probeTexture) == false ? probeTexture : s.Programs[m.ProgramSlot].White);
         const auto shadowSource =
             m.ShadowSlot != NO_SHADOW ? s.Shadows[m.ShadowSlot].Texture : s.Programs[m.ProgramSlot].White;
         status = rhi::CreateTextureView(s.Device, bakeSource, m.BakeTexture);
@@ -4642,6 +4646,34 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     {
         return Status::InvalidDescription;
     }
+    const BakedGiProbeVolume& probes = description.ProbeVolume;
+    const bool hasProbes = rhi::IsNull(probes.Texture) == false;
+    if (hasProbes == true)
+    {
+        if (p->HasAuthoredProfile == false || rhi::IsNull(bake.Texture) == false ||
+            IsGiProbeGridValid(probes.Grid) == false || internal::CountGiProbes(probes.Grid) == 0 ||
+            bounded({probes.IrradianceScale, 0, 0}) == false)
+        {
+            return Status::InvalidDescription;
+        }
+        rhi::TextureDescription texture;
+        const Status textureStatus = rhi::GetTextureDescription(s.Device, probes.Texture, texture);
+        if (textureStatus != Status::Ready)
+        {
+            return textureStatus;
+        }
+        if (texture.Format != rhi::RasterFormat::Rgba8Unorm || texture.MipLevels != 1 || texture.Attachment == true ||
+            texture.Width != LUDUS_GI_PROBE_ATLAS_WIDTH ||
+            texture.Height != internal::ComputeGiProbeAtlasHeight(probes.Grid))
+        {
+            return Status::InvalidDescription;
+        }
+        const Status ready = rhi::GetStatus(s.Device, probes.Texture);
+        if (ready != Status::Ready)
+        {
+            return ready == Status::Pending ? Status::NotReady : ready;
+        }
+    }
     if (math::IsFinite(description.Metallic) == false || description.Metallic < 0 || description.Metallic > 1 ||
         math::IsFinite(description.Roughness) == false || description.Roughness < MIN_ROUGHNESS ||
         description.Roughness > 1 || bounded(description.Emission) == false ||
@@ -4888,6 +4920,18 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                             bake.Scale.Z,
                             bake.ShouldAddToEnvironment == true ? 1.0F : 0.0F};
     parameters.BakeUv = bake.UvTransform;
+    if (hasProbes == true)
+    {
+        // Negative inverse spacing tags the mutually exclusive probe-atlas payload.
+        parameters.BakeScale = {probes.Grid.OriginWorld.X,
+                                probes.Grid.OriginWorld.Y,
+                                probes.Grid.OriginWorld.Z,
+                                -1 / probes.Grid.Spacing};
+        parameters.BakeUv = {static_cast<float32>(probes.Grid.Counts[0]),
+                             static_cast<float32>(probes.Grid.Counts[1]),
+                             static_cast<float32>(probes.Grid.Counts[2]),
+                             probes.IrradianceScale};
+    }
     parameters.SurfaceMap = {description.NormalScale,
                              rhi::IsNull(description.SurfaceMap) ? 0.0F : 1.0F,
                              rhi::IsNull(description.EmissionMap) ? 0.0F : 1.0F,

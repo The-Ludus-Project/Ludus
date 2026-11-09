@@ -9,6 +9,7 @@
 #include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/gameplay/camera/evaluation.hpp>
 #include <ludus/graphics/renderer/light_selection.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include <QImage>
@@ -154,6 +155,8 @@ struct RenderScene final
     graphics::renderer::LightSelection AuthoredLights{};
     /// Enabled authored analytic sources that opted into the shared always-on bake.
     QVector<foundation::uint64> AlwaysOnLightIds;
+    graphics::renderer::GiProbeGrid ProbeGrid{};
+    QVector<foundation::uint64> GiProbeReceiverIds;
     /// Enabled World panel luminaires (the preview descriptor's `luminaire` binding), admitted by
     /// NormalizePanelLuminaires; each SourceId is its entity key's source identity. They light only scene shaders
     /// that read them, such as the slice-sampling-luminaire template, and Merge keeps the authored snapshot's.

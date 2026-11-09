@@ -26,8 +26,14 @@ shards analyze every translation unit, and shard 0 checks changed lines with the
 naming and magic-number rules. These jobs restore Conan and compiler caches
 without saving their own, so they cannot evict a shared baseline. The Editor job
 restores the cache that [develop compiler cache](#develop-compiler-cache) saves
-for the latest `develop` commit, and falls back to the batch's cache on `main`. Measured batch runs took about 25 minutes for the Editor compile and
-4 minutes per analysis shard with warm caches.
+for the latest `develop` commit, and falls back to the batch's cache on `main`.
+Measured batch runs took about 25 minutes for the Editor compile and 4 minutes
+per analysis shard with warm caches. Without a develop cache, PR compiles start
+from the newest batch on `main`, so while batches fail and `main` stays behind
+`develop` they take longer; measured PR Editor jobs took 27-38 minutes when
+`main` was 60 commits behind. Editing the description or marking a draft ready
+reuses the run that already compiled the same commit
+([superseded pull-request runs](#superseded-pull-request-runs)).
 
 From 2026-10-19 to 2026-11-08 integration PRs compiled nothing. Between 2026-10-27
 and 2026-11-08, 2 of about 38 batches that ran their suites passed: build-graph,
@@ -400,8 +406,23 @@ always carries a new head. Its runs share one group per PR and supersede runs fo
 earlier commits. Every other activity revalidates the head in a group named for
 that commit that never cancels an in-progress run. GitHub keeps at most one run
 pending per group and cancels an older pending run, which has created no checks.
-A same-commit duplicate therefore waits and runs completely; it costs a duplicate
-run, not a blocked check. A later push does not cancel such a run for an earlier commit.
+A same-commit duplicate therefore waits and runs completely rather than leaving a
+blocked check. A later push does not cancel such a run for an earlier commit.
+
+An `edited` (other than retargeting) or `ready_for_review` run of `ci` does not
+repeat the native compile and analysis. Editing re-runs the workflow so that
+**Develop health** re-reads `Batch-Fix:` declarations; the commit and base are
+unchanged. **Classify changes** reads this workflow's runs with a read-only
+`actions` token. It selects the newest earlier, uncancelled pull-request run for
+the same PR, base branch and head commit, which may still be in progress, and
+reports it as `validated_by`. Every native job then skips, and the `Ubuntu Clang`
+gate waits for that run. It passes only when that run's `Ubuntu Clang` gate passed
+and every other job except **Develop health** succeeded or was skipped. **Develop
+health** runs again for the new description. A cancelled, unreadable or
+unfinished (after 300 minutes) owner fails the gate; re-run the owner, then this
+run. If the lookup fails or no earlier run exists, the run compiles as usual.
+Retargeting, pushes, reopening and documentation-only changes never reuse a run.
+Before this rule, one push plus a description edit cost two 30-minute compiles.
 
 The `Ubuntu Clang` gate still runs after cancellation. If a dependency was
 cancelled, it reads this workflow's runs with the job's read-only `actions`
@@ -564,9 +585,15 @@ through normal initialization and review the resulting lockfile separately.
 A missing or incompatible lock fails CI rather than silently resolving new
 versions.
 
-Conan cache keys include the preset, local recipes and sources, lockfile,
-profile, tool versions, and presets. A commit suffix permits refreshed snapshots
-after restoring a compatible older cache. Compiler caches are separated by
+Conan cache keys include the preset, the local recipes (`third_party/*/conanfile.py`)
+and the support files the Catch2 recipe exports, lockfile, profile, tool versions,
+and presets. They omit vendored FetchContent sources under `third_party`, which
+are not Conan inputs: hashing them gave every `develop` PR a key the batch on
+`main` never saved. Conan's recipe revisions rebuild a package whose exported
+files change, so the key only selects a starting cache. Jobs that only restore
+fall back to the newest cache of their preset; writers save exact keys. Compiler
+cache keys add a commit suffix, which permits refreshed snapshots after restoring
+a compatible older cache. Compiler caches are separated by
 preset and configuration (ordinary, PCH, editor). CMake honors
 `LUDUS_ENABLE_CCACHE=1` from the environment for native builds; browser presets
 keep their separate cache policy. The native setup action installs ccache.

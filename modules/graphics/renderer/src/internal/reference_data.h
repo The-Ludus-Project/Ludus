@@ -547,6 +547,13 @@ struct ReferenceProbeAddress final
                                                               ReferenceCaptureInfo& inoutInfo,
                                                               const ReferenceProbeAddress& address,
                                                               math::Vector3& outIrradiance) noexcept;
+/// Trace incoming radiance at a volume probe for an analytic-only offline bake.
+[[nodiscard]] rhi::RasterStatus TraceReferenceGiProbe(const ReferenceJob& job,
+                                                      ReferenceCaptureInfo& inoutInfo,
+                                                      const ReferenceProbeAddress& address,
+                                                      math::Vector3 positionWorld,
+                                                      math::Vector3 directionWorld,
+                                                      math::Vector3& outRadiance) noexcept;
 [[nodiscard]] rhi::RasterStatus PrepareReferenceCamera(ReferenceJob&) noexcept;
 /// Private GPU-compute implementations in reference_compute.cpp.
 /// Validate both reflected kernels against the frozen ABI and create their shaders.

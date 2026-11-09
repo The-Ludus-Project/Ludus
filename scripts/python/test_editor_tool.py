@@ -102,9 +102,6 @@ class DescriptorFixtureTests(unittest.TestCase):
             editor_project.parse_descriptor_bytes(json.dumps(too_many).encode("utf-8"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # --------------------------------------------------------------------------- #
 # Shared File API logic tests (cmake_targets), exercised directly.
@@ -1029,3 +1026,31 @@ class SetupDetailsProtocolTests(unittest.TestCase):
             writer.setup_details("identity")
         writer.result("failed", "configuring", "ProtocolError", "Details unavailable", True, None, None)
         self.assertEqual(1, len(frames))
+
+
+class SetupCheckResultCodeTests(unittest.TestCase):
+    def check_code(self, tooling_code: str) -> editor_tool.OperationResult:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            context = editor_tool.ToolContext(root, engine, None)
+            operation = editor_tool.Operation(context, Mock(), "0000000000000001", "project_check",
+                                              root / "ludus.project.json", "", -1)
+            failure = editor_tool.ToolingError(tooling_code, "SDK or tool inputs changed; run repair")
+            with patch.object(operation, "_load_clean_descriptor", return_value=Mock()), \
+                 patch.object(operation, "_execute_setup", side_effect=failure):
+                return operation.execute()
+
+    def test_stale_and_missing_setup_keep_their_repairable_codes(self):
+        # The Editor offers Repair for these codes; InvalidProject would send the user to the settings file.
+        for code in ("BootstrapStale", "MissingTools"):
+            with self.subTest(code=code):
+                result = self.check_code(code)
+                self.assertEqual(("failed", code), (result.outcome, result.code))
+                self.assertTrue(result.message.startswith(f"{code}: "))
+
+    def test_other_tooling_codes_still_report_an_invalid_project(self):
+        self.assertEqual("InvalidProject", self.check_code("ManifestInvalid").code)
+
+
+if __name__ == "__main__":
+    unittest.main()

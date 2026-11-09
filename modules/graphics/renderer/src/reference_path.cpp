@@ -800,6 +800,42 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                ? rhi::RasterStatus::Ready
                : FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRadiance);
 }
+namespace
+{
+rhi::RasterStatus
+TraceReferenceProbePath(const ReferenceJob& job, ReferenceCaptureInfo& inoutInfo, ReferencePath& inoutPath) noexcept
+{
+    ReferencePath& path = inoutPath;
+    while (path.IsActive == true)
+    {
+        rhi::RayResult hit;
+        if (TraceReferenceOracle(job.Scene, path.Ray, hit) != rhi::RasterStatus::Ready ||
+            PrepareReferenceVertex(job, inoutInfo, path, hit) != rhi::RasterStatus::Ready)
+        {
+            return rhi::RasterStatus::Failed;
+        }
+        for (uint32 shadow = 0; shadow < path.ShadowCount; ++shadow)
+        {
+            rhi::RayResult visibility;
+            if (TraceReferenceOracle(job.Scene, path.Shadows[shadow], visibility) != rhi::RasterStatus::Ready)
+            {
+                return rhi::RasterStatus::Failed;
+            }
+            if (visibility.Hit == 0)
+            {
+                path.Indirect = path.Indirect + path.PendingDirects[shadow];
+            }
+        }
+        if (path.HasNext == false)
+        {
+            break;
+        }
+        path.Ray = path.Next;
+    }
+    return rhi::RasterStatus::Ready;
+}
+} // namespace
+
 rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
                                                 ReferenceCaptureInfo& inoutInfo,
                                                 const ReferenceProbeAddress& address,
@@ -885,31 +921,9 @@ rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
     path.PreviousPdf = cosineSample / math::kPiF;
     path.Ray =
         ReferenceRay(Offset(pointWorld, triangle, directionWorld), directionWorld, job.Description.SecondaryDistance);
-    while (path.IsActive == true)
+    if (TraceReferenceProbePath(job, inoutInfo, path) != rhi::RasterStatus::Ready)
     {
-        rhi::RayResult hit;
-        if (TraceReferenceOracle(job.Scene, path.Ray, hit) != rhi::RasterStatus::Ready ||
-            PrepareReferenceVertex(job, inoutInfo, path, hit) != rhi::RasterStatus::Ready)
-        {
-            return rhi::RasterStatus::Failed;
-        }
-        for (uint32 shadow = 0; shadow < path.ShadowCount; ++shadow)
-        {
-            rhi::RayResult visibility;
-            if (TraceReferenceOracle(job.Scene, path.Shadows[shadow], visibility) != rhi::RasterStatus::Ready)
-            {
-                return rhi::RasterStatus::Failed;
-            }
-            if (visibility.Hit == 0)
-            {
-                path.Indirect = path.Indirect + path.PendingDirects[shadow];
-            }
-        }
-        if (path.HasNext == false)
-        {
-            break;
-        }
-        path.Ray = path.Next;
+        return rhi::RasterStatus::Failed;
     }
     const math::Vector3 irradiance = directIrradiance + path.Direct + path.Indirect;
     if (ValidContribution(irradiance) == false)
@@ -917,6 +931,30 @@ rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
         return rhi::RasterStatus::Failed;
     }
     outIrradiance = irradiance;
+    return rhi::RasterStatus::Ready;
+}
+rhi::RasterStatus TraceReferenceGiProbe(const ReferenceJob& job,
+                                        ReferenceCaptureInfo& inoutInfo,
+                                        const ReferenceProbeAddress& address,
+                                        math::Vector3 positionWorld,
+                                        math::Vector3 directionWorld,
+                                        math::Vector3& outRadiance) noexcept
+{
+    ReferencePath path;
+    path.Pixel = address.TriangleIndex;
+    path.Sample = address.SampleIndex;
+    // The probe is a virtual receiver. At least one material vertex must scatter the
+    // selected analytic sources before their energy can reach it.
+    path.Depth = 1;
+    path.PreviousPoint = positionWorld;
+    path.Ray = ReferenceRay(positionWorld, directionWorld, job.Description.SecondaryDistance);
+    const rhi::RasterStatus status = TraceReferenceProbePath(job, inoutInfo, path);
+    const math::Vector3 radiance = path.Indirect;
+    if (status != rhi::RasterStatus::Ready || ValidContribution(radiance) == false)
+    {
+        return rhi::RasterStatus::Failed;
+    }
+    outRadiance = radiance;
     return rhi::RasterStatus::Ready;
 }
 } // namespace ludus::graphics::renderer::internal

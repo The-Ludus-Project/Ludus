@@ -202,6 +202,7 @@ private:
     foundation::threading::JobSystem mBakeJobs;
     foundation::UniquePtr<StaticLightingJob> mBakeJob;
     foundation::Array<graphics::renderer::BakedLighting> mBakeCharts;
+    graphics::renderer::BakedGiProbeVolume mProbeVolume{};
     foundation::Array<graphics::renderer::MaterialVersion> mBakedMaterials;
     foundation::usize mBakedMaterialCursor = 0;
     QString mBakeFailure;

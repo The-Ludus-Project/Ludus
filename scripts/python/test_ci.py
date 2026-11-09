@@ -336,6 +336,33 @@ class NativePrerequisiteTests(unittest.TestCase):
                 self.assertEqual(environment_file.read_text(), expected)
                 self.assertEqual("Mesa correctness profile: nopt" in result.stdout, should_select)
 
+    def test_conan_cache_keys_hash_only_conan_inputs(self):
+        # Vendored FetchContent trees under third_party are not Conan inputs. Hashing
+        # them gave develop pull requests a key the batch on main never saved.
+        native = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
+        macos = (self.ROOT / ".github/actions/macos-setup/action.yml").read_text()
+        keys = re.findall(r"(?m)^        key: conan-[^\n]*$", native + macos)
+        self.assertEqual(len(keys), 3)
+        recipes = sorted(path.parent.name for path in (self.ROOT / "third_party").glob("*/conanfile.py"))
+        self.assertIn("catch2", recipes)
+        catch2 = (self.ROOT / "third_party/catch2/conanfile.py").read_text()
+        exported = re.search(r"for name in \(([^)]*)\):", catch2)
+        self.assertIsNotNone(exported)
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertNotIn("'third_party/**'", key)
+                self.assertIn("'third_party/*/conanfile.py'", key)
+                for name in re.findall(r'"([^"]+)"', exported.group(1)):
+                    self.assertTrue(f"'tests/support/{name}'" in key
+                                    or f"'tests/support/{name.rsplit('.', 1)[0]}.*'" in key, name)
+        # Only the read-only restore falls back to an older package set; writers save exact keys.
+        writer = native.split("    - name: Cache selected Conan packages\n", 1)[1].split("    - name:", 1)[0]
+        reader = native.split("    - name: Restore selected Conan packages without saving\n", 1)[1]
+        reader = reader.split("    - name:", 1)[0]
+        self.assertNotIn("restore-keys", writer)
+        self.assertIn("restore-keys: |\n          conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-\n",
+                      reader)
+
     def test_rendered_editor_setup_installs_software_vulkan_before_initialization(self):
         action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
         step = action.split("    - name: Install native prerequisites\n", 1)[1]

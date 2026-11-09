@@ -193,8 +193,9 @@ if request['operation'] == 'project_check':
     send('engine_pin', state='stale', installation='/checkout/out/install/linux-clang-release',
          pinned_revision='0361c59' + '0' * 33, editor_revision='5c74c12' + '0' * 33, editor_owned=True,
          message='The project engine install was built from 0361c59, but this editor runs 5c74c12.')
-    send('result', outcome='failed', stage='configuring', code='InvalidProject',
-         message='SDK or tool inputs changed; run repair', cleanup_confirmed=True, exit_code=None, signal=None)
+    send('result', outcome='failed', stage='configuring', code='BootstrapStale',
+         message='BootstrapStale: SDK or tool inputs changed; run repair', cleanup_confirmed=True, exit_code=None,
+         signal=None)
 else:
     Path(request['project']).with_name('setup_request.json').write_text(json.dumps(request))
     send('result', outcome='success', stage='configuring', code='Ok', message='Setup checked',
@@ -258,8 +259,8 @@ time.sleep(0.15)
 is_ready = Path(request['project']).with_name('ready').exists()
 print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     outcome='success' if is_ready else 'failed', stage='configuring',
-    code='Ok' if is_ready else 'InvalidProject',
-    message='Setup checked' if is_ready else 'SDK or tool inputs changed; run repair',
+    code='Ok' if is_ready else 'BootstrapStale',
+    message='Setup checked' if is_ready else 'BootstrapStale: SDK or tool inputs changed; run repair',
     cleanup_confirmed=True, exit_code=None, signal=None)), flush=True)
 )py"));
     ToolingPaths tooling;
@@ -286,7 +287,12 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
         },
         10000));
     CHECK(notice->isVisible());
-    CHECK(message->text().contains(QStringLiteral("SDK or tool inputs changed")));
+    CHECK(message->text() == QStringLiteral("Build tools are out of date."));
+    QLabel* detail = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeDetail"));
+    REQUIRE(detail != nullptr);
+    CHECK(detail->text().contains(QStringLiteral("SDK or tool inputs changed")));
+    // A stale setup is fixed by repair, so the notice offers it rather than the settings file.
+    CHECK(repair->text() == QStringLiteral("Repair project"));
     CHECK(repair->isEnabled());
     ProjectDescriptor draft = controller.State().Draft;
     draft.Name = QStringLiteral("Changed project settings");
@@ -294,8 +300,6 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     CHECK(notice->isVisible());
     CHECK_FALSE(repair->isEnabled());
     CHECK_FALSE(check->isEnabled());
-    QLabel* detail = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeDetail"));
-    REQUIRE(detail != nullptr);
     CHECK(detail->text().contains(QStringLiteral("Save project settings")));
     controller.UndoProjectEdit();
     CHECK(repair->isEnabled());

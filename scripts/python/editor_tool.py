@@ -1037,7 +1037,7 @@ class Operation:
         except (OSError, subprocess.CalledProcessError) as exc:
             return OperationResult("failed", self._stage, "ReleaseFailed" if self._operation in ("release_init", "package") else "SpawnFailed", str(exc))
         except ToolingError as exc:
-            code = "ReleaseFailed" if self._operation in ("release_init", "package") else exc.code if exc.code in ("MissingTools", "MissingDebugger", "ArtifactInvalid", "ConfigureFailed", "BuildFailed", "Busy", "Conflict") else "InvalidProject"
+            code = "ReleaseFailed" if self._operation in ("release_init", "package") else exc.code if exc.code in ("MissingTools", "BootstrapStale", "MissingDebugger", "ArtifactInvalid", "ConfigureFailed", "BuildFailed", "Busy", "Conflict") else "InvalidProject"
             return OperationResult("failed", self._stage, code, f"{exc.code}: {exc.message}")
         except editor_project.ProjectError as exc:
             return OperationResult("failed", self._stage, exc.code, exc.message)
