@@ -925,12 +925,26 @@ LUDUS_INLINE uint32 ReadValidationIndex(const uint8* bytes, usize width, usize i
     std::memcpy(&value, bytes + i * width, width);
     return value;
 }
-/// Fills outMaxima with the per-block maxima of an index record's bytes. Returns false when host storage
-/// cannot hold the maxima; the caller then abandons the record.
+/// Returns whether width is the byte width of a 16-bit or 32-bit index.
+LUDUS_INLINE bool IsIndexWidth(usize width) noexcept
+{
+    return width == sizeof(uint16) || width == sizeof(uint32);
+}
+/// Returns the number of validation blocks that cover count indices.
+LUDUS_INLINE usize CountIndexBlocks(usize count) noexcept
+{
+    return (count + INDEX_MAXIMUM_BLOCK_INDICES - 1) / INDEX_MAXIMUM_BLOCK_INDICES;
+}
+/// Fills outMaxima with the per-block maxima of an index record's bytes. Returns false for a width other than
+/// 2 or 4 bytes, or when host storage cannot hold the maxima; the caller then abandons the record.
 bool BuildIndexBlockMaxima(const StorageArray<uint8>& indices, usize width, StorageArray<uint32>& outMaxima) noexcept
 {
+    if (IsIndexWidth(width) == false)
+    {
+        return false;
+    }
     const usize count = indices.GetSize() / width;
-    const usize blocks = (count + INDEX_MAXIMUM_BLOCK_INDICES - 1) / INDEX_MAXIMUM_BLOCK_INDICES;
+    const usize blocks = CountIndexBlocks(count);
     if (outMaxima.TryResize(blocks) == false)
     {
         return false;
@@ -949,14 +963,23 @@ bool BuildIndexBlockMaxima(const StorageArray<uint8>& indices, usize width, Stor
     return true;
 }
 /// Returns the largest index (restart values as RESTART_INDEX_MAXIMUM) in [first, first + count) of an
-/// index record whose maxima BuildIndexBlockMaxima built.
-/// @pre The range lies inside the record's indices.
+/// index record whose maxima BuildIndexBlockMaxima built. Returns RESTART_INDEX_MAXIMUM, which no vertex count
+/// admits, for an unsupported width, a range outside the record's indices or maxima that do not cover them.
 uint32 ComputeIndexRangeMaximum(const StorageArray<uint8>& indices,
                                 const StorageArray<uint32>& maxima,
                                 usize width,
                                 usize first,
                                 usize count) noexcept
 {
+    if (IsIndexWidth(width) == false)
+    {
+        return RESTART_INDEX_MAXIMUM;
+    }
+    const usize indexCount = indices.GetSize() / width;
+    if (first > indexCount || count > indexCount - first || maxima.GetSize() != CountIndexBlocks(indexCount))
+    {
+        return RESTART_INDEX_MAXIMUM;
+    }
     const usize end = first + count;
     uint32 maximum = 0;
     usize i = first;
