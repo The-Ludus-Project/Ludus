@@ -65,18 +65,25 @@ runs:
     # Thanks to GitHub's "Dependency caching reference": immutable dependency
     # snapshots use input identities; compiler snapshots roll forward per commit.
     # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching
+    # Conan keys hash only Conan inputs: the local recipes and the support files the
+    # Catch2 recipe exports. Vendored FetchContent or source trees under third_party
+    # would give develop pull requests a key that the batch on main never saves.
     - name: Cache selected Conan packages
       if: inputs.conan-cache-writer == 'true'
       uses: actions/cache@v4
       with:
         path: out/conan/home
-        key: conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/**', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
+        key: conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/*/conanfile.py', 'tests/support/prepare_catch_headers.py', 'tests/support/catch_stream.*', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
     - name: Restore selected Conan packages without saving
       if: inputs.conan-cache-writer != 'true'
       uses: actions/cache/restore@v4
       with:
         path: out/conan/home
-        key: conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/**', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
+        key: conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/*/conanfile.py', 'tests/support/prepare_catch_headers.py', 'tests/support/catch_stream.*', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
+        # Read-only jobs never save, so an older package set is a safe start: the
+        # locked install reuses matching packages and builds only what is missing.
+        restore-keys: |
+          conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-
     - name: Cache compiler outputs
       if: inputs.compiler-cache == 'true' && inputs.compiler-cache-writer == 'true'
       uses: actions/cache@v4
