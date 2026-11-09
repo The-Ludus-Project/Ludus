@@ -1595,8 +1595,35 @@ result to lit surface radiance before exposure and tone mapping. The
 renderer-owned resolve reuses texture slots after the G-buffer pass and keeps
 the graph package interface intact. Transparent surfaces, other renderer
 profiles, and reference path tracing remain outside this integration. If the
-camera leaves the admitted altitude range, the World uses its ordinary
-background and lighting and reports the altitude and supported range.
+camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
+
+### Celestial background and orbital views
+
+The Atmosphere entity's celestial provider supplies distant scene-linear radiance.
+It evaluates a deterministic procedural star field and an optional Lambertian
+Moon. The Moon uses the linked directional light's world direction and color.
+Its phase comes from the visible disk normals and the direction toward the Sun.
+The lunar disk masks background sources behind it. The renderer applies view
+transmittance and planet occlusion to the celestial boundary before it adds
+in-scattering and applies exposure and tone mapping. The celestial boundary
+contributes to the displayed sky. Surface skylight and aerial perspective keep
+their solar transport model.
+
+Inside the shell, the sky view and transmittance tables serve the background.
+For perspective cameras above the shell, a ray that misses it sees the
+unattenuated boundary. A crossing ray integrates between the near and far
+intersections, or stops at the ground sphere and hides the boundary. This
+renders the limb and the visible atmosphere over a dark ground. SDK callers
+opt in with `AtmosphereDescription::Celestial.IsEnabled`. Orbital backgrounds
+support observer altitudes up to one billion metres. Orthographic views use
+the in-shell range and the observer's common ray direction. The graph uses
+its ordinary clear outside the supported range.
+
+The provider models a distant disk with a nominal apparent radius and a
+procedural star field. An ephemeris catalog, lunar parallax, cast eclipse
+shadows, and lunar atmospheric illumination are separate extensions.
+NASA Science describes the lit-sphere geometry and the Moon's nominal apparent size.
+[Moon phases](https://science.nasa.gov/moon/moon-phases/) · [Hubble glossary](https://science.nasa.gov/mission/hubble/multimedia/hubble-glossary/)
 
 ### Milestones and acceptance
 

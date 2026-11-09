@@ -1,6 +1,7 @@
 #include "display_tone_mapping.slang"
 #include "renderer_deferred_fullscreen.slang"
 
+#include "renderer_atmosphere_celestial.slang"
 #include "renderer_atmosphere_transport.slang"
 
 struct AtmosphereViewParameters
@@ -11,6 +12,9 @@ struct AtmosphereViewParameters
     float4 SolarIlluminance;    // xyz: linear RGB perpendicular illuminance, w: disk chord radius
     float4 CameraForwardWorld;  // xyz: orthographic ray, w: radiance per unit disk illuminance
     float4 Lighting;            // x enables multiple scattering.
+    float4 MoonDirectionWorld;  // xyz: direction, w: sine of the angular radius.
+    float4 LunarRadiance;       // xyz: full-phase peak luminance, w: disk chord radius.
+    float4 Celestial;           // x: actual observer altitude in kilometres, y: star peak luminance, z: orbital flag.
     float4 Output;              // xy: viewport dimensions, z: exposure multiplier, w: display curve
 };
 LUDUS_SHADER_BINDING(0)
@@ -122,25 +126,82 @@ float3 GetViewDirectionWorld(in float2 positionPixel)
     return float4(radiance / max(sampleCount - fraction, sampleCount * MINIMUM_ESCAPE), 1);
 }
 
+struct AtmosphereBackgroundTransport
+{
+    float3 Radiance;
+    float3 Transmittance;
+};
+
+AtmosphereBackgroundTransport EvaluateAtmosphereBackground(in float3 directionWorld)
+{
+    const uint ORBITAL_STEPS = 64;
+    AtmosphereBackgroundTransport result;
+    result.Radiance = 0;
+    result.Transmittance = 1;
+    float3 upWorld = atmosphereView.RadialUpWorld.xyz;
+    float3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
+    float height = atmosphereView.Celestial.x;
+    float zenithCosine = clamp(dot(directionWorld, upWorld), -1, 1);
+    if (atmosphereView.Celestial.z == 0)
+    {
+        result.Radiance = SampleAtmosphereSky(atmosphereSky, directionWorld, upWorld, sunWorld, height);
+        result.Transmittance = zenithCosine < ComputeHorizonCosine(height)
+                                   ? float3(0)
+                                   : SampleTransmittance(atmosphereTransmittance, height, zenithCosine);
+        return result;
+    }
+
+    // Work from the perpendicular point and near root, which avoids subtracting
+    // two long distances when reconstructing the radial direction at shell entry.
+    float radius = GROUND_RADIUS + height;
+    float projection = radius * zenithCosine;
+    float discriminant = projection * projection - (height - SHELL_HEIGHT) * (radius + TOP_RADIUS);
+    if (projection >= 0 || discriminant <= 0)
+    {
+        return result;
+    }
+    float root = sqrt(discriminant);
+    float3 perpendicularWorld = radius * (upWorld - zenithCosine * directionWorld);
+    float3 entryUpWorld = normalize(perpendicularWorld - root * directionWorld);
+    float entryCosine = -root / TOP_RADIUS;
+    bool hitsGround = entryCosine < ComputeHorizonCosine(SHELL_HEIGHT);
+    float distance = hitsGround ? GetDistanceToGround(SHELL_HEIGHT, entryCosine) : 2 * root;
+    AtmosphereSegment segment = IntegrateAtmosphere(atmosphereTransmittance,
+                                                    atmosphereMultiple,
+                                                    SHELL_HEIGHT,
+                                                    entryCosine,
+                                                    clamp(dot(entryUpWorld, sunWorld), -1, 1),
+                                                    clamp(dot(directionWorld, sunWorld), -1, 1),
+                                                    distance,
+                                                    ORBITAL_STEPS,
+                                                    atmosphereView.Lighting.x > 0);
+    result.Radiance = segment.Radiance;
+    result.Transmittance = hitsGround ? float3(0) : segment.Transmittance;
+    return result;
+}
+
 [shader("fragment")] float4 AtmosphereDisplayMain(in DeferredVarying input) : SV_Target0
 {
     float3 directionWorld = GetViewDirectionWorld(input.PositionClip.xy);
-    float3 upWorld = atmosphereView.RadialUpWorld.xyz;
     float3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
-    float height = atmosphereView.RadialUpWorld.w;
-    float zenithCosine = clamp(dot(directionWorld, upWorld), -1, 1);
-    float horizon = ComputeHorizonCosine(height);
-    bool hitsGround = zenithCosine < horizon;
-    float3 radiance = SampleAtmosphereSky(atmosphereSky, directionWorld, upWorld, sunWorld, height);
-    float chord = length(directionWorld - sunWorld);
-    float edge = max(fwidth(chord), DIRECTION_EPSILON);
-    float diskCoverage = saturate(0.5 + (atmosphereView.SolarIlluminance.w - chord) / edge);
-    if (diskCoverage > 0 && hitsGround == false)
+    float3 moonWorld = atmosphereView.MoonDirectionWorld.xyz;
+    float angularFootprint = max(length(ddx(directionWorld)), length(ddy(directionWorld)));
+    float sunCoverage =
+        ComputeCelestialDiskCoverage(length(directionWorld - sunWorld), atmosphereView.SolarIlluminance.w);
+    float moonCoverage =
+        ComputeCelestialDiskCoverage(length(directionWorld - moonWorld), atmosphereView.LunarRadiance.w);
+    float3 boundary = sunCoverage * atmosphereView.CameraForwardWorld.w * atmosphereView.SolarIlluminance.xyz;
+    if (atmosphereView.Celestial.y > 0)
     {
-        radiance += SampleTransmittance(atmosphereTransmittance, height, zenithCosine) *
-                    (diskCoverage * atmosphereView.CameraForwardWorld.w);
+        boundary += EvaluateCelestialStars(directionWorld, angularFootprint, atmosphereView.Celestial.y);
     }
-    radiance *= atmosphereView.SolarIlluminance.xyz;
+    if (atmosphereView.MoonDirectionWorld.w > 0 && moonCoverage > 0)
+    {
+        float phase = EvaluateLunarPhase(directionWorld, moonWorld, sunWorld, atmosphereView.MoonDirectionWorld.w);
+        boundary = lerp(boundary, phase * atmosphereView.LunarRadiance.xyz, moonCoverage);
+    }
+    AtmosphereBackgroundTransport transport = EvaluateAtmosphereBackground(directionWorld);
+    float3 radiance = transport.Radiance * atmosphereView.SolarIlluminance.xyz + transport.Transmittance * boundary;
     if (atmosphereView.Output.z > 0)
     {
         radiance = MapSceneToDisplay(radiance, atmosphereView.Output.z, uint(atmosphereView.Output.w + 0.5));

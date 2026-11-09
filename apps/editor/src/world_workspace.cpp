@@ -2400,8 +2400,8 @@ void WorldWorkspace::RenderInspector()
                 else
                 {
                     choices->addItem(QStringLiteral("None"), QString());
-                    const bool isAtmosphereSun =
-                        Document_.HasBuiltInSchema() == true && IsWorldAtmosphereSunField(cid, pid);
+                    const bool isAtmosphereLight =
+                        Document_.HasBuiltInSchema() == true && IsWorldAtmosphereLightField(cid, pid);
                     const auto candidates = type == QStringLiteral("entity")
                                                 ? Document_.Draft().value(QStringLiteral("entities")).toArray()
                                                 : Document_.Schema().value(QStringLiteral("assets")).toArray();
@@ -2413,7 +2413,7 @@ void WorldWorkspace::RenderInspector()
                         {
                             continue;
                         }
-                        if (isAtmosphereSun == true && IsWorldAtmosphereSun(entry) == false)
+                        if (isAtmosphereLight == true && IsWorldAtmosphereLight(entry) == false)
                         {
                             continue;
                         }
@@ -2429,7 +2429,7 @@ void WorldWorkspace::RenderInspector()
                             key);
                     }
                     const QString reference = current.toString();
-                    if (isAtmosphereSun == true && reference.isEmpty() == false && choices->findData(reference) < 0)
+                    if (isAtmosphereLight == true && reference.isEmpty() == false && choices->findData(reference) < 0)
                     {
                         choices->addItem(QStringLiteral("Missing directional light — %1").arg(reference), reference);
                     }

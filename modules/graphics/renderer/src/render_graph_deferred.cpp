@@ -400,15 +400,18 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
     {
         return Status::InvalidState;
     }
-    math::Matrix4 clipToWorld;
-    if (TryMakeCameraClipToWorld(camera, clipToWorld) == false)
-    {
-        return Status::InvalidDescription;
-    }
     Status status = inoutRenderer.getDeferredMaterial(view, mMaterial);
     if (status != Status::Ready)
     {
         return status;
+    }
+    const AtmosphereDescription& atmosphere = camera.Atmosphere;
+    const bool isCelestialBackgroundOnly =
+        mMaterial.HasMaterial == false && atmosphere.IsEnabled == true && atmosphere.Celestial.IsEnabled == true;
+    math::Matrix4 clipToWorld{};
+    if (isCelestialBackgroundOnly == false && TryMakeCameraClipToWorld(camera, clipToWorld) == false)
+    {
+        return Status::InvalidDescription;
     }
     mTargetsOrNull = &inoutTargets;
     mMeshLights = meshLights;
@@ -447,7 +450,6 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         mExposure,
         static_cast<float32>(mToneCurve),
     };
-    const AtmosphereDescription& atmosphere = camera.Atmosphere;
     if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
     {
         constexpr float64 METRES_PER_KILOMETRE = LUDUS_ATMOSPHERE_METRES_PER_KILOMETRE;

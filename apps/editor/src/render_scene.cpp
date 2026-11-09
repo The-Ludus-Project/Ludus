@@ -169,6 +169,8 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.Luminaires = authored.Luminaires;
     inoutScene.Atmosphere = authored.Atmosphere;
     inoutScene.IsAtmosphereSunSwitchedOff = authored.IsAtmosphereSunSwitchedOff;
+    inoutScene.AtmosphereMoonSourceId = authored.AtmosphereMoonSourceId;
+    inoutScene.IsAtmosphereMoonSwitchedOff = authored.IsAtmosphereMoonSwitchedOff;
     inoutScene.AtmosphereStatus = authored.AtmosphereStatus;
     if (authored.Cameras.isEmpty() == false)
     {
@@ -649,6 +651,49 @@ int32 Find(const QVector<T>& values, const QString& id)
     return -1;
 }
 
+struct AtmosphereLight final
+{
+    math::Vector3 DirectionWorld{};
+    math::Vector3 Illuminance{};
+};
+
+bool ReadAtmosphereLight(const QJsonObject& entity,
+                         const QJsonObject& transformBinding,
+                         AtmosphereLight& outLight,
+                         QString& outError)
+{
+    if (IsWorldAtmosphereLight(entity) == false)
+    {
+        outError = QStringLiteral("Select an existing directional light.");
+        return false;
+    }
+    math::TransformTRS transform;
+    if (Transform(Values(entity, transformBinding), transform, outError) == false)
+    {
+        return false;
+    }
+    const QJsonObject light =
+        entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+    bool isAboveHorizon = true;
+    if (TryResolveWorldCelestialRotation(light, transform.Rotation, isAboveHorizon) == false)
+    {
+        outError = QStringLiteral("Repair the selected light's celestial driver fields in Properties.");
+        return false;
+    }
+    // Evaluate planet occlusion along the view ray. The observer flag belongs to direct scene lighting.
+    const float32 intensity = light.value(QStringLiteral("enabled")).toBool() == true
+                                  ? static_cast<float32>(light.value(QStringLiteral("intensity")).toDouble())
+                                  : 0;
+    outLight =
+    {
+        .DirectionWorld = math::Rotate(transform.Rotation, {0, 0, 1}),
+        .Illuminance = {intensity * static_cast<float32>(light.value(QStringLiteral("r")).toDouble()),
+                        intensity * static_cast<float32>(light.value(QStringLiteral("g")).toDouble()),
+                        intensity * static_cast<float32>(light.value(QStringLiteral("b")).toDouble())},
+    };
+    return true;
+}
+
 void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& transformBinding, RenderScene& inoutScene)
 {
     if (world.HasBuiltInSchema() == false)
@@ -677,51 +722,62 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     const QJsonObject properties =
         entity.value(QStringLiteral("components")).toObject().value(GetWorldAtmosphereComponentId()).toObject();
     const QString sunId = properties.value(QStringLiteral("sun")).toString();
-    const QJsonObject sun = world.Entity(sunId);
-    if (IsWorldAtmosphereSun(sun) == false)
-    {
-        inoutScene.AtmosphereStatus = QStringLiteral("Select a directional light in Atmosphere → Sun.");
-        return;
-    }
     math::TransformTRS placement;
-    math::TransformTRS lightTransform;
     QString error;
-    const QJsonObject light =
-        sun.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
-    if (Transform(Values(entity, transformBinding), placement, error) == false ||
-        Transform(Values(sun, transformBinding), lightTransform, error) == false)
+    if (Transform(Values(entity, transformBinding), placement, error) == false)
     {
-        inoutScene.AtmosphereStatus =
-            QStringLiteral("Repair the Atmosphere or Sun Transform in Properties. %1").arg(error);
+        inoutScene.AtmosphereStatus = QStringLiteral("Repair the Atmosphere Transform in Properties. %1").arg(error);
         return;
     }
-    bool isAboveHorizon = true;
-    if (TryResolveWorldCelestialRotation(light, lightTransform.Rotation, isAboveHorizon) == false)
+    AtmosphereLight sun;
+    if (ReadAtmosphereLight(world.Entity(sunId), transformBinding, sun, error) == false)
     {
-        inoutScene.AtmosphereStatus =
-            QStringLiteral("Repair the selected Sun's celestial driver fields in Properties.");
+        inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Sun. %1").arg(error);
         return;
     }
-    // The airless observer flag only gates direct illumination on geometry. The
-    // atmosphere tests the planet shadow independently at each scattering point.
-    const float32 intensity = light.value(QStringLiteral("enabled")).toBool() == true
-                                  ? static_cast<float32>(light.value(QStringLiteral("intensity")).toDouble())
-                                  : 0;
     const uint64 sunSourceId = ComputeSourceId(sunId);
     inoutScene.Atmosphere =
     {
         .IsEnabled = true,
         .SurfaceAnchorWorld = placement.Translation,
         .SurfaceUpWorld = math::Rotate(placement.Rotation, {0, 1, 0}),
-        .DirectionToSunWorld = math::Rotate(lightTransform.Rotation, {0, 0, 1}),
-        .SolarIlluminance = {intensity * static_cast<float32>(light.value(QStringLiteral("r")).toDouble()),
-                             intensity * static_cast<float32>(light.value(QStringLiteral("g")).toDouble()),
-                             intensity * static_cast<float32>(light.value(QStringLiteral("b")).toDouble())},
+        .DirectionToSunWorld = sun.DirectionWorld,
+        .SolarIlluminance = sun.Illuminance,
         .SolarAngularRadiusRadians =
             math::DegreesToRadians(static_cast<float32>(properties.value(QStringLiteral("solarRadius")).toDouble())),
         .SunSourceId = sunSourceId,
         .ShouldLightScene = true,
     };
+    rr::CelestialBackgroundDescription& celestial = inoutScene.Atmosphere.Celestial;
+    celestial.IsEnabled = true;
+    celestial.StarRadiance = properties.value(QStringLiteral("stars")).toBool(true) == true ? 1.0F : 0.0F;
+    const QString moonId = properties.value(QStringLiteral("moon")).toString();
+    if (moonId.isEmpty() == true)
+    {
+        return;
+    }
+    if (moonId == sunId)
+    {
+        inoutScene.AtmosphereStatus = QStringLiteral("Select a different directional light in Atmosphere → Moon.");
+        return;
+    }
+    AtmosphereLight moon;
+    if (ReadAtmosphereLight(world.Entity(moonId), transformBinding, moon, error) == false)
+    {
+        inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Moon. %1").arg(error);
+        return;
+    }
+    celestial.DirectionToMoonWorld = moon.DirectionWorld;
+    if (math::LengthSquared(moon.Illuminance) == 0)
+    {
+        return;
+    }
+    constexpr float32 LAMBERTIAN_FULL_PHASE_SCALE = 1.5F; // The mean cosine over the projected disk is two thirds.
+    constexpr float32 RADIUS = rr::CelestialBackgroundDescription::DEFAULT_LUNAR_RADIUS_RADIANS;
+    const float32 sine = math::Sin(RADIUS);
+    celestial.LunarAngularRadiusRadians = RADIUS;
+    celestial.LunarPeakRadiance = moon.Illuminance * (LAMBERTIAN_FULL_PHASE_SCALE / (math::kPiF * sine * sine));
+    inoutScene.AtmosphereMoonSourceId = ComputeSourceId(moonId);
 }
 } // namespace
 RenderSceneSource RenderScene::GetSource(const QString& root, const WorldDocument& world)
@@ -1437,6 +1493,20 @@ bool TryTraceRenderSceneRay(const RenderScene& scene, const math::Ray3& rayWorld
     }
     return hasHit;
 }
+rr::AtmosphereDescription RenderScene::GetAtmosphereForView() const noexcept
+{
+    rr::AtmosphereDescription atmosphere = Atmosphere;
+    if (IsAtmosphereSunSwitchedOff == true)
+    {
+        atmosphere.SolarIlluminance = {};
+    }
+    if (IsAtmosphereMoonSwitchedOff == true)
+    {
+        atmosphere.Celestial.LunarAngularRadiusRadians = 0;
+    }
+    return atmosphere;
+}
+
 bool RenderScene::ShouldUseEmptyWorldView() const noexcept
 {
     return Identity.isEmpty() == false && Objects.isEmpty() == true && Atmosphere.IsEnabled == false &&

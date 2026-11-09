@@ -5383,6 +5383,9 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     QJsonObject components = atmosphere.value(QStringLiteral("components")).toObject();
     QJsonObject values = components.value(atmosphereComponent).toObject();
     values.insert(QStringLiteral("sun"), sunId);
+    // An A1 world omits the A2 fields and keeps their defaults after loading.
+    values.remove(QStringLiteral("stars"));
+    values.remove(QStringLiteral("moon"));
     components.insert(atmosphereComponent, values);
     REQUIRE(document.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
             true);
@@ -5405,6 +5408,30 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.IsEnabled == true);
     CHECK(scene.Atmosphere.SunSourceId == ComputeEntitySourceId(sunId));
     CHECK(scene.Atmosphere.ShouldLightScene == true);
+    CHECK(scene.Atmosphere.Celestial.IsEnabled == true);
+    CHECK(scene.Atmosphere.Celestial.StarRadiance > 0);
+    CHECK(scene.Atmosphere.Celestial.LunarAngularRadiusRadians == 0);
+
+    QString moonId;
+    REQUIRE(CreateWorldSun(reopened, entropy, placement, moonId, error) == true);
+    values.insert(QStringLiteral("moon"), moonId);
+    values.insert(QStringLiteral("stars"), false);
+    components.insert(atmosphereComponent, values);
+    REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
+            true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.AtmosphereMoonSourceId == ComputeEntitySourceId(moonId));
+    CHECK(scene.Atmosphere.Celestial.DirectionToMoonWorld.Y == Catch::Approx(1));
+    CHECK(scene.Atmosphere.Celestial.LunarPeakRadiance.X > 0);
+    CHECK(scene.Atmosphere.Celestial.StarRadiance == 0);
+    REQUIRE(reopened.RemoveEntities({moonId}, error) == true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.IsEnabled == true);
+    CHECK(scene.AtmosphereStatus.contains(QStringLiteral("Moon")) == true);
+    CHECK(scene.Atmosphere.Celestial.LunarAngularRadiusRadians == 0);
+    REQUIRE(reopened.Undo() == true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.Celestial.LunarAngularRadiusRadians > 0);
     REQUIRE(reopened.RemoveEntities({atmosphereId}, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.IsEnabled == false);

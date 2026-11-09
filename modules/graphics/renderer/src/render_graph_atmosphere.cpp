@@ -75,6 +75,13 @@ float64 GetAtmosphereTopAltitude() noexcept
     return LUDUS_ATMOSPHERE_HEIGHT_KILOMETRES * METRES_PER_KILOMETRE;
 }
 
+float64 GetAtmosphereMaximumViewAltitude(const AtmosphereDescription& atmosphere, bool isOrthographic) noexcept
+{
+    return atmosphere.Celestial.IsEnabled == true && isOrthographic == false
+               ? CelestialBackgroundDescription::MAXIMUM_ORBITAL_ALTITUDE_METRES
+               : GetAtmosphereTopAltitude();
+}
+
 namespace internal
 {
 using Status = rhi::RasterStatus;
@@ -97,6 +104,7 @@ constexpr uint32 TRANSMITTANCE_SLOT = 1;
 constexpr uint32 SKY_SLOT = 2;
 constexpr uint32 MULTIPLE_SLOT = 3;
 constexpr usize TABLE_BINDING_COUNT = 3;
+constexpr usize DISPLAY_BINDING_COUNT = 4;
 constexpr usize MULTIPLE_BINDING_COUNT = 1;
 
 bool IsAccepted(Status status) noexcept
@@ -113,8 +121,59 @@ struct AtmosphereViewUniform final
     math::Vector4 SolarIlluminance{};
     math::Vector4 CameraForwardWorld{};
     math::Vector4 Lighting{};
+    math::Vector4 MoonDirectionWorld{};
+    math::Vector4 LunarRadiance{};
+    math::Vector4 Celestial{};
     math::Vector4 Output{};
 };
+
+namespace
+{
+bool TryMakeOrbitalRayTransform(const ViewDescription& camera, math::Matrix4& outClipToEye) noexcept
+{
+    // Perspective direction only depends on the linear clip X, Y and W rows.
+    // Replace the depth row and translation so a small near plane survives a large camera position.
+    math::Matrix4 directionToClip = camera.WorldToClip;
+    for (usize column = 0; column < CLIP_ROWS; ++column)
+    {
+        directionToClip.Columns[column].Z = 0;
+    }
+    constexpr usize TRANSLATION_COLUMN = CLIP_ROWS - 1;
+    directionToClip.Columns[TRANSLATION_COLUMN] = {0, 0, 1, 0};
+    return math::TryInverse(directionToClip, outClipToEye) == math::MathStatus::Success;
+}
+
+bool TryPackCelestial(const CelestialBackgroundDescription& celestial, AtmosphereViewUniform& inoutUniform) noexcept
+{
+    if (celestial.IsEnabled == false)
+    {
+        return true;
+    }
+    const float32 starRadiance = celestial.StarRadiance;
+    const float32 moonRadius = celestial.LunarAngularRadiusRadians;
+    if (math::IsFinite(starRadiance) == false || starRadiance < 0 || math::IsFinite(moonRadius) == false ||
+        moonRadius < 0 || moonRadius >= math::kHalfPiF)
+    {
+        return false;
+    }
+    inoutUniform.Celestial.Y = starRadiance;
+    if (moonRadius == 0)
+    {
+        return true;
+    }
+    const math::Vector3 radiance = celestial.LunarPeakRadiance;
+    math::Vector3 directionWorld;
+    const float32 sine = math::Sin(moonRadius);
+    if (math::TryNormalize(celestial.DirectionToMoonWorld, directionWorld) != math::MathStatus::Success ||
+        math::IsFinite(radiance) == false || radiance.X < 0 || radiance.Y < 0 || radiance.Z < 0 || sine <= 0)
+    {
+        return false;
+    }
+    inoutUniform.MoonDirectionWorld = {directionWorld.X, directionWorld.Y, directionWorld.Z, sine};
+    inoutUniform.LunarRadiance = {radiance.X, radiance.Y, radiance.Z, 2 * math::Sin(moonRadius * 0.5F)};
+    return true;
+}
+} // namespace
 
 struct AtmosphereSkyTable final
 {
@@ -427,18 +486,28 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
         {
             return Status::InvalidDescription;
         }
-        if (altitudeMetres < 0 || altitudeMetres > GetAtmosphereTopAltitude())
+        if (altitudeMetres < 0 ||
+            altitudeMetres > GetAtmosphereMaximumViewAltitude(atmosphere, camera.OrthographicCamera))
         {
             return Status::Ready;
         }
+        AtmosphereViewUniform uniform;
+        uniform.Celestial.X = static_cast<float32>(altitudeMetres / METRES_PER_KILOMETRE);
+        if (TryPackCelestial(atmosphere.Celestial, uniform) == false)
+        {
+            return Status::InvalidDescription;
+        }
+        mIsOrbital = altitudeMetres > GetAtmosphereTopAltitude();
+        uniform.Celestial.Z = mIsOrbital == true ? 1.0F : 0.0F;
         const Status prepared = inoutProgram.Prepare(device);
         if (prepared != Status::Ready)
         {
             return prepared;
         }
-        AtmosphereViewUniform uniform;
         math::Matrix4 clipToEye;
-        if (TryMakeCameraClipToEye(camera, clipToEye) == false)
+        const bool hasRayTransform = mIsOrbital == true ? TryMakeOrbitalRayTransform(camera, clipToEye)
+                                                        : TryMakeCameraClipToEye(camera, clipToEye);
+        if (hasRayTransform == false)
         {
             return Status::InvalidDescription;
         }
@@ -447,14 +516,16 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
         {
             uniform.ClipToEyeRows[row] = rows.Columns[row];
         }
-        uniform.RadialUpWorld = {upWorld.X,
-                                 upWorld.Y,
-                                 upWorld.Z,
-                                 static_cast<float32>(altitudeMetres / METRES_PER_KILOMETRE)};
+        uniform.RadialUpWorld = {
+            upWorld.X,
+            upWorld.Y,
+            upWorld.Z,
+            static_cast<float32>(math::Min(altitudeMetres, GetAtmosphereTopAltitude()) / METRES_PER_KILOMETRE)};
         uniform.DirectionToSunWorld = {sunWorld.X,
                                        sunWorld.Y,
                                        sunWorld.Z,
-                                       math::Clamp(math::Dot(upWorld, sunWorld), -1.0F, 1.0F)};
+                                       mIsOrbital == true ? 0.0F
+                                                          : math::Clamp(math::Dot(upWorld, sunWorld), -1.0F, 1.0F)};
         uniform.SolarIlluminance = {illuminance.X, illuminance.Y, illuminance.Z, 2 * math::Sin(radius * 0.5F)};
         math::Vector3 forwardWorld{};
         if (camera.OrthographicCamera == true &&
@@ -536,10 +607,17 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
     }
     if (mHasDisplayBindings == false)
     {
-        resources[TABLE_BINDING_COUNT - 1] = { .Binding = SKY_SLOT, .Texture = sky.View };
+        const StaticArray<rhi::RasterBindingResource, DISPLAY_BINDING_COUNT> displayResources{
+            {resources[0],
+             resources[1],
+             {
+                 .Binding = SKY_SLOT,
+                 .Texture = mIsOrbital == true ? inoutProgram.mTransmittanceView : sky.View,
+             },
+             resources[2]}};
         status = rhi::CreateBindingSet(device,
                                        inoutProgram.mPasses[static_cast<usize>(Stage::Display)].Layout,
-                                       resources.AsSpan(),
+                                       displayResources.AsSpan(),
                                        mDisplayBindings);
         if (IsAccepted(status) == false)
         {
@@ -554,7 +632,7 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
 bool RenderGraphAtmosphereView::TryGetLightingResources(AtmosphereLightingResources& outResources) const noexcept
 {
     using Stage = RenderGraphAtmosphereProgram::Stage;
-    if (mSkyOrNull == nullptr || mSkyOrNull->HasMultiple == false)
+    if (mSkyOrNull == nullptr || mSkyOrNull->HasMultiple == false || mIsOrbital == true)
     {
         return false;
     }
@@ -600,7 +678,8 @@ Status RenderGraphAtmosphereView::RecordTables(const rhi::RasterVertexSlice& ver
     {
         status = drawTable(Stage::Multiple, program.mMultiple, program.mMultipleBindings);
     }
-    return status == Status::Ready ? drawTable(Stage::Sky, mSkyOrNull->Texture, mSkyBindings) : status;
+    return status == Status::Ready && mIsOrbital == false ? drawTable(Stage::Sky, mSkyOrNull->Texture, mSkyBindings)
+                                                          : status;
 }
 
 Status RenderGraphAtmosphereView::RecordSky(const rhi::RasterVertexSlice& vertices,

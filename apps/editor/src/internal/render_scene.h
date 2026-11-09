@@ -162,6 +162,8 @@ struct RenderScene final
     QVector<foundation::uint64> AlwaysOnLightIds;
     graphics::renderer::AtmosphereDescription Atmosphere{};
     bool IsAtmosphereSunSwitchedOff = false;
+    foundation::uint64 AtmosphereMoonSourceId = 0;
+    bool IsAtmosphereMoonSwitchedOff = false;
     QString AtmosphereStatus;
     graphics::renderer::GiProbeGrid ProbeGrid{};
     QVector<foundation::uint64> GiProbeReceiverIds;
@@ -239,6 +241,8 @@ struct RenderScene final
                                    RenderScene& outScene,
                                    QString& outError,
                                    bool shouldComposeLighting = true);
+    /// Copy the atmosphere with preview light switches applied.
+    [[nodiscard]] graphics::renderer::AtmosphereDescription GetAtmosphereForView() const noexcept;
     /// True when a loaded World has neither drawable objects nor an Atmosphere request.
     [[nodiscard]] bool ShouldUseEmptyWorldView() const noexcept;
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.

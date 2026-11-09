@@ -244,9 +244,10 @@ QString GetWorldAtmosphereComponentId()
 {
     return QStringLiteral("atmosphere");
 }
-bool IsWorldAtmosphereSunField(const QString& component, const QString& field)
+bool IsWorldAtmosphereLightField(const QString& component, const QString& field)
 {
-    return component == GetWorldAtmosphereComponentId() && field == QStringLiteral("sun");
+    return component == GetWorldAtmosphereComponentId() &&
+           (field == QStringLiteral("sun") || field == QStringLiteral("moon"));
 }
 QJsonArray FindWorldAtmosphereEntities(const QJsonObject& document)
 {
@@ -261,7 +262,7 @@ QJsonArray FindWorldAtmosphereEntities(const QJsonObject& document)
     }
     return atmospheres;
 }
-bool IsWorldAtmosphereSun(const QJsonObject& entity)
+bool IsWorldAtmosphereLight(const QJsonObject& entity)
 {
     return entity.value(QStringLiteral("components"))
                .toObject()

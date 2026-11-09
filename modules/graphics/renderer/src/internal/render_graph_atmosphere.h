@@ -120,6 +120,7 @@ private:
     rhi::BufferHandle mUniform{};
     rhi::BindingSetHandle mSkyBindings{};
     rhi::BindingSetHandle mDisplayBindings{};
+    bool mIsOrbital = false;
     bool mHasUniform = false;
     bool mHasSkyBindings = false;
     bool mHasDisplayBindings = false;

@@ -15,6 +15,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -1425,6 +1426,47 @@ float64 IntegrateEarthBlueHigherOrders()
     }
     return radiance;
 }
+rhi::RasterStatus PollAtmosphereGraph(GraphGpuFixture& inoutFixture, rhi::RasterStatus status)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        status = inoutFixture.Graph.Poll();
+    }
+    return status;
+}
+
+void ReadAtmosphereFrame(GraphGpuFixture& inoutFixture)
+{
+    rhi::SubmissionToken submission;
+    REQUIRE(inoutFixture.Graph.Render(inoutFixture.Surface, WIDTH, HEIGHT, submission) == rhi::RasterStatus::Ready);
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect;
+    REQUIRE(inoutFixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(aspect == rhi::TextureAspect::Color);
+    rhi::ReadbackTicket readback;
+    constexpr usize ROW_BYTES = WIDTH * TEXEL_BYTES;
+    REQUIRE(rhi::RequestTextureReadback(inoutFixture.Device,
+                                        texture,
+                                        { .Width = WIDTH, .Height = HEIGHT },
+                                        ROW_BYTES,
+                                        readback) == rhi::RasterStatus::Pending);
+    rhi::RasterStatus status = rhi::GetStatus(inoutFixture.Device, readback);
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        REQUIRE(rhi::PollLifetime(inoutFixture.Device) == rhi::RasterStatus::Ready);
+        status = rhi::GetStatus(inoutFixture.Device, readback);
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CopyReadback(inoutFixture.Device,
+                              readback,
+                              inoutFixture.Pixels.GetData(),
+                              inoutFixture.Pixels.GetSize()) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Release(inoutFixture.Device, readback) == rhi::RasterStatus::Ready);
+}
 } // namespace
 
 TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque transport",
@@ -1435,17 +1477,9 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
     const renderer::RenderGraphPrograms programs =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
-    const auto poll = [&](rhi::RasterStatus status) {
-        const std::chrono::steady_clock::time_point deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            status = fixture.Graph.Poll();
-        }
-        return status;
-    };
-    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
             rhi::RasterStatus::Ready);
     const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
     fixture.Meshes[0].Geometry.Normals = normals.GetData();
@@ -1468,45 +1502,18 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
     uint64 contentRevision = 1;
     const auto update = [&]() {
         renderer::RenderGraphReport report;
-        return poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
-                                         {fixture.Items.GetData(), fixture.Items.GetSize()},
-                                         {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
-                                         ++revision,
-                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
-                                         report,
-                                         &inputs,
-                                         contentRevision));
-    };
-    const auto render = [&]() {
-        rhi::SubmissionToken submission;
-        REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, submission) == rhi::RasterStatus::Ready);
-        rhi::TextureHandle texture;
-        rhi::TextureAspect aspect;
-        REQUIRE(fixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
-        REQUIRE(aspect == rhi::TextureAspect::Color);
-        rhi::ReadbackTicket readback;
-        constexpr usize ROW_BYTES = WIDTH * TEXEL_BYTES;
-        REQUIRE(rhi::RequestTextureReadback(fixture.Device,
-                                            texture,
-                                            { .Width = WIDTH, .Height = HEIGHT },
-                                            ROW_BYTES,
-                                            readback) == rhi::RasterStatus::Pending);
-        rhi::RasterStatus status = rhi::GetStatus(fixture.Device, readback);
-        const std::chrono::steady_clock::time_point deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            REQUIRE(rhi::PollLifetime(fixture.Device) == rhi::RasterStatus::Ready);
-            status = rhi::GetStatus(fixture.Device, readback);
-        }
-        REQUIRE(status == rhi::RasterStatus::Ready);
-        REQUIRE(rhi::CopyReadback(fixture.Device, readback, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
-                rhi::RasterStatus::Ready);
-        REQUIRE(rhi::Release(fixture.Device, readback) == rhi::RasterStatus::Ready);
+        return PollAtmosphereGraph(fixture,
+                                   fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                                        {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                                        {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                        ++revision,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report,
+                                                        &inputs,
+                                                        contentRevision));
     };
     REQUIRE(update() == rhi::RasterStatus::Ready);
-    render();
+    ReadAtmosphereFrame(fixture);
     const usize covered = GetPixel(WIDTH / 2, HEIGHT / 2);
     const usize sky = GetPixel(2, 2);
     const StaticArray<uint8, PIXEL_BYTES> original = fixture.Pixels;
@@ -1518,7 +1525,7 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
     camera.Atmosphere.SolarIlluminance = {SKY_ILLUMINANCE, SKY_ILLUMINANCE, SKY_ILLUMINANCE};
     camera.Atmosphere.DirectionToSunWorld = {std::sqrt(1 - solarElevation * solarElevation), solarElevation, 0};
     REQUIRE(update() == rhi::RasterStatus::Ready);
-    render();
+    ReadAtmosphereFrame(fixture);
     for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
     {
         const math::Vector3d sunWorld{static_cast<float64>(camera.Atmosphere.DirectionToSunWorld.X),
@@ -1546,13 +1553,13 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         camera.Atmosphere.SolarIlluminance = {DISK_ILLUMINANCE, DISK_ILLUMINANCE, DISK_ILLUMINANCE};
         camera.Atmosphere.SolarAngularRadiusRadians = DISK_RADIUS;
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         const uint64 drawableRevision = fixture.Graph.GetDrawableSceneRevision();
         const StaticArray<uint8, PIXEL_BYTES> disk = fixture.Pixels;
         camera.Atmosphere.SolarAngularRadiusRadians = 0;
         CHECK(update() == rhi::RasterStatus::InvalidDescription);
         CHECK(fixture.Graph.GetDrawableSceneRevision() == drawableRevision);
-        render();
+        ReadAtmosphereFrame(fixture);
         CHECK(fixture.Pixels == disk);
         camera.Atmosphere.SolarAngularRadiusRadians = DISK_RADIUS;
         const float64 diskSine = std::sin(static_cast<float64>(DISK_RADIUS));
@@ -1576,11 +1583,11 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         camera.CameraForward = {0, 0, -1};
         camera.Atmosphere.SolarIlluminance = {SKY_ILLUMINANCE, SKY_ILLUMINANCE, SKY_ILLUMINANCE};
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         const uint8 singleScatteringBlue = fixture.Pixels[sky + 2];
         camera.Atmosphere.ShouldLightScene = true;
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         constexpr usize BLUE_CHANNEL = 2;
         const float64 higherOrderBlue = static_cast<float64>(SKY_ILLUMINANCE) * IntegrateEarthBlueHigherOrders();
         const float64 observedBlue =
@@ -1595,7 +1602,7 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         fixture.Items[0].MeshToWorld.Translation.Y = CAMERA_HEIGHT_METRES;
         ++contentRevision;
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         const StaticArray<uint8, PIXEL_BYTES> nearPixels = fixture.Pixels;
         CHECK(nearPixels[covered] == original[covered]);
 
@@ -1605,7 +1612,7 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         camera.WorldToClip.Columns[2].Z = -1 / FAR_PLANE_METRES;
         camera.WorldToClip.Columns[3].Z = camera.CameraPosition.Z / FAR_PLANE_METRES;
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         const StaticArray<uint8, PIXEL_BYTES> farPixels = fixture.Pixels;
         for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
         {
@@ -1626,7 +1633,7 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
 
         camera.Atmosphere.SolarIlluminance = {SKY_ILLUMINANCE, SKY_ILLUMINANCE, SKY_ILLUMINANCE};
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         CHECK(fixture.Pixels[covered + 2] > farPixels[covered + 2]);
 
         // A second directional light comes before the Sun in the packed list.
@@ -1651,11 +1658,11 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         material.Emission = {};
         ++contentRevision;
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         const StaticArray<uint8, PIXEL_BYTES> unlinked = fixture.Pixels;
         camera.Atmosphere.SunSourceId = lights[1].SourceId;
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         CHECK(fixture.Pixels[covered] < unlinked[covered]);
         CHECK(fixture.Pixels[covered + 1] == unlinked[covered + 1]);
         CHECK(fixture.Pixels[covered + 1] > 0);
@@ -1664,15 +1671,154 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         inputs.Environment = {1, 1, 1};
         ++contentRevision;
         REQUIRE(update() == rhi::RasterStatus::Ready);
-        render();
+        ReadAtmosphereFrame(fixture);
         CHECK(fixture.Pixels == atmosphericLighting);
         inputs.Lights = {};
         ++contentRevision;
     }
     camera.Atmosphere.IsEnabled = false;
     REQUIRE(update() == rhi::RasterStatus::Ready);
-    render();
+    ReadAtmosphereFrame(fixture);
     CHECK(fixture.Pixels[sky] == original[sky]);
     CHECK(fixture.Pixels[sky + 1] == original[sky + 1]);
     CHECK(fixture.Pixels[sky + 2] == original[sky + 2]);
+}
+
+TEST_CASE("Celestial boundary composes through ground and orbital atmosphere rays",
+          "[render-graph][atmosphere][gpu][reference-compute]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    constexpr float32 LUNAR_PEAK = 0.5F;
+    constexpr float32 TEST_DISK_RADIUS = 0.15F;
+    constexpr usize BLUE_CHANNEL = 2;
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.Celestial.IsEnabled = true;
+    camera.Atmosphere.Celestial.LunarPeakRadiance = {LUNAR_PEAK, LUNAR_PEAK, LUNAR_PEAK};
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = TEST_DISK_RADIUS;
+    const renderer::SceneShaderInputs inputs;
+    uint64 revision = 0;
+    const auto render = [&]() {
+        renderer::RenderGraphReport report;
+        INFO("view revision " << (revision + 1) << ", height " << camera.CameraPosition.Y);
+        REQUIRE(PollAtmosphereGraph(fixture,
+                                    fixture.Graph.Update({},
+                                                         {},
+                                                         {&camera, 1},
+                                                         ++revision,
+                                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                         report,
+                                                         &inputs)) == rhi::RasterStatus::Ready);
+        ReadAtmosphereFrame(fixture);
+    };
+    const auto pointAtMoon = [&](math::Vector3 directionWorld) {
+        camera.CameraForward = directionWorld;
+        camera.Atmosphere.DirectionToSunWorld = -directionWorld;
+        camera.Atmosphere.Celestial.DirectionToMoonWorld = directionWorld;
+    };
+    camera.OrthographicCamera = true;
+    pointAtMoon({0, 1, 0});
+    render();
+    const uint8 zenith = fixture.Pixels[center + BLUE_CHANNEL];
+    CHECK(zenith > 0);
+    CHECK(static_cast<float32>(zenith) / 255 < LUNAR_PEAK);
+
+    camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+    pointAtMoon({1, 0, 0});
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] < zenith);
+    pointAtMoon({0, -1, 0});
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+
+    camera.OrthographicCamera = false;
+    constexpr float32 ORBIT_HEIGHT_METRES = 500000;
+    constexpr float64 GROUND_KILOMETRES = 6360;
+    constexpr float64 TOP_KILOMETRES = 6460;
+    constexpr float64 ORBIT_RADIUS_KILOMETRES = GROUND_KILOMETRES + static_cast<float64>(ORBIT_HEIGHT_METRES) / 1000;
+    camera.CameraPosition = {0, ORBIT_HEIGHT_METRES, 0};
+    const auto makeOrbitRay = [&](float64 impactKilometres, float32 fieldOfView) {
+        const math::Vector3 directionWorld{
+            static_cast<float32>(impactKilometres / ORBIT_RADIUS_KILOMETRES),
+            -static_cast<float32>(std::sqrt(1 - impactKilometres * impactKilometres /
+                                                    (ORBIT_RADIUS_KILOMETRES * ORBIT_RADIUS_KILOMETRES))),
+            0};
+        constexpr float32 TARGET_OFFSET_METRES = 10000;
+        constexpr float32 NEAR_METRES = 1000;
+        constexpr float32 FAR_METRES = 2000000;
+        math::Matrix4 worldToView;
+        math::Matrix4 viewToClip;
+        REQUIRE(math::TryLookAt(camera.CameraPosition,
+                                camera.CameraPosition + directionWorld * TARGET_OFFSET_METRES,
+                                {0, 0, 1},
+                                worldToView) == math::MathStatus::Success);
+        REQUIRE(math::TryPerspectiveReverseZ(fieldOfView,
+                                             static_cast<float32>(WIDTH) / HEIGHT,
+                                             NEAR_METRES,
+                                             FAR_METRES,
+                                             viewToClip) == math::MathStatus::Success);
+        for (math::Vector4& column : viewToClip.Columns)
+        {
+            column.Z = column.W - column.Z;
+        }
+        camera.WorldToClip = viewToClip * worldToView;
+        pointAtMoon(directionWorld);
+    };
+    constexpr float32 ORACLE_FIELD_OF_VIEW = 0.01F;
+    makeOrbitRay(TOP_KILOMETRES + 20, ORACLE_FIELD_OF_VIEW);
+    render();
+    CHECK(math::Abs(static_cast<float64>(fixture.Pixels[center + BLUE_CHANNEL]) / 255 -
+                    static_cast<float64>(LUNAR_PEAK)) <= 1.0 / 255);
+    constexpr float64 LIMB_IMPACT_KILOMETRES = GROUND_KILOMETRES + 15;
+    makeOrbitRay(LIMB_IMPACT_KILOMETRES, ORACLE_FIELD_OF_VIEW);
+    render();
+    constexpr usize STEPS = 2048;
+    const float64 halfDistance =
+        std::sqrt(TOP_KILOMETRES * TOP_KILOMETRES - LIMB_IMPACT_KILOMETRES * LIMB_IMPACT_KILOMETRES);
+    const float64 step = 2 * halfDistance / STEPS;
+    float64 depth = 0;
+    for (usize i = 0; i < STEPS; ++i)
+    {
+        const float64 distance = (static_cast<float64>(i) + 0.5) * step - halfDistance;
+        const float64 altitude =
+            std::sqrt(LIMB_IMPACT_KILOMETRES * LIMB_IMPACT_KILOMETRES + distance * distance) - GROUND_KILOMETRES;
+        depth += ComputeEarthExtinction(altitude, BLUE_CHANNEL) * step;
+    }
+    const float64 expected = static_cast<float64>(LUNAR_PEAK) * std::exp(-depth);
+    const float64 observed = static_cast<float64>(fixture.Pixels[center + BLUE_CHANNEL]) / 255;
+    CHECK(observed > 0);
+    CHECK(math::Abs(observed - expected) <= 2.0 / 255 + 0.10 * expected);
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = 0;
+    camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    camera.Atmosphere.SolarIlluminance = {1, 1, 1};
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] > 0);
+
+    camera.Atmosphere.SolarIlluminance = {};
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = TEST_DISK_RADIUS;
+    makeOrbitRay(GROUND_KILOMETRES - 20, ORACLE_FIELD_OF_VIEW);
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = 0;
+    makeOrbitRay(TOP_KILOMETRES + 100, 0.5F);
+    render();
+    const StaticArray<uint8, PIXEL_BYTES> starless = fixture.Pixels;
+    camera.Atmosphere.Celestial.StarRadiance = 1;
+    render();
+    const StaticArray<uint8, PIXEL_BYTES> stars = fixture.Pixels;
+    CHECK(stars != starless);
+    render();
+    CHECK(fixture.Pixels == stars);
 }
