@@ -154,6 +154,147 @@ TEST_CASE("Scene source checks the versioned project BRDF program", "[scene-sour
                    "brdf.powers");
 }
 
+TEST_CASE("Scene source compiles closure programs into bounded register code", "[scene-source][program]")
+{
+    namespace format = ludus::content::scene_format;
+    constexpr std::string_view MATERIAL = R"("name": "Wall", "model": "diffuse")";
+    // A rusted metal: the diffuse rust weight is one minus the conductor weight; an unused
+    // parameter is dropped, and equal inline constants share one slot.
+    const std::string text = ReplaceInValid(MATERIAL, R"("name":"Wall","model":"program","metallic":0.75,
+        "roughness":0.4,"program":{"version":1,
+          "parameters":[{"name":"metal","input":"metallic"},
+                        {"name":"rust","one_minus":"metal"},
+                        {"name":"unused","add":[1,2]},
+                        {"name":"tint","multiply":["rust",[0.6,0.3,0.1]]},
+                        {"name":"rough","input":"roughness"},
+                        {"name":"sheen_weight","lerp":[0,0.25,"rust"]}],
+          "lobes":[{"operation":"diffuse","weight":"tint"},
+                   {"operation":"conductor","weight":"metal","roughness":"rough","eta":[0.2,0.9,1.1],
+                    "k":[3.9,2.4,2.2]},
+                   {"operation":"cosine_power","weight":"sheen_weight","roughness":"rough","power":8}]})");
+    SceneSource scene;
+    SceneSourceError error;
+    const SceneSourceStatus status = ParseSceneSource(text, scene, error);
+    INFO(error.Message.View());
+    REQUIRE(status == SceneSourceStatus::Success);
+    const ludus::content::scene_source::SourceMaterial& material = scene.Materials[0];
+    CHECK(material.Model == SourceMaterialModel::Program);
+    CHECK(material.Metallic == 0.75);
+    CHECK(material.Roughness == 0.4);
+    const format::MaterialProgram& program = material.Program;
+    REQUIRE(format::IsMaterialProgramValid(program) == true);
+    // metal, rust, tint constant, tint, rough, two lerp constants and the lerp; "unused" and its
+    // constants are dropped.
+    CHECK(program.InstructionCount == 8);
+    CHECK(program.ConstantCount == 3);
+    REQUIRE(program.LobeCount == 3);
+    CHECK(program.Lobes[0].Operation == format::MaterialLobeOperation::Diffuse);
+    CHECK(program.Lobes[0].RoughnessRegister == format::NO_MATERIAL_PROGRAM_REGISTER);
+    CHECK(program.Lobes[1].Operation == format::MaterialLobeOperation::Conductor);
+    CHECK(program.Lobes[1].K[0] == 3.9F);
+    CHECK(program.Lobes[2].Operation == format::MaterialLobeOperation::CosinePower);
+    CHECK(program.Lobes[2].Power == 8);
+    CHECK(program.Lobes[1].RoughnessRegister == program.Lobes[2].RoughnessRegister);
+    CHECK(format::GetMaterialProgramCapabilities(program) ==
+          (format::LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION |
+           format::LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER));
+    // No register is read before it is written, and each live value keeps its own register.
+    for (uint32 index = 0; index < program.InstructionCount; ++index)
+    {
+        CHECK(program.Instructions[index].Destination < format::MAX_MATERIAL_PROGRAM_REGISTERS);
+    }
+}
+
+TEST_CASE("Scene source rejects closure programs it cannot compile", "[scene-source][program]")
+{
+    constexpr std::string_view MATERIAL = R"("name": "Wall", "model": "diffuse")";
+    const auto program = [MATERIAL](std::string_view body) {
+        return ReplaceInValid(MATERIAL, std::string(R"("name":"P","model":"program","program":)") + std::string(body));
+    };
+    RequireFailure(program(R"({"version":2,"lobes":[{"operation":"diffuse","weight":1}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.version");
+    RequireFailure(program(R"({"version":1,"lobes":[]})"), SceneSourceStatus::Malformed, "program.lobes");
+    RequireFailure(program(R"({"version":1,"lobes":[{"operation":"glass","weight":1}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.lobes[0].operation");
+    RequireFailure(program(R"({"version":1,"lobes":[{"operation":"conductor","weight":1,"eta":[1,1,1],
+                               "k":[1,1,1]}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.lobes[0].roughness: is required");
+    RequireFailure(program(R"({"version":1,"lobes":[{"operation":"diffuse","weight":1,"power":4}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.lobes[0].power: does not apply");
+    RequireFailure(program(R"({"version":1,"lobes":[{"operation":"diffuse","weight":"missing"}]})"),
+                   SceneSourceStatus::UnresolvedReference,
+                   "program.lobes[0].weight: names no earlier parameter");
+    RequireFailure(program(R"({"version":1,"parameters":[{"name":"a","add":["a",1]}],
+                               "lobes":[{"operation":"diffuse","weight":"a"}]})"),
+                   SceneSourceStatus::UnresolvedReference,
+                   "program.parameters[0].add[0]");
+    RequireFailure(program(R"({"version":1,"parameters":[{"name":"a","constant":1},{"name":"a","constant":2}],
+                               "lobes":[{"operation":"diffuse","weight":"a"}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.parameters[1].name: repeats");
+    RequireFailure(program(R"({"version":1,"parameters":[{"name":"a","constant":1,"input":"metallic"}],
+                               "lobes":[{"operation":"diffuse","weight":"a"}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "define exactly one of");
+    RequireFailure(program(R"({"version":1,"parameters":[{"name":"a","input":"opacity"}],
+                               "lobes":[{"operation":"diffuse","weight":"a"}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.parameters[0].input");
+    RequireFailure(program(R"({"version":1,"parameters":[{"name":"a","lerp":[0,1]}],
+                               "lobes":[{"operation":"diffuse","weight":"a"}]})"),
+                   SceneSourceStatus::Malformed,
+                   "three operands");
+    RequireFailure(program(R"({"version":1,"lobes":[{"operation":"diffuse","weight":20000}]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.lobes[0].weight");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"P","model":"diffuse","program":{"version":1})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program requires the program model");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"P","model":"program")"),
+                   SceneSourceStatus::Malformed,
+                   "program: missing member");
+
+    // Nine lobes exceed the lobe limit.
+    std::string lobes;
+    for (usize i = 0; i < 9; ++i)
+    {
+        lobes += i == 0 ? "" : ",";
+        lobes += R"({"operation":"diffuse","weight":1})";
+    }
+    RequireFailure(program(R"({"version":1,"lobes":[)" + lobes + "]}"), SceneSourceStatus::Limit, "at most 8 lobes");
+    // Eight lobe weights from a chain of sums, and one roughness read at the end, keep nine
+    // values live from two constants.
+    std::string chain = R"({"name":"r","constant":0.5},{"name":"x0","constant":0.1})";
+    lobes.clear();
+    for (usize i = 1; i <= 8; ++i)
+    {
+        const std::string name = "x" + std::to_string(i);
+        chain += R"(,{"name":")" + name + R"(","add":["x)" + std::to_string(i - 1) + R"(","x0"]})";
+        lobes += i == 1 ? "" : ",";
+        lobes +=
+            i < 8 ? R"({"operation":"diffuse","weight":")" + name + "\"}"
+                  : R"({"operation":"conductor","weight":")" + name + R"(","roughness":"r","eta":[1,1,1],"k":[1,1,1]})";
+    }
+    RequireFailure(program(R"({"version":1,"parameters":[)" + chain + R"(],"lobes":[)" + lobes + "]}"),
+                   SceneSourceStatus::Limit,
+                   "live at once");
+    // A chain of sums keeps few values live but loads nine distinct constants.
+    std::string parameters = R"({"name":"s0","constant":1})";
+    for (usize i = 1; i < 9; ++i)
+    {
+        parameters += R"(,{"name":"s)" + std::to_string(i) + R"(","add":["s)" + std::to_string(i - 1) + R"(",)" +
+                      std::to_string(i + 1) + "]}";
+    }
+    RequireFailure(program(R"({"version":1,"parameters":[)" + parameters +
+                           R"(],"lobes":[{"operation":"diffuse","weight":"s8"}]})"),
+                   SceneSourceStatus::Limit,
+                   "distinct constants");
+}
+
 TEST_CASE("Scene source camera, description and emission are optional", "[scene-source]")
 {
     const std::string text = R"({"format": "ludus.scene", "version": 1, "name": "Bare",

@@ -1323,6 +1323,42 @@ or false declaration produces the existing incompatible material requirement
 diagnostic. Rebuild existing ray graph shader packages for scene kernel ABI 14
 to pick up the evaluator. The graph sources use the same interface.
 
+### Material closure programs
+
+A [closure program](scene-source-format.md#closure-program) adds a new
+composition of supported lobes as data. It needs no new model tag, scene kernel
+ABI or graph edit. The program is owned by the [scene format](../../modules/content/scene_format/include/ludus/content/scene_format/material_program.h)
+and has two parts. A straight-line parameter program runs over eight float4
+registers. A flattened mixture of up to eight leaf lobes follows it. The lobes
+are diffuse, isotropic GGX conductor and cosine power. With RGB lobe weights
+$w_i$ and selection weights $s_i$, the mean of each $w_i$, the surface value is
+$\sum_i w_i f_i$. One uniform selects a lobe with probability $s_i / \sum_j s_j$,
+and two more sample its direction. Evaluation and continuation return the full
+mixture density $\sum_i s_i p_i / \sum_j s_j$. This generalizes the
+[Mix](#diffuse-and-rough-conductor-mix) and the same one-sample mixture
+construction of Pharr, Jakob and Humphreys, *Physically Based Rendering*,
+fourth edition, [section 2.2.3](https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency).
+
+A program's capabilities come from its operations. The mixture offers
+continuous reflection and the fixed three-value sampler only when every lobe
+does. It carries any lobe's transmission, internal walk or delta events.
+Every version-1 operation offers both, so a version-1 program satisfies the
+fixed-dimension reflection requirement by construction. Layered, dielectric
+and subsurface operations stay built-in models until gate 4 defines their
+estimated-density and null-event contracts.
+
+LUSCN version 11 stores one fixed-width program record after the extension of
+each program material. The cook, the Resources decoder and the validator share
+the limits and field layout. The decoder rejects programs with unknown opcodes,
+forward register reads, nonzero padding or out-of-range parameters.
+
+Status: the content path is complete. No renderer evaluates programs yet.
+Renderer admission rejects a program material as an invalid description, as it
+does the unresolved marker. Editor World import names the repair, which is to
+assign a built-in model for now. A C++ oracle interpreter and one shared Slang
+interpreter, used by every GPU path, come next with CPU/GPU parity and measured
+costs. World import and inspection follow them.
+
 ### Preparation and publication
 
 Validate the candidate definition and overrides, resolve its exact dependencies,

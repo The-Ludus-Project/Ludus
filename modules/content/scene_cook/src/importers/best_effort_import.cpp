@@ -1474,6 +1474,49 @@ void ResolveCamera(const SceneIr& scene,
     return version;
 }
 
+/// Write a LUSCN v11 program record field by field (scene_format::MaterialProgram).
+void AppendMaterialProgram(const format::MaterialProgram& program, detail::ByteWriter& inoutBlob) noexcept
+{
+    for (const uint32 value : {program.Version, program.ConstantCount, program.InstructionCount, program.LobeCount})
+    {
+        inoutBlob.AppendUint32(value);
+    }
+    for (const foundation::StaticArray<float32, format::MATERIAL_PROGRAM_COMPONENTS>& constant : program.Constants)
+    {
+        for (const float32 component : constant)
+        {
+            inoutBlob.AppendFloat32(static_cast<float64>(component));
+        }
+    }
+    for (const format::MaterialProgramInstruction& instruction : program.Instructions)
+    {
+        const foundation::StaticArray<uint8, format::MATERIAL_PROGRAM_INSTRUCTION_FIELDS> fields{
+            {static_cast<uint8>(instruction.Opcode),
+             instruction.Destination,
+             instruction.OperandA,
+             instruction.OperandB,
+             instruction.OperandC}};
+        inoutBlob.AppendBytes({fields.GetData(), fields.GetSize()});
+        inoutBlob.AppendBytes({instruction.Reserved.GetData(), instruction.Reserved.GetSize()});
+    }
+    for (const format::MaterialProgramLobe& lobe : program.Lobes)
+    {
+        const foundation::StaticArray<uint8, format::MATERIAL_PROGRAM_LOBE_BYTE_FIELDS> fields{
+            {static_cast<uint8>(lobe.Operation), lobe.WeightRegister, lobe.RoughnessRegister}};
+        inoutBlob.AppendBytes({fields.GetData(), fields.GetSize()});
+        inoutBlob.AppendBytes({lobe.Reserved.GetData(), lobe.Reserved.GetSize()});
+        for (const float32 value : lobe.Eta)
+        {
+            inoutBlob.AppendFloat32(static_cast<float64>(value));
+        }
+        for (const float32 value : lobe.K)
+        {
+            inoutBlob.AppendFloat32(static_cast<float64>(value));
+        }
+        inoutBlob.AppendFloat32(static_cast<float64>(lobe.Power));
+    }
+}
+
 void PackBundle(const SceneIr& scene,
                 const IrCamera& camera,
                 const CookPlan& plan,
@@ -1552,6 +1595,12 @@ void PackBundle(const SceneIr& scene,
         inoutBlob.AppendFloat32(static_cast<float64>(scattering.AlphaV));
         inoutBlob.AppendFloat32(static_cast<float64>(scattering.CoatingEta));
         inoutBlob.AppendFloat32(static_cast<float64>(scattering.CoatingThickness));
+        if (scattering.Model == format::MaterialModel::Program)
+        {
+            // The planner copies Scattering from the representative, so it exists.
+            LUDUS_ASSERT(planned.Representative != IR_NONE);
+            AppendMaterialProgram(scene.Materials[planned.Representative].Program, inoutBlob);
+        }
     }
     for (const CookedMesh& mesh : meshes)
     {
@@ -2181,7 +2230,8 @@ void ReportDisabledLights(const SceneIr& scene, const CookedLighting& lighting, 
         sizeof(format::Header) +
         plan.Materials.GetSize() *
             (MAX_TEXTURES_PER_SLOT * sizeof(format::TextureRecord) + sizeof(format::MaterialRecordV6) +
-             format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3));
+             format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3)) +
+        CountMaterialProgramBytes(plan);
     const usize bundleLimit = format::IMPORT_LIMITS.BundleBytes;
     const usize fixedBytes = geometryBytes + recordBytes + lightingRecords;
     const usize lightingBudget = bundleLimit > fixedBytes ? bundleLimit - fixedBytes : 0;

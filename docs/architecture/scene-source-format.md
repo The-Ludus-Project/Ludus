@@ -153,11 +153,12 @@ value.
 | Member | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique name that objects refer to. |
-| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). |
+| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). `"program"` selects a [closure program](#closure-program). |
 | `base_color` | yes | Linear Rec. 709 reflectance, each channel in [0, 1]. |
-| `metallic` | no | `metallic_roughness` only; [0, 1], default 0. |
-| `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness`, default 1. |
+| `metallic` | no | `metallic_roughness` and `program` only; [0, 1], default 0. |
+| `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness` and `program`, default 1. |
 | `brdf` | for project BRDF | Versioned reflection program described below. |
+| `program` | for program | Versioned closure program described below. |
 | `weight` | for Mix | Conductor fraction in [0, 1]. The Lambertian lobe uses the complementary weight and `base_color`. |
 | `conductor` | for Mix | Contains `alpha` (isotropic GGX width in [0.0001, 1]), `eta` (three positive real IOR channels), and `k` (three nonnegative extinction channels). Optical constants are at most 10000. |
 | `emission` | no | Makes every polygon of the material an area light. |
@@ -194,6 +195,74 @@ Its default is `false`.
 
 See [assign and edit a project BRDF in World](../development/editor-workspace.md#assign-and-edit-a-project-brdf)
 and the [transport contract](renderer-systems.md#project-brdf-programs).
+
+### Closure program
+
+A closure program describes a material as a weighted mixture of leaf lobes.
+Named parameters compute the lobe weights and roughness from constants and from
+the material's surface inputs. This example is a rusted metal. Its conductor
+weight is the metallic input, and the rust's diffuse weight is the remainder
+tinted orange:
+
+```json
+{
+  "name": "Rust",
+  "model": "program",
+  "base_color": [0.6, 0.3, 0.1],
+  "metallic": 0.7,
+  "roughness": 0.4,
+  "program": {
+    "version": 1,
+    "parameters": [
+      {"name": "metal", "input": "metallic"},
+      {"name": "rust", "one_minus": "metal"},
+      {"name": "tint", "multiply": ["rust", [0.6, 0.3, 0.1]]},
+      {"name": "rough", "input": "roughness"}
+    ],
+    "lobes": [
+      {"operation": "diffuse", "weight": "tint"},
+      {"operation": "conductor", "weight": "metal", "roughness": "rough",
+       "eta": [0.2, 0.9, 1.1], "k": [3.9, 2.4, 2.2]}
+    ]
+  }
+}
+```
+
+`parameters` is an optional list evaluated in order. Each entry has a unique
+`name` and exactly one expression:
+
+| Expression | Value |
+| --- | --- |
+| `"constant": c` | A number for all three channels, or three numbers. Magnitudes are at most 10000. |
+| `"input": "base_color"` | The base colour, after its texture. `"roughness"` and `"metallic"` give that input in every channel. |
+| `"add": [a, b]`, `"multiply": [a, b]` | Per-channel sum or product. |
+| `"lerp": [a, b, t]` | Per-channel `a + (b - a) * t`. |
+| `"one_minus": a`, `"clamp": a` | `1 - a`, or `a` clamped to [0, 1]. |
+
+An operand names an earlier parameter or gives an inline constant. Name
+references must point backwards, so a program cannot form a cycle. `lobes` lists
+one to eight leaf lobes. Each lobe takes a `weight` operand whose three channels
+scale the lobe:
+
+| `operation` | Other members | Lobe |
+| --- | --- | --- |
+| `"diffuse"` | none | Lambertian reflection. |
+| `"conductor"` | `roughness`, `eta`, `k` | Isotropic GGX conductor. Alpha is the square of the roughness operand. `eta` holds three positive and `k` three nonnegative channels, each at most 10000. |
+| `"cosine_power"` | `roughness`, `power` | The [project BRDF](#project-brdf-program) cosine-power term with exponent `(1 - roughness) * power`, power in [0, 32]. |
+
+A nested mix is written as a product of weights, so the mixture is always flat.
+The material's `base_color`, `metallic` and `roughness` are the surface inputs.
+They are also the metallic-roughness approximation that raster profiles draw.
+
+The reader compiles the program into bounded register code:
+- At most 32 values, counting inline constants.
+- At most 8 distinct constants.
+- At most 8 values live at once.
+
+It drops parameters that no lobe uses, and it reuses a register after the last
+read of its value. A program that exceeds a limit fails with `LIMIT_EXCEEDED`
+and a message that names the fix. The cook stores programs in LUSCN version 11; see
+[closure programs in the renderer](renderer-systems.md#material-closure-programs).
 
 ### Object
 

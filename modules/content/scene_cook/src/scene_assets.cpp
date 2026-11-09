@@ -1912,6 +1912,12 @@ struct BundleParts final
             {
                 return inoutFailure.FailInvalid("Material model requires a newer LUSCN version");
             }
+            if (source.Scattering.Model == format::MaterialModel::Program)
+            {
+                return inoutFailure.FailInvalid(
+                    "World import does not support closure-program materials yet. Assign a built-in model "
+                    "such as mix or metallic_roughness to this material in its scene source, then import again.");
+            }
         }
         BundleMaterial material;
         material.Bytes = data.subspan(start, inoutReader.GetOffset() - start);
