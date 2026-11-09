@@ -657,9 +657,9 @@ TEST_CASE("Save and Undo follow the active document tab", "[editor][layout][shel
     QListWidget* entities = world->findChild<QListWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(entities != nullptr);
     const int32 before = entities->count();
-    QPushButton* add = world->findChild<QPushButton*>(QStringLiteral("worldAdd"));
-    REQUIRE(add != nullptr);
-    add->click();
+    QAction* addOrNull = world->findChild<QAction*>(QStringLiteral("worldAdd"));
+    REQUIRE(addOrNull != nullptr);
+    addOrNull->trigger();
     Settle();
     CHECK(entities->count() == before + 1);
     // Focus in the Properties tool window keeps the World as the active document.
@@ -708,9 +708,9 @@ TEST_CASE("Destroying the window stops World previews before deleting the Render
         REQUIRE(well.OpenDocument(renderer) == true);
         REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
         REQUIRE(well.OpenDocument(world) == true);
-        QPushButton* add = world->findChild<QPushButton*>(QStringLiteral("worldAdd"));
-        REQUIRE(add != nullptr);
-        add->click();
+        QAction* addOrNull = world->findChild<QAction*>(QStringLiteral("worldAdd"));
+        REQUIRE(addOrNull != nullptr);
+        addOrNull->trigger();
         Settle();
         Action(window, QStringLiteral("document.save"))->trigger();
         REQUIRE(world->Dirty() == false);
