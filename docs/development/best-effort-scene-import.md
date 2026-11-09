@@ -369,7 +369,7 @@ disabled light adds a `LIGHT_DISABLED` warning to the import report; when no
 enabled light or environment remains, the message names the remedies. A disabled
 light keeps its authored position and direction. When a World renders almost
 black, the editor warns and offers to add a sun aimed like the first disabled
-directional light; **Add Geometry / Light → Sun** adds the same one (see [Lighting a World that renders black](editor-workspace.md#lighting-a-world-that-renders-black)).
+directional light; **Add World Preset → Sun** adds the same one (see [Lighting a World that renders black](editor-workspace.md#lighting-a-world-that-renders-black)).
 
 In the World's import preview, choose **Choose environment…**, then select the
 bundled HDR inside the scene source folder. Review the updated preview and choose

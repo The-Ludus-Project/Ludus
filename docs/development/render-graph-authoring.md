@@ -3096,7 +3096,7 @@ shaders from the scene. `main_shaders/luminaire.slang` defines its emission:
   scene geometry between a receiver and the panel does.
 
 **Add a luminaire to the World.** In a default World, choose
-**Add Geometry / Light → Luminaire**. It creates an entity with a `transform` and a
+**Add World Preset → Luminaire**. It creates an entity with a `transform` and a
 `luminaire` component, a 0.7 m panel facing down 2 m above the origin. Select it
 in the entity list to outline the panel and its emission direction in the
 viewport, and move or rotate it with the transform tools. The panel emits along

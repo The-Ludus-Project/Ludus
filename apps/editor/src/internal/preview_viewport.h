@@ -98,6 +98,11 @@ public:
     /// input does not navigate. Platform has no pointer input yet, so the game receives none.
     /// @param endpointOrNull The game's hosted window, borrowed until replaced; null ends forwarding.
     void SetPlayInput(platform::HostedWindowEndpoint* endpointOrNull);
+    /// Explore the currently presented World from spawn, at speed in metres per second.
+    /// Existing right-drag navigation controls the camera; Escape or losing focus restores the editor view.
+    [[nodiscard]] bool
+    BeginFirstPerson(const gameplay::camera::CameraSample& spawn, foundation::float32 speed, QString& outError);
+    void EndFirstPerson();
     /// Present the project's graph output using this viewport's scene, camera and device.
     /// Call on the GUI thread; workspace must outlive the binding. Native builds only.
     /// While this viewport's preview feeds the graph, it also presents the workspace's ray path
@@ -256,6 +261,8 @@ private:
     QTimer mNavigationTimer;
     QElapsedTimer mNavigationClock;
     foundation::float32 mSpeedMultiplier = 1;
+    foundation::float32 mFirstPersonSpeed = 0;
+    bool mShouldJump = false;
     bool mIsFlying = false;
     bool mHasWorldContextMenu = false;
     bool mHasContextPress = false;
