@@ -27,6 +27,7 @@
 QT_BEGIN_NAMESPACE
 class QAction;
 class QContextMenuEvent;
+class QMessageBox;
 QT_END_NAMESPACE
 namespace ludus::platform
 {
@@ -57,6 +58,16 @@ enum class ViewportPresentation : foundation::uint8
 /// @param maxWidth Viewport width in logical pixels; a non-positive width returns text unchanged.
 /// @return The text with the added line breaks and shortened words.
 [[nodiscard]] QString FitOverlayText(const QString& text, qreal maxWidth);
+/// Offer to switch a viewport whose ray render graph draws too slowly to navigate to the engine's default raster
+/// renderer, naming the measured frame time. The window-modal box opens without a nested event loop and deletes
+/// itself when closed. **Switch to raster** (the default button) turns on inoutSource's Force raster preference,
+/// which persists with the viewport and stays visible in its toolbar; **Keep current renderer** (Escape) changes
+/// nothing. The render graph and the World are never edited. GUI thread only.
+/// @param inoutSource Preview whose Force raster is turned on; the box stops acting on it if it is destroyed first.
+/// @param frameMilliseconds Mean measured frame time, in milliseconds.
+/// @return The open box, owned by inoutParent; object name `viewportSlowFrameSuggestion`.
+QMessageBox*
+SuggestRasterFallback(QWidget& inoutParent, RenderPreview& inoutSource, foundation::float64 frameMilliseconds);
 // One embedded presentation surface for both World bindings and cooked scenes.
 // Frames come from a ViewportFrameSource; device admission and navigation stay with the RenderPreview.
 class PreviewViewport final : public QWidget

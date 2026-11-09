@@ -201,6 +201,55 @@ float64 RollingAverage::GetLatest() const noexcept
                ? 0
                : mSamples[(mNext + VIEWPORT_STATISTICS_AVERAGE_FRAMES - 1) % VIEWPORT_STATISTICS_AVERAGE_FRAMES];
 }
+bool ViewportSlowFrameMonitor::AddFrame(uint64 generation, float64 milliseconds) noexcept
+{
+    if (generation == 0 || generation != mGeneration)
+    {
+        // The first frame of a generation pays for its cold preparation; it does not show the drawing cost.
+        mGeneration = generation;
+        mStreak = 0;
+        mStreakSumMilliseconds = 0;
+        return false;
+    }
+    if (math::IsFinite(milliseconds) == false || milliseconds < mThresholdMilliseconds)
+    {
+        mStreak = 0;
+        mStreakSumMilliseconds = 0;
+        return false;
+    }
+    ++mStreak;
+    mStreakSumMilliseconds += milliseconds;
+    if (mStreak < SLOW_FRAME_STREAK)
+    {
+        return false;
+    }
+    mReportedMilliseconds = mStreakSumMilliseconds / static_cast<float64>(mStreak);
+    mStreak = 0;
+    mStreakSumMilliseconds = 0;
+    return true;
+}
+void ViewportSlowFrameMonitor::Reset() noexcept
+{
+    mGeneration = 0;
+    mStreak = 0;
+    mStreakSumMilliseconds = 0;
+    mReportedMilliseconds = 0;
+}
+void ViewportSlowFrameMonitor::SetThresholdMilliseconds(float64 milliseconds) noexcept
+{
+    if (math::IsFinite(milliseconds) == true && milliseconds >= 0)
+    {
+        mThresholdMilliseconds = milliseconds;
+    }
+}
+float64 ViewportSlowFrameMonitor::GetThresholdMilliseconds() const noexcept
+{
+    return mThresholdMilliseconds;
+}
+float64 ViewportSlowFrameMonitor::GetStreakMilliseconds() const noexcept
+{
+    return mReportedMilliseconds;
+}
 void GraphViewportStatistics::Reset() noexcept
 {
     mCpuMilliseconds.Reset();

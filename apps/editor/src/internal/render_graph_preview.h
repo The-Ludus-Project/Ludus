@@ -210,6 +210,18 @@ public:
     /// Package of the active graph, including a raster fallback when selected.
     [[nodiscard]] const QString& GetActivePackagePath() const noexcept;
     [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
+    /// True when a ray renderer draws the requested package and Force raster would replace it with the
+    /// authored raster fallback (the engine default raster graph in the World viewport).
+    [[nodiscard]] bool CanSwitchToRasterFallback() const noexcept;
+    /// Claim the suggestion announced by SlowFramesDetected. Several viewports can present one preview, so only
+    /// the first visible one should ask the user. True at most once per active package for the lifetime of this
+    /// preview, and only while CanSwitchToRasterFallback; whatever the user answers, that package is not
+    /// suggested again. GUI thread only.
+    [[nodiscard]] bool TakeSlowFrameSuggestion();
+    /// Replace the frame time that counts as slow, in milliseconds (default
+    /// ViewportSlowFrameMonitor::DEFAULT_SLOW_FRAME_MILLISECONDS). Zero counts every frame; tests use it to reach a
+    /// streak without a slow GPU. Invalid values preserve the threshold.
+    void SetSlowFrameMilliseconds(foundation::float64 milliseconds) noexcept;
     /// Display attachment chosen by SetOutputTarget; empty selects the exported output.
     [[nodiscard]] const QString& GetOutputTarget() const noexcept;
     /// Whether a frame capture could capture one output of the active generation, judged without a device by
@@ -350,6 +362,12 @@ Q_SIGNALS:
     void TargetInspected();
     /// The freeze, its staleness or the ray path capture's state changed.
     void RayPathCaptureChanged();
+    /// ViewportSlowFrameMonitor::SLOW_FRAME_STREAK consecutive frames of the active ray generation each took at
+    /// least the slow-frame threshold, from the camera update before submission to presentation, and its raster
+    /// fallback has not been suggested yet. Emitted after the tick that presented the last of them, again after
+    /// every further streak until a viewport claims it with TakeSlowFrameSuggestion.
+    /// @param frameMilliseconds Mean frame time of the streak in milliseconds.
+    void SlowFramesDetected(foundation::float64 frameMilliseconds);
 
 private:
     struct State;
