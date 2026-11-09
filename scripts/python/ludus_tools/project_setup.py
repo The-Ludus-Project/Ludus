@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .buildlock import BuildTreeLock
-from .errors import INVALID_PROJECT, ToolingError
+from .errors import BOOTSTRAP_STALE, INVALID_PROJECT, MISSING_TOOLS, ToolingError
 from .identity import detect_msvc_version, load_prefix_manifest
 from .lockfile import parse_local_settings_file
 from .operations import PRESET_FLAVOR, locate_project, resolve_project
@@ -349,7 +349,7 @@ def _list(source: Path, configured, profiles, runner, env):
         visible = set(re.findall(r'^  "([^"\n]+)"', output, re.MULTILINE))
         required = {preset_for(source, p) for p in profiles if kind != "test" or not p.startswith("web-")}
         if not required <= visible:
-            raise ToolingError(INVALID_PROJECT, f"Missing selectable {kind} presets: {sorted(required - visible)}; run repair")
+            raise ToolingError(BOOTSTRAP_STALE, f"Missing selectable {kind} presets: {sorted(required - visible)}; run repair")
 
 
 def setup_for_profile(settings: dict, profile: str) -> dict:
@@ -383,19 +383,19 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
     paths, descriptor, source = supported_project(path, profile)
     settings = setup_for_profile(read_object(paths.project_dir / ".ludus/setup.json"), descriptor.preset)
     if not settings:
-        raise ToolingError(INVALID_PROJECT, "Project setup is missing; use Project > Repair Project Setup")
+        raise ToolingError(MISSING_TOOLS, "Project setup is missing; use Project > Repair Project Setup")
     resolved = resolve_project(path, store=SdkStore(), profile=descriptor.preset, enforce_host_toolchain=False)
     sdk = resolved.resolution.prefix.resolve()
     validate_native_identity(resolved.resolution.identity, descriptor)
     web = Path(settings["web_sdk"]) if settings.get("web_sdk") else None
     configured, records, stamps = _inputs(tooling_root, source, sdk, descriptor.preset, web, project=paths.project_dir)
     if settings.get("signature") != _signature(configured, records, stamps):
-        raise ToolingError(INVALID_PROJECT, "SDK or tool inputs changed; run repair to refresh presets and caches")
+        raise ToolingError(BOOTSTRAP_STALE, "SDK or tool inputs changed; run repair to refresh presets and caches")
     local = read_object(source / "CMakeUserPresets.json")
     for profile, fields in records.items():
         item = next((p for p in local.get("configurePresets", []) if p.get("name") == preset_for(source, profile)), None)
         if not item or item.get("hidden", False) or item.get("cmakeExecutable") != str(configured["cmake"]) or any(item.get(k) != v for k, v in fields.items()):
-            raise ToolingError(INVALID_PROJECT, f"Stale local preset for {profile}; run repair")
+            raise ToolingError(BOOTSTRAP_STALE, f"Stale local preset for {profile}; run repair")
         cache_path = source / "out/build" / profile / "CMakeCache.txt"
         if cache_path.is_file():
             keys = ["CMAKE_PREFIX_PATH", "CMAKE_MAKE_PROGRAM", "CMAKE_CXX_COMPILER",
@@ -404,7 +404,7 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
             if profile.startswith("windows-msvc-"):
                 keys.extend(("CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES", "Ludus_DIR"))
                 if cache_value(cache_path, "CMAKE_GENERATOR") != fields["generator"]:
-                    raise ToolingError(INVALID_PROJECT, f"Stale CMake generator for {profile}; run repair")
+                    raise ToolingError(BOOTSTRAP_STALE, f"Stale CMake generator for {profile}; run repair")
             for key in keys:
                 expected = fields["cacheVariables"].get(key)
                 cached = cache_value(cache_path, key)
@@ -412,10 +412,10 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
                     os.name == "nt" and key not in ("CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES")
                     and cached is not None and Path(cached) == Path(expected)
                 ):
-                    raise ToolingError(INVALID_PROJECT, f"Stale CMake cache for {profile}: {key}; run repair")
+                    raise ToolingError(BOOTSTRAP_STALE, f"Stale CMake cache for {profile}: {key}; run repair")
     ide = read_object(source / ".vscode/settings.json")
     if ide.get("cmake.useCMakePresets") != "always" or ide.get("cmake.cmakePath", str(configured["cmake"])) != str(configured["cmake"]):
-        raise ToolingError(INVALID_PROJECT, "IDE CMake path or preset mode is stale; run repair")
+        raise ToolingError(BOOTSTRAP_STALE, "IDE CMake path or preset mode is stale; run repair")
     cancel_check()
     env = environment(tooling_root)
     verify_tool_versions(configured, tooling_root, runner, env, resolved.resolution.identity)
