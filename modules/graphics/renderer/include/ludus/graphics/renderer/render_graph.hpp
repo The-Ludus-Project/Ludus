@@ -485,6 +485,8 @@ struct RenderGraphSceneResourceReport final
     foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
     foundation::uint32 DroppedLights =
         0; ///< Latest forward material's dropped light count; clustered shading retains all admitted lights.
+    /// Source ID assigned the latest prepared deferred scene's directional shadow map, or zero if none.
+    foundation::uint64 DirectionalShadowLightSourceId = 0;
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final
