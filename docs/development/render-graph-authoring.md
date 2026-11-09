@@ -6146,7 +6146,12 @@ record widths or older role IDs; older packages remain readable.
 ### Directional shadows
 
 The default shadows the directional light with the lowest source identity among
-lights with positive intensity and a nonblack color. The renderer fits one
+lights that request raster shadows and have positive intensity and a nonblack
+color. In the built-in World inspector, clear **Light → Raster Shadows** to
+exclude a light while keeping its illumination. SDK callers set
+`DirectLight::ShouldCastRasterShadows`. The resource report's
+`DirectionalShadowLightSourceId` identifies the light assigned a map and is zero
+when no light qualifies. The renderer fits one
 1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
 with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
 of the four depth comparisons uses the sampled caster's depth and slope to
