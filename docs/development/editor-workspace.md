@@ -1814,6 +1814,20 @@ has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting wit
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
 
+### Per-light raster shadows
+
+In a built-in World, select a light and clear **Light → Raster Shadows** in
+**Properties** to keep its direct light without allocating a raster shadow map.
+Apply the edit and save the World to keep the setting. The checkbox is on by
+default, including for older Worlds.
+
+The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
+one map to the eligible directional light with the lowest source ID. In that
+graph, point and spot lights illuminate without shadow maps. The native Lit
+preview also supports shadow maps for point and spot lights. Reference path
+tracing and baked lighting compute visibility from scene geometry independently
+of this setting.
+
 ### Celestial directional lights
 
 Select a directional light and set **Light → Celestial Role** in **Properties**.

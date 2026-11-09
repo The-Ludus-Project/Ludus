@@ -1193,6 +1193,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(fixture.Pixels[center + 2] <= 1);
         const uint8 remainingGreen = fixture.Pixels[center + 1];
         CHECK(remainingGreen > 4);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[1].SourceId);
         CHECK(fixture.Pixels[center] <= 1);
         const StaticArray<uint8, PIXEL_BYTES> shadowed = fixture.Pixels;
         render();
@@ -1203,12 +1204,21 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         render();
         CHECK(fixture.Pixels == shadowed);
 
-        lights[1].Direction = {1, 0, -1};
+        lights[1].Direction = {-1, 0, -1};
+        lights[1].ShouldCastRasterShadows = false;
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+        CHECK(fixture.Pixels[center + 2] == litBlue);
+        CHECK(fixture.Pixels[center + 1] <= 1);
+
+        lights[0].ShouldCastRasterShadows = false;
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center + 2] == litBlue);
         CHECK(fixture.Pixels[center + 1] == remainingGreen);
         CHECK(fixture.Pixels[center] <= 1);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == 0);
     }
 }
 

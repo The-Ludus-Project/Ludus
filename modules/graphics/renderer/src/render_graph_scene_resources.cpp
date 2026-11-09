@@ -57,8 +57,8 @@ Status BuildDirectionalShadowRegion(BorrowedView<const DirectLight> lights,
     for (usize index = 0; index < lights.GetSize(); ++index)
     {
         const DirectLight& light = lights[index];
-        if (light.Kind == LightKind::Directional && light.Intensity > 0 && light.Color != math::Vector3{} &&
-            (selectedOrNull == nullptr || light.SourceId < selectedOrNull->SourceId))
+        if (light.Kind == LightKind::Directional && light.ShouldCastRasterShadows == true && light.Intensity > 0 &&
+            light.Color != math::Vector3{} && (selectedOrNull == nullptr || light.SourceId < selectedOrNull->SourceId))
         {
             selectedOrNull = &light;
         }
@@ -1159,6 +1159,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         owner.Report.MeshLightShadowCasters = static_cast<uint32>(candidate.MeshLightShadowCasters.GetSize());
         owner.Report.UnshadowedMeshLights = shadows.UnshadowedRecords;
         owner.Report.MeshLightShadowFaces = shadows.Faces;
+        owner.Report.DirectionalShadowLightSourceId = candidate.Shadows.Directional.Light.SourceId;
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

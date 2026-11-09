@@ -491,11 +491,12 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     if (OwnsDevice_)
     {
         // MakeKey hashes every mesh and texture byte, so it runs only when a prepared generation could be
-        // kept. That generation's key equals the current scene's: equal keys are its only way to outlive a
-        // scene change. A project graph draws the World without creating a generation, and skips the hash.
+        // kept. Raster shadow eligibility is compared separately because the bake key describes physical lighting.
+        // A project graph draws the World without creating a generation, and skips the hash.
         const bool canKeepResources =
             mResources.Get() != nullptr && mResources->IsPrepared() == true && mHasPreparationFailed == false;
-        if (canKeepResources == true && mResources->LightingKey == preview_lighting::MakeKey(scene))
+        if (canKeepResources == true && mResources->Source.RasterUnshadowedLightIds == scene.RasterUnshadowedLightIds &&
+            mResources->LightingKey == preview_lighting::MakeKey(scene))
         {
             ViewDirty_ = true;
         }
