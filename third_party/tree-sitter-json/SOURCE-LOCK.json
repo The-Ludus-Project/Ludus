@@ -1,0 +1,21 @@
+{
+  "name": "tree-sitter-json",
+  "version": "0.24.8",
+  "tag": "v0.24.8",
+  "commit": "ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24",
+  "archive_url": "https://github.com/tree-sitter/tree-sitter-json/archive/refs/tags/v0.24.8.tar.gz",
+  "archive_sha256": "acf6e8362457e819ed8b613f2ad9a0e1b621a77556c296f3abea58f7880a9213",
+  "license": "MIT",
+  "grammars": [
+    {
+      "name": "json",
+      "entry_point": "tree_sitter_json",
+      "language_abi": 14,
+      "directory": "src",
+      "sources": [
+        "parser.c"
+      ]
+    }
+  ],
+  "notes": "Editor syntax grammar (ADR 0026), published 2024-11-11. apps/editor/cmake/EditorTreeSitter.cmake downloads this exact archive with CMake FetchContent, verifies its SHA-256 and that its LICENSE equals the committed copy, and compiles only the listed upstream-generated sources as C. Verified by downloading the archive twice on 2026-11-08; see docs/architecture/code-editor-evidence/tree-sitter-manifest.md."
+}

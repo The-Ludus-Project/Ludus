@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from editor_web import PAYLOAD, PLAYER_PAYLOAD, PLAYERS, download, extract, validate_package
+from editor_web import PAYLOAD, PLAYER_PAYLOAD, PLAYERS, TREE_SITTER_GRAMMAR_NOTICES, download, extract, validate_package
 
 
 class EditorPackageTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class EditorPackageTests(unittest.TestCase):
             (self.site / "players" / sample / "game.wasm").write_bytes(b"\0asm\x01\0\0\0\x05\x06\x01\x01\x80\x04\x80\x20")
             (self.site / "players" / sample / "game.js").write_text("game.wasm")
         (self.site / "licenses").mkdir()
-        for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
+        for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", *TREE_SITTER_GRAMMAR_NOTICES, "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
             (self.site / "licenses" / name).write_text("notice")
         self.manifest()
 
@@ -78,6 +78,11 @@ class EditorPackageTests(unittest.TestCase):
     def test_license_cannot_be_omitted(self):
         (self.site / "licenses/Qt-LGPL-3.0.txt").unlink()
         with self.assertRaisesRegex(ValueError, "Missing editor license"):
+            validate_package(self.site)
+
+    def test_grammar_license_cannot_be_omitted(self):
+        (self.site / "licenses/tree-sitter-luau.txt").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing editor license: tree-sitter-luau.txt"):
             validate_package(self.site)
 
     def test_verified_archive_is_reused_without_network(self):

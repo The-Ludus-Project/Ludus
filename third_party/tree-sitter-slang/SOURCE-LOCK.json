@@ -1,0 +1,22 @@
+{
+  "name": "tree-sitter-slang",
+  "version": "0.3.1",
+  "tag": "v0.3.1",
+  "commit": "c7ab1ee2bea2ac431fa78d72b80d8957d5a5bcd3",
+  "archive_url": "https://github.com/tree-sitter-grammars/tree-sitter-slang/archive/refs/tags/v0.3.1.tar.gz",
+  "archive_sha256": "81c5ca98baa698071294d5d7f71c11e77000501a3c0f7a8cd0fec08e117c09ff",
+  "license": "MIT",
+  "grammars": [
+    {
+      "name": "slang",
+      "entry_point": "tree_sitter_slang",
+      "language_abi": 15,
+      "directory": "src",
+      "sources": [
+        "parser.c",
+        "scanner.c"
+      ]
+    }
+  ],
+  "notes": "Editor syntax grammar (ADR 0026), published 2025-07-29. apps/editor/cmake/EditorTreeSitter.cmake downloads this exact archive with CMake FetchContent, verifies its SHA-256 and that its LICENSE equals the committed copy, and compiles only the listed upstream-generated sources as C. Verified by downloading the archive twice on 2026-11-08; see docs/architecture/code-editor-evidence/tree-sitter-manifest.md."
+}
