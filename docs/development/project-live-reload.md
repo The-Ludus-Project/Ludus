@@ -195,8 +195,15 @@ render a shader effect.
 ## Recover and debug
 
 Pause/Step/Resume operate on the host's simulation clock, with no catch-up after
-a pause. Stop cancels build/query work and supervises owned descendants. A native
-crash or hang affects the game process; documents remain in the editor. A hang
+a pause. The Game toolbar's **Fast-forward (4×)** batches four fixed
+updates per presentation iteration. Each update still receives the regular
+fixed `DeltaSeconds` and the host increments `ElapsedSeconds` by the same
+amount between advancing updates. The host presents the last update's render
+result once. Paused sessions still step one tick at a time, and the speed
+selection lasts for the current Play session, including code reload.
+
+Stop cancels build/query work and supervises owned descendants. A native crash
+or hang affects the game process while documents remain in the editor. A hang
 produces a diagnostic and awaits explicit Stop. A debugger-stopped process is
 not killed for a missing heartbeat.
 

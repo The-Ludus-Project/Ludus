@@ -5,10 +5,9 @@
 // 60 Hz schedule while the host's window can be seen, or when it has none, and a
 // 10 Hz schedule while the window is minimized or occluded: the same hidden rule
 // as the world reference's LoopPacing, without that loop's swapchain pacing and
-// frame-rate cap. The simulation is unaffected: the host still advances one
-// fixed tick per running frame, so a hidden game advances at the hidden rate and
-// the editor's Pause stays the only pause. The policy owns a FramePacer and
-// nothing else; the play session and the static shipping loop share it.
+// frame-rate cap. The game host chooses its fixed update batch independently.
+// A hidden game advances at the hidden frame rate times that batch size.
+// The play session and the static shipping loop share this pacing policy.
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>

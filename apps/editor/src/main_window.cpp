@@ -509,6 +509,10 @@ void MainWindow::BuildMenus()
     PauseAction_ = playMenu->addAction(QStringLiteral("Pause"));
     StepAction_ = playMenu->addAction(QStringLiteral("Step"));
     ResumeAction_ = playMenu->addAction(QStringLiteral("Resume"));
+    mFastForwardActionOrNull = playMenu->addAction(QStringLiteral("Fast-forward"));
+    mFastForwardActionOrNull->setObjectName(QStringLiteral("playFastForward"));
+    mFastForwardActionOrNull->setIconText(QStringLiteral("Fast-forward"));
+    mFastForwardActionOrNull->setCheckable(true);
     RefreshPropertiesAction_ = playMenu->addAction(QStringLiteral("Refresh Inspector"));
     auto* details = playMenu->addAction(QStringLiteral("Refresh Session Details"));
     connect(details, &QAction::triggered, Controller_, &EditorController::RefreshSessionDetails);
@@ -541,9 +545,10 @@ void MainWindow::BuildMenus()
     connect(PauseAction_, &QAction::triggered, this, [this]() { Controller_->PlayCommand(QStringLiteral("Pause")); });
     connect(StepAction_, &QAction::triggered, this, [this]() { Controller_->PlayCommand(QStringLiteral("Step")); });
     connect(ResumeAction_, &QAction::triggered, this, [this]() { Controller_->PlayCommand(QStringLiteral("Resume")); });
+    connect(mFastForwardActionOrNull, &QAction::triggered, Controller_, &EditorController::TogglePlayFastForward);
     connect(RefreshPropertiesAction_, &QAction::triggered, Controller_, &EditorController::RefreshProperties);
 
-    // Groups: Run (Play, Build, Stop), Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The
+    // Run, Launch and Session each get a toolbar group. The
     // session commands are only meaningful while a game is running or paused, so RenderCapabilities shows them
     // only then, together with their separator.
     GameToolbar_->addAction(PlayAction_);
@@ -556,6 +561,7 @@ void MainWindow::BuildMenus()
     GameToolbar_->addAction(PauseAction_);
     GameToolbar_->addAction(StepAction_);
     GameToolbar_->addAction(ResumeAction_);
+    GameToolbar_->addAction(mFastForwardActionOrNull);
     GameToolbar_->addAction(BuildReloadAction_);
 
     // The Render Graph toolbar is the context strip: it shows only while a render graph is the active document
@@ -588,8 +594,8 @@ void MainWindow::BuildMenus()
 
     // One icon set for every toolbar command (docs/architecture/editor-art-direction.md, Iconography). Primary
     // commands show their icon beside the label; secondary commands that sit in a run of peers (Undo, Redo, Pause,
-    // Step, Resume) are icon-only and keep their name and shortcut in the tooltip. The action keeps its icon
-    // for menus; only its toolbar button changes style.
+    // Step, Resume, Fast-forward) are icon-only and keep their name and shortcut in the tooltip. The action keeps its
+    // icon for menus; only its toolbar button changes style.
     const auto useIcon = [](QToolBar* toolbar, QAction* action, EditorIcon icon, Qt::ToolButtonStyle style) {
         action->setIcon(GetEditorIcon(icon));
         QToolButton* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(action));
@@ -616,6 +622,7 @@ void MainWindow::BuildMenus()
     useIcon(GameToolbar_, PauseAction_, EditorIcon::Pause, iconOnly);
     useIcon(GameToolbar_, StepAction_, EditorIcon::Step, iconOnly);
     useIcon(GameToolbar_, ResumeAction_, EditorIcon::Play, iconOnly);
+    useIcon(GameToolbar_, mFastForwardActionOrNull, EditorIcon::Profiling, iconOnly);
     useIcon(GameToolbar_, BuildReloadAction_, EditorIcon::ReloadCode, labelled);
 
     // Output commands live on the Output tool window's own toolbar.
@@ -1362,6 +1369,14 @@ void MainWindow::RenderCapabilities()
     UndoSessionAction_->setEnabled(Controller_->CanUndoSession());
     RedoSessionAction_->setEnabled(Controller_->CanRedoSession());
     const auto& playState = Controller_->PlayState();
+    mFastForwardActionOrNull->setVisible(isSessionLive == true && playState.FastForwardMultiplier > 1);
+    mFastForwardActionOrNull->setEnabled(Controller_->CanSetPlayFastForward());
+    mFastForwardActionOrNull->setChecked(playState.IsFastForwarding);
+    const QString fastForwardLabel = playState.IsFastForwarding == true
+                                         ? QStringLiteral("Normal speed (1×)")
+                                         : QStringLiteral("Fast-forward (%1×)").arg(playState.FastForwardMultiplier);
+    mFastForwardActionOrNull->setText(fastForwardLabel);
+    mFastForwardActionOrNull->setToolTip(fastForwardLabel);
     UndoTuningAction_->setEnabled(playState.TuningDocumentAvailable && playState.TuningCanUndo);
     RedoTuningAction_->setEnabled(playState.TuningDocumentAvailable && playState.TuningCanRedo);
     SaveTuningAction_->setEnabled(Controller_->CanSaveTuningDocument());

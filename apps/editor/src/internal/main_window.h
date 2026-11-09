@@ -404,6 +404,7 @@ private:
     QAction* PauseAction_ = nullptr;
     QAction* StepAction_ = nullptr;
     QAction* ResumeAction_ = nullptr;
+    QAction* mFastForwardActionOrNull = nullptr;
     QAction* RefreshPropertiesAction_ = nullptr;
     QAction* UndoSessionAction_ = nullptr;
     QAction* RedoSessionAction_ = nullptr;
