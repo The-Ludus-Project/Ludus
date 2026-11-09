@@ -15,6 +15,9 @@
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QAction;
+class QMenu;
+class QPoint;
 class QComboBox;
 class QFormLayout;
 class QLabel;
@@ -255,6 +258,7 @@ private:
     [[nodiscard]] bool readProjectBrdfRoughness(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
     void mapImportedMaterial(const QString& source, const QString& replacement, const QString& label);
     void bindViewportInteraction();
+    void showEntityMenu(const QPoint& positionGlobal, const QString& entityId);
     void updateViewportInteraction();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);
     /// Store the scene viewport's current perspective view as the level start view (one undo step).
@@ -356,9 +360,10 @@ private:
     QLineEdit* Name_ = nullptr;
     QComboBox* Components_;
     QPushButton* Attach_;
-    QPushButton* Add_;
-    QPushButton* Duplicate_;
-    QPushButton* Remove_;
+    QMenu* mEntityMenu;
+    QAction* mAddEntity;
+    QAction* mDuplicateEntities;
+    QAction* mDeleteEntities;
     QPushButton* Apply_;
     QPushButton* Reset_;
     QPushButton* Recovery_;

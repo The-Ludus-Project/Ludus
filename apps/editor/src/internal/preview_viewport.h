@@ -26,6 +26,7 @@
 
 QT_BEGIN_NAMESPACE
 class QAction;
+class QContextMenuEvent;
 QT_END_NAMESPACE
 namespace ludus::platform
 {
@@ -60,6 +61,8 @@ enum class ViewportPresentation : foundation::uint8
 // Frames come from a ViewportFrameSource; device admission and navigation stay with the RenderPreview.
 class PreviewViewport final : public QWidget
 {
+    Q_OBJECT
+
 public:
     /// Present preview's own frames.
     explicit PreviewViewport(RenderPreview* preview, QWidget* parentOrNull = nullptr, bool isAutomatic = true);
@@ -114,13 +117,14 @@ public:
     {
         return *mObjectInteraction;
     }
+    /// Distinguish a World context click from right-drag navigation on this surface.
+    void EnableWorldContextMenu() noexcept;
     /// View menu action "Set start view from this view". Hidden until an owner that can store a
     /// start view shows it and handles triggered, describing the view with
     /// RenderPreview::TryDescribeStartView. Owned by this viewport; GUI thread only.
     [[nodiscard]] QAction& GetStartViewSaveAction() noexcept;
     /// Install World terrain actions in the viewport toolbar and right-click menu. Call once.
     void SetTerrainActions();
-    [[nodiscard]] QAction& GetAddTerrainAction() noexcept;
     [[nodiscard]] QAction& GetEditTerrainAction() noexcept;
     void SetTerrainPreviewLabel(bool isVisible);
     /// @brief Save the render result this viewport currently shows as a PNG file (View → Save screenshot…).
@@ -170,9 +174,14 @@ public:
     /// environment variable LUDUS_EDITOR_VIEWPORT=offscreen forces the readback path on Linux.
     [[nodiscard]] static ViewportPresentation GetPresentation() noexcept;
 
+Q_SIGNALS:
+    /// Right click on the edit surface or a keyboard context request. Entity ID is empty on the background.
+    void WorldContextMenuRequested(const QPoint& positionGlobal, const QString& entityId);
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -247,8 +256,10 @@ private:
     QElapsedTimer mNavigationClock;
     foundation::float32 mSpeedMultiplier = 1;
     bool mIsFlying = false;
-    bool mShouldShowTerrainMenu = false;
-    void showTerrainMenu(const QPoint& positionGlobal);
+    bool mHasWorldContextMenu = false;
+    bool mHasContextPress = false;
+    QPointF mContextPressGlobal;
+    void beginFlyNavigation(QPointF positionGlobal, Qt::KeyboardModifiers modifiers);
     bool mHasMouseCapture = false;
     void stopNavigation();
     void advanceNavigation();

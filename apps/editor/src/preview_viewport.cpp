@@ -20,6 +20,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -664,7 +665,6 @@ struct PreviewViewport::State final
     QToolBar* ControlsOrNull = nullptr;
     /// View menu action that stores the current view as the start view; created with the controls.
     QAction* StartViewSaveActionOrNull = nullptr;
-    QAction* AddTerrainActionOrNull = nullptr;
     QAction* EditTerrainActionOrNull = nullptr;
     QLabel* TerrainPreviewLabelOrNull = nullptr;
     EmptyWorldView* MessageOrNull = nullptr;
@@ -2413,20 +2413,13 @@ QAction& PreviewViewport::GetStartViewSaveAction() noexcept
 }
 void PreviewViewport::SetTerrainActions()
 {
-    LUDUS_REQUIRE(mState->AddTerrainActionOrNull == nullptr);
-    mState->AddTerrainActionOrNull = new QAction(QStringLiteral("Add Terrain…"), this);
-    mState->AddTerrainActionOrNull->setObjectName(QStringLiteral("viewportAddTerrain"));
+    LUDUS_REQUIRE(mState->EditTerrainActionOrNull == nullptr);
     mState->EditTerrainActionOrNull = mState->ControlsOrNull->addAction(QStringLiteral("Edit Terrain…"));
     mState->EditTerrainActionOrNull->setObjectName(QStringLiteral("viewportEditTerrain"));
     mState->TerrainPreviewLabelOrNull = new QLabel(QStringLiteral("Terrain preview"), this);
     mState->TerrainPreviewLabelOrNull->setObjectName(QStringLiteral("viewportTerrainPreviewLabel"));
     mState->Layout->insertWidget(1, mState->TerrainPreviewLabelOrNull);
     mState->TerrainPreviewLabelOrNull->hide();
-}
-QAction& PreviewViewport::GetAddTerrainAction() noexcept
-{
-    LUDUS_REQUIRE(mState->AddTerrainActionOrNull != nullptr);
-    return *mState->AddTerrainActionOrNull;
 }
 QAction& PreviewViewport::GetEditTerrainAction() noexcept
 {
@@ -2439,23 +2432,6 @@ void PreviewViewport::SetTerrainPreviewLabel(bool isVisible)
     {
         mState->TerrainPreviewLabelOrNull->setVisible(isVisible);
     }
-}
-void PreviewViewport::showTerrainMenu(const QPoint& positionGlobal)
-{
-    if (mState->AddTerrainActionOrNull == nullptr ||
-        (mState->AddTerrainActionOrNull->isEnabled() == false && mState->EditTerrainActionOrNull->isEnabled() == false))
-    {
-        return;
-    }
-    QMenu* menu = new QMenu(this);
-    menu->setObjectName(QStringLiteral("viewportTerrainMenu"));
-    menu->addAction(mState->AddTerrainActionOrNull);
-    if (mState->EditTerrainActionOrNull->isVisible() == true)
-    {
-        menu->addAction(mState->EditTerrainActionOrNull);
-    }
-    connect(menu, &QMenu::aboutToHide, menu, &QObject::deleteLater);
-    menu->popup(positionGlobal);
 }
 bool PreviewViewport::SaveScreenshot(const QString& path, QString& outError)
 {
@@ -2790,6 +2766,9 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
     {
         switch (event->type())
         {
+            case QEvent::ContextMenu:
+                contextMenuEvent(static_cast<QContextMenuEvent*>(event));
+                return event->isAccepted();
             case QEvent::MouseButtonPress:
                 mousePressEvent(static_cast<QMouseEvent*>(event));
                 return true;

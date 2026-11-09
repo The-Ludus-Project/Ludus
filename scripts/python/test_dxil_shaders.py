@@ -151,6 +151,20 @@ class DxilDriverTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
                 raster_interface(changed, "fragment", dxil=True)
 
+    def test_raster_native_reflection_admits_depth_but_not_stencil_or_compute_depth(self):
+        from compile_raster import raster_interface
+
+        def document(stage, scalar):
+            return {"parameters": [{"name": "depth", "binding": {"kind": "shaderResource", "index": 0},
+                    "type": {"kind": "resource", "baseShape": "texture2D", "resultType": {
+                        "kind": "scalar", "scalarType": scalar}}}],
+                    "entryPoints": [{"stage": stage, "bindings": [{"name": "depth", "binding": {"used": 1}}]}]}
+        self.assertEqual(raster_interface(document("fragment", "float32"), "fragment", dxil=True)["entries"][0]["kind"],
+                         "TextureDepth2D")
+        for stage, scalar in (("fragment", "uint32"), ("compute", "float32")):
+            with self.subTest(stage=stage, scalar=scalar), self.assertRaises(RuntimeError):
+                raster_interface(document(stage, scalar), stage, dxil=True)
+
     def test_compute_header_carries_scalar_storage_and_workgroup(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = self.compile(Path(temporary), compute="ComputeMain")

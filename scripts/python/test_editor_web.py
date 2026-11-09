@@ -25,7 +25,7 @@ class EditorPackageTests(unittest.TestCase):
             (self.site / "players" / sample / "game.wasm").write_bytes(b"\0asm\x01\0\0\0\x05\x06\x01\x01\x80\x04\x80\x20")
             (self.site / "players" / sample / "game.js").write_text("game.wasm")
         (self.site / "licenses").mkdir()
-        for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
+        for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
             (self.site / "licenses" / name).write_text("notice")
         self.manifest()
 

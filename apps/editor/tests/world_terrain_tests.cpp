@@ -56,6 +56,13 @@ QJsonObject GetTerrainRecipe(const WorldDocument& world, const QString& key)
 {
     return world.Entity(key).value(QStringLiteral("components")).toObject().value(GetTerrainComponentId()).toObject();
 }
+
+void OpenTerrainCreation(WorldWorkspace& inoutWorld)
+{
+    QAction* addOrNull = inoutWorld.findChild<QAction*>(QStringLiteral("worldGenerateTerrain"));
+    REQUIRE(addOrNull != nullptr);
+    addOrNull->trigger();
+}
 } // namespace
 
 TEST_CASE("Terrain extraction is seeded, resolution independent and safe at the admitted grid limit",
@@ -250,7 +257,7 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     REQUIRE(compareOrNull != nullptr);
     REQUIRE(statusOrNull != nullptr);
 
-    viewport.GetAddTerrainAction().trigger();
+    OpenTerrainCreation(workspace);
     REQUIRE(panelOrNull->isVisible() == true);
     CHECK(commitOrNull->isEnabled() == false);
     REQUIRE(QTest::qWaitFor([commitOrNull]() { return commitOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS));
@@ -386,7 +393,7 @@ TEST_CASE("Terrain draft publication keeps the delegated World view during a ren
     RenderPanel* renderOrNull = world.findChild<RenderPanel*>();
     REQUIRE(renderOrNull != nullptr);
     PreviewViewport& viewport = renderOrNull->GetViewport();
-    viewport.GetAddTerrainAction().trigger();
+    OpenTerrainCreation(world);
     const QLabel* statusOrNull = world.findChild<QLabel*>(QStringLiteral("worldTerrainStatus"));
     QPushButton* commitOrNull = world.findChild<QPushButton*>(QStringLiteral("worldTerrainCommit"));
     QLineEdit* widthOrNull = world.findChild<QLineEdit*>(QStringLiteral("worldTerrainField:width"));
@@ -452,7 +459,7 @@ TEST_CASE("Terrain dock imports a raster and commits one native brush stroke", "
     RenderPanel* renderOrNull = world.findChild<RenderPanel*>();
     REQUIRE(renderOrNull != nullptr);
     PreviewViewport& viewport = renderOrNull->GetViewport();
-    viewport.GetAddTerrainAction().trigger();
+    OpenTerrainCreation(world);
     QTabBar* sourceModeOrNull = world.findChild<QTabBar*>(QStringLiteral("worldTerrainMode"));
     QLineEdit* pathOrNull = world.findChild<QLineEdit*>(QStringLiteral("worldTerrainHeightmapPath"));
     QPushButton* commitOrNull = world.findChild<QPushButton*>(QStringLiteral("worldTerrainCommit"));
@@ -498,9 +505,22 @@ TEST_CASE("Terrain dock imports a raster and commits one native brush stroke", "
     REQUIRE(preview.FrameSelection() == true);
     ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
     const QRectF frame(0, 0, 800, 600);
-    REQUIRE(interaction.Press(frame.center(), frame) == true);
+    ludus::graphics::renderer::ViewDescription view;
+    QString viewError;
+    REQUIRE(preview.DescribeView(800, 600, view, viewError) == true);
+    interaction.SetImageSize({800, 600});
+    interaction.SetPresentedView(view.WorldToClip);
+    const auto project = [&view, &frame](foundation::float32 x) {
+        const foundation::math::Vector4 clip = view.WorldToClip * foundation::math::Vector4{x, 0, 0, 1};
+        return frame.center() + QPointF(static_cast<foundation::float64>(clip.X / clip.W) * frame.width() * 0.5,
+                                        static_cast<foundation::float64>(-clip.Y / clip.W) * frame.height() * 0.5);
+    };
+    const QPointF startPixel = project(0);
+    const QPointF endPixel = project(4);
+    REQUIRE(interaction.Pick(endPixel, frame) == key);
+    REQUIRE(interaction.Press(startPixel, frame) == true);
     REQUIRE(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::TerrainBrush);
-    REQUIRE(interaction.Move(frame.center() + QPointF(80, 0), false) == true);
+    REQUIRE(interaction.Move(endPixel, false) == true);
     REQUIRE(interaction.Release() == true);
     REQUIRE(QTest::qWaitFor([&]() { return world.Document().Draft() != imported; }, TERRAIN_WAIT_MILLISECONDS));
     const QJsonObject sculpted = world.Document().Draft();

@@ -303,8 +303,11 @@ acceptance work. The implementation is on `codex/windows-integration-d3b`.
   have private depth (D32F), or depth/stencil (D32F/S8). Writable views select one
   mip and layer, including array/cube attachments. Up to four color targets use
   independent load/store contracts. Surface depth is budgeted, retained across
-  passes, and replaced after draining the queue on an extent change. MSAA,
-  resolves and sampled depth/stencil are not advertised.
+  passes, and replaced after draining the queue on an extent change. The private
+  depth is a typeless resource (`R32_TYPELESS`, or `R32G8X24_TYPELESS` with stencil),
+  so a depth-aspect view samples it as `R32_FLOAT` and `DepthSampled` is advertised.
+  It follows the texture's transitions: depth writes in attachment passes, shader
+  reads elsewhere. MSAA, resolves and sampled stencil are not advertised.
 - **Passes and barriers.** Clears initialize the complete selected attachment,
   independently of viewport/scissor. Draw rectangles use top-left physical
   pixels; empty scissors issue no draw. Discard invalidates facade contents;
@@ -889,8 +892,14 @@ with optional tooling absent.
   draws the rg2 `surface` graph on WARP and checks its pixels across instance and
   camera edits. `Ludus::ShaderDevelopment` builds on Windows too: the same test
   reloads an edited DXIL generation through the file watcher, keeping the drawable
-  frame across a truncated publication. The remaining rg2 GPU suites, depth views
-  and producer-driven Windows rebuilds are still open.
+  frame across a truncated publication. The portable RG2/RG3 pixel suite and the
+  RG4 pool suite now run in that executable too, on fixtures cooked for `dxil`
+  alone. On Direct3D 12 this covers cooked draws, offscreen color and depth exports
+  read through depth views, bound uniforms, LUSL callbacks and composite stages,
+  masked coverage, runtime activation and independent entry points. Still open:
+  the default-graph suite (clustered deferred, forward-lit, upscaling and mesh area
+  lights in `render_graph_default_render_tests.cpp`) and producer-driven Windows
+  rebuilds (`ludus_shader_reload_gpu`).
 - **D6d (editor):** port Qt host integration and hosted-window transport plus
   D3D12 native interop/shared presentation with explicit handle ownership,
   adapter identity, producer/consumer synchronization and teardown fencing.
@@ -952,7 +961,7 @@ these rows remain pending.
 | RHI / transfers and lifetime | D4a | verified (Clang/WARP) | Production MSVC baseline and physical-GPU evidence still pending | PR #622 | `5b56bea2`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878) |
 | RHI / compute and ordered mixed graph | D4b | verified (Clang/MSVC WARP) | D7 physical-GPU qualification | PR #992 | `9858bdb4`, [Windows CI](https://github.com/The-Ludus-Project/Ludus/actions/runs/41951508494) |
 | GPU timing / PIX / DRED | frame/pass duration, external GPU capture, DRED logs | implemented | D5b | PIX replay and physical adapter evidence pending | Windows RHI `[d5b]` and `[ordered-compute]` conformance |
-| Renderer / graph | D6a | World raster source preset | Run on a physical GPU; add DXIL for authored graph packages | pending | Packed World and renderer pixel tests |
+| Renderer / graph | D6a, D6c | World raster preset; DXIL graph packages; RG2/RG3 and RG4 pool pixel suites on WARP | Default-graph pixel suite on Direct3D 12; physical GPU | pending | Packed World and renderer pixel tests; `ludus_render_graph_dxil_tests` in the MSVC Ninja lane |
 | Text / localization / UI | D6a | Source targets in runtime preset | Validate MSVC shaping, atlas, localization and UI tests | pending | Windows runtime CI targets |
 | Content / resources | D6a | Packed room loader, Content saves, scene cooker and `ludus-cook` | Run the cooker suites on a physical Windows host | pending | Packed/loose replay and bounded publication tests; cooker goldens and saved-level suites in the MSVC Ninja lane |
 | Runtime / game host | D6a, D6c | Static host; DLL load, reload, PDB checks and socket supervision | Editor live-play tooling on Windows (D6d) | [PR #1021](https://github.com/The-Ludus-Project/Ludus/pull/1021) | Static lifecycle, loader, reload, session, supervisor and PDB tests in the MSVC Ninja lane |

@@ -6,6 +6,7 @@
 #include "internal/item_selection.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_entity_search.h"
 
 #include "internal/controller.h"
@@ -48,9 +49,11 @@
 #include <QList>
 #include <QListWidget>
 #include <QLockFile>
+#include <QMap>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPoint>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScrollArea>
@@ -58,6 +61,8 @@
 #include <QSettings>
 #include <QShortcut>
 #include <QSplitter>
+#include <QStringList>
+#include <QStringView>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
@@ -111,6 +116,61 @@ bool Replace(const QString& path, const QByteArray& bytes)
 QString FieldKey(const QString& component, const QString& property)
 {
     return component + QLatin1Char('/') + property;
+}
+constexpr foundation::int32 WORLD_PROPERTY_LAYOUT_WIDTH = 360;
+void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
+{
+    const QString component = QStringLiteral("light");
+    QComboBox* kindOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("kind"))));
+    QComboBox* roleOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_ROLE)));
+    QComboBox* driverOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_DRIVER)));
+    if (kindOrNull == nullptr || roleOrNull == nullptr || driverOrNull == nullptr)
+    {
+        return;
+    }
+
+    struct CelestialRow final
+    {
+        WorldCelestialFieldGroup Group;
+        QWidget* Field;
+    };
+    QVector<CelestialRow> celestialRows;
+    const QString componentPrefix = FieldKey(component, QString());
+    for (const QString& key : fields.keys())
+    {
+        if (key.startsWith(componentPrefix) == true)
+        {
+            const WorldCelestialFieldGroup group =
+                GetWorldCelestialFieldGroup(QStringView(key).sliced(componentPrefix.size()));
+            QWidget* fieldOrNull = fields.value(key);
+            if (group != WorldCelestialFieldGroup::Other && fieldOrNull != nullptr)
+            {
+                celestialRows.append({group, fieldOrNull});
+            }
+        }
+    }
+    const auto updateRows = [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, celestialRows]() {
+        const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
+        const bool hasDriver = isDirectional == true && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
+        const QString driver = driverOrNull->currentData().toString();
+        const bool hasObserver = hasDriver == true && driver != WORLD_CELESTIAL_AUTHORED;
+        const bool hasOrbit = hasObserver == true && driver == WORLD_CELESTIAL_ORBIT;
+        const bool hasEarth = hasObserver == true && hasOrbit == false;
+        for (const CelestialRow& row : celestialRows)
+        {
+            const bool isVisible = (row.Group == WorldCelestialFieldGroup::Role && isDirectional == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Driver && hasDriver == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Observer && hasObserver == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Earth && hasEarth == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Orbit && hasOrbit == true);
+            inoutRows.setRowVisible(row.Field, isVisible);
+        }
+        inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+    };
+    QObject::connect(kindOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
+    QObject::connect(roleOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
+    QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
+    updateRows();
 }
 QString Display(const QJsonValue& value)
 {
@@ -386,33 +446,34 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     ConfigureItemSelection(*Entities_);
     Entities_->setObjectName(QStringLiteral("worldEntities"));
     Entities_->setAccessibleName(QStringLiteral("World entities"));
+    Entities_->setToolTip(QStringLiteral("Right-click to add, duplicate, or delete entities."));
     Entities_->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
     mEntitySearch = new WorldEntitySearch(*Entities_, entityColumn);
     entityLayout->addWidget(mEntitySearch);
     entityLayout->addWidget(Entities_, 1);
-    // Entity commands share one row under the list.
-    QHBoxLayout* commands = new QHBoxLayout;
-    Add_ = new QPushButton(QStringLiteral("Add Entity"), entityColumn);
-    Add_->setObjectName(QStringLiteral("worldAdd"));
-    Duplicate_ = new QPushButton(QStringLiteral("Duplicate"), entityColumn);
-    Duplicate_->setObjectName(QStringLiteral("worldDuplicate"));
-    Remove_ = new QPushButton(QStringLiteral("Delete"), entityColumn);
-    Remove_->setObjectName(QStringLiteral("worldDelete"));
-    for (QPushButton* button : {Add_, Duplicate_, Remove_})
-    {
-        button->setProperty("density", QStringLiteral("compact"));
-        // A layout never squeezes a command below the height its own text needs.
-        button->setMinimumHeight(button->sizeHint().height());
-        commands->addWidget(button);
-    }
-    entityLayout->addLayout(commands);
+    mEntityMenu = new QMenu(this);
+    mEntityMenu->setObjectName(QStringLiteral("worldEntityContextMenu"));
+    mAddEntity = mEntityMenu->addAction(QStringLiteral("Add Entity"));
+    mAddEntity->setObjectName(QStringLiteral("worldAdd"));
+    mDuplicateEntities = mEntityMenu->addAction(QStringLiteral("Duplicate"));
+    mDuplicateEntities->setObjectName(QStringLiteral("worldDuplicate"));
+    mDeleteEntities = mEntityMenu->addAction(QStringLiteral("Delete"));
+    mDeleteEntities->setObjectName(QStringLiteral("worldDelete"));
+    Entities_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(Entities_, &QWidget::customContextMenuRequested, this, [this](const QPoint& positionList) {
+        const QListWidgetItem* itemOrNull = Entities_->itemAt(positionList);
+        showEntityMenu(Entities_->viewport()->mapToGlobal(positionList),
+                       itemOrNull == nullptr ? QString() : itemOrNull->data(Qt::UserRole).toString());
+    });
     QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
     addObject->setText(QStringLiteral("Add Geometry / Light"));
     addObject->setToolTip(QStringLiteral("Create geometry, lights or luminaires in a default World. Project-owned "
                                          "schemas use Add Entity and their declared components."));
     addObject->setPopupMode(QToolButton::InstantPopup);
-    QMenu* objectMenu = new QMenu(addObject);
+    QMenu* objectMenu = new QMenu(addObject->text(), addObject);
+    mEntityMenu->addSeparator();
+    mEntityMenu->addMenu(objectMenu);
     addObject->setMenu(objectMenu);
     addObject->setMinimumHeight(addObject->sizeHint().height());
     entityLayout->addWidget(addObject);
@@ -428,14 +489,14 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
         connect(objectMenu, &QMenu::aboutToShow, action, [this, action]() {
-            action->setEnabled(Add_->isEnabled() == true && IsBuiltInWorld(Document_) == true);
+            action->setEnabled(mAddEntity->isEnabled() == true && IsBuiltInWorld(Document_) == true);
             action->setToolTip(
                 QStringLiteral("Create an object in a default World. Project schemas define their own components."));
         });
         connect(action, &QAction::triggered, this, [this, preset]() {
             QString id;
             QString error;
-            if (Add_->isEnabled() == false)
+            if (mAddEntity->isEnabled() == false)
             {
                 return;
             }
@@ -465,7 +526,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     QAction* generateTerrain = objectMenu->addAction(QStringLiteral("Add Terrain…"));
     generateTerrain->setObjectName(QStringLiteral("worldGenerateTerrain"));
     connect(objectMenu, &QMenu::aboutToShow, generateTerrain, [this, generateTerrain]() {
-        generateTerrain->setEnabled(Add_->isEnabled() == true && Document_.HasBuiltInTerrain() == true &&
+        generateTerrain->setEnabled(mAddEntity->isEnabled() == true && Document_.HasBuiltInTerrain() == true &&
                                     isSceneWorkerActive() == false);
     });
     connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainAuthoring(); });
@@ -609,12 +670,12 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     connect(mEntitySearch, &WorldEntitySearch::SelectionChanged, this, updateSelection);
     connect(Entities_, &QListWidget::currentItemChanged, this, updateSelection);
     connect(Entities_, &QListWidget::itemSelectionChanged, this, updateSelection);
-    const auto bindCommand = [this](const QKeySequence& key, QPushButton* button) {
+    const auto bindCommand = [this](const QKeySequence& key, QAction* action) {
         QShortcut* shortcut = new QShortcut(key, Entities_);
         shortcut->setContext(Qt::WidgetShortcut);
-        connect(shortcut, &QShortcut::activated, button, &QPushButton::click);
+        connect(shortcut, &QShortcut::activated, action, &QAction::trigger);
     };
-    bindCommand(QKeySequence(Qt::CTRL | Qt::Key_D), Duplicate_);
+    bindCommand(QKeySequence(Qt::CTRL | Qt::Key_D), mDuplicateEntities);
     QList<QKeySequence> deleteKeys = QKeySequence::keyBindings(QKeySequence::Delete);
 #if defined(Q_OS_MACOS)
     const QKeySequence backspace(Qt::Key_Backspace);
@@ -625,7 +686,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
 #endif
     for (const QKeySequence& key : deleteKeys)
     {
-        bindCommand(key, Remove_);
+        bindCommand(key, mDeleteEntities);
     }
     const auto rename = [this]() {
         if (Entities_->isEnabled() == true && mSelectedEntities.size() == 1 && Name_ != nullptr)
@@ -642,8 +703,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     renameReturn->setContext(Qt::WidgetShortcut);
     connect(renameReturn, &QShortcut::activated, this, rename);
 #endif
-    connect(Add_, &QPushButton::clicked, this, [this]() {
-        QString id, error;
+    connect(mAddEntity, &QAction::triggered, this, [this]() {
+        QString id;
+        QString error;
         if (Document_.CreateEntity(mEntropy, error, QStringLiteral("Entity"), id) == false)
         {
             Changed(error);
@@ -655,7 +717,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         Snapshot();
         Changed(QStringLiteral("Entity created. Give it a meaningful name in the inspector."));
     });
-    connect(Duplicate_, &QPushButton::clicked, this, [this]() {
+    connect(mDuplicateEntities, &QAction::triggered, this, [this]() {
         QStringList copies;
         QString error;
         if (Document_.DuplicateEntities(mEntropy, mSelectedEntities, copies, error) == false)
@@ -669,7 +731,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         Snapshot();
         Changed(QStringLiteral("Selected entities duplicated with new stable IDs. Undo is available."));
     });
-    connect(Remove_, &QPushButton::clicked, this, [this]() {
+    connect(mDeleteEntities, &QAction::triggered, this, [this]() {
         const QMessageBox::StandardButton answer =
             QMessageBox::question(this,
                                   QStringLiteral("Delete Entities"),
@@ -725,6 +787,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   "session and cooks it here. Play and runtime binding require the native editor."));
 #endif
     initializeTerrainAuthoring();
+    mEntityMenu->addAction(&Render_->GetViewport().GetEditTerrainAction());
     bindViewportInteraction();
     DraftTimer_.setSingleShot(true);
     DraftTimer_.setInterval(180);
@@ -2172,7 +2235,8 @@ void WorldWorkspace::RenderInspector()
             const auto p = value.toObject();
             const auto pid = p.value(QStringLiteral("id")).toString();
             const auto type = p.value(QStringLiteral("type")).toString();
-            const auto current = values.value(pid);
+            const QJsonValue authored = values.value(pid);
+            const QJsonValue current = authored.isUndefined() == true ? p.value(QStringLiteral("default")) : authored;
             QWidget* field = nullptr;
             if (type == QStringLiteral("boolean"))
             {
@@ -2337,7 +2401,14 @@ void WorldWorkspace::RenderInspector()
             });
             rows->addRow(remove);
         }
-        group->setMinimumHeight(rows->totalHeightForWidth(360));
+        if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
+        {
+            ConfigureCelestialLightFields(*group, *rows, Fields_);
+        }
+        else
+        {
+            group->setMinimumHeight(rows->totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+        }
         group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
         Inspector_->addWidget(group);
     }
@@ -2455,12 +2526,12 @@ void WorldWorkspace::Changed(const QString& message)
     PlayButton_->setEnabled(Document_.Loaded() && isBusy == false);
     CancelScene_->setVisible(isBusy);
     CancelScene_->setEnabled(Scene_->CanCancel());
-    Add_->setEnabled(Document_.Loaded() && Pending_ == false && Entities_->count() < WorldDocument::MAX_ENTITIES &&
-                     isBusy == false);
-    Duplicate_->setEnabled(Selected_.isEmpty() == false && Pending_ == false &&
-                           Entities_->count() + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
-                           isBusy == false);
-    Remove_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
+    mAddEntity->setEnabled(Document_.Loaded() == true && Pending_ == false &&
+                           Entities_->count() < WorldDocument::MAX_ENTITIES && isBusy == false);
+    mDuplicateEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false &&
+                                   Entities_->count() + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
+                                   isBusy == false);
+    mDeleteEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
     Attach_->setEnabled(mSelectedEntities.size() == 1 && Pending_ == false && Components_->count() > 0 &&
                         isBusy == false);
     Components_->setEnabled(Pending_ == false && isBusy == false);
@@ -2576,27 +2647,35 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
         {
             const auto p = definition.toObject();
             const auto pid = p.value(QStringLiteral("id")).toString();
-            auto* field = Fields_.value(FieldKey(c.key(), pid));
+            QWidget* fieldOrNull = Fields_.value(FieldKey(c.key(), pid));
+            if (fieldOrNull != nullptr && fieldOrNull->isHidden() == true && Document_.HasBuiltInSchema() == true &&
+                c.key() == QStringLiteral("light") && IsWorldCelestialProperty(pid) == true)
+            {
+                // A hidden driver's draft may be incomplete. Keep its last accepted settings.
+                continue;
+            }
+            const QJsonValue authored = values.value(pid);
+            const QJsonValue current = authored.isUndefined() == true ? p.value(QStringLiteral("default")) : authored;
             QJsonValue candidate;
-            if (auto* check = qobject_cast<QCheckBox*>(field))
+            if (QCheckBox* checkOrNull = qobject_cast<QCheckBox*>(fieldOrNull); checkOrNull != nullptr)
             {
-                candidate = check->isChecked();
+                candidate = checkOrNull->isChecked();
             }
-            else if (auto* choice = qobject_cast<QComboBox*>(field))
+            else if (QComboBox* choiceOrNull = qobject_cast<QComboBox*>(fieldOrNull); choiceOrNull != nullptr)
             {
-                candidate = choice->currentData().toString();
+                candidate = choiceOrNull->currentData().toString();
             }
-            else if (auto* text = qobject_cast<QLineEdit*>(field))
+            else if (QLineEdit* textOrNull = qobject_cast<QLineEdit*>(fieldOrNull); textOrNull != nullptr)
             {
                 // Preserve unchanged JSON numbers exactly rather than round them
                 // through the float32 text converter during an unrelated edit.
-                if (text->text() == Display(values.value(pid)))
+                if (textOrNull->text() == Display(current))
                 {
-                    candidate = values.value(pid);
+                    candidate = current;
                 }
-                else if (WorldDocument::ParseValue(p, text->text(), candidate, outError) == false)
+                else if (WorldDocument::ParseValue(p, textOrNull->text(), candidate, outError) == false)
                 {
-                    outInvalidOrNull = text;
+                    outInvalidOrNull = textOrNull;
                     return false;
                 }
             }
@@ -2605,7 +2684,11 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                 outError = QStringLiteral("Inspector no longer matches the selected entity.");
                 return false;
             }
-            values.insert(pid, candidate);
+            // Leave absent optional fields absent until the user authors a non-default value.
+            if (authored.isUndefined() == false || candidate != current)
+            {
+                values.insert(pid, candidate);
+            }
         }
         c.value() = values;
     }
@@ -3163,7 +3246,7 @@ void WorldWorkspace::StopPreview() noexcept
 bool WorldWorkspace::ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& repair)
 {
     if (repair.Repair == RenderGraphLuminaireRepair::None || Pending_ == true || SceneBusy() == true ||
-        Add_->isEnabled() == false)
+        mAddEntity->isEnabled() == false)
     {
         Changed(QStringLiteral("The World cannot be edited now; try the luminaire repair again when it is ready."));
         return false;
@@ -3237,7 +3320,7 @@ bool WorldWorkspace::ApplySunRepair(const WorldLightingCoverage& repair)
 }
 bool WorldWorkspace::addSun(const WorldSunPlacement& sun)
 {
-    if (Pending_ == true || SceneBusy() == true || Add_->isEnabled() == false)
+    if (Pending_ == true || SceneBusy() == true || mAddEntity->isEnabled() == false)
     {
         Changed(QStringLiteral("The World cannot be edited now; try adding the sun again when it is ready."));
         return false;
