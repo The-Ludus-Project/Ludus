@@ -939,7 +939,8 @@ void LevelWorkspace::CommitCandidate()
     ApplyPendingProject();
     startPlacementValidation();
 }
-void LevelWorkspace::Rollback(const QString& error)
+// The copy is the contract: error may alias RenderPreview's status, which SetScene below clears.
+void LevelWorkspace::Rollback(QString error) // NOLINT(performance-unnecessary-value-param)
 {
     const bool hasPreviousFrame = Viewport_->HasRetainedGraphFrame();
     AwaitingViewport_ = false;
