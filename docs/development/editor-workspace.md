@@ -1177,6 +1177,12 @@ and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
 **Save World** to keep the spawn. Duplicate the entity to keep multiple starting
 points.
 
+Select a player to see its upright collision box in the World viewport. Press
+**F** with the viewport focused or double-click the player in the hierarchy to
+frame the box. The box measures 0.48 × 1.75 × 0.48 m, and its base sits 1.60 m
+below the spawn eye. Rotation aims the view and scale leaves the box at its fixed
+size.
+
 To make a surface solid, select its Terrain, mesh preset, or imported mesh
 entity. In **Properties**, choose **Static Collider** and click **Add Component**.
 Select several meshes to attach the component to the eligible entities in one

@@ -3,6 +3,7 @@
 #include "internal/builtin_world.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_gizmo_readout.h"
+#include "internal/viewport_walk_collision.h"
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
@@ -15,6 +16,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
+#include <ludus/gameplay/camera/camera.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 
 #include <QColor>
@@ -272,6 +274,12 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     mSelected = selected;
     const QJsonObject entity = world.Entity(selected);
     const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    gameplay::camera::CameraSample spawn;
+    float32 speed = 0;
+    QString spawnError;
+    mHasPlayerSpawn = ReadWorldFirstPersonPlayer(world, selected, spawn, speed, spawnError);
+    mPlayerEyeWorld = mHasPlayerSpawn == true ? spawn.Pose.Position : math::Vector3d{};
+    mShouldPreviewPlayerMove = false;
     mProbeGrid = {};
     mLuminaireHalfExtentWorld = 0;
     mParentToWorld = {};
@@ -314,6 +322,9 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
         const QJsonObject properties = binding.value(QStringLiteral("properties")).toObject();
         if (binding.isEmpty() == false && values.isEmpty() == false)
         {
+            // An imported mesh's placement can be edited separately from its player component's Transform.
+            mShouldPreviewPlayerMove =
+                mHasPlayerSpawn == true && binding.value(QStringLiteral("component")) == QStringLiteral("transform");
             mPlacement.insert(QStringLiteral("basis"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1});
             mPlacement.insert(QStringLiteral("parent"), QString());
             const TransformPropertyNames keys{QStringLiteral("position"),
@@ -597,6 +608,25 @@ void ViewportObjectInteraction::appendBoxOutline(const math::Aabb3& bounds,
             }
         }
     }
+}
+
+void ViewportObjectInteraction::appendPlayerOutline(ViewportObjectOverlay& inoutOverlay) const
+{
+    if (mHasPlayerSpawn == false)
+    {
+        return;
+    }
+    math::Vector3d eyeWorld = mPlayerEyeWorld;
+    // The player uses the authored Transform position as its eye. Its body stays upright and at a fixed size.
+    if (mShouldPreviewPlayerMove == true && mTool == Tool::Move && mDragTarget.IsValid() == true)
+    {
+        const QJsonArray position = mCandidate.value(QStringLiteral("position")).toArray();
+        if (position.size() == AXIS_COUNT)
+        {
+            eyeWorld = {position[0].toDouble(), position[1].toDouble(), position[2].toDouble()};
+        }
+    }
+    appendBoxOutline(ViewportWalkCollision::ComputeBodyBounds(eyeWorld), mWorldToClip, inoutOverlay);
 }
 
 bool ViewportObjectInteraction::refreshMeshBounds()
@@ -1456,6 +1486,15 @@ void ViewportObjectInteraction::RequestFrameAt(QPointF positionPixel, const QRec
         Q_EMIT FrameRequested(id);
     }
 }
+bool ViewportObjectInteraction::TryRequestFramePlayer()
+{
+    if (mHasPlayerSpawn == false)
+    {
+        return false;
+    }
+    Q_EMIT FrameRequested(mSelected);
+    return true;
+}
 bool ViewportObjectInteraction::FrameProbeVolume() noexcept
 {
     return mPreviewOrNull.isNull() == false && mProbeGrid.Counts[0] != 0 &&
@@ -1777,6 +1816,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         outOverlay.ReadoutText = mReadoutText;
         outOverlay.ReadoutAnchorPixel = mReadoutAnchorPixel;
     }
+    appendPlayerOutline(outOverlay);
     const RenderScene& scene = mPreviewOrNull->Scene();
     for (const PreviewObject& object : scene.Objects)
     {

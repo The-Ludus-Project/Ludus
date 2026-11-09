@@ -14,6 +14,7 @@
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
+#include "internal/selection_outline_request.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_document.h"
@@ -2935,6 +2936,76 @@ TEST_CASE("World Properties attaches Static Collider to selected meshes in one e
     workspace.StopPreview();
 }
 
+TEST_CASE("A meshless First Person Player shows its collision box and can be framed",
+          "[editor][world][first-person][framing][overlay]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("player-bounds.world.json"))) == true);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(createOrNull != nullptr);
+    REQUIRE(viewportOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    createOrNull->trigger();
+    REQUIRE(entitiesOrNull->topLevelItemCount() == 1);
+    REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave() == true; }) == true);
+    const QTreeWidgetItem* playerOrNull = entitiesOrNull->topLevelItem(0);
+    REQUIRE(playerOrNull != nullptr);
+    const QString id = playerOrNull->data(0, Qt::UserRole).toString();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    math::Aabb3 boundsWorld;
+    CHECK(preview.Scene().TryGetBounds(id, boundsWorld) == false);
+    const QJsonObject draft = workspace.Document().Draft();
+
+    SECTION("frame the player from the viewport keyboard")
+    {
+        QTest::keyClick(viewportOrNull, Qt::Key_F);
+    }
+    SECTION("frame the player from the hierarchy")
+    {
+        const QPoint rowPixel = entitiesOrNull->visualItemRect(playerOrNull).center();
+        QTest::mouseClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
+        tests::DoubleClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
+    }
+
+    PreviewStartView view;
+    REQUIRE(preview.TryDescribeStartView(view) == true);
+    // The default eye is 1.65 m above the World origin and 1.60 m above the box base.
+    constexpr float64 TARGET_HEIGHT_METRES = 0.925;
+    constexpr float64 FRAME_TOLERANCE_METRES = 0.001;
+    CHECK(view.TargetWorld.X == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
+    CHECK(view.TargetWorld.Y == Catch::Approx(TARGET_HEIGHT_METRES).margin(FRAME_TOLERANCE_METRES));
+    CHECK(view.TargetWorld.Z == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
+
+    ViewportObjectInteraction& interaction = viewportOrNull->GetObjectInteraction();
+    // Offscreen has no presented GPU image. Exercise the production overlay geometry.
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    interaction.SetGpuOutlineEnabled(true);
+    const QRectF framePixel{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    constexpr usize COLLISION_BOX_EDGES = 12;
+    CHECK(overlay.OutlineLinesPixel.GetSize() == COLLISION_BOX_EDGES);
+    SelectionOutlineRequest meshOutline;
+    CHECK(interaction.TryGetGpuOutlineRequest(meshOutline) == false);
+
+    entitiesOrNull->clearSelection();
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.OutlineLinesPixel.IsEmpty() == true);
+    CHECK(workspace.Document().Draft() == draft);
+}
+
 TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity list visible",
           "[editor][world][first-person]")
 {
@@ -3835,7 +3906,7 @@ TEST_CASE("World viewport moves, resizes and scales an unbaked GI probe volume w
     workspace.StopPreview();
 }
 
-TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation]")
+TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation][framing]")
 {
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
@@ -3855,6 +3926,9 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     const QJsonObject level =
         QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
     REQUIRE(document.ImportScene(level, error) == true);
+    const QString importedId =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    REQUIRE(document.Attach(importedId, error, QStringLiteral("firstPersonPlayer")) == true);
     const QString path = QDir(root).filePath(QStringLiteral("mixed.world.json"));
     Write(path, document.Encode());
     ToolingPaths tools;
@@ -3876,6 +3950,20 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     CHECK(scene->PreviewScene().Objects.size() == 2);
     CHECK(scene->PreviewScene().AuthoredLights.Count == 1);
     CHECK(workspace.Document().Draft() == document.Draft());
+
+    // Imported placement supplies the mesh bounds even when the player lacks a Transform.
+    REQUIRE(HasWorldFirstPersonPlayer(workspace.Document(), importedId) == true);
+    REQUIRE(workspace.Document()
+                .Entity(importedId)
+                .value(QStringLiteral("components"))
+                .toObject()
+                .contains(QStringLiteral("transform")) == false);
+    RenderPreview& preview = workspace.GetRenderPreview();
+    preview.FrameAll();
+    preview.SetFocusDistance(preview.GetFocusDistance() * 3);
+    const ludus::foundation::float32 distanceBefore = preview.GetFocusDistance();
+    scene->GetViewport().GetObjectInteraction().FrameRequested(importedId);
+    CHECK(preview.GetFocusDistance() < distanceBefore);
     workspace.StopPreview();
 }
 

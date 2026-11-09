@@ -455,7 +455,7 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
         }
         if (event->key() == Qt::Key_F)
         {
-            if (mObjectInteraction->FrameProbeVolume() == false)
+            if (mObjectInteraction->FrameProbeVolume() == false && mObjectInteraction->TryRequestFramePlayer() == false)
             {
                 static_cast<void>(Preview_->FrameSelection());
             }
