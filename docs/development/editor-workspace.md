@@ -1261,7 +1261,8 @@ reasons and how a shader names its own.
 ### Select and transform objects in the World viewport
 
 Click a visible object's triangles to select it. The hierarchy and Properties
-follow the same stable entity ID; clicking empty space clears the selection.
+follow the same stable entity ID. Click empty space or press **Escape** in the
+idle viewport to clear the selection.
 The selected object is marked by its silhouette: a two-pixel line in the selection
 amber of the design tokens with a dark casing, drawn over the rendered image so it
 stays legible against both bright and dark surfaces. The outline follows the object's

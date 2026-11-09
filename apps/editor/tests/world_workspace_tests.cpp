@@ -2459,8 +2459,12 @@ TEST_CASE("World viewport interaction shares hierarchy selection inspector valid
     placement.insert(QStringLiteral("scale"), QJsonArray{0, 1, 1});
     interaction.PlacementCommitted(id, placement);
     CHECK(workspace.Document().Draft() == accepted);
-    interaction.SelectionRequested(QString());
+    REQUIRE(entitiesOrNull->selectedItems().size() == 1);
+    QTest::keyClick(&sceneOrNull->GetViewport(), Qt::Key_Escape);
     CHECK(entitiesOrNull->selectedItems().isEmpty() == true);
+    CHECK(workspace.Session().value(QStringLiteral("selection")).toString().isEmpty() == true);
+    CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldEntityName")) == nullptr);
+    CHECK(workspace.Document().Draft() == accepted);
 }
 TEST_CASE("World viewport mouse events select objects while Alt keeps camera navigation",
           "[editor][world][object-interaction]")
@@ -2501,6 +2505,16 @@ TEST_CASE("World viewport mouse events select objects while Alt keeps camera nav
     CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Rotate);
     QTest::keyClick(&viewport, Qt::Key_R);
     CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Scale);
+    const QRectF framePixel{0, 0, 800, 600};
+    const QPointF handlePixel = framePixel.center() + QPointF(70, 0);
+    REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+    REQUIRE(interaction.IsDragging() == true);
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    CHECK(interaction.IsDragging() == false);
+    CHECK(selection.count() == 1);
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    REQUIRE(selection.count() == 2);
+    CHECK(selection[1][0].toString().isEmpty() == true);
 }
 
 TEST_CASE("Destroying a viewport renderer cancels its outstanding object gesture",
