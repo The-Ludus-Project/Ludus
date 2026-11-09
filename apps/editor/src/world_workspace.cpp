@@ -589,6 +589,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
     sections->setStretchFactor(1, LIGHT_SECTION_STRETCH);
     connect(mLightsPanel, &WorldLightsPanel::LightsChangeRequested, this, &WorldWorkspace::applyLightChange);
+    connect(mLightsPanel, &WorldLightsPanel::LightSelected, this, &WorldWorkspace::selectLight);
 
     BoundViewport_ = Render_->TakeViewport(split);
     Scene_ = new LevelWorkspace(tooling, this);
@@ -1500,8 +1501,9 @@ void WorldWorkspace::Render()
         Selected_ = mSelectedEntities.value(0);
     }
     Rendering_ = false;
-    RenderInspector();
+    // The light list first: the inspector mirrors the entity selection into it and may show its selected light.
     renderLights();
+    RenderInspector();
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
     // World-demo Worlds render in the same bound viewport as every other scene-less World.
@@ -1540,6 +1542,57 @@ void WorldWorkspace::applyLightChange(const WorldLightChange& change, const QStr
     Render();
     Snapshot();
     Changed(message);
+}
+void WorldWorkspace::selectLight(const WorldLightRow& row)
+{
+    // Like a hierarchy click, a light selection never replaces an inspector holding unapplied edits.
+    if (Pending_ == true)
+    {
+        return;
+    }
+    for (const QString& key : row.EntityKeys)
+    {
+        if (SelectEntity(key) == true)
+        {
+            return;
+        }
+    }
+    Selected_.clear();
+    mSelectedEntities.clear();
+    Render();
+    Changed();
+}
+void WorldWorkspace::addLightGroup(const WorldLightRow& row)
+{
+    QGroupBox* group = new QGroupBox(QStringLiteral("Light"));
+    group->setObjectName(QStringLiteral("worldLight"));
+    QFormLayout* rows = new QFormLayout(group);
+    const QString origin = row.Origin == WorldLightOrigin::Missing
+                               ? row.Detail
+                               : QStringLiteral("Imported with the scene; it has no World entity. Switch it in the "
+                                                "Lights list. Its values change only when the scene is re-imported.");
+    QLabel* help = new QLabel(origin, group);
+    help->setObjectName(QStringLiteral("worldLightHelp"));
+    help->setTextFormat(Qt::PlainText);
+    help->setWordWrap(true);
+    rows->addRow(help);
+    rows->addRow(QStringLiteral("Name"), new QLabel(row.Label, group));
+    QString state = row.IsEnabled == true ? QStringLiteral("On") : QStringLiteral("Off");
+    if (row.Origin == WorldLightOrigin::Missing)
+    {
+        state = QStringLiteral("Off (missing from the scene)");
+    }
+    rows->addRow(QStringLiteral("Switch"), new QLabel(state, group));
+    for (const WorldLightProperty& property : row.Properties)
+    {
+        QLabel* value = new QLabel(property.Value, group);
+        value->setObjectName(QStringLiteral("worldLight:") + property.Label);
+        value->setTextFormat(Qt::PlainText);
+        value->setWordWrap(true);
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        rows->addRow(property.Label, value);
+    }
+    Inspector_->addWidget(group);
 }
 void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
 {
@@ -2043,6 +2096,7 @@ void WorldWorkspace::RenderInspector()
 {
     Scene_->SetSelection(Selected_);
     Render_->SetSelection(Selected_, Pending_);
+    mLightsPanel->SelectEntityLight(Selected_);
     Fields_.clear();
     Name_ = nullptr;
     while (auto* item = Inspector_->takeAt(0))
@@ -2081,6 +2135,13 @@ void WorldWorkspace::RenderInspector()
             state.ShortcutHint = QStringLiteral("Open a world from the Project Explorer.");
             empty->SetContent(state);
             Inspector_->addWidget(empty);
+            Inspector_->addStretch();
+            return;
+        }
+        const WorldLightRow* lightOrNull = mLightsPanel->GetSelectedRowOrNull();
+        if (lightOrNull != nullptr && lightOrNull->EntityKeys.isEmpty() == true)
+        {
+            addLightGroup(*lightOrNull);
             Inspector_->addStretch();
             return;
         }

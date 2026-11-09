@@ -46,6 +46,7 @@ class LevelWorkspace;
 class WorldLightsPanel;
 class WorldTerrainPanel;
 struct WorldLightChange;
+struct WorldLightRow;
 enum class PlacementValidationResult : foundation::uint8;
 struct ToolingPaths;
 /// Where Play opens the game: a local editor preference, not project data.
@@ -256,6 +257,11 @@ private:
     void renderLights();
     /// Apply a light switch, Solo or Enable All from the light list as one undo step.
     void applyLightChange(const WorldLightChange& change, const QString& message);
+    /// Show the properties of a light selected in the light list: select its first World entity, or, for a light
+    /// without one, clear the entity selection so the inspector shows the light's own values.
+    void selectLight(const WorldLightRow& row);
+    /// Append the read-only Light group of the light list's selected light, which has no World entity.
+    void addLightGroup(const WorldLightRow& row);
     /// Append the read-only Material group of the selected scene instance, read from the
     /// presented viewport scene; a placeholder until that scene has loaded.
     void addMaterialGroup();

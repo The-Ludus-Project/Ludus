@@ -2025,6 +2025,15 @@ selected light and any always-on baked lights enabled. **Enable All**
 switches every light back on. Each action is one World edit. Undo and Redo
 restore the previous state, and **Save World** keeps it.
 
+Selecting a light row shows its properties in **Properties**. An imported area
+light selects its first emissive object. Its **Material** group shows the
+emission. An authored light selects its entity and shows its light component.
+An imported analytic light has no World entity, so **Properties** shows a
+read-only **Light** group instead. The group lists its kind, intensity,
+position or direction, range and source ID. Change those values in the source
+scene and re-import. Selecting an entity in the entity list or the viewport also
+highlights the light it emits.
+
 A switched-off light keeps its identity and authored values. The viewport,
 reference path tracer, render graphs and the Light Transformer see no emission
 and no light from it, and no light sampler picks it. Toggling an imported light
