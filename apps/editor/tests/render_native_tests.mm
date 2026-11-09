@@ -847,18 +847,17 @@ TEST_CASE("Native Lit viewport publishes an opted-in always-on bake and falls ba
         }
         return preview.Status().contains(expected);
     };
-    bool hasDrawnWhileBaking = false;
-    QObject::connect(&preview, &RenderPreview::Changed, &viewport, [&preview, &hasDrawnWhileBaking]() {
-        hasDrawnWhileBaking =
-            hasDrawnWhileBaking == true || preview.Status().contains(QStringLiteral("baking always-on lighting"));
-    });
+    const QImage previousFrame = ReadViewport();
+    REQUIRE(previousFrame.isNull() == false);
     scene.Identity = QByteArrayLiteral("selected-always-on-light");
     scene.AlwaysOnLightIds.append(scene.AuthoredLights.Lights[0].SourceId);
     REQUIRE(preview.SetScene(scene) == true);
+    // The previous image stays visible while the replacement prepares. The bake can finish before
+    // the replacement presents its first frame.
+    CHECK(ReadViewport() == previousFrame);
     const bool hasBaked = waitForBakeStatus(QStringLiteral("always-on lighting baked"));
     INFO(preview.Status().toStdString());
     REQUIRE(hasBaked == true);
-    CHECK(hasDrawnWhileBaking == true);
     REQUIRE(Frames(preview, preview.Frames() + 2) == true);
     CHECK(ReadViewport().isNull() == false);
 
