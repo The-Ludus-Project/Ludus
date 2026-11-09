@@ -20,6 +20,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFocusEvent>
@@ -33,6 +34,7 @@
 #include <QPoint>
 #include <QPointF>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -82,6 +84,30 @@ RenderScene MakeNavigationScene()
     authored.Sample.Lens.Projection = camera::CameraProjection::PerspectiveInfinite;
     authored.Sample.Lens.NearPlane = 0.01F;
     scene.Cameras.push_back(authored);
+    return scene;
+}
+void AddCollisionQuad(PreviewMesh& inoutMesh,
+                      math::Vector3 firstWorld,
+                      math::Vector3 secondWorld,
+                      math::Vector3 thirdWorld,
+                      math::Vector3 fourthWorld)
+{
+    const uint32 first = static_cast<uint32>(inoutMesh.Positions.size());
+    inoutMesh.Positions.append({firstWorld, secondWorld, thirdWorld, fourthWorld});
+    inoutMesh.Indices.append({first, first + 1, first + 2, first + 2, first + 1, first + 3});
+}
+
+RenderScene MakeWalkingScene()
+{
+    RenderScene scene = MakeNavigationScene();
+    PreviewMesh& mesh = scene.Meshes[0];
+    mesh.Positions.clear();
+    AddCollisionQuad(mesh, {-5, 0, -5}, {-5, 0, 5}, {5, 0, -5}, {5, 0, 5});
+    AddCollisionQuad(mesh, {1, 0, -2}, {1, 0, 2}, {1, 0.25F, -2}, {1, 0.25F, 2});
+    AddCollisionQuad(mesh, {1, 0.25F, -2}, {1, 0.25F, 2}, {3, 0.25F, -2}, {3, 0.25F, 2});
+    AddCollisionQuad(mesh, {3, 0, -5}, {3, 0, 5}, {3, 4, -5}, {3, 4, 5});
+    // Include an extra triangle pair so the query also crosses the tree split.
+    AddCollisionQuad(mesh, {-4, 0, -5}, {-4, 0, 5}, {-4, 4, -5}, {-4, 4, 5});
     return scene;
 }
 } // namespace
@@ -135,6 +161,104 @@ TEST_CASE("Detaching an authored viewport camera preserves its pose lens and vis
     CHECK(after.CameraPosition == before.CameraPosition);
     CHECK(after.CameraForward != before.CameraForward);
 }
+TEST_CASE("First person navigation collides without changing the authored camera", "[editor][navigation][first-person]")
+{
+    RenderPreview preview;
+    const RenderScene scene = MakeWalkingScene();
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.Navigate(0, {0, 0}, 1, false);
+    const QJsonObject editorNavigation = preview.Navigation();
+    const camera::CameraSample editorCamera = preview.GetVisibleCameraSample();
+    PreviewViewport viewport(&preview, nullptr, false);
+    viewport.EnableWorldContextMenu();
+    QSignalSpy contextMenu(&viewport, &PreviewViewport::WorldContextMenuRequested);
+    camera::CameraSample spawn = editorCamera;
+    spawn.Pose.Position = {0, 2, 0};
+    REQUIRE(math::TryFromAxisAngle({1, 0, 0}, 0.5F, spawn.Pose.Orientation) == math::MathStatus::Success);
+    QString error;
+    REQUIRE(viewport.BeginFirstPerson(spawn, 3, error) == true);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == spawn.Pose.Position);
+    rr::ViewDescription view;
+    REQUIRE(preview.DescribeView(800, 600, view, error) == true);
+    CHECK(view.CameraPosition == math::Vector3{0, 2, 0});
+
+    for (uint32 frame = 0; frame < 10; ++frame)
+    {
+        preview.AdvanceFirstPerson({}, 0.1F, 3, false);
+    }
+    const math::Vector3d groundedWorld = preview.GetVisibleCameraSample().Pose.Position;
+    CHECK(groundedWorld.Y == Catch::Approx(1.602).margin(0.003));
+    preview.AdvanceFirstPerson({0, 0, -1}, 0.1F, 3, false);
+    const camera::CameraSample moved = preview.GetVisibleCameraSample();
+    CHECK(moved.Pose.Position.Y == groundedWorld.Y);
+    CHECK(moved.Pose.Position.Z == Catch::Approx(-0.3));
+    preview.Look(20, 0);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == moved.Pose.Position);
+    CHECK(preview.GetVisibleCameraSample().Pose.Orientation != moved.Pose.Orientation);
+
+    QTest::mousePress(&viewport, Qt::RightButton);
+    QTest::keyClick(&viewport, Qt::Key_Space);
+    constexpr int32 POLL_MILLISECONDS = 10;
+    constexpr int32 MOVEMENT_TIMEOUT_MILLISECONDS = 1000;
+    QElapsedTimer timer;
+    timer.start();
+    while (preview.GetVisibleCameraSample().Pose.Position.Y <= moved.Pose.Position.Y &&
+           timer.elapsed() < MOVEMENT_TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    QTest::mouseRelease(&viewport, Qt::RightButton);
+    CHECK(contextMenu.count() == 0);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position.Y > moved.Pose.Position.Y);
+    CHECK(preview.Navigation() == editorNavigation);
+
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == editorCamera.Pose.Position);
+    CHECK(preview.GetVisibleCameraSample().Pose.Orientation == editorCamera.Pose.Orientation);
+    REQUIRE(viewport.BeginFirstPerson(spawn, 3, error) == true);
+    QFocusEvent focusLost(QEvent::FocusOut);
+    QApplication::sendEvent(&viewport, &focusLost);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    CHECK(preview.Navigation() == editorNavigation);
+}
+
+TEST_CASE("Explore walks up a step and a fast move cannot tunnel through a thin wall",
+          "[editor][navigation][first-person]")
+{
+    RenderPreview preview;
+    RenderScene scene = MakeWalkingScene();
+    REQUIRE(preview.SetScene(scene) == true);
+    camera::CameraSample spawn = scene.Cameras[0].Sample;
+    spawn.Pose = { .Position = {0, 1.61, 0}, .Orientation = {} };
+    QString error;
+    PreviewViewport viewport(&preview, nullptr, false);
+    REQUIRE(viewport.BeginFirstPerson(spawn, 3, error) == true);
+    for (uint32 frame = 0; frame < 6; ++frame)
+    {
+        preview.AdvanceFirstPerson({1, 0, 0}, 0.1F, 3, false);
+    }
+    const math::Vector3d onStepWorld = preview.GetVisibleCameraSample().Pose.Position;
+    CHECK(onStepWorld.X > 1);
+    CHECK(onStepWorld.Y == Catch::Approx(1.852).margin(0.003));
+    preview.AdvanceFirstPerson({1, 0, 0}, 0.1F, 200, false);
+    const math::Vector3d atWallWorld = preview.GetVisibleCameraSample().Pose.Position;
+    CHECK(atWallWorld.X == Catch::Approx(2.758).margin(0.005));
+
+    // A failed spawn preserves the current view. Publishing different geometry ends the session.
+    spawn.Pose.Position = {3, 2, 0};
+    CHECK(preview.BeginFirstPerson(spawn, error) == false);
+    CHECK(error.contains(QStringLiteral("clear of walls")) == true);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == atWallWorld);
+    scene.Identity = QByteArrayLiteral("replacement-collision-fixture");
+    REQUIRE(preview.SetScene(scene) == true);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    QKeyEvent shortcut(QEvent::ShortcutOverride, Qt::Key_F12, Qt::NoModifier);
+    shortcut.ignore();
+    QApplication::sendEvent(&viewport, &shortcut);
+    CHECK(shortcut.isAccepted() == false);
+}
+
 TEST_CASE("Selected object framing ignores scene-wide radius and fits portrait and wide viewports",
           "[editor][navigation]")
 {
@@ -270,6 +394,7 @@ TEST_CASE("Viewport input frames selection, consumes fractional scrolling and st
                          false);
     QApplication::sendEvent(&viewport, &trackpad);
     CHECK(preview.Navigation().value(QStringLiteral("camera")).toString().isEmpty() == true);
+    viewport.EnableWorldContextMenu();
     const QJsonObject beforeFly = preview.Navigation();
     QTest::mousePress(&viewport, Qt::RightButton);
     QTest::keyPress(&viewport, Qt::Key_W);
@@ -928,6 +1053,8 @@ TEST_CASE("Right drag vertical input preserves the rendered horizontal camera ax
     RenderPreview preview;
     REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
     PreviewViewport viewport(&preview, nullptr, false);
+    viewport.EnableWorldContextMenu();
+    QSignalSpy contextMenu(&viewport, &PreviewViewport::WorldContextMenuRequested);
     viewport.resize(800, 600);
     rr::ViewDescription before;
     rr::ViewDescription after;
@@ -963,6 +1090,7 @@ TEST_CASE("Right drag vertical input preserves the rendered horizontal camera ax
                         Qt::NoButton,
                         Qt::NoModifier);
     QApplication::sendEvent(&viewport, &release);
+    CHECK(contextMenu.isEmpty() == true);
     REQUIRE(preview.DescribeView(800, 600, after, error) == true);
     CHECK(after.CameraPosition == before.CameraPosition);
     CHECK(math::Distance(after.CameraForward, before.CameraForward) > 0.1F);

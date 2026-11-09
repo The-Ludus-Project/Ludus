@@ -3096,7 +3096,7 @@ shaders from the scene. `main_shaders/luminaire.slang` defines its emission:
   scene geometry between a receiver and the panel does.
 
 **Add a luminaire to the World.** In a default World, choose
-**Add Geometry / Light → Luminaire**. It creates an entity with a `transform` and a
+**Add World Preset → Luminaire**. It creates an entity with a `transform` and a
 `luminaire` component, a 0.7 m panel facing down 2 m above the origin. Select it
 in the entity list to outline the panel and its emission direction in the
 viewport, and move or rotate it with the transform tools. The panel emits along
@@ -5738,6 +5738,18 @@ rebuilds; a removed target returns to Final output. Discarded/undefined attachme
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
 
+Open **Exposure** next to the output selector to adjust the viewport in stops.
+Zero uses the graph's authored exposure, +1 doubles it, and −1 halves it. Use
+**Reset to graph exposure** to return to zero. The adjustment stays with this
+viewport session as you navigate. It updates the lighting resolve before the
+tone curve and 8-bit output, without a graph rebuild or a saved World or graph
+edit.
+
+Exposure is available for **Final output** when a clustered deferred raster pass
+with an enabled ToneMap directly writes the export. For other graphs or targets,
+return to a supported final output to use the control. Reference captures run
+with the graph's authored exposure.
+
 After the graph's own outputs, the selector offers the editor's built-in debug views:
 **Debug: Albedo**, **Normal**, **Depth**, **Roughness**, **Metallic**, **UV**, **Light count**
 and **Wireframe**. These work with every graph, including ones that write no G-buffer, because
@@ -5842,14 +5854,13 @@ Limits:
 
 The engine default and the **Raster** starter use the `ClusteredDeferred` scene
 profile. They shade the current World's authored materials, textures, analytic
-lights and environment; an unlit World with no emission or environment is dark.
-A World without a lighting model, such as the World demo's flat-coloured rooms, is
-extracted as each object's tint (times its colour texture) in emission over a black
-base colour. It shows its authored colours without an invented light; that emission
-also registers as mesh area lighting, which reflects from nothing because every base
-colour is black.
-They require static opaque triangles with normals. Masked/transparent materials
-and invalid inputs reject preparation and retain the last drawable generation.
+lights and environment. Lit materials are dark without incident light or emission.
+For a World without a lighting model, such as the World demo's flat-coloured rooms,
+the editor extracts each object's tint (times its colour texture) as display-only
+emission over a black base colour. That emission contributes no mesh area lighting.
+They require static triangles with normals and opaque or alpha-masked materials.
+Blended materials and invalid inputs reject preparation and retain the last drawable generation.
+The default shadows one authored directional light with a cached orthographic map.
 Emissive meshes also provide direct area lighting, shadowed by cached cube shadow maps
 ([Mesh-light shadows](#mesh-light-shadows)). No proxy lights, ray tracing or indirect illumination are added.
 The graph's ToneMap node (PBR Neutral at unit exposure) is fused into the lighting
@@ -6092,6 +6103,28 @@ Other raster technique families are rejected by this profile. Existing `ForwardL
 and `ClusteredForward` packages keep their existing lighting ABI and behavior.
 Runtime package version 24 appends four deferred support roles without changing
 record widths or older role IDs; older packages remain readable.
+
+### Directional shadows
+
+The default shadows the directional light with the lowest source identity among
+lights with positive intensity and a nonblack color. The renderer fits one
+1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
+with a one-texel atlas gutter. It snaps the projection to the texel grid and uses
+the existing four-tap depth comparison with a receiver bias of 0.001 in
+normalized light depth. Opaque and alpha-masked scene geometry cast shadows.
+The resolve applies visibility to the selected light's direct diffuse and specular
+contribution. Point and spot lights and additional directional lights are
+evaluated without analytic shadows in this profile.
+
+The atlas is prepared with the scene. The renderer draws the directional map
+before the first lighting resolve that has enough draw budget. Until then the
+light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
+prepare a replacement, and failed preparation retains the previous drawable
+generation. The directional slot shares the mesh-light atlas when the scene
+has both kinds of casters. The whole-scene fit keeps the shadow stable as the
+camera moves. In large scenes, each texel covers more ground, so nearby edges
+can appear coarse. Recook existing clustered deferred shader packages to use
+directional visibility.
 
 ### Mesh-light shadows
 
@@ -7170,19 +7203,21 @@ What each fixture establishes:
   `dxil` build stops with `dxil requires --dxc-path`. The two libraries join each
   DXIL stage's cache identity only, so changing them recompiles DXIL alone. DXIL
   stages accept the bindings the Direct3D 12 raster profile allows: one resource
-  per binding, uniform buffers and sampled textures in raster stages, and storage
-  only in compute. Ray traversal programs are refused for `dxil`. On the Windows
-  lane, `ludus_render_graph_dxil_tests` builds the rg2 `surface` and `bound`
-  fixtures for `dxil`, cooks them, and checks that each color stage decodes to a
-  signed DXIL container with its entry. It then draws the compiled `surface` graph
-  headlessly on Direct3D 12 (WARP in CI). Its pixels follow instance and camera
-  edits, as in the portable RG2 GPU suite. Graphs whose stages need ray traversal,
-  depth sampling, descriptor arrays or fragment storage do not build for `dxil`.
+  per binding, uniform buffers and sampled color or depth textures in raster
+  stages, and storage only in compute. Ray traversal programs are refused for
+  `dxil`. On the Windows lane, `ludus_render_graph_dxil_tests` builds the rg2 pixel fixtures for `dxil`
+  alone, cooks them, and checks that each `surface` and `bound` color stage decodes
+  to a signed DXIL container with its entry. The same executable runs the portable
+  RG2/RG3 pixel suite and the RG4 pool suite on those packages, headlessly on
+  Direct3D 12 (WARP in CI); depth exports are read through depth-aspect views.
+  Graphs whose stages need ray traversal, descriptor arrays or fragment storage
+  do not build for `dxil`.
 - The cooked-fixture `[render-graph][activation]` test decodes the CMake-cooked
   `rg2_surface.lurgrt` and compares it with its compiled header: plan records,
-  CPU interface identity and every stage artifact (SPIR-V words, Metal/WGSL/GLSL
-  text, entries and inputs). The host's native target (Metal on macOS, SPIR-V
-  elsewhere) and WGSL must be present.
+  CPU interface identity and every stage artifact (SPIR-V words, DXIL bytes,
+  Metal/WGSL/GLSL text, entries and inputs). The host's native target (Metal on
+  macOS, DXIL on Windows, SPIR-V elsewhere) must be present, and WGSL too outside
+  Windows, whose fixtures carry `dxil` alone.
 - The `[render-graph][gpu][activation]` test loads the same `.lurgrt`, activates
   it twice and compares its pixels byte for byte with the compiled-header graph.
 - The installed-SDK check (`tests/sdk_consumer/verify_render_graph_execution.py`)

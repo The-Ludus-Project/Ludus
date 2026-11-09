@@ -449,6 +449,14 @@ void RunNativeViewportFixture(const QString& runtime, bool shouldVerifyReplaceme
 
     presented = viewport.PresentedFrames();
     previousRevision = getGraphRevision();
+    viewport.EnableWorldContextMenu();
+    QSignalSpy contextMenu(&viewport, &PreviewViewport::WorldContextMenuRequested);
+    const QJsonObject beforeClick = preview.Navigation();
+    SendNativeMouse(surface, NSEventTypeRightMouseDown, start);
+    SendNativeMouse(surface, NSEventTypeRightMouseUp, start);
+    REQUIRE(contextMenu.count() == 1);
+    CHECK(preview.Navigation() == beforeClick);
+
     SendNativeMouse(surface, NSEventTypeRightMouseDown, start);
     const QJsonObject beforeLook = preview.Navigation();
     SendNativeMouse(surface, NSEventTypeRightMouseDragged, moved, 0, moved - start);
@@ -459,6 +467,7 @@ void RunNativeViewportFixture(const QString& runtime, bool shouldVerifyReplaceme
             true);
     SendNativeKey(surface, 13, @"w", false);
     SendNativeMouse(surface, NSEventTypeRightMouseUp, moved);
+    CHECK(contextMenu.count() == 1);
     RequirePresentation(viewport, presented, &preview, workspace.GetPreviewOrNull(), previousRevision);
     const QJsonObject stopped = preview.Navigation();
     QTest::qWait(80);

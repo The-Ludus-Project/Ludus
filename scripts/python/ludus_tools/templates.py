@@ -386,9 +386,16 @@ def get_template(template_id: str) -> Template:
     return tmpl
 
 
-def render_files(template: Template, inputs: ProjectInputs) -> list[TemplateFile]:
-    """Return the rendered template files (does not touch the filesystem)."""
-    _validate_identifier(inputs.target)
+def render_files(template: Template, inputs: ProjectInputs, *,
+                 placeholders: frozenset[str] = frozenset()) -> list[TemplateFile]:
+    """Return the rendered template files (does not touch the filesystem).
+
+    Keys in ``placeholders`` stay as ``{{ KEY }}`` for a later renderer (the
+    browser editor's session template); ``inputs`` values for those keys are
+    ignored and are not validated here.
+    """
+    if "TARGET" not in placeholders:
+        _validate_identifier(inputs.target)
     link_targets = " ".join(f"Ludus::{c}" for c in (inputs.components or ["FoundationBase"]))
     values = {
         "NAME": inputs.name,
@@ -398,6 +405,10 @@ def render_files(template: Template, inputs: ProjectInputs) -> list[TemplateFile
         "PRESET": inputs.preset,
         "LINUX_CXX_COMPILER": pinned_llvm_tool("clang++"),
     }
+    unknown = placeholders - values.keys()
+    if unknown:
+        raise ToolingError(GENERATION_FAILED, f"unknown deferred placeholders: {sorted(unknown)}")
+    values.update({key: "{{ " + key + " }}" for key in placeholders})
     rendered: list[TemplateFile] = []
     for f in template.files:
         if f.relpath == "ludus.project.json":

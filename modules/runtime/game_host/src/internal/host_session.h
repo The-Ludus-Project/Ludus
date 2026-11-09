@@ -52,6 +52,8 @@ class FramePresenter;
 
 /// Largest frame interval the host's diagnostic frame clock accepts: the frame-update 250 ms clamp.
 inline constexpr uint64 HOST_MAXIMUM_FRAME_DELTA_NANOSECONDS = 250'000'000;
+/// Fixed simulation ticks run per presentation iteration at the debug fast-forward rate.
+inline constexpr uint32 HOST_FAST_FORWARD_TICKS_PER_FRAME = 4;
 
 [[nodiscard]] std::string_view PlayStateName(PlayState state) noexcept;
 
@@ -146,8 +148,9 @@ private:
     [[nodiscard]] protocol::CommandStatus PublishProperties(uint64 requestId) noexcept;
     [[nodiscard]] protocol::CommandStatus ApplyPropertyEdits(const protocol::Message& command) noexcept;
 
-    // One Update tick of the active instance (unless paused/stepping gate it).
-    void StepFrame() noexcept;
+    // Run the active instance's bounded batch of fixed updates for one presentation iteration.
+    void StepFrame(uint64 maximumUpdates = HOST_FAST_FORWARD_TICKS_PER_FRAME) noexcept;
+    [[nodiscard]] bool updateGame(bool shouldAdvance) noexcept;
 
     // Whether the active module advertises the Reload capability (gates calls to
     // the optional Quiesce/Resume/checkpoint/candidate callbacks).
@@ -170,6 +173,7 @@ private:
     bool Quiesced_ = false;
     bool StepRequested_ = false;
     bool ScriptPaused_ = false;
+    bool mIsFastForwarding = false;
     bool ReadyEmitted_ = false;
     bool HelloReceived_ = false;
     bool AwaitingLoad_ = false;
@@ -182,8 +186,8 @@ private:
     // Frame timing (docs/architecture/high-resolution-time.md, "Runtime timing
     // telemetry"): RunLoop paces each frame start, at the hidden rate while the
     // presenter's window cannot be seen, samples one timestamp per frame and
-    // reports the aggregate on Status. Simulation still advances one fixed tick
-    // per frame; the samples are diagnostics, not simulation debt.
+    // reports the aggregate on Status. The fixed update batch is independent
+    // of the diagnostic clock samples.
     HostPacing mPacing;
     platform::PacingClock PacingClock_ = platform::GetSystemPacingClock();
     ludus::foundation::time::FrameClock FrameClock_{

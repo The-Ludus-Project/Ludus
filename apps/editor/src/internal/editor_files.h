@@ -35,6 +35,18 @@ void OpenEditorDocument(QWidget* owner,
 [[nodiscard]] bool EncodeEditorProjectArchive(const QString& directory, QByteArray& archive);
 // Copy a bundled sample to a new writable project; preserve the output on failure.
 [[nodiscard]] bool CopyEditorSample(const QString& id, QString& descriptor, const QString& destinationRoot = {});
+/// Return the CMake target `ludus create` derives from a project name: ASCII letters, digits and `_.+-` stay,
+/// every other code point becomes `_`, leading and trailing `._+-` are trimmed, an empty result becomes `app`,
+/// and the result is cut to 128 characters. Mirrors ludus_tools.create._derive_target.
+[[nodiscard]] QString DeriveProjectTarget(const QString& name);
+/// Create a project in the absent folder `destination` from the bundled minimal template, which the build
+/// renders from ludus_tools.create.session_template_files, substituting `name` and its derived target.
+/// Used where the Python tooling cannot run (the browser editor). On failure nothing remains at
+/// `destination`, `outDescriptor` is preserved and `outProblem` names the cause and the next step.
+[[nodiscard]] bool CreateEditorProjectFromTemplate(const QString& name,
+                                                   const QString& destination,
+                                                   QString& outDescriptor,
+                                                   QString& outProblem);
 #if defined(Q_OS_WASM)
 /// Copy a selected scene into MEMFS and report its entry path (.pbrt, .gltf, .glb, .obj or .luscene.json;
 /// lifetime-guarded). isFolder picks a whole scene folder; otherwise one .zip, or an entry

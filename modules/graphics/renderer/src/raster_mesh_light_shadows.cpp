@@ -411,7 +411,9 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
     return Status::Ready;
 }
 
-bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCasters, uint32 atlasTexels) noexcept
+bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCasters,
+                                        uint32 atlasTexels,
+                                        bool hasDirectionalShadow) noexcept
 {
     const uint32 atlasCells = atlasTexels / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;
     if (atlasTexels % MIN_MESH_LIGHT_SHADOW_FACE_TEXELS != 0 || atlasCells == 0 ||
@@ -441,10 +443,17 @@ bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCaste
                                     MIN_MESH_LIGHT_SHADOW_FACE_TEXELS,
                                     MAX_MESH_LIGHT_SHADOW_FACE_TEXELS);
     }
+    constexpr uint32 DIRECTIONAL_CELLS_PER_SIDE = DIRECTIONAL_SHADOW_TEXELS / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;
+    constexpr uint32 DIRECTIONAL_CELL_COUNT = DIRECTIONAL_CELLS_PER_SIDE * DIRECTIONAL_CELLS_PER_SIDE;
+    static_assert(MAX_MESH_LIGHT_SHADOW_FACE_TEXELS <= DIRECTIONAL_SHADOW_TEXELS);
+    static_assert((DIRECTIONAL_CELLS_PER_SIDE & (DIRECTIONAL_CELLS_PER_SIDE - 1)) == 0);
+    const uint32 reservedCells = hasDirectionalShadow == true ? DIRECTIONAL_CELL_COUNT : 0;
     const uint64 atlasArea = uint64{atlasTexels} * atlasTexels;
+    const uint64 reservedArea =
+        hasDirectionalShadow == true ? uint64{DIRECTIONAL_SHADOW_TEXELS} * DIRECTIONAL_SHADOW_TEXELS : 0;
     while (true)
     {
-        uint64 area = 0;
+        uint64 area = reservedArea;
         bool canHalve = false;
         for (usize caster = 0; caster < inoutCasters.GetSize(); ++caster)
         {
@@ -489,7 +498,7 @@ bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCaste
     {
         return false;
     }
-    uint32 cursor = 0;
+    uint32 cursor = reservedCells;
     for (const FaceSlot& slot : slots)
     {
         const uint32 cellsPerSide = slot.Texels / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;

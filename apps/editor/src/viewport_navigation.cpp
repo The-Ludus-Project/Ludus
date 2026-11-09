@@ -8,6 +8,7 @@
 #include <ludus/platform/hosted_window.h>
 
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QCursor>
 #include <QGuiApplication>
 #include <QHideEvent>
@@ -52,6 +53,40 @@ int32 GetMovementKey(int32 key) noexcept
     }
 }
 } // namespace
+bool PreviewViewport::BeginFirstPerson(const gameplay::camera::CameraSample& spawn, float32 speed, QString& outError)
+{
+    if (mPlayEndpointOrNull != nullptr || mIsInspectingRayPaths == true)
+    {
+        outError = QStringLiteral("Stop the hosted game or leave ray path inspection before exploring.");
+        return false;
+    }
+    if (math::IsFinite(speed) == false || speed <= 0)
+    {
+        outError = QStringLiteral("Set a positive Move speed on the First Person Player.");
+        return false;
+    }
+    if (Preview_->BeginFirstPerson(spawn, outError) == false)
+    {
+        return false;
+    }
+    stopNavigation();
+    mFirstPersonSpeed = speed;
+    mNavigationClock.start();
+    mNavigationTimer.start();
+    updateObjectInteractionAvailability();
+    setFocus(Qt::OtherFocusReason);
+    return true;
+}
+void PreviewViewport::EndFirstPerson()
+{
+    if (mFirstPersonSpeed > 0)
+    {
+        mFirstPersonSpeed = 0;
+        stopNavigation();
+        Preview_->EndFirstPerson();
+        updateObjectInteractionAvailability();
+    }
+}
 void PreviewViewport::resizeEvent(QResizeEvent* event)
 {
     mObjectInteraction->Cancel();
@@ -65,6 +100,11 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     if (mPlayEndpointOrNull != nullptr)
     {
         // A click gives the game the keyboard; there is no pointer input to forward yet.
+        event->accept();
+        return;
+    }
+    if (Preview_->IsExploringFirstPerson() == true && event->button() != Qt::RightButton)
+    {
         event->accept();
         return;
     }
@@ -93,26 +133,63 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::RightButton)
     {
         mObjectInteraction->Cancel();
-        mIsFlying = true;
-        mHeldKeys[BOOST_KEY] = event->modifiers().testFlag(Qt::ShiftModifier);
-        mNavigationClock.start();
-        mNavigationTimer.start();
-        const QString platformName = QGuiApplication::platformName();
-        if (isVisible() == true && platformName != QStringLiteral("offscreen") &&
-            platformName != QStringLiteral("minimal") && platformName != QStringLiteral("wasm"))
+        if (mHasWorldContextMenu == true && Preview_->IsExploringFirstPerson() == false)
         {
-            mCaptureStartGlobal = event->globalPosition().toPoint();
-            mCanWarpPointer =
-                platformName.startsWith(QStringLiteral("wayland")) == false && platformName != QStringLiteral("cocoa");
-            grabMouse(Qt::BlankCursor);
-            mHasMouseCapture = true;
-#if defined(Q_OS_MACOS)
-            static_cast<void>(mRelativeMouse.TryBegin());
-#endif
-            recenterPointer();
+            mHasContextPress = true;
+            mContextPressGlobal = event->globalPosition();
+        }
+        else
+        {
+            beginFlyNavigation(event->globalPosition(), event->modifiers());
         }
     }
     event->accept();
+}
+void PreviewViewport::EnableWorldContextMenu() noexcept
+{
+    mHasWorldContextMenu = true;
+}
+void PreviewViewport::contextMenuEvent(QContextMenuEvent* event)
+{
+    if (Preview_->IsExploringFirstPerson() == true)
+    {
+        event->accept();
+        return;
+    }
+    if (mHasWorldContextMenu == false || mPlayEndpointOrNull != nullptr)
+    {
+        QWidget::contextMenuEvent(event);
+        return;
+    }
+    // Qt sends native mouse context events on press or release depending on platform.
+    // The tracked gesture opens the menu on release, after we know it was not a drag.
+    if (event->reason() == QContextMenuEvent::Keyboard && mIsFlying == false && mHasContextPress == false)
+    {
+        Q_EMIT WorldContextMenuRequested(mapToGlobal(rect().center()), {});
+    }
+    event->accept();
+}
+void PreviewViewport::beginFlyNavigation(QPointF positionGlobal, Qt::KeyboardModifiers modifiers)
+{
+    mHasContextPress = false;
+    mIsFlying = true;
+    mHeldKeys[BOOST_KEY] = modifiers.testFlag(Qt::ShiftModifier);
+    mNavigationClock.start();
+    mNavigationTimer.start();
+    const QString platformName = QGuiApplication::platformName();
+    if (isVisible() == true && platformName != QStringLiteral("offscreen") &&
+        platformName != QStringLiteral("minimal") && platformName != QStringLiteral("wasm"))
+    {
+        mCaptureStartGlobal = positionGlobal.toPoint();
+        mCanWarpPointer =
+            platformName.startsWith(QStringLiteral("wayland")) == false && platformName != QStringLiteral("cocoa");
+        grabMouse(Qt::BlankCursor);
+        mHasMouseCapture = true;
+#if defined(Q_OS_MACOS)
+        static_cast<void>(mRelativeMouse.TryBegin());
+#endif
+        recenterPointer();
+    }
 }
 void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
 {
@@ -132,7 +209,23 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
     }
     if (event->button() == Qt::RightButton)
     {
+        const QPointF positionGlobal = event->globalPosition();
+        const bool isContextClick =
+            mHasContextPress == true &&
+            (positionGlobal - mContextPressGlobal).manhattanLength() < QApplication::startDragDistance();
         stopNavigation();
+        if (Preview_->IsExploringFirstPerson() == true)
+        {
+            mNavigationClock.start();
+            mNavigationTimer.start();
+        }
+        else if (isContextClick == true &&
+                 getInteractionFrame().contains(getInteractionPosition(positionGlobal)) == true)
+        {
+            const QString entityId =
+                mObjectInteraction->Pick(getInteractionPosition(positionGlobal), getInteractionFrame());
+            Q_EMIT WorldContextMenuRequested(positionGlobal.toPoint(), entityId);
+        }
     }
     event->accept();
 }
@@ -140,6 +233,18 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
 {
     if (mPlayEndpointOrNull != nullptr)
     {
+        event->accept();
+        return;
+    }
+    if (mHasContextPress == true && event->buttons().testFlag(Qt::RightButton) == true)
+    {
+        const QPointF delta = event->globalPosition() - mContextPressGlobal;
+        if (delta.manhattanLength() >= QApplication::startDragDistance())
+        {
+            mLastPositionGlobal = event->globalPosition();
+            beginFlyNavigation(mContextPressGlobal, event->modifiers());
+            Preview_->Look(static_cast<float32>(delta.x()), static_cast<float32>(delta.y()));
+        }
         event->accept();
         return;
     }
@@ -200,12 +305,13 @@ bool PreviewViewport::navigateMouse(float32 deltaX,
     const bool isPrimaryDrag = buttons.testFlag(Qt::LeftButton);
     const bool isOrbitModifier = modifiers.testFlag(Qt::AltModifier);
     const bool isPanModifier = modifiers.testFlag(Qt::ShiftModifier);
-    if (buttons.testFlag(Qt::MiddleButton) == true ||
-        (isPrimaryDrag == true && isOrbitModifier == true && isPanModifier == true))
+    const bool isExploring = Preview_->IsExploringFirstPerson();
+    if (isExploring == false && (buttons.testFlag(Qt::MiddleButton) == true ||
+                                 (isPrimaryDrag == true && isOrbitModifier == true && isPanModifier == true)))
     {
         Preview_->Pan(deltaX, deltaY, getDrawableHeight());
     }
-    else if (isPrimaryDrag == true && isOrbitModifier == true)
+    else if (isExploring == false && isPrimaryDrag == true && isOrbitModifier == true)
     {
         Preview_->Orbit(deltaX, deltaY);
     }
@@ -227,12 +333,21 @@ void PreviewViewport::wheelEvent(QWheelEvent* event)
         event->accept();
         return;
     }
+    if (Preview_->IsExploringFirstPerson() == true)
+    {
+        event->accept();
+        return;
+    }
     // Qt supplies logical pixel deltas for high-resolution trackpads; retain fractional notches otherwise.
     const float32 steps = event->pixelDelta().isNull() == false ? static_cast<float32>(event->pixelDelta().y()) / 80
                                                                 : static_cast<float32>(event->angleDelta().y()) / 120;
     if (steps != 0)
     {
         mObjectInteraction->Cancel();
+        if (mHasContextPress == true)
+        {
+            beginFlyNavigation(mContextPressGlobal, event->modifiers());
+        }
         if (mIsFlying == true)
         {
             mSpeedMultiplier =
@@ -253,6 +368,7 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_Escape)
     {
+        EndFirstPerson();
         mObjectInteraction->Cancel();
         stopNavigation();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -264,10 +380,28 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
         event->accept();
         return;
     }
+    if (Preview_->IsExploringFirstPerson() == true && event->key() == Qt::Key_Space)
+    {
+        if (mIsFlying == true && event->isAutoRepeat() == false)
+        {
+            mShouldJump = true;
+        }
+        event->accept();
+        return;
+    }
     const int32 movementKey = GetMovementKey(event->key());
+    if (mHasContextPress == true && movementKey >= 0 && movementKey != BOOST_KEY)
+    {
+        beginFlyNavigation(mContextPressGlobal, event->modifiers());
+    }
     if (mIsFlying == true && movementKey >= 0)
     {
         mHeldKeys[static_cast<usize>(movementKey)] = true;
+        event->accept();
+        return;
+    }
+    if (Preview_->IsExploringFirstPerson() == true)
+    {
         event->accept();
         return;
     }
@@ -366,12 +500,14 @@ void PreviewViewport::keyReleaseEvent(QKeyEvent* event)
 }
 void PreviewViewport::stopNavigation()
 {
+    mHasContextPress = false;
     mObjectInteraction->Cancel();
 #if defined(Q_OS_MACOS)
     mRelativeMouse.Stop();
 #endif
     mIsFlying = false;
     mNavigationTimer.stop();
+    mShouldJump = false;
     for (bool& isHeld : mHeldKeys)
     {
         isHeld = false;
@@ -388,7 +524,13 @@ void PreviewViewport::stopNavigation()
 }
 void PreviewViewport::advanceNavigation()
 {
-    if (mIsFlying == false)
+    const bool isExploring = Preview_->IsExploringFirstPerson();
+    if (mFirstPersonSpeed > 0 && isExploring == false)
+    {
+        EndFirstPerson();
+        return;
+    }
+    if (mIsFlying == false && isExploring == false)
     {
         return;
     }
@@ -398,13 +540,23 @@ void PreviewViewport::advanceNavigation()
         (mHeldKeys[RIGHT_KEY] == true ? 1.0F : 0.0F) - (mHeldKeys[LEFT_KEY] == true ? 1.0F : 0.0F),
         (mHeldKeys[UP_KEY] == true ? 1.0F : 0.0F) - (mHeldKeys[DOWN_KEY] == true ? 1.0F : 0.0F),
         (mHeldKeys[BACKWARD_KEY] == true ? 1.0F : 0.0F) - (mHeldKeys[FORWARD_KEY] == true ? 1.0F : 0.0F)};
-    if (math::LengthSquared(movementControls) == 0)
+    constexpr float32 BOOST_MULTIPLIER = 4;
+    const float32 boost = mHeldKeys[BOOST_KEY] == true ? BOOST_MULTIPLIER : 1.0F;
+    if (isExploring == true)
     {
+        Preview_->AdvanceFirstPerson(movementControls, deltaSeconds, mFirstPersonSpeed * boost, mShouldJump);
+        mShouldJump = false;
         return;
     }
-    const float32 speed = math::Clamp(Preview_->GetFocusDistance() * 0.5F, 0.001F, 10000.0F) * mSpeedMultiplier *
-                          (mHeldKeys[BOOST_KEY] == true ? 4.0F : 1.0F);
-    Preview_->Fly(movementControls, deltaSeconds, speed);
+    if (math::LengthSquared(movementControls) > 0)
+    {
+        constexpr float32 MINIMUM_EDITOR_SPEED = 0.001F;
+        constexpr float32 MAXIMUM_EDITOR_SPEED = 10000.0F;
+        const float32 speed =
+            math::Clamp(Preview_->GetFocusDistance() * 0.5F, MINIMUM_EDITOR_SPEED, MAXIMUM_EDITOR_SPEED) *
+            mSpeedMultiplier * boost;
+        Preview_->Fly(movementControls, deltaSeconds, speed);
+    }
 }
 void PreviewViewport::recenterPointer()
 {
@@ -419,6 +571,7 @@ void PreviewViewport::focusOutEvent(QFocusEvent* event)
 {
     // Window deactivation, modal dialogs and Shift+F1 all arrive here: the game loses focus.
     sendPlayFocus(false);
+    EndFirstPerson();
     stopNavigation();
     QWidget::focusOutEvent(event);
 }
@@ -430,6 +583,7 @@ void PreviewViewport::hideEvent(QHideEvent* event)
         // A hidden tab or dock is an occluded window: the game drops to its hidden pacing.
         static_cast<void>(mPlayEndpointOrNull->SendVisibility(platform::WindowVisibility::Occluded));
     }
+    EndFirstPerson();
     stopNavigation();
     QWidget::hideEvent(event);
 }

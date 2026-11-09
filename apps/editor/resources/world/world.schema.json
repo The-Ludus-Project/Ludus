@@ -339,6 +339,24 @@
           "max": 2
         }
       ]
+    },
+    {
+      "id": "firstPersonPlayer",
+      "label": "First Person Player",
+      "help": "Start walking from this entity's Transform position (eye) and X/Y rotation (pitch/yaw). The player uses gravity and collides with World surfaces.",
+      "required": false,
+      "properties": [
+        {
+          "id": "speed",
+          "label": "Move speed",
+          "type": "number",
+          "default": 3,
+          "min": 0.01,
+          "max": 1000,
+          "unit": "m/s",
+          "help": "Base movement speed when exploring from this spawn."
+        }
+      ]
     }
   ],
   "assets": [

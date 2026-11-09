@@ -95,9 +95,9 @@ sequence behavior on the owner thread; CPU jobs are a separate execution choice.
 
 The reusable module is `modules/gameplay/world`, exported as
 `Ludus::GameplayWorld`. It contains `EntityId`, `EntityRegistry`, and the small
-typed `ComponentPool<T>` facility. It depends on Base and Containers. It does not
-depend on Platform, Input, RHI, Audio, Text, or game-specific component types.
-Component types may themselves use explicitly included FoundationMath values.
+typed `ComponentPool<T>` facility. The Earth sky sampler uses FoundationMath
+rotations. The module uses FoundationBase, Containers, Identity and Math, and
+keeps platform, input and rendering dependencies in the game and its adapters.
 
 The consuming game repository owns `GameWorld`, level schema and codecs,
 spawn recipes, gameplay systems, and its renderer adapter. Initially the session
@@ -232,3 +232,42 @@ No new third-party dependency is selected by this proposal. Selecting a JSON
 parser or ECS library requires checking its pinned version, licensing, browser
 support, and exception-free failure behavior. The gameplay data contracts do not
 depend on that choice.
+
+## Earth celestial transforms
+
+Include `<ludus/gameplay/world/celestial_transform.hpp>` and link
+`Ludus::GameplayWorld` to sample Earth Sun or Earth Moon as a transform driver.
+Call `ludus::gameplay::world::TrySampleEarthCelestialTransform` with the game's
+clock in fractional UTC days since 2000-01-01 12:00 UTC and the observer's
+latitude and longitude in degrees. On success, assign the returned rotation to
+the light transform. Its local −Z axis points along the incoming light in a
+world with +X east, +Y up and −Z north. Use `IsAboveHorizon` to gate direct
+illumination. The game owns the clock, transform, and intensity. Hosted games
+can convert `FrameInput::ElapsedSeconds` to days for the Earth templates or
+hours for a custom orbit and add the authored epoch. This makes the sky follow
+Pause, Step, and the [host's debug fast-forward](../development/project-live-reload.md#recover-and-debug).
+The sampler uses approximate solar and lunar positions and a spherical, airless Earth.
+See [celestial directional lights](../development/editor-workspace.md#celestial-directional-lights)
+for the World editor controls.
+
+### Custom circular orbits
+
+Use `TrySampleCelestialOrbitTransform` in the same header for a fictional world
+or a different star or satellite. Share a `CelestialObserver` and fractional
+simulation hours across lights seen from the same place. Each light has its own
+`CelestialOrbit`, with signed angular rate, initial phase, inclination, and
+ascending node in the observer world's equatorial frame. Angles are in degrees
+and rates are in degrees per simulation hour. With an equatorial orbit whose
+rate equals the world spin, the body stays at a fixed point in the sky.
+
+At time zero, observer longitude is measured east of the reference meridian.
+The ascending node uses the same reference direction, and orbital phase is
+measured along the circle from that node. For a coplanar orbit the node angle
+sets the phase reference. The inclination of a star's orbit relative to the
+world equator can represent the world's axial tilt relative to its orbital plane.
+
+For a nearby moon, set `ObserverRadiusRatio` to the observer's distance from
+the world's center divided by the moon's orbital radius. The sampler projects
+the resulting direction from the observer to the body and reports geometric
+horizon visibility. A zero ratio models a distant source. Each path is
+prescribed, and the game owns the clock and applies the returned rotation.

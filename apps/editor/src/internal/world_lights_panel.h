@@ -50,6 +50,7 @@ struct WorldLightRow final
     /// Radiance or intensity, object count and source ID, for the tooltip.
     QString Detail;
     bool IsEnabled = true;
+    bool IsBakedAlwaysOn = false;
 };
 
 /// The light rows of `world` presented as `scene`, imported rows first in definition order.
@@ -70,7 +71,7 @@ struct WorldLightChange final
 /// Turn rows[row] on or off, keeping every other light.
 [[nodiscard]] WorldLightChange
 MakeWorldLightToggle(const QVector<WorldLightRow>& rows, const LightSwitchSet& current, qsizetype row, bool isEnabled);
-/// Keep only rows[row] on: every other imported source is switched off and every other World light disabled.
+/// Keep rows[row] and always-on baked lights enabled. Switch the other lights off.
 /// Missing entries are kept.
 [[nodiscard]] WorldLightChange
 MakeWorldLightSolo(const QVector<WorldLightRow>& rows, const LightSwitchSet& current, qsizetype row);

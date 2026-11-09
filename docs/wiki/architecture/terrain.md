@@ -13,6 +13,7 @@ provides a reading path.
 | --- | --- |
 | Choose the terrain representation and integration boundaries | [Terrain systems architecture](../../architecture/terrain.md) |
 | Implement coordinates, queries, LOD, materials, editing or residency | [Terrain contracts](../../architecture/terrain.md#coordinates-and-canonical-surface) |
+| Design the World viewport workflow for adding and editing terrain | [Terrain authoring in the World viewport](../../architecture/terrain.md#terrain-authoring-in-the-world-viewport) |
 | Design source layers, deterministic recipes, hydrology, erosion or cooking | [Terrain generation](../../architecture/terrain-generation.md) |
 | Assess which Gems articles changed the design and which were deferred | [Gems and research review](../../architecture/terrain-gems-review.md) |
 | Plan research after the baseline is implemented and validated | [Post-baseline research queue](../../architecture/terrain-gems-review.md#post-baseline-research-queue) |

@@ -5,8 +5,8 @@ Status: version 1, November 3, 2026. Reader `Ludus::SceneSource`
 `Ludus::SceneCook`.
 
 A Ludus scene source is a scene description that Ludus owns and that people can
-read and edit by hand. It holds world-space convex polygons, materials with
-emission and an optional camera. The engine's test scenes are written in it, so
+read and edit by hand. It holds world-space convex polygons, parametric
+[aperture screens](#aperture), materials with emission and an optional camera. The engine's test scenes are written in it, so
 the scenes the GPU tests render are files you can import into any project's World.
 
 It is a source format, like pbrt-v4, glTF and OBJ: World **Import scene…** cooks it
@@ -31,6 +31,12 @@ to create them.
    template, for example the Veach and Guibas MIS template, to see the light's
    soft shadows. **Save World** keeps the import.
 
+A scene's [apertures](#aperture) import into a default World as aperture entities
+rather than cooked geometry. Import `tests/scenes/diffraction/single-slit.luscene.json`,
+select **Slit screen** in the entity list, change **Opening** under **Aperture** in
+**Properties** and choose **Apply Changes**: the viewport and the ray templates show
+the wider or narrower slit at once, without a reimport.
+
 The command line cooks the same files: `ludus-cook import <file> <output-directory>`.
 
 ## Engine test scenes
@@ -48,7 +54,7 @@ MIT license), which the import records like any other source license.
 | `many_lights/many-emitter-room.luscene.json` | The Cornell room with its ceiling light replaced by a 4 × 4 grid of small emitters, each its own material, whose radiance spans a factor of 64. | The many-emitter room of the [RIS projected-solid-angle template](../development/render-graph-authoring.md#resample-many-area-lights-with-projected-solid-angle-sampling) and the polygonal-light-sampling template's triangle-budget check |
 | `many_lights/emitter-field-diffuse.luscene.json` | The Cornell room with a 40 × 40 field of small emitters (3200 emissive triangles) in four radiance levels and three tints; one object per level and tint; rough dielectric walls. | The diffuse variant of the hidden `[.ris-projected-solid-angle-benchmark]` |
 | `many_lights/emitter-field-specular.luscene.json` | The same field over glossy metal (roughness 0.2), which mirrors the emitters. | The specular variant of `[.ris-projected-solid-angle-benchmark]` |
-| `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen with a vertical slit 5 cm wide and 80 cm long, whose long edges are knife edges, and a white Lambertian wall 1 m behind the screen. The camera stands between the screen and the wall. At a design wavelength of 5 mm the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import check of `ludus_scene_import_tests`; no renderer test yet |
+| `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen, an [aperture](#aperture) whose vertical slit is 80 cm long with a 5 cm opening, and a white Lambertian wall 1 m behind the screen. The slit's long edges are knife edges; in a default World its opening is an editable entity field. The camera stands between the screen and the wall. At a design wavelength of 5 mm and the 5 cm opening, the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import and aperture-deferral checks of `ludus_scene_import_tests` and the `[aperture]` import test of `ludus_editor_tests`; no renderer test yet |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
 All but the single slit and the large line grid use the Cornell room camera of the GPU tests: eye at
@@ -191,12 +197,54 @@ and the [transport contract](renderer-systems.md#project-brdf-programs).
 
 ### Object
 
+An object is either explicit polygons (`positions` and `polygons`) or one
+[aperture](#aperture) (`aperture`), never both.
+
 | Member | Meaning |
 | --- | --- |
 | `name` | Unique, nonempty name. |
 | `material` | Name of a declared material. |
 | `positions` | World-space positions in metres, each `[x, y, z]` with every coordinate within ±1,000,000. |
 | `polygons` | Each polygon lists 3–64 indices into the object's `positions`. |
+| `aperture` | A parametric screen with a slit, described below, instead of `positions` and `polygons`. |
+
+### Aperture
+
+An aperture is a flat, opaque rectangular screen with a centred rectangular slit,
+whose long edges are knife edges (the screen has no thickness). Its sizes are
+parameters, so changing the opening is one number:
+
+```json
+{
+  "name": "Slit screen",
+  "material": "Black screen",
+  "aperture": {
+    "center": [0, 0, 0],
+    "normal": [0, 0, 1],
+    "up": [0, 1, 0],
+    "screen_width": 3,
+    "screen_height": 3,
+    "slit_length": 0.8,
+    "opening": 0.05
+  }
+}
+```
+
+| Member | Meaning |
+| --- | --- |
+| `center` | World-space centre of the slit, metres. |
+| `normal` | Direction the screen's front face looks along; nonzero, normalised by the reader. |
+| `up` | Direction along the slit; nonzero and perpendicular to `normal` (cosine at most 10⁻⁹). Across the slit is `up` × `normal`. |
+| `screen_width` | Screen extent across the slit, in (0, 2,000,000] metres. |
+| `screen_height` | Screen extent along the slit, in (0, 2,000,000] metres. |
+| `slit_length` | Slit extent along `up`, in (0, `screen_height`] metres. |
+| `opening` | Slit width across it, in [0, `screen_width`) metres. Zero closes the slit. |
+
+The reader expands an aperture into up to four strictly convex quads, left and right
+of the slit and then above and below it, omitting a part with no area. Their corners
+count towards the position and corner limits, must stay within ±1,000,000 m, and are
+exactly the corners you would write by hand: the single slit cooks to the same
+triangles as when its screen was written as polygons.
 
 ## Conventions
 
@@ -249,6 +297,19 @@ whose emission and capacity limits the cook enforces.
   differs.
 - LUSCN stores no reflection sidedness, so how a renderer shades back faces is its own
   choice, as for other imports. Emission keeps its sidedness.
+- `ludus-cook import` and tests cook an aperture as its quads, like any object. The
+  Editor's **Import scene…** into a default World instead leaves each aperture out of
+  the cooked bundle, with an `APERTURE_DEFERRED` note in the import report, and creates
+  an aperture entity in the same undoable import. Its Transform places the aperture's
+  frame and its **Aperture** component holds the sizes, so Properties edits the
+  opening and World extraction regenerates the screen (see
+  [apertures in the World](../development/editor-workspace.md#apertures)). The entity
+  reflects as Lambertian with the material's base colour; the import warns when the
+  material has other reflection terms or emission, which the entity does not keep.
+  Reimporting the same file into the same World finds the entity it created and keeps
+  its edits. A scene whose objects are all apertures has nothing left to cook, so its
+  Editor import fails; add the scene's other geometry. Worlds with a project-owned
+  schema cook apertures as quads.
 
 ## Implementation references
 

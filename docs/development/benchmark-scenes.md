@@ -539,7 +539,7 @@ To inspect the room in an existing configured Ludus project, import
 `scene-v4.pbrt`, add the generated `graph` package, and route its
 `SliceSamplingLuminaire` configuration to the viewport. The configuration exposes
 `color` (defensive slice sampling), `sliceSampling`, and `uniformArea` outputs.
-Add the room's panel with **Add Geometry / Light → Luminaire** and set its
+Add the room's panel with **Add World Preset → Luminaire** and set its
 Transform to position `(0, 0.97, 0)` and rotation `(-90, 0, 0)`, keeping the
 default half extent `0.35` and beam profile; the headless kernels in
 `tools/luminaire-benchmark/shaders` use the same panel. Follow the linked graph guide for

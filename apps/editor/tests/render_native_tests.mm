@@ -625,7 +625,8 @@ enum class LightingReceiverDefect : uint8
     MismatchedBakeTexcoords,
 };
 // Builds the definition privately and publishes it as an immutable snapshot.
-RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDefect::None)
+RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDefect::None,
+                              bool shouldAddAnalyticLight = false)
 {
     RenderScene scene;
     SharedPtr<ludus::resources::SceneDefinition> definition;
@@ -675,6 +676,17 @@ RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDe
         {
             textureCoordinateBakeAtlas = {0, 0};
         }
+    }
+    if (shouldAddAnalyticLight == true)
+    {
+        REQUIRE(data.Lights.TryResize(1) == true);
+        ludus::resources::SceneLight& light = data.Lights[0];
+        light.SourceId = 103;
+        light.Kind = ludus::resources::SceneLightKind::Directional;
+        light.DirectionWorld = {0, -1, 0};
+        light.IntensityRgb = {2, 1, 0};
+        QString error;
+        REQUIRE(RenderScene::LoadCookedLights(data, scene.AuthoredLights, error) == true);
     }
     scene.Definition = Move(definition);
     scene.Meshes.resize(2);
@@ -804,6 +816,55 @@ TEST_CASE("Native Lit viewport ignores lightmap UVs and keeps live camera render
     CHECK(viewport.PresentedFrames() > 0);
     preview.Stop();
 }
+TEST_CASE("Native Lit viewport publishes an opted-in always-on bake and falls back on failure",
+          "[.render-native][lighting]")
+{
+    RenderScene scene = MakeLightingScene(LightingReceiverDefect::None, true);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(320, 240);
+    viewport.show();
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(Frames(preview, 2) == true);
+    CHECK(preview.Status().contains(QStringLiteral("direct lighting")) == true);
+
+    const auto waitForBakeStatus = [&preview](const QString& expected) {
+        constexpr int64 BAKE_DEADLINE_MILLISECONDS = 15000;
+        constexpr int32 POLL_MILLISECONDS = 10;
+        QElapsedTimer timer;
+        timer.start();
+        while (preview.Status().contains(expected) == false && timer.elapsed() < BAKE_DEADLINE_MILLISECONDS)
+        {
+            QTest::qWait(POLL_MILLISECONDS);
+        }
+        return preview.Status().contains(expected);
+    };
+    bool hasDrawnWhileBaking = false;
+    QObject::connect(&preview, &RenderPreview::Changed, &viewport, [&preview, &hasDrawnWhileBaking]() {
+        hasDrawnWhileBaking =
+            hasDrawnWhileBaking == true || preview.Status().contains(QStringLiteral("baking always-on lighting"));
+    });
+    scene.Identity = QByteArrayLiteral("selected-always-on-light");
+    scene.AlwaysOnLightIds.append(scene.AuthoredLights.Lights[0].SourceId);
+    REQUIRE(preview.SetScene(scene) == true);
+    const bool hasBaked = waitForBakeStatus(QStringLiteral("always-on lighting baked"));
+    INFO(preview.Status().toStdString());
+    REQUIRE(hasBaked == true);
+    CHECK(hasDrawnWhileBaking == true);
+    REQUIRE(Frames(preview, preview.Frames() + 2) == true);
+    CHECK(ReadViewport().isNull() == false);
+
+    scene.Identity = QByteArrayLiteral("missing-always-on-light");
+    scene.AlwaysOnLightIds[0] = 1000;
+    REQUIRE(preview.SetScene(scene) == true);
+    REQUIRE(waitForBakeStatus(QStringLiteral("Using realtime lighting")) == true);
+    REQUIRE(Frames(preview, preview.Frames() + 2) == true);
+    CHECK(ReadViewport().isNull() == false);
+    preview.Stop();
+}
+
 TEST_CASE("Native Lit viewport accepts zero-area triangles without baking", "[.render-native][lighting]")
 {
     RenderScene scene = MakeLightingScene(LightingReceiverDefect::ZeroAreaTriangle);

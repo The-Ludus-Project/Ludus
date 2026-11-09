@@ -12,6 +12,7 @@ shared by the wiki and offline readers.
 - [runtime UI design](../../architecture/ui.md)
 - [renderer systems proposal](../../architecture/renderer-systems.md)
 - [Material system design](../../architecture/renderer-systems.md#material-system-design)
+- [Clear-sky atmosphere design](../../architecture/renderer-systems.md#clear-sky-atmosphere-design)
 - [reference review](../../architecture/renderer-systems-gems-review.md)
 - [L0 portable scene submission](../../architecture/renderer-systems.md#portable-scene-submission-l0)
 - [terrain proposal](terrain.md)

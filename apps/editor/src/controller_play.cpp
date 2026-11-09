@@ -79,8 +79,9 @@ Capabilities EditorController::Caps() const
     caps.CanBuildDebug = false;
 #endif
 #if defined(Q_OS_WASM)
+    // New Project stays available: CreateProject renders the bundled template without a tool process.
     caps.CanConfigure = caps.CanBuild = caps.CanBuildRun = caps.CanBuildDebug = false;
-    caps.CanProjectCheck = caps.CanProjectSetup = caps.CanProjectCreate = false;
+    caps.CanProjectCheck = caps.CanProjectSetup = false;
     caps.CanReleaseInit = caps.CanPackage = false;
 #endif
     return caps;
@@ -139,6 +140,7 @@ void EditorController::Play()
         return;
     }
     PlayState_ = {};
+    mFastForwardRequest.clear();
     ScriptRequest_.clear();
     TimingRequest_.clear();
     SessionUndo_.clear();
@@ -289,6 +291,34 @@ void EditorController::PlayCommand(const QString& command)
                                    {QStringLiteral("expected_generation"), PlayState_.Generation}}}});
 }
 
+bool EditorController::CanSetPlayFastForward() const
+{
+    return PlayState_.FastForwardMultiplier > 1 && PlayState_.DebuggerStopped == false &&
+           PlayState_.ScriptPaused == false && mFastForwardRequest.isEmpty() == true &&
+           (PlayState_.Phase == PlayPhase::Running || PlayState_.Phase == PlayPhase::Paused);
+}
+
+void EditorController::TogglePlayFastForward()
+{
+    if (CanSetPlayFastForward() == false)
+    {
+        return;
+    }
+    mFastForwardRequest = NextPlayRequest();
+    if (mFastForwardRequest.isEmpty() == true ||
+        Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
+                    {QStringLiteral("request"), mFastForwardRequest},
+                    {QStringLiteral("command"),
+                     QJsonObject{{QStringLiteral("command"), QStringLiteral("SetFastForward")},
+                                 {QStringLiteral("expected_generation"), PlayState_.Generation},
+                                 {QStringLiteral("fast_forward"), PlayState_.IsFastForwarding == false}}}}) == false)
+    {
+        mFastForwardRequest.clear();
+        PlayState_.Message = QStringLiteral("Could not queue fast-forward. Wait for the host and try again.");
+    }
+    Publish();
+}
+
 void EditorController::RefreshProperties()
 {
     if (PropertyRequest_.isEmpty() == false ||
@@ -386,6 +416,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
     }
     else if (type == QStringLiteral("ended"))
     {
+        mFastForwardRequest.clear();
         PlayState_.DebuggerStopped = false;
         PlayState_.ScriptStatus = {};
         PlayState_.ScriptPaused = false;
@@ -459,6 +490,17 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
         }
         PlayState_.Message = status + QStringLiteral(": ") + event.value(QStringLiteral("message")).toString();
         const auto host = event.value(QStringLiteral("host")).toObject();
+        const bool isFastForwardResult = mFastForwardRequest.isEmpty() == false && request == mFastForwardRequest;
+        const QJsonValue fastForward = host.value(QStringLiteral("fast_forward"));
+        if (fastForward.isBool() == true &&
+            (isFastForwardResult == true || host.contains(QStringLiteral("presented_frames")) == true))
+        {
+            PlayState_.IsFastForwarding = fastForward.toBool();
+        }
+        if (isFastForwardResult == true)
+        {
+            mFastForwardRequest.clear();
+        }
         if (ScriptRequest_.isEmpty() == false && request == ScriptRequest_)
         {
             ScriptRequest_.clear();
@@ -563,6 +605,8 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
         if (kind == QStringLiteral("SessionReady"))
         {
             PlayState_.Session = host.value(QStringLiteral("session")).toString();
+            const foundation::int64 multiplier = host.value(QStringLiteral("fast_forward_multiplier")).toInteger();
+            PlayState_.FastForwardMultiplier = multiplier > 1 ? static_cast<uint64>(multiplier) : 0;
         }
         if (kind == QStringLiteral("ModuleReady") && PlayState_.Phase == PlayPhase::Starting)
         {

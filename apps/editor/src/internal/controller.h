@@ -79,6 +79,8 @@ struct PlaySnapshot
     QString HostCwd;
     QString SdkIdentity;
     bool DebuggerStopped = false;
+    bool IsFastForwarding = false;
+    uint64 FastForwardMultiplier = 0;
     uint64 SchemaEpoch = 0;
     uint64 SchemaVersion = 0;
     QJsonArray Properties;
@@ -181,6 +183,8 @@ public:
         return Watch_.Active();
     }
     void PlayCommand(const QString& command);
+    [[nodiscard]] bool CanSetPlayFastForward() const;
+    void TogglePlayFastForward();
     void CookScripts();
     void ScriptCommand(const QJsonObject& command);
     void RefreshProperties();
@@ -256,6 +260,7 @@ private:
     QString ScriptRequest_;
     QString PropertyRequest_;
     QString TimingRequest_;
+    QString mFastForwardRequest;
     QJsonArray PropertyChunks_;
     uint64 PropertyCount_ = 0;
     QString EditRequest_;

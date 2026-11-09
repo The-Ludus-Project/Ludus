@@ -87,10 +87,21 @@ public:
     {
         return Schema_;
     }
+    /// Whether this document uses the exact bundled schema, including its optional extensions.
+    [[nodiscard]] LUDUS_INLINE bool HasBuiltInSchema() const noexcept
+    {
+        return mIsBuiltInSchema;
+    }
     /// Whether this document uses the bundled default schema with terrain authoring enabled.
     [[nodiscard]] LUDUS_INLINE bool HasBuiltInTerrain() const noexcept
     {
-        return mHasBuiltInTerrain;
+        return mIsBuiltInSchema;
+    }
+    /// Whether this document uses the bundled default schema with aperture authoring enabled
+    /// (the `aperture` component, internal/world_aperture.h).
+    [[nodiscard]] LUDUS_INLINE bool HasBuiltInAperture() const noexcept
+    {
+        return mIsBuiltInSchema;
     }
     /// True when the open World is a version-2 record with a document AssetId and entity UUIDs.
     [[nodiscard]] bool HasUuidRecords() const;
@@ -141,7 +152,11 @@ public:
                             const QJsonObject* scene = nullptr);
     // Import is one history transaction. Cooked object IDs become entity IDs.
     // Version-2 records do not support the scene extension yet and are refused.
-    [[nodiscard]] bool ImportScene(const QJsonObject& level, QString& error);
+    /// @param generatedEntities Complete authored entity records the import adds beside the cooked
+    /// objects in the same transaction, such as MakeImportedApertures' apertures. A record whose ID
+    /// an entity already has is skipped, so a reimport keeps that entity and its edits.
+    [[nodiscard]] bool
+    ImportScene(const QJsonObject& level, QString& outError, const QJsonArray& generatedEntities = {});
     [[nodiscard]] QJsonObject SceneLevel() const;
     /// Map all current and future slots of a logical source material in one World history entry.
     [[nodiscard]] bool MapSceneMaterial(const QString& source, const QString& replacement, QString& outError);
@@ -211,6 +226,6 @@ private:
     QJsonObject Saved_;
     DocumentHistory<QJsonObject, 32> History_;
     bool Loaded_ = false;
-    bool mHasBuiltInTerrain = false;
+    bool mIsBuiltInSchema = false;
 };
 } // namespace ludus::editor
