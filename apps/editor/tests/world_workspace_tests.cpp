@@ -58,6 +58,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QLockFile>
 #include <QMessageBox>
 #include <QProcess>
