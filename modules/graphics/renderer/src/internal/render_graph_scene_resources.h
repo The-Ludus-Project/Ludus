@@ -20,6 +20,7 @@ public:
     ForwardSceneGeneration& operator=(const ForwardSceneGeneration&) = delete;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] foundation::BorrowedView<const SceneItem> GetItems() const noexcept;
+    [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
     /// Borrowed read-only triangle storage, retained until this generation is destroyed.
     [[nodiscard]] rhi::RasterBindingResource GetMeshLights() const noexcept;
     [[nodiscard]] foundation::uint32 GetMeshLightCount() const noexcept;
@@ -55,7 +56,8 @@ public:
                                                Renderer& inoutRenderer,
                                                MaterialProgram program,
                                                bool isClustered = false,
-                                               bool hasMeshLights = false) noexcept;
+                                               bool hasMeshLights = false,
+                                               MaterialProgram surfaceChartProgram = {}) noexcept;
     /// Consume every input before returning. Failure preserves a null generation.
     [[nodiscard]] rhi::RasterStatus
     Prepare(const RenderGraphSceneDescription& scene,

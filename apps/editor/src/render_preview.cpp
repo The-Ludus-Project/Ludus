@@ -355,6 +355,26 @@ QSize RenderPreview::GetDrawableSize() const noexcept
 {
     return mDrawableSize;
 }
+void RenderPreview::SetSurfaceBakeWorldPath(const QString& path)
+{
+    mSurfaceBake.SetWorldPath(path);
+}
+
+bool RenderPreview::SaveSurfaceBake()
+{
+    return mSurfaceBake.Save();
+}
+
+QSharedPointer<const WorldSurfaceBake> RenderPreview::GetSurfaceBake() const
+{
+    return mSurfaceBake.GetReady();
+}
+
+QString RenderPreview::GetSurfaceBakeFailure() const
+{
+    return mSurfaceBake.GetFailure();
+}
+
 bool RenderPreview::SetScene(const RenderScene& scene)
 {
     bool isValid = scene.Identity.isEmpty()
@@ -389,6 +409,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
         Stop();
         EndFirstPerson();
         Scene_ = {};
+        mSurfaceBake.SetScene(Scene_);
         mHasSceneBounds = false;
         Residency_.Reset();
         OrbitCenter_ = {};
@@ -442,6 +463,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     Residency_.Swap(residency);
     EndFirstPerson();
     Scene_ = scene;
+    mSurfaceBake.SetScene(Scene_);
     mSceneBoundsWorld = sceneBoundsWorld;
     mHasSceneBounds = hasSceneBounds;
     if (CameraId_.isEmpty() == false)
@@ -1838,6 +1860,10 @@ bool RenderPreview::prepare()
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const bool hasPublishedBake = mResources->HasPublishedBake();
     const QString previousBakeStatus = mResources->DescribeBake();
+    if (mResources->Source.Identity == Scene_.Identity)
+    {
+        mResources->SetSurfaceBake(mSurfaceBake.GetReady(), mSurfaceBake.GetFailure());
+    }
     const PreviewPreparationStatus status = mResources->Prepare(Surface_, mPreparationFailure);
     if (status == PreviewPreparationStatus::Failed)
     {
@@ -1938,6 +1964,12 @@ void RenderPreview::Tick()
     {
         return;
     }
+#    if !defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    if (mShading == PreviewShading::Lit || mIsProjectGraphEnabled == true)
+    {
+        mSurfaceBake.Poll(Scene_);
+    }
+#    endif
     // A failed built-in view leaves the device to the project graph, which still retires its resources.
     if ((isDelegatingToProjectGraph() == true || (mHasPreparationFailed == true && mIsProjectGraphEnabled == true)) &&
         HasOpenViewportSubmission() == false)

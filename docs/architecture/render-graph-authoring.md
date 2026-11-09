@@ -1519,6 +1519,15 @@ GPU light assignment, arbitrary material interfaces and cross-device caches rema
 separate extensions. See the [canonical workflow](../development/render-graph-authoring.md#use-the-forward-lit-template)
 for limits, shader editing and installed-SDK usage.
 
+The forward surface-chart profile makes the optional `SceneBakedLighting`
+connection explicit on the canvas. Package version 34 adds a realtime
+fragment role with no chart texture slot, and an optional chart fragment role.
+A connected configuration stages both programs. Scene preparation validates
+the chart's placement identity and geometry layout, expands triangle chart
+coordinates, and selects the material program before submitting draws. Current
+and pending scenes pin their chart textures through the existing resource
+cache. Earlier forward packages keep their original fragment ABI.
+
 The default `ClusteredDeferred` profile retains this scene-generation boundary and
 adds renderer-owned G-buffer targets and immutable per-view resolve bindings.
 Version 24 appends material, fullscreen lighting and prepass depth-copy stage roles;

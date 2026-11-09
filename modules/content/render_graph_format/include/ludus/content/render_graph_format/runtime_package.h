@@ -123,8 +123,10 @@ inline constexpr foundation::uint32 SCENE_RESOURCE_LIGHT_TRANSFORMER = 4U;
 /// First generation carrying MAX_RAY_PROGRAMS capture warm-up invocation counts after the scene resource word.
 /// Earlier packages imply zero. This metadata does not alter interactive accumulation or shader execution.
 inline constexpr foundation::uint32 CAPTURE_WARMUP_PACKAGE_VERSION = 33;
+/// First generation carrying specialized forward realtime and optional surface-chart fragments.
+inline constexpr foundation::uint32 FORWARD_SURFACE_CHART_PACKAGE_VERSION = 34;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = CAPTURE_WARMUP_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = FORWARD_SURFACE_CHART_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -196,8 +198,12 @@ inline constexpr foundation::usize DEFERRED_STAGE_ROLE_COUNT = 4;
 /// OPAQUE_GBUFFER_PACKAGE_VERSION carry it with every deferred target.
 inline constexpr foundation::usize DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE =
     DEFERRED_STAGE_ROLE_FIRST + DEFERRED_STAGE_ROLE_COUNT;
-/// Complete role table including clustered deferred support.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE + 1;
+/// Forward fragment selected for draws with a valid baked irradiance chart.
+inline constexpr foundation::usize FORWARD_SURFACE_CHART_STAGE_ROLE = DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE + 1;
+/// Forward realtime fragment compiled without baked-lighting resources.
+inline constexpr foundation::usize FORWARD_REALTIME_STAGE_ROLE = FORWARD_SURFACE_CHART_STAGE_ROLE + 1;
+/// Total number of admitted shader roles.
+inline constexpr foundation::usize STAGE_ROLE_COUNT = FORWARD_REALTIME_STAGE_ROLE + 1;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
@@ -275,6 +281,10 @@ enum class StageRole : foundation::uint32
     /// DeferredGBufferFragment without the alpha-coverage discard, drawn for opaque materials so tile-based GPUs keep
     /// hidden-surface removal; masked materials keep DeferredGBufferFragment.
     DeferredOpaqueGBufferFragment = DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE,
+    /// Forward material fragment selected for draws with valid surface charts.
+    ForwardSurfaceChartFragment = FORWARD_SURFACE_CHART_STAGE_ROLE,
+    /// Forward material fragment without baked-lighting sampling.
+    ForwardRealtimeFragment = FORWARD_REALTIME_STAGE_ROLE,
     NativeRayStages = NATIVE_RAY_STAGE_ROLE, ///< Linked native ray stages sharing the persistent scene ABI.
 };
 /// Float vertex input width of one stage input record.

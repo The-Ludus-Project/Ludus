@@ -7,6 +7,10 @@
           "to": "draw.scene"
         },
         {
+          "from": "input.bakedLighting",
+          "to": "draw.bakedLighting"
+        },
+        {
           "from": "input.view",
           "to": "draw.view"
         },
@@ -24,6 +28,10 @@
         {
           "id": "scene",
           "type": "Scene"
+        },
+        {
+          "id": "bakedLighting",
+          "type": "SceneBakedLighting"
         },
         {
           "id": "view",
@@ -47,6 +55,11 @@
               "id": "scene",
               "type": "Scene",
               "required": true
+            },
+            {
+              "id": "bakedLighting",
+              "type": "SceneBakedLighting",
+              "required": false
             },
             {
               "id": "view",
