@@ -231,8 +231,11 @@ Requirements: CE08, CE19 (syntax roles), CE22, CE26. Prerequisite: M0 ADR accept
   `apps/editor/cmake/EditorTreeSitter.cmake` into `ludus_editor_tree_sitter`
   (ADR 0026 pinning amendment: FetchContent, since the browser build has no
   Conan), smoke tests in `code_syntax_runtime_tests.cpp`, manifest in
-  `docs/architecture/code-editor-evidence/tree-sitter-manifest.md`. Grammars
-  pending.)*
+  `docs/architecture/code-editor-evidence/tree-sitter-manifest.md`. The seven
+  upstream grammars are pinned the same way, under `third_party/tree-sitter-*`,
+  compiled into the same target, declared in `code_syntax_grammars.h` and
+  parsed in `code_syntax_grammar_tests.cpp`. Wasm build of the grammars and the
+  LUSL grammar pending.)*
 - [ ] Implement the worker, snapshot posting at the debounce, token packing,
   delta shifting and the revision checks (design section 6).
 - [ ] Turn `CodeSyntaxHighlighter` into the token applier with the lexical

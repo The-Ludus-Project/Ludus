@@ -87,8 +87,11 @@ pre-generated `parser.c`, so the editor build never regenerates a grammar.
 > Crashpad pin.
 >
 > The rest of this section still applies: exact tags, verified hashes, the
-> manifest and no floating versions. The text below keeps the original recipe
-> wording for the record.
+> manifest and no floating versions. The one exception is
+> `polychromatist/tree-sitter-luau`, which publishes no tags. It is pinned to
+> an exact commit and that commit's archive hash, and the
+> [manifest](../architecture/code-editor-evidence/tree-sitter-manifest.md#grammars)
+> records why. The text below keeps the original recipe wording for the record.
 
 Each dependency gets a Ludus-owned Conan recipe under `third_party/<name>/`
 (following `third_party/harfbuzz`) that downloads the exact upstream tagged

@@ -1,0 +1,22 @@
+{
+  "name": "tree-sitter-luau",
+  "version": "0.3.0",
+  "tag": null,
+  "commit": "71b03e66b2c8dd04e0133c9b998a54a58f239ca4",
+  "archive_url": "https://github.com/polychromatist/tree-sitter-luau/archive/71b03e66b2c8dd04e0133c9b998a54a58f239ca4.tar.gz",
+  "archive_sha256": "353fbd5bfa204025e717cea2296cd0f678454ccc90f7745a9341b76cbe746431",
+  "license": "MIT",
+  "grammars": [
+    {
+      "name": "luau",
+      "entry_point": "tree_sitter_luau",
+      "language_abi": 14,
+      "directory": "src",
+      "sources": [
+        "parser.c",
+        "scanner.c"
+      ]
+    }
+  ],
+  "notes": "Editor syntax grammar (ADR 0026), published 2025-12-08. apps/editor/cmake/EditorTreeSitter.cmake downloads this exact archive with CMake FetchContent, verifies its SHA-256 and that its LICENSE equals the committed copy, and compiles only the listed upstream-generated sources as C. Verified by downloading the archive twice on 2026-11-08; see docs/architecture/code-editor-evidence/tree-sitter-manifest.md. Upstream publishes no tags; the pin is the commit that sets the grammar version 0.3.0, and the archive is that commit's."
+}
