@@ -270,6 +270,7 @@ private:
     void updateViewportInteraction();
     void exploreFirstPerson();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);
+    void commitProbeFace(const QString& id, foundation::int32 axis, foundation::uint32 count, bool isMinimumFace);
     /// Store the scene viewport's current perspective view as the level start view (one undo step).
     void saveStartView();
     void Changed(const QString& message = {});

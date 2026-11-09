@@ -1,8 +1,10 @@
 #include "internal/viewport_object_interaction.h"
 #include "design_tokens.h"
+#include "internal/builtin_world.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_gizmo_readout.h"
 #include "internal/world_document.h"
+#include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -25,12 +27,20 @@ namespace ludus::editor
 {
 using namespace foundation;
 namespace math = foundation::math;
+namespace rr = graphics::renderer;
 namespace
 {
 constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
 constexpr usize TRIANGLE_VERTICES = ViewportObjectOverlay::TRIANGLE_VERTICES;
 /// Corners of a mesh's bounding box, as the combinations of its three axis bits.
-constexpr usize BOX_CORNERS = 8;
+constexpr usize X_CORNER_BIT = 1;
+constexpr usize Y_CORNER_BIT = X_CORNER_BIT << 1U;
+constexpr usize Z_CORNER_BIT = Y_CORNER_BIT << 1U;
+constexpr usize BOX_CORNERS = Z_CORNER_BIT << 1U;
+constexpr float64 MINIMUM_PROBE_FACE_MOTION_PIXELS = 2;
+constexpr float64 PROBE_FACE_HALF_PIXELS = 5;
+constexpr int32 PROBE_EXTENT_DECIMALS = 2;
+constexpr math::Affine3 WORLD_AXES{};
 constexpr usize MAX_OUTLINE_LINES = ViewportObjectOverlay::MAX_OUTLINE_LINES;
 /// A luminaire's outline: the panel square, its two diagonals and the emission direction.
 constexpr usize LUMINAIRE_OUTLINE_CORNERS = 4;
@@ -123,6 +133,15 @@ constexpr QRgb MixColour(QRgb from, QRgb to, int32 percent) noexcept
                 MixChannel(qGreen(from), qGreen(to), percent),
                 MixChannel(qBlue(from), qBlue(to), percent));
 }
+math::Vector3 ComputeProbeFaceWorld(const rr::GiProbeGrid& grid, int32 face) noexcept
+{
+    const math::Aabb3 boundsWorld = ComputeWorldGiProbeBounds(grid);
+    const math::Vector3 centerWorld = (boundsWorld.Min + boundsWorld.Max) * 0.5F;
+    const int32 axis = face % AXIS_COUNT;
+    const float32 halfExtent = static_cast<float32>(grid.Counts[axis] - 1) * grid.Spacing * 0.5F;
+    return centerWorld + WORLD_AXES.Columns[axis] * (face >= AXIS_COUNT ? -halfExtent : halfExtent);
+}
+
 float64 ComputeSnap(float64 value, float64 interval) noexcept
 {
     const float64 scaled = value / interval;
@@ -238,15 +257,32 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
         return;
     }
     mSelected = selected;
-    mPlacement = world.ScenePlacement(world.Entity(selected));
+    const QJsonObject entity = world.Entity(selected);
+    const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    mProbeGrid = {};
     mLuminaireHalfExtentWorld = 0;
+    mParentToWorld = {};
+    QString probeError;
+    const bool hasProbeVolume = IsBuiltInWorld(world) == true &&
+                                ReadWorldGiProbeGrid(components, mProbeGrid, probeError, true) == true &&
+                                mProbeGrid.Counts[0] != 0;
+    mIsStandaloneProbeVolume = hasProbeVolume == true && IsStandaloneWorldGiProbeVolume(entity, components) == true;
+    if (mIsStandaloneProbeVolume == true)
+    {
+        // The bake uses the authored position in world space, independent of rotation, scale and mesh parents.
+        mPlacement = QJsonObject{{QStringLiteral("position"), ReadWorldGiProbeOrigin(components)},
+                                 {QStringLiteral("rotation"), QJsonArray{0, 0, 0}},
+                                 {QStringLiteral("scale"), QJsonArray{1, 1, 1}},
+                                 {QStringLiteral("basis"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1}}};
+        mCanEdit = canEdit;
+        Q_EMIT Changed();
+        return;
+    }
+    mPlacement = world.ScenePlacement(entity);
     const QJsonObject luminaireBinding = mPreviewOrNull->Scene().LuminaireBinding;
     if (luminaireBinding.isEmpty() == false)
     {
-        const QJsonValue halfExtent = world.Entity(selected)
-                                          .value(QStringLiteral("components"))
-                                          .toObject()
-                                          .value(luminaireBinding.value(QStringLiteral("component")).toString())
+        const QJsonValue halfExtent = components.value(luminaireBinding.value(QStringLiteral("component")).toString())
                                           .toObject()
                                           .value(luminaireBinding.value(QStringLiteral("properties"))
                                                      .toObject()
@@ -260,11 +296,7 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     if (mPlacement.isEmpty() == true)
     {
         const QJsonObject binding = mPreviewOrNull->Scene().TransformBinding;
-        const QJsonObject values = world.Entity(selected)
-                                       .value(QStringLiteral("components"))
-                                       .toObject()
-                                       .value(binding.value(QStringLiteral("component")).toString())
-                                       .toObject();
+        const QJsonObject values = components.value(binding.value(QStringLiteral("component")).toString()).toObject();
         // The preview descriptor's binding names each semantic transform property under "properties".
         const QJsonObject properties = binding.value(QStringLiteral("properties")).toObject();
         if (binding.isEmpty() == false && values.isEmpty() == false)
@@ -288,7 +320,6 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
         }
     }
     mCanEdit = canEdit == true && mPlacement.isEmpty() == false;
-    mParentToWorld = {};
     const QString parentId = mPlacement.value(QStringLiteral("parent")).toString();
     bool hasParent = parentId.isEmpty();
     for (const PreviewObject& object : mPreviewOrNull->Scene().Objects)
@@ -515,27 +546,8 @@ void ViewportObjectInteraction::appendObjectOutline(const PreviewObject& object,
         {
             return;
         }
-        const math::Aabb3& bounds = mMeshBoundsMesh[static_cast<usize>(object.Mesh)];
-        StaticArray<math::Vector4, BOX_CORNERS> cornersClip{};
-        for (usize corner = 0; corner < BOX_CORNERS; ++corner)
-        {
-            const math::Vector4 cornerMesh{(corner & 1U) != 0 ? bounds.Max.X : bounds.Min.X,
-                                           (corner & 2U) != 0 ? bounds.Max.Y : bounds.Min.Y,
-                                           (corner & 4U) != 0 ? bounds.Max.Z : bounds.Min.Z,
-                                           1};
-            cornersClip[corner] = meshToClip * cornerMesh;
-        }
-        // Each pair of corners that differ in exactly one axis bit is a box edge.
-        for (usize first = 0; first < BOX_CORNERS; ++first)
-        {
-            for (usize bit = 1; bit < BOX_CORNERS; bit <<= 1U)
-            {
-                if ((first & bit) == 0)
-                {
-                    mOutlineSegments.Add({cornersClip[first], cornersClip[first | bit]});
-                }
-            }
-        }
+        appendBoxOutline(mMeshBoundsMesh[static_cast<usize>(object.Mesh)], meshToClip, inoutOverlay);
+        return;
     }
     for (const SilhouetteSegment& segment : mOutlineSegments)
     {
@@ -547,6 +559,33 @@ void ViewportObjectInteraction::appendObjectOutline(const PreviewObject& object,
         }
     }
 }
+void ViewportObjectInteraction::appendBoxOutline(const math::Aabb3& bounds,
+                                                 const math::Matrix4& boundsToClip,
+                                                 ViewportObjectOverlay& inoutOverlay) const
+{
+    StaticArray<math::Vector4, BOX_CORNERS> cornersClip{};
+    for (usize corner = 0; corner < BOX_CORNERS; ++corner)
+    {
+        cornersClip[corner] = boundsToClip * math::Vector4{(corner & X_CORNER_BIT) != 0 ? bounds.Max.X : bounds.Min.X,
+                                                           (corner & Y_CORNER_BIT) != 0 ? bounds.Max.Y : bounds.Min.Y,
+                                                           (corner & Z_CORNER_BIT) != 0 ? bounds.Max.Z : bounds.Min.Z,
+                                                           1};
+    }
+    // Each pair of corners that differ in exactly one axis bit is a box edge.
+    for (usize first = 0; first < BOX_CORNERS; ++first)
+    {
+        for (usize bit = X_CORNER_BIT; bit <= Z_CORNER_BIT; bit <<= 1U)
+        {
+            QLineF linePixel;
+            if ((first & bit) == 0 && inoutOverlay.OutlineLinesPixel.GetSize() < MAX_OUTLINE_LINES &&
+                projectSegment({cornersClip[first], cornersClip[first | bit]}, linePixel) == true)
+            {
+                inoutOverlay.OutlineLinesPixel.Add(linePixel);
+            }
+        }
+    }
+}
+
 bool ViewportObjectInteraction::refreshMeshBounds()
 {
     const RenderScene& scene = mPreviewOrNull->Scene();
@@ -725,7 +764,8 @@ void ViewportObjectInteraction::buildHandles()
     mHandles.Clear();
     mPlaneHandles.Clear();
     mHasUniformHandle = false;
-    if (mCanEdit == false || mTool == Tool::Select || mTerrainBrushKey.isEmpty() == false)
+    if (mCanEdit == false || mTool == Tool::Select || mTerrainBrushKey.isEmpty() == false ||
+        (mIsStandaloneProbeVolume == true && mTool != Tool::Move))
     {
         return;
     }
@@ -993,8 +1033,157 @@ void ViewportObjectInteraction::appendTerrainFootprint(ViewportObjectOverlay& in
     }
 }
 
+bool ViewportObjectInteraction::projectProbeFace(const rr::GiProbeGrid& grid,
+                                                 int32 face,
+                                                 QPointF& outPositionPixel) const
+{
+    const math::Vector3 centerWorld = ComputeProbeFaceWorld(grid, face);
+    const int32 axis = face % AXIS_COUNT;
+    const float32 towardCenter = face >= AXIS_COUNT ? grid.Spacing : -grid.Spacing;
+    QPointF centerPixel;
+    QPointF inwardPixel;
+    if (project(centerWorld, centerPixel) == false || mFramePixel.contains(centerPixel) == false ||
+        project(centerWorld + WORLD_AXES.Columns[axis] * towardCenter, inwardPixel) == false ||
+        QLineF(centerPixel, inwardPixel).length() < MINIMUM_PROBE_FACE_MOTION_PIXELS)
+    {
+        return false;
+    }
+    outPositionPixel = centerPixel;
+    return true;
+}
+
+ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickProbeFace(QPointF positionPixel) const
+{
+    HandleTarget target;
+    if (mCanEdit == false || mProbeGrid.Counts[0] == 0 || mTool != Tool::Move)
+    {
+        return target;
+    }
+    float64 nearest = HANDLE_HIT_PIXELS * HANDLE_HIT_PIXELS;
+    for (int32 face = 0; face < ViewportObjectOverlay::PROBE_FACE_HANDLES; ++face)
+    {
+        QPointF handlePixel;
+        if (projectProbeFace(mProbeGrid, face, handlePixel) == true)
+        {
+            const QPointF deltaPixel = positionPixel - handlePixel;
+            const float64 distance = QPointF::dotProduct(deltaPixel, deltaPixel);
+            if (distance < nearest)
+            {
+                target = {HandleKind::ProbeFace, face};
+                nearest = distance;
+            }
+        }
+    }
+    return target;
+}
+
+bool ViewportObjectInteraction::beginProbeFaceDrag(QPointF positionPixel)
+{
+    mProbeDragGrid = mProbeGrid;
+    mProbeDragFramePixel = mFramePixel;
+    mDragPlaneOriginWorld = ComputeProbeFaceWorld(mProbeGrid, mDragTarget.Index);
+    const math::Vector3 axisWorld = WORLD_AXES.Columns[mDragTarget.Index % AXIS_COUNT];
+    math::Ray3 pressRay;
+    if (math::TryInverse(mWorldToClip, mDragClipToWorld) != math::MathStatus::Success ||
+        TryMakePixelRay(mDragClipToWorld, mFramePixel, positionPixel, pressRay) == false)
+    {
+        return false;
+    }
+    // Keep the axis in the drag plane and face the press ray as directly as possible.
+    const math::Vector3 normalWorld = pressRay.Direction - axisWorld * math::Dot(pressRay.Direction, axisWorld);
+    return math::TryNormalize(normalWorld, mDragPlaneNormalWorld) == math::MathStatus::Success &&
+           TryIntersectPlane(pressRay, mDragPlaneOriginWorld, mDragPlaneNormalWorld, mDragPlaneStartWorld) == true;
+}
+
+void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
+{
+    math::Ray3 rayWorld;
+    math::Vector3 hitWorld;
+    if (TryMakePixelRay(mDragClipToWorld, mProbeDragFramePixel, positionPixel, rayWorld) == false ||
+        TryIntersectPlane(rayWorld, mDragPlaneOriginWorld, mDragPlaneNormalWorld, hitWorld) == false)
+    {
+        return;
+    }
+    const int32 axis = mDragTarget.Index % AXIS_COUNT;
+    const bool isMinimumFace = mDragTarget.Index >= AXIS_COUNT;
+    const math::Vector3 axisWorld = WORLD_AXES.Columns[axis];
+    const float32 deltaMetres = math::Dot(hitWorld - mDragPlaneStartWorld, axisWorld);
+    const float32 originalCount = static_cast<float32>(mProbeGrid.Counts[axis]);
+    const float32 desiredCount =
+        originalCount + (isMinimumFace == true ? -deltaMetres : deltaMetres) / mProbeGrid.Spacing;
+    if (math::IsFinite(desiredCount) == false)
+    {
+        return;
+    }
+    const uint32 count =
+        static_cast<uint32>(math::Clamp(desiredCount, 2.F, static_cast<float32>(rr::MAX_GI_PROBE_AXIS_COUNT)) + 0.5F);
+    rr::GiProbeGrid candidate = mProbeGrid;
+    candidate.Counts[axis] = count;
+    if (isMinimumFace == true)
+    {
+        const float32 originOffsetMetres = (originalCount - static_cast<float32>(count)) * candidate.Spacing;
+        candidate.OriginWorld = candidate.OriginWorld + axisWorld * originOffsetMetres;
+    }
+    if (rr::IsGiProbeGridValid(candidate) == false)
+    {
+        return;
+    }
+    mProbeDragGrid = candidate;
+    mReadoutAnchorPixel = positionPixel;
+    mReadoutText = QStringLiteral("%1 · %2 probes · %3 m")
+                       .arg(QChar('X' + axis))
+                       .arg(count)
+                       .arg(static_cast<float64>(static_cast<float32>(count - 1) * candidate.Spacing),
+                            0,
+                            'f',
+                            PROBE_EXTENT_DECIMALS);
+    Q_EMIT Changed();
+}
+
+void ViewportObjectInteraction::appendProbeVolume(ViewportObjectOverlay& inoutOverlay) const
+{
+    if (mProbeGrid.Counts[0] == 0)
+    {
+        return;
+    }
+    rr::GiProbeGrid grid = mDragTarget.Kind == HandleKind::ProbeFace ? mProbeDragGrid : mProbeGrid;
+    if (mDragTarget.IsValid() == true && mDragTarget.Kind != HandleKind::ProbeFace && mTool == Tool::Move)
+    {
+        grid.OriginWorld = WorldDocument::MakeSceneMeshToParent(mCandidate).Translation;
+    }
+    appendBoxOutline(ComputeWorldGiProbeBounds(grid), mWorldToClip, inoutOverlay);
+    if (mCanEdit == false || mTool != Tool::Move)
+    {
+        return;
+    }
+    for (int32 face = 0; face < ViewportObjectOverlay::PROBE_FACE_HANDLES; ++face)
+    {
+        QPointF handlePixel;
+        if (projectProbeFace(grid, face, handlePixel) == false)
+        {
+            continue;
+        }
+        const QPointF offset(PROBE_FACE_HALF_PIXELS, PROBE_FACE_HALF_PIXELS);
+        const QPointF diagonal(offset.x(), -offset.y());
+        const ViewportHandleFill::Corners corners{handlePixel - offset,
+                                                  handlePixel + diagonal,
+                                                  handlePixel + offset,
+                                                  handlePixel - diagonal};
+        const HandleTarget target{HandleKind::ProbeFace, face};
+        inoutOverlay.HandleFills.Add(
+            {GrowQuad(corners, CASING_GROWTH_PIXELS), ViewportHandleFill::MAX_CORNERS, RECEDE_COLOR});
+        inoutOverlay.HandleFills.Add(
+            {corners, ViewportHandleFill::MAX_CORNERS, getHandleColour(target, face % AXIS_COUNT, false)});
+    }
+}
+
 ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickHandle(QPointF positionPixel)
 {
+    const HandleTarget probeFace = pickProbeFace(positionPixel);
+    if (probeFace.IsValid() == true)
+    {
+        return probeFace;
+    }
     const HandleTarget terrain = pickTerrainHandle(positionPixel);
     if (terrain.IsValid() == true)
     {
@@ -1151,7 +1340,15 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
         const math::Affine3 meshToWorld = makeTransform(mPlacement);
         mRotationDirection =
             math::Dot(math::Cross(meshToWorld.Columns[0], meshToWorld.Columns[1]), meshToWorld.Columns[2]) < 0 ? -1 : 1;
-        if (target.Kind == HandleKind::TerrainExtent)
+        if (target.Kind == HandleKind::ProbeFace)
+        {
+            if (beginProbeFaceDrag(positionPixel) == false)
+            {
+                Cancel();
+                return true;
+            }
+        }
+        else if (target.Kind == HandleKind::TerrainExtent)
         {
             if (beginTerrainDrag(positionPixel) == false)
             {
@@ -1196,6 +1393,12 @@ void ViewportObjectInteraction::RequestFrameAt(QPointF positionPixel, const QRec
         Q_EMIT FrameRequested(id);
     }
 }
+bool ViewportObjectInteraction::FrameProbeVolume() noexcept
+{
+    return mPreviewOrNull.isNull() == false && mProbeGrid.Counts[0] != 0 &&
+           mPreviewOrNull->FrameBounds(ComputeWorldGiProbeBounds(mProbeGrid)) == true;
+}
+
 bool ViewportObjectInteraction::dragAxis(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues)
 {
     const int32 axis = mDragTarget.Index;
@@ -1339,6 +1542,9 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
     bool isValueUsable = false;
     switch (mDragTarget.Kind)
     {
+        case HandleKind::ProbeFace:
+            dragProbeFace(positionPixel);
+            return true;
         case HandleKind::TerrainExtent:
             dragTerrainExtent(positionPixel);
             return true;
@@ -1387,7 +1593,15 @@ bool ViewportObjectInteraction::Release()
     const QJsonObject candidate = mCandidate;
     mDragTarget = {};
     mReadoutText.clear();
-    if (target.Kind == HandleKind::TerrainExtent)
+    if (target.Kind == HandleKind::ProbeFace)
+    {
+        const int32 axis = target.Index % AXIS_COUNT;
+        if (mProbeDragGrid.Counts[axis] != mProbeGrid.Counts[axis])
+        {
+            Q_EMIT ProbeFaceCommitted(mSelected, axis, mProbeDragGrid.Counts[axis], target.Index >= AXIS_COUNT);
+        }
+    }
+    else if (target.Kind == HandleKind::TerrainExtent)
     {
         const float32 initial = target.Index == 0 ? mTerrainExtent.X : mTerrainExtent.Y;
         if (mTerrainDragExtent != initial)
@@ -1563,6 +1777,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     }
     appendTerrainFootprint(outOverlay);
     appendTerrainBrush(outOverlay);
+    appendProbeVolume(outOverlay);
     if (mHasUniformHandle == true)
     {
         // The centre handle takes the pivot's place, so the scale tool has one marker at its origin.

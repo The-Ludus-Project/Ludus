@@ -1155,10 +1155,13 @@ bool RenderPreview::FrameSelection() noexcept
 bool RenderPreview::FrameEntity(const QString& id) noexcept
 {
     math::Aabb3 boundsWorld;
-    if (id.isEmpty() == true || Scene_.TryGetBounds(id, boundsWorld) == false || beginNavigation() == false ||
-        mCameraController.TryFrame(boundsWorld,
-                                   static_cast<float32>(RequestedWidth_) / static_cast<float32>(RequestedHeight_)) ==
-            false)
+    return id.isEmpty() == false && Scene_.TryGetBounds(id, boundsWorld) == true && FrameBounds(boundsWorld) == true;
+}
+bool RenderPreview::FrameBounds(const math::Aabb3& boundsWorld) noexcept
+{
+    if (beginNavigation() == false || mCameraController.TryFrame(boundsWorld,
+                                                                 static_cast<float32>(RequestedWidth_) /
+                                                                     static_cast<float32>(RequestedHeight_)) == false)
     {
         return false;
     }

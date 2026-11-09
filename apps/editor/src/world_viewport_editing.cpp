@@ -5,6 +5,7 @@
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/viewport_object_interaction.h"
+#include "internal/world_probe_volume.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/gameplay/camera/camera.hpp>
@@ -62,6 +63,7 @@ void WorldWorkspace::bindViewportInteraction()
             }
         });
         connect(&interaction, &ViewportObjectInteraction::FrameRequested, this, &WorldWorkspace::frameEntity);
+        connect(&interaction, &ViewportObjectInteraction::ProbeFaceCommitted, this, &WorldWorkspace::commitProbeFace);
         connect(&interaction,
                 &ViewportObjectInteraction::PlacementCommitted,
                 this,
@@ -78,7 +80,14 @@ void WorldWorkspace::frameEntity(const QString& id)
     {
         return;
     }
-    if (preview.FrameEntity(id) == false)
+    const QJsonObject components = Document_.Entity(id).value(QStringLiteral("components")).toObject();
+    graphics::renderer::GiProbeGrid grid;
+    QString error;
+    const bool isProbeVolume = IsBuiltInWorld(Document_) == true &&
+                               ReadWorldGiProbeGrid(components, grid, error, true) == true && grid.Counts[0] != 0;
+    const bool isFramed =
+        isProbeVolume == true ? preview.FrameBounds(ComputeWorldGiProbeBounds(grid)) : preview.FrameEntity(id);
+    if (isFramed == false)
     {
         Changed(QStringLiteral("Cannot frame this entity. Choose an entity with a visible mesh, or use Frame all."));
     }
@@ -169,7 +178,18 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
     const ViewportObjectInteraction::TransformPropertyNames keys{QStringLiteral("position"),
                                                                  QStringLiteral("rotation"),
                                                                  QStringLiteral("scale")};
-    if (scene.isEmpty() == false && sceneBinding.isEmpty() == true)
+    const bool isStandaloneProbeVolume =
+        IsBuiltInWorld(Document_) == true && IsStandaloneWorldGiProbeVolume(entity, components) == true;
+    if (isStandaloneProbeVolume == true)
+    {
+        const QJsonArray origin = placement.value(QStringLiteral("position")).toArray();
+        if (origin.size() != AXIS_COUNT)
+        {
+            return;
+        }
+        WriteWorldGiProbeOrigin(components, origin);
+    }
+    else if (scene.isEmpty() == false && sceneBinding.isEmpty() == true)
     {
         for (const QString& key : keys)
         {
@@ -220,7 +240,36 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
     }
     RenderInspector();
     Snapshot();
-    Changed(QStringLiteral("Object transformed. Undo restores its placement; Save World keeps the edit."));
+    Changed(isStandaloneProbeVolume == true
+                ? QStringLiteral("Probe volume moved. Undo restores its placement. Save World keeps the edit.")
+                : QStringLiteral("Object transformed. Undo restores its placement; Save World keeps the edit."));
+}
+void WorldWorkspace::commitProbeFace(const QString& id, int32 axis, uint32 count, bool isMinimumFace)
+{
+    if (id != Selected_ || Pending_ == true || SceneBusy() == true || mSelectedEntities.size() != 1 ||
+        IsBuiltInWorld(Document_) == false || axis < 0 || axis >= AXIS_COUNT || count < 2 ||
+        count > graphics::renderer::MAX_GI_PROBE_AXIS_COUNT)
+    {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(id);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    if (components.contains(GetGiProbeVolumeComponentId()) == false)
+    {
+        return;
+    }
+    ResizeWorldGiProbeAxis(components, static_cast<usize>(axis), count, isMinimumFace);
+    QString error;
+    if (Document_.Edit(id, components, entity.value(QStringLiteral("name")).toString(), error) == false)
+    {
+        Changed(QStringLiteral(
+                    "Probe volume could not be resized. Drag the face closer to the volume or reduce probe spacing. ") +
+                error);
+        return;
+    }
+    RenderInspector();
+    Snapshot();
+    Changed(QStringLiteral("Probe volume resized. Undo restores its bounds. Save World keeps the edit."));
 }
 void WorldWorkspace::saveStartView()
 {
