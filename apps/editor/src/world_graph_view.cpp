@@ -8,20 +8,28 @@
 #include "internal/renderer_workspace.h"
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
 
+#include <QAction>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSignalBlocker>
+#include <QToolButton>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 
 namespace ludus::editor
 {
 namespace
 {
 constexpr foundation::int32 MINIMUM_TARGET_TEXT_CHARACTERS = 4;
+constexpr foundation::int32 EXPOSURE_DECIMALS = 2;
+constexpr foundation::float64 EXPOSURE_STEP_STOPS = 0.25;
 constexpr foundation::int32 STATISTICS_REFRESH_MILLISECONDS = 250;
 constexpr foundation::int32 STATISTICS_MARGIN_PIXEL = design::SPACING_SMALL;
 /// Output-menu item role holding a built-in debug view's PreviewShading; graph targets leave it empty.
@@ -79,7 +87,7 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     refreshTargets();
     refreshFrame();
 }
-QWidget* WorldGraphView::TakeControls(QWidget* parent)
+QWidget* WorldGraphView::TakeControls(QWidget* parent, RenderPreview& inoutSource)
 {
     QWidget* controls = new QWidget(parent);
     controls->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
@@ -103,6 +111,54 @@ QWidget* WorldGraphView::TakeControls(QWidget* parent)
     mTargets->show();
     layout->addWidget(configurations);
     layout->addWidget(mTargets, 1);
+
+    QToolButton* exposureButton = new QToolButton(controls);
+    exposureButton->setObjectName(QStringLiteral("viewportExposure"));
+    exposureButton->setText(QStringLiteral("Exposure"));
+    exposureButton->setPopupMode(QToolButton::InstantPopup);
+    QMenu* exposureMenu = new QMenu(exposureButton);
+    exposureButton->setMenu(exposureMenu);
+    QDoubleSpinBox* exposure = new QDoubleSpinBox(exposureMenu);
+    exposure->setObjectName(QStringLiteral("viewportExposureStops"));
+    exposure->setAccessibleName(QStringLiteral("Exposure compensation in stops"));
+    exposure->setSuffix(QStringLiteral(" stops"));
+    exposure->setDecimals(EXPOSURE_DECIMALS);
+    constexpr foundation::float64 LIMIT =
+        static_cast<foundation::float64>(graphics::renderer::ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS);
+    exposure->setRange(-LIMIT, LIMIT);
+    exposure->setSingleStep(EXPOSURE_STEP_STOPS);
+    exposure->setKeyboardTracking(false);
+    QWidgetAction* exposureField = new QWidgetAction(exposureMenu);
+    exposureField->setDefaultWidget(exposure);
+    exposureMenu->addAction(exposureField);
+    QAction* reset = exposureMenu->addAction(QStringLiteral("Reset to graph exposure"));
+    reset->setObjectName(QStringLiteral("viewportResetExposure"));
+    connect(exposure, &QDoubleSpinBox::valueChanged, &inoutSource, [&inoutSource](foundation::float64 stops) {
+        inoutSource.SetRasterExposureStops(static_cast<foundation::float32>(stops));
+    });
+    connect(reset, &QAction::triggered, &inoutSource, [&inoutSource]() { inoutSource.SetRasterExposureStops(0); });
+    const auto refreshExposure = [this, exposureButton, exposure, reset, &inoutSource]() {
+        const bool canAdjust = mTargets->currentIndex() == 0 && mPreview.CanAdjustRasterExposure() == true &&
+                               inoutSource.Scene().Objects.isEmpty() == false;
+        const foundation::float32 stops = inoutSource.GetRasterExposureStops();
+        exposureButton->setEnabled(canAdjust);
+        exposure->setEnabled(canAdjust);
+        exposureButton->setToolTip(
+            canAdjust == true ? QStringLiteral("Adjust this viewport in stops relative to the graph's exposure.")
+                              : QStringLiteral("Exposure needs Final output from a clustered deferred raster "
+                                               "graph with ToneMap enabled and a World with geometry."));
+        const QSignalBlocker blocker(exposure);
+        exposure->setValue(static_cast<foundation::float64>(stops));
+        reset->setEnabled(canAdjust == true && stops != 0);
+    };
+    connect(&mPreview, &RenderGraphPreview::Changed, exposureButton, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::TargetsChanged, exposureButton, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::RayPathCaptureChanged, exposureButton, refreshExposure);
+    connect(&inoutSource, &RenderPreview::Changed, exposureButton, refreshExposure);
+    connect(&inoutSource, &RenderPreview::RasterExposureChanged, exposureButton, refreshExposure);
+    connect(mTargets, &QComboBox::currentIndexChanged, exposureButton, refreshExposure);
+    refreshExposure();
+    layout->addWidget(exposureButton);
     return controls;
 }
 void WorldGraphView::SetCanPresent(bool canPresent)

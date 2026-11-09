@@ -5738,6 +5738,18 @@ rebuilds; a removed target returns to Final output. Discarded/undefined attachme
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
 
+Open **Exposure** next to the output selector to adjust the viewport in stops.
+Zero uses the graph's authored exposure, +1 doubles it, and −1 halves it. Use
+**Reset to graph exposure** to return to zero. The adjustment stays with this
+viewport session as you navigate. It updates the lighting resolve before the
+tone curve and 8-bit output, without a graph rebuild or a saved World or graph
+edit.
+
+Exposure is available for **Final output** when a clustered deferred raster pass
+with an enabled ToneMap directly writes the export. For other graphs or targets,
+return to a supported final output to use the control. Reference captures run
+with the graph's authored exposure.
+
 After the graph's own outputs, the selector offers the editor's built-in debug views:
 **Debug: Albedo**, **Normal**, **Depth**, **Roughness**, **Metallic**, **UV**, **Light count**
 and **Wireframe**. These work with every graph, including ones that write no G-buffer, because

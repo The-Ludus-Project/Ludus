@@ -176,6 +176,13 @@ public:
     {
         return mLookSensitivity;
     }
+    /// Adjust the native viewport's tone-mapped raster output, in stops. The value belongs to this view session.
+    /// Invalid values preserve it. Zero resets the preview to the graph's authored exposure.
+    void SetRasterExposureStops(foundation::float32 stops);
+    [[nodiscard]] LUDUS_INLINE foundation::float32 GetRasterExposureStops() const noexcept
+    {
+        return mRasterExposureStops;
+    }
     /// Select the viewport toolbar's size preset by index (below VIEWPORT_SIZE_PRESET_COUNT);
     /// other values preserve it. The viewport letterboxes its frame to the preset and requests
     /// the drawable from ComputeViewportDrawableSize. Persisted by Navigation; GUI thread only.
@@ -327,6 +334,7 @@ Q_SIGNALS:
     void DrawableSizeChanged(const QSize& size);
     void Changed();
     void NavigationChanged();
+    void RasterExposureChanged();
     void RenderAdmissionChanged();
     void RendererPreferenceChanged(bool shouldForceRaster);
     void DeviceRequested();
@@ -368,6 +376,7 @@ private:
     ViewportWalkCollision mFirstPersonCollision;
     bool mIsExploringFirstPerson = false;
     foundation::float32 mLookSensitivity = 1;
+    foundation::float32 mRasterExposureStops = 0;
     /// Viewport size preset index; see SetViewportSize.
     foundation::usize mViewportSizeIndex = 0;
     QString mSelectedId;
