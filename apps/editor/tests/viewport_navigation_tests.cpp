@@ -29,10 +29,12 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QPoint>
 #include <QPointF>
+#include <QPointer>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -1121,6 +1123,44 @@ TEST_CASE("Force raster is a saved local viewport preference", "[editor][viewpor
     preview.RestoreNavigation({});
     CHECK(preview.ShouldForceRaster() == false);
     CHECK(buttonOrNull->isChecked() == false);
+}
+
+TEST_CASE("A slow viewport offers Force raster and changes nothing when declined", "[editor][viewport][selection]")
+{
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    QToolButton* forceRasterOrNull = viewport.findChild<QToolButton*>(QStringLiteral("viewportForceRaster"));
+    REQUIRE(forceRasterOrNull != nullptr);
+    constexpr float64 FRAME_MILLISECONDS = 2894.8;
+
+    QPointer<QMessageBox> declined = SuggestRasterFallback(viewport, preview, FRAME_MILLISECONDS);
+    REQUIRE(declined.isNull() == false);
+    CHECK(declined->objectName() == QStringLiteral("viewportSlowFrameSuggestion"));
+    CHECK(declined->text().contains(QStringLiteral("2.9 s per frame")) == true);
+    CHECK(declined->text().contains(QStringLiteral("last 3 frames")) == true);
+    QPushButton* switchOrNull = declined->findChild<QPushButton*>(QStringLiteral("viewportSlowFrameSwitch"));
+    QPushButton* keepOrNull = declined->findChild<QPushButton*>(QStringLiteral("viewportSlowFrameKeep"));
+    REQUIRE(switchOrNull != nullptr);
+    REQUIRE(keepOrNull != nullptr);
+    CHECK(declined->defaultButton() == switchOrNull);
+    CHECK(declined->escapeButton() == keepOrNull);
+    keepOrNull->click();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(declined.isNull() == true);
+    CHECK(preview.ShouldForceRaster() == false);
+    CHECK(forceRasterOrNull->isChecked() == false);
+
+    QPointer<QMessageBox> accepted = SuggestRasterFallback(viewport, preview, FRAME_MILLISECONDS);
+    REQUIRE(accepted.isNull() == false);
+    QPushButton* acceptOrNull = accepted->findChild<QPushButton*>(QStringLiteral("viewportSlowFrameSwitch"));
+    REQUIRE(acceptOrNull != nullptr);
+    acceptOrNull->click();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(accepted.isNull() == true);
+    // The same saved preference and toolbar state as pressing Force raster.
+    CHECK(preview.ShouldForceRaster() == true);
+    CHECK(forceRasterOrNull->isChecked() == true);
+    CHECK(preview.Navigation().value(QStringLiteral("forceRaster")).toBool() == true);
 }
 
 TEST_CASE("Look-at poses aim and roll the editor camera, clamp its lens and reject degenerate views",

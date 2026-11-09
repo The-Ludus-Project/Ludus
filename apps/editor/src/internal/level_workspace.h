@@ -251,7 +251,9 @@ private:
     void Publish();
     void CommitCandidate();
     void CommitImport();
-    void Rollback(const QString& error);
+    /// Restore the accepted scene and report error. Takes its own copy: RenderPreview::Failed passes a
+    /// reference to the preview's status, which restoring an empty previous scene clears.
+    void Rollback(QString error);
     void Render();
     void Inspect();
     void Edit();

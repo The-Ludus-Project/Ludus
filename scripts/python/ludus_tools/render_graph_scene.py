@@ -3,6 +3,7 @@
 PARTS = ("geometry", "materials", "lights")
 TYPES = {part: "Scene" + part.title() for part in PARTS}
 ALL_DATA = (1 << len(PARTS)) - 1
+BAKED_LIGHTING = "SceneBakedLighting"
 
 
 def ports(inputs):

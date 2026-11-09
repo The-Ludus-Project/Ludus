@@ -5576,7 +5576,11 @@ void RendererWorkspace::ServicePreview()
         preview.SetReferenceSize(mPreviewSourceOrNull->GetDrawableSize());
     }
     const QSize target = preview.GetTargetSize();
-    mArePreviewInputsDirty = mArePreviewInputsDirty == true || target != mPreviewTargetSize;
+    const QSharedPointer<const WorldSurfaceBake> surfaceBake = mPreviewSourceOrNull != nullptr
+                                                                   ? mPreviewSourceOrNull->GetSurfaceBake()
+                                                                   : QSharedPointer<const WorldSurfaceBake>{};
+    mArePreviewInputsDirty =
+        mArePreviewInputsDirty == true || target != mPreviewTargetSize || surfaceBake != mPreviewSurfaceBake;
     mPreviewTargetSize = target;
     if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false &&
         mArePreviewInputsDirty == true)
@@ -5611,13 +5615,13 @@ void RendererWorkspace::ServicePreview()
                 setProblem(mExtractionProblem, error);
             }
             view.RasterExposureStops = mPreviewSourceOrNull->GetRasterExposureStops();
-            if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
+            if (hasView == true && (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
                                     AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
                                     view.RasterExposureStops != mPreviewExposureStops))
             {
                 LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
                 bool hasUpdatedInputs = false;
-                if (scene.Identity == mPreviewSceneIdentity)
+                if (scene.Identity == mPreviewSceneIdentity && surfaceBake == mPreviewSurfaceBake)
                 {
                     preview.SetCamera(view, ++mPreviewRevision);
                     hasUpdatedInputs = true;
@@ -5625,7 +5629,8 @@ void RendererWorkspace::ServicePreview()
                 else
                 {
                     RenderGraphExtraction extraction;
-                    if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)
+                    if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error, surfaceBake) ==
+                        true)
                     {
                         setProblem(mExtractionProblem, {});
                         extraction.ContentRevision = mPreviewRevision;
@@ -5641,6 +5646,7 @@ void RendererWorkspace::ServicePreview()
                 if (hasUpdatedInputs == true)
                 {
                     mPreviewSceneIdentity = scene.Identity;
+                    mPreviewSurfaceBake = surfaceBake;
                     mPreviewWorldToClip = view.WorldToClip;
                     mPreviewExposureStops = view.RasterExposureStops;
                 }
@@ -5692,7 +5698,28 @@ void RendererWorkspace::renderPreview()
             setProblem(mActivationProblem, {});
         }
         static_cast<PreviewImage*>(mPreviewImage)->SetImage(mPreviewOrNull->GetImage());
-        const QString previewStatus = mPreviewOrNull->GetStatus();
+        QString previewStatus = mPreviewOrNull->GetStatus();
+        if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->Scene().AlwaysOnLightIds.isEmpty() == false)
+        {
+            const usize chartDraws = mPreviewOrNull->GetSurfaceChartDrawCount();
+            const QString failure = mPreviewSourceOrNull->GetSurfaceBakeFailure();
+            if (chartDraws != 0)
+            {
+                previewStatus += QStringLiteral("\nSurface charts in use on %1 draws.").arg(chartDraws);
+            }
+            else if (failure.isEmpty() == false)
+            {
+                previewStatus += QLatin1Char('\n') + failure;
+            }
+            else if (mPreviewSourceOrNull->GetSurfaceBake().isNull() == false)
+            {
+                previewStatus += QStringLiteral("\nSurface bake ready. The active graph uses realtime lighting.");
+            }
+            else
+            {
+                previewStatus += QStringLiteral("\nSurface bake pending. Using realtime lighting.");
+            }
+        }
         if (mPreviewStatus->text() != previewStatus)
         {
             mPreviewStatus->setText(previewStatus);

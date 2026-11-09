@@ -272,6 +272,7 @@ QStringList GetCellChoices(const QString& field, const QString& kind, const QStr
                       QStringLiteral("SceneGeometry"),
                       QStringLiteral("SceneMaterials"),
                       QStringLiteral("SceneLights"),
+                      QStringLiteral("SceneBakedLighting"),
                       QStringLiteral("View"),
                       QStringLiteral("AccelerationStructure"),
                       QStringLiteral("Float32"),

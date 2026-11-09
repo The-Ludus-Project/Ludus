@@ -443,6 +443,8 @@ configure_file(src/internal/render_graph_plan_policy.h.in
 # widgets or launching tools. All headers are private (src/internal).
 add_library(ludus_editor_core STATIC
     src/browser_player.cpp
+    src/internal/browser_viewport_backend.h
+    src/browser_viewport_backend.cpp
     src/internal/tool_process.h
     src/internal/play_process.h
     src/internal/source_watch.h
@@ -743,6 +745,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/editor_camera_controller.cpp
     src/static_lighting_job.cpp
     src/internal/static_lighting_job.h
+    src/world_surface_bake.cpp
+    src/internal/world_surface_bake.h
     src/preview_area_lights.cpp
     src/internal/preview_area_lights.h
     src/render_panel.cpp
@@ -1208,6 +1212,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp
         tests/render_graph_canvas_feedback_tests.cpp
         tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
+        tests/browser_viewport_backend_tests.cpp
         tests/texture_inspection_tests.cpp
         tests/external_code_editor_tests.cpp
         tests/live_journey_tests.cpp

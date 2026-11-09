@@ -178,6 +178,7 @@ struct RenderGraphPackage::State final
     bool HasVisibilityFields = false;
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
+    bool CanHaveForwardSurfaceCharts = false;
     bool CanHaveClusteredForward = false;
     bool CanHaveClusteredDeferred = false;
     bool HasExplicitAccumulation = false;
@@ -246,7 +247,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
-        const bool isDeferredRole = role >= format::DEFERRED_STAGE_ROLE_FIRST;
+        const bool isDeferredRole =
+            role >= format::DEFERRED_STAGE_ROLE_FIRST && role <= format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE;
+        const bool isSpecializedForward = role >= format::FORWARD_SURFACE_CHART_STAGE_ROLE;
+        if (isSpecializedForward == true && CanHaveForwardSurfaceCharts == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
         if (isDeferredRole == true && CanHaveClusteredDeferred == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -262,7 +269,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
         const bool isForwardRole = (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
-                                   isClusteredFragment == true || isForwardDepth == true || isDeferredRole == true;
+                                   isClusteredFragment == true || isForwardDepth == true || isDeferredRole == true ||
+                                   isSpecializedForward == true;
         if (isForwardRole == true && HasForwardStages == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -449,9 +457,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             const bool isFragment = role == static_cast<usize>(format::StageRole::ForwardFragment);
             const bool hasClusteredFragment = Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent;
-            if ((isFragment == true && hasClusteredFragment == true && Stages[role][target].IsPresent == true) ||
-                (isFragment == true ? (Stages[role][target].IsPresent == true || hasClusteredFragment == true)
-                                    : Stages[role][target].IsPresent) != hasForward)
+            const bool hasRealtime = Stages[format::FORWARD_REALTIME_STAGE_ROLE][target].IsPresent;
+            if ((isFragment == true &&
+                 (hasRealtime == true && (hasClusteredFragment == true || Stages[role][target].IsPresent == true))) ||
+                (isFragment == true && hasClusteredFragment == true && Stages[role][target].IsPresent == true) ||
+                (isFragment == true
+                     ? (Stages[role][target].IsPresent == true || hasClusteredFragment == true || hasRealtime == true)
+                     : Stages[role][target].IsPresent) != hasForward)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
@@ -459,14 +471,22 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     }
     bool hasClusteredForward = false;
     bool hasLegacyForward = false;
+    bool hasRealtimeForward = false;
+    bool hasSurfaceChartForward = false;
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
         hasClusteredForward =
             hasClusteredForward == true || Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent == true;
         hasLegacyForward = hasLegacyForward == true ||
                            Stages[static_cast<usize>(format::StageRole::ForwardFragment)][target].IsPresent == true;
+        hasRealtimeForward =
+            hasRealtimeForward == true || Stages[format::FORWARD_REALTIME_STAGE_ROLE][target].IsPresent;
+        hasSurfaceChartForward =
+            hasSurfaceChartForward == true || Stages[format::FORWARD_SURFACE_CHART_STAGE_ROLE][target].IsPresent;
     }
-    if (hasClusteredForward == true && hasLegacyForward == true)
+    if ((hasClusteredForward == true && (hasLegacyForward == true || hasRealtimeForward == true)) ||
+        (hasLegacyForward == true && hasRealtimeForward == true) ||
+        (hasSurfaceChartForward == true && hasRealtimeForward == false))
     {
         return RenderGraphPackageStatus::Malformed;
     }
@@ -478,7 +498,12 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
         const bool hasClusteredTarget = Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent;
-        for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
+        if (Stages[format::FORWARD_SURFACE_CHART_STAGE_ROLE][target].IsPresent !=
+            (hasSurfaceChartForward == true && Stages[format::FORWARD_REALTIME_STAGE_ROLE][target].IsPresent == true))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role <= format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE; ++role)
         {
             const bool isRequired = hasDeferred == true && hasClusteredTarget == true &&
                                     (role != format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE || HasOpaqueGBuffer == true);
@@ -849,7 +874,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
+        (version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
+         version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
          version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
          version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
@@ -877,6 +903,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
+    candidate->CanHaveForwardSurfaceCharts = version >= format::FORWARD_SURFACE_CHART_PACKAGE_VERSION;
     // Earlier clustered deferred resolves read emitter records without the bounding-sphere header word.
     candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
     candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
@@ -1240,7 +1267,9 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                          &result.DeferredLightingVertex,
                          &result.DeferredLightingFragment,
                          &result.DeferredDepthCopyFragment,
-                         &result.DeferredOpaqueGBufferFragment}};
+                         &result.DeferredOpaqueGBufferFragment,
+                         &result.ForwardSurfaceChartFragment,
+                         &result.ForwardFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
@@ -1320,6 +1349,18 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                         }
                     }
                 }
+            }
+        }
+        if (role == format::FORWARD_REALTIME_STAGE_ROLE)
+        {
+            bool hasRealtime = false;
+            for (const State::StageView& view : views)
+            {
+                hasRealtime = hasRealtime == true || view.IsPresent == true;
+            }
+            if (hasRealtime == false)
+            {
+                continue;
             }
         }
         if ((role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||

@@ -166,7 +166,6 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.LuminaireBinding = authored.LuminaireBinding;
     inoutScene.Luminaires = authored.Luminaires;
     inoutScene.Atmosphere = authored.Atmosphere;
-    inoutScene.AtmosphereSunSourceId = authored.AtmosphereSunSourceId;
     inoutScene.IsAtmosphereSunSwitchedOff = authored.IsAtmosphereSunSwitchedOff;
     inoutScene.AtmosphereStatus = authored.AtmosphereStatus;
     if (authored.Cameras.isEmpty() == false)
@@ -702,6 +701,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     const float32 intensity = light.value(QStringLiteral("enabled")).toBool() == true
                                   ? static_cast<float32>(light.value(QStringLiteral("intensity")).toDouble())
                                   : 0;
+    const uint64 sunSourceId = ComputeSourceId(sunId);
     inoutScene.Atmosphere =
     {
         .IsEnabled = true,
@@ -713,8 +713,9 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
                              intensity * static_cast<float32>(light.value(QStringLiteral("b")).toDouble())},
         .SolarAngularRadiusRadians =
             math::DegreesToRadians(static_cast<float32>(properties.value(QStringLiteral("solarRadius")).toDouble())),
+        .SunSourceId = sunSourceId,
+        .ShouldLightScene = true,
     };
-    inoutScene.AtmosphereSunSourceId = ComputeSourceId(sunId);
 }
 } // namespace
 RenderSceneSource RenderScene::GetSource(const QString& root, const WorldDocument& world)

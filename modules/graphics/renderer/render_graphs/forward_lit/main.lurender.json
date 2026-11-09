@@ -7,6 +7,10 @@
           "to": "raster.scene"
         },
         {
+          "from": "scene.bakedLighting",
+          "to": "raster.bakedLighting"
+        },
+        {
           "from": "camera.view",
           "to": "raster.view"
         },

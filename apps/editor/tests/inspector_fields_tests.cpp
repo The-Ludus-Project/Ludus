@@ -12,12 +12,12 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -244,9 +244,9 @@ TEST_CASE("The world inspector shows compact transform rows and short identifier
     REQUIRE(view.Open(path));
     view.resize(WORKSPACE_WIDTH, WORKSPACE_HEIGHT);
     view.show();
-    QListWidget* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(list != nullptr);
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     QTest::qWait(SETTLE_MILLISECONDS);
     QWidget* window = view.window();
 
@@ -296,9 +296,9 @@ TEST_CASE("The world inspector shows a swatch beside colour channels", "[editor]
     REQUIRE(view.Open(path));
     view.resize(WORKSPACE_WIDTH, WORKSPACE_HEIGHT);
     view.show();
-    QListWidget* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(list != nullptr);
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     QComboBox* choices = view.window()->findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
     REQUIRE(choices != nullptr);
     const int light = choices->findData(QStringLiteral("light"));

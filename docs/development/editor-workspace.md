@@ -106,12 +106,17 @@ selectable items in the focused view; Escape clears that view's selection. Arrow
 keys navigate and Shift+arrow extends selection. Text fields keep their own
 native selection, clipboard and undo shortcuts.
 
-Use **Search entities** above the World entity list to filter names, labels and
-stable IDs without changing the document. Matching ignores case and surrounding
-spaces; the count shows how many entities match. Clear the search to show all
-entities. Filtering deselects hidden entities, so Duplicate and Delete act only
-on visible selections. Picking a hidden entity in the viewport clears the search
-and reveals its selection. Search pauses while inspector edits need Apply or Reset.
+The World entity list nests children under their authored scene parents.
+Expand or collapse a branch with its disclosure arrow. Selecting a child from
+the viewport expands its branch.
+
+Use **Search entities** to filter names, labels and stable IDs without changing
+the document. Matching ignores case and surrounding spaces. The count shows
+how many entities match. Ancestors of matches stay visible for context and
+can be selected when they also match the query. Filtering and collapsing
+deselect rows that are no longer available for group edits. Picking a
+filtered-out entity in the viewport clears the search and reveals its
+selection. Search pauses while inspector edits need Apply or Reset.
 
 In the World entity list, Ctrl+D / Command+D duplicates the selected group;
 Delete (also Backspace on macOS) asks to delete the group. Each group operation
@@ -674,9 +679,11 @@ in the preview. The saved World embeds the sample grid and orientation, so it
 can reopen in the native or browser editor without the original PNG.
 
 To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
-brush**. Set the radius in terrain-local metres, then drag on the ground and
-release to apply one undoable stroke. The brush has full strength in the inner
-half of the radius and fades to zero at the edge.
+brush**. Set the radius in terrain-local metres, then drag on the ground. The
+viewport reshapes the terrain while you drag, and the update rate follows how
+quickly the viewport can prepare the World. Release to keep the stroke as one
+undoable edit. The World document changes only on release. The brush has full
+strength in the inner half of the radius and fades to zero at the edge.
 
 - **Flatten** moves the surface toward an absolute local height. Enter the
   height or use **Pick from surface** to sample it.
@@ -691,7 +698,7 @@ select entities or show transform handles. Clicks made while the previous
 stroke is still applying, or while unapplied source changes or **Compare with
 committed** pause sculpting, start no stroke; the Terrain panel says what to
 finish first. Choose **Off** to return to ordinary viewport editing. Press Escape or move
-focus away during a drag to cancel it. Turn on **Show slope at cursor** while
+focus away during a drag to cancel it and restore the surface. Turn on **Show slope at cursor** while
 using a brush to measure the surface angle in degrees from World horizontal.
 A terrain can keep up to 16 strokes.
 **Save World** keeps the strokes and replays them in order after a compatible
@@ -1259,7 +1266,8 @@ reasons and how a shader names its own.
 ### Select and transform objects in the World viewport
 
 Click a visible object's triangles to select it. The hierarchy and Properties
-follow the same stable entity ID; clicking empty space clears the selection.
+follow the same stable entity ID. Click empty space or press **Escape** in the
+idle viewport to clear the selection.
 The selected object is marked by its silhouette: a two-pixel line in the selection
 amber of the design tokens with a dark casing, drawn over the rendered image so it
 stays legible against both bright and dark surfaces. The outline follows the object's
@@ -1866,11 +1874,12 @@ The Earth preset sets the physical radii. Use the Sun's Transform or celestial
 driver to move from daylight through sunset into early twilight.
 
 The default clustered deferred raster graph shows the sky and solar disk behind
-World geometry. Surface lighting still comes from the World’s authored lights
-and environment. If the Sun reference is empty or missing, pick a directional
-light in Properties. Moving the camera below the ground or above the shell also
-uses the graph's ordinary background. Delete the Atmosphere to restore that
-background at every altitude. Save and Undo work through the normal World
+World geometry. It attenuates the linked Sun at opaque surfaces, lights them
+with the clear sky, and adds haze along the camera-to-surface path. Other
+authored lights still contribute. If the Sun reference is empty or missing,
+pick a directional light in Properties. Moving the camera below the ground
+or above the shell restores the graph's ordinary background and lighting.
+Delete the Atmosphere to restore both at every altitude. Save and Undo work through the normal World
 commands. A World can have one Atmosphere.
 [Renderer contract](../architecture/renderer-systems.md#clear-sky-atmosphere-design)
 
@@ -1894,9 +1903,18 @@ current World can render in realtime, then swaps in the baked lighting when it
 is ready. If chart preparation fails, realtime lighting stays active and the
 viewport status shows the reason.
 
-The World saves the opt-in. The viewport generates its charts in memory when
-needed. Browser preview, project render graphs, and packaged games use their
-existing lighting paths.
+The World saves the opt-in. After the bake is ready, **Save World** also writes
+a `.ludus-lighting` file beside the World. Keep the two files together. Reopening
+uses the saved charts when they match the current geometry, placements,
+materials, and lights. Edits to those inputs return affected draws to realtime
+while the new bake prepares.
+
+The native [Forward lit template](render-graph-authoring.md#use-the-forward-lit-template)
+can use these charts through its **Baked Lighting** connection. Its preview
+status reports when surface charts are ready and how many draws use them.
+GI Probe Receivers use realtime lighting in this graph. The built-in Lit
+viewport samples the probe volume for those receivers.
+Browser and packaged game hosts continue to use their existing inputs.
 
 ### Baking probe GI for moving objects
 

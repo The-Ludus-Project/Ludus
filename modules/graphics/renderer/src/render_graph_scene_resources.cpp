@@ -5,6 +5,7 @@
 #include "internal/scene_material_validation.h"
 #include <ludus/graphics/renderer/deferred_layout.h>
 
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -28,13 +29,15 @@ namespace ludus::graphics::renderer::internal
 {
 using namespace foundation;
 namespace format = content::render_graph_format;
+namespace scene_format = content::scene_format;
 using Status = rhi::RasterStatus;
 namespace
 {
 constexpr usize RETAINED_GENERATION_COUNT = 3;
 constexpr usize CACHE_MESH_COUNT = format::MAX_ITEMS * RETAINED_GENERATION_COUNT;
 constexpr usize MATERIAL_TEXTURE_COUNT = 3;
-constexpr usize CACHE_TEXTURE_COUNT = format::MAX_ITEMS * MATERIAL_TEXTURE_COUNT * RETAINED_GENERATION_COUNT;
+constexpr usize DRAW_TEXTURE_COUNT = MATERIAL_TEXTURE_COUNT + 1;
+constexpr usize CACHE_TEXTURE_COUNT = format::MAX_ITEMS * DRAW_TEXTURE_COUNT * RETAINED_GENERATION_COUNT;
 constexpr usize CHANNEL_COUNT = 4;
 constexpr usize TRIANGLE_CORNER_COUNT = 3;
 constexpr uint32 DIRECTIONAL_SHADOW_GUTTER_TEXELS = 1;
@@ -151,6 +154,92 @@ bool MakeMeshKey(const MeshDescription& mesh, Array<uint8>& outBytes) noexcept
            Append(outBytes, mesh.Colors.GetDataOrNull(), counts[COLORS]) == true &&
            Append(outBytes, mesh.MaterialTexcoords1.GetDataOrNull(), counts[MATERIAL_TEXCOORDS]) == true;
 }
+struct SurfaceChartMesh final
+{
+    Array<math::Vector3> PositionsMesh;
+    Array<math::Vector3> NormalsMesh;
+    Array<math::Vector2> MaterialTexcoords;
+    Array<math::Vector2> SecondaryTexcoords;
+    Array<math::Vector2> BakeTexcoords;
+    Array<math::Vector4> TangentsMesh;
+    Array<math::Vector4> Colors;
+    Array<uint32> Indices;
+};
+
+template <typename T>
+bool ExpandChartAttribute(const MeshDescription& mesh, const T* valuesOrNull, Array<T>& outValues) noexcept
+{
+    if (valuesOrNull == nullptr)
+    {
+        return true;
+    }
+    if (outValues.TryResize(mesh.IndexCount) == false)
+    {
+        return false;
+    }
+    for (usize index = 0; index < mesh.IndexCount; ++index)
+    {
+        outValues[index] = valuesOrNull[mesh.Indices[index]];
+    }
+    return true;
+}
+
+bool BuildSurfaceChartMesh(const MeshDescription& source,
+                           const scene_format::BakeChartLayout& layout,
+                           SurfaceChartMesh& outMesh,
+                           MeshDescription& outGeometry) noexcept
+{
+    if (source.Positions == nullptr || source.Normals == nullptr || source.Indices == nullptr ||
+        source.IndexCount > scene_format::MAX_VERTICES || source.Tangents.IsValid() == false ||
+        source.Colors.IsValid() == false || source.MaterialTexcoords1.IsValid() == false ||
+        (source.Tangents.IsEmpty() == false && source.Tangents.GetSize() != source.VertexCount) ||
+        (source.Colors.IsEmpty() == false && source.Colors.GetSize() != source.VertexCount) ||
+        (source.MaterialTexcoords1.IsEmpty() == false && source.MaterialTexcoords1.GetSize() != source.VertexCount))
+    {
+        return false;
+    }
+    for (usize index = 0; index < source.IndexCount; ++index)
+    {
+        if (source.Indices[index] >= source.VertexCount)
+        {
+            return false;
+        }
+    }
+    if (ExpandChartAttribute(source, source.Positions, outMesh.PositionsMesh) == false ||
+        ExpandChartAttribute(source, source.Normals, outMesh.NormalsMesh) == false ||
+        ExpandChartAttribute(source, source.Texcoords, outMesh.MaterialTexcoords) == false ||
+        ExpandChartAttribute(source, source.MaterialTexcoords1.GetDataOrNull(), outMesh.SecondaryTexcoords) == false ||
+        ExpandChartAttribute(source, source.Tangents.GetDataOrNull(), outMesh.TangentsMesh) == false ||
+        ExpandChartAttribute(source, source.Colors.GetDataOrNull(), outMesh.Colors) == false ||
+        outMesh.BakeTexcoords.TryResize(source.IndexCount) == false ||
+        outMesh.Indices.TryResize(source.IndexCount) == false)
+    {
+        return false;
+    }
+    for (usize index = 0; index < source.IndexCount; ++index)
+    {
+        if (scene_format::TryGetBakeChartUv(layout,
+                                            static_cast<uint32>(index / TRIANGLE_CORNER_COUNT),
+                                            static_cast<uint32>(index % TRIANGLE_CORNER_COUNT),
+                                            outMesh.BakeTexcoords[index].X,
+                                            outMesh.BakeTexcoords[index].Y) == false)
+        {
+            return false;
+        }
+        outMesh.Indices[index] = static_cast<uint32>(index);
+    }
+    outGeometry = source;
+    outGeometry.Positions = outMesh.PositionsMesh.GetData();
+    outGeometry.Normals = outMesh.NormalsMesh.GetData();
+    outGeometry.VertexCount = source.IndexCount;
+    outGeometry.Indices = outMesh.Indices.GetData();
+    outGeometry.Texcoords = outMesh.MaterialTexcoords.GetData();
+    outGeometry.BakeTexcoords = outMesh.BakeTexcoords.GetData();
+    outGeometry.Tangents = {outMesh.TangentsMesh.GetData(), outMesh.TangentsMesh.GetSize()};
+    outGeometry.Colors = {outMesh.Colors.GetData(), outMesh.Colors.GetSize()};
+    outGeometry.MaterialTexcoords1 = {outMesh.SecondaryTexcoords.GetData(), outMesh.SecondaryTexcoords.GetSize()};
+    return true;
+}
 } // namespace
 struct ForwardSceneResources::State final
 {
@@ -174,8 +263,10 @@ struct ForwardSceneResources::State final
     rhi::DeviceHandle Device{};
     Renderer* RendererOrNull = nullptr;
     MaterialProgram Program{};
+    MaterialProgram SurfaceChartProgram{};
     bool IsClustered = false;
     bool HasMeshLights = false;
+    bool HasSurfaceCharts = false;
     StaticArray<MeshEntry, CACHE_MESH_COUNT> Meshes{};
     StaticArray<TextureEntry, CACHE_TEXTURE_COUNT> Textures{};
     usize IdentityBytes = 0;
@@ -381,6 +472,8 @@ struct ForwardSceneGeneration::State final
     Array<LitMaterialDescription> Descriptions;
     Array<MaterialVersion> Materials;
     Array<DirectLight> Lights;
+    Array<uint64> BakedLightIds;
+    usize SurfaceChartDraws = 0;
     Array<math::Vector4> MeshLightWords;
     rhi::BufferHandle MeshLightBuffer{};
     uint32 MeshLightCount = 0;
@@ -436,7 +529,8 @@ Status ForwardSceneResources::Initialize(rhi::DeviceHandle device,
                                          Renderer& inoutRenderer,
                                          MaterialProgram program,
                                          bool isClustered,
-                                         bool hasMeshLights) noexcept
+                                         bool hasMeshLights,
+                                         MaterialProgram surfaceChartProgram) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -450,6 +544,8 @@ Status ForwardSceneResources::Initialize(rhi::DeviceHandle device,
     allocationOrNull->Device = device;
     allocationOrNull->RendererOrNull = &inoutRenderer;
     allocationOrNull->Program = program;
+    allocationOrNull->SurfaceChartProgram = surfaceChartProgram;
+    allocationOrNull->HasSurfaceCharts = inoutRenderer.GetStatus(surfaceChartProgram) == Status::Ready;
     allocationOrNull->IsClustered = isClustered;
     allocationOrNull->HasMeshLights = hasMeshLights;
     mState.Reset(allocationOrNull);
@@ -481,6 +577,23 @@ uint32 ForwardSceneGeneration::GetMeshLightCount() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightCount;
 }
+uint32 ForwardSceneGeneration::FindDirectionalLightIndex(uint64 sourceId) const noexcept
+{
+    if (sourceId == 0 || mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    const State& state = *mState;
+    for (usize index = 0; index < state.Lights.GetSize(); ++index)
+    {
+        const DirectLight& light = state.Lights[index];
+        if (light.SourceId == sourceId && light.Kind == LightKind::Directional)
+        {
+            return static_cast<uint32>(index + 1);
+        }
+    }
+    return 0;
+}
 uint32 ForwardSceneGeneration::GetMeshLightGridWord() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightGridWord;
@@ -492,6 +605,10 @@ BorrowedView<const MeshLightShadowCaster> ForwardSceneGeneration::GetMeshLightSh
         return {};
     }
     return {mState->MeshLightShadowCasters.GetData(), mState->MeshLightShadowCasters.GetSize()};
+}
+usize ForwardSceneGeneration::GetSurfaceChartDrawCount() const noexcept
+{
+    return mState.Get() == nullptr ? 0 : mState->SurfaceChartDraws;
 }
 rhi::TextureViewHandle ForwardSceneGeneration::GetShadowAtlasView() const noexcept
 {
@@ -591,12 +708,18 @@ Status ForwardSceneGeneration::Poll() noexcept
         LitMaterialDescription& description = state.Descriptions[state.PreparedMaterials];
         description.Lights = state.Lights.GetData();
         description.LightCount = state.Lights.GetSize();
+        if (rhi::IsNull(description.Bake.Texture) == false)
+        {
+            description.BakedDirectLightIds = {state.BakedLightIds.GetData(), state.BakedLightIds.GetSize()};
+        }
         description.Clusters = owner.IsClustered == true ? &state.Clusters : nullptr;
         LightSelection selection;
+        const MaterialProgram program =
+            rhi::IsNull(description.Bake.Texture) == false ? owner.SurfaceChartProgram : owner.Program;
         const ShadowRegion& directional = state.Shadows.Directional;
         const bool hasDirectionalShadow = directional.Light.SourceId != 0;
         const Status status =
-            owner.RendererOrNull->createLitMaterial(owner.Program,
+            owner.RendererOrNull->createLitMaterial(program,
                                                     description,
                                                     state.Materials[state.PreparedMaterials],
                                                     selection,
@@ -669,9 +792,23 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             return Status::Unsupported;
         }
     }
+    if (owner.HasSurfaceCharts == true &&
+        (scene.Inputs.SurfaceCharts.IsValid() == false || scene.Inputs.BakedLightIds.IsValid() == false ||
+         (scene.Inputs.SurfaceCharts.IsEmpty() == false &&
+          scene.Inputs.SurfaceCharts.GetSize() != scene.Items.GetSize()) ||
+         scene.Inputs.BakedLightIds.GetSize() > MAX_DIRECT_LIGHTS))
+    {
+        return Status::InvalidDescription;
+    }
+    if (owner.HasSurfaceCharts == true &&
+        candidate.BakedLightIds.TryAddRange(
+            {scene.Inputs.BakedLightIds.GetDataOrNull(), scene.Inputs.BakedLightIds.GetSize()}) == false)
+    {
+        return Status::OutOfMemory;
+    }
     // Reserve pin arrays before any acquisition, so failed allocation cannot leak pins.
     if (candidate.MeshPins.TryEnsureCapacity(format::MAX_ITEMS) == false ||
-        candidate.TexturePins.TryEnsureCapacity(format::MAX_ITEMS * MATERIAL_TEXTURE_COUNT) == false ||
+        candidate.TexturePins.TryEnsureCapacity(format::MAX_ITEMS * DRAW_TEXTURE_COUNT) == false ||
         candidate.Items.TryEnsureCapacity(format::MAX_ITEMS) == false ||
         candidate.Descriptions.TryEnsureCapacity(format::MAX_ITEMS) == false ||
         candidate.Lights.TryAddRange({normalized.Lights, normalized.Count}) == false)
@@ -744,10 +881,42 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         {
             return Status::CapacityExceeded;
         }
+        MeshDescription placementGeometry = mesh.Geometry;
+        SurfaceChartMesh expandedMesh;
+        const SceneSurfaceChart* chartOrNull = owner.HasSurfaceCharts == true &&
+                                                       scene.Inputs.SurfaceCharts.IsEmpty() == false &&
+                                                       candidate.BakedLightIds.IsEmpty() == false
+                                                   ? &scene.Inputs.SurfaceCharts[itemIndex]
+                                                   : nullptr;
+        usize chartTexture = NO_RESOURCE;
+        if (chartOrNull != nullptr && chartOrNull->SourceId == item.SourceId && item.SourceId != 0 &&
+            chartOrNull->MeshToWorld == item.MeshToWorld)
+        {
+            scene_format::BakeChartLayout layout;
+            const rhi::TextureCpuContent& texture = chartOrNull->Irradiance;
+            if (triangleCount <= scene_format::MAX_VERTICES &&
+                scene_format::TryMakeBakeChartLayout(static_cast<uint32>(triangleCount), layout) == true &&
+                texture.Format == rhi::RasterFormat::Rgba8Unorm && texture.Width == layout.Width &&
+                texture.Height == layout.Height && math::IsFinite(chartOrNull->Scale) == true &&
+                chartOrNull->Scale.X >= 0 && chartOrNull->Scale.Y >= 0 && chartOrNull->Scale.Z >= 0 &&
+                BuildSurfaceChartMesh(mesh.Geometry, layout, expandedMesh, placementGeometry) == true)
+            {
+                const Status status = owner.AcquireTexture(texture, chartTexture);
+                if (IsAccepted(status) == true && chartTexture != NO_RESOURCE)
+                {
+                    static_cast<void>(candidate.TexturePins.TryAdd(chartTexture));
+                }
+                else
+                {
+                    chartTexture = NO_RESOURCE;
+                    placementGeometry = mesh.Geometry;
+                }
+            }
+        }
         for (usize slot = 0; slot < slotCount; ++slot)
         {
             Array<uint32> indices;
-            MeshDescription geometry = mesh.Geometry;
+            MeshDescription geometry = placementGeometry;
             if (mesh.MaterialSlots.IsEmpty() == false)
             {
                 if (indices.TryEnsureCapacity(geometry.IndexCount) == false)
@@ -885,6 +1054,21 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             drawing.SourceId = candidate.Items.GetSize() + 1;
             drawing.InstanceIndex = static_cast<uint32>(candidate.Items.GetSize());
             drawing.DrawIndex = static_cast<uint32>(item.MeshIndex);
+            if (chartTexture != NO_RESOURCE && chartOrNull != nullptr)
+            {
+                drawing.BakeSceneRevision = scene.SourceGeneration;
+                drawing.BakeDependencyRevision = scene.SourceGeneration;
+                description.Bake.Texture = owner.Textures[chartTexture].Handle;
+                description.Bake.Scale = chartOrNull->Scale;
+                description.Bake.UvTransform = {1, 1, 0, 0};
+                description.Bake.SourceId = drawing.SourceId;
+                description.Bake.SceneRevision = drawing.BakeSceneRevision;
+                description.Bake.DependencyRevision = drawing.BakeDependencyRevision;
+                description.Bake.Transform = drawing.Transform;
+                description.Bake.AreTriangleChartsEnabled = true;
+                description.Bake.ShouldAddToEnvironment = true;
+                ++candidate.SurfaceChartDraws;
+            }
             static_cast<void>(candidate.Items.TryAdd(drawing));
             static_cast<void>(candidate.Descriptions.TryAdd(description));
         }

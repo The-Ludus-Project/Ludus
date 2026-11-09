@@ -918,6 +918,18 @@ also re-evaluate selection against the new device's enabled capabilities. Pendin
 or failed replacements keep the last completed image until the new renderer
 presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
+When a raytracing graph is too slow to navigate, the viewport offers the raster
+graph itself. After three consecutive frames that each take at least one second,
+from the camera update before submission to presentation, a **Slow viewport**
+message names the measured frame time and asks whether to switch. The first
+frame of every generation is not counted, because it includes cold preparation
+such as pipeline and acceleration-structure builds. **Switch to raster** turns on
+**Force raster**, exactly as the toolbar button does; **Keep current renderer**
+(Escape) changes nothing. Either way the message is not shown again for that
+runtime package until the editor restarts, so turning **Force raster** back off
+keeps the raytracing graph without asking again. The message never appears for
+a raster graph, while **Force raster** is on, or while the viewport is hidden.
+
 #### See which nodes cannot run here
 
 The graph canvas compares each enabled node with the viewport device's enabled
@@ -9484,6 +9496,22 @@ mip zero is used for these scene maps; this does not introduce texture streaming
 Unassigned materials use the existing neutral material. Invalid references, error
 materials, masked/transparent coverage and missing normals reject the candidate.
 The previous drawable scene remains available while a replacement is pending or fails.
+
+The template connects **Baked Lighting** from **Scene** to its forward raster
+subgraph. Disconnect the wire and rebuild to preview realtime diffuse only.
+With the wire connected, the native editor supplies the World's ready
+[always-on surface charts](editor-workspace.md#baking-always-on-lights).
+Forward scene preparation checks each placement and chooses a separately
+compiled chart fragment for matching draws. A chart samples incoming diffuse
+irradiance and replaces realtime diffuse for the covered lights. The material
+still supplies albedo and live specular. Ordinary draws use the realtime
+fragment, which has no chart texture binding. The first profile requires all
+forward raster passes in a configuration to agree on the bake connection.
+
+The SDK accepts the same typed chart inputs through `SceneShaderInputs`.
+Callers supply charts matching the submitted scene revision and item order.
+The editor owns its on-disk chart format. This integration covers surface
+charts in Forward lit.
 
 Direct lighting uses L4's declared selection: validate at most 128 unique sources,
 then retain the eight smallest source identities. `GetReport().Resources.DroppedLights`

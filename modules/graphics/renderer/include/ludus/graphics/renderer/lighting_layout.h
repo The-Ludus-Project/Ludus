@@ -19,6 +19,8 @@ static const LightingLayoutValue SHADOW_REGION_WORDS = 6;
 static const LightingLayoutValue SHADOW_DATA_WORDS = SHADOW_REGION_CAPACITY * SHADOW_REGION_WORDS;
 /// Float4 words preceding the direct-light array in the portable material ABI.
 static const LightingLayoutValue FORWARD_HEADER_WORDS = 9;
+/// Sampled surface chart in the forward material interface.
+static const LightingLayoutValue BAKE_TEXTURE_BINDING = 3;
 /// Maximum selected direct lights in the portable forward profile.
 static const LightingLayoutValue FORWARD_LIGHT_COUNT = 8;
 /// Float4 words encoding one direct light.

@@ -1,11 +1,14 @@
 #include "internal/level.h"
 #include "internal/level_workspace.h"
+#include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/readback.h"
+#include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_reference_capture.h"
+#include "internal/world_surface_bake.h"
 #include "internal/world_workspace.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
@@ -29,11 +32,11 @@
 #include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMouseEvent>
 #include <QSize>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTreeWidget>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -615,7 +618,7 @@ void AddLightingQuad(ludus::resources::SceneMesh& inoutMesh,
         REQUIRE(inoutMesh.Indices.TryAdd(start + order[i + (isFacingDown == true ? 2 : 1)]));
     }
 }
-// Receiver-mesh inputs the interactive viewport must accept without static-lighting preparation.
+// Receiver-mesh inputs for native preview validation.
 enum class LightingReceiverDefect : uint8
 {
     None,
@@ -623,6 +626,7 @@ enum class LightingReceiverDefect : uint8
     ZeroAreaTriangle,
     // Direct lighting ignores authored lightmap coordinates.
     MismatchedBakeTexcoords,
+    OutOfRangeIndex,
 };
 // Builds the definition privately and publishes it as an immutable snapshot.
 RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDefect::None,
@@ -676,6 +680,10 @@ RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDe
         {
             textureCoordinateBakeAtlas = {0, 0};
         }
+    }
+    else if (defect == LightingReceiverDefect::OutOfRangeIndex)
+    {
+        receiver.Indices[0] = ~uint32{0};
     }
     if (shouldAddAnalyticLight == true)
     {
@@ -934,18 +942,17 @@ TEST_CASE("Native Lit viewport publishes an opted-in always-on bake and falls ba
         }
         return preview.Status().contains(expected);
     };
-    bool hasDrawnWhileBaking = false;
-    QObject::connect(&preview, &RenderPreview::Changed, &viewport, [&preview, &hasDrawnWhileBaking]() {
-        hasDrawnWhileBaking =
-            hasDrawnWhileBaking == true || preview.Status().contains(QStringLiteral("baking always-on lighting"));
-    });
+    const QImage previousFrame = ReadViewport();
+    REQUIRE(previousFrame.isNull() == false);
     scene.Identity = QByteArrayLiteral("selected-always-on-light");
     scene.AlwaysOnLightIds.append(scene.AuthoredLights.Lights[0].SourceId);
     REQUIRE(preview.SetScene(scene) == true);
+    // The previous image stays visible while the replacement prepares. The bake can finish before
+    // the replacement presents its first frame.
+    CHECK(ReadViewport() == previousFrame);
     const bool hasBaked = waitForBakeStatus(QStringLiteral("always-on lighting baked"));
     INFO(preview.Status().toStdString());
     REQUIRE(hasBaked == true);
-    CHECK(hasDrawnWhileBaking == true);
     REQUIRE(Frames(preview, preview.Frames() + 2) == true);
     CHECK(ReadViewport().isNull() == false);
 
@@ -958,10 +965,42 @@ TEST_CASE("Native Lit viewport publishes an opted-in always-on bake and falls ba
     preview.Stop();
 }
 
+TEST_CASE("Native Lit bake chart preparation rejects out-of-range mesh indices", "[.render-native][lighting]")
+{
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(320, 240);
+    viewport.show();
+    REQUIRE(preview.SetScene(MakeLightingScene()) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(Frames(preview, 2) == true);
+
+    RenderScene invalid = MakeLightingScene(LightingReceiverDefect::OutOfRangeIndex, true);
+    invalid.AlwaysOnLightIds.append(invalid.AuthoredLights.Lights[0].SourceId);
+    PreviewGpuGeneration replacement(preview.GetDevice(), invalid, PreviewShading::Lit, preview.GetShaders());
+    QString error;
+    PreviewPreparationStatus status = PreviewPreparationStatus::Pending;
+    REQUIRE(QTest::qWaitFor([&]() {
+                status = replacement.Prepare(preview.GetSurface(), error);
+                return status != PreviewPreparationStatus::Pending;
+            }) == true);
+    INFO(error.toStdString());
+    REQUIRE(status == PreviewPreparationStatus::Failed);
+    CHECK(replacement.DescribeBake().contains(QStringLiteral("Could not prepare bake chart geometry")) == true);
+    CHECK(Frames(preview, preview.Frames() + 1) == true);
+    CHECK(ReadViewport().isNull() == false);
+}
+
 TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a wall",
           "[.render-native][lighting][probe-gi]")
 {
+    constexpr int32 BAKE_DEADLINE_MILLISECONDS = 15000;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString worldPath = QDir(directory.path()).filePath(QStringLiteral("probes.world.json"));
     RenderPreview preview;
+    preview.SetSurfaceBakeWorldPath(worldPath);
     PreviewViewport viewport(&preview);
     viewport.resize(320, 240);
     viewport.show();
@@ -971,7 +1010,6 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
     REQUIRE(preview.Start() == true);
 
     const auto sampleReceiver = [&preview]() {
-        constexpr int64 BAKE_DEADLINE_MILLISECONDS = 15000;
         constexpr int32 POLL_MILLISECONDS = 10;
         QElapsedTimer timer;
         timer.start();
@@ -1000,6 +1038,25 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
         return image.pixelColor(positionPixel);
     };
     const QColor lit = sampleReceiver();
+    REQUIRE(preview.SaveSurfaceBake() == true);
+    WorldSurfaceBakeState reopened;
+    reopened.SetWorldPath(worldPath);
+    reopened.SetScene(litRoom);
+    const QSharedPointer<const WorldSurfaceBake> saved = reopened.GetReady();
+    REQUIRE(saved.isNull() == false);
+    CHECK(saved->ProbeAtlas.Pixels.isEmpty() == true);
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(litRoom, {}, 1, extraction, error, saved) == true);
+    REQUIRE(extraction.SurfaceCharts.size() == litRoom.Objects.size());
+    CHECK(extraction.SurfaceCharts.first().SourceId == extraction.Items.first().SourceId);
+    CHECK(extraction.SurfaceCharts.last().SourceId == 0);
+    REQUIRE(QTest::qWaitFor(
+                [&]() {
+                    reopened.Poll(litRoom);
+                    return reopened.GetReady()->ProbeAtlas.Pixels.isEmpty() == false;
+                },
+                BAKE_DEADLINE_MILLISECONDS) == true);
     const RenderScene darkRoom = MakeGiProbeScene(.75F);
     REQUIRE(preview.SetScene(darkRoom) == true);
     const QColor dark = sampleReceiver();
@@ -1120,13 +1177,13 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     CHECK(drawn != before.pixelColor(0, 0));
 
     // An applied World edit re-extracts, and the player leaves its old pixel.
-    QListWidget* entities = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(entities != nullptr);
-    for (int32 row = 0; row < entities->count(); ++row)
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    for (int32 row = 0; row < entitiesOrNull->topLevelItemCount(); ++row)
     {
-        if (entities->item(row)->data(Qt::UserRole).toString() == player)
+        if (entitiesOrNull->topLevelItem(row)->data(0, Qt::UserRole).toString() == player)
         {
-            entities->setCurrentRow(row, QItemSelectionModel::ClearAndSelect);
+            entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(row), 0, QItemSelectionModel::ClearAndSelect);
         }
     }
     QLineEdit* x = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));

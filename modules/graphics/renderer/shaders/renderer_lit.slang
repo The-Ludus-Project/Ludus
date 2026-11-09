@@ -52,13 +52,19 @@ StructuredBuffer<float4> meshLightWords LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_DEFE
 #    define LUDUS_LTC_TABLE_BINDING LUDUS_DEFERRED_LTC_BINDING
 #    include "ltc_table.slang"
 #else
+#    ifndef LUDUS_GRAPH_REALTIME
 LUDUS_SHADER_BINDING(3) Texture2D<float4> bakeTexture : register(t3);
+#    endif
 LUDUS_SHADER_BINDING(4) Texture2D<float4> shadowTexture : register(t4);
 #endif
 LUDUS_SHADER_BINDING(5) SamplerState shadowSampler : register(s5);
 #ifdef LUDUS_CLUSTERED
 LUDUS_SHADER_BINDING(6) Texture2D<float4> clusterTexture : register(t6);
-#    ifdef LUDUS_SURFACE_FIDELITY
+#    if defined(LUDUS_ATMOSPHERE_SURFACE)
+#        include "renderer_atmosphere_layout.h"
+LUDUS_SHADER_BINDING(LUDUS_ATMOSPHERE_DEFERRED_MULTIPLE_SLOT)
+Texture2D<float4> atmosphereMultipleTexture LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_ATMOSPHERE_DEFERRED_MULTIPLE_SLOT);
+#    elif defined(LUDUS_SURFACE_FIDELITY)
 LUDUS_SHADER_BINDING(7) Texture2D<float4> surfaceTexture : register(t7);
 #    else
 LUDUS_SHADER_BINDING(7) SamplerState clusterSampler : register(s7);
@@ -71,7 +77,13 @@ LUDUS_SHADER_BINDING(6) Texture2D<float4> surfaceTexture : register(t6);
 #    include "renderer_surface_functions.slang"
 #endif
 #ifdef LUDUS_AUTHORED_INPUTS
-#    ifdef LUDUS_CLUSTERED
+#    if defined(LUDUS_ATMOSPHERE_SURFACE)
+LUDUS_SHADER_BINDING(LUDUS_ATMOSPHERE_DEFERRED_SKY_SLOT)
+Texture2D<float4> atmosphereSkyTexture LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_ATMOSPHERE_DEFERRED_SKY_SLOT);
+LUDUS_SHADER_BINDING(LUDUS_ATMOSPHERE_DEFERRED_TRANSMITTANCE_SLOT)
+Texture2D<float4>
+    atmosphereTransmittanceTexture LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_ATMOSPHERE_DEFERRED_TRANSMITTANCE_SLOT);
+#    elif defined(LUDUS_CLUSTERED)
 LUDUS_SHADER_BINDING(8) Texture2D<float4> environmentTexture : register(t8);
 LUDUS_SHADER_BINDING(9) SamplerState environmentSampler : register(s9);
 LUDUS_SHADER_BINDING(10) Texture2D<float4> emissionTexture : register(t10);
@@ -309,7 +321,7 @@ float3 EvaluateEnvironmentIrradiance(in float3 normalWorld)
         irradiance += material.IrradianceSh[coefficient].rgb * basis[coefficient];
     return max(irradiance, float3(0));
 }
-#    ifndef LUDUS_DEFERRED_MESH_LIGHTS
+#    if !defined(LUDUS_DEFERRED_MESH_LIGHTS) && !defined(LUDUS_GRAPH_REALTIME) && !defined(LUDUS_GRAPH_SURFACE_CHART)
 #        include "probe_volume_layout.h"
 float4 ReadGiProbeTexel(int probe, int texel)
 {
@@ -567,6 +579,11 @@ SurfaceSample SampleMaterial(in Varying input)
     return output;
 }
 #endif
+#ifdef LUDUS_ATMOSPHERE_SURFACE
+#    include "renderer_atmosphere_surface.slang"
+#    include "renderer_atmosphere_transport.slang"
+#endif
+
 float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 {
     float4 baseColor = surface.BaseColor;
@@ -577,11 +594,25 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
     float nv = max(dot(normalWorld, viewDirectionWorld), 0);
     float3 f0 = lerp(float3(0.04), baseColor.rgb, metallic);
     float3 f = f0 + (1 - f0) * ComputeFifth(1 - nv);
+#ifdef LUDUS_ATMOSPHERE_SURFACE
+    float3 irradiance = 0;
+    float3 specularEnvironment = 0;
+    if (nv > 0)
+    {
+        EvaluateAtmosphereEnvironment(normalWorld,
+                                      viewDirectionWorld,
+                                      roughness,
+                                      f0,
+                                      nv,
+                                      irradiance,
+                                      specularEnvironment);
+    }
+#else
     // Hemispheric constant environment: sky irradiance above, scaled by w toward the ground (+Y is up).
     float3 irradiance =
         material.EnvironmentIrradiance.rgb * lerp(material.EnvironmentIrradiance.w, 1, normalWorld.y * 0.5 + 0.5);
     float3 specularEnvironment = material.EnvironmentRadiance.rgb * f;
-#ifdef LUDUS_AUTHORED_INPUTS
+#    ifdef LUDUS_AUTHORED_INPUTS
     if (material.Authored.z > .5)
     {
         irradiance = EvaluateEnvironmentIrradiance(normalWorld);
@@ -594,9 +625,12 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
         float2 dfg = EvaluateEnvironmentDfg(roughness, nv);
         specularEnvironment = radiance * (f0 * dfg.x + dfg.y);
     }
+#    endif
 #endif
-#ifndef LUDUS_DEFERRED_MESH_LIGHTS
+#if !defined(LUDUS_DEFERRED_MESH_LIGHTS) && !defined(LUDUS_GRAPH_REALTIME)
+#    ifndef LUDUS_GRAPH_SURFACE_CHART
     if (input.IsBakeValid > 0.5)
+#    endif
     {
         float3 bakedIrradiance =
             bakeTexture.SampleLevel(colorSampler, saturate(input.BakeUv) * material.BakeUv.xy + material.BakeUv.zw, 0)
@@ -604,7 +638,7 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
             material.BakeScale.rgb;
         irradiance = irradiance * material.BakeScale.w + bakedIrradiance;
     }
-#    ifdef LUDUS_AUTHORED_INPUTS
+#    if defined(LUDUS_AUTHORED_INPUTS) && !defined(LUDUS_GRAPH_SURFACE_CHART)
     else if (material.BakeScale.w < 0)
     {
         irradiance += EvaluateGiProbeIrradiance(input.PositionWorld, normalWorld);
@@ -692,14 +726,29 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
                 attenuation *= color.w == 4 ? abs(emitterCosine) : max(emitterCosine, 0);
             }
         }
+        float3 lightColor = color.rgb;
+#ifdef LUDUS_ATMOSPHERE_SURFACE
+        if (i + 1 == int(deferredView.AtmosphereSunWorld.w) && color.w == 0)
+        {
+            lightColor = EvaluateAtmosphereSun(input.PositionWorld);
+            lightDirectionWorld = deferredView.AtmosphereSunWorld.xyz;
+        }
+#endif
+#if defined(LUDUS_GRAPH_REALTIME)
+        const bool shouldReplaceDiffuse = false;
+#elif defined(LUDUS_GRAPH_SURFACE_CHART)
+        const bool shouldReplaceDiffuse = extra.y > 0.5;
+#else
+    const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
+#endif
         float3 contribution = EvaluateBrdf(baseColor.rgb,
                                            normalWorld,
                                            viewDirectionWorld,
                                            lightDirectionWorld,
                                            metallic,
                                            roughness,
-                                           input.IsBakeValid > 0.5 && extra.y > 0.5) *
-                              color.rgb * attenuation * ComputeShadowVisibility(i, input);
+                                           shouldReplaceDiffuse) *
+                              lightColor * attenuation * ComputeShadowVisibility(i, input);
         result += contribution;
 #ifdef LUDUS_DEBUG_VIEW
         lightCount += any(contribution > 0) ? 1 : 0;
