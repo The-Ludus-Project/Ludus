@@ -701,7 +701,7 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 #elif defined(LUDUS_GRAPH_SURFACE_CHART)
         const bool shouldReplaceDiffuse = extra.y > 0.5;
 #else
-        const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
+    const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
 #endif
         float3 contribution = EvaluateBrdf(baseColor.rgb,
                                            normalWorld,
