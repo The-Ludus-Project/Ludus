@@ -29,10 +29,11 @@ class HarfBuzzPinnedRecipe(ConanFile):
     options = {"fPIC": [True, False]}
     default_options = {"fPIC": True}
 
-    # The download query requests the same archive after gateway failures on the bare URL.
-    # See the dependency manifest for the verified pin.
-    _source_url = (
-        "https://github.com/harfbuzz/harfbuzz/releases/download/14.5.1/harfbuzz-14.5.1.tar.xz?download=1"
+    # The release asset API can serve the same pinned archive if the download page returns 504.
+    # Both endpoints are checked against the digest in the dependency manifest.
+    _source_urls = (
+        "https://api.github.com/repos/harfbuzz/harfbuzz/releases/assets/602061249",
+        "https://github.com/harfbuzz/harfbuzz/releases/download/14.5.1/harfbuzz-14.5.1.tar.xz?download=1",
     )
     _source_sha256 = "7e2fa4e8c7c98e8d8140671f5772542afaaa6acccfbd746506886b6d85f7f8d6"
 
@@ -49,8 +50,8 @@ class HarfBuzzPinnedRecipe(ConanFile):
         cmake_layout(self)
 
     def source(self):
-        get(self, self._source_url, filename=f"harfbuzz-{self.version}.tar.xz",
-            sha256=self._source_sha256, strip_root=True)
+        get(self, self._source_urls, filename=f"harfbuzz-{self.version}.tar.xz",
+            sha256=self._source_sha256, headers={"Accept": "application/octet-stream"}, strip_root=True)
 
     def generate(self):
         deps = CMakeDeps(self)
