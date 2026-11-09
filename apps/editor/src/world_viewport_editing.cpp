@@ -79,24 +79,26 @@ void WorldWorkspace::frameEntity(const QString& id)
     {
         return;
     }
+    QString spawnError;
     if (HasWorldFirstPersonPlayer(Document_, id) == true)
     {
         gameplay::camera::CameraSample spawn;
         float32 speed = 0;
-        QString error;
-        if (ReadWorldFirstPersonPlayer(Document_, id, spawn, speed, error) == false)
+        if (ReadWorldFirstPersonPlayer(Document_, id, spawn, speed, spawnError) == true)
         {
-            Changed(error);
+            if (preview.FrameBounds(ViewportWalkCollision::ComputeBodyBounds(spawn.Pose.Position)) == false)
+            {
+                Changed(QStringLiteral("Cannot frame this player. Use Frame all, then try framing the player again."));
+            }
+            return;
         }
-        else if (preview.FrameBounds(ViewportWalkCollision::ComputeBodyBounds(spawn.Pose.Position)) == false)
-        {
-            Changed(QStringLiteral("Cannot frame this player. Use Frame all, then try framing the player again."));
-        }
-        return;
     }
     if (preview.FrameEntity(id) == false)
     {
-        Changed(QStringLiteral("Cannot frame this entity. Choose an entity with a visible mesh, or use Frame all."));
+        Changed(
+            spawnError.isEmpty() == true
+                ? QStringLiteral("Cannot frame this entity. Choose an entity with a visible mesh, or use Frame all.")
+                : spawnError);
     }
 }
 void WorldWorkspace::showEntityMenu(const QPoint& positionGlobal, const QString& entityId)

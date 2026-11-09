@@ -246,7 +246,7 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     float32 speed = 0;
     QString spawnError;
     mHasPlayerSpawn = ReadWorldFirstPersonPlayer(world, selected, spawn, speed, spawnError);
-    mPlayerEyeWorld = spawn.Pose.Position;
+    mPlayerEyeWorld = mHasPlayerSpawn == true ? spawn.Pose.Position : math::Vector3d{};
     mShouldPreviewPlayerMove = false;
     mLuminaireHalfExtentWorld = 0;
     const QJsonObject luminaireBinding = mPreviewOrNull->Scene().LuminaireBinding;

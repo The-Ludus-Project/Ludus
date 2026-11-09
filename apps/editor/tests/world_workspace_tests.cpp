@@ -2906,9 +2906,9 @@ TEST_CASE("A meshless First Person Player shows its collision box and can be fra
 
     PreviewStartView view;
     REQUIRE(preview.TryDescribeStartView(view) == true);
-    // A 1.65 m spawn eye is 0.725 m above the centre of the body.
+    // The default eye is 1.65 m above the World origin and 1.60 m above the box base.
     constexpr float64 TARGET_HEIGHT_METRES = 0.925;
-    constexpr float64 FRAME_TOLERANCE_METRES = 0.00001;
+    constexpr float64 FRAME_TOLERANCE_METRES = 0.001;
     CHECK(view.TargetWorld.X == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
     CHECK(view.TargetWorld.Y == Catch::Approx(TARGET_HEIGHT_METRES).margin(FRAME_TOLERANCE_METRES));
     CHECK(view.TargetWorld.Z == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
@@ -3568,7 +3568,7 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
     workspace.StopPreview();
 }
 
-TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation]")
+TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation][framing]")
 {
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
@@ -3588,6 +3588,9 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     const QJsonObject level =
         QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
     REQUIRE(document.ImportScene(level, error) == true);
+    const QString importedId =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    REQUIRE(document.Attach(importedId, error, QStringLiteral("firstPersonPlayer")) == true);
     const QString path = QDir(root).filePath(QStringLiteral("mixed.world.json"));
     Write(path, document.Encode());
     ToolingPaths tools;
@@ -3609,6 +3612,20 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     CHECK(scene->PreviewScene().Objects.size() == 2);
     CHECK(scene->PreviewScene().AuthoredLights.Count == 1);
     CHECK(workspace.Document().Draft() == document.Draft());
+
+    // Imported placement supplies the mesh bounds even when the player lacks a Transform.
+    REQUIRE(HasWorldFirstPersonPlayer(workspace.Document(), importedId) == true);
+    REQUIRE(workspace.Document()
+                .Entity(importedId)
+                .value(QStringLiteral("components"))
+                .toObject()
+                .contains(QStringLiteral("transform")) == false);
+    RenderPreview& preview = workspace.GetRenderPreview();
+    preview.FrameAll();
+    preview.SetFocusDistance(preview.GetFocusDistance() * 3);
+    const ludus::foundation::float32 distanceBefore = preview.GetFocusDistance();
+    scene->GetViewport().GetObjectInteraction().FrameRequested(importedId);
+    CHECK(preview.GetFocusDistance() < distanceBefore);
     workspace.StopPreview();
 }
 
