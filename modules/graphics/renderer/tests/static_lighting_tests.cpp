@@ -1,3 +1,5 @@
+#include "../shaders/probe_volume_layout.h"
+
 #include <ludus/graphics/renderer/static_lighting.hpp>
 
 #include <ludus/content/scene_format/luscn.h>
@@ -200,6 +202,58 @@ rhi::RasterStatus WaitForProgress(rr::StaticLightingBake& inoutBake)
     return status;
 }
 } // namespace
+TEST_CASE("Static GI probes capture colored bounce and the wall between two rooms", "[static-lighting][probe-gi]")
+{
+    resources::SceneDefinition scene = MakeBakeScene(false, false, true);
+    scene.Lights[0].PositionWorld.X = -.5F;
+    REQUIRE(scene.Objects.TryResize(2) == true);
+    scene.Objects[1].Mesh = 1;
+    scene.Objects[1].Material = 1;
+    scene.Objects[1].SourceId = 2;
+    resources::SceneMesh& wall = scene.Meshes[1];
+    wall.Positions[0] = {0, -10, -10};
+    wall.Positions[1] = {0, 10, -10};
+    wall.Positions[2] = {0, 0, 10};
+    for (math::Vector3& normalWorld : wall.Normals)
+    {
+        normalWorld = {1, 0, 0};
+    }
+
+    const uint64 selected = scene.Lights[0].SourceId;
+    rr::StaticLightingBakeDescription description = MakeBakeDescription(2);
+    description.AnalyticLightIds = {&selected, 1};
+    description.ProbeGrid.OriginWorld = {-.5F, -.5F, .5F};
+    description.ProbeGrid.Counts = {2, 2, 2};
+
+    rr::StaticLightingBake serial;
+    REQUIRE(serial.Initialize(scene, description) == rhi::RasterStatus::Pending);
+    rr::StaticGiProbeAtlas unavailable;
+    CHECK(serial.GetProbeAtlas(unavailable) == rhi::RasterStatus::NotReady);
+    CHECK(unavailable.Pixels.IsEmpty() == true);
+    static_cast<void>(CompleteBake(serial, 7));
+    rr::StaticGiProbeAtlas atlas;
+    REQUIRE(serial.GetProbeAtlas(atlas) == rhi::RasterStatus::Ready);
+    REQUIRE(atlas.IrradianceScale > 0);
+    constexpr usize PIXEL_BYTES = ludus::content::scene_format::TEXEL_BYTES;
+    constexpr usize FLOOR_FACE = LUDUS_GI_PROBE_FACES - 1;
+    constexpr usize POSITIVE_X_CENTRAL_DEPTH = LUDUS_GI_PROBE_FACES + 2 * LUDUS_GI_PROBE_FACE_WIDTH + 2;
+    CHECK(atlas.Pixels[FLOOR_FACE * PIXEL_BYTES] > 0);
+    CHECK(atlas.Pixels[FLOOR_FACE * PIXEL_BYTES + 1] == 0);
+    CHECK(atlas.Pixels[(LUDUS_GI_PROBE_TEXELS + FLOOR_FACE) * PIXEL_BYTES] == 0);
+    CHECK(atlas.Pixels[POSITIVE_X_CENTRAL_DEPTH * PIXEL_BYTES] == 64);
+
+    threading::JobSystem jobs;
+    REQUIRE(jobs.Initialize({ .WorkerCount = 2 }) == threading::JobStatus::Ok);
+    rr::StaticLightingBake scheduled;
+    REQUIRE(scheduled.Submit(jobs, scene, description) == rhi::RasterStatus::Pending);
+    REQUIRE(scheduled.Finish() == rhi::RasterStatus::Ready);
+    rr::StaticGiProbeAtlas other;
+    REQUIRE(scheduled.GetProbeAtlas(other) == rhi::RasterStatus::Ready);
+    CHECK(other.IrradianceScale == atlas.IrradianceScale);
+    REQUIRE(other.Pixels.GetSize() == atlas.Pixels.GetSize());
+    CHECK(std::memcmp(other.Pixels.GetDataOrNull(), atlas.Pixels.GetDataOrNull(), atlas.Pixels.GetSize()) == 0);
+}
+
 TEST_CASE("Always-on bake isolates selected analytic light and respects occlusion", "[static-lighting]")
 {
     resources::SceneDefinition scene = MakeBakeScene(false, true, true);

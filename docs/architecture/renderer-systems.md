@@ -3903,6 +3903,27 @@ at Initialize, while the source texture bytes remain borrowed through destructio
 Use a bake revision key for physical geometry/material/light/environment changes;
 camera movement and exposure do not change these view-independent irradiance charts.
 
+### Baked GI probe volume
+
+The optional analytic-light bake also samples incoming bounced radiance at
+a bounded uniform World grid. Six cosine projections form an ambient cube at
+each probe. Short first-hit rays populate six coarse face depth maps in the
+same atlas. The depth maps store distance along the face axis so planar walls
+aligned to the grid give consistent comparisons across neighbouring rays.
+This adapts the visibility-aware interpolation of [Majercik, Guertin,
+Nowrouzezahrai and McGuire, *Dynamic Diffuse Global Illumination with Ray-Traced
+Irradiance Fields*, §5](https://jcgt.org/published/0008/02/01/) for an offline
+bake with nearest depth samples.
+
+The authored Lit shader samples up to eight neighbours, rejects occluded or
+invalid probes, and renormalizes the remaining trilinear weights. A material
+binds either the probe atlas or a surface chart. The volume contributes only
+bounce from the selected analytic lights, so receivers keep live direct
+lighting and environment. Marked moving receivers are excluded from the
+bake geometry. The fixed directional resolution can miss fine occluders.
+This atlas is a raster lighting approximation. Reference captures continue
+to evaluate their original transport against the full scene.
+
 ### Material debug views
 
 `LitMaterialDescription::DebugView` (`MaterialDebugView`) replaces a lit

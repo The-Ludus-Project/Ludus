@@ -3,6 +3,7 @@
 #include "internal/render_scene_limits.h"
 #include "internal/world_aperture.h"
 #include "internal/world_document.h"
+#include "internal/world_probe_volume.h"
 
 #include "internal/world_celestial_light.h"
 
@@ -286,6 +287,17 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
                                        outId,
                                        QJsonObject{{transform, MakeDefaultValues(inoutWorld, transform)},
                                                    {component, MakeDefaultValues(inoutWorld, component)}});
+    }
+    if (preset == QStringLiteral("GI Probe Volume"))
+    {
+        const QString component = GetGiProbeVolumeComponentId();
+        return inoutWorld.CreateEntity(
+            entropy,
+            outError,
+            preset,
+            outId,
+            QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
+                        {component, MakeDefaultValues(inoutWorld, component)}});
     }
     if (preset == QStringLiteral("First Person Player"))
     {

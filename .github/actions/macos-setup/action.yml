@@ -33,7 +33,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: out/conan/home
-        key: conan-macos-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-variant }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/**', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
+        key: conan-macos-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-variant }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/*/conanfile.py', 'tests/support/prepare_catch_headers.py', 'tests/support/catch_stream.*', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
     - name: Restore macOS compiler outputs
       id: compiler
       uses: actions/cache/restore@v4

@@ -686,7 +686,11 @@ half of the radius and fades to zero at the edge.
   the stroke. **Strength** controls how much to blend on each pass. The
   smoothing distance depends on how far apart the terrain samples are.
 
-Choose **Off** to return to ordinary viewport editing. Press Escape or move
+While a brush is chosen, clicks in the viewport belong to the brush: they do not
+select entities or show transform handles. Clicks made while the previous
+stroke is still applying, or while unapplied source changes or **Compare with
+committed** pause sculpting, start no stroke; the Terrain panel says what to
+finish first. Choose **Off** to return to ordinary viewport editing. Press Escape or move
 focus away during a drag to cancel it. Turn on **Show slope at cursor** while
 using a brush to measure the surface angle in degrees from World horizontal.
 A terrain can keep up to 16 strokes.
@@ -1892,6 +1896,27 @@ viewport status shows the reason.
 The World saves the opt-in. The viewport generates its charts in memory when
 needed. Browser preview, project render graphs, and packaged games use their
 existing lighting paths.
+
+### Baking probe GI for moving objects
+
+Create a **GI Probe Volume** from **Add World Preset** in a default World.
+Set its Transform position to the volume's minimum corner. Set **Probe spacing**
+in metres and the number of points along each axis, including the endpoints.
+The volume follows the World axes. The native Lit viewport supports one volume,
+with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.
+
+Opt one or more static lights into [always-on baking](#baking-always-on-lights),
+then select the volume and click **Bake GI**. Attach **GI Probe Receiver** to
+each authored mesh that should use the volume. Receiver geometry is excluded
+from the bake. Receivers keep realtime direct lighting and sample bounced
+diffuse at their current position. Static surfaces use their own charts.
+
+The viewport keeps drawing with realtime lighting while the bake runs. Outside
+the volume, or where no nearby probe has recorded visibility, receivers use
+realtime lighting and the authored environment. Save the World to keep the
+volume and receiver settings. The native editor generates the atlas in memory
+when the baked lighting inputs change. The prototype uses coarse directional
+visibility, so placement near thin or diagonal geometry can affect the result.
 
 ### Switching lights
 

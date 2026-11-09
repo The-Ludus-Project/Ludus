@@ -693,6 +693,15 @@ void WorldWorkspace::initializeTerrainAuthoring()
         connect(&interaction, &ViewportObjectInteraction::TerrainStrokeRejected, this, [panel](const QString& message) {
             panel->Status->setText(message);
         });
+        connect(&interaction, &ViewportObjectInteraction::TerrainSculptRefused, this, [this, panel]() {
+            panel->Status->setText(
+                Pending_ == true             ? QStringLiteral("Apply or reset the Properties changes, then sculpt.")
+                : panel->IsComparing == true ? QStringLiteral("Turn off Compare with committed to sculpt.")
+                : panel->HasConflict == true ? QStringLiteral("The World changed. Refresh Draft, then sculpt.")
+                : panel->StrokeRecipe.isEmpty() == false || panel->ReadySequence != panel->Sequence
+                    ? QStringLiteral("Applying the previous stroke. Sculpt again when the preview is ready.")
+                    : QStringLiteral("Apply or cancel the source changes before sculpting."));
+        });
         connect(&interaction, &ViewportObjectInteraction::TerrainHeightPicked, this, [panel](float32 height) {
             panel->BrushHeight->setValue(static_cast<float64>(height));
             panel->PickHeight->setChecked(false);
@@ -1281,14 +1290,19 @@ void WorldWorkspace::applyTerrainInteraction()
     ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
     PreviewViewport& otherViewport =
         &viewport == &Render_->GetViewport() ? Scene_->GetViewport() : Render_->GetViewport();
-    otherViewport.GetObjectInteraction().SetTerrainBrush({}, 0, false, false);
-    const bool hasBrush = panel.IsOpen == true && panel.Sculpt->isEnabled() == true &&
-                          panel.GetBrush() != TerrainBrush::Off && panel.IsComparing == false && Pending_ == false &&
-                          IsPlayingInViewport() == false && panel.Target == Selected_;
+    otherViewport.GetObjectInteraction().SetTerrainBrush({}, 0, false, false, false);
+    // The chosen brush stays the viewport tool while a stroke's preview is pending, so clicks in that window
+    // are refused instead of selecting the terrain and showing its transform handles.
+    const bool hasBrush = panel.IsOpen == true && panel.GetBrush() != TerrainBrush::Off &&
+                          IsPlayingInViewport() == false && panel.Target.isEmpty() == false &&
+                          panel.Target == Selected_;
+    const bool canSculpt =
+        hasBrush == true && panel.Sculpt->isEnabled() == true && panel.IsComparing == false && Pending_ == false;
     interaction.SetTerrainBrush(hasBrush == true ? panel.Target : QString{},
                                 hasBrush == true ? static_cast<float32>(panel.BrushRadius->value()) : 0,
                                 hasBrush == true && panel.PickHeight->isChecked() == true,
-                                hasBrush == true && panel.ShowSlope->isChecked() == true);
+                                hasBrush == true && panel.ShowSlope->isChecked() == true,
+                                canSculpt);
     if (hasDraft == true && panel.Target.isEmpty() == true)
     {
         interaction.SetWorld(panel.ReadyWorld, panel.ReadyKey, true);

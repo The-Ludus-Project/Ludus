@@ -1751,6 +1751,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     forceRaster->setObjectName(QStringLiteral("viewportForceRaster"));
     forceRaster->setText(QStringLiteral("Force raster"));
     forceRaster->setCheckable(true);
+    forceRaster->setProperty("visualRole", QStringLiteral("toggle"));
     forceRaster->setChecked(preview->ShouldForceRaster());
     forceRaster->setAccessibleName(QStringLiteral("Force raster renderer"));
     forceRaster->setToolTip(QStringLiteral("Use raster even when hardware raytracing is available. "
@@ -1765,6 +1766,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     statistics->setObjectName(QStringLiteral("viewportStatistics"));
     statistics->setText(QStringLiteral("Stats"));
     statistics->setCheckable(true);
+    statistics->setProperty("visualRole", QStringLiteral("toggle"));
     statistics->setChecked(preview->IsStatisticsVisible());
     statistics->setAccessibleName(QStringLiteral("Show viewport statistics"));
     statistics->setToolTip(QStringLiteral("Overlay GPU frame time, CPU frame time, resolution and draw count, "
@@ -1802,6 +1804,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         liveShaders->setObjectName(QStringLiteral("viewportLiveShaders"));
         liveShaders->setText(QStringLiteral("Live shaders"));
         liveShaders->setCheckable(true);
+        liveShaders->setProperty("visualRole", QStringLiteral("toggle"));
         liveShaders->setAccessibleName(QStringLiteral("Reload renderer shaders when their sources change"));
         liveShaders->setToolTip(GetLiveShadersToolTip());
         controls->addWidget(liveShaders);

@@ -19,6 +19,7 @@
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_probe_volume.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
 #include <QCheckBox>
@@ -65,6 +66,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
@@ -2790,6 +2792,58 @@ TEST_CASE("First Person Player preset persists a spawn and uses the imported sta
     CHECK(forwardWorld.Z == Catch::Approx(0).margin(1e-6));
 }
 
+TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity list visible",
+          "[editor][world][first-person]")
+{
+    using ludus::foundation::int32;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("player.world.json"))) == true);
+    QAction* addOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAdd"));
+    QAction* createPlayerOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    const QPushButton* exploreOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldExploreFirstPerson"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(createPlayerOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(exploreOrNull != nullptr);
+
+    constexpr int32 ENTITY_COUNT_BEFORE_PLAYER = 30;
+    for (int32 i = 0; i < ENTITY_COUNT_BEFORE_PLAYER; ++i)
+    {
+        addOrNull->trigger();
+    }
+    createPlayerOrNull->trigger();
+    REQUIRE(entitiesOrNull->count() == ENTITY_COUNT_BEFORE_PLAYER + 1);
+    entitiesOrNull->setCurrentRow(ENTITY_COUNT_BEFORE_PLAYER - 1);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+    entitiesOrNull->scrollToBottom();
+    const QListWidgetItem* playerOrNull = entitiesOrNull->item(ENTITY_COUNT_BEFORE_PLAYER);
+    REQUIRE(playerOrNull != nullptr);
+    REQUIRE(playerOrNull->text() == QStringLiteral("First Person Player"));
+    REQUIRE(exploreOrNull->isHidden() == true);
+    REQUIRE(entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).bottom() < 0);
+    const int32 listHeight = entitiesOrNull->height();
+    const QRect playerRow = entitiesOrNull->visualItemRect(playerOrNull);
+    REQUIRE(entitiesOrNull->viewport()->rect().contains(playerRow) == true);
+
+    QTest::mouseClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, playerRow.center());
+    QApplication::processEvents();
+    CHECK(playerOrNull->isSelected() == true);
+    CHECK(exploreOrNull->isVisible() == true);
+    CHECK(exploreOrNull->isEnabled() == true);
+    CHECK(entitiesOrNull->height() == listHeight);
+    const QRect selectedRow = entitiesOrNull->visualItemRect(playerOrNull);
+    CHECK(selectedRow.top() == playerRow.top());
+    CHECK(entitiesOrNull->viewport()->rect().contains(selectedRow) == true);
+    workspace.StopPreview();
+}
+
 TEST_CASE("Explore as Player moves the rendered staircase2 World camera", "[.first-person-native][editor][world]")
 {
     using namespace ludus::foundation;
@@ -3296,6 +3350,57 @@ TEST_CASE("The World inspector offers an explicit always-on bake for a static li
     REQUIRE(RenderScene::Load(root, workspace.Document(), optedOut, error) == true);
     CHECK(optedOut.AlwaysOnLightIds.isEmpty() == true);
     CHECK(optedOut.AuthoredLights.Count == 1);
+    workspace.StopPreview();
+}
+
+TEST_CASE("The World inspector bakes one authored GI volume for marked receivers", "[editor][world][probe-gi]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString receiver;
+    QString volume;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), receiver, error) == true);
+    REQUIRE(document.Attach(receiver, error, GetGiProbeReceiverComponentId()) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    const QJsonObject original = document.Draft();
+    QString duplicate;
+    CHECK(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), duplicate, error) == false);
+    CHECK(document.Draft() == original);
+    CHECK(error.contains(QStringLiteral("one GI Probe Volume")) == true);
+
+    const QString path = QDir(root).filePath(QStringLiteral("probe-gi.world.json"));
+    Write(path, document.Encode());
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    RenderScene before;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), before, error) == true);
+    CHECK(before.ProbeGrid.Counts[0] == 0);
+    CHECK(before.GiProbeReceiverIds == QVector<ludus::foundation::uint64>{ComputeEntitySourceId(receiver)});
+    QPushButton* bakeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldBakeGi"));
+    REQUIRE(bakeOrNull != nullptr);
+    REQUIRE(bakeOrNull->isEnabled() == true);
+    bakeOrNull->click();
+
+    RenderScene after;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), after, error) == true);
+    CHECK(after.ProbeGrid.Counts[0] > 0);
+    CHECK(after.ProbeGrid.Spacing == 1);
+    CHECK(after.GiProbeReceiverIds == before.GiProbeReceiverIds);
+    CHECK(preview_lighting::MakeKey(after) != preview_lighting::MakeKey(before));
+    workspace.Undo();
+    RenderScene undone;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), undone, error) == true);
+    CHECK(undone.ProbeGrid.Counts[0] == 0);
     workspace.StopPreview();
 }
 

@@ -7,6 +7,9 @@ outputs:
   validation_tier:
     description: Whether this run is the cheap integration tier, full batch tier, or standalone nightly tier.
     value: ${{ steps.classify.outputs.validation_tier }}
+  validated_by:
+    description: Earlier run of this workflow whose native validation this unchanged pull-request commit reuses, or empty.
+    value: ${{ steps.classify.outputs.validated_by }}
 runs:
   using: composite
   steps:
@@ -16,12 +19,15 @@ runs:
     - name: Classify the complete change
       id: classify
       shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
       run: python3 scripts/python/ci_scope.py classify
     - name: Require an explicit routing output
       shell: bash
       env:
         NATIVE_REQUIRED: ${{ steps.classify.outputs.native_required }}
         VALIDATION_TIER: ${{ steps.classify.outputs.validation_tier }}
+        VALIDATED_BY: ${{ steps.classify.outputs.validated_by }}
       run: |
         case "$NATIVE_REQUIRED" in
           true|false) ;;
@@ -31,3 +37,7 @@ runs:
           full|integration|nightly) ;;
           *) echo 'Missing or invalid CI validation tier.' >&2; exit 1 ;;
         esac
+        if [[ -n "$VALIDATED_BY" && ! "$VALIDATED_BY" =~ ^[1-9][0-9]*$ ]]; then
+          echo 'Invalid CI validating run.' >&2
+          exit 1
+        fi
