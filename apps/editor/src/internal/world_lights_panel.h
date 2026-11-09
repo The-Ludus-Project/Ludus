@@ -6,6 +6,7 @@
 #include "internal/world_document.h"
 
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
@@ -37,6 +38,13 @@ enum class WorldLightOrigin : foundation::uint8
     Missing,
 };
 
+/// One read-only value of a light without a World entity, for the inspector.
+struct WorldLightProperty final
+{
+    QString Label;
+    QString Value;
+};
+
 /// One switchable light.
 struct WorldLightRow final
 {
@@ -45,6 +53,12 @@ struct WorldLightRow final
     LightSourceKey Key;
     /// World lights: the entity key.
     QString EntityKey;
+    /// The World entities whose properties describe this light, in selection order: an authored light's entity,
+    /// or the emissive objects of an imported emitter group in scene order. Empty for imported analytic lights and
+    /// missing switches, which have no entity.
+    QStringList EntityKeys;
+    /// Lights without an entity: the cooked values the inspector shows instead of entity properties.
+    QVector<WorldLightProperty> Properties;
     QString Label;
     QString KindLabel;
     /// Radiance or intensity, object count and source ID, for the tooltip.
@@ -81,7 +95,8 @@ MakeWorldLightSolo(const QVector<WorldLightRow>& rows, const LightSwitchSet& cur
 [[nodiscard]] WorldLightChange MakeMissingLightSwitchesRemoved(const QVector<WorldLightRow>& rows,
                                                                const LightSwitchSet& current);
 
-/// Checkable light list with Solo, Enable All and Remove Missing. GUI thread.
+/// Checkable light list with Solo, Enable All and Remove Missing. Selecting a light asks for its properties
+/// (LightSelected); the World workspace mirrors entity selection back through SelectEntityLight. GUI thread.
 class WorldLightsPanel final : public QWidget
 {
     Q_OBJECT
@@ -94,10 +109,18 @@ public:
     {
         return mRows;
     }
+    /// The selected light, or null when no light is selected. Valid until the next SetRows.
+    [[nodiscard]] const WorldLightRow* GetSelectedRowOrNull() const;
+    /// Show the selection of entity `entityKey` in the list without emitting LightSelected: select the light whose
+    /// EntityKeys contain it, or clear the selection when no light does. An empty key keeps a selected light that
+    /// has no entity, whose properties the inspector shows in place of an entity's.
+    void SelectEntityLight(const QString& entityKey);
 
 Q_SIGNALS:
     /// The user asked for `change`; `message` describes it for the status line.
     void LightsChangeRequested(const ludus::editor::WorldLightChange& change, const QString& message);
+    /// The user selected `row`; show its entity's properties, or its own when EntityKeys is empty.
+    void LightSelected(const ludus::editor::WorldLightRow& row);
 
 private:
     void rowChanged(QTreeWidgetItem* item);
@@ -107,6 +130,7 @@ private:
     /// top light back to the top.
     void rebuildItems(const WorldLightRow* selectedOrNull);
     void updateCommands();
+    void selectionChanged();
     [[nodiscard]] qsizetype getSelectedRow() const;
     QVector<WorldLightRow> mRows;
     LightSwitchSet mSwitches;

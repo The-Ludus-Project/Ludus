@@ -12,9 +12,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QString>
@@ -113,6 +116,16 @@ void SetRowChecked(WorldLightsPanel& inoutPanel, qsizetype row, bool isChecked)
     QTreeWidgetItem* itemOrNull = treeOrNull->topLevelItem(static_cast<int32>(row));
     REQUIRE(itemOrNull != nullptr);
     itemOrNull->setCheckState(0, isChecked == true ? Qt::Checked : Qt::Unchecked);
+}
+
+/// Select only `row` in the light list, as a click does.
+void SelectRow(WorldLightsPanel& inoutPanel, qsizetype row)
+{
+    QTreeWidget* treeOrNull = inoutPanel.findChild<QTreeWidget*>(QStringLiteral("worldLights"));
+    REQUIRE(treeOrNull != nullptr);
+    QTreeWidgetItem* itemOrNull = treeOrNull->topLevelItem(static_cast<int32>(row));
+    REQUIRE(itemOrNull != nullptr);
+    treeOrNull->setCurrentItem(itemOrNull);
 }
 
 void ClickCommand(WorldLightsPanel& inoutPanel, const QString& name, qsizetype selectedRow = -1)
@@ -428,6 +441,92 @@ TEST_CASE("A World keeps opening when it switches off lights its scene no longer
     ClickCommand(*panelOrNull, QStringLiteral("worldLightsRemoveMissing"));
     CHECK(workspace.Document().GetLightSwitches().Disabled.isEmpty() == true);
     CHECK(FindRow(*panelOrNull, WorldLightOrigin::Missing) < 0);
+    workspace.StopPreview();
+}
+
+TEST_CASE("Selecting a light shows its properties", "[editor][world][lighting][light-switches]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString projectPath = QDir(directory.path()).filePath(QStringLiteral("project"));
+    REQUIRE(QDir().mkpath(projectPath) == true);
+    const QString root = QFileInfo(projectPath).canonicalFilePath();
+    const QString source = directory.filePath(QStringLiteral("source/scene.pbrt"));
+    WriteSwitchSource(source);
+    const QString path = QDir(root).filePath(QStringLiteral("select.world.json"));
+    CreateImportedWorld(root, path, source);
+
+    WorldWorkspace workspace(MakeSceneTools(), nullptr);
+    workspace.SetProject(root, 1);
+    LevelWorkspace* levelOrNull = workspace.findChild<LevelWorkspace*>();
+    WorldLightsPanel* panelOrNull = workspace.findChild<WorldLightsPanel*>();
+    REQUIRE(levelOrNull != nullptr);
+    REQUIRE(panelOrNull != nullptr);
+    // The inspector lives in the shell's Properties tool window; the light list drives it from there too.
+    QWidget properties;
+    REQUIRE(workspace.TakePropertiesPanel(&properties) != nullptr);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForWorld(workspace);
+    INFO(levelOrNull->StatusText().toStdString());
+    const qsizetype ceiling = FindRow(*panelOrNull, WorldLightOrigin::ImportedEmitter, 0);
+    const qsizetype point = FindRow(*panelOrNull, WorldLightOrigin::ImportedLight);
+    REQUIRE(ceiling >= 0);
+    REQUIRE(point >= 0);
+    const WorldLightRow ceilingRow = panelOrNull->GetRows()[ceiling];
+    REQUIRE(ceilingRow.EntityKeys.size() == 1);
+    CHECK(panelOrNull->GetRows()[point].EntityKeys.isEmpty() == true);
+    const auto findName = [&properties]() {
+        return properties.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
+    };
+
+    // An imported area light selects its emissive object, whose inspector shows the emitting material.
+    SelectRow(*panelOrNull, ceiling);
+    const QString ceilingName =
+        workspace.Document().Entity(ceilingRow.EntityKeys.first()).value(QStringLiteral("name")).toString();
+    REQUIRE(findName() != nullptr);
+    CHECK(findName()->text() == ceilingName);
+    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldMaterial")) != nullptr);
+    CHECK(panelOrNull->GetSelectedRowOrNull() != nullptr);
+    CHECK(panelOrNull->GetSelectedRowOrNull()->Key == ceilingRow.Key);
+
+    // An imported analytic light has no entity: the inspector shows its cooked values instead.
+    SelectRow(*panelOrNull, point);
+    CHECK(findName() == nullptr);
+    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldLight")) != nullptr);
+    QLabel* intensityOrNull = properties.findChild<QLabel*>(QStringLiteral("worldLight:Intensity"));
+    REQUIRE(intensityOrNull != nullptr);
+    CHECK(intensityOrNull->text() == QStringLiteral("3, 1, 2 cd"));
+    QLabel* positionOrNull = properties.findChild<QLabel*>(QStringLiteral("worldLight:Position"));
+    REQUIRE(positionOrNull != nullptr);
+    CHECK(positionOrNull->text() == QStringLiteral("0, 2, 0 m"));
+    // Switching it keeps the light selected and its properties shown, with the new state.
+    SetRowChecked(*panelOrNull, point, false);
+    CHECK(panelOrNull->GetSelectedRowOrNull() != nullptr);
+    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldLight")) != nullptr);
+
+    // Selecting the emitter's entity elsewhere selects its light; another entity clears the light selection.
+    REQUIRE(workspace.SelectEntity(ceilingRow.EntityKeys.first()) == true);
+    REQUIRE(panelOrNull->GetSelectedRowOrNull() != nullptr);
+    CHECK(panelOrNull->GetSelectedRowOrNull()->Key == ceilingRow.Key);
+    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldLight")) == nullptr);
+    QString floorKey;
+    for (const QJsonValue value : workspace.Document().Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QString key = workspace.Document().GetEntityKey(value.toObject());
+        bool isLight = false;
+        for (const WorldLightRow& row : panelOrNull->GetRows())
+        {
+            isLight = isLight == true || row.EntityKeys.contains(key) == true;
+        }
+        if (isLight == false)
+        {
+            floorKey = key;
+        }
+    }
+    REQUIRE(floorKey.isEmpty() == false);
+    REQUIRE(workspace.SelectEntity(floorKey) == true);
+    CHECK(panelOrNull->GetSelectedRowOrNull() == nullptr);
+    REQUIRE(findName() != nullptr);
     workspace.StopPreview();
 }
 

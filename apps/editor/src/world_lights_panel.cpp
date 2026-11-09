@@ -41,6 +41,10 @@ bool IsSameLight(const WorldLightRow& a, const WorldLightRow& b) noexcept
 {
     return a.Origin == b.Origin && a.Key == b.Key && a.EntityKey == b.EntityKey;
 }
+QString FormatNumber(foundation::float32 value)
+{
+    return QString::number(static_cast<float64>(value), 'g', DISPLAY_SIGNIFICANT_DIGITS);
+}
 QString FormatRgb(const foundation::math::Vector3& rgb)
 {
     return QStringLiteral("%1, %2, %3")
@@ -60,6 +64,34 @@ QString GetLightKindLabel(resources::SceneLightKind kind)
             return QStringLiteral("Spot light");
     }
     return QStringLiteral("Light");
+}
+/// The cooked values of an imported analytic light, which has no World entity to inspect.
+QVector<WorldLightProperty> DescribeSceneLight(const resources::SceneLight& light)
+{
+    const bool isDirectional = light.Kind == resources::SceneLightKind::Directional;
+    const bool isSpot = light.Kind == resources::SceneLightKind::Spot;
+    QVector<WorldLightProperty> properties;
+    properties.append({QStringLiteral("Kind"), GetLightKindLabel(light.Kind)});
+    properties.append(
+        {QStringLiteral("Intensity"),
+         FormatRgb(light.IntensityRgb) + (isDirectional == true ? QStringLiteral(" lux") : QStringLiteral(" cd"))});
+    if (isDirectional == false)
+    {
+        properties.append({QStringLiteral("Position"), FormatRgb(light.PositionWorld) + QStringLiteral(" m")});
+    }
+    if (isDirectional == true || isSpot == true)
+    {
+        properties.append({QStringLiteral("Direction"), FormatRgb(light.DirectionWorld)});
+    }
+    if (isSpot == true)
+    {
+        properties.append(
+            {QStringLiteral("Cone cosines"),
+             QStringLiteral("inner %1, outer %2").arg(FormatNumber(light.InnerCos), FormatNumber(light.OuterCos))});
+    }
+    properties.append({QStringLiteral("Range"), FormatNumber(light.Range) + QStringLiteral(" m")});
+    properties.append({QStringLiteral("Source ID"), FormatLightSourceId(light.SourceId)});
+    return properties;
 }
 QString GetLightKindLabel(const QString& kind)
 {
@@ -125,6 +157,7 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             WorldLightRow row;
             row.Origin = WorldLightOrigin::WorldLight;
             row.EntityKey = world.GetEntityKey(entity);
+            row.EntityKeys = {row.EntityKey};
             const QString entityLabel = world.GetEntityLabel(entity);
             row.Label = entity.value(QStringLiteral("name")).toString(entityLabel);
             row.Detail = QStringLiteral("World light entity %1").arg(entityLabel);
@@ -157,11 +190,17 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             }
             const LightSourceKey key{LightSourceKind::Emitter, material.AreaSourceId};
             QStringList names;
+            QStringList entityKeys;
             for (const PreviewObject& object : scene.Objects)
             {
                 if (object.Surface == static_cast<int32>(i))
                 {
                     names.append(object.Name);
+                    // An imported object is a World entity with the same key, as viewport picking relies on.
+                    if (world.Entity(object.Id).isEmpty() == false)
+                    {
+                        entityKeys.append(object.Id);
+                    }
                 }
             }
             qsizetype index = -1;
@@ -192,6 +231,7 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
                 index = rows.size() - 1;
             }
             objectCounts[index] += names.size();
+            rows[index].EntityKeys.append(entityKeys);
         }
         for (qsizetype i = 0; i < rows.size(); ++i)
         {
@@ -216,6 +256,7 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             row.Label = QStringLiteral("Light %1").arg(++lightNumber);
             row.Detail = QStringLiteral("Light %1 · intensity %2")
                              .arg(FormatLightSourceId(light.SourceId), FormatRgb(light.IntensityRgb));
+            row.Properties = DescribeSceneLight(light);
             rows.append(row);
         }
         for (const LightSourceKey& key : switches.Disabled)
@@ -240,6 +281,10 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             row.Detail = QStringLiteral("%1 %2 is switched off but not in the imported scene. Remove it, or "
                                         "re-import the scene that contained it.")
                              .arg(GetLightSourceKindName(key.Kind), FormatLightSourceId(key.SourceId));
+            row.Properties = {
+                {QStringLiteral("Kind"), row.KindLabel},
+                {QStringLiteral("Source ID"), FormatLightSourceId(key.SourceId)},
+            };
             rows.append(row);
         }
     }
@@ -382,7 +427,7 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
     }
     layout->addLayout(commands);
     connect(mTreeOrNull, &QTreeWidget::itemChanged, this, &WorldLightsPanel::rowChanged);
-    connect(mTreeOrNull, &QTreeWidget::itemSelectionChanged, this, &WorldLightsPanel::updateCommands);
+    connect(mTreeOrNull, &QTreeWidget::itemSelectionChanged, this, &WorldLightsPanel::selectionChanged);
     connect(mSoloOrNull, &QPushButton::clicked, this, [this]() {
         const qsizetype row = getSelectedRow();
         if (row < 0 || mRows[row].Origin == WorldLightOrigin::Missing)
@@ -519,6 +564,51 @@ void WorldLightsPanel::updateCommands()
     mSoloOrNull->setEnabled(row >= 0 && mRows[row].Origin != WorldLightOrigin::Missing && mRows.size() > 1);
     mEnableAllOrNull->setEnabled(hasDisabled);
     mRemoveMissingOrNull->setVisible(hasMissing);
+}
+void WorldLightsPanel::selectionChanged()
+{
+    updateCommands();
+    const qsizetype row = getSelectedRow();
+    if (mIsRendering == true || row < 0)
+    {
+        return;
+    }
+    // A copy: the receiver may replace the rows while it shows the light's properties.
+    const WorldLightRow selected = mRows[row];
+    Q_EMIT LightSelected(selected);
+}
+const WorldLightRow* WorldLightsPanel::GetSelectedRowOrNull() const
+{
+    const qsizetype row = getSelectedRow();
+    return row >= 0 && row < mRows.size() ? &mRows[row] : nullptr;
+}
+void WorldLightsPanel::SelectEntityLight(const QString& entityKey)
+{
+    const WorldLightRow* selectedOrNull = GetSelectedRowOrNull();
+    if (entityKey.isEmpty() == true && selectedOrNull != nullptr && selectedOrNull->EntityKeys.isEmpty() == true)
+    {
+        return;
+    }
+    if (selectedOrNull != nullptr && entityKey.isEmpty() == false &&
+        selectedOrNull->EntityKeys.contains(entityKey) == true)
+    {
+        return;
+    }
+    mIsRendering = true;
+    mTreeOrNull->clearSelection();
+    for (qsizetype i = 0; entityKey.isEmpty() == false && i < mRows.size(); ++i)
+    {
+        if (mRows[i].EntityKeys.contains(entityKey) == true)
+        {
+            QTreeWidgetItem* item = mTreeOrNull->topLevelItem(static_cast<int32>(i));
+            item->setSelected(true);
+            mTreeOrNull->setCurrentItem(item, NAME_COLUMN, QItemSelectionModel::NoUpdate);
+            mTreeOrNull->scrollToItem(item);
+            break;
+        }
+    }
+    mIsRendering = false;
+    updateCommands();
 }
 qsizetype WorldLightsPanel::getSelectedRow() const
 {
