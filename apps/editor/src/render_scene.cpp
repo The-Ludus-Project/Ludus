@@ -198,14 +198,16 @@ public:
     /// Allocate room for exactly wordCount words. @return false when allocation fails.
     [[nodiscard]] bool TryReserve(usize wordCount)
     {
-        if (wordCount > static_cast<usize>(std::numeric_limits<qsizetype>::max()) / sizeof(uint32))
+        // QDataStream::writeRawData takes an int length on older Qt releases; one mesh block must fit it.
+        if (wordCount > static_cast<usize>(std::numeric_limits<int32>::max()) / sizeof(uint32))
         {
             return false;
         }
-        mBlock = QByteArray(static_cast<qsizetype>(wordCount * sizeof(uint32)), Qt::Uninitialized);
+        const usize byteCount = wordCount * sizeof(uint32);
+        mBlock = QByteArray(static_cast<qsizetype>(byteCount), Qt::Uninitialized);
         mWritten = 0;
         mHasOverflowed = false;
-        return mBlock.size() == static_cast<qsizetype>(wordCount * sizeof(uint32));
+        return static_cast<usize>(mBlock.size()) == byteCount;
     }
     /// Encode one word; a word past the reservation is dropped and makes TryFlush fail.
     void Write(uint32 value) noexcept
@@ -249,11 +251,13 @@ public:
     /// Append the encoded words; false unless every reserved word was written.
     [[nodiscard]] bool TryFlush(QDataStream& inoutStream)
     {
-        if (mHasOverflowed == true || static_cast<qsizetype>(mWritten) != mBlock.size())
+        if (mHasOverflowed == true || mWritten != static_cast<usize>(mBlock.size()))
         {
             return false;
         }
-        return inoutStream.writeRawData(mBlock.constData(), mBlock.size()) == mBlock.size();
+        // TryReserve bounded the block to the int32 range.
+        const int32 byteCount = static_cast<int32>(mWritten);
+        return inoutStream.writeRawData(mBlock.constData(), byteCount) == byteCount;
     }
 
 private:

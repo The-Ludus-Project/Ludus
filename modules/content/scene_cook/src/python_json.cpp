@@ -207,31 +207,33 @@ constexpr usize MIN_INDEXED_OBJECT_MEMBERS = 16;
 /// Index slots per member after a rebuild; the index is rebuilt before it becomes more than half full.
 constexpr usize MEMBER_INDEX_SLOTS_PER_MEMBER = 4;
 
-/// Open-addressing index of the member keys of the object being parsed. Each slot holds a member index plus one;
-/// zero marks an empty slot. Objects with fewer than MIN_INDEXED_OBJECT_MEMBERS members are scanned instead.
+/// Open-addressing index of the member keys of one object while it is parsed. Each slot holds a member index plus
+/// one; zero marks an empty slot. Objects with fewer than MIN_INDEXED_OBJECT_MEMBERS members are scanned instead.
 class MemberKeyIndex final
 {
 public:
-    /// Whether object already has a member named key. @return false when the index cannot allocate.
-    [[nodiscard]] bool
-    TryFind(const JsonTree& tree, JsonIndex object, std::string_view key, bool& outIsPresent) noexcept
+    /// Index the members of object in tree, which must outlive this index.
+    MemberKeyIndex(const JsonTree& tree, JsonIndex object) noexcept : mTree(tree), mObject(object) {}
+
+    /// Whether the object already has a member named key. @return false when the index cannot allocate.
+    [[nodiscard]] bool TryFind(std::string_view key, bool& outIsPresent) noexcept
     {
-        const usize count = tree.GetCount(object);
+        const usize count = mTree.GetCount(mObject);
         if (count < MIN_INDEXED_OBJECT_MEMBERS)
         {
-            outIsPresent = tree.GetMember(object, key) != NO_JSON_NODE;
+            outIsPresent = mTree.GetMember(mObject, key) != NO_JSON_NODE;
             return true;
         }
-        if (mSlots.IsEmpty() == true && rebuild(tree, object, count) == false)
+        if (mSlots.IsEmpty() == true && rebuild(count) == false)
         {
             return false;
         }
-        outIsPresent = mSlots[findSlot(tree, object, key)] != 0;
+        outIsPresent = mSlots[findSlot(key)] != 0;
         return true;
     }
 
     /// Index the member just appended at position member. @return false when the index cannot allocate.
-    [[nodiscard]] bool TryAdd(const JsonTree& tree, JsonIndex object, usize member) noexcept
+    [[nodiscard]] bool TryAdd(usize member) noexcept
     {
         const usize count = member + 1;
         if (count < MIN_INDEXED_OBJECT_MEMBERS)
@@ -240,9 +242,9 @@ public:
         }
         if (count * 2 > mSlots.GetSize())
         {
-            return rebuild(tree, object, count);
+            return rebuild(count);
         }
-        mSlots[findSlot(tree, object, tree.GetKey(object, member))] = count;
+        mSlots[findSlot(mTree.GetKey(mObject, member))] = count;
         return true;
     }
 
@@ -253,11 +255,11 @@ private:
     }
 
     /// The slot holding key, or the empty slot where it belongs.
-    [[nodiscard]] usize findSlot(const JsonTree& tree, JsonIndex object, std::string_view key) const noexcept
+    [[nodiscard]] usize findSlot(std::string_view key) const noexcept
     {
         const usize mask = mSlots.GetSize() - 1;
         usize slot = static_cast<usize>(hashKey(key)) & mask;
-        while (mSlots[slot] != 0 && tree.GetKey(object, mSlots[slot] - 1) != key)
+        while (mSlots[slot] != 0 && mTree.GetKey(mObject, mSlots[slot] - 1) != key)
         {
             slot = (slot + 1) & mask;
         }
@@ -265,7 +267,7 @@ private:
     }
 
     /// Index the first count members into a power-of-two table at most a quarter full.
-    [[nodiscard]] bool rebuild(const JsonTree& tree, JsonIndex object, usize count) noexcept
+    [[nodiscard]] bool rebuild(usize count) noexcept
     {
         usize size = 1;
         while (size < count * MEMBER_INDEX_SLOTS_PER_MEMBER)
@@ -279,11 +281,13 @@ private:
         }
         for (usize member = 0; member < count; ++member)
         {
-            mSlots[findSlot(tree, object, tree.GetKey(object, member))] = member + 1;
+            mSlots[findSlot(mTree.GetKey(mObject, member))] = member + 1;
         }
         return true;
     }
 
+    const JsonTree& mTree;
+    JsonIndex mObject;
     Array<usize> mSlots;
 };
 
@@ -649,7 +653,7 @@ private:
             ++mOffset;
             return true;
         }
-        MemberKeyIndex keys;
+        MemberKeyIndex keys(mTree, object);
         while (true)
         {
             if (mOffset >= mText.size() || mText[mOffset] != '"')
@@ -679,7 +683,7 @@ private:
                 return fail("out of memory");
             }
             bool isDuplicate = false;
-            if (keys.TryFind(mTree, object, keyView, isDuplicate) == false)
+            if (keys.TryFind(keyView, isDuplicate) == false)
             {
                 return fail("out of memory");
             }
@@ -703,7 +707,7 @@ private:
             }
             const usize member = mTree.GetCount(object);
             mTree.AppendMember(object, keyView, value);
-            if (mTree.IsOk() == true && keys.TryAdd(mTree, object, member) == false)
+            if (mTree.IsOk() == true && keys.TryAdd(member) == false)
             {
                 return fail("out of memory");
             }
