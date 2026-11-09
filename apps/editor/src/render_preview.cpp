@@ -83,6 +83,30 @@ QString DescribeBrowserStartupFailure(const rhi::StartupInfo& startup, BrowserVi
     }
     return QStringLiteral("startup failed");
 }
+/// Why CreateDevice refused a browser attempt before any backend startup ran (every status but Failed).
+QString DescribeBrowserAdmissionFailure(rhi::DeviceStatus status)
+{
+    switch (status)
+    {
+        case rhi::DeviceStatus::Unsupported:
+            return QStringLiteral("not supported by this editor build");
+        case rhi::DeviceStatus::InvalidState:
+            return QStringLiteral("another editor surface is using the GPU session");
+        case rhi::DeviceStatus::IdentityExhausted:
+            return QStringLiteral("no GPU session identities remain; reload the page");
+        case rhi::DeviceStatus::DeviceLost:
+            return QStringLiteral("the GPU device was lost during startup");
+        case rhi::DeviceStatus::Ready:
+        case rhi::DeviceStatus::Pending:
+        case rhi::DeviceStatus::Skipped:
+        case rhi::DeviceStatus::NotReady:
+        case rhi::DeviceStatus::InvalidHandle:
+        case rhi::DeviceStatus::InvalidDescription:
+        case rhi::DeviceStatus::Failed:
+            break;
+    }
+    return QStringLiteral("startup failed");
+}
 #endif
 } // namespace
 struct RenderPreview::Residency final
@@ -717,7 +741,8 @@ bool RenderPreview::AdmitBrowserDevice(const BrowserDeviceRequest& request)
         .Height = RequestedHeight_,
         .CanvasSelector = request.CanvasSelectorOrNull,
     };
-    rhi::StartupInfo failure;
+    // Written only when startup itself fails (Failed); other outcomes keep these defaults.
+    rhi::StartupInfo failure{};
     const rhi::DeviceStatus started = rhi::CreateDevice({ .Name = "Ludus browser editor viewport", .Version = 1 },
                                                         window,
                                                         description,
@@ -727,7 +752,9 @@ bool RenderPreview::AdmitBrowserDevice(const BrowserDeviceRequest& request)
     if (started != rhi::DeviceStatus::Ready && started != rhi::DeviceStatus::Pending)
     {
         // Keep the start pending: the viewport may try another API or report the final failure.
-        mBrowserStartupFailure = DescribeBrowserStartupFailure(failure, request.Api);
+        mBrowserStartupFailure = started == rhi::DeviceStatus::Failed
+                                     ? DescribeBrowserStartupFailure(failure, request.Api)
+                                     : DescribeBrowserAdmissionFailure(started);
         return false;
     }
     mBrowserApi = request.Api;
