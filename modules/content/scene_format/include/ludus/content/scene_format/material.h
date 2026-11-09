@@ -9,9 +9,12 @@ namespace ludus::content::scene_format
 using MaterialModelTag = foundation::uint32;
 /// Binary32 scalar representation shared with Slang material policy constants.
 using MaterialScalar = foundation::float32;
+/// Bit mask of material capabilities, the LUDUS_MATERIAL_CAPABILITY_* values; also consumed by Slang.
+using MaterialCapabilityBits = foundation::uint32;
 #else
 typedef uint MaterialModelTag;
 typedef float MaterialScalar;
+typedef uint MaterialCapabilityBits;
 #endif
 /// Legacy metallic/roughness scattering wire tag, shared with shader code.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS = 0;
@@ -44,6 +47,16 @@ static const MaterialModelTag LUDUS_COATING_SAMPLES = 1;
 static const MaterialScalar LUDUS_SMOOTH_INTERFACE_ALPHA = 0.001F;
 /// Smallest rough coating alpha; smaller values require a delta dielectric interface.
 static const MaterialScalar LUDUS_COATING_MIN_ALPHA = LUDUS_SMOOTH_INTERFACE_ALPHA;
+/// Capability: evaluates reflection with a continuous solid-angle density.
+static const MaterialCapabilityBits LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION = 1U;
+/// Capability: every scattering proposal consumes exactly three uniform values from the caller's path event.
+static const MaterialCapabilityBits LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER = 2U;
+/// Capability: may transmit through the surface into or out of its medium.
+static const MaterialCapabilityBits LUDUS_MATERIAL_CAPABILITY_TRANSMISSION = 4U;
+/// Capability: runs an internal random walk on its own random stream; its densities are estimated.
+static const MaterialCapabilityBits LUDUS_MATERIAL_CAPABILITY_INTERNAL_WALK = 8U;
+/// Capability: may produce delta events with a probability mass instead of a directional density.
+static const MaterialCapabilityBits LUDUS_MATERIAL_CAPABILITY_DELTA = 16U;
 
 #ifdef __cplusplus
 /// Scattering identity retained by scene assets; evaluators declare their supported profile.
@@ -76,11 +89,61 @@ enum class MaterialModel : foundation::uint32
 {
     return model == MaterialModel::Conductor || model == MaterialModel::DiffuseConductorMix;
 }
+/// Report the scattering capabilities a built-in model guarantees for every parameter value.
+/// A project BRDF's fixed-dimension sampler is its own declaration; the MaterialScattering
+/// overload adds it. The unresolved import marker offers nothing.
+/// @return A mask of LUDUS_MATERIAL_CAPABILITY_* bits.
+[[nodiscard]] constexpr MaterialCapabilityBits GetMaterialCapabilities(MaterialModel model) noexcept
+{
+    switch (model)
+    {
+        case MaterialModel::MetallicRoughness:
+        case MaterialModel::Diffuse:
+        case MaterialModel::Conductor:
+        case MaterialModel::DiffuseConductorMix:
+            return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER;
+        case MaterialModel::CoatedDiffuse:
+            return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_INTERNAL_WALK;
+        case MaterialModel::Dielectric:
+        case MaterialModel::ThinDielectric:
+            return LUDUS_MATERIAL_CAPABILITY_TRANSMISSION | LUDUS_MATERIAL_CAPABILITY_DELTA;
+        case MaterialModel::ProjectBrdf:
+            return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION;
+        case MaterialModel::Unresolved:
+            break;
+    }
+    return 0;
+}
+/// Material capabilities a scene pass consumes: every assigned material must offer each required
+/// capability and none of the unsupported ones. Passes declare requirements, not model names.
+struct MaterialRequirement final
+{
+    MaterialCapabilityBits RequiredCapabilities = 0;    ///< Bits every assigned material must set.
+    MaterialCapabilityBits UnsupportedCapabilities = 0; ///< Bits no assigned material may set.
+};
+/// Continuous reflection with a fixed three-value sampler and no transmission, delta or internal-walk
+/// events. Restricted estimators such as Rao-Blackwellized Metropolis consume exactly this contract.
+inline constexpr MaterialRequirement FIXED_DIMENSION_REFLECTION_REQUIREMENT =
+{
+    .RequiredCapabilities =
+        LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER,
+    .UnsupportedCapabilities = LUDUS_MATERIAL_CAPABILITY_TRANSMISSION | LUDUS_MATERIAL_CAPABILITY_INTERNAL_WALK |
+                               LUDUS_MATERIAL_CAPABILITY_DELTA,
+};
+/// Test a capability mask against a pass requirement.
+/// @param capabilities LUDUS_MATERIAL_CAPABILITY_* bits of one assigned material.
+/// @param requirement The capabilities the consuming pass requires and those it cannot handle.
+/// @return True when every required bit is set and no unsupported bit is set.
+[[nodiscard]] constexpr bool SatisfiesMaterialRequirement(MaterialCapabilityBits capabilities,
+                                                          MaterialRequirement requirement) noexcept
+{
+    return (capabilities & requirement.RequiredCapabilities) == requirement.RequiredCapabilities &&
+           (capabilities & requirement.UnsupportedCapabilities) == 0;
+}
 /// Report whether the model supplies continuous reflection and a fixed three-value sampler.
 [[nodiscard]] constexpr bool SupportsFixedDimensionReflection(MaterialModel model) noexcept
 {
-    return model == MaterialModel::MetallicRoughness || model == MaterialModel::Diffuse ||
-           model == MaterialModel::Conductor || model == MaterialModel::DiffuseConductorMix;
+    return SatisfiesMaterialRequirement(GetMaterialCapabilities(model), FIXED_DIMENSION_REFLECTION_REQUIREMENT);
 }
 /// RGB channels in serialized optical constants.
 inline constexpr foundation::usize MATERIAL_RGB_CHANNELS = 3;
@@ -123,11 +186,22 @@ struct MaterialScattering final
     foundation::float32 CoatingThickness =
         DEFAULT_COATING_THICKNESS; ///< Optical thickness, or project BRDF guarantee (0 or 1).
 };
+/// Report the capabilities of one material's scattering, including a project BRDF's declared
+/// fixed-dimension sampler (stored in CoatingThickness as 0 or 1).
+/// @return A mask of LUDUS_MATERIAL_CAPABILITY_* bits.
+[[nodiscard]] constexpr MaterialCapabilityBits GetMaterialCapabilities(const MaterialScattering& scattering) noexcept
+{
+    MaterialCapabilityBits capabilities = GetMaterialCapabilities(scattering.Model);
+    if (scattering.Model == MaterialModel::ProjectBrdf && scattering.CoatingThickness == 1)
+    {
+        capabilities |= LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER;
+    }
+    return capabilities;
+}
 /// Test the fixed-dimension reflection guarantee, including a project program's declaration.
 [[nodiscard]] constexpr bool SupportsFixedDimensionReflection(const MaterialScattering& scattering) noexcept
 {
-    return scattering.Model == MaterialModel::ProjectBrdf ? scattering.CoatingThickness == 1
-                                                          : SupportsFixedDimensionReflection(scattering.Model);
+    return SatisfiesMaterialRequirement(GetMaterialCapabilities(scattering), FIXED_DIMENSION_REFLECTION_REQUIREMENT);
 }
 /// Number of scalar float32 fields in the explicit MaterialScattering wire schema.
 inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHANNELS + MATERIAL_RGB_CHANNELS + 2 + 2;

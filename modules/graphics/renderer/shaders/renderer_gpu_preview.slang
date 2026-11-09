@@ -1245,8 +1245,14 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_Dispat
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
         graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RADIANCE;
         graphRadianceIsResolved = false;
-        // Keep one callback invocation: duplicating it for raw/mean output expands large estimators twice.
-        float3 sample = EvaluateGraphRay(pixel);
+        // A package compiled against another scene kernel ABI would decode materials with its stale copy of the
+        // evaluator, so the renderer's packed layout must match the one this package was compiled with.
+        float3 sample = float3(-1);
+        if (SurfaceLayout.x == LUDUS_GPU_PREVIEW_SURFACE_WORDS && SurfaceLayout.z == LUDUS_GPU_PREVIEW_KERNEL_VERSION)
+            // Keep one callback invocation: duplicating it for raw/mean output expands large estimators twice.
+            sample = EvaluateGraphRay(pixel);
+        else
+            graphFailureReason = LUDUS_SCENE_FAILURE_INTERFACE_VERSION;
 #else
         float3 sample = Integrate(pixel, sampleCount);
 #endif
