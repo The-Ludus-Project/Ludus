@@ -452,41 +452,46 @@ TEST_CASE("Indexed draws check every index of ranges spanning precomputed valida
         createIndices(BufferRole::Index16, restart16.GetData(), restart16.GetSize() * sizeof(uint16));
     const BufferHandle belowRestart16Buffer =
         createIndices(BufferRole::Index16, belowRestart16.GetData(), belowRestart16.GetSize() * sizeof(uint16));
-    const auto drawRange = [&](BufferHandle indices, usize width, usize first, usize count, uint32 vertexCount) {
+    struct IndexRange
+    {
+        usize First = 0;
+        usize Count = 0;
+    };
+    const auto drawRange = [&](BufferHandle indices, usize width, IndexRange range, uint32 vertexCount) {
         RasterDraw draw = scene.Draw();
         draw.Pipeline = instancePipeline;
         draw.Indices = indices;
-        draw.IndexOffset = first * width;
-        draw.IndexCount = static_cast<uint32>(count);
+        draw.IndexOffset = range.First * width;
+        draw.IndexCount = static_cast<uint32>(range.Count);
         draw.VertexCount = vertexCount;
         return DrawIndexed(session.Device, draw);
     };
     REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
-    CHECK(drawRange(valid16Buffer, sizeof(uint16), 0, INDEX_COUNT, VERTEX_COUNT) == RasterStatus::Ready);
-    CHECK(drawRange(valid16Buffer, sizeof(uint16), 0, INDEX_COUNT, VERTEX_COUNT - 1) ==
+    CHECK(drawRange(valid16Buffer, sizeof(uint16), {0, INDEX_COUNT}, VERTEX_COUNT) == RasterStatus::Ready);
+    CHECK(drawRange(valid16Buffer, sizeof(uint16), {0, INDEX_COUNT}, VERTEX_COUNT - 1) ==
           RasterStatus::InvalidDescription);
     const auto checkOutOfRange = [&](BufferHandle buffer, usize width) {
         // Found through a whole block's maximum, a partial head block and a partial tail block.
-        CHECK(drawRange(buffer, width, 0, INDEX_COUNT, VERTEX_COUNT) == RasterStatus::InvalidDescription);
-        CHECK(drawRange(buffer, width, 510, 690, VERTEX_COUNT) == RasterStatus::InvalidDescription);
-        CHECK(drawRange(buffer, width, 597, 6, VERTEX_COUNT) == RasterStatus::InvalidDescription);
-        CHECK(drawRange(buffer, width, 513, 255, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {0, INDEX_COUNT}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {510, 690}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {597, 6}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {513, 255}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
         // Ranges that end just before or start just after the bad index never read it.
-        CHECK(drawRange(buffer, width, 0, OUT_OF_RANGE_POSITION, VERTEX_COUNT) == RasterStatus::Ready);
+        CHECK(drawRange(buffer, width, {0, OUT_OF_RANGE_POSITION}, VERTEX_COUNT) == RasterStatus::Ready);
         CHECK(drawRange(buffer,
                         width,
-                        OUT_OF_RANGE_POSITION + 3,
-                        INDEX_COUNT - OUT_OF_RANGE_POSITION - 3,
+                        {OUT_OF_RANGE_POSITION + 3, INDEX_COUNT - OUT_OF_RANGE_POSITION - 3},
                         VERTEX_COUNT) == RasterStatus::Ready);
-        CHECK(drawRange(buffer, width, 0, INDEX_COUNT, OUT_OF_RANGE_INDEX) == RasterStatus::InvalidDescription);
-        CHECK(drawRange(buffer, width, 0, INDEX_COUNT, OUT_OF_RANGE_INDEX + 1) == RasterStatus::Ready);
+        CHECK(drawRange(buffer, width, {0, INDEX_COUNT}, OUT_OF_RANGE_INDEX) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {0, INDEX_COUNT}, OUT_OF_RANGE_INDEX + 1) == RasterStatus::Ready);
     };
     checkOutOfRange(outOfRange16Buffer, sizeof(uint16));
     checkOutOfRange(outOfRange32Buffer, sizeof(uint32));
     // A 16-bit restart value is rejected even when the vertex count would admit it as an ordinary index.
-    CHECK(drawRange(restart16Buffer, sizeof(uint16), 0, INDEX_COUNT, RESTART_VERTEX_COUNT) ==
+    CHECK(drawRange(restart16Buffer, sizeof(uint16), {0, INDEX_COUNT}, RESTART_VERTEX_COUNT) ==
           RasterStatus::InvalidDescription);
-    CHECK(drawRange(belowRestart16Buffer, sizeof(uint16), 0, INDEX_COUNT, RESTART_VERTEX_COUNT) == RasterStatus::Ready);
+    CHECK(drawRange(belowRestart16Buffer, sizeof(uint16), {0, INDEX_COUNT}, RESTART_VERTEX_COUNT) ==
+          RasterStatus::Ready);
     CHECK(reference::Draws == 8);
     REQUIRE(EndFrame(session.Device) == DeviceStatus::Ready);
 }
