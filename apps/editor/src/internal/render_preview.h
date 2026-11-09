@@ -81,11 +81,13 @@ public:
     [[nodiscard]] bool FrameEntity(const QString& id) noexcept;
     /// Use a transient first-person camera while retaining the editor's navigation and scene.
     [[nodiscard]] bool BeginFirstPerson(const gameplay::camera::CameraSample& spawn, QString& outError);
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters): elapsed seconds then speed, as in Fly; the units differ.
     /// Move and apply gravity to the transient player. Controls use only X and Z.
     void AdvanceFirstPerson(foundation::math::Vector3 movementControls,
                             foundation::float32 deltaSeconds,
                             foundation::float32 speed,
                             bool shouldJump);
+    // NOLINTEND(bugprone-easily-swappable-parameters)
     /// Restore the normal editor view; safe to call when no session is active.
     void EndFirstPerson();
     [[nodiscard]] LUDUS_INLINE bool IsExploringFirstPerson() const noexcept
