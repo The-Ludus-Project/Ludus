@@ -193,7 +193,7 @@ same executable. Both runs released all bytes counted by the allocator hook.
 
 | Operation | First allocation denied in a separate run |
 | --- | --- |
-| World creation | Returned a world ID after the 2,048-byte stack allocation failed. |
+| World creation | Returned a world ID after Box3D's internal stack allocator failed to obtain its 2,048-byte backing buffer. |
 | Mesh cooking | ASan detected a null write inside `b3CreateMesh` after a 32-byte request failed. |
 | Dynamic body insertion | UBSan detected a null island record in `b3CreateIsland` after a 64-byte request failed. |
 | First tick | ASan detected a null write during broad-phase tree rebuild after a 1,024-byte request failed. |
@@ -203,10 +203,10 @@ over 360 ticks at 60 Hz with four substeps. Two later ticks also allocated.
 Raising all five `b3Capacity` hints to 256 preserved those counts and the
 final cube state while increasing peak tracked bytes from 311,168 to
 747,456. These hints reserve some initial storage. Tick work can still
-grow storage, and `b3World_Step` returns no failure status.
+grow storage, and `b3World_Step` returns no failure status (see
 [Box3D capacity fields](https://github.com/erincatto/box3d/blob/336263320469e5e9febfe18697ab562488f7e97a/include/box3d/types.h#L130-L147),
 [allocator implementation](https://github.com/erincatto/box3d/blob/336263320469e5e9febfe18697ab562488f7e97a/src/core.c#L136-L174),
-[step interface](https://github.com/erincatto/box3d/blob/336263320469e5e9febfe18697ab562488f7e97a/include/box3d/box3d.h#L48-L57)
+and [step interface](https://github.com/erincatto/box3d/blob/336263320469e5e9febfe18697ab562488f7e97a/include/box3d/box3d.h#L48-L57)).
 
 | Other candidates inspected | Allocation gate |
 | --- | --- |
