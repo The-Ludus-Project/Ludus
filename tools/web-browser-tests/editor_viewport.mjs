@@ -278,6 +278,19 @@ try {
   assert.ok(fallbackLit.warm > 50 && isWarm(fallbackLit.geometry), 'WebGL 2 Lit must shade the authored material');
   report.cases.push('Missing WebGPU falls back to WebGL 2 with Solid and shadowed Lit pixels');
   await fallback.close();
+  // WebGPU without an adapter fails asynchronously, after the device was admitted; the import must keep
+  // waiting for the WebGL 2 retry rather than read the stopped WebGPU device as a stopped viewport.
+  const adapterless = await browser.newPage({viewport: {width: 1440, height: 1000}});
+  activePage = adapterless;
+  await adapterless.addInitScript(() => {
+    if (globalThis.GPU) GPU.prototype.requestAdapter = async () => null;
+  });
+  await open(adapterless);
+  await importScene(adapterless);
+  await rendered(adapterless);
+  assert.equal(await canvas(adapterless).getAttribute('data-api'), 'webgl2');
+  report.cases.push('An asynchronous WebGPU adapter failure falls back to WebGL 2 and the import publishes');
+  await adapterless.close();
   // The page address can force WebGL 2 even where WebGPU works.
   const forced = await browser.newPage({viewport: {width: 1440, height: 1000}});
   activePage = forced;
@@ -305,9 +318,17 @@ try {
   const unavailableError = await unavailable.locator('#screen').getAttribute('data-viewport-error');
   assert.match(unavailableError, /WebGPU/);
   assert.match(unavailableError, /WebGL 2/);
+  // The import the user started fails in its own surface with that cause and next step, not only
+  // "Previous scene and level retained."
+  await unavailable.waitForFunction(() => /^Scene import failed: \S/.test(
+    document.querySelector('#screen').dataset.viewportPrompt || ''), null, {timeout: 10000});
+  const importFailure = await unavailable.locator('#screen').getAttribute('data-viewport-prompt');
+  assert.ok(importFailure.startsWith('Scene import failed: ' + unavailableError), importFailure);
+  assert.match(importFailure, /hardware acceleration/);
+  assert.match(importFailure, /Previous scene and level retained\.$/);
   assert.equal(await unavailable.locator('body').getAttribute('data-editor-state'), 'ready');
   await unavailable.screenshot({path: resolve(output, 'unavailable.png')});
-  report.cases.push('Missing WebGPU and WebGL 2 report both causes without a CPU rendering fallback');
+  report.cases.push('Missing WebGPU and WebGL 2 report both causes, also in the import failure, without a CPU rendering fallback');
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {

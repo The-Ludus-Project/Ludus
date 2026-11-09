@@ -69,15 +69,17 @@ public:
     /// Start an engine WebGPU or WebGL 2 device for the request's canvas. Pending startup is serviced by
     /// Tick. A startup failure, now or later, never shows an error: it stops the device, keeps the reason
     /// in GetBrowserStartupFailure and (when asynchronous) emits BrowserApiFailed, so the viewport can try
-    /// another API or call ReportBrowserUnavailable. A synchronous failure returns false and keeps the
-    /// start pending. Failures after the device reached Ready are reported as ordinary failures.
+    /// another API or call ReportBrowserUnavailable. Either way the start stays pending (Running() remains
+    /// true) until the viewport admits another API or reports; a synchronous failure returns false.
+    /// Failures after the device reached Ready are reported as ordinary failures.
     [[nodiscard]] bool AdmitBrowserDevice(const BrowserDeviceRequest& request);
     /// Reason the last browser startup attempt failed, for example "no compatible GPU adapter".
     [[nodiscard]] LUDUS_INLINE const QString& GetBrowserStartupFailure() const noexcept
     {
         return mBrowserStartupFailure;
     }
-    /// End a browser start that no API could satisfy: shows message and emits Failed.
+    /// End a browser start that no API could satisfy: shows message and emits Failed. An operation waiting
+    /// for the first frame, such as a World scene import, rolls back with message as its cause.
     void ReportBrowserUnavailable(const QString& message);
     void Stop() noexcept;
     /// Select a view; orbitDegrees contains yaw/pitch in degrees and zoom is the legacy radius scale.
@@ -369,7 +371,8 @@ Q_SIGNALS:
     void DeviceRequested();
     /// Emitted before the owned device is destroyed; borrowers must release device resources.
     void DeviceStopping();
-    /// A browser device failed before it reached Ready; the device is stopped and no error is shown.
+    /// A browser device failed before it reached Ready; the device is stopped, the start stays pending
+    /// and no error is shown. The receiver must admit another API or call ReportBrowserUnavailable.
     void BrowserApiFailed(ludus::editor::BrowserViewportApi api, const QString& reason);
     void Stopped();
     void Failed(const QString& error);
