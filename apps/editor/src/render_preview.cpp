@@ -701,7 +701,7 @@ bool RenderPreview::AdmitOffscreenDevice()
 bool RenderPreview::AdmitBrowserDevice(const BrowserDeviceRequest& request)
 {
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-    if (mIsStarting == false || OwnsDevice_ == true || request.CanvasSelector == nullptr)
+    if (mIsStarting == false || OwnsDevice_ == true || request.CanvasSelectorOrNull == nullptr)
     {
         return false;
     }
@@ -715,7 +715,7 @@ bool RenderPreview::AdmitBrowserDevice(const BrowserDeviceRequest& request)
         .System = platform::WindowSystem::WebCanvas,
         .Width = RequestedWidth_,
         .Height = RequestedHeight_,
-        .CanvasSelector = request.CanvasSelector,
+        .CanvasSelector = request.CanvasSelectorOrNull,
     };
     rhi::StartupInfo failure;
     const rhi::DeviceStatus started = rhi::CreateDevice({ .Name = "Ludus browser editor viewport", .Version = 1 },

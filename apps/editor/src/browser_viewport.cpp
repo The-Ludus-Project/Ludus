@@ -41,7 +41,8 @@ EM_JS(int32, CreateViewportCanvas, (const char* selector), {
     return 1;
 });
 EM_JS(void, SyncViewportCanvas, (const char* selector, int32 x, int32 y, int32 width, int32 height,
-                                int32 screenWidth, int32 screenHeight, int32 isVisible, float64 presentedFrames), {
+                                int32 screenWidth, int32 screenHeight, int32 isVisible, float64 presentedFrames,
+                                int32 drawableWidth, int32 drawableHeight), {
     const canvas = document.querySelector(UTF8ToString(selector));
     const screen = document.getElementById('screen');
     if (canvas == null || screen == null) return;
@@ -53,6 +54,12 @@ EM_JS(void, SyncViewportCanvas, (const char* selector, int32 x, int32 y, int32 w
     canvas.style.width = (width * scaleX) + 'px';
     canvas.style.height = (height * scaleY) + 'px';
     canvas.style.display = isVisible ? 'block' : 'none';
+    // WebGL draws into the canvas's own width/height (WebGPU's surface configuration sets them).
+    // Platform does not own this canvas, so its owner matches them to the requested drawable.
+    if (canvas.dataset.api === 'webgl2' && (canvas.width !== drawableWidth || canvas.height !== drawableHeight)) {
+        canvas.width = drawableWidth;
+        canvas.height = drawableHeight;
+    }
     const frameCount = String(presentedFrames);
     if (presentedFrames > 0 && canvas.dataset.frames != frameCount) {
         delete canvas.dataset.error;
@@ -148,15 +155,16 @@ bool BrowserViewport::Start()
             return false;
         }
         mHasPresentedImage = false;
-        service();
         const BrowserViewportApi api = mNextApi;
+        // Mark before the first sync: a WebGL 2 canvas is sized there, and resizing clears it.
+        MarkViewportApi(mSelector.constData(), api == BrowserViewportApi::WebGl2 ? 1 : 0);
+        service();
         RenderPreview::BrowserDeviceRequest request;
-        request.CanvasSelector = mSelector.constData();
+        request.CanvasSelectorOrNull = mSelector.constData();
         request.Api = api;
         request.ApiNote = DescribeBrowserViewportApi(api, mWebGpuFailure);
         if (mPreview->AdmitBrowserDevice(request) == true)
         {
-            MarkViewportApi(mSelector.constData(), api == BrowserViewportApi::WebGl2 ? 1 : 0);
             mService.start();
             return true;
         }
@@ -260,6 +268,8 @@ void BrowserViewport::service()
                        rectangleScreenLogical.width(),
                        rectangleScreenLogical.height(),
                        isVisible == true && mCanPresent == true && mHasPresentedImage == true ? 1 : 0,
-                       static_cast<float64>(mPresentedFrames));
+                       static_cast<float64>(mPresentedFrames),
+                       mRequestedWidth,
+                       mRequestedHeight);
 }
 } // namespace ludus::editor

@@ -262,7 +262,7 @@ FrameStatus Begin() noexcept
     }
     // Default framebuffer (the canvas). Resize is a viewport change; the backing
     // store is sized by Platform's resize observer, which the app mirrors into
-    // the FrameTarget width/height.
+    // the FrameTarget width/height. A canvas outside Platform is sized by its owner.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, static_cast<GLsizei>(gTarget.Width), static_cast<GLsizei>(gTarget.Height));
     glDisable(GL_SCISSOR_TEST);

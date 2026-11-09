@@ -56,7 +56,7 @@ public:
     struct BrowserDeviceRequest final
     {
         /// CSS selector of a canvas no graphics API has claimed yet; must outlive Stop.
-        const char* CanvasSelector = nullptr;
+        const char* CanvasSelectorOrNull = nullptr;
         BrowserViewportApi Api = BrowserViewportApi::WebGpu;
         /// Active-API note for the statistics overlay, for example why WebGL 2 is used.
         QString ApiNote;

@@ -35,7 +35,6 @@ rhi::BindingSetHandle gCompositeSet;
 rhi::BufferHandle gFullscreen;
 rhi::OrderedGraph gGraph;
 bool gHasGraph = false;
-bool gHasCheckedOffscreenTarget = false;
 bool gUseCompute = false;
 bool gArgumentsVerified = false;
 bool gHasArgumentReadback = false;
@@ -586,7 +585,8 @@ void Tick() noexcept
     }
     // Both browser backends admit offscreen-only frames (editor shadow preparation records them);
     // the graph frame below then restores presentation and its pixels are compared as before.
-    if (Variant() >= 3 && gHasCheckedOffscreenTarget == false)
+    static bool hasCheckedOffscreenTarget = false;
+    if (Variant() >= 3 && hasCheckedOffscreenTarget == false)
     {
         if (rhi::SetFrameTarget(gDevice, gSurface, { .Width = 96, .Height = 64, .ShouldPresentToSurface = false }) !=
             rhi::DeviceStatus::Ready)
@@ -594,7 +594,7 @@ void Tick() noexcept
             Stop(true);
             return;
         }
-        gHasCheckedOffscreenTarget = true;
+        hasCheckedOffscreenTarget = true;
     }
     if (rhi::SetFrameTarget(gDevice, gSurface, {96, 64, clear, clear, clear, 1}) != rhi::DeviceStatus::Ready)
     {
