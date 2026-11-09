@@ -1,5 +1,6 @@
 #include "internal/world_earth_location.h"
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/gameplay/world/celestial_transform.hpp>
 
@@ -34,7 +35,7 @@
 #    endif
 #endif
 
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
 #    include <QHash>
 #    include <emscripten.h>
 #endif
@@ -87,7 +88,7 @@ QString FormatPlaceLabel(const QJsonObject& properties)
     return label.join(QStringLiteral(", "));
 }
 
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
 // Thanks to W3C, "Geolocation", https://www.w3.org/TR/geolocation/.
 // Request a single position with the browser's permission UI and return only latitude and longitude.
 enum class BrowserPositionStatus : int32
@@ -191,12 +192,12 @@ public:
             mReplyOrNull->disconnect(this);
             mReplyOrNull->abort();
         }
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
         GetBrowserEarthRequests().remove(mBrowserRequest);
 #endif
     }
 
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
     void ReceiveBrowserPosition(BrowserPositionStatus status, float64 latitude, float64 longitude)
     {
         mBrowserRequest = 0;
@@ -324,7 +325,7 @@ private:
     void locate()
     {
         begin(Operation::Position, QStringLiteral("Waiting for device location…"));
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
         static uint32 nextRequest = 0;
         mBrowserRequest = ++nextRequest;
         if (mBrowserRequest == 0)
@@ -416,7 +417,7 @@ private:
     }
 #endif
 
-#if defined(__EMSCRIPTEN__) || defined(LUDUS_EDITOR_EARTH_POSITIONING)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB || defined(LUDUS_EDITOR_EARTH_POSITIONING)
     void showPosition(float64 latitude, float64 longitude)
     {
         if (AreEarthCoordinatesValid(latitude, longitude) == false)
@@ -439,13 +440,13 @@ private:
     QNetworkAccessManager mNetwork;
     QNetworkReply* mReplyOrNull = nullptr;
     Operation mOperation = Operation::Idle;
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
     uint32 mBrowserRequest = 0;
 #endif
 };
 } // namespace
 
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
 extern "C" EMSCRIPTEN_KEEPALIVE void
 LudusReceiveEarthPosition(uint32 request, int32 status, float64 latitude, float64 longitude)
 {
