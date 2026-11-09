@@ -81,9 +81,10 @@ public:
           Cancel(new QPushButton(QStringLiteral("Cancel"), this)), Commit(new QPushButton(this)),
           Import(new QPushButton(QStringLiteral("Choose Heightmap…"), this)), HeightmapInfo(new QLabel(this)),
           FlipX(new QCheckBox(QStringLiteral("Flip X"), this)), FlipZ(new QCheckBox(QStringLiteral("Flip Z"), this)),
-          Sculpt(new QCheckBox(QStringLiteral("Flatten brush"), this)),
-          PickHeight(new QPushButton(QStringLiteral("Pick from surface"), this)), BrushRadius(new QDoubleSpinBox(this)),
-          BrushHeight(new QDoubleSpinBox(this)), mForm(new QFormLayout), mPresetRow(new QWidget(this))
+          Sculpt(new QComboBox(this)), PickHeight(new QPushButton(QStringLiteral("Pick from surface"), this)),
+          BrushRadius(new QDoubleSpinBox(this)), BrushHeight(new QDoubleSpinBox(this)),
+          BrushDelta(new QDoubleSpinBox(this)), BrushStrength(new QDoubleSpinBox(this)), mForm(new QFormLayout),
+          mPresetRow(new QWidget(this))
     {
         setObjectName(QStringLiteral("worldTerrainPanel"));
         QVBoxLayout* layout = new QVBoxLayout(this);
@@ -134,7 +135,11 @@ public:
         addField(QStringLiteral("featureSize"), QStringLiteral("Feature size (m)"));
         addField(QStringLiteral("roughness"), QStringLiteral("Roughness"));
         addField(QStringLiteral("samples"), QStringLiteral("Samples per side"));
-        Sculpt->setObjectName(QStringLiteral("worldTerrainFlatten"));
+        Sculpt->setObjectName(QStringLiteral("worldTerrainSculptBrush"));
+        Sculpt->addItem(QStringLiteral("Off"), static_cast<int32>(TerrainBrush::Off));
+        Sculpt->addItem(QStringLiteral("Flatten"), static_cast<int32>(TerrainBrush::Flatten));
+        Sculpt->addItem(QStringLiteral("Raise / Lower"), static_cast<int32>(TerrainBrush::RaiseLower));
+        Sculpt->addItem(QStringLiteral("Smooth"), static_cast<int32>(TerrainBrush::Smooth));
         PickHeight->setObjectName(QStringLiteral("worldTerrainPickHeight"));
         PickHeight->setCheckable(true);
         BrushRadius->setObjectName(QStringLiteral("worldTerrainBrushRadius"));
@@ -144,10 +149,23 @@ public:
         BrushHeight->setObjectName(QStringLiteral("worldTerrainBrushHeight"));
         BrushHeight->setDecimals(BRUSH_DECIMAL_PLACES);
         BrushHeight->setRange(-MAX_TERRAIN_BRUSH_HEIGHT_METRES, MAX_TERRAIN_BRUSH_HEIGHT_METRES);
-        mForm->addRow(Sculpt);
+        BrushDelta->setObjectName(QStringLiteral("worldTerrainBrushDelta"));
+        BrushDelta->setDecimals(BRUSH_DECIMAL_PLACES);
+        BrushDelta->setRange(-MAX_TERRAIN_BRUSH_HEIGHT_METRES, MAX_TERRAIN_BRUSH_HEIGHT_METRES);
+        BrushDelta->setValue(1);
+        BrushStrength->setObjectName(QStringLiteral("worldTerrainBrushStrength"));
+        BrushStrength->setDecimals(BRUSH_DECIMAL_PLACES);
+        constexpr float64 MINIMUM_SMOOTH_STRENGTH = 0.001;
+        BrushStrength->setRange(MINIMUM_SMOOTH_STRENGTH, 1);
+        constexpr float64 SMOOTH_STRENGTH_STEP = 0.1;
+        BrushStrength->setSingleStep(SMOOTH_STRENGTH_STEP);
+        BrushStrength->setValue(0.5);
+        mForm->addRow(QStringLiteral("Sculpt brush"), Sculpt);
         mForm->addRow(QStringLiteral("Radius (m)"), BrushRadius);
         mForm->addRow(QStringLiteral("Target height (m)"), BrushHeight);
         mForm->addRow(PickHeight);
+        mForm->addRow(QStringLiteral("Height change (m)"), BrushDelta);
+        mForm->addRow(QStringLiteral("Strength"), BrushStrength);
         Status->setObjectName(QStringLiteral("worldTerrainStatus"));
         Status->setWordWrap(true);
         Status->setTextFormat(Qt::PlainText);
@@ -189,9 +207,9 @@ public:
         const QSignalBlocker advancedBlock(Advanced);
         const QSignalBlocker sculptBlock(Sculpt);
         const QSignalBlocker pickBlock(PickHeight);
-        Sculpt->setChecked(false);
+        Sculpt->setCurrentIndex(0);
         PickHeight->setChecked(false);
-        Sculpt->setVisible(name.isEmpty() == false);
+        mForm->setRowVisible(Sculpt, name.isEmpty() == false);
         Sculpt->setEnabled(false);
         SetHeightmap(mInitialRecipe.value(HEIGHTMAP_FIELD).toObject());
         const QString shape = mInitialRecipe.value(QStringLiteral("shape")).toString();
@@ -256,9 +274,12 @@ public:
         mForm->setRowVisible(Advanced, isGenerate);
         mForm->setRowVisible(Fields.value(QStringLiteral("minimumElevation")),
                              isFlat == true || isImport == true || hasAdvanced == true);
-        mForm->setRowVisible(BrushRadius, Sculpt->isChecked());
-        mForm->setRowVisible(BrushHeight, Sculpt->isChecked());
-        mForm->setRowVisible(PickHeight, Sculpt->isChecked());
+        const TerrainBrush brush = GetBrush();
+        mForm->setRowVisible(BrushRadius, brush != TerrainBrush::Off);
+        mForm->setRowVisible(BrushHeight, brush == TerrainBrush::Flatten);
+        mForm->setRowVisible(PickHeight, brush == TerrainBrush::Flatten);
+        mForm->setRowVisible(BrushDelta, brush == TerrainBrush::RaiseLower);
+        mForm->setRowVisible(BrushStrength, brush == TerrainBrush::Smooth);
         for (const QString& key : {QStringLiteral("seed"),
                                    QStringLiteral("featureSize"),
                                    QStringLiteral("roughness"),
@@ -366,6 +387,27 @@ public:
         return mInitialRecipe;
     }
 
+    [[nodiscard]] LUDUS_INLINE TerrainBrush GetBrush() const
+    {
+        return static_cast<TerrainBrush>(Sculpt->currentData().toInt());
+    }
+
+    [[nodiscard]] float32 GetBrushValue() const
+    {
+        switch (GetBrush())
+        {
+            case TerrainBrush::Flatten:
+                return static_cast<float32>(BrushHeight->value());
+            case TerrainBrush::RaiseLower:
+                return static_cast<float32>(BrushDelta->value());
+            case TerrainBrush::Smooth:
+                return static_cast<float32>(BrushStrength->value());
+            case TerrainBrush::Off:
+                return 0;
+        }
+        return 0;
+    }
+
     void SetStrokePending(bool isPending)
     {
         Mode->setEnabled(isPending == false);
@@ -379,6 +421,8 @@ public:
         FlipZ->setEnabled(isPending == false);
         BrushRadius->setEnabled(isPending == false);
         BrushHeight->setEnabled(isPending == false);
+        BrushDelta->setEnabled(isPending == false);
+        BrushStrength->setEnabled(isPending == false);
         PickHeight->setEnabled(isPending == false);
         for (QLineEdit* field : Fields)
         {
@@ -442,10 +486,12 @@ public:
     QLabel* HeightmapInfo;
     QCheckBox* FlipX;
     QCheckBox* FlipZ;
-    QCheckBox* Sculpt;
+    QComboBox* Sculpt;
     QPushButton* PickHeight;
     QDoubleSpinBox* BrushRadius;
     QDoubleSpinBox* BrushHeight;
+    QDoubleSpinBox* BrushDelta;
+    QDoubleSpinBox* BrushStrength;
     QMap<QString, QLineEdit*> Fields;
     QTimer Timer;
 
@@ -572,15 +618,33 @@ void WorldWorkspace::initializeTerrainAuthoring()
         changeSource();
     });
 #endif
-    connect(panel->Sculpt, &QCheckBox::toggled, this, [this, panel]() {
+    const auto cancelBrushGesture = [this]() {
+        Render_->GetViewport().GetObjectInteraction().Cancel();
+        Scene_->GetViewport().GetObjectInteraction().Cancel();
+    };
+    connect(panel->Sculpt, &QComboBox::currentIndexChanged, this, [this, panel, cancelBrushGesture]() {
+        cancelBrushGesture();
         const QSignalBlocker blocker(panel->PickHeight);
         panel->PickHeight->setChecked(false);
         panel->UpdateFields();
         applyTerrainInteraction();
-        if (panel->Sculpt->isChecked() == true)
+        switch (panel->GetBrush())
         {
-            panel->Status->setText(
-                QStringLiteral("Drag on the terrain to flatten it. Release applies one undoable stroke."));
+            case TerrainBrush::Off:
+                panel->Status->setText(QStringLiteral("Choose a brush to sculpt, or change the terrain source."));
+                break;
+            case TerrainBrush::Flatten:
+                panel->Status->setText(
+                    QStringLiteral("Drag to flatten to the target height. Release applies the stroke."));
+                break;
+            case TerrainBrush::RaiseLower:
+                panel->Status->setText(QStringLiteral("Enter a positive amount to raise terrain or a negative amount "
+                                                      "to lower it. Drag and release to apply."));
+                break;
+            case TerrainBrush::Smooth:
+                panel->Status->setText(
+                    QStringLiteral("Drag to blend the terrain toward nearby heights. Release applies the stroke."));
+                break;
         }
     });
     connect(panel->PickHeight, &QPushButton::toggled, this, [this, panel](bool isPicking) {
@@ -591,6 +655,9 @@ void WorldWorkspace::initializeTerrainAuthoring()
         }
     });
     connect(panel->BrushRadius, &QDoubleSpinBox::valueChanged, this, [this]() { applyTerrainInteraction(); });
+    connect(panel->BrushHeight, &QDoubleSpinBox::valueChanged, this, cancelBrushGesture);
+    connect(panel->BrushDelta, &QDoubleSpinBox::valueChanged, this, cancelBrushGesture);
+    connect(panel->BrushStrength, &QDoubleSpinBox::valueChanged, this, cancelBrushGesture);
     connect(panel->Preset, &QComboBox::currentIndexChanged, this, changeSource);
     connect(panel->Randomize, &QPushButton::clicked, this, [panel, changeSource]() {
         panel->RandomizeSeed();
@@ -742,7 +809,7 @@ void WorldWorkspace::queueTerrainPreview()
     panel.Commit->setEnabled(false);
     panel.Compare->setEnabled(false);
     panel.Sculpt->setEnabled(false);
-    if (panel.Sculpt->isChecked() == true)
+    if (panel.GetBrush() != TerrainBrush::Off)
     {
         applyTerrainInteraction();
     }
@@ -1067,7 +1134,7 @@ void WorldWorkspace::refreshTerrainBase()
 void WorldWorkspace::queueTerrainStroke(const QJsonArray& points)
 {
     WorldTerrainPanel& panel = *mTerrainPanelOrNull;
-    if (panel.IsOpen == false || panel.Sculpt->isEnabled() == false || panel.Sculpt->isChecked() == false ||
+    if (panel.IsOpen == false || panel.Sculpt->isEnabled() == false || panel.GetBrush() == TerrainBrush::Off ||
         panel.ReadySequence != panel.Sequence || panel.ReadyRecipe != panel.GetCommittedRecipe() ||
         panel.Target != Selected_)
     {
@@ -1075,11 +1142,12 @@ void WorldWorkspace::queueTerrainStroke(const QJsonArray& points)
     }
     QJsonObject recipe = panel.ReadyRecipe;
     QString error;
-    if (AppendTerrainFlattenStroke(recipe,
-                                   points,
-                                   static_cast<float32>(panel.BrushRadius->value()),
-                                   static_cast<float32>(panel.BrushHeight->value()),
-                                   error) == false)
+    if (AppendTerrainStroke(recipe,
+                            points,
+                            static_cast<float32>(panel.BrushRadius->value()),
+                            panel.GetBrush(),
+                            panel.GetBrushValue(),
+                            error) == false)
     {
         panel.Status->setText(error);
         return;
@@ -1119,7 +1187,7 @@ void WorldWorkspace::commitTerrainDraft()
         QString message;
         if (panel.RemovedStrokes != 0)
         {
-            message = QStringLiteral("The smaller footprint cuts %1 Flatten strokes. Applying removes those strokes.")
+            message = QStringLiteral("The smaller footprint cuts %1 sculpt strokes. Applying removes those strokes.")
                           .arg(panel.RemovedStrokes);
         }
         if (shouldReplaceHeightmap == true)
@@ -1170,7 +1238,7 @@ void WorldWorkspace::commitTerrainDraft()
         panel.HasDraftView = false;
         panel.Sculpt->setEnabled(true);
         panel.Compare->setEnabled(true);
-        panel.Status->setText(QStringLiteral("Flatten applied. Undo restores the previous surface."));
+        panel.Status->setText(QStringLiteral("Stroke applied. Undo restores the previous surface."));
     }
     else
     {
@@ -1209,7 +1277,7 @@ void WorldWorkspace::applyTerrainInteraction()
         &viewport == &Render_->GetViewport() ? Scene_->GetViewport() : Render_->GetViewport();
     otherViewport.GetObjectInteraction().SetTerrainBrush({}, 0, false);
     const bool hasBrush = panel.IsOpen == true && panel.Sculpt->isEnabled() == true &&
-                          panel.Sculpt->isChecked() == true && panel.IsComparing == false && Pending_ == false &&
+                          panel.GetBrush() != TerrainBrush::Off && panel.IsComparing == false && Pending_ == false &&
                           IsPlayingInViewport() == false && panel.Target == Selected_;
     interaction.SetTerrainBrush(hasBrush == true ? panel.Target : QString{},
                                 hasBrush == true ? static_cast<float32>(panel.BrushRadius->value()) : 0,

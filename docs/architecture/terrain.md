@@ -3,7 +3,7 @@
 Status: the [World editor](../development/editor-workspace.md#s4-scene-authoring)
 generates bounded heightfield meshes for default Worlds. The
 [viewport authoring slices](#delivery-and-review-gates) add docked source
-editing, native grayscale heightmap import, and the Flatten brush. The tiled
+editing, native grayscale heightmap import, and three sculpt brushes. The tiled
 terrain module, streaming renderer, and physics adapter remain proposed. Sizes
 and performance budgets are starting profiles and require measurements on the
 selected targets.
@@ -520,12 +520,11 @@ brush active. **Exit Terrain Edit** returns to ordinary selection.
   replaces the source in one undo step. Canceling a source edit discards the
   candidate. A saved Flat recipe opens in Flat, while Rolling Hills and Ridges
   open in Generate with their stored versions and values.
-- **Sculpt** starts with **Flatten**. **Raise / Lower** and **Smooth** are
-  follow-on tools. The cursor follows the finest authored surface and shows
-  the brush radius in metres.
-  For Flatten, **Pick from surface** samples a target elevation or the author
-  enters it directly. Press and drag to work on the highlighted area. One stroke
-  makes one undo step. A slope overlay for route inspection is planned.
+- **Sculpt** offers **Flatten**, **Raise / Lower**, and **Smooth**. The cursor
+  follows the authored surface and shows the brush radius in metres.
+  Flatten uses an absolute elevation, Raise / Lower uses a signed offset, and
+  Smooth blends toward the surrounding heights from the start of the stroke.
+  One stroke makes one undo step. A slope overlay for route inspection is planned.
 - **Paint** shows the available terrain materials, radius and strength. The
   brush previews the affected area on the selected surface. Material strokes
   get their own undo steps and preserve the authored heights.

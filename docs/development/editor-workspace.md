@@ -668,23 +668,31 @@ negative Z. Use **Flip X** and **Flip Z** to align the raster against the World
 in the preview. The saved World embeds the sample grid and orientation, so it
 can reopen in the native or browser editor without the original PNG.
 
-To sculpt committed terrain, open **Edit Terrain…** and turn on **Flatten
-brush**. Set the radius and target height in terrain-local metres, or choose
-**Pick from surface** and click the ground to copy its height. Drag on the
-terrain and release to apply one undoable stroke. The inner half of the radius
-reaches the target height and the outer half blends back into the surface.
-Press Escape or move focus away during a drag to cancel it. A terrain can
-keep up to 16 strokes. **Save World** keeps the strokes. Compatible source
-changes retain their locations and target heights. If shrinking the footprint
-would clip a stroke, the confirmation
-names how many strokes the edit removes. Replacing an embedded heightmap also
-requires confirmation.
+To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
+brush**. Set the radius in terrain-local metres, then drag on the ground and
+release to apply one undoable stroke. The brush has full strength in the inner
+half of the radius and fades to zero at the edge.
+
+- **Flatten** moves the surface toward an absolute local height. Enter the
+  height or use **Pick from surface** to sample it.
+- **Raise / Lower** adds a signed local height change. A positive value raises
+  the surface, and a negative value lowers it.
+- **Smooth** blends heights toward neighboring samples from the surface before
+  the stroke. **Strength** controls how much to blend on each pass. The
+  smoothing distance depends on how far apart the terrain samples are.
+
+Choose **Off** to return to ordinary viewport editing. Press Escape or move
+focus away during a drag to cancel it. A terrain can keep up to 16 strokes.
+**Save World** keeps the strokes and replays them in order after a compatible
+source change. If shrinking the footprint would clip a stroke, the
+confirmation names how many strokes the edit removes. Replacing an embedded
+heightmap also requires confirmation.
 
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
 shows the terrain's surface colour without adding mesh lights. Terrain
-collision, other brush modes, material paint, erosion and streaming are
+collision, material paint, erosion and streaming are
 future work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.

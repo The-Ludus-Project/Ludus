@@ -1306,8 +1306,7 @@ bool ViewportObjectInteraction::Release()
         mTerrainStroke = {};
         if (mHasTerrainStrokeOverflowed == true)
         {
-            Q_EMIT TerrainStrokeRejected(
-                QStringLiteral("This stroke is too long. Split it into shorter Flatten strokes."));
+            Q_EMIT TerrainStrokeRejected(QStringLiteral("This stroke is too long. Split it into shorter strokes."));
         }
         else
         {

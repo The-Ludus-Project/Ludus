@@ -33,12 +33,21 @@ inline constexpr foundation::float64 MAX_TERRAIN_BRUSH_HEIGHT_METRES = 128;
 /// Remove strokes whose support would be cut by a smaller footprint. Returns the count for commit confirmation.
 [[nodiscard]] qsizetype RemoveClippedTerrainStrokes(const QJsonObject& previous, QJsonObject& inoutRecipe);
 
-/// Append one validated, ordered flatten stroke. Failure preserves inoutRecipe.
-[[nodiscard]] bool AppendTerrainFlattenStroke(QJsonObject& inoutRecipe,
-                                              const QJsonArray& points,
-                                              foundation::float32 radius,
-                                              foundation::float32 height,
-                                              QString& outError);
+enum class TerrainBrush : foundation::uint8
+{
+    Off,
+    Flatten,
+    RaiseLower,
+    Smooth,
+};
+
+/// Append an ordered stroke. Value is local metres for Flatten and Raise/Lower, or a blend weight for Smooth.
+[[nodiscard]] bool AppendTerrainStroke(QJsonObject& inoutRecipe,
+                                       const QJsonArray& points,
+                                       foundation::float32 radius,
+                                       TerrainBrush brush,
+                                       foundation::float32 value,
+                                       QString& outError);
 
 /// Check the relationships between the schema-validated recipe fields.
 [[nodiscard]] bool ValidateTerrainRecipe(const QJsonObject& recipe, QString& outError);
