@@ -1162,6 +1162,18 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
     Q_EMIT SelectionRequested(Pick(positionPixel, framePixel));
     return true;
 }
+void ViewportObjectInteraction::RequestFrameAt(QPointF positionPixel, const QRectF& framePixel)
+{
+    if (mTerrainBrushKey.isEmpty() == false || IsDragging() == true)
+    {
+        return;
+    }
+    const QString id = Pick(positionPixel, framePixel);
+    if (id.isEmpty() == false)
+    {
+        Q_EMIT FrameRequested(id);
+    }
+}
 bool ViewportObjectInteraction::dragAxis(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues)
 {
     const int32 axis = mDragTarget.Index;

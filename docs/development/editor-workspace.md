@@ -1476,15 +1476,16 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 | Middle-drag or Shift + Alt/Option + left-drag | Pan in the camera plane |
 | Wheel / high-resolution trackpad scroll | Proportional dolly; orthographic views change visible span |
 | F | Frame the selected rendered World entity |
+| Double-click a rendered entity in the native viewport or its row in the World hierarchy | Move the editor camera to frame that entity |
 | Numpad 7 / 1 / 3 | Orthographic Top / Front / Right view; add Ctrl (Command on macOS) for Bottom / Back / Left |
 | Numpad 5 | Switch between perspective and orthographic projection |
 | Home / **Frame all visible objects** | Fit all extracted visible geometry |
 | Shift+Home / **View → Go to start view** | Return to an imported scene's [start view](#scene-start-view) |
 | Escape, right-button release, focus loss or hiding the viewport | Stop fly movement and release mouse capture |
 
-Plain left-drag is reserved for selection/tools. Double-click no longer resets
-the entire scene. An absent, hidden or non-renderable selection makes **F** a
-no-op. Framing uses transformed mesh bounds, fits both viewport axes, and
+Plain left-drag is reserved for selection/tools. Double-clicking empty space
+leaves the camera in place. An absent, hidden or non-renderable selection makes
+**F** a no-op. Framing uses transformed mesh bounds, fits both viewport axes, and
 preserves orientation. Pan uses the current lens, focus distance and drawable
 height, so resizing and display scaling do not change the intended displacement.
 Fractional pointer/scroll input is retained rather than rounded to mouse notches.

@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QCursor>
+#include <QEvent>
 #include <QGuiApplication>
 #include <QHideEvent>
 
@@ -120,6 +121,13 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     }
     if (event->button() == Qt::LeftButton && pickRayPathPixel(event->globalPosition()) == true)
     {
+        event->accept();
+        return;
+    }
+    if (event->type() == QEvent::MouseButtonDblClick && event->button() == Qt::LeftButton &&
+        event->buttons() == Qt::LeftButton && event->modifiers() == Qt::NoModifier && mIsFlying == false)
+    {
+        mObjectInteraction->RequestFrameAt(getInteractionPosition(event->globalPosition()), getInteractionFrame());
         event->accept();
         return;
     }

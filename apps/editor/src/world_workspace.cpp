@@ -447,7 +447,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     ConfigureItemSelection(*Entities_);
     Entities_->setObjectName(QStringLiteral("worldEntities"));
     Entities_->setAccessibleName(QStringLiteral("World entities"));
-    Entities_->setToolTip(QStringLiteral("Right-click to add, duplicate, or delete entities."));
+    Entities_->setToolTip(QStringLiteral("Double-click to frame a visible entity. "
+                                         "Right-click to add, duplicate, or delete entities."));
     Entities_->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
     mEntitySearch = new WorldEntitySearch(*Entities_, entityColumn);
     entityLayout->addWidget(mEntitySearch);
@@ -680,6 +681,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     connect(mEntitySearch, &WorldEntitySearch::SelectionChanged, this, updateSelection);
     connect(Entities_, &QListWidget::currentItemChanged, this, updateSelection);
     connect(Entities_, &QListWidget::itemSelectionChanged, this, updateSelection);
+    connect(Entities_, &QListWidget::itemDoubleClicked, this, [this](const QListWidgetItem* item) {
+        frameEntity(item->data(Qt::UserRole).toString());
+    });
     const auto bindCommand = [this](const QKeySequence& key, QAction* action) {
         QShortcut* shortcut = new QShortcut(key, Entities_);
         shortcut->setContext(Qt::WidgetShortcut);
