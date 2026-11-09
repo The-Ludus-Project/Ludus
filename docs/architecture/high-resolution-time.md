@@ -306,16 +306,16 @@ The loop still pumps the control channel at 10 Hz, so a `Stop`, `Pause` or reloa
 is dispatched within 100 ms. Unlike the world reference, the host does not pause
 the simulation while hidden: the editor's `Pause` command owns the play state,
 and a second, implicit pause would make `Status` report `Running` while
-`sim_ticks` stood still. The host keeps its one-tick-per-running-frame contract,
-so a hidden game advances at the hidden rate, with no catch-up when shown.
+`sim_ticks` stood still. The host continues advancing a fixed batch of ticks
+at the hidden frame rate, with no catch-up when shown.
 `pacing_interval_ns` reports the active interval, so the editor's Timing panel
 shows 100 ms while the game window is hidden, and the 120-frame window then
 spans twelve seconds.
 
-The simulation is otherwise unchanged: the host still advances
-one fixed tick per running frame and never catches up after pause or reload
-(live-reload design 8), so the frame samples are diagnostics, not simulation
-debt. A committed module reload is a session replacement and drops both the
+A running host advances one fixed tick per frame at normal speed and four
+during debug fast-forward. The timestep stays fixed and the host skips catch-up
+after pause or reload (live-reload design 8). Frame samples serve diagnostics.
+A committed module reload is a session replacement and drops both the
 pacing schedule and the frame-clock baseline. A rejected reload resumes the old
 instance and schedule, so its stall appears as one long, rescheduled frame.
 

@@ -242,8 +242,11 @@ clock in fractional UTC days since 2000-01-01 12:00 UTC and the observer's
 latitude and longitude in degrees. On success, assign the returned rotation to
 the light transform. Its local −Z axis points along the incoming light in a
 world with +X east, +Y up and −Z north. Use `IsAboveHorizon` to gate direct
-illumination. The game owns the clock, transform, and intensity. The sampler
-uses approximate solar and lunar positions and a spherical, airless Earth.
+illumination. The game owns the clock, transform, and intensity. Hosted games
+can convert `FrameInput::ElapsedSeconds` to days for the Earth templates or
+hours for a custom orbit and add the authored epoch. This makes the sky follow
+Pause, Step, and the [host's debug fast-forward](../development/project-live-reload.md#recover-and-debug).
+The sampler uses approximate solar and lunar positions and a spherical, airless Earth.
 See [celestial directional lights](../development/editor-workspace.md#celestial-directional-lights)
 for the World editor controls.
 

@@ -549,7 +549,7 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   description only when its row cannot: multi-line or elided descriptions.
 - **Toolbars** share the menus' commands, in groups told apart by a separator: Standard
   holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
-  Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
+  Launch (Run, Debug) and Session (Pause, Step, Resume, Fast-forward, Reload Code). The Session group
   is shown only while a game is running or paused. The Render Graph toolbar is the
   context strip: it appears while a render graph is shown in any document group, so a World
   shown alone keeps one row of commands. Its buttons show an icon beside the label: Validate,
@@ -1800,6 +1800,13 @@ horizon contributes zero direct light. Intensity and colour come from the
 authored light. The rules model direction and horizon visibility. Lunar phase
 and atmospheric effects are outside their scope. Games can pass
 their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+
+During a supported hosted Play session, choose **Fast-forward (4×)** in the
+**Play** menu or Game toolbar to advance the game by four fixed ticks per
+rendered frame. **Normal speed (1×)** restores the usual rate. **Pause** still
+freezes simulation and **Step** advances one tick. Game code that samples
+celestial motion from the host's simulation clock sees the same speed change
+as gameplay. The World viewport uses its authored preview time.
 
 Choose **Custom Orbit** for a different observer world, star, or moon. Set
 **Orbit Time** in simulation hours from your chosen epoch. For lights viewed
