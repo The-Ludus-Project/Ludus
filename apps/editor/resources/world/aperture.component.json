@@ -1,0 +1,78 @@
+{
+  "id": "aperture",
+  "label": "Aperture",
+  "help": "Opaque flat screen with a centred slit, generated from these sizes. It lies in the entity's local XY plane with its front face toward +Z; the slit runs along local Y and opens across local X. Its long edges are knife edges.",
+  "required": false,
+  "properties": [
+    {
+      "id": "opening",
+      "label": "Opening",
+      "type": "number",
+      "default": 0.05,
+      "help": "Width of the slit across local X; zero closes it. Must be less than Screen width.",
+      "unit": "m",
+      "min": 0,
+      "max": 10000
+    },
+    {
+      "id": "slitLength",
+      "label": "Slit length",
+      "type": "number",
+      "default": 0.5,
+      "help": "Length of the slit along local Y; at most Screen height.",
+      "unit": "m",
+      "min": 0.0001,
+      "max": 10000
+    },
+    {
+      "id": "screenWidth",
+      "label": "Screen width",
+      "type": "number",
+      "default": 1,
+      "help": "Extent of the screen across the slit, along local X.",
+      "unit": "m",
+      "min": 0.0001,
+      "max": 10000
+    },
+    {
+      "id": "screenHeight",
+      "label": "Screen height",
+      "type": "number",
+      "default": 1,
+      "help": "Extent of the screen along the slit, along local Y.",
+      "unit": "m",
+      "min": 0.0001,
+      "max": 10000
+    },
+    {
+      "id": "r",
+      "label": "Reflectance R",
+      "type": "number",
+      "default": 0,
+      "help": "Linear Lambertian reflectance of the screen; zero absorbs all light, like an ideal knife-edge screen.",
+      "unit": "",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "g",
+      "label": "Reflectance G",
+      "type": "number",
+      "default": 0,
+      "help": "Linear Lambertian reflectance of the screen; zero absorbs all light, like an ideal knife-edge screen.",
+      "unit": "",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "b",
+      "label": "Reflectance B",
+      "type": "number",
+      "default": 0,
+      "help": "Linear Lambertian reflectance of the screen; zero absorbs all light, like an ideal knife-edge screen.",
+      "unit": "",
+      "min": 0,
+      "max": 1
+    }
+  ]
+}

@@ -620,8 +620,8 @@ navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
 **Add World Preset** in the right-click menu or below the entity list to
-create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
-**Luminaire**. Each command
+create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun**,
+**Luminaire** or [**Aperture Slit**](#apertures). Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
@@ -719,6 +719,33 @@ that viewport automatically. Its selectors expose authored graph configurations 
 attachments. The **Stats** toggle shows live update FPS, CPU/GPU time and readback
 latency; see the [graph viewport measurement definitions](render-graph-authoring.md#start-customizing-the-renderer). The current static graph profile does not provide the former Lit material
 preview; its input and presentation limits are documented with that workflow.
+
+### Apertures
+
+An aperture is an opaque flat screen with a centred slit whose sizes are entity
+fields. Choose **Add World Preset → Aperture Slit** to create a 1 m screen at the
+origin with a 0.5 m slit and a 5 cm opening, or import a
+[scene source aperture](../architecture/scene-source-format.md#aperture), such as the
+screen of `tests/scenes/diffraction/single-slit.luscene.json`.
+
+Select the entity and edit the **Aperture** component in Properties, then **Apply
+Changes**:
+
+- **Opening** is the slit width across local X, in metres; zero closes the slit. It
+  must be less than **Screen width**.
+- **Slit length** runs along local Y, at most **Screen height**.
+- **Screen width** and **Screen height** size the screen around the slit.
+- **Colour** (Reflectance R, G and B) is the screen's linear Lambertian reflectance;
+  the default black absorbs all light, like the ideal knife-edge screen of diffraction
+  work.
+
+The screen lies in the entity's local XY plane and faces +Z, so use Transform to place
+and turn it. The editor rebuilds the screen from these fields whenever it extracts the
+World, so the viewport and the ray templates show each applied opening, and **Undo**
+restores the previous one. An edit that cannot form a screen, such as an opening as
+wide as the screen, is refused in Properties with the field to change. An aperture
+draws its own screen, so it cannot share an entity with Renderable, Terrain or
+imported geometry. Like the other presets, apertures need a default World.
 
 ## Recording CPU and GPU profiling
 

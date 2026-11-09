@@ -22,6 +22,8 @@ inline constexpr usize MAX_ENTRY_BYTES = scene_source::MAX_SCENE_SOURCE_BYTES;
 /// Read a scene source entry file into outScene.
 /// @param entryBytes Complete entry file.
 /// @param entryName Root-relative name recorded for the entry.
+/// @param shouldDeferApertures Leave `aperture` objects out of outScene, each with an
+/// APERTURE_DEFERRED note, for a caller that generates them (BestEffortOptions::ShouldDeferApertures).
 /// @param outScene Replaced. Each polygon becomes a triangle fan with its own vertices and
 /// its flat geometric normal, so shading never blends across polygon edges.
 /// @param inoutLog Receives the parse failure (line 0: JSON positions are not tracked) and
@@ -30,6 +32,7 @@ inline constexpr usize MAX_ENTRY_BYTES = scene_source::MAX_SCENE_SOURCE_BYTES;
 /// @return Ok; Invalid when the document is not a valid scene source; Cancelled; OutOfMemory.
 [[nodiscard]] Status ReadScene(std::span<const uint8> entryBytes,
                                std::string_view entryName,
+                               bool shouldDeferApertures,
                                SceneIr& outScene,
                                DiagnosticLog& inoutLog,
                                const Cancellation* cancelOrNull = nullptr) noexcept;

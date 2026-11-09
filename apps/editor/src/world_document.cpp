@@ -3,6 +3,7 @@
 #include "internal/builtin_world.h"
 #include "internal/editor_identity.h"
 #include "internal/material_inspection.h"
+#include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_terrain.h"
 
@@ -451,6 +452,14 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 break;
             }
             components.append(terrainComponent);
+            QByteArray apertureBytes;
+            QJsonObject apertureComponent;
+            if (ReadBuiltInWorldAsset(QStringLiteral("aperture.component.json"), apertureBytes, error) == false ||
+                Decode(apertureBytes, MAX_SCHEMA_BYTES, apertureComponent, error) == false)
+            {
+                return false;
+            }
+            components.append(apertureComponent);
             schema.insert(QStringLiteral("components"), components);
             isBuiltInSchema = true;
         }
@@ -789,6 +798,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         labels.insert(label);
     }
     const QString terrainComponent = GetTerrainComponentId();
+    const QString apertureComponent = GetApertureComponentId();
     bool hasAuthoredTerrainPayload = false;
     for (const auto value : entities)
     {
@@ -804,6 +814,24 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                            "Generate Terrain to create it."));
             }
             if (ValidateTerrainRecipe(components.value(terrainComponent).toObject(), error) == false)
+            {
+                return false;
+            }
+        }
+        if (HasBuiltInAperture() == true && components.contains(apertureComponent) == true)
+        {
+            if (components.contains(QStringLiteral("transform")) == false ||
+                e.contains(QStringLiteral("scene")) == true ||
+                components.contains(QStringLiteral("renderable")) == true ||
+                components.contains(terrainComponent) == true)
+            {
+                return Fail(
+                    error,
+                    QStringLiteral("An aperture draws its own screen: it needs a Transform on an entity without "
+                                   "Renderable, Terrain or imported geometry. Use Add World Preset → "
+                                   "Aperture Slit, or remove those components first."));
+            }
+            if (ValidateApertureParameters(components.value(apertureComponent).toObject(), error) == false)
             {
                 return false;
             }
@@ -1452,15 +1480,15 @@ bool WorldDocument::Edit(const QString& entity,
     }
     return ReplaceEntity(e, error);
 }
-bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
+bool WorldDocument::ImportScene(const QJsonObject& level, QString& outError, const QJsonArray& generatedEntities)
 {
     if (HasUuidRecords() == true)
     {
-        return Fail(error, QStringLiteral("Version-2 World records do not support the scene extension yet."));
+        return Fail(outError, QStringLiteral("Version-2 World records do not support the scene extension yet."));
     }
     if (level.value(QStringLiteral("objects")).isArray() == false)
     {
-        return Fail(error, QStringLiteral("Missing imported instances."));
+        return Fail(outError, QStringLiteral("Missing imported instances."));
     }
     auto candidate = Draft_;
     auto entities = candidate.value(QStringLiteral("entities")).toArray();
@@ -1472,14 +1500,14 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
         {
             if (Entity(id).value(QStringLiteral("scene")).isObject() == false)
             {
-                return Fail(error, QStringLiteral("An imported ID collides with an existing gameplay entity."));
+                return Fail(outError, QStringLiteral("An imported ID collides with an existing gameplay entity."));
             }
             continue; // Existing entities and all their edits remain authoritative.
         }
         const auto transform = object.value(QStringLiteral("transform")).toArray();
         if (transform.size() != 12)
         {
-            return Fail(error, QStringLiteral("Invalid imported affine transform."));
+            return Fail(outError, QStringLiteral("Invalid imported affine transform."));
         }
         QJsonArray basis, position;
         for (foundation::int32 i = 0; i < 12; ++i)
@@ -1551,9 +1579,17 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
     {
         candidate.insert(QStringLiteral("shared_coatings"), sharedCoatings);
     }
+    for (const QJsonValue value : generatedEntities)
+    {
+        const QJsonObject entity = value.toObject();
+        if (Entity(entity.value(QStringLiteral("id")).toString()).isEmpty() == true)
+        {
+            entities.append(entity);
+        }
+    }
     candidate.insert(QStringLiteral("scene"), metadata);
     candidate.insert(QStringLiteral("entities"), entities);
-    return Commit(candidate, error);
+    return Commit(candidate, outError);
 }
 bool WorldDocument::MapSceneMaterial(const QString& source, const QString& replacement, QString& outError)
 {

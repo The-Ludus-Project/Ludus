@@ -63,7 +63,8 @@ struct WorldSunPlacement final
                                               gameplay::camera::CameraSample& outCamera,
                                               foundation::float32& outSpeed,
                                               QString& outError);
-/// Create one bundled geometry, light, luminaire or player preset as one validated history transaction.
+/// Create one bundled geometry, light, luminaire, player or aperture preset as one validated history transaction.
+/// "Aperture Slit" creates a default-sized aperture screen at the origin (internal/world_aperture.h).
 /// Failure preserves the document and outId. Must run on the editor thread.
 [[nodiscard]] bool CreateWorldObject(WorldDocument& inoutWorld,
                                      const foundation::identity::EntropySource& entropy,

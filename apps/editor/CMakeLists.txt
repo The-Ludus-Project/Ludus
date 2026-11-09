@@ -376,6 +376,7 @@ function(ludus_editor_add_builtin_world target)
         PREFIX "/world" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world"
         FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/world.schema.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/terrain.component.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/aperture.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/render.preview.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/plane.mesh.json"
@@ -755,6 +756,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_document.cpp
     src/world_terrain.cpp
     src/world_terrain_editing.cpp
+    src/world_aperture.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
@@ -839,6 +841,8 @@ target_link_libraries(ludus_editor_application
         # Scene import, save and assembly run in process (no Python scene backend),
         # including the browser Editor's MEMFS copies.
         Ludus::SceneCook
+        # Scene source apertures import as editable World aperture entities.
+        Ludus::SceneSource
         Ludus::FoundationThreading
         ludus_stb_image
         # World documents share the version-2 record constants with their owner (object handles stage 3).
@@ -1136,6 +1140,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/import_report_tests.cpp
         tests/world_workspace_tests.cpp
         tests/world_terrain_tests.cpp
+        tests/world_aperture_tests.cpp
         tests/material_inspection_tests.cpp
         tests/inspector_fields_tests.cpp
         tests/level_workspace_tests.cpp

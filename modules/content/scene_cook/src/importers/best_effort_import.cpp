@@ -2606,7 +2606,12 @@ bool ImportLudusScene(std::string_view entryFile,
     }
     if (status == Status::Ok)
     {
-        status = ludus_scene::ReadScene(bytes.AsSpan(), detail::GetBaseName(native), scene, log, cancelOrNull);
+        status = ludus_scene::ReadScene(bytes.AsSpan(),
+                                        detail::GetBaseName(native),
+                                        options.ShouldDeferApertures,
+                                        scene,
+                                        log,
+                                        cancelOrNull);
     }
     return CookImportedScene(LUDUS_SCENE_PROFILE,
                              scene,

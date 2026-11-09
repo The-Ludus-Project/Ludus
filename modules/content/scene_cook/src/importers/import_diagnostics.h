@@ -75,6 +75,8 @@ inline constexpr std::string_view UNSUPPORTED_FEATURE = "UNSUPPORTED_FEATURE";
 inline constexpr std::string_view EXTENSION_REQUIRED = "EXTENSION_REQUIRED";
 /// An optional extension or record was ignored as the specification permits.
 inline constexpr std::string_view EXTENSION_IGNORED = "EXTENSION_IGNORED";
+/// A scene source aperture was left out of the bundle for the importing World to generate.
+inline constexpr std::string_view APERTURE_DEFERRED = "APERTURE_DEFERRED";
 /// A vertex attribute or texture-coordinate set the IR does not carry.
 inline constexpr std::string_view ATTRIBUTE_IGNORED = "ATTRIBUTE_IGNORED";
 /// A primitive, face or record that is not a triangle surface was skipped.
