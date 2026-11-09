@@ -909,9 +909,14 @@ with optional tooling absent.
   `StorageRead` (writes stay in compute); the DXIL profile in `compile_raster.py`
   and `ludus_compile_shader` accept the same fragment storage reads. The default
   graph's manifest lists `dxil` on Windows, so the installed template cooks for
-  Direct3D 12. MetalFX cases skip through the capability query. Still open:
-  producer-driven Windows rebuilds (`ludus_shader_reload_gpu`), and a WARP pass
-  of the default-graph suite is pending until the Windows lane runs this change.
+  Direct3D 12. MetalFX cases skip through the capability query. The first
+  Windows run of these fixtures reached the 260-character path limit in the
+  clustered `ZPrepass` cook; the graph build now stages programs under shorter
+  names and reports a path at that limit with the repair
+  ([authoring guide](../development/render-graph-authoring.md#windows-worker)).
+  Still open: producer-driven Windows rebuilds (`ludus_shader_reload_gpu`), and
+  the WARP pass of the default-graph suite is recorded once the Windows lane
+  passes with the shorter paths.
 - **D6d (editor):** port Qt host integration and hosted-window transport plus
   D3D12 native interop/shared presentation with explicit handle ownership,
   adapter identity, producer/consumer synchronization and teardown fencing.
