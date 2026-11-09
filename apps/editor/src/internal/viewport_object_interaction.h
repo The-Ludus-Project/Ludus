@@ -141,6 +141,8 @@ public:
         return mDragTarget;
     }
     [[nodiscard]] bool Press(QPointF positionPixel, const QRectF& framePixel);
+    /// Request framing for the visible entity under a double-click in the edit view.
+    void RequestFrameAt(QPointF positionPixel, const QRectF& framePixel);
     [[nodiscard]] bool Move(QPointF positionPixel, bool shouldSnap);
     [[nodiscard]] bool Release();
     void Cancel();
@@ -170,6 +172,7 @@ Q_SIGNALS:
     /// The selection outline the GPU should draw changed, possibly to none; read it with TryGetGpuOutlineRequest.
     void GpuOutlineChanged();
     void SelectionRequested(const QString& id);
+    void FrameRequested(const QString& id);
     /// Original stable ID and absolute placement arrays (metres, Euler degrees, positive scale).
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
     void TerrainExtentCommitted(const QString& key, foundation::float64 extent);

@@ -77,6 +77,8 @@ public:
     [[nodiscard]] bool TryDescribeStartView(PreviewStartView& outView) const noexcept;
     void SetSelection(const QString& id);
     [[nodiscard]] bool FrameSelection() noexcept;
+    /// Frame the visible mesh bounds of a World entity by stable ID.
+    [[nodiscard]] bool FrameEntity(const QString& id) noexcept;
     /// Use a transient first-person camera while retaining the editor's navigation and scene.
     [[nodiscard]] bool BeginFirstPerson(const gameplay::camera::CameraSample& spawn, QString& outError);
     // NOLINTBEGIN(bugprone-easily-swappable-parameters): elapsed seconds then speed, as in Fly; the units differ.

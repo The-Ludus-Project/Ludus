@@ -1128,9 +1128,12 @@ void RenderPreview::SetSelection(const QString& id)
 }
 bool RenderPreview::FrameSelection() noexcept
 {
+    return FrameEntity(mSelectedId);
+}
+bool RenderPreview::FrameEntity(const QString& id) noexcept
+{
     math::Aabb3 boundsWorld;
-    if (mSelectedId.isEmpty() == true || Scene_.TryGetBounds(mSelectedId, boundsWorld) == false ||
-        beginNavigation() == false ||
+    if (id.isEmpty() == true || Scene_.TryGetBounds(id, boundsWorld) == false || beginNavigation() == false ||
         mCameraController.TryFrame(boundsWorld,
                                    static_cast<float32>(RequestedWidth_) / static_cast<float32>(RequestedHeight_)) ==
             false)

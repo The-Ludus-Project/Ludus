@@ -258,6 +258,7 @@ private:
     [[nodiscard]] bool readProjectBrdfRoughness(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
     void mapImportedMaterial(const QString& source, const QString& replacement, const QString& label);
     void bindViewportInteraction();
+    void frameEntity(const QString& id);
     void showEntityMenu(const QPoint& positionGlobal, const QString& entityId);
     void updateViewportInteraction();
     void exploreFirstPerson();

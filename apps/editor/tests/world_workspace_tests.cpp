@@ -21,6 +21,7 @@
 #include "internal/world_lights_panel.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_workspace.h"
+#include "mouse_fixture.h"
 #include "scene_fixture.h"
 #include <QCheckBox>
 #include <QColor>
@@ -67,6 +68,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
@@ -564,6 +566,75 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     REQUIRE(entitiesOrNull->selectedItems().size() == 1);
     CHECK(entitiesOrNull->selectedItems().first()->data(Qt::UserRole).toString() == cubeId);
     menuOrNull->close();
+}
+
+TEST_CASE("Double-clicking a World entity frames it from the viewport or hierarchy", "[editor][world][framing]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("framing.world.json"))) == true);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+
+    QAction* cubeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"));
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(cubeOrNull != nullptr);
+    REQUIRE(viewportOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    cubeOrNull->trigger();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    REQUIRE(QTest::qWaitFor([&preview]() { return preview.Scene().Objects.size() == 1; }) == true);
+    const QString cubeId = preview.Scene().Objects.first().Id;
+    math::Aabb3 boundsWorld;
+    REQUIRE(preview.Scene().TryGetBounds(cubeId, boundsWorld) == true);
+    const math::Vector3 centerWorld = (boundsWorld.Min + boundsWorld.Max) * 0.5F;
+    const QJsonObject draft = workspace.Document().Draft();
+    preview.FrameAll();
+    preview.SetFocusDistance(preview.GetFocusDistance() * 3);
+    const float32 distanceBefore = preview.GetFocusDistance();
+
+    SECTION("viewport picks the entity and ignores the background")
+    {
+        const QLayout* layoutOrNull = viewportOrNull->layout();
+        REQUIRE(layoutOrNull != nullptr);
+        REQUIRE(layoutOrNull->count() >= 2);
+        const QRect framePixel = layoutOrNull->itemAt(layoutOrNull->count() - 1)->geometry();
+        // Test the input proxy with the extracted scene, independent of GPU presentation.
+        viewportOrNull->GetObjectInteraction().SetActive(true);
+        viewportOrNull->GetObjectInteraction().SetTool(ViewportObjectInteraction::Tool::Select);
+        entitiesOrNull->clearSelection();
+        preview.Pan(8, 0, static_cast<float32>(framePixel.height()));
+        const QJsonObject navigation = preview.Navigation();
+        tests::DoubleClick(viewportOrNull, Qt::LeftButton, Qt::NoModifier, framePixel.topLeft() + QPoint(4, 4));
+        CHECK(preview.Navigation() == navigation);
+        tests::DoubleClick(viewportOrNull, Qt::LeftButton, Qt::AltModifier, framePixel.center());
+        CHECK(preview.Navigation() == navigation);
+        QTest::mouseClick(viewportOrNull, Qt::LeftButton, Qt::NoModifier, framePixel.center());
+        REQUIRE(entitiesOrNull->selectedItems().size() == 1);
+        CHECK(entitiesOrNull->selectedItems().first()->data(Qt::UserRole).toString() == cubeId);
+        CHECK(preview.Navigation() == navigation);
+        tests::DoubleClick(viewportOrNull, Qt::LeftButton, Qt::NoModifier, framePixel.center());
+    }
+    SECTION("hierarchy frames the clicked row")
+    {
+        REQUIRE(entitiesOrNull->count() == 1);
+        const QPoint rowPixel = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+        QTest::mouseClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
+        tests::DoubleClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
+    }
+    CHECK(preview.GetFocusDistance() < distanceBefore);
+    PreviewStartView view;
+    REQUIRE(preview.TryDescribeStartView(view) == true);
+    CHECK(view.TargetWorld.X == Catch::Approx(centerWorld.X).margin(0.00001));
+    CHECK(view.TargetWorld.Y == Catch::Approx(centerWorld.Y).margin(0.00001));
+    CHECK(view.TargetWorld.Z == Catch::Approx(centerWorld.Z).margin(0.00001));
+    CHECK(workspace.Document().Draft() == draft);
 }
 
 TEST_CASE("World layout remains usable in a compact desktop window", "[editor][world]")

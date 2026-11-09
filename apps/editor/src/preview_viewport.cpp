@@ -2812,9 +2812,18 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
             case QEvent::Leave:
                 leaveEvent(event);
                 break;
-            case QEvent::MouseButtonDblClick:
+            case QEvent::MouseButtonDblClick: {
+                // QWidget routes double-clicks to mousePressEvent. The embedded QQuickWindow needs forwarding.
+                QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
+                if (mouseEvent->button() == Qt::LeftButton && mouseEvent->buttons() == Qt::LeftButton &&
+                    mouseEvent->modifiers() == Qt::NoModifier)
+                {
+                    mousePressEvent(mouseEvent);
+                    return true;
+                }
                 event->ignore();
                 return false;
+            }
             case QEvent::Wheel:
                 wheelEvent(static_cast<QWheelEvent*>(event));
                 return true;

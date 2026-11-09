@@ -61,6 +61,7 @@ void WorldWorkspace::bindViewportInteraction()
                 Changed();
             }
         });
+        connect(&interaction, &ViewportObjectInteraction::FrameRequested, this, &WorldWorkspace::frameEntity);
         connect(&interaction,
                 &ViewportObjectInteraction::PlacementCommitted,
                 this,
@@ -68,6 +69,19 @@ void WorldWorkspace::bindViewportInteraction()
     }
     // Only the scene viewport shows a level, so only it can store a start view.
     connect(&Scene_->GetViewport().GetStartViewSaveAction(), &QAction::triggered, this, &WorldWorkspace::saveStartView);
+}
+void WorldWorkspace::frameEntity(const QString& id)
+{
+    RenderPreview& preview = GetRenderPreview();
+    if (Pending_ == true || SceneBusy() == true || IsPlayingInViewport() == true ||
+        preview.IsExploringFirstPerson() == true || preview.IsRayPathInspection() == true)
+    {
+        return;
+    }
+    if (preview.FrameEntity(id) == false)
+    {
+        Changed(QStringLiteral("Cannot frame this entity. Choose an entity with a visible mesh, or use Frame all."));
+    }
 }
 void WorldWorkspace::showEntityMenu(const QPoint& positionGlobal, const QString& entityId)
 {
