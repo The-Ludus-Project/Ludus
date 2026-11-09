@@ -129,6 +129,11 @@ scene or restart the preview to request a fresh device. The separate canvas
 follows the Qt viewport rectangle and hides with its tab, popups and modal dialogs;
 mouse and keyboard navigation continue through Qt.
 
+Render graphs can be edited and saved here but do not run: the viewport always
+uses its built-in renderer. The graph canvas says so in a notice, and greys out
+ray tracing, compute and Denoise nodes as **Desktop editor only**. See
+[which nodes cannot run here](render-graph-authoring.md#see-which-nodes-cannot-run-here).
+
 ## Preview the complete website
 
 Build MkDocs and the API reference first, then copy the editor payload; MkDocs

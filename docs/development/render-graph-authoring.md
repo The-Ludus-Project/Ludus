@@ -918,6 +918,33 @@ also re-evaluate selection against the new device's enabled capabilities. Pendin
 or failed replacements keep the last completed image until the new renderer
 presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
+#### See which nodes cannot run here
+
+The graph canvas compares each enabled node with the viewport device's enabled
+capabilities, probed with the same renderer selection the preview uses, and greys
+out what cannot run there. Such a card is dimmed, gets a grey header and a dashed
+border, and shows a badge below it. Its tooltip names the cause and the fix. A
+notice across the top of the canvas summarizes the configuration, and the
+Renderer outline greys the configuration and node rows with the same tooltips.
+These marks are view-only and never change the draft, selection or undo history.
+
+| Badge | Cause | Fix |
+| --- | --- | --- |
+| Needs RT hardware | `NativeQuery` traversal (including legacy RayTracingPipeline nodes without an invocation type) on a device without enabled native ray queries | Right-click › **Use Compute BVH Traversal…**, or preview on RT hardware |
+| Needs RT pipeline | Hardware RT pipeline invocation on a device without native ray stages | Right-click › **Use Compute BVH Traversal…** |
+| Needs GPU compute | Software traversal on a device without compute and storage buffers | Preview on a GPU with compute support |
+| Bypassed · no denoiser | A Denoise node in an editor set up without OIDN; the preview skips it | Run init with `--with-denoiser` |
+| Not supported yet | A ComputePipeline without a Scene input, or a GraphicsPipeline with stages other than vertex/fragment or a vertex layout other than `RendererStatic`; Build rejects these on every device | Right-click › **Add Scene and View Inputs**, or remove the other stages |
+| Desktop editor only | Ray tracing, compute and denoising never run in the browser editor | Open the project in the desktop editor |
+| N nested nodes can't run | A Subgraph whose imported configuration holds any of the above | **Open Subgraph** and repair the named nodes |
+
+Disabled nodes are not marked, because the compiler bypasses them. Before a viewport
+device starts, the canvas makes no device claim and marks only **Not supported yet**
+settings. **Use Compute BVH Traversal…** asks first, with Cancel as the default. It
+changes only the node's invocation type to Compute and its traversal to `ComputeBvh`,
+keeping its callbacks, ports and wires, in one undoable edit. The right-click menu
+also lists the cause, so the explanation stays visible with Properties hidden.
+
 Runtime applications ship an authored raster package alongside an optional native
 RT package and use `RenderGraphActivation::StageSelected`. After initializing the
 activation and setting its drawable reference size, pass ownership of both decoded

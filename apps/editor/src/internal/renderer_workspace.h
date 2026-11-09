@@ -36,6 +36,7 @@ class QDialog;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
@@ -473,6 +474,14 @@ private:
     void refreshWatchedSources();
     void enableSceneMaterials();
     void makeSceneCompute();
+    /// Re-probe the preview device's render-graph capabilities after it starts, stops or changes,
+    /// and grey out the nodes and configurations it cannot run. No document or history change.
+    void refreshDeviceProfile();
+    /// Confirm, then switch the selected unavailable ray node to Compute BVH traversal in one
+    /// undoable edit. Cancel (the default) leaves the draft unchanged.
+    void useComputeBvhTraversal();
+    /// Add the selected node's unavailability cause and repair to its context menu; none when it can run.
+    void addAvailabilityActions(QMenu& inoutMenu, const QJsonObject& node);
     void expandSceneBundle(bool isExpanded);
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
@@ -687,6 +696,8 @@ private:
     QString mSourceDiagnosticsFile;
     ViewportFramePump mPreviewPump;
     foundation::uint64 mPreviewDeviceSerial = 0;
+    /// Device serial the canvas's device profile was probed from; 0 for none.
+    foundation::uint64 mProfiledDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;
     bool mArePreviewInputsDirty = true;
     QSize mPreviewTargetSize;

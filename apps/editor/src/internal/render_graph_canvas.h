@@ -1,7 +1,9 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
+#include "internal/render_graph_availability.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_layout.h"
 #include "internal/render_graph_minimap.h"
@@ -130,6 +132,21 @@ public:
     /// Current World drawable reference in physical pixels; empty means unavailable.
     /// Refreshes size annotations without changing drafts, selection, layout or undo history.
     void SetReferenceSize(const QSize& size);
+    /// Capabilities of the device that previews graphs. Unavailable nodes are greyed with a badge
+    /// naming the cause and fix, and a notice summarizes the configuration. View only: preserves
+    /// drafts, selection, layout and undo history.
+    void SetDeviceProfile(const RenderGraphDeviceProfile& profile);
+    [[nodiscard]] LUDUS_INLINE const RenderGraphDeviceProfile& GetDeviceProfile() const noexcept
+    {
+        return mDeviceProfile;
+    }
+    /// Availability of a displayed node; Available for unknown IDs and nodes that can run.
+    [[nodiscard]] RenderGraphAvailabilityFeedback GetNodeAvailability(const QString& node) const;
+    /// The displayed configuration's availability notice; empty when every node can run.
+    [[nodiscard]] LUDUS_INLINE const QString& GetAvailabilitySummary() const noexcept
+    {
+        return mAvailability.Summary;
+    }
     /// Frame all node boxes, including configuration interfaces. View only: preserves
     /// selection, authored positions and undo. Empty graphs are a no-op; magnification is bounded.
     void FitGraph();
@@ -313,6 +330,8 @@ private:
     void fitBounds(const QRectF& bounds);
     /// Pin the minimap to the viewport's bottom-right corner, above the scene.
     void placeMinimap();
+    /// Pin the availability notice to the viewport's top edge, above the scene.
+    void placeAvailabilityNotice();
     void updateFramingControls();
     void applyViewTransform(const RenderGraphViewState& state);
     void rebuildNavigation();
@@ -336,6 +355,10 @@ private:
     QAction* mMinimapAction;
     RenderGraphMinimap* mMinimapOrNull = nullptr;
     QLabel* mZoomLabel;
+    /// Viewport overlay naming why the displayed configuration cannot run here; hidden when it can.
+    QLabel* mAvailabilityNotice;
+    RenderGraphDeviceProfile mDeviceProfile;
+    RenderGraphConfigurationAvailability mAvailability;
     foundation::float64 mPresentedScale = 0;
     QGraphicsRectItem* mDiagnosticMarkerOrNull = nullptr;
     QGraphicsSimpleTextItem* mDiagnosticLabelOrNull = nullptr;

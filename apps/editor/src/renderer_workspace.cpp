@@ -46,6 +46,7 @@
 #    include "editor_renderer_static.h"
 #    include "internal/ray_path_inspection.h"
 #    include "internal/render_graph_capture_profile.h"
+#    include "internal/render_graph_device_profile.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
@@ -55,6 +56,7 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDialog>
@@ -81,6 +83,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -1257,6 +1260,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                 showNodeContextMenu(globalPosition, node.isEmpty() == false);
             });
     setupGraphSelection();
+    refreshDeviceProfile();
     connect(mPreviewButton, &QPushButton::clicked, this, [this]() { static_cast<void>(PreviewRuntime()); });
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mPreviewOrNull = new RenderGraphPreview(
@@ -3162,6 +3166,15 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOri
             QTreeWidgetItem* configurationItem = new QTreeWidgetItem(fileItem, {QLatin1Char('#') + configurationId});
             configurationItem->setData(0, FILE_ROLE, file);
             configurationItem->setData(0, CONFIGURATION_ROLE, configurationId);
+            // Greyed like the canvas: rows that cannot run on the preview device keep their cause in a tooltip.
+            const RenderGraphConfigurationAvailability availability =
+                InspectRenderGraphAvailability(mDocument, file, configurationId, mCanvas->GetDeviceProfile());
+            const QColor unavailableText = mTree->palette().color(QPalette::Disabled, QPalette::Text);
+            if (availability.UnavailableCount > 0)
+            {
+                configurationItem->setForeground(0, unavailableText);
+                configurationItem->setToolTip(0, availability.Summary);
+            }
             if (file == mSelectedFile && configurationId == mSelectedConfiguration && mSelectedNode.isEmpty() == true)
             {
                 currentOrNull = configurationItem;
@@ -3177,6 +3190,13 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOri
                 nodeItem->setData(0, FILE_ROLE, file);
                 nodeItem->setData(0, CONFIGURATION_ROLE, configurationId);
                 nodeItem->setData(0, NODE_ROLE, nodeId);
+                const RenderGraphAvailabilityFeedback nodeAvailability = availability.Nodes.value(nodeId);
+                if (nodeAvailability.Availability != RenderGraphAvailability::Available)
+                {
+                    nodeItem->setForeground(0, unavailableText);
+                    nodeItem->setToolTip(0,
+                                         nodeAvailability.Label + QStringLiteral("\n") + nodeAvailability.Explanation);
+                }
                 nodeItem->setSelected(file == mSelectedFile && configurationId == mSelectedConfiguration &&
                                       mSelectedNodes.contains(nodeId) == true);
                 if (file == mSelectedFile && configurationId == mSelectedConfiguration && nodeId == mSelectedNode)
@@ -4630,6 +4650,11 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition,
             });
     mCanvas->AddLayoutMenu(menu);
     const QJsonObject node = isNodeContext == false || mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
+    if (node.isEmpty() == false && mSelectedFile == mCanvas->GetFile() &&
+        mSelectedConfiguration == mCanvas->GetConfiguration())
+    {
+        addAvailabilityActions(menu, node);
+    }
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
     {
         const QString asset = node.value(QStringLiteral("asset")).toString();
@@ -5318,6 +5343,38 @@ void RendererWorkspace::openSubgraph(const QString& asset, const QString& config
     mStatus->setText(QStringLiteral("Showing subgraph %1#%2.").arg(asset, configuration));
 }
 
+void RendererWorkspace::refreshDeviceProfile()
+{
+    RenderGraphDeviceProfile profile;
+    uint64 serial = 0;
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    // The browser editor never executes render graphs, whatever its viewport device.
+    profile.Kind = RenderGraphDeviceKind::Browser;
+#elif defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)
+    {
+        serial = mPreviewSourceOrNull->GetDeviceSerial();
+        if (serial == mProfiledDeviceSerial)
+        {
+            return;
+        }
+        profile = ProbeRenderGraphDeviceProfile(mPreviewSourceOrNull->GetDevice());
+        // A device still starting reports Unknown; probe again on its next change.
+        serial = profile.Kind == RenderGraphDeviceKind::Unknown ? 0 : serial;
+    }
+#endif
+    if (serial == mProfiledDeviceSerial && profile.Kind == mCanvas->GetDeviceProfile().Kind)
+    {
+        return;
+    }
+    mProfiledDeviceSerial = serial;
+    mCanvas->SetDeviceProfile(profile);
+    if (mDocument.IsLoaded() == true)
+    {
+        renderTree(false);
+    }
+}
+
 void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
 {
     if (sourceOrNull == mPreviewSourceOrNull)
@@ -5339,6 +5396,8 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
 #endif
     mPreviewSourceOrNull = sourceOrNull;
     mCanvas->SetReferenceSize({});
+    mProfiledDeviceSerial = 0;
+    refreshDeviceProfile();
     mPreviewDeviceSerial = 0;
     mPreviewSceneIdentity.clear();
     mArePreviewInputsDirty = true;
@@ -5358,6 +5417,8 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
             mPreviewPump.Stop();
             mPreviewOrNull->Detach();
             mPreviewDeviceSerial = 0;
+            mProfiledDeviceSerial = 0;
+            mCanvas->SetDeviceProfile({});
             if (mIsDefaultPreview == true)
             {
                 prepareDefaultPreview();
@@ -5390,6 +5451,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         connect(mPreviewSourceOrNull, &RenderPreview::RasterExposureChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
             mArePreviewInputsDirty = true;
+            refreshDeviceProfile();
             if (mPreviewSourceOrNull->HasDevice() == true)
             {
                 mPreviewPump.Start();
@@ -5506,6 +5568,7 @@ void RendererWorkspace::ServicePreview()
             mPreviewDeviceSerial = mPreviewSourceOrNull->GetDeviceSerial();
             mPreviewSceneIdentity.clear();
             mArePreviewInputsDirty = true;
+            refreshDeviceProfile();
         }
     }
     if (mPreviewSourceOrNull != nullptr)
