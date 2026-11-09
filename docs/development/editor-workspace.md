@@ -106,12 +106,17 @@ selectable items in the focused view; Escape clears that view's selection. Arrow
 keys navigate and Shift+arrow extends selection. Text fields keep their own
 native selection, clipboard and undo shortcuts.
 
-Use **Search entities** above the World entity list to filter names, labels and
-stable IDs without changing the document. Matching ignores case and surrounding
-spaces; the count shows how many entities match. Clear the search to show all
-entities. Filtering deselects hidden entities, so Duplicate and Delete act only
-on visible selections. Picking a hidden entity in the viewport clears the search
-and reveals its selection. Search pauses while inspector edits need Apply or Reset.
+The World entity list nests children under their authored scene parents.
+Expand or collapse a branch with its disclosure arrow. Selecting a child from
+the viewport expands its branch.
+
+Use **Search entities** to filter names, labels and stable IDs without changing
+the document. Matching ignores case and surrounding spaces. The count shows
+how many entities match. Ancestors of matches stay visible for context and
+can be selected when they also match the query. Filtering and collapsing
+deselect rows that are no longer available for group edits. Picking a
+filtered-out entity in the viewport clears the search and reveals its
+selection. Search pauses while inspector edits need Apply or Reset.
 
 In the World entity list, Ctrl+D / Command+D duplicates the selected group;
 Delete (also Backspace on macOS) asks to delete the group. Each group operation

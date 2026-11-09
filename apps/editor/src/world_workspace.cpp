@@ -48,7 +48,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
-#include <QListWidget>
 #include <QLockFile>
 #include <QMap>
 #include <QMenu>
@@ -66,6 +65,7 @@
 #include <QStringList>
 #include <QStringView>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QVector>
 
@@ -445,16 +445,18 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     QWidget* entityColumn = new QWidget(sections);
     QVBoxLayout* entityLayout = new QVBoxLayout(entityColumn);
     entityLayout->setContentsMargins(0, 0, 0, 0);
-    Entities_ = new QListWidget(entityColumn);
-    ConfigureItemSelection(*Entities_);
-    Entities_->setObjectName(QStringLiteral("worldEntities"));
-    Entities_->setAccessibleName(QStringLiteral("World entities"));
-    Entities_->setToolTip(QStringLiteral("Double-click to frame a visible entity. "
+    mEntities = new QTreeWidget(entityColumn);
+    ConfigureItemSelection(*mEntities);
+    mEntities->setHeaderHidden(true);
+    mEntities->setExpandsOnDoubleClick(false);
+    mEntities->setObjectName(QStringLiteral("worldEntities"));
+    mEntities->setAccessibleName(QStringLiteral("World entities"));
+    mEntities->setToolTip(QStringLiteral("Double-click to frame a visible entity. "
                                          "Right-click to add, duplicate, or delete entities."));
-    Entities_->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
-    mEntitySearch = new WorldEntitySearch(*Entities_, entityColumn);
+    mEntities->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
+    mEntitySearch = new WorldEntitySearch(*mEntities, entityColumn);
     entityLayout->addWidget(mEntitySearch);
-    entityLayout->addWidget(Entities_, 1);
+    entityLayout->addWidget(mEntities, 1);
     mEntityMenu = new QMenu(this);
     mEntityMenu->setObjectName(QStringLiteral("worldEntityContextMenu"));
     mAddEntity = mEntityMenu->addAction(QStringLiteral("Add Entity"));
@@ -463,11 +465,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     mDuplicateEntities->setObjectName(QStringLiteral("worldDuplicate"));
     mDeleteEntities = mEntityMenu->addAction(QStringLiteral("Delete"));
     mDeleteEntities->setObjectName(QStringLiteral("worldDelete"));
-    Entities_->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(Entities_, &QWidget::customContextMenuRequested, this, [this](const QPoint& positionList) {
-        const QListWidgetItem* itemOrNull = Entities_->itemAt(positionList);
-        showEntityMenu(Entities_->viewport()->mapToGlobal(positionList),
-                       itemOrNull == nullptr ? QString() : itemOrNull->data(Qt::UserRole).toString());
+    mEntities->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(mEntities, &QWidget::customContextMenuRequested, this, [this](const QPoint& positionList) {
+        const QTreeWidgetItem* itemOrNull = mEntities->itemAt(positionList);
+        showEntityMenu(mEntities->viewport()->mapToGlobal(positionList),
+                       itemOrNull == nullptr || itemOrNull->flags().testFlag(Qt::ItemIsSelectable) == false
+                           ? QString()
+                           : itemOrNull->data(0, Qt::UserRole).toString());
     });
     QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
@@ -676,25 +680,28 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
             return;
         }
         mSelectedEntities.clear();
-        for (const QListWidgetItem* item : Entities_->selectedItems())
+        for (const QTreeWidgetItem* item : mEntities->selectedItems())
         {
-            mSelectedEntities.append(item->data(Qt::UserRole).toString());
+            mSelectedEntities.append(item->data(0, Qt::UserRole).toString());
         }
-        const QListWidgetItem* currentOrNull = Entities_->currentItem();
+        const QTreeWidgetItem* currentOrNull = mEntities->currentItem();
         Selected_ = currentOrNull != nullptr && currentOrNull->isSelected() == true
-                        ? currentOrNull->data(Qt::UserRole).toString()
+                        ? currentOrNull->data(0, Qt::UserRole).toString()
                         : mSelectedEntities.value(0);
         RenderInspector();
         Changed();
     };
     connect(mEntitySearch, &WorldEntitySearch::SelectionChanged, this, updateSelection);
-    connect(Entities_, &QListWidget::currentItemChanged, this, updateSelection);
-    connect(Entities_, &QListWidget::itemSelectionChanged, this, updateSelection);
-    connect(Entities_, &QListWidget::itemDoubleClicked, this, [this](const QListWidgetItem* item) {
-        frameEntity(item->data(Qt::UserRole).toString());
+    connect(mEntities, &QTreeWidget::currentItemChanged, this, updateSelection);
+    connect(mEntities, &QTreeWidget::itemSelectionChanged, this, updateSelection);
+    connect(mEntities, &QTreeWidget::itemDoubleClicked, this, [this](const QTreeWidgetItem* item) {
+        if (item->flags().testFlag(Qt::ItemIsSelectable) == true)
+        {
+            frameEntity(item->data(0, Qt::UserRole).toString());
+        }
     });
     const auto bindCommand = [this](const QKeySequence& key, QAction* action) {
-        QShortcut* shortcut = new QShortcut(key, Entities_);
+        QShortcut* shortcut = new QShortcut(key, mEntities);
         shortcut->setContext(Qt::WidgetShortcut);
         connect(shortcut, &QShortcut::activated, action, &QAction::trigger);
     };
@@ -712,17 +719,17 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         bindCommand(key, mDeleteEntities);
     }
     const auto rename = [this]() {
-        if (Entities_->isEnabled() == true && mSelectedEntities.size() == 1 && Name_ != nullptr)
+        if (mEntities->isEnabled() == true && mSelectedEntities.size() == 1 && Name_ != nullptr)
         {
             Name_->setFocus();
             Name_->selectAll();
         }
     };
-    QShortcut* renameShortcut = new QShortcut(QKeySequence(Qt::Key_F2), Entities_);
+    QShortcut* renameShortcut = new QShortcut(QKeySequence(Qt::Key_F2), mEntities);
     renameShortcut->setContext(Qt::WidgetShortcut);
     connect(renameShortcut, &QShortcut::activated, this, rename);
 #if defined(Q_OS_MACOS)
-    QShortcut* renameReturn = new QShortcut(QKeySequence(Qt::Key_Return), Entities_);
+    QShortcut* renameReturn = new QShortcut(QKeySequence(Qt::Key_Return), mEntities);
     renameReturn->setContext(Qt::WidgetShortcut);
     connect(renameReturn, &QShortcut::activated, this, rename);
 #endif
@@ -1438,29 +1445,11 @@ void WorldWorkspace::SceneVerified(bool accepted)
 void WorldWorkspace::Render()
 {
     Rendering_ = true;
-    Entities_->clear();
-    for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
-    {
-        const QJsonObject entity = value.toObject();
-        QListWidgetItem* item = new QListWidgetItem(entity.value(QStringLiteral("name")).toString(), Entities_);
-        const QString id = Document_.GetEntityKey(entity);
-        const QString label = Document_.GetEntityLabel(entity);
-        item->setData(Qt::UserRole, id);
-        item->setToolTip(label == id ? id : label + QLatin1Char('\n') + id);
-        if (mSelectedEntities.contains(id) == true)
-        {
-            item->setSelected(true);
-        }
-        if (id == Selected_)
-        {
-            Entities_->setCurrentItem(item, QItemSelectionModel::NoUpdate);
-        }
-    }
-    mEntitySearch->Refresh();
+    mEntitySearch->Rebuild(Document_, mSelectedEntities, Selected_);
     QStringList retained;
-    for (const QListWidgetItem* item : Entities_->selectedItems())
+    for (const QTreeWidgetItem* item : mEntities->selectedItems())
     {
-        retained.append(item->data(Qt::UserRole).toString());
+        retained.append(item->data(0, Qt::UserRole).toString());
     }
     mSelectedEntities = retained;
     if (mSelectedEntities.contains(Selected_) == false)
@@ -2622,8 +2611,8 @@ void WorldWorkspace::Changed(const QString& message)
     {
         field->setEnabled(isBusy == false || DraftPreview_);
     }
-    Entities_->setEnabled(Pending_ == false && isBusy == false);
-    mEntitySearch->setEnabled(Entities_->isEnabled());
+    mEntities->setEnabled(Pending_ == false && isBusy == false);
+    mEntitySearch->setEnabled(mEntities->isEnabled());
     mLightsPanel->setEnabled(Pending_ == false && isBusy == false);
     const bool isWorkerActive = isSceneWorkerActive();
     Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false &&
@@ -2631,10 +2620,11 @@ void WorldWorkspace::Changed(const QString& message)
     PlayButton_->setEnabled(Document_.Loaded() && isBusy == false);
     CancelScene_->setVisible(isBusy);
     CancelScene_->setEnabled(Scene_->CanCancel());
+    const qsizetype entityCount = Document_.Draft().value(QStringLiteral("entities")).toArray().size();
     mAddEntity->setEnabled(Document_.Loaded() == true && Pending_ == false &&
-                           Entities_->count() < WorldDocument::MAX_ENTITIES && isBusy == false);
+                           entityCount < WorldDocument::MAX_ENTITIES && isBusy == false);
     mDuplicateEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false &&
-                                   Entities_->count() + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
+                                   entityCount + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
                                    isBusy == false);
     mDeleteEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
     Attach_->setEnabled(mSelectedEntities.size() == 1 && Pending_ == false && Components_->count() > 0 &&
@@ -2973,6 +2963,11 @@ bool WorldWorkspace::SelectEntity(const QString& id)
     mSelectedEntities = {id};
     Selected_ = id;
     Render();
+    QTreeWidgetItem* currentOrNull = mEntities->currentItem();
+    if (currentOrNull != nullptr)
+    {
+        mEntities->scrollToItem(currentOrNull);
+    }
     Changed();
     return true;
 }
@@ -3002,11 +2997,7 @@ bool WorldWorkspace::Apply()
     Document_ = candidate;
     Pending_ = false;
     // Update labels in place so Save preserves the focused field's text buffer.
-    for (foundation::int32 i = 0; i < Entities_->count(); ++i)
-    {
-        auto* item = Entities_->item(i);
-        item->setText(Document_.Entity(item->data(Qt::UserRole).toString()).value(QStringLiteral("name")).toString());
-    }
+    mEntitySearch->UpdateLabels(Document_);
     for (auto* field : Fields_)
     {
         auto* choice = qobject_cast<QComboBox*>(field);

@@ -86,7 +86,6 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QObject>
@@ -102,6 +101,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QWidget>
 
 using namespace ludus::editor;
@@ -2198,14 +2198,14 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
     const QByteArray identity = world.GetRenderPreview().Scene().Identity;
     const QImage initial = graphView->GetImage();
-    QListWidget* entities = world.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(entities != nullptr);
+    QTreeWidget* entitiesOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
     const QString player = world.Document().FindEntityKey(QStringLiteral("player-start"));
-    for (int32 row = 0; row < entities->count(); ++row)
+    for (int32 row = 0; row < entitiesOrNull->topLevelItemCount(); ++row)
     {
-        if (entities->item(row)->data(Qt::UserRole).toString() == player)
+        if (entitiesOrNull->topLevelItem(row)->data(0, Qt::UserRole).toString() == player)
         {
-            entities->setCurrentRow(row);
+            entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(row));
         }
     }
     QLineEdit* position = world.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));
