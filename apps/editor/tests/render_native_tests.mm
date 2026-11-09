@@ -7,6 +7,7 @@
 #include "internal/readback.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
+#include "internal/viewport_object_interaction.h"
 #include "internal/viewport_reference_capture.h"
 #include "internal/world_surface_bake.h"
 #include "internal/world_workspace.h"
@@ -279,6 +280,22 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     {
         REQUIRE(embedded.save(qEnvironmentVariable("LUDUS_GPU_VIEWPORT_IMAGE")));
     }
+    // Switching sources retires the current image item. Its replacement must stay below the gizmos.
+    RenderPreview alternateSource;
+    viewport.SetFrameSource(&alternateSource);
+    viewport.SetFrameSource(&preview);
+    REQUIRE(Frames(preview, preview.Frames() + 1));
+    ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
+    interaction.SetWorld(world, QStringLiteral("starter.cube"), true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    const QImage withoutHandles = ReadViewport();
+    REQUIRE(withoutHandles.isNull() == false);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Move);
+    const QImage withHandles = ReadViewport();
+    REQUIRE(withHandles.isNull() == false);
+    CHECK(withHandles != withoutHandles);
+    interaction.SetWorld(world, {}, false);
+    CHECK(ReadViewport() == embedded);
     // Rebuilding a mode must retain the actual Qt GPU image throughout setup.
     bool didResetFrames = false;
     QObject::connect(&preview, &RenderPreview::ResettingFrames, &preview, [&didResetFrames]() {

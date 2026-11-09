@@ -135,6 +135,10 @@ public:
     }
     /// Distinguish a World context click from right-drag navigation on this surface.
     void EnableWorldContextMenu() noexcept;
+    /// Expose the viewport's transform tool selector for World authoring.
+    void ShowObjectTools();
+    /// Switch the object tool for an unmodified Q, W, E or R while authoring input is available.
+    [[nodiscard]] bool TrySelectObjectTool(const QKeyEvent& event);
     /// View menu action "Set start view from this view". Hidden until an owner that can store a
     /// start view shows it and handles triggered, describing the view with
     /// RenderPreview::TryDescribeStartView. Owned by this viewport; GUI thread only.
