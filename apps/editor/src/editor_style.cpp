@@ -423,8 +423,16 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             }
             break;
         case PE_PanelButtonTool: {
+            // A switch that is on (visual role "toggle", such as Force raster) fills with the accent like a selected
+            // segment, so its state reads at a glance. Disclosure buttons (Advanced, Details) keep the edge only:
+            // being open is not a mode that changes what the editor does.
+            if (isEnabled == true && option->state.testFlag(State_On) == true &&
+                HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "toggle") == true)
+            {
+                DrawControlBody(painter, option->rect, { .Fill = mColours.Accent, .Edge = mColours.Accent }, edgeWidth);
+            }
             // A checked toggle (Live Preview) keeps an accent edge so its state reads without hovering.
-            if (option->state.testFlag(State_On) == true)
+            else if (option->state.testFlag(State_On) == true)
             {
                 DrawControlBody(painter,
                                 option->rect,
@@ -532,6 +540,15 @@ void EditorStyle::drawControl(ControlElement element,
         }
         case CE_ToolButtonLabel: {
             const QStyleOptionToolButton* tool = qstyleoption_cast<const QStyleOptionToolButton*>(option);
+            if (tool != nullptr && isEnabled == true && option->state.testFlag(State_On) == true &&
+                HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "toggle") == true)
+            {
+                // The label of a switch that is on sits on the accent fill, so it takes the accent's text colour.
+                QStyleOptionToolButton onLabel = *tool;
+                onLabel.palette.setColor(QPalette::ButtonText, mColours.AccentText);
+                QProxyStyle::drawControl(element, &onLabel, painter, widgetOrNull);
+                return;
+            }
             const bool isInstantMenu = tool != nullptr &&
                                        tool->features.testFlag(QStyleOptionToolButton::HasMenu) == true &&
                                        tool->features.testFlag(QStyleOptionToolButton::MenuButtonPopup) == false;

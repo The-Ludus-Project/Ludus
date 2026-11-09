@@ -1106,6 +1106,11 @@ TEST_CASE("Force raster is a saved local viewport preference", "[editor][viewpor
     PreviewViewport viewport(&preview);
     QToolButton* buttonOrNull = viewport.findChild<QToolButton*>(QStringLiteral("viewportForceRaster"));
     REQUIRE(buttonOrNull != nullptr);
+    // A mode switch, so the style fills it with the accent while it is on (a bare edge was easy to miss).
+    CHECK(buttonOrNull->property("visualRole").toString() == QStringLiteral("toggle"));
+    QToolButton* statisticsOrNull = viewport.findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    REQUIRE(statisticsOrNull != nullptr);
+    CHECK(statisticsOrNull->property("visualRole").toString() == QStringLiteral("toggle"));
     CHECK(preview.ShouldForceRaster() == false);
     buttonOrNull->click();
     CHECK(preview.ShouldForceRaster() == true);

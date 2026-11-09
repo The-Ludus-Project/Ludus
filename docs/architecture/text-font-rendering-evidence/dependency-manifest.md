@@ -12,6 +12,10 @@ release.
 | FreeType | 2.14.3 | https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz | `36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f` | FTL (BSD-style) or GPLv2; used under FTL. `docs/FTL.TXT` in the archive. |
 | HarfBuzz | 14.5.1 | https://github.com/harfbuzz/harfbuzz/releases/download/14.5.1/harfbuzz-14.5.1.tar.xz | `7e2fa4e8c7c98e8d8140671f5772542afaaa6acccfbd746506886b6d85f7f8d6` | "Old MIT" (`COPYING`). |
 
+The Conan recipe requests the HarfBuzz archive from the [GitHub release asset
+API](https://api.github.com/repos/harfbuzz/harfbuzz/releases/assets/602061249) or
+the release download URL. It checks either response against the SHA-256 above.
+
 Verified from the archives themselves:
 `freetype.h` declares `FREETYPE_MAJOR 2 / MINOR 14 / PATCH 3`; HarfBuzz
 `meson.build` declares `version: '14.5.1'` and `hb-version.h` defines

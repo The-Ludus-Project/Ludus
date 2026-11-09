@@ -17,6 +17,10 @@ inline constexpr int RECENT_PROJECT_ITEM_PADDING = 8;
 /// Control geometry and state painting for every widget, over the platform style: flat controls with a one pixel
 /// edge, the accent for focus, hover and the primary action, and an accent underline on the selected tab. It replaces
 /// the window-wide style sheet; colours come from the palette and the tokens, widths from the contrast preference.
+///
+/// A widget opts into a variant with the "visualRole" dynamic property: "primary" (the accent action), "secondary"
+/// (a quieter label), "segment" (one button of a segmented control) or "toggle" (a checkable tool button that switches
+/// a mode, such as a viewport's Force raster: when on it fills with the accent, unlike a disclosure button).
 class EditorStyle final : public QProxyStyle
 {
 public:

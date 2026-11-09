@@ -203,6 +203,38 @@ TEST_CASE("The setup notice guides a repair from problem to progress to ready", 
     CHECK(noticeOrNull->isVisible() == false);
 }
 
+TEST_CASE("Changed SDK or tool inputs offer a repair, not the settings file", "[editor][setup][guidance]")
+{
+    // The setup check reports a stale recorded setup as BootstrapStale; it used to say InvalidProject, which named
+    // an unreadable settings file and offered only Open Project Settings, a page that cannot refresh the setup.
+    const SetupGuidance stale = DescribeSetupProblem(
+        QStringLiteral("BootstrapStale: SDK or tool inputs changed; run repair to refresh presets and caches"));
+    CHECK(stale.Headline == QStringLiteral("Build tools are out of date."));
+    CHECK(stale.Detail == QStringLiteral("SDK or tool inputs changed; run repair to refresh presets and caches"));
+    CHECK(stale.IsRepairable == true);
+
+    QTemporaryDir directory;
+    QFile fixture(QStringLiteral(LUDUS_EDITOR_SOURCE_DIR) + QStringLiteral("/tests/fixtures/valid_v2_cmake.json"));
+    REQUIRE(fixture.open(QIODevice::ReadOnly));
+    const QString descriptor = directory.filePath(QStringLiteral("ludus.project.json"));
+    WriteFile(descriptor, fixture.readAll());
+    EditorController controller(ToolingPaths{});
+    MainWindow window(&controller);
+    window.show();
+    controller.OpenProject(descriptor);
+    QCoreApplication::processEvents();
+    controller.ReportProjectSetupProblem(
+        QStringLiteral("BootstrapStale: SDK or tool inputs changed; run repair to refresh presets and caches"));
+    QCoreApplication::processEvents();
+    QPushButton* primaryOrNull = window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"));
+    QLabel* headlineOrNull = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeText"));
+    REQUIRE(primaryOrNull != nullptr);
+    REQUIRE(headlineOrNull != nullptr);
+    CHECK(headlineOrNull->text() == QStringLiteral("Build tools are out of date."));
+    CHECK(primaryOrNull->text() == QStringLiteral("Repair project"));
+    CHECK(primaryOrNull->property("opensSettings").toBool() == false);
+}
+
 TEST_CASE("A settings problem offers Project Settings, not a repair that cannot help", "[editor][setup][guidance]")
 {
     QTemporaryDir directory;
