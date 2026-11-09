@@ -6,6 +6,7 @@
 #include "internal/world_demo_adapter.h"
 #include "internal/world_workspace.h"
 
+#include <QAction>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -183,7 +184,7 @@ TEST_CASE("World demo actors colliders settings and duplication share one inspec
     CHECK(runtime.Seed == ~ludus::foundation::uint64{0});
     CHECK(runtime.Collision[0].HalfExtent.X == 8);
     Select(view, QStringLiteral("guard-a"));
-    view.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->click();
+    view.findChild<QAction*>(QStringLiteral("worldDuplicate"))->trigger();
     // Five gameplay entities, six scatter entities and the duplicate.
     CHECK(view.Document().Draft().value(QStringLiteral("entities")).toArray().size() == 12);
     REQUIRE(view.Save());

@@ -84,6 +84,37 @@ TEST_CASE("D4b admits required raster and compute on shader model 6", "[rhi][win
     CHECK(information.Profile.Compute.MaxStorageBindings >= 4);
 }
 
+TEST_CASE("D6c attachment depth is sampled through a depth view; stencil loads stay unsupported", "[rhi][windows][d6c]")
+{
+    ResourceDevice owner;
+    rhi::FormatCapabilities format;
+    REQUIRE(rhi::GetFormatCapabilities(owner.Device, rhi::RasterFormat::Rgba8Unorm, format) ==
+            rhi::RasterStatus::Ready);
+    CHECK(format.DepthSampled == true);
+    CHECK(format.StencilSampled == false);
+    const bool hasStencil = GENERATE(false, true);
+    if (hasStencil == true && format.StencilAttachment == false)
+    {
+        return;
+    }
+    constexpr uint32 EXTENT = 8;
+    rhi::TextureDescription description;
+    description.Width = EXTENT;
+    description.Height = EXTENT;
+    description.Attachment = true;
+    description.Stencil = hasStencil;
+    rhi::TextureHandle texture;
+    REQUIRE(rhi::CreateTexture(owner.Device, description, {}, texture) == rhi::RasterStatus::Ready);
+    rhi::TextureViewHandle depth;
+    REQUIRE(rhi::CreateTextureView(owner.Device, texture, { .Aspect = rhi::TextureAspect::Depth }, depth) ==
+            rhi::RasterStatus::Ready);
+    rhi::TextureViewHandle stencil;
+    CHECK(rhi::CreateTextureView(owner.Device, texture, { .Aspect = rhi::TextureAspect::Stencil }, stencil) !=
+          rhi::RasterStatus::Ready);
+    CHECK(rhi::Destroy(owner.Device, depth) == rhi::RasterStatus::Ready);
+    CHECK(rhi::Destroy(owner.Device, texture) == rhi::RasterStatus::Ready);
+}
+
 TEST_CASE("D3a binding snapshots retain native buffers and descriptors within configured limits", "[rhi][windows][d3a]")
 {
     rhi::StorageLimits limits;
