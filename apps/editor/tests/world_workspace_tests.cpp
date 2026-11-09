@@ -65,6 +65,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
@@ -2788,6 +2789,58 @@ TEST_CASE("First Person Player preset persists a spawn and uses the imported sta
     const math::Vector3 forwardWorld = math::Rotate(spawn.Pose.Orientation, {0, 0, -1});
     CHECK(forwardWorld.X == Catch::Approx(1));
     CHECK(forwardWorld.Z == Catch::Approx(0).margin(1e-6));
+}
+
+TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity list visible",
+          "[editor][world][first-person]")
+{
+    using ludus::foundation::int32;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("player.world.json"))) == true);
+    QAction* addOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAdd"));
+    QAction* createPlayerOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    const QPushButton* exploreOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldExploreFirstPerson"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(createPlayerOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(exploreOrNull != nullptr);
+
+    constexpr int32 ENTITY_COUNT_BEFORE_PLAYER = 30;
+    for (int32 i = 0; i < ENTITY_COUNT_BEFORE_PLAYER; ++i)
+    {
+        addOrNull->trigger();
+    }
+    createPlayerOrNull->trigger();
+    REQUIRE(entitiesOrNull->count() == ENTITY_COUNT_BEFORE_PLAYER + 1);
+    entitiesOrNull->setCurrentRow(ENTITY_COUNT_BEFORE_PLAYER - 1);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+    entitiesOrNull->scrollToBottom();
+    const QListWidgetItem* playerOrNull = entitiesOrNull->item(ENTITY_COUNT_BEFORE_PLAYER);
+    REQUIRE(playerOrNull != nullptr);
+    REQUIRE(playerOrNull->text() == QStringLiteral("First Person Player"));
+    REQUIRE(exploreOrNull->isHidden() == true);
+    REQUIRE(entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).bottom() < 0);
+    const int32 listHeight = entitiesOrNull->height();
+    const QRect playerRow = entitiesOrNull->visualItemRect(playerOrNull);
+    REQUIRE(entitiesOrNull->viewport()->rect().contains(playerRow) == true);
+
+    QTest::mouseClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, playerRow.center());
+    QApplication::processEvents();
+    CHECK(playerOrNull->isSelected() == true);
+    CHECK(exploreOrNull->isVisible() == true);
+    CHECK(exploreOrNull->isEnabled() == true);
+    CHECK(entitiesOrNull->height() == listHeight);
+    const QRect selectedRow = entitiesOrNull->visualItemRect(playerOrNull);
+    CHECK(selectedRow.top() == playerRow.top());
+    CHECK(entitiesOrNull->viewport()->rect().contains(selectedRow) == true);
+    workspace.StopPreview();
 }
 
 TEST_CASE("Explore as Player moves the rendered staircase2 World camera", "[.first-person-native][editor][world]")
