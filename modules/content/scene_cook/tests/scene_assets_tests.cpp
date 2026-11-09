@@ -289,6 +289,40 @@ TEST_CASE("Python json round trip keeps ints, floats, order and escapes", "[scen
     CHECK_FALSE(detail::WriteCanonicalJson(special, root, output));
 }
 
+TEST_CASE("Python json indexes large objects and still reports the first duplicate key", "[scene_assets]")
+{
+    // A catalog's artifact table has one member per artifact; parsing indexes such objects instead of scanning them.
+    constexpr usize MEMBER_COUNT = 300;
+    std::string input = "{";
+    for (usize i = 0; i < MEMBER_COUNT; ++i)
+    {
+        input += (i == 0 ? "\"k" : ",\"k") + std::to_string(i) + "\":" + std::to_string(i);
+    }
+    const std::string unique = input + "}";
+    detail::JsonTree tree;
+    detail::JsonIndex root = detail::NO_JSON_NODE;
+    content::MessageText message;
+    REQUIRE(detail::ParsePythonJson(ToSpan(std::string_view(unique)), tree, root, message));
+    REQUIRE(tree.GetCount(root) == MEMBER_COUNT);
+    for (usize i = 0; i < MEMBER_COUNT; ++i)
+    {
+        const std::string key = "k" + std::to_string(i);
+        CHECK(tree.GetKey(root, i) == key);
+        CHECK(tree.GetNode(tree.GetMember(root, key)).Integer == static_cast<int64>(i));
+    }
+
+    // Duplicates past and before the indexing threshold are both found; the first repeated key is reported even
+    // when another member repeats later.
+    for (const usize repeated : {usize{3}, usize{17}, MEMBER_COUNT - 1})
+    {
+        const std::string duplicate =
+            input + ",\"k" + std::to_string(repeated) + "\":0,\"k" + std::to_string(MEMBER_COUNT / 2) + "\":0}";
+        detail::JsonTree failed;
+        CHECK_FALSE(detail::ParsePythonJson(ToSpan(std::string_view(duplicate)), failed, root, message));
+        CHECK(std::string(message.View()) == "Duplicate JSON field: k" + std::to_string(repeated));
+    }
+}
+
 TEST_CASE("New levels match the reference document", "[scene_assets]")
 {
     SequentialUuids counter;

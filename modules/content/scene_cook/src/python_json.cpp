@@ -1,5 +1,6 @@
 #include "python_json.h"
 
+#include <ludus/foundation/hash/hash.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/strings/string.hpp>
 
@@ -199,6 +200,92 @@ void AppendCodePoint(Array<char>& inoutText, uint32 codePoint, bool& inoutIsOk) 
     inoutOffset += count + 1;
     return true;
 }
+
+/// Member count from which parseObject finds duplicate keys through a hash index instead of a scan. A catalog's
+/// artifact table has one member per artifact, so scanning made parsing it quadratic in the artifact count.
+constexpr usize MIN_INDEXED_OBJECT_MEMBERS = 16;
+/// Index slots per member after a rebuild; the index is rebuilt before it becomes more than half full.
+constexpr usize MEMBER_INDEX_SLOTS_PER_MEMBER = 4;
+
+/// Open-addressing index of the member keys of the object being parsed. Each slot holds a member index plus one;
+/// zero marks an empty slot. Objects with fewer than MIN_INDEXED_OBJECT_MEMBERS members are scanned instead.
+class MemberKeyIndex final
+{
+public:
+    /// Whether object already has a member named key. @return false when the index cannot allocate.
+    [[nodiscard]] bool
+    TryFind(const JsonTree& tree, JsonIndex object, std::string_view key, bool& outIsPresent) noexcept
+    {
+        const usize count = tree.GetCount(object);
+        if (count < MIN_INDEXED_OBJECT_MEMBERS)
+        {
+            outIsPresent = tree.GetMember(object, key) != NO_JSON_NODE;
+            return true;
+        }
+        if (mSlots.IsEmpty() == true && rebuild(tree, object, count) == false)
+        {
+            return false;
+        }
+        outIsPresent = mSlots[findSlot(tree, object, key)] != 0;
+        return true;
+    }
+
+    /// Index the member just appended at position member. @return false when the index cannot allocate.
+    [[nodiscard]] bool TryAdd(const JsonTree& tree, JsonIndex object, usize member) noexcept
+    {
+        const usize count = member + 1;
+        if (count < MIN_INDEXED_OBJECT_MEMBERS)
+        {
+            return true;
+        }
+        if (count * 2 > mSlots.GetSize())
+        {
+            return rebuild(tree, object, count);
+        }
+        mSlots[findSlot(tree, object, tree.GetKey(object, member))] = count;
+        return true;
+    }
+
+private:
+    [[nodiscard]] static uint64 hashKey(std::string_view key) noexcept
+    {
+        return foundation::TableHash64(std::span<const uint8>(reinterpret_cast<const uint8*>(key.data()), key.size()));
+    }
+
+    /// The slot holding key, or the empty slot where it belongs.
+    [[nodiscard]] usize findSlot(const JsonTree& tree, JsonIndex object, std::string_view key) const noexcept
+    {
+        const usize mask = mSlots.GetSize() - 1;
+        usize slot = static_cast<usize>(hashKey(key)) & mask;
+        while (mSlots[slot] != 0 && tree.GetKey(object, mSlots[slot] - 1) != key)
+        {
+            slot = (slot + 1) & mask;
+        }
+        return slot;
+    }
+
+    /// Index the first count members into a power-of-two table at most a quarter full.
+    [[nodiscard]] bool rebuild(const JsonTree& tree, JsonIndex object, usize count) noexcept
+    {
+        usize size = 1;
+        while (size < count * MEMBER_INDEX_SLOTS_PER_MEMBER)
+        {
+            size *= 2;
+        }
+        mSlots.Clear();
+        if (mSlots.TryResize(size, usize{0}) == false)
+        {
+            return false;
+        }
+        for (usize member = 0; member < count; ++member)
+        {
+            mSlots[findSlot(tree, object, tree.GetKey(object, member))] = member + 1;
+        }
+        return true;
+    }
+
+    Array<usize> mSlots;
+};
 
 class Parser final
 {
@@ -562,6 +649,7 @@ private:
             ++mOffset;
             return true;
         }
+        MemberKeyIndex keys;
         while (true)
         {
             if (mOffset >= mText.size() || mText[mOffset] != '"')
@@ -590,7 +678,12 @@ private:
             {
                 return fail("out of memory");
             }
-            if (mTree.GetMember(object, keyView) != NO_JSON_NODE)
+            bool isDuplicate = false;
+            if (keys.TryFind(mTree, object, keyView, isDuplicate) == false)
+            {
+                return fail("out of memory");
+            }
+            if (isDuplicate == true)
             {
                 char text[MAX_MESSAGE_BYTES + 1]{};
                 constexpr std::string_view PREFIX = "Duplicate JSON field: ";
@@ -608,7 +701,12 @@ private:
                 (void)mMessage.Set(std::string_view(text, at));
                 return false;
             }
-            mTree.SetMember(object, keyView, value);
+            const usize member = mTree.GetCount(object);
+            mTree.AppendMember(object, keyView, value);
+            if (mTree.IsOk() == true && keys.TryAdd(mTree, object, member) == false)
+            {
+                return fail("out of memory");
+            }
             skipSpace();
             if (mOffset < mText.size() && mText[mOffset] == '}')
             {
@@ -981,6 +1079,20 @@ void JsonTree::SetMember(JsonIndex object, std::string_view key, JsonIndex value
             mNodes[object].Children[i * 2 + 1] = value;
             return;
         }
+    }
+    const JsonIndex keyNode = AddString(key);
+    if (mIsOk == false || mNodes[object].Children.TryAdd(keyNode) == false ||
+        mNodes[object].Children.TryAdd(value) == false)
+    {
+        mIsOk = false;
+    }
+}
+
+void JsonTree::AppendMember(JsonIndex object, std::string_view key, JsonIndex value) noexcept
+{
+    if (mIsOk == false)
+    {
+        return;
     }
     const JsonIndex keyNode = AddString(key);
     if (mIsOk == false || mNodes[object].Children.TryAdd(keyNode) == false ||

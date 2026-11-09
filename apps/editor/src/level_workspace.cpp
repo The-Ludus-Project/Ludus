@@ -830,9 +830,11 @@ void LevelWorkspace::decodeCandidate()
         if (Success_ == true && VerificationOnly_ == false && authoredWorld.Loaded() == true &&
             RenderScene::GetSource(Root_, authoredWorld) == RenderSceneSource::ProjectBindings)
         {
+            // Scene_ is LoadCooked's decode of these bytes: composing reuses it instead of decoding the bundle again.
             RenderScene authored;
-            Success_ = RenderScene::Load(Root_, authoredWorld, authored, Error_, false) &&
-                       RenderScene::Merge(authored, bytes, Candidate_, Scene_, Error_, CandidateRevisions_);
+            Success_ =
+                RenderScene::Load(Root_, authoredWorld, authored, Error_, false) &&
+                RenderScene::MergeLoaded(authored, bytes, Candidate_, Scene_, Scene_, Error_, CandidateRevisions_);
         }
         // The World's switched-off lights; missing sources are listed by the World's light panel.
         LightSwitchReport lightSwitchReport;
