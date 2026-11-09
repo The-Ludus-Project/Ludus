@@ -917,10 +917,12 @@ struct RenderGraph::State final
     StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
     internal::ForwardSceneResources ForwardResources;
     MaterialProgram ForwardProgram{};
+    MaterialProgram ForwardSurfaceChartProgram{};
     internal::RenderGraphDeferredProgram DeferredProgram;
     bool HasDeferredProgram = false;
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
+    bool HasForwardSurfaceChartProgram = false;
     bool HasForwardResources = false;
     /// The sample limit an Accumulate on operation averages to: the authored limit, or the capture override
     /// when one is set and the pass accumulates at all. Zero outputs individual samples.
@@ -1706,6 +1708,8 @@ struct RenderGraph::State final
         Resizing.Reset();
         Current.Reset();
         ForwardResources.Reset();
+        static_cast<void>(
+            Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardSurfaceChartProgram));
         static_cast<void>(Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardProgram));
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
@@ -2058,6 +2062,11 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             return Status::InvalidDescription;
         }
+    }
+    if (HasShaderArtifact(programs.ForwardSurfaceChartFragment) == true &&
+        (hasForwardProfile == false || programs.HasClusteredForward == true))
+    {
+        return Status::InvalidDescription;
     }
     const bool hasDepthArtifact = HasShaderArtifact(programs.ForwardDepth);
     if (hasDepthArtifact != programs.HasClusteredForward ||
@@ -2801,13 +2810,34 @@ Status RenderGraph::Poll() noexcept
         {
             return status;
         }
+        if (HasShaderArtifact(state.Programs.ForwardSurfaceChartFragment) == true)
+        {
+            if (state.HasForwardSurfaceChartProgram == false)
+            {
+                status = context.prewarmProgram(state.Programs.ForwardVertex,
+                                                state.Programs.ForwardSurfaceChartFragment,
+                                                &state.Programs.ForwardShadow,
+                                                state.ForwardSurfaceChartProgram);
+                if (IsAccepted(status) == false)
+                {
+                    return status;
+                }
+                state.HasForwardSurfaceChartProgram = true;
+            }
+            status = context.GetStatus(state.ForwardSurfaceChartProgram);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+        }
         if (state.HasForwardResources == false)
         {
             status = state.ForwardResources.Initialize(state.Device,
                                                        context,
                                                        state.ForwardProgram,
                                                        state.Programs.HasClusteredForward,
-                                                       state.Programs.HasClusteredDeferred);
+                                                       state.Programs.HasClusteredDeferred,
+                                                       state.ForwardSurfaceChartProgram);
             if (status != Status::Ready)
             {
                 return status;
@@ -3475,6 +3505,7 @@ RenderGraphReport RenderGraph::GetReport() const noexcept
         if (mState->Current.Get() != nullptr && mState->Current->ForwardGeneration.Get() != nullptr)
         {
             report.PendingMeshLightShadowFaces = mState->Current->ForwardGeneration->GetPendingMeshLightShadowFaces();
+            report.Resources.SurfaceChartDraws = mState->Current->ForwardGeneration->GetSurfaceChartDrawCount();
         }
     }
     return report;

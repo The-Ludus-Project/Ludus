@@ -73,7 +73,8 @@ QStringList GetConfigurationPortTypes(int32 version, bool isOutput)
         types += {QStringLiteral("Scene"),
                   QStringLiteral("SceneGeometry"),
                   QStringLiteral("SceneMaterials"),
-                  QStringLiteral("SceneLights")};
+                  QStringLiteral("SceneLights"),
+                  QStringLiteral("SceneBakedLighting")};
     }
     if (isOutput == false)
     {

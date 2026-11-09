@@ -48,6 +48,18 @@ constexpr StaticArray<rhi::RasterBinding, FORWARD_BINDING_COUNT> FORWARD_BINDING
      {8, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0},
      {9, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0}},
 };
+constexpr StaticArray<rhi::RasterBinding, FORWARD_BINDING_COUNT - 1> FORWARD_REALTIME_BINDINGS = []() noexcept {
+    StaticArray<rhi::RasterBinding, FORWARD_BINDING_COUNT - 1> bindings;
+    usize index = 0;
+    for (const rhi::RasterBinding& binding : FORWARD_BINDINGS)
+    {
+        if (binding.Binding != BAKE_TEXTURE_BINDING)
+        {
+            bindings[index++] = binding;
+        }
+    }
+    return bindings;
+}();
 constexpr StaticArray<rhi::RasterUniformMember, FORWARD_MEMBER_COUNT> FORWARD_MEMBERS{
     {{0, "Tint", 0, rhi::RasterUniformShape::Float4},
      {0, "UvTransform", FLOAT4_BYTES, rhi::RasterUniformShape::Float4},
@@ -202,7 +214,13 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Vertex;
             inoutDescription.Inputs = FORWARD_INPUTS.AsSpan();
             break;
+        case format::StageRole::ForwardRealtimeFragment:
+            inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
+            inoutDescription.Bindings = FORWARD_REALTIME_BINDINGS.AsSpan();
+            inoutDescription.UniformMembers = FORWARD_MEMBERS.AsSpan();
+            break;
         case format::StageRole::ForwardFragment:
+        case format::StageRole::ForwardSurfaceChartFragment:
         case format::StageRole::ForwardShadow:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
             inoutDescription.Bindings = {isClustered == true ? CLUSTERED_BINDINGS.GetData()

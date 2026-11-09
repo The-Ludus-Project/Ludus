@@ -12,7 +12,7 @@ from . import render_graph_ray_invocation as ray_invocation
 
 KINDS = ('GraphicsPipeline', 'ComputePipeline', 'RayTracingPipeline')
 RESOURCE_TYPES = ('ColorTexture', 'DepthTexture', 'Buffer')
-INPUT_TYPES = ('Scene', 'SceneGeometry', 'SceneMaterials', 'SceneLights', 'View', *RESOURCE_TYPES, 'AccelerationStructure',
+INPUT_TYPES = ('Scene', 'SceneGeometry', 'SceneMaterials', 'SceneLights', 'SceneBakedLighting', 'View', *RESOURCE_TYPES, 'AccelerationStructure',
                'Float32', 'Float2', 'Float3', 'Float4', 'UInt32')
 MAX_PORTS = 8
 MAX_SHADERS = 16
@@ -248,6 +248,11 @@ def lower_graphics(node, where, graph):
         outputs[aspect] = port['id']
         record[aspect + '_load'] = port['load']
         record[aspect + '_store'] = port['store']
+    baked_inputs = [port for port in node['inputs'] if port['type'] == graph.scene_bundle.BAKED_LIGHTING]
+    graph._require(len(baked_inputs) <= 1 and all(not port['required'] for port in baked_inputs),
+                   'Capability', where, 'Declare at most one optional SceneBakedLighting input for realtime fallback.')
+    if baked_inputs:
+        mappings['baked_lighting'] = baked_inputs[0]['id']
     graph._require(len(outputs) == len(node['outputs']) and set(mappings.values()) == set(input_types),
                    'Capability', where, 'additional resources require a separately qualified execution profile')
     return record, mappings, outputs

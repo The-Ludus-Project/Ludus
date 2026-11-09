@@ -7,6 +7,7 @@ CLUSTERED_PROFILE = {'version': 1, 'profile': 'ClusteredForward'}
 # Appended roles preserve every historical raster/ray role and record width.
 SUPPORT = {
     'ForwardLit': ('renderer_authored', ('vertex', 'fragment')),
+    'ForwardSurfaceChart': ('renderer_authored', ('fragment',)),
     'ForwardShadow': ('renderer_authored_shadow', ('fragment',)),
     'ForwardOutput': ('renderer_output', ('vertex', 'fragment')),
     'ForwardFlatShadow': ('renderer_shadow', ('fragment',)),
@@ -22,8 +23,8 @@ GBUFFER_GROUPS = ('DeferredGBuffer', 'DeferredOpaqueGBuffer')
 ROLE_KEYS = [('ForwardLit', 'vertex'), ('ForwardLit', 'fragment'), ('ForwardShadow', 'fragment'),
              ('ForwardOutput', 'vertex'), ('ForwardOutput', 'fragment'), ('ForwardFlatShadow', 'fragment'),
              ('ForwardDepth', 'fragment'), ('DeferredGBuffer', 'fragment'), ('DeferredLighting', 'vertex'),
-             ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'), ('DeferredOpaqueGBuffer', 'fragment')]
-MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment']
+             ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'), ('DeferredOpaqueGBuffer', 'fragment'), ('ForwardSurfaceChart', 'fragment')]
+MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment', 'ForwardSurfaceChartFragment']
 INPUTS = [{'location': i, 'format': 'Float3' if i in (0, 7) else 'Float2' if i in (6, 13, 15) else 'Float4'} for i in range(16)]
 
 
@@ -74,7 +75,7 @@ def material_layout(snapshot, build, is_clustered_profile=False):
     return {'offsets': offsets, 'shapes': shapes, 'size': surface_offset + (2 + constant(environment, 'LUDUS_ENVIRONMENT_SH_COEFFICIENTS')) * word}
 
 
-def expand(programs, techniques, snapshot, helper, build):
+def expand(programs, techniques, snapshot, helper, build, has_surface_charts=False):
     selected = [technique for technique in techniques.values() if is_forward(technique)]
     if not selected:
         return programs
@@ -106,6 +107,8 @@ def expand(programs, techniques, snapshot, helper, build):
                   'Capability', 'ClusteredDeferred', 'an authored DeferredLighting fragment callback is required')
     result = dict(programs)
     for group, (recipe_name, stages) in SUPPORT.items():
+        if group == 'ForwardSurfaceChart' and not has_surface_charts:
+            continue
         if group.startswith('Deferred') and not is_deferred_profile:
             continue
         if group == 'ForwardDepth' and not is_clustered_profile:
@@ -116,8 +119,15 @@ def expand(programs, techniques, snapshot, helper, build):
         capture(recipe['source'])
         for stage in stages:
             identity = support_program(techniques, group, stage)
-            original = programs.get(technique['fragment'] if group in GBUFFER_GROUPS else identity)
+            if group == 'ForwardSurfaceChart':
+                build.require(identity not in programs, 'Source', identity,
+                              'The renderer reserves this support program ID. Rename the authored program and update its assignments.')
+            original = programs.get(technique['fragment'] if group in (*GBUFFER_GROUPS, 'ForwardSurfaceChart') else identity)
             source = '#define LUDUS_OPAQUE_COVERAGE 1\n' if group == 'DeferredOpaqueGBuffer' else ''
+            if group == 'ForwardSurfaceChart':
+                source = '#define LUDUS_GRAPH_SURFACE_CHART 1\n'
+            elif group == 'ForwardLit' and stage == 'fragment' and not is_clustered_profile:
+                source = '#define LUDUS_GRAPH_REALTIME 1\n'
             source += '#include "_ludus_forward/' + recipe['source'] + '"\n'
             if original is not None:
                 source += '#include "' + original['source'] + '"\n'
@@ -135,7 +145,7 @@ def expand(programs, techniques, snapshot, helper, build):
                                 'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [],
                                 'forward_wrapper': source, 'forward_group': group,
                                 'fragment_storage': group == 'DeferredLighting' and stage == 'fragment',
-                                'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardShadow', *GBUFFER_GROUPS, 'DeferredLighting') else None}
+                                'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardSurfaceChart', 'ForwardShadow', *GBUFFER_GROUPS, 'DeferredLighting') else None}
     # The existing flat pair initializes the renderer's shared mesh/view services.
     recipe = recipes['renderer_flat']
     capture(recipe['source'])
@@ -186,13 +196,15 @@ def check_interface(program, result, build):
             build.require(all(view.get(field) == value for field, value in layout.items()),
                           'Layout', program['id'], 'deferred view layout differs from the owned ABI')
         return []
-    expected = (11 if is_clustered_profile else 10) if group == 'ForwardLit' and stage == 'fragment' else 3 if stage == 'fragment' and group in ('ForwardShadow', 'ForwardOutput') else 0
-    build.require(len(entries) == expected, 'Layout', program['id'], 'forward recipe binding interface mismatch')
+    is_realtime = group == 'ForwardLit' and stage == 'fragment' and not is_clustered_profile
+    expected = (11 if is_clustered_profile else 10) if group in ('ForwardLit', 'ForwardSurfaceChart') and stage == 'fragment' else 3 if stage == 'fragment' and group in ('ForwardShadow', 'ForwardOutput') else 0
+    build.require(len(entries) == expected - int(is_realtime), 'Layout', program['id'], 'forward recipe binding interface mismatch')
     if expected:
         kinds = ('UniformBuffer', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D')
         if is_clustered_profile:
             kinds = kinds[:8] + ('Texture2D', 'Sampler', 'Texture2D')
-        build.require([(entry['binding'], entry['kind']) for entry in entries] == list(enumerate(kinds[:expected])),
+        slots = [(slot, kind) for slot, kind in enumerate(kinds[:expected]) if not is_realtime or slot != 3]
+        build.require([(entry['binding'], entry['kind']) for entry in entries] == slots,
                       'Layout', program['id'], 'forward resource slots/kinds differ from the owned ABI')
         uniform = entries[0]
         layout = program.get('forward_layout') or {'size': 16, 'offsets': {'Output': 0}, 'shapes': {'Output': 'Float4'}}

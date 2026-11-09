@@ -48,7 +48,8 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
         ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")},
                          {QStringLiteral("geometry"), QStringLiteral("SceneGeometry")},
                          {QStringLiteral("materials"), QStringLiteral("SceneMaterials")},
-                         {QStringLiteral("lights"), QStringLiteral("SceneLights")}};
+                         {QStringLiteral("lights"), QStringLiteral("SceneLights")},
+                         {QStringLiteral("bakedLighting"), QStringLiteral("SceneBakedLighting")}};
     }
     else if (kind == QStringLiteral("Camera"))
     {

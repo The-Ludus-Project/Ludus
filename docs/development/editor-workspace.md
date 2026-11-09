@@ -674,9 +674,11 @@ in the preview. The saved World embeds the sample grid and orientation, so it
 can reopen in the native or browser editor without the original PNG.
 
 To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
-brush**. Set the radius in terrain-local metres, then drag on the ground and
-release to apply one undoable stroke. The brush has full strength in the inner
-half of the radius and fades to zero at the edge.
+brush**. Set the radius in terrain-local metres, then drag on the ground. The
+viewport reshapes the terrain while you drag, and the update rate follows how
+quickly the viewport can prepare the World. Release to keep the stroke as one
+undoable edit. The World document changes only on release. The brush has full
+strength in the inner half of the radius and fades to zero at the edge.
 
 - **Flatten** moves the surface toward an absolute local height. Enter the
   height or use **Pick from surface** to sample it.
@@ -691,7 +693,7 @@ select entities or show transform handles. Clicks made while the previous
 stroke is still applying, or while unapplied source changes or **Compare with
 committed** pause sculpting, start no stroke; the Terrain panel says what to
 finish first. Choose **Off** to return to ordinary viewport editing. Press Escape or move
-focus away during a drag to cancel it. Turn on **Show slope at cursor** while
+focus away during a drag to cancel it and restore the surface. Turn on **Show slope at cursor** while
 using a brush to measure the surface angle in degrees from World horizontal.
 A terrain can keep up to 16 strokes.
 **Save World** keeps the strokes and replays them in order after a compatible
@@ -1894,9 +1896,18 @@ current World can render in realtime, then swaps in the baked lighting when it
 is ready. If chart preparation fails, realtime lighting stays active and the
 viewport status shows the reason.
 
-The World saves the opt-in. The viewport generates its charts in memory when
-needed. Browser preview, project render graphs, and packaged games use their
-existing lighting paths.
+The World saves the opt-in. After the bake is ready, **Save World** also writes
+a `.ludus-lighting` file beside the World. Keep the two files together. Reopening
+uses the saved charts when they match the current geometry, placements,
+materials, and lights. Edits to those inputs return affected draws to realtime
+while the new bake prepares.
+
+The native [Forward lit template](render-graph-authoring.md#use-the-forward-lit-template)
+can use these charts through its **Baked Lighting** connection. Its preview
+status reports when surface charts are ready and how many draws use them.
+GI Probe Receivers use realtime lighting in this graph. The built-in Lit
+viewport samples the probe volume for those receivers.
+Browser and packaged game hosts continue to use their existing inputs.
 
 ### Baking probe GI for moving objects
 

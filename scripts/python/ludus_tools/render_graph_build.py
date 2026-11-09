@@ -1090,6 +1090,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                 continue
             node = operation['pipeline']
             technique = techniques[operation['technique']]
+            require(not operation.get('baked_lighting', False) or technique.get('scene_interface') == forward.PROFILE,
+                    'Capability', operation['id'], 'Baked Lighting requires the ForwardLit scene profile. Disconnect the bake input or use a Forward lit graph.')
             if node['kind'] == 'ComputePipeline':
                 continue  # A scene compute kernel selects no recipe; lowering admitted its fixed state.
             assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
@@ -1162,7 +1164,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
             if 'ray_wrapper' in programs[program_identity]:
                 closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
                                                                         sys.modules[__name__])
-    programs = forward.expand(programs, techniques, snapshot, helper, sys.modules[__name__])
+    has_surface_charts = any(operation.get('baked_lighting', False) for plan in plans for operation in plan['passes'])
+    programs = forward.expand(programs, techniques, snapshot, helper, sys.modules[__name__], has_surface_charts)
     for program_identity, program in programs.items():
         if 'forward_wrapper' in program:
             closures[program_identity] = forward.capture_closure(program, snapshot)
@@ -1360,7 +1363,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                   'forward_stages': {group + ':' + stage: entries[(forward.support_program(techniques, group, stage), target)]
                                                      for group, (_, stages) in forward.SUPPORT.items() for stage in stages
                                                      if (not group.startswith('Deferred') or any(forward.is_deferred(item) for item in techniques.values())) and
-                                                     (group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique))}}
+                                                     (group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique)) and
+                                                     (group != 'ForwardSurfaceChart' or (forward.support_program(techniques, group, stage), target) in entries)}}
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)
