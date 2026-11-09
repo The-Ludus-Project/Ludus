@@ -52,6 +52,62 @@ bool Accepted(rhi::RasterStatus s) noexcept
 }
 
 #endif
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+/// Why one browser API could not start, in words a viewport message can quote.
+QString DescribeBrowserStartupFailure(const rhi::StartupInfo& startup, BrowserViewportApi api)
+{
+    const rhi::AttemptInfo& attempt = api == BrowserViewportApi::WebGl2 ? startup.WebGL2 : startup.WebGpu;
+    const rhi::StartupError error = attempt.Error != rhi::StartupError::None ? attempt.Error : startup.Error;
+    switch (error)
+    {
+        case rhi::StartupError::InstanceUnavailable:
+        case rhi::StartupError::BackendUnavailable:
+            return QStringLiteral("not provided by this browser");
+        case rhi::StartupError::AdapterUnavailable:
+            return QStringLiteral("no compatible GPU adapter");
+        case rhi::StartupError::DeviceUnavailable:
+            return QStringLiteral("the GPU device could not be created");
+        case rhi::StartupError::SurfaceUnavailable:
+        case rhi::StartupError::InvalidWindow:
+            return QStringLiteral("the viewport canvas could not be configured");
+        case rhi::StartupError::RenderingUnavailable:
+            return QStringLiteral("rendering failed during startup");
+        case rhi::StartupError::RequirementsUnsatisfied:
+            return QStringLiteral("the GPU does not meet the viewport's limits");
+        case rhi::StartupError::DeviceLost:
+            return QStringLiteral("the GPU device was lost during startup");
+        case rhi::StartupError::Validation:
+        case rhi::StartupError::GenerationExhausted:
+        case rhi::StartupError::None:
+            break;
+    }
+    return QStringLiteral("startup failed");
+}
+/// Why CreateDevice refused a browser attempt before any backend startup ran (every status but Failed).
+QString DescribeBrowserAdmissionFailure(rhi::DeviceStatus status)
+{
+    switch (status)
+    {
+        case rhi::DeviceStatus::Unsupported:
+            return QStringLiteral("not supported by this editor build");
+        case rhi::DeviceStatus::InvalidState:
+            return QStringLiteral("another editor surface is using the GPU session");
+        case rhi::DeviceStatus::IdentityExhausted:
+            return QStringLiteral("no GPU session identities remain; reload the page");
+        case rhi::DeviceStatus::DeviceLost:
+            return QStringLiteral("the GPU device was lost during startup");
+        case rhi::DeviceStatus::Ready:
+        case rhi::DeviceStatus::Pending:
+        case rhi::DeviceStatus::Skipped:
+        case rhi::DeviceStatus::NotReady:
+        case rhi::DeviceStatus::InvalidHandle:
+        case rhi::DeviceStatus::InvalidDescription:
+        case rhi::DeviceStatus::Failed:
+            break;
+    }
+    return QStringLiteral("startup failed");
+}
+#endif
 } // namespace
 struct RenderPreview::Residency final
 {
@@ -688,37 +744,45 @@ bool RenderPreview::AdmitOffscreenDevice()
     return false;
 #endif
 }
-bool RenderPreview::AdmitBrowserDevice(const char* canvasSelector)
+bool RenderPreview::AdmitBrowserDevice(const BrowserDeviceRequest& request)
 {
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-    if (mIsStarting == false || OwnsDevice_ == true || canvasSelector == nullptr)
+    if (mIsStarting == false || OwnsDevice_ == true || request.CanvasSelectorOrNull == nullptr)
     {
         return false;
     }
     rhi::DeviceDescription description = MakeViewportDeviceDescription();
-    // Keep Qt's widget canvas independent, without changing the current GL context.
-    description.Selection = rhi::BackendSelection::WebGPU;
+    // The viewport owns its canvas and chooses the API: WebGL 2 needs a canvas WebGPU never claimed,
+    // so the viewport retries on a fresh canvas rather than through the RHI's Platform canvas swap.
+    description.Selection =
+        request.Api == BrowserViewportApi::WebGl2 ? rhi::BackendSelection::WebGL2 : rhi::BackendSelection::WebGPU;
     const platform::NativeWindowInfo window
     {
         .System = platform::WindowSystem::WebCanvas,
         .Width = RequestedWidth_,
         .Height = RequestedHeight_,
-        .CanvasSelector = canvasSelector,
+        .CanvasSelector = request.CanvasSelectorOrNull,
     };
+    // Written only when startup itself fails (Failed); other outcomes keep these defaults.
+    rhi::StartupInfo failure{};
     const rhi::DeviceStatus started = rhi::CreateDevice({ .Name = "Ludus browser editor viewport", .Version = 1 },
                                                         window,
                                                         description,
                                                         Device_,
-                                                        Surface_);
+                                                        Surface_,
+                                                        &failure);
     if (started != rhi::DeviceStatus::Ready && started != rhi::DeviceStatus::Pending)
     {
-        mIsStarting = false;
-        Status_ = QStringLiteral(
-            "WebGPU viewport unavailable. Use a browser with WebGPU enabled. World edits remain available.");
-        Q_EMIT Changed();
-        Q_EMIT Failed(Status_);
+        // Keep the start pending: the viewport may try another API or report the final failure.
+        mBrowserStartupFailure = started == rhi::DeviceStatus::Failed
+                                     ? DescribeBrowserStartupFailure(failure, request.Api)
+                                     : DescribeBrowserAdmissionFailure(started);
         return false;
     }
+    mBrowserApi = request.Api;
+    mBrowserApiNote = request.ApiNote;
+    mHasBrowserDeviceStarted = false;
+    mBrowserStartupFailure.clear();
     mIsStarting = false;
     OwnsDevice_ = true;
     ++mDeviceSerial;
@@ -730,9 +794,16 @@ bool RenderPreview::AdmitBrowserDevice(const char* canvasSelector)
     mFramePump.Start();
     return true;
 #else
-    static_cast<void>(canvasSelector);
+    static_cast<void>(request);
     return false;
 #endif
+}
+void RenderPreview::ReportBrowserUnavailable(const QString& message)
+{
+    mIsStarting = false;
+    Status_ = message;
+    Q_EMIT Changed();
+    Q_EMIT Failed(Status_);
 }
 void RenderPreview::Stop() noexcept
 {
@@ -2030,6 +2101,27 @@ void RenderPreview::Tick()
         mFramePump.SetProducerPending(true);
         return;
     }
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    if (ready != rhi::DeviceStatus::Ready && mHasBrowserDeviceStarted == false)
+    {
+        // A startup failure is the viewport's to retry or report; failures after Ready are not concealed.
+        mBrowserStartupFailure = DescribeBrowserStartupFailure(device.Startup, mBrowserApi);
+        const BrowserViewportApi api = mBrowserApi;
+        const QString reason = mBrowserStartupFailure;
+        Stop();
+        // As after a synchronous failure, the start stays pending until the viewport admits another API
+        // or calls ReportBrowserUnavailable. Operations that wait for a first frame check Running() after
+        // Stopped; the retry must not read to them as a stopped viewport.
+        mIsStarting = true;
+        Q_EMIT BrowserApiFailed(api, reason);
+        return;
+    }
+    if (ready == rhi::DeviceStatus::Ready && mHasBrowserDeviceStarted == false)
+    {
+        mHasBrowserDeviceStarted = true;
+        mStatistics.Api = mBrowserApiNote;
+    }
+#    endif
     if (ready != rhi::DeviceStatus::Ready || rhi::PollLifetime(Device_) != rhi::RasterStatus::Ready)
     {
         fail(QStringLiteral("GPU device is unavailable. World edits are preserved."));
@@ -2100,7 +2192,7 @@ void RenderPreview::Tick()
     if (rhi::SetFrameTarget(Device_, Surface_, { .Width = RequestedWidth_, .Height = RequestedHeight_ }) !=
         rhi::DeviceStatus::Ready)
     {
-        fail(QStringLiteral("WebGPU viewport resize failed. World edits are preserved."));
+        fail(QStringLiteral("GPU viewport resize failed. World edits are preserved."));
         return;
     }
 #    endif
@@ -2180,7 +2272,7 @@ void RenderPreview::Tick()
     if (rhi::SetFrameTarget(Device_, Surface_, { .Width = RequestedWidth_, .Height = RequestedHeight_ }) !=
         rhi::DeviceStatus::Ready)
     {
-        fail(QStringLiteral("WebGPU viewport target restoration failed. World edits are preserved."));
+        fail(QStringLiteral("GPU viewport target restoration failed. World edits are preserved."));
         return;
     }
 #    endif
