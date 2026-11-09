@@ -245,8 +245,8 @@ bool ApplyLightSwitches(const LightSwitchSet& switches, RenderScene& inoutScene,
     inoutScene.Surfaces = foundation::Move(surfaces);
     inoutScene.AuthoredLights = presentedLights;
     inoutScene.IsAtmosphereSunSwitchedOff =
-        inoutScene.AtmosphereSunSourceId != 0 &&
-        normalized.IsDisabled({LightSourceKind::Light, inoutScene.AtmosphereSunSourceId}) == true;
+        inoutScene.Atmosphere.SunSourceId != 0 &&
+        normalized.IsDisabled({LightSourceKind::Light, inoutScene.Atmosphere.SunSourceId}) == true;
     if (applied.isEmpty() == true)
     {
         inoutScene.Identity = unswitchedIdentity;

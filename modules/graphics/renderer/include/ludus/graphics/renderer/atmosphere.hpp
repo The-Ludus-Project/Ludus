@@ -5,7 +5,7 @@
 
 namespace ludus::graphics::renderer
 {
-/// Spherical Earth clear-sky background resolved from one World atmosphere and directional light.
+/// Spherical Earth atmosphere resolved from one World entity and directional light.
 struct AtmosphereDescription final
 {
     /// False preserves the graph's authored background. Other fields are ignored when false.
@@ -22,6 +22,11 @@ struct AtmosphereDescription final
     static constexpr foundation::float32 DEFAULT_SOLAR_RADIUS_RADIANS = 0.004675F;
     /// Solar disk radius in radians, finite and strictly between zero and half pi.
     foundation::float32 SolarAngularRadiusRadians = DEFAULT_SOLAR_RADIUS_RADIANS;
+    /// Stable source identity of the linked directional light in the scene. Zero supplies no direct light.
+    foundation::uint64 SunSourceId = 0;
+    /// Enable multiple scattering, skylight and aerial perspective for opaque deferred surfaces.
+    /// Only applies when the view is admitted to the atmosphere shell.
+    bool ShouldLightScene = false;
 };
 /// Compute the signed altitude in metres above an Earth clear-sky surface.
 /// Invalid anchor, up or eye coordinates preserve outAltitudeMetres.
