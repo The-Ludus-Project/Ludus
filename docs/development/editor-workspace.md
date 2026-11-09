@@ -433,7 +433,9 @@ directory, verifies setup/configure/build/tests, then publishes to an absent
 destination and opens it. Failure/cancellation before publication discards the
 stage and leaves the current workspace intact. Staging build artifacts are
 discarded because their CMake paths belong to the staging directory. The next
-Configure builds at the final location.
+Configure builds at the final location. The browser editor creates the same
+files without setup or verification; see
+[New projects in the browser](browser-editor.md#new-projects).
 
 The CLI calls the same backend:
 

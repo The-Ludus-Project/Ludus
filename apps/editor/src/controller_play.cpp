@@ -79,8 +79,9 @@ Capabilities EditorController::Caps() const
     caps.CanBuildDebug = false;
 #endif
 #if defined(Q_OS_WASM)
+    // New Project stays available: CreateProject renders the bundled template without a tool process.
     caps.CanConfigure = caps.CanBuild = caps.CanBuildRun = caps.CanBuildDebug = false;
-    caps.CanProjectCheck = caps.CanProjectSetup = caps.CanProjectCreate = false;
+    caps.CanProjectCheck = caps.CanProjectSetup = false;
     caps.CanReleaseInit = caps.CanPackage = false;
 #endif
     return caps;

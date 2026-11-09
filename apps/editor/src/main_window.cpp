@@ -1421,21 +1421,19 @@ void MainWindow::RenderCapabilities()
     ExportProjectAction_->setEnabled(Controller_->State().Document == DocumentState::ProjectLoaded);
     const auto desktop =
         QStringLiteral("Requires the desktop editor: this browser workspace cannot run local tools or native games.");
-    for (auto* action : {NewProjectAction_,
-                         CheckSetupAction_,
-                         SetupProjectAction_,
-                         ConfigureAction_,
-                         BuildAction_,
-                         BuildRunAction_,
-                         BuildDebugAction_,
-                         SetupReleaseAction_,
-                         PackageReleaseAction_,
-                         PlayAction_,
-                         BuildReloadAction_})
+    for (QAction* action : {CheckSetupAction_,
+                            SetupProjectAction_,
+                            ConfigureAction_,
+                            BuildAction_,
+                            BuildRunAction_,
+                            BuildDebugAction_,
+                            SetupReleaseAction_,
+                            PackageReleaseAction_,
+                            PlayAction_,
+                            BuildReloadAction_})
     {
         action->setToolTip(desktop);
     }
-    WelcomeNewButton_->setToolTip(desktop);
     if (Controller_->State().Dirty())
     {
         MarkBrowserEdited();
@@ -1941,7 +1939,17 @@ void MainWindow::OnNewProject()
     Audio_->StopPreview();
     auto* dialog = new ProjectCreationDialog(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    connect(dialog, &QDialog::accepted, this, [this, dialog]() { Controller_->CreateProject(dialog->Options()); });
+    connect(dialog, &QDialog::accepted, this, [this, dialog]() {
+        Controller_->CreateProject(dialog->Options());
+#if defined(Q_OS_WASM)
+        // The browser creates the project synchronously; a failure has no job output to follow.
+        const LastResult& result = Controller_->State().Result;
+        if (result.Kind == Outcome::Failed)
+        {
+            QMessageBox::warning(this, QStringLiteral("New Project"), result.Message);
+        }
+#endif
+    });
     dialog->open();
 }
 

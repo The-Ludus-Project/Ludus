@@ -29,7 +29,8 @@ from .buildlock import BuildTreeLock
 from .errors import INVALID_PROJECT, MIGRATION_FAILED, ToolingError
 from .identity import SdkIdentity, load_prefix_manifest
 from .lockfile import Lock, LocalSettings, unresolved_lock
-from .templates import ProjectInputs, get_template, publish_project, render_files, stage_project, TemplateFile
+from .templates import (ProjectInputs, Template, TemplateFile, get_template, publish_project, render_files,
+                        stage_project)
 
 DESCRIPTOR_NAME = "ludus.project.json"
 LOCK_NAME = "ludus.lock.json"
@@ -108,19 +109,7 @@ def create_project(
         raise ToolingError(INVALID_PROJECT, "Windows MSVC project creation requires local SDK setup; omit --release and --ci")
     target = _derive_target(name)
 
-    engine_req = desc.EngineRequirement(version=engine_version, components=list(components), features=[])
-    descriptor = desc.Descriptor(
-        version=2,
-        name=name,
-        provider="cmake",
-        source_dir=".",
-        preset=preset,
-        target=target,
-        run_cwd=".",
-        run_args=[],
-        engine=engine_req,
-        template=desc.TemplateRef(id=template.id, version=template.version),
-    )
+    descriptor = _new_descriptor(name, target, preset, engine_version, components, template)
     # Validate the descriptor we are about to write through the real parser.
     desc.parse_descriptor_bytes(_canonical_descriptor_json(descriptor).encode("utf-8"))
 
@@ -186,6 +175,94 @@ def create_project(
             raise
     published = publish_project(staged)
     return CreateResult(destination=published, descriptor=descriptor, lock=lock)
+
+
+def _new_descriptor(name: str, target: str, preset: str, engine_version: str, components: list[str],
+                    template: Template) -> desc.Descriptor:
+    return desc.Descriptor(
+        version=2,
+        name=name,
+        provider="cmake",
+        source_dir=".",
+        preset=preset,
+        target=target,
+        run_cwd=".",
+        run_args=[],
+        engine=desc.EngineRequirement(version=engine_version, components=list(components), features=[]),
+        template=desc.TemplateRef(id=template.id, version=template.version),
+    )
+
+
+# --- Browser session template --------------------------------------------------
+#
+# The browser editor cannot run this tooling, so its build embeds the files
+# create_project() would write, rendered with every value except the project's
+# identity. The editor substitutes those two placeholders when the user creates
+# a project (apps/editor/src/editor_files.cpp, CreateEditorProjectFromTemplate):
+#
+# * ``{{ TARGET }}`` becomes the name's target, derived exactly as _derive_target;
+# * ``{{ NAME }}`` appears only inside a JSON string and becomes the name's JSON
+#   string escape (json.dumps(name, ensure_ascii=False) without the quotes).
+#
+# The engine requirement is the editor build's own engine version. No SDK is
+# selected, so no .ludus/local.json is written: the desktop editor's project
+# setup selects an engine after the project is downloaded and reopened.
+
+SESSION_TEMPLATE_ID = "minimal"
+# The browser offers Linux-hosted samples; desktop setup repairs the preset per host.
+SESSION_TEMPLATE_PRESET = "linux-clang-development"
+SESSION_TEMPLATE_PLACEHOLDERS = frozenset({"NAME", "TARGET"})
+
+
+def session_template_files(engine_version: str) -> list[TemplateFile]:
+    """Return the session template: create_project's files with deferred NAME and TARGET."""
+    template = get_template(SESSION_TEMPLATE_ID)
+    components = ["FoundationBase"]
+    name = "{{ NAME }}"
+    target = "{{ TARGET }}"
+    rendered = render_files(template, ProjectInputs(
+        name=name, target=target, engine_version=engine_version, components=components,
+        preset=SESSION_TEMPLATE_PRESET,
+    ), placeholders=SESSION_TEMPLATE_PLACEHOLDERS)
+    descriptor = _new_descriptor(name, target, SESSION_TEMPLATE_PRESET, engine_version, components, template)
+    # Validate everything except the deferred identity through the real parser.
+    sample = _canonical_descriptor_json(_new_descriptor("Session template", "session_template",
+                                                        SESSION_TEMPLATE_PRESET, engine_version, components, template))
+    desc.parse_descriptor_bytes(sample.encode("utf-8"))
+    rendered.append(TemplateFile(DESCRIPTOR_NAME, _canonical_descriptor_json(descriptor)))
+    lock = unresolved_lock(engine_version, template.version)
+    rendered.append(TemplateFile(LOCK_NAME, lock.serialize().decode("utf-8")))
+    for file in rendered:
+        if file.executable:
+            raise ToolingError(INVALID_PROJECT, f"session templates cannot carry executable files: {file.relpath}")
+    return rendered
+
+
+def write_session_template(directory: Path, engine_version: str) -> list[str]:
+    """Write the session template below ``directory`` and return its relative paths.
+
+    Unchanged files keep their timestamps and files no longer in the template
+    are removed, so an unchanged template never forces the editor's resources to
+    rebuild. The directory is a build output owned by this function.
+    """
+    directory = Path(directory)
+    files = session_template_files(engine_version)
+    wanted = {file.relpath for file in files}
+    if directory.exists():
+        for existing in sorted(directory.rglob("*"), reverse=True):
+            relative = existing.relative_to(directory).as_posix()
+            if existing.is_file() and relative not in wanted:
+                existing.unlink()
+            elif existing.is_dir() and not any(existing.iterdir()):
+                existing.rmdir()
+    for file in files:
+        target = directory / file.relpath
+        data = file.content.encode("utf-8")
+        if target.is_file() and target.read_bytes() == data:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return sorted(wanted)
 
 
 def _derive_target(name: str) -> str:
