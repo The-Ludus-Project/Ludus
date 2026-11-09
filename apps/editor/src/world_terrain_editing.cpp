@@ -83,7 +83,8 @@ public:
           FlipX(new QCheckBox(QStringLiteral("Flip X"), this)), FlipZ(new QCheckBox(QStringLiteral("Flip Z"), this)),
           Sculpt(new QComboBox(this)), PickHeight(new QPushButton(QStringLiteral("Pick from surface"), this)),
           BrushRadius(new QDoubleSpinBox(this)), BrushHeight(new QDoubleSpinBox(this)),
-          BrushDelta(new QDoubleSpinBox(this)), BrushStrength(new QDoubleSpinBox(this)), mForm(new QFormLayout),
+          BrushDelta(new QDoubleSpinBox(this)), BrushStrength(new QDoubleSpinBox(this)),
+          ShowSlope(new QCheckBox(QStringLiteral("Show slope at cursor"), this)), mForm(new QFormLayout),
           mPresetRow(new QWidget(this))
     {
         setObjectName(QStringLiteral("worldTerrainPanel"));
@@ -166,6 +167,8 @@ public:
         mForm->addRow(PickHeight);
         mForm->addRow(QStringLiteral("Height change (m)"), BrushDelta);
         mForm->addRow(QStringLiteral("Strength"), BrushStrength);
+        ShowSlope->setObjectName(QStringLiteral("worldTerrainShowSlope"));
+        mForm->addRow(ShowSlope);
         Status->setObjectName(QStringLiteral("worldTerrainStatus"));
         Status->setWordWrap(true);
         Status->setTextFormat(Qt::PlainText);
@@ -280,6 +283,7 @@ public:
         mForm->setRowVisible(PickHeight, brush == TerrainBrush::Flatten);
         mForm->setRowVisible(BrushDelta, brush == TerrainBrush::RaiseLower);
         mForm->setRowVisible(BrushStrength, brush == TerrainBrush::Smooth);
+        mForm->setRowVisible(ShowSlope, brush != TerrainBrush::Off);
         for (const QString& key : {QStringLiteral("seed"),
                                    QStringLiteral("featureSize"),
                                    QStringLiteral("roughness"),
@@ -492,6 +496,7 @@ public:
     QDoubleSpinBox* BrushHeight;
     QDoubleSpinBox* BrushDelta;
     QDoubleSpinBox* BrushStrength;
+    QCheckBox* ShowSlope;
     QMap<QString, QLineEdit*> Fields;
     QTimer Timer;
 
@@ -655,6 +660,7 @@ void WorldWorkspace::initializeTerrainAuthoring()
         }
     });
     connect(panel->BrushRadius, &QDoubleSpinBox::valueChanged, this, [this]() { applyTerrainInteraction(); });
+    connect(panel->ShowSlope, &QCheckBox::toggled, this, [this]() { applyTerrainInteraction(); });
     connect(panel->BrushHeight, &QDoubleSpinBox::valueChanged, this, cancelBrushGesture);
     connect(panel->BrushDelta, &QDoubleSpinBox::valueChanged, this, cancelBrushGesture);
     connect(panel->BrushStrength, &QDoubleSpinBox::valueChanged, this, cancelBrushGesture);
@@ -1275,13 +1281,14 @@ void WorldWorkspace::applyTerrainInteraction()
     ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
     PreviewViewport& otherViewport =
         &viewport == &Render_->GetViewport() ? Scene_->GetViewport() : Render_->GetViewport();
-    otherViewport.GetObjectInteraction().SetTerrainBrush({}, 0, false);
+    otherViewport.GetObjectInteraction().SetTerrainBrush({}, 0, false, false);
     const bool hasBrush = panel.IsOpen == true && panel.Sculpt->isEnabled() == true &&
                           panel.GetBrush() != TerrainBrush::Off && panel.IsComparing == false && Pending_ == false &&
                           IsPlayingInViewport() == false && panel.Target == Selected_;
     interaction.SetTerrainBrush(hasBrush == true ? panel.Target : QString{},
                                 hasBrush == true ? static_cast<float32>(panel.BrushRadius->value()) : 0,
-                                hasBrush == true && panel.PickHeight->isChecked() == true);
+                                hasBrush == true && panel.PickHeight->isChecked() == true,
+                                hasBrush == true && panel.ShowSlope->isChecked() == true);
     if (hasDraft == true && panel.Target.isEmpty() == true)
     {
         interaction.SetWorld(panel.ReadyWorld, panel.ReadyKey, true);

@@ -682,7 +682,9 @@ half of the radius and fades to zero at the edge.
   smoothing distance depends on how far apart the terrain samples are.
 
 Choose **Off** to return to ordinary viewport editing. Press Escape or move
-focus away during a drag to cancel it. A terrain can keep up to 16 strokes.
+focus away during a drag to cancel it. Turn on **Show slope at cursor** while
+using a brush to measure the surface angle in degrees from World horizontal.
+A terrain can keep up to 16 strokes.
 **Save World** keeps the strokes and replays them in order after a compatible
 source change. If shrinking the footprint would clip a stroke, the
 confirmation names how many strokes the edit removes. Replacing an embedded

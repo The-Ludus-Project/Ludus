@@ -316,10 +316,20 @@ void ViewportObjectInteraction::SetTerrainFootprint(const QJsonObject& recipe)
     mTerrainBaseElevation = base;
     Q_EMIT Changed();
 }
-void ViewportObjectInteraction::SetTerrainBrush(const QString& key, float32 radius, bool shouldPickHeight)
+void ViewportObjectInteraction::SetTerrainBrush(const QString& key,
+                                                float32 radius,
+                                                bool shouldPickHeight,
+                                                bool shouldShowSlope)
 {
+    const bool hasSlopeChanged = shouldShowSlope != mShouldShowTerrainSlope;
+    mShouldShowTerrainSlope = shouldShowSlope;
     if (key == mTerrainBrushKey && radius == mTerrainBrushRadius && shouldPickHeight == mShouldPickTerrainHeight)
     {
+        if (hasSlopeChanged == true)
+        {
+            mHasTerrainBrushHit = false;
+            Q_EMIT Changed();
+        }
         return;
     }
     Cancel();
@@ -566,9 +576,12 @@ bool ViewportObjectInteraction::refreshMeshBounds()
 QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& outerFramePixel)
 {
     math::Vector3 hitMesh;
-    return pick(positionPixel, resolveFrame(outerFramePixel), hitMesh);
+    return pick(positionPixel, resolveFrame(outerFramePixel), hitMesh, nullptr);
 }
-QString ViewportObjectInteraction::pick(QPointF positionPixel, const QRectF& framePixel, math::Vector3& outHitMesh)
+QString ViewportObjectInteraction::pick(QPointF positionPixel,
+                                        const QRectF& framePixel,
+                                        math::Vector3& outHitMesh,
+                                        float32* outSlopeDegreesOrNull)
 {
     math::Matrix4 worldToClip;
     math::Matrix4 clipToWorld;
@@ -629,6 +642,16 @@ QString ViewportObjectInteraction::pick(QPointF positionPixel, const QRectF& fra
             {
                 nearest = distance;
                 outHitMesh = rayMesh.Origin + rayMesh.Direction * static_cast<float32>(distance);
+                if (outSlopeDegreesOrNull != nullptr && object.Id == mTerrainBrushKey)
+                {
+                    const math::Vector3 firstWorld =
+                        math::TransformVector(object.Transform, positionsMesh[b] - positionsMesh[a]);
+                    const math::Vector3 secondWorld =
+                        math::TransformVector(object.Transform, positionsMesh[c] - positionsMesh[a]);
+                    const math::Vector3 normalWorld = math::Cross(firstWorld, secondWorld);
+                    const float32 horizontal = math::Length(math::Vector2{normalWorld.X, normalWorld.Z});
+                    *outSlopeDegreesOrNull = math::RadiansToDegrees(math::Atan2(horizontal, math::Abs(normalWorld.Y)));
+                }
                 result = object.Id;
                 hasHit = true;
             }
@@ -639,12 +662,18 @@ QString ViewportObjectInteraction::pick(QPointF positionPixel, const QRectF& fra
 bool ViewportObjectInteraction::updateTerrainBrush(QPointF positionPixel, const QRectF& outerFramePixel)
 {
     math::Vector3 hitMesh;
+    float32 slopeDegrees = 0;
     const bool hasHit = mIsActive == true && mCanEdit == true &&
-                        pick(positionPixel, resolveFrame(outerFramePixel), hitMesh) == mTerrainBrushKey;
-    if (hasHit != mHasTerrainBrushHit || (hasHit == true && hitMesh != mTerrainBrushHitMesh))
+                        pick(positionPixel,
+                             resolveFrame(outerFramePixel),
+                             hitMesh,
+                             mShouldShowTerrainSlope == true ? &slopeDegrees : nullptr) == mTerrainBrushKey;
+    if (hasHit != mHasTerrainBrushHit ||
+        (hasHit == true && (hitMesh != mTerrainBrushHitMesh || slopeDegrees != mTerrainSlopeDegrees)))
     {
         mHasTerrainBrushHit = hasHit;
         mTerrainBrushHitMesh = hitMesh;
+        mTerrainSlopeDegrees = slopeDegrees;
         Q_EMIT Changed();
     }
     return hasHit;
@@ -1523,6 +1552,12 @@ void ViewportObjectInteraction::appendTerrainBrush(ViewportObjectOverlay& inoutO
         if (object.Id != mTerrainBrushKey)
         {
             continue;
+        }
+        if (mShouldShowTerrainSlope == true && project(math::TransformPoint(object.Transform, mTerrainBrushHitMesh),
+                                                       inoutOverlay.ReadoutAnchorPixel) == true)
+        {
+            inoutOverlay.ReadoutText =
+                QStringLiteral("Slope %1°").arg(static_cast<float64>(mTerrainSlopeDegrees), 0, 'f', 1);
         }
         const float32 radius = mTerrainBrushRadius;
         math::Vector3 previousMesh = mTerrainBrushHitMesh + math::Vector3{radius, 0, 0};

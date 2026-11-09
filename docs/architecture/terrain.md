@@ -524,7 +524,8 @@ brush active. **Exit Terrain Edit** returns to ordinary selection.
   follows the authored surface and shows the brush radius in metres.
   Flatten uses an absolute elevation, Raise / Lower uses a signed offset, and
   Smooth blends toward the surrounding heights from the start of the stroke.
-  One stroke makes one undo step. A slope overlay for route inspection is planned.
+  One stroke makes one undo step. **Show slope at cursor** reports the hit
+  triangle's angle from World horizontal for route inspection.
 - **Paint** shows the available terrain materials, radius and strength. The
   brush previews the affected area on the selected surface. Material strokes
   get their own undo steps and preserve the authored heights.

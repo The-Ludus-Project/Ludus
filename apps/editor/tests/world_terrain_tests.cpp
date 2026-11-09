@@ -478,11 +478,13 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
         panelOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("worldTerrainBrushStrength"));
     QPushButton* pickOrNull = panelOrNull->findChild<QPushButton*>(QStringLiteral("worldTerrainPickHeight"));
     QDoubleSpinBox* targetOrNull = panelOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("worldTerrainBrushHeight"));
+    QCheckBox* slopeOrNull = panelOrNull->findChild<QCheckBox*>(QStringLiteral("worldTerrainShowSlope"));
     REQUIRE(brushOrNull != nullptr);
     REQUIRE(deltaOrNull != nullptr);
     REQUIRE(strengthOrNull != nullptr);
     REQUIRE(pickOrNull != nullptr);
     REQUIRE(targetOrNull != nullptr);
+    REQUIRE(slopeOrNull != nullptr);
     REQUIRE(panelOrNull->isVisible() == true);
     const bool canFlatten =
         QTest::qWaitFor([brushOrNull]() { return brushOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS);
@@ -492,6 +494,17 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     renderOrNull->Preview().SetAxisView(EditorAxisView::Top);
     interaction.ClearPresentedView();
     brushOrNull->setCurrentIndex(brushOrNull->findData(static_cast<foundation::int32>(TerrainBrush::Flatten)));
+    REQUIRE(slopeOrNull->isVisible() == true);
+    slopeOrNull->setChecked(true);
+    REQUIRE(interaction.Hover(framePixel.center(), framePixel) == true);
+    ViewportObjectOverlay slopeOverlay;
+    interaction.BuildOverlay(framePixel, slopeOverlay);
+    CHECK(slopeOverlay.ReadoutText.startsWith(QStringLiteral("Slope ")) == true);
+    CHECK(slopeOverlay.ReadoutText.endsWith(QChar(u'°')) == true);
+    slopeOrNull->setChecked(false);
+    REQUIRE(interaction.Hover(framePixel.center(), framePixel) == true);
+    interaction.BuildOverlay(framePixel, slopeOverlay);
+    CHECK(slopeOverlay.ReadoutText.isEmpty() == true);
     pickOrNull->click();
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
     CHECK(pickOrNull->isChecked() == false);

@@ -82,7 +82,7 @@ public:
     /// An empty recipe removes the draft overlay.
     void SetTerrainFootprint(const QJsonObject& recipe);
     /// An empty key restores normal picking. The brush radius is measured in terrain-local metres.
-    void SetTerrainBrush(const QString& key, foundation::float32 radius, bool shouldPickHeight);
+    void SetTerrainBrush(const QString& key, foundation::float32 radius, bool shouldPickHeight, bool shouldShowSlope);
     void SetTool(Tool tool);
     [[nodiscard]] LUDUS_INLINE Tool GetTool() const noexcept
     {
@@ -206,7 +206,10 @@ private:
     void buildHandles();
     void appendTerrainFootprint(ViewportObjectOverlay& inoutOverlay) const;
     void appendTerrainBrush(ViewportObjectOverlay& inoutOverlay) const;
-    [[nodiscard]] QString pick(QPointF positionPixel, const QRectF& framePixel, foundation::math::Vector3& outHitMesh);
+    [[nodiscard]] QString pick(QPointF positionPixel,
+                               const QRectF& framePixel,
+                               foundation::math::Vector3& outHitMesh,
+                               foundation::float32* outSlopeDegreesOrNull);
     [[nodiscard]] bool updateTerrainBrush(QPointF positionPixel, const QRectF& outerFramePixel);
     void appendTerrainStrokePoint();
     [[nodiscard]] HandleTarget pickTerrainHandle(QPointF positionPixel) const;
@@ -217,8 +220,10 @@ private:
     QJsonArray mTerrainStroke;
     foundation::math::Vector3 mTerrainBrushHitMesh;
     foundation::float32 mTerrainBrushRadius = 0;
+    foundation::float32 mTerrainSlopeDegrees = 0;
     bool mHasTerrainBrushHit = false;
     bool mShouldPickTerrainHeight = false;
+    bool mShouldShowTerrainSlope = false;
     bool mHasTerrainStrokeGap = false;
     bool mHasTerrainStrokeOverflowed = false;
     QRectF mTerrainStrokeFramePixel;
