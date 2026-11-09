@@ -2042,8 +2042,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
     connect(mState->GraphViewOrNull, &WorldGraphView::DebugViewChanged, this, &PreviewViewport::updateGraphDebugView);
-    // A new World has no objects for the graph to extract; draw it with the built-in view instead of
-    // leaving the previous World's graph image on screen.
+    // Use the built-in view for a new World with no geometry or Atmosphere to draw.
     connect(Preview_, &RenderPreview::Changed, this, &PreviewViewport::updateEmptyWorldView);
     updateEmptyWorldView();
     // The project graph keeps its device and last image; return to it rather than an empty viewport.
@@ -2198,7 +2197,7 @@ void PreviewViewport::updateEmptyWorldView()
     {
         return;
     }
-    const bool isEmptyWorld = Preview_->Scene().IsLoadedWithoutObjects();
+    const bool isEmptyWorld = Preview_->Scene().ShouldUseEmptyWorldView();
     if (isEmptyWorld == mIsShowingEmptyWorld)
     {
         return;

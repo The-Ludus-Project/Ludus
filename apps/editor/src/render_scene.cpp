@@ -158,6 +158,10 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.AlwaysOnLightIds = authored.AlwaysOnLightIds;
     inoutScene.LuminaireBinding = authored.LuminaireBinding;
     inoutScene.Luminaires = authored.Luminaires;
+    inoutScene.Atmosphere = authored.Atmosphere;
+    inoutScene.AtmosphereSunSourceId = authored.AtmosphereSunSourceId;
+    inoutScene.IsAtmosphereSunSwitchedOff = authored.IsAtmosphereSunSwitchedOff;
+    inoutScene.AtmosphereStatus = authored.AtmosphereStatus;
     if (authored.Cameras.isEmpty() == false)
     {
         inoutScene.Cameras = authored.Cameras;
@@ -552,6 +556,79 @@ int32 Find(const QVector<T>& values, const QString& id)
     }
     return -1;
 }
+
+void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& transformBinding, RenderScene& inoutScene)
+{
+    if (world.HasBuiltInSchema() == false)
+    {
+        return;
+    }
+    const QJsonArray atmospheres = FindWorldAtmosphereEntities(world.Draft());
+    if (atmospheres.isEmpty() == true)
+    {
+        return;
+    }
+    if (atmospheres.size() > 1)
+    {
+        QStringList names;
+        for (const QJsonValue value : atmospheres)
+        {
+            const QJsonObject entity = value.toObject();
+            names.append(QStringLiteral("%1 (%2)").arg(entity.value(QStringLiteral("name")).toString(),
+                                                       world.GetEntityLabel(entity)));
+        }
+        inoutScene.AtmosphereStatus =
+            QStringLiteral("Keep one Atmosphere and remove the others: %1.").arg(names.join(QStringLiteral(", ")));
+        return;
+    }
+    const QJsonObject entity = atmospheres.first().toObject();
+    const QJsonObject properties =
+        entity.value(QStringLiteral("components")).toObject().value(GetWorldAtmosphereComponentId()).toObject();
+    const QString sunId = properties.value(QStringLiteral("sun")).toString();
+    const QJsonObject sun = world.Entity(sunId);
+    if (IsWorldAtmosphereSun(sun) == false)
+    {
+        inoutScene.AtmosphereStatus = QStringLiteral("Select a directional light in Atmosphere → Sun.");
+        return;
+    }
+    math::TransformTRS placement;
+    math::TransformTRS lightTransform;
+    QString error;
+    const QJsonObject light =
+        sun.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+    if (Transform(Values(entity, transformBinding), placement, error) == false ||
+        Transform(Values(sun, transformBinding), lightTransform, error) == false)
+    {
+        inoutScene.AtmosphereStatus =
+            QStringLiteral("Repair the Atmosphere or Sun Transform in Properties. %1").arg(error);
+        return;
+    }
+    bool isAboveHorizon = true;
+    if (TryResolveWorldCelestialRotation(light, lightTransform.Rotation, isAboveHorizon) == false)
+    {
+        inoutScene.AtmosphereStatus =
+            QStringLiteral("Repair the selected Sun's celestial driver fields in Properties.");
+        return;
+    }
+    // The airless observer flag only gates direct illumination on geometry. The
+    // atmosphere tests the planet shadow independently at each scattering point.
+    const float32 intensity = light.value(QStringLiteral("enabled")).toBool() == true
+                                  ? static_cast<float32>(light.value(QStringLiteral("intensity")).toDouble())
+                                  : 0;
+    inoutScene.Atmosphere =
+    {
+        .IsEnabled = true,
+        .SurfaceAnchorWorld = placement.Translation,
+        .SurfaceUpWorld = math::Rotate(placement.Rotation, {0, 1, 0}),
+        .DirectionToSunWorld = math::Rotate(lightTransform.Rotation, {0, 0, 1}),
+        .SolarIlluminance = {intensity * static_cast<float32>(light.value(QStringLiteral("r")).toDouble()),
+                             intensity * static_cast<float32>(light.value(QStringLiteral("g")).toDouble()),
+                             intensity * static_cast<float32>(light.value(QStringLiteral("b")).toDouble())},
+        .SolarAngularRadiusRadians =
+            math::DegreesToRadians(static_cast<float32>(properties.value(QStringLiteral("solarRadius")).toDouble())),
+    };
+    inoutScene.AtmosphereSunSourceId = ComputeSourceId(sunId);
+}
 } // namespace
 RenderSceneSource RenderScene::GetSource(const QString& root, const WorldDocument& world)
 {
@@ -787,6 +864,7 @@ bool RenderScene::Load(const QString& root,
             }
         }
     }
+    ExtractWorldAtmosphere(world, transform, candidate);
     bool bounds = false;
     bool hasAuthoredLighting = false;
     usize terrainVertices = 0;
@@ -1248,9 +1326,10 @@ bool TryTraceRenderSceneRay(const RenderScene& scene, const math::Ray3& rayWorld
     }
     return hasHit;
 }
-bool RenderScene::IsLoadedWithoutObjects() const noexcept
+bool RenderScene::ShouldUseEmptyWorldView() const noexcept
 {
-    return Identity.isEmpty() == false && Objects.isEmpty() == true;
+    return Identity.isEmpty() == false && Objects.isEmpty() == true && Atmosphere.IsEnabled == false &&
+           AtmosphereStatus.isEmpty() == true;
 }
 bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) const noexcept
 {
@@ -1384,7 +1463,14 @@ bool RenderScene::View(const PreviewViewOptions& options, rr::ViewDescription& o
         }
         else if (TryGetBounds({}, boundsWorld) == false)
         {
-            return Fail(outError, QStringLiteral("The World has no finite geometry bounds for a finite projection."));
+            if (Objects.isEmpty() == false)
+            {
+                return Fail(outError,
+                            QStringLiteral("The World has no finite geometry bounds for a finite projection."));
+            }
+            // A sky-only World has no geometry to bound. The existing minimum
+            // far distance admits its camera rays and the editor's depth-tested grid.
+            boundsWorld = {position, position};
         }
         float32 farthest = 0;
         for (usize corner = 0; corner < AABB_CORNER_COUNT; ++corner)

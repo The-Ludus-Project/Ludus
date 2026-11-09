@@ -7,6 +7,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/gpu_preview.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/materials.hpp>
@@ -287,6 +288,9 @@ struct ViewDescription final
     /// Applies to enabled ToneMap nodes on clustered deferred passes only. Invalid values reject
     /// graph updates before publication. Other renderer entry points ignore this field.
     ludus::foundation::float32 RasterExposureStops = 0;
+    /// Optional Earth clear-sky background for the clustered deferred graph.
+    /// Out-of-shell cameras use the graph clear. Invalid inputs reject a new candidate.
+    AtmosphereDescription Atmosphere{};
 };
 /// Packet counts and a diagnostic prefix, copied to caller storage; IDs follow draw/instance order.
 struct ViewReport final

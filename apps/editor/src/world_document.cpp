@@ -451,6 +451,13 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 components[i] = component;
                 break;
             }
+            QByteArray atmosphereBytes;
+            QJsonObject atmosphereComponent;
+            if (ReadBuiltInWorldAsset(QStringLiteral("atmosphere.component.json"), atmosphereBytes, error) == false ||
+                Decode(atmosphereBytes, MAX_SCHEMA_BYTES, atmosphereComponent, error) == false)
+            {
+                return false;
+            }
             components.append(terrainComponent);
             QByteArray apertureBytes;
             QJsonObject apertureComponent;
@@ -460,6 +467,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 return false;
             }
             components.append(apertureComponent);
+            components.append(atmosphereComponent);
             schema.insert(QStringLiteral("components"), components);
             isBuiltInSchema = true;
         }
@@ -836,6 +844,13 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 return false;
             }
         }
+        if (HasBuiltInSchema() == true && components.contains(GetWorldAtmosphereComponentId()) == true &&
+            (components.contains(QStringLiteral("transform")) == false || e.contains(QStringLiteral("scene")) == true))
+        {
+            return Fail(error,
+                        QStringLiteral("An Atmosphere needs a Transform and its own World entity. Use the "
+                                       "Atmosphere preset or attach a Transform first."));
+        }
         for (const auto definition : Schema_.value(QStringLiteral("components")).toArray())
         {
             const auto c = definition.toObject();
@@ -883,8 +898,11 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     return false;
                 }
                 const auto type = p.value(QStringLiteral("type")).toString();
+                // An atmosphere keeps its authored entity identity when the Sun is deleted.
+                const bool isAtmosphereSun = HasBuiltInSchema() == true && IsWorldAtmosphereSunField(c.key(), property);
                 if (v.toString().isEmpty() == false &&
-                    ((type == QStringLiteral("entity") && ids.contains(v.toString()) == false) ||
+                    ((type == QStringLiteral("entity") && isAtmosphereSun == false &&
+                      ids.contains(v.toString()) == false) ||
                      (type == QStringLiteral("asset") && assets.contains(v.toString()) == false)))
                 {
                     return Fail(error,
@@ -1179,6 +1197,16 @@ bool WorldDocument::Commit(const QJsonObject& candidate, QString& error)
         candidate.value(QStringLiteral("document")) != Draft_.value(QStringLiteral("document")))
     {
         return Fail(error, QStringLiteral("The candidate changes the World's version or document identity."));
+    }
+    if (HasBuiltInSchema() == true)
+    {
+        const QJsonArray atmospheres = FindWorldAtmosphereEntities(candidate);
+        if (atmospheres.size() > 1 && atmospheres.size() > FindWorldAtmosphereEntities(Draft_).size())
+        {
+            return Fail(error,
+                        QStringLiteral("A World supports one Atmosphere. Edit or delete %1 first.")
+                            .arg(atmospheres.first().toObject().value(QStringLiteral("name")).toString()));
+        }
     }
     if (candidate == Draft_)
     {

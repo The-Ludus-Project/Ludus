@@ -8,6 +8,8 @@
 #include <ludus/graphics/renderer/light_selection.hpp>
 
 #include <QByteArray>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 
 namespace ludus::editor
@@ -63,7 +65,15 @@ struct WorldSunPlacement final
                                               gameplay::camera::CameraSample& outCamera,
                                               foundation::float32& outSpeed,
                                               QString& outError);
-/// Create one bundled geometry, light, luminaire, player or aperture preset as one validated history transaction.
+/// Built-in Atmosphere component key.
+[[nodiscard]] QString GetWorldAtmosphereComponentId();
+/// Detect the built-in Atmosphere Sun reference field.
+[[nodiscard]] bool IsWorldAtmosphereSunField(const QString& component, const QString& field);
+/// Find World entities carrying the built-in Atmosphere component.
+[[nodiscard]] QJsonArray FindWorldAtmosphereEntities(const QJsonObject& document);
+/// Check whether an entity can be selected as the Atmosphere's Sun.
+[[nodiscard]] bool IsWorldAtmosphereSun(const QJsonObject& entity);
+/// Create one bundled World preset as one validated history transaction.
 /// "Aperture Slit" creates a default-sized aperture screen at the origin (internal/world_aperture.h).
 /// Failure preserves the document and outId. Must run on the editor thread.
 [[nodiscard]] bool CreateWorldObject(WorldDocument& inoutWorld,

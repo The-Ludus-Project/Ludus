@@ -1851,6 +1851,24 @@ account for the shift in a nearby moon's apparent position. A value of zero
 treats the source as distant. The rule follows a prescribed circular orbit and
 uses the same horizon cutoff as the Earth templates.
 
+### Add a clear-sky atmosphere
+
+In a default World, open **Add World Preset → Atmosphere** from the entity
+menu. Select the new entity and choose an existing directional light in
+**Properties → Atmosphere → Sun**, then apply the edit. The entity's position
+places a point on the ground and its local +Y points up from that surface.
+The Earth preset sets the physical radii. Use the Sun's Transform or celestial
+driver to move from daylight through sunset into early twilight.
+
+The default clustered deferred raster graph shows the sky and solar disk behind
+World geometry. Surface lighting still comes from the World’s authored lights
+and environment. If the Sun reference is empty or missing, pick a directional
+light in Properties. Moving the camera below the ground or above the shell also
+uses the graph's ordinary background. Delete the Atmosphere to restore that
+background at every altitude. Save and Undo work through the normal World
+commands. A World can have one Atmosphere.
+[Renderer contract](../architecture/renderer-systems.md#clear-sky-atmosphere-design)
+
 ### Baking always-on lights
 
 In the default World, select an authored **Point Light**, **Spot Light**, or

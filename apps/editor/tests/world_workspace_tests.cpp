@@ -4501,3 +4501,71 @@ TEST_CASE("World entity search keeps group commands scoped to visible matches", 
     workspace.findChild<QPushButton*>(QStringLiteral("worldReset"))->click();
     CHECK(search->isEnabled() == true);
 }
+
+TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen", "[editor][world][atmosphere]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString atmosphereId;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Atmosphere"), atmosphereId, error) == true);
+    const QJsonObject created = document.Draft();
+    QString secondId;
+    CHECK(CreateWorldObject(document, entropy, QStringLiteral("Atmosphere"), secondId, error) == false);
+    QStringList copies;
+    CHECK(document.DuplicateEntities(entropy, {atmosphereId}, copies, error) == false);
+    CHECK(document.Draft() == created);
+    CHECK(error.contains(QStringLiteral("one Atmosphere")) == true);
+    RenderScene scene;
+    REQUIRE(RenderScene::Load(directory.path(), document, scene, error) == true);
+    CHECK(scene.Atmosphere.IsEnabled == false);
+    CHECK(scene.AtmosphereStatus.contains(QStringLiteral("directional light")) == true);
+    CHECK(scene.ShouldUseEmptyWorldView() == false);
+    const QByteArray assetsIdentity = scene.AssetsIdentity;
+
+    QString sunId;
+    const WorldSunPlacement placement
+    {
+        .RotationDegrees = {-90, 0, 0},
+        .IlluminanceLux = 10,
+    };
+    REQUIRE(CreateWorldSun(document, entropy, placement, sunId, error) == true);
+    const QString atmosphereComponent = GetWorldAtmosphereComponentId();
+    const QJsonObject atmosphere = document.Entity(atmosphereId);
+    QJsonObject components = atmosphere.value(QStringLiteral("components")).toObject();
+    QJsonObject values = components.value(atmosphereComponent).toObject();
+    values.insert(QStringLiteral("sun"), sunId);
+    components.insert(atmosphereComponent, values);
+    REQUIRE(document.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
+            true);
+    REQUIRE(RenderScene::Load(directory.path(), document, scene, error) == true);
+    CHECK(scene.Atmosphere.IsEnabled == true);
+    CHECK(scene.Atmosphere.DirectionToSunWorld.Y == Catch::Approx(1));
+    CHECK(scene.Atmosphere.SolarIlluminance.X == Catch::Approx(10));
+    CHECK(scene.ShouldUseEmptyWorldView() == false);
+    CHECK(scene.AssetsIdentity == assetsIdentity);
+
+    REQUIRE(document.RemoveEntities({sunId}, error) == true);
+    REQUIRE(RenderScene::Load(directory.path(), document, scene, error) == true);
+    CHECK(scene.Atmosphere.IsEnabled == false);
+    CHECK(scene.AtmosphereStatus.isEmpty() == false);
+    REQUIRE(document.Undo() == true);
+    WorldDocument reopened;
+    REQUIRE(reopened.LoadSchema(schema, error) == true);
+    REQUIRE(reopened.Load(document.Encode(), error) == true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.IsEnabled == true);
+    CHECK(scene.AtmosphereSunSourceId == ComputeEntitySourceId(sunId));
+    REQUIRE(reopened.RemoveEntities({atmosphereId}, error) == true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.IsEnabled == false);
+    CHECK(scene.AtmosphereStatus.isEmpty() == true);
+    CHECK(scene.ShouldUseEmptyWorldView() == true);
+}

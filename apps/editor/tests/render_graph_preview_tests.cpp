@@ -4815,3 +4815,94 @@ TEST_CASE("Graph display frames draw the selection outline on the GPU and move i
     CHECK(countOutline(next) > 0);
     preview.Detach();
 }
+
+TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
+          "[editor][render-graph][world-graph][atmosphere]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    RendererWorkspace rendererWorkspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(rendererWorkspace);
+    rendererWorkspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &rendererWorkspace, [&]() {
+        rendererWorkspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    rendererWorkspace.EnableWorldRendering();
+    rendererWorkspace.SetProject(root, 1);
+    world.SetProject(root, 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Create(QDir(root).filePath(QStringLiteral("sky.world.json"))) == true);
+    QAction* cubeOrNull = world.findChild<QAction*>(QStringLiteral("worldCreateCube"));
+    QAction* sunOrNull = world.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    QAction* atmosphereOrNull = world.findChild<QAction*>(QStringLiteral("worldCreateAtmosphere"));
+    QAction* deleteOrNull = world.findChild<QAction*>(QStringLiteral("worldDelete"));
+    REQUIRE(cubeOrNull != nullptr);
+    REQUIRE(sunOrNull != nullptr);
+    REQUIRE(atmosphereOrNull != nullptr);
+    REQUIRE(deleteOrNull != nullptr);
+    cubeOrNull->trigger();
+    sunOrNull->trigger();
+    world.ResumePreview();
+
+    QWidget* viewportOrNull = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewportOrNull != nullptr);
+    WorldGraphView* graphViewOrNull = viewportOrNull->findChild<WorldGraphView*>();
+    REQUIRE(graphViewOrNull != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            rendererWorkspace.ServicePreview();
+        }
+        return isReady();
+    };
+    const bool hasInitialImage = waitFor([&]() { return graphViewOrNull->GetImage().isNull() == false; });
+    INFO(rendererWorkspace.GetStatusText().toStdString());
+    INFO(rendererWorkspace.GetRenderProblem().toStdString());
+    INFO(world.GetRenderPreview().Scene().Objects.size());
+    REQUIRE(hasInitialImage == true);
+    const QImage clear = graphViewOrNull->GetImage();
+
+    atmosphereOrNull->trigger();
+    QComboBox* sunFieldOrNull = world.findChild<QComboBox*>(QStringLiteral("worldField:atmosphere/sun"));
+    REQUIRE(sunFieldOrNull != nullptr);
+    REQUIRE(sunFieldOrNull->count() == 2);
+    sunFieldOrNull->setCurrentIndex(1);
+    REQUIRE(world.Apply() == true);
+    REQUIRE(waitFor([&]() {
+                return world.GetRenderPreview().Scene().Atmosphere.IsEnabled == true &&
+                       graphViewOrNull->GetImage() != clear;
+            }) == true);
+    const QImage sky = graphViewOrNull->GetImage();
+    RenderGraphPreview* previewOrNull = rendererWorkspace.GetPreviewOrNull();
+    REQUIRE(previewOrNull != nullptr);
+    const uint64 skyRevision = previewOrNull->GetPresentedRevision();
+    world.GetRenderPreview().Orbit(2, 0);
+    REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > skyRevision; }) == true);
+    const uint64 orbitedRevision = previewOrNull->GetPresentedRevision();
+    world.resize(960, 640);
+    REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > orbitedRevision; }) == true);
+    const QImage resizedSky = graphViewOrNull->GetImage();
+    CHECK(resizedSky.size() != sky.size());
+
+    deleteOrNull->trigger();
+    REQUIRE(waitFor([&]() {
+                return world.GetRenderPreview().Scene().Atmosphere.IsEnabled == false &&
+                       graphViewOrNull->GetImage() != resizedSky;
+            }) == true);
+    world.Undo();
+    REQUIRE(waitFor([&]() {
+                return world.GetRenderPreview().Scene().Atmosphere.IsEnabled == true &&
+                       graphViewOrNull->GetImage() == resizedSky;
+            }) == true);
+    world.StopPreview();
+    rendererWorkspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}

@@ -138,15 +138,16 @@ QWidget* WorldGraphView::TakeControls(QWidget* parent, RenderPreview& inoutSourc
     });
     connect(reset, &QAction::triggered, &inoutSource, [&inoutSource]() { inoutSource.SetRasterExposureStops(0); });
     const auto refreshExposure = [this, exposureButton, exposure, reset, &inoutSource]() {
-        const bool canAdjust = mTargets->currentIndex() == 0 && mPreview.CanAdjustRasterExposure() == true &&
-                               inoutSource.Scene().Objects.isEmpty() == false;
+        const bool canAdjust =
+            mTargets->currentIndex() == 0 && mPreview.CanAdjustRasterExposure() == true &&
+            (inoutSource.Scene().Objects.isEmpty() == false || inoutSource.Scene().Atmosphere.IsEnabled == true);
         const foundation::float32 stops = inoutSource.GetRasterExposureStops();
         exposureButton->setEnabled(canAdjust);
         exposure->setEnabled(canAdjust);
         exposureButton->setToolTip(
             canAdjust == true ? QStringLiteral("Adjust this viewport in stops relative to the graph's exposure.")
                               : QStringLiteral("Exposure needs Final output from a clustered deferred raster "
-                                               "graph with ToneMap enabled and a World with geometry."));
+                                               "graph with ToneMap enabled and a World with geometry or atmosphere."));
         const QSignalBlocker blocker(exposure);
         exposure->setValue(static_cast<foundation::float64>(stops));
         reset->setEnabled(canAdjust == true && stops != 0);

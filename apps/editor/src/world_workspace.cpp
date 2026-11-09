@@ -493,6 +493,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                                   QStringLiteral("Directional Light"),
                                   QStringLiteral("Sun"),
                                   QStringLiteral("Luminaire"),
+                                  QStringLiteral("Atmosphere"),
                                   QStringLiteral("First Person Player"),
                                   QStringLiteral("Aperture Slit")})
     {
@@ -2272,6 +2273,8 @@ void WorldWorkspace::RenderInspector()
                 else
                 {
                     choices->addItem(QStringLiteral("None"), QString());
+                    const bool isAtmosphereSun =
+                        Document_.HasBuiltInSchema() == true && IsWorldAtmosphereSunField(cid, pid);
                     const auto candidates = type == QStringLiteral("entity")
                                                 ? Document_.Draft().value(QStringLiteral("entities")).toArray()
                                                 : Document_.Schema().value(QStringLiteral("assets")).toArray();
@@ -2280,6 +2283,10 @@ void WorldWorkspace::RenderInspector()
                         const auto entry = candidate.toObject();
                         if (type == QStringLiteral("asset") &&
                             entry.value(QStringLiteral("kind")) != p.value(QStringLiteral("asset_kind")))
+                        {
+                            continue;
+                        }
+                        if (isAtmosphereSun == true && IsWorldAtmosphereSun(entry) == false)
                         {
                             continue;
                         }
@@ -2293,6 +2300,11 @@ void WorldWorkspace::RenderInspector()
                                     .toString() +
                                 QStringLiteral(" — ") + shown,
                             key);
+                    }
+                    const QString reference = current.toString();
+                    if (isAtmosphereSun == true && reference.isEmpty() == false && choices->findData(reference) < 0)
+                    {
+                        choices->addItem(QStringLiteral("Missing directional light — %1").arg(reference), reference);
                     }
                 }
                 choices->setCurrentIndex(choices->findData(current.toString()));

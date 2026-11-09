@@ -5524,7 +5524,7 @@ void RendererWorkspace::ServicePreview()
         graphics::renderer::ViewDescription view;
         QString error;
         const RenderScene& scene = mPreviewSourceOrNull->Scene();
-        if (scene.IsLoadedWithoutObjects() == true)
+        if (scene.ShouldUseEmptyWorldView() == true)
         {
             // Nothing to extract, and no geometry to bound a finite projection. This is not a
             // problem: the World viewport draws the empty World with its built-in view meanwhile.
