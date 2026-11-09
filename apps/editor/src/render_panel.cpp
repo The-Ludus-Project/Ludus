@@ -375,6 +375,8 @@ void RenderPanel::SetWorld(const QString& root, const WorldDocument* world)
         Cameras_->addItem(QStringLiteral("Editor camera (does not edit the world)"), QString());
     }
     Root_ = root;
+    mIsTerrainDraft = false;
+    mHasPendingTerrainLoad = false;
     World_ = world;
     mShouldUseDefaultCamera = true;
     PreviewWorld_ = world == nullptr ? WorldDocument{} : *world;
@@ -457,6 +459,7 @@ bool RenderPanel::Refresh(bool launch)
         finished->deleteLater();
         if (isCurrent == true)
         {
+            mHasPendingTerrainLoad = false;
             Q_EMIT Loaded(isAccepted);
         }
         if (Again_)
@@ -488,6 +491,11 @@ bool RenderPanel::publish(const RenderScene& scene, bool shouldLaunch)
     // keep whatever the user chose, including the editor camera.
     const bool shouldUseDefaultCamera =
         mShouldUseDefaultCamera == true && selected.isEmpty() == true && scene.DefaultCamera >= 0;
+    if (mHasPendingTerrainLoad == true && PreviewViewport::CanPresent() == true &&
+        Preview_.Scene().Identity != scene.Identity)
+    {
+        Viewport_->HoldFrame();
+    }
     if (Preview_.SetScene(scene) == false)
     {
         Stale_ = Preview_.Status();
@@ -502,11 +510,18 @@ bool RenderPanel::publish(const RenderScene& scene, bool shouldLaunch)
         Cameras_->setCurrentIndex(scene.DefaultCamera + 1);
     }
     navigate();
-    if (shouldLaunch == true)
+    // A terrain request can inherit the initial World's launch from a queued load.
+    // When the viewport cannot present, keep the validated terrain available for editing.
+    if (shouldLaunch == true && (mHasPendingTerrainLoad == false || PreviewViewport::CanPresent() == true))
     {
         Q_EMIT Starting();
         if (Preview_.Start() == false)
         {
+            if (mHasPendingTerrainLoad == true)
+            {
+                Stale_ = Preview_.Status();
+                return false;
+            }
             Viewport_->ClearFrame(Preview_.Status());
         }
         return true;
@@ -556,14 +571,38 @@ QWidget* RenderPanel::TakeViewport(QWidget* parent)
 }
 void RenderPanel::PreviewDraft(const WorldDocument& draft, bool shouldStart)
 {
+    mIsTerrainDraft = false;
+    mHasPendingTerrainLoad = false;
     PreviewWorld_ = draft;
     if (draft.Loaded() && draft.SceneLevel().isEmpty())
     {
         (void)Refresh(shouldStart == true || Preview_.Running() == true);
     }
 }
+void RenderPanel::PreviewTerrainDraft(const WorldDocument& draft)
+{
+    mIsTerrainDraft = true;
+    mHasPendingTerrainLoad = true;
+    PreviewWorld_ = draft;
+    (void)Refresh(PreviewViewport::CanPresent());
+}
+void RenderPanel::CancelTerrainDraft() noexcept
+{
+    if (mIsTerrainDraft == false)
+    {
+        return;
+    }
+    mIsTerrainDraft = false;
+    mHasPendingTerrainLoad = false;
+    ++Generation_;
+    Again_ = false;
+    QueuedLaunch_ = false;
+    PreviewWorld_ = World_ == nullptr ? WorldDocument{} : *World_;
+}
 void RenderPanel::Stop() noexcept
 {
+    const bool wasLoadingTerrain = mHasPendingTerrainLoad;
+    CancelTerrainDraft();
     Preview_.Stop();
     ++Generation_;
     Again_ = false;
@@ -571,6 +610,11 @@ void RenderPanel::Stop() noexcept
     Stop_->setEnabled(false);
     Open_->setEnabled(World_ != nullptr && World_->Loaded());
     Status_->setText(QStringLiteral("Viewport paused. World data is preserved."));
+    if (wasLoadingTerrain == true)
+    {
+        Stale_ = QStringLiteral("Viewport paused. Resume it and refresh the terrain draft.");
+        Q_EMIT Loaded(false);
+    }
 }
 void RenderPanel::navigate()
 {
