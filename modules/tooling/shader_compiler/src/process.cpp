@@ -25,7 +25,10 @@ void WriteHex(parsing::JsonWriter& inoutWriter, const Array<uint8>& bytes) noexc
     inoutWriter.Raw("\"");
 }
 } // namespace
-bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uint8>& outBytes) noexcept
+bool Process(Compiler& inoutCompiler,
+             BorrowedView<const uint8> bytes,
+             uint32 connectionLanes,
+             Array<uint8>& outBytes) noexcept
 {
     parsing::JsonDocument document;
     parsing::ParseError error;
@@ -127,6 +130,8 @@ bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uin
     writer.Integer(PROTOCOL_VERSION);
     writer.Raw(",\"implementation\":\"" LUDUS_WORKER_IDENTITY "\",\"library_sha256\":\"" LUDUS_SLANG_LIBRARY_HASH "\"");
     writer.Raw(",\"library_inventory_sha256\":\"" LUDUS_SLANG_INVENTORY_HASH "\"");
+    writer.Raw(",\"concurrency\":");
+    writer.Integer(connectionLanes);
     writer.Raw(",\"compiler\":\"" LUDUS_SLANG_VERSION "\",\"identity\":");
     writer.Integer(result.Identity);
     writer.Raw(",\"status\":");

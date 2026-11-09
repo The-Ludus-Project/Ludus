@@ -7,7 +7,8 @@ packing. See docs/architecture/render-graph-authoring.md. No GPU work occurs her
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 
 import hashlib
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from .buildlock import BuildTreeLock
@@ -65,6 +67,9 @@ MAX_SHADER_INCLUDE_DEPTH = 16
 MAX_PACKAGE_FILES = 8192
 MAX_PACKAGE_INDEX_BYTES = 2 * 1024 * 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
+# Cache-missed stages compile in this many concurrent compiler processes at most (also
+# bounded by half the host's CPU count). Each stage is one mostly single-threaded compiler.
+MAX_PARALLEL_STAGES = 8
 SOURCE_LIMIT_REPAIR = ('Remove shader programs and sources that the package no longer uses (in the editor, '
                        'right-click the Subgraph node of a template you no longer need and choose Delete Subgraph '
                        'and Library, or right-click the canvas and choose Remove Unused Shaders) and build again.')
@@ -959,6 +964,62 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
+def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker_socket=None, worker_identity=None,
+                   worker_lanes=1, lanes=None):
+    """Compile cache-missed stages concurrently; return one outcome per job, in job order.
+
+    jobs holds (program, closure, target) in build order. Each stage writes only its own
+    work directory below stage, so stages are independent. An outcome is either
+    (artifacts, result, file digests) or the exception that stopped that stage; the
+    caller publishes outcomes in job order and raises the first exception. A failure
+    stops only the stages after it, while earlier stages finish, so the first exception
+    is the first failing stage in build order, exactly as for a serial build. Stages
+    sent to the native worker never exceed its advertised lanes, so a queued request
+    never waits behind more compiles than the worker serves at once.
+    """
+    if not jobs:
+        return []
+    # Half the logical CPUs: hosts with efficiency cores, or an editor and GPU driver
+    # sharing the machine, gain little from more compilers and lose memory headroom.
+    lanes = lanes or min(len(jobs), max(1, (os.cpu_count() or 1) // 2), MAX_PARALLEL_STAGES)
+    worker = threading.BoundedSemaphore(max(1, worker_lanes)) if worker_socket else None
+    first_failure = [len(jobs)]
+    failure_lock = threading.Lock()
+
+    def compile_one(index):
+        program, closure, target = jobs[index]
+        def stopped():
+            return index > first_failure[0] or bool(cancel and cancel())
+        try:
+            checkpoint(stopped)
+            # Native Metal ray pipelines always use their own compiler process.
+            with worker if worker and not program.get('native_ray_pipeline') else nullcontext():
+                checkpoint(stopped)
+                work = stage / ('compile-' + program['id'] + '-' + target)
+                work.mkdir()
+                artifacts, result = compile_program(program, schemas, closure, snapshot, work, helper, tools, target,
+                                                    stopped, worker_socket, worker_identity)
+            files = {p.name: digest(read(p, 2 * 1024 * 1024)) for p in artifacts.iterdir() if p.is_file()}
+            return artifacts, result, files
+        except BaseException:
+            with failure_lock:
+                first_failure[0] = min(first_failure[0], index)
+            raise
+
+    if lanes <= 1:
+        outcomes = []
+        for index in range(len(jobs)):
+            try:
+                outcomes.append(compile_one(index))
+            except BaseException as error:  # Reported by the caller after earlier stages publish.
+                outcomes.append(error)
+                break
+        return outcomes
+    with ThreadPoolExecutor(max_workers=lanes, thread_name_prefix='rg-stage') as pool:
+        futures = [pool.submit(compile_one, index) for index in range(len(jobs))]
+        return [future.exception() or future.result() for future in futures]
+
+
 def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
                     lusl_style='strict'):
     """Capture and lower the same immutable shader contexts for compilation and editing.
@@ -1160,6 +1221,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                            luslc=snapshot.language_tool,
                                            dxc=dxc if 'dxil' in value['profiles'] else None)
     worker_identity = None
+    worker_lanes = 1
     if worker_socket:
         import importlib.util
         spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / NATIVE_WORKER_HELPER)
@@ -1178,6 +1240,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
         worker_identity = descriptor.get('implementation')
         require(isinstance(worker_identity, str) and len(worker_identity) == 64, 'Tools', 'native worker', 'missing implementation identity')
+        # Workers that predate concurrent connections omit the field and serve one at a time.
+        worker_lanes = descriptor.get('concurrency', 1)
+        require(type(worker_lanes) is int and worker_lanes >= 1, 'Tools', 'native worker', 'invalid concurrency')
         # Native compilation is a distinct implementation and owns separate artifact keys.
         tool_hashes['native/implementation'] = worker_identity
     if any(t in value['profiles'] for t in ('spirv', 'glsl')):
@@ -1198,6 +1263,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         with tempfile.TemporaryDirectory(prefix='.rg1-', dir=output) as stage:
             stage = Path(stage)
             compiled, entries, hits, misses = {}, {}, 0, 0
+            pending, pending_keys = [], set()
             for pid, program in sorted(programs.items()):
                 for target in sorted(value['profiles']):
                     if program.get('native_ray_pipeline') and target != 'metal':
@@ -1218,25 +1284,41 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                           and not (target != 'dxil' and k in ('tool/dxcompiler.dll', 'tool/dxil.dll'))
                                           and not (target != 'glsl' and not (program.get('native_ray_queries') or program.get('software_ray_queries')) and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)
-                    saved = cache / key
-                    result = checked_cache(saved, key_data)
-                    if result is None:
-                        work = stage / ('compile-' + pid + '-' + target)
-                        work.mkdir()
-                        artifacts, result = compile_program(program, schemas, closure, snapshot, work, helper, tool_paths, target, cancel, worker_socket, worker_identity)
-                        files = {p.name: digest(read(p, 2 * 1024 * 1024)) for p in artifacts.iterdir() if p.is_file()}
-                        (artifacts / 'cache.json').write_bytes(encoded({'identity': key_data, 'files': files, 'result': result}))
-                        checkpoint(cancel)
-                        if saved.exists():
-                            shutil.rmtree(saved)
-                        os.replace(artifacts, saved)
-                        written_cache.append(saved)
-                        misses += 1
-                    else:
+                    entries[(pid, target)] = key
+                    if key in pending_keys:
+                        # An identical stage earlier in this build compiles once; later uses hit it.
                         hits += 1
+                        continue
+                    result = checked_cache(cache / key, key_data)
+                    if result is None:
+                        pending_keys.add(key)
+                        pending.append((program, closures[pid], target, key, key_data))
+                        continue
+                    hits += 1
                     require(result['target'] == target and result['stage'] == program['stage'], 'Cache', key, 'cached stage identity mismatch')
                     compiled[(pid, target)] = result
-                    entries[(pid, target)] = key
+            # Cache misses compile concurrently, then publish in build order like a serial build.
+            outcomes = compile_stages([job[:3] for job in pending], stage, schemas, snapshot, helper, tool_paths, cancel,
+                                      worker_socket, worker_identity, worker_lanes)
+            built = {}
+            for (program, _, target, key, key_data), outcome in zip(pending, outcomes):
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                artifacts, result, files = outcome
+                (artifacts / 'cache.json').write_bytes(encoded({'identity': key_data, 'files': files, 'result': result}))
+                checkpoint(cancel)
+                saved = cache / key
+                if saved.exists():
+                    shutil.rmtree(saved)
+                os.replace(artifacts, saved)
+                written_cache.append(saved)
+                misses += 1
+                built[key] = result
+            for (pid, target), key in entries.items():
+                if (pid, target) not in compiled:
+                    result = built[key]
+                    require(result['target'] == target and result['stage'] == programs[pid]['stage'], 'Cache', key, 'cached stage identity mismatch')
+                    compiled[(pid, target)] = result
             recipes, routes = [], []
             for tid, technique in sorted(techniques.items()):
                 for target in sorted(value['profiles']):
