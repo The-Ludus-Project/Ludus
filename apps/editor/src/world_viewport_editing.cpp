@@ -13,6 +13,7 @@
 #include <QComboBox>
 #include <QJsonArray>
 #include <QKeySequence>
+#include <QListWidget>
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
@@ -55,10 +56,7 @@ void WorldWorkspace::bindViewportInteraction()
             }
             else
             {
-                Selected_.clear();
-                mSelectedEntities.clear();
-                Render();
-                Changed();
+                Entities_->clearSelection();
             }
         });
         connect(&interaction, &ViewportObjectInteraction::FrameRequested, this, &WorldWorkspace::frameEntity);

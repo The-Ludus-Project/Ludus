@@ -376,6 +376,10 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_Escape)
     {
+        const bool canClearSelection = event->modifiers() == Qt::NoModifier && event->isAutoRepeat() == false &&
+                                       mObjectInteraction->IsDragging() == false && mIsFlying == false &&
+                                       mHasContextPress == false && Preview_->IsExploringFirstPerson() == false &&
+                                       mIsInspectingRayPaths == false;
         EndFirstPerson();
         mObjectInteraction->Cancel();
         stopNavigation();
@@ -385,6 +389,10 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
             mRayPaths->Leave();
         }
 #endif
+        if (canClearSelection == true)
+        {
+            mObjectInteraction->RequestClearSelection();
+        }
         event->accept();
         return;
     }
