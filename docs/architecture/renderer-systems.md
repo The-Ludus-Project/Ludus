@@ -1461,21 +1461,30 @@ spatial variant; see the output pass above); TAA is a later feature needing moti
 
 ## Clear-sky atmosphere design
 
-Start with one opt-in, spherical Earth-like atmosphere per World and one authored
-distant Sun. The first viewport milestone covers a clear sky, a resolved solar
-disk, sunsets and the sunlit portion of twilight for cameras at or above the
-surface and inside the atmosphere. A sunless ray can go dark in this profile.
+Add an **Atmosphere** entity to the World to render a spherical Earth-like sky
+lit by an authored distant Sun. The first viewport milestone covers a clear
+sky, a resolved solar disk, sunsets and the sunlit portion of twilight for
+cameras at or above the surface and inside the atmosphere. A sunless ray can
+go dark in this profile.
 Clouds are outside the atmosphere system.
 
 ### Ownership and inputs
 
-- The World owns the atmosphere selection, its placement and an explicit
-  binding to one directional light by persistent entity identity. Start with
-  **Off** and **Earth clear sky**, a surface anchor in world metres, its outward
-  up direction (default +Y) and the Sun's angular radius in degrees, converted
-  to radians at extraction. Off is the default for existing Worlds. Persist
-  and undo these edits through the World document owner. The game or editor
-  owns the clock, any orbit or ephemeris, and the light transform. Reuse the
+- Choose **Atmosphere** from the World's existing entity creation menu. The
+  editor adds and selects the entity in one undoable edit. Edit its Transform
+  and Atmosphere component in **Properties**. Transform position in world metres
+  anchors the surface, and rotation maps the entity's local +Y to outward up.
+  The **Earth clear sky** preset supplies the physical radii independently of
+  entity scale. The component stores the preset, the Sun's angular radius in
+  degrees, and a reference to a directional light by persistent entity identity.
+  Extraction converts the angle to radians. Save, delete and undo through the
+  ordinary World document operations.
+- A0 admits one Atmosphere entity per World. A World without one uses its
+  ordinary background. If an add or duplicate would create a second Atmosphere,
+  reject the edit and identify the existing entity to edit or remove. If a
+  loaded World has conflicting Atmosphere entities, identify them and use the
+  ordinary background until the author resolves the conflict. The game or editor
+  owns the clock and light transform. Reuse the
   [celestial directional light drivers](../development/editor-workspace.md#celestial-directional-lights)
   for moving the Sun.
 - Extraction resolves the selected light into a unit world direction **toward**
@@ -1485,8 +1494,11 @@ Clouds are outside the atmosphere system.
   celestial driver would suppress direct ground lighting below its geometric
   horizon. The sphere tests light visibility independently at each scattering
   point, including points above a viewer already in shadow. A disabled light
-  contributes zero. A missing or invalid binding identifies the field and
-  offers to select a directional light or turn the atmosphere off.
+  contributes zero. A newly added Atmosphere can be saved with an empty Sun
+  reference. An empty or unresolved reference uses the ordinary background
+  and identifies the **Sun** field in Properties so the author can select a
+  directional light. Preserve an unresolved identity so undoing deletion of
+  the referenced light restores the binding.
 - GraphicsRenderer owns the immutable resolved atmosphere, the prepared GPU
   textures and per-view sampling state. Keep profile and view data distinct.
   Compute planet-relative inputs from the local surface anchor using binary64
@@ -1559,14 +1571,13 @@ a visible sky from sky illumination. Report a requested atmosphere on an
 unsupported profile explicitly, with the supported raster profile named as a
 repair. If a camera moves outside the admitted altitude range, render the
 World with its ordinary clear and show the current altitude and supported
-range so the user can navigate back. The off path preserves the previous
-clear behavior.
+range so the user can navigate back.
 
 ### Milestones and acceptance
 
 | Stage | Result and acceptance |
 | --- | --- |
-| A0. Clear-sky viewport | Compare raw scene-linear GPU transmittance and scattering against independent binary64 quadrature of the same single-scattering model. Use analytic vacuum and constant-extinction checks, phase normalization, vertical and grazing paths on both sides of the horizon, and day, sunset and twilight views at several altitudes. Assert finite nonnegative radiance, bounded transmittance, correct planet shadow and no disk through ground. Establish absolute error floors for dark values and relative tolerances for lit values before tuning LUT quality. Test enable/off, save/undo/reopen, Sun edits, camera movement and resize in the selected World's interactive viewport. Check geometry/depth preservation, disk coverage, one tone map and recovery on re-entering the admitted altitude range. Exercise Pending, failure, stale completion and successful publication while retaining a prior GPU image. Record backend, LUT dimensions, GPU timings and update frequency; qualify each supported backend separately. |
+| A0. Clear-sky viewport | Compare raw scene-linear GPU transmittance and scattering against independent binary64 quadrature of the same single-scattering model. Use analytic vacuum and constant-extinction checks, phase normalization, vertical and grazing paths on both sides of the horizon, and day, sunset and twilight views at several altitudes. Assert finite nonnegative radiance, bounded transmittance, correct planet shadow and no disk through ground. Establish absolute error floors for dark values and relative tolerances for lit values before tuning LUT quality. Test entity creation through the existing menu, Properties edits, deletion and undo, save/reopen, and duplicate rejection in the selected World's interactive viewport. Exercise an empty Sun reference, deleted Sun and undo, camera movement and resize. Check geometry/depth preservation, disk coverage, one tone map and recovery on re-entering the admitted altitude range. Exercise Pending, failure, stale completion and successful publication while retaining a prior GPU image. Record backend, LUT dimensions, GPU timings and update frequency; qualify each supported backend separately. |
 | A1. Atmosphere lighting and aerial perspective | Add multiple scattering after comparing against a declared higher-order solution. Use the same solar input and atmosphere transmittance for the linked direct light at receivers. Generate diffuse and filtered specular environment lighting from the sky when enabled, replacing that environment's lighting contribution and excluding the solar disk already represented by direct lighting. Apply the finite-segment contract to opaque geometry before tone mapping. Document transparent/profile coverage and test no double counting, monotonic homogeneous extinction and distance-dependent haze. |
 | A2. Night sky and space | Add an independent celestial provider for top-of-atmosphere radiance and disk geometry, beginning with stars and the Moon. Compose through the same transmittance and planet occlusion so stars attenuate toward the horizon and the Moon can share its direction with an authored light. Qualify shell entry and exit and limb rendering for orbital views. Lunar phase and eclipses require explicit source/occluder geometry. Airglow or aurora would add a separate emitting term within the atmosphere. |
 | A3. Tabulated particle optics | Add an offline cook for wavelength-dependent particle optics, with versioned density, scattering, absorption and normalized angular phase data. Preserve spectral inputs through the relevant transport before color conversion when claiming spectral fidelity. Check angular resolution and interpolation near forward peaks, then compare a Mars dust preset against the paper's published measurements. |
