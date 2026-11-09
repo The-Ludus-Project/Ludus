@@ -30,6 +30,8 @@ std::string_view CommandKindName(CommandKind kind) noexcept
             return "Stop";
         case CommandKind::ScriptDebug:
             return "ScriptDebug";
+        case CommandKind::SetFastForward:
+            return "SetFastForward";
     }
     return "Unknown";
 }

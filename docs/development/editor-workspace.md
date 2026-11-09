@@ -549,7 +549,7 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   description only when its row cannot: multi-line or elided descriptions.
 - **Toolbars** share the menus' commands, in groups told apart by a separator: Standard
   holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
-  Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
+  Launch (Run, Debug) and Session (Pause, Step, Resume, Fast-forward, Reload Code). The Session group
   is shown only while a game is running or paused. The Render Graph toolbar is the
   context strip: it appears while a render graph is shown in any document group, so a World
   shown alone keeps one row of commands. Its buttons show an icon beside the label: Validate,
@@ -617,7 +617,7 @@ The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
-**Add Geometry / Light** in the right-click menu or below the entity list to
+**Add World Preset** in the right-click menu or below the entity list to
 create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
 **Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
@@ -638,7 +638,10 @@ down. Only render graphs that read luminaires, such as the
 are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
 panel and its emission direction in the viewport.
 
-Choose **Add Geometry / Light → Add Terrain…** or right-click the World
+The same menu adds a [First Person Player](#explore-from-a-first-person-player)
+for exploring the scene from a saved spawn.
+
+Choose **Add World Preset → Add Terrain…** or right-click the World
 viewport and choose **Add Terrain…**. The Terrain panel opens beside the
 viewport with a Rolling Hills draft. Use **Flat** for a level surface or
 **Generate** for Rolling Hills and Ridges. Set the footprint and relief in
@@ -693,9 +696,10 @@ heightmap also requires confirmation.
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
-shows the terrain's surface colour without adding mesh lights. Terrain
-collision, material paint, erosion and streaming are
-future work. See the
+shows the terrain's surface colour without adding mesh lights.
+[Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
+mesh for walking collision. Material paint, erosion and streaming are future
+work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
 
@@ -1121,6 +1125,36 @@ lighting implementation supplies Lit materials, authored lights and shadows;
 Solid and Albedo remain inspection modes. See the owning
 [renderer contract](../architecture/renderer-systems.md) and
 [camera contract](../architecture/camera-systems.md).
+
+### Explore from a First Person Player
+
+Choose **Add World Preset → First Person Player** to add a reusable spawn to a
+default World. The new entity starts at eye height above the origin, or at the
+imported scene's saved start view when that position fits the Transform range.
+In Properties, set Transform X/Y/Z to the eye position in metres, set Rotation X
+and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
+**Save World** to keep the spawn. Duplicate the entity to keep multiple starting
+points.
+
+Apply or cancel any open Terrain draft. Select a player in the hierarchy and
+click **Explore as Player**. Hold the right
+mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
+**Space** to jump. Use **Escape** or leave the viewport to return to the previous
+editor camera. Movement is temporary and applies gravity even while you stand
+still. If you fall below the World, you return to the spawn.
+
+The player uses an upright box and sweeps it against the current visible
+World triangles, including generated terrain and imported meshes. It can
+step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
+above the floor and clear of walls and ceilings. Hide decorative geometry
+that should not obstruct a walk. Collision preparation can take longer for
+large imports and admits up to eight million instanced triangles. Publishing
+different World geometry ends the walk. Choose **Explore as Player** again to
+walk on the new surface.
+
+This editor preview only moves the player. Rigid bodies, thrown objects,
+and gameplay collision assets follow the
+[physics systems architecture](../architecture/physics-systems.md).
 
 ### Try a 3D authoring workflow
 
@@ -1729,7 +1763,7 @@ estimated illuminance. It appears in the viewport status and as a **Renderer
 preview** row in the Error List; render graphs that read only luminaires keep
 their own luminaire warning instead. An unlit viewport never shows it.
 
-In a default World, choose **Add Geometry / Light → Sun**, or double-click the
+In a default World, choose **Add World Preset → Sun**, or double-click the
 warning: a confirmation box then offers **Add sun**, with **Cancel** as the
 default. Both create the same directional light entity named *Sun* of 10 lux,
 aimed like the first disabled imported directional light that shines down, or
@@ -1766,6 +1800,13 @@ horizon contributes zero direct light. Intensity and colour come from the
 authored light. The rules model direction and horizon visibility. Lunar phase
 and atmospheric effects are outside their scope. Games can pass
 their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+
+During a supported hosted Play session, choose **Fast-forward (4×)** in the
+**Play** menu or Game toolbar to advance the game by four fixed ticks per
+rendered frame. **Normal speed (1×)** restores the usual rate. **Pause** still
+freezes simulation and **Step** advances one tick. Game code that samples
+celestial motion from the host's simulation clock sees the same speed change
+as gameplay. The World viewport uses its authored preview time.
 
 Choose **Custom Orbit** for a different observer world, star, or moon. Set
 **Orbit Time** in simulation hours from your chosen epoch. For lights viewed

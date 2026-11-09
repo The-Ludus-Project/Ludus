@@ -698,5 +698,6 @@ private:
     QByteArray mPreviewInputIdentity;
     RenderGraphSource mPreviewSourceVersion = RenderGraphSource::Draft;
     foundation::math::Matrix4 mPreviewWorldToClip = foundation::math::Matrix4::Identity();
+    foundation::float32 mPreviewExposureStops = 0;
 };
 } // namespace ludus::editor

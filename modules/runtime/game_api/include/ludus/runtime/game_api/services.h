@@ -44,9 +44,12 @@ enum class LogSeverity : uint32
 /// the current held state, normalized by the host from the Platform contract.
 struct FrameInput final
 {
+    /// Update callback ordinal. Debug fast-forward can run several updates per presented image.
     uint64 FrameIndex = 0;
+    /// Simulation timestep in seconds for an advancing update. Paused updates leave the simulation clock frozen.
     float64 DeltaSeconds = 0;
-    float64 ElapsedSeconds = 0; ///< Monotonic simulation seconds owned by host.
+    /// Host-owned simulation seconds at the start of the update, excluding paused time.
+    float64 ElapsedSeconds = 0;
     uint32 Width = 0;
     uint32 Height = 0;
     /// @brief Bitset of currently-held logical actions (sample vocabulary).

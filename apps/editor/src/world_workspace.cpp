@@ -202,7 +202,8 @@ QString GetWorldIntroduction()
 }
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
-WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent)
+WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
+    : QWidget(parent), mExploreFirstPersonButton(new QPushButton(QStringLiteral("Explore as Player"), this))
 {
     setObjectName(QStringLiteral("worldWorkspace"));
     auto* layout = new QVBoxLayout(this);
@@ -467,8 +468,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     });
     QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
-    addObject->setText(QStringLiteral("Add Geometry / Light"));
-    addObject->setToolTip(QStringLiteral("Create geometry, lights or luminaires in a default World. Project-owned "
+    addObject->setText(QStringLiteral("Add World Preset"));
+    addObject->setToolTip(QStringLiteral("Create geometry, lights or a player spawn in a default World. Project-owned "
                                          "schemas use Add Entity and their declared components."));
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject->text(), addObject);
@@ -477,6 +478,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     addObject->setMenu(objectMenu);
     addObject->setMinimumHeight(addObject->sizeHint().height());
     entityLayout->addWidget(addObject);
+    mExploreFirstPersonButton->setObjectName(QStringLiteral("worldExploreFirstPerson"));
+    mExploreFirstPersonButton->setToolTip(
+        QStringLiteral("Hold the right mouse button to look, WASD to walk, Shift to run, and Space to jump. "
+                       "Press Escape to return to the editor view."));
+    mExploreFirstPersonButton->setMinimumHeight(mExploreFirstPersonButton->sizeHint().height());
+    entityLayout->addWidget(mExploreFirstPersonButton);
+    connect(mExploreFirstPersonButton, &QPushButton::clicked, this, &WorldWorkspace::exploreFirstPerson);
     for (const QString& preset : {QStringLiteral("Cube"),
                                   QStringLiteral("Plane"),
                                   QStringLiteral("Sphere"),
@@ -484,7 +492,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   QStringLiteral("Spot Light"),
                                   QStringLiteral("Directional Light"),
                                   QStringLiteral("Sun"),
-                                  QStringLiteral("Luminaire")})
+                                  QStringLiteral("Luminaire"),
+                                  QStringLiteral("First Person Player")})
     {
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
@@ -3298,6 +3307,8 @@ void WorldWorkspace::ResumePreview()
 void WorldWorkspace::StopPreview() noexcept
 {
     closeTerrainAuthoring(false);
+    Render_->GetViewport().EndFirstPerson();
+    Scene_->GetViewport().EndFirstPerson();
     Render_->Stop();
     Scene_->StopPreview();
 }

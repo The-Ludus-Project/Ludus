@@ -81,7 +81,7 @@ WorldLightingCoverage DescribeWorldLighting(const WorldLightingSummary& world)
     coverage.Warning =
         QStringLiteral("This World renders almost black: %1. ").arg(causes.join(QStringLiteral("; "))) +
         (world.CanRepair == true
-             ? QStringLiteral("Add a sun from Add Geometry / Light, or reimport the scene with Choose environment.")
+             ? QStringLiteral("Add a sun from Add World Preset, or reimport the scene with Choose environment.")
              : QStringLiteral("Add a directional light entity, or reimport the scene with Choose environment."));
     if (world.CanRepair == false)
     {

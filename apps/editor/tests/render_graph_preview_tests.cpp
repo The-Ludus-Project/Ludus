@@ -67,12 +67,14 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFile>
@@ -1186,8 +1188,26 @@ TEST_CASE("The editor's prebuilt engine default previews with no project files",
     // The default graph displays the unlit tint without creating an area light.
     CheckColor(center, MapDefaultGraphColor({.25F, .5F, .75F}));
     CHECK(preview.GetReport().CandidateReport.Resources.MeshLightPolygons == 0);
-    // The fixture's generation shares the host interface, so either previews in one editor.
+    REQUIRE(preview.CanAdjustRasterExposure() == true);
+    renderer::ViewDescription view;
+    REQUIRE(preview.TryGetPresentedView(view) == true);
+    const uint64 revision = preview.GetPresentedRevision();
+    view.RasterExposureStops = -2;
+    preview.SetCamera(view, revision + 1);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == revision + 1; }) == true);
+    constexpr float32 TWO_STOPS_DARKER = 0.25F;
+    CheckColor(preview.GetImage().pixelColor(extent.width() / 2, extent.height() / 2),
+               MapDefaultGraphColor(math::Vector3{.25F, .5F, .75F} * TWO_STOPS_DARKER));
+    CHECK(preview.GetPresentedGeneration() == 1);
+    view.RasterExposureStops = 0;
+    preview.SetCamera(view, revision + 2);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == revision + 2; }) == true);
+    CHECK(preview.GetImage() == image);
+
+    // The fixture shares the host interface and has no ToneMap on its final output.
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > 1; }) == true);
+    CHECK(preview.CanAdjustRasterExposure() == false);
     preview.Detach();
 }
 
@@ -3648,6 +3668,89 @@ TEST_CASE("Supplied staircase2 World stays drawable through the engine default f
     }
     world.StopPreview();
     renderer.SetPreviewSource(nullptr);
+}
+
+TEST_CASE("Viewport exposure adjusts the live frame without editing the graph",
+          "[editor][render-graph][world-graph][viewport-exposure]")
+{
+    {
+        const DeviceFixture probe;
+        if (probe.IsAvailable == false)
+        {
+            SKIP("No GPU adapter on this host");
+        }
+    }
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source, static_cast<QWidget*>(nullptr), false);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(source.SetScene(MakeScene({.25F, .5F, .75F, 1})) == true);
+    REQUIRE(source.Start() == true);
+    RenderGraphPreview* graph = workspace.GetPreviewOrNull();
+    REQUIRE(graph != nullptr);
+    const auto waitForRevision = [&](uint64 previous) {
+        for (usize attempt = 0; attempt < ATTEMPTS; ++attempt)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+            if (graph->GetPresentedRevision() > previous)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    REQUIRE(waitForRevision(0) == true);
+    const QImage authored = graph->GetImage();
+    REQUIRE(authored.isNull() == false);
+    QToolButton* button = viewport.findChild<QToolButton*>(QStringLiteral("viewportExposure"));
+    QDoubleSpinBox* exposure = viewport.findChild<QDoubleSpinBox*>(QStringLiteral("viewportExposureStops"));
+    QAction* reset = viewport.findChild<QAction*>(QStringLiteral("viewportResetExposure"));
+    QComboBox* targets = viewport.findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(button != nullptr);
+    REQUIRE(exposure != nullptr);
+    REQUIRE(reset != nullptr);
+    REQUIRE(targets != nullptr);
+    CHECK(button->isEnabled() == true);
+    CHECK(exposure->value() == 0);
+    CHECK(reset->isEnabled() == false);
+
+    const uint64 generation = graph->GetPresentedGeneration();
+    const uint64 revision = graph->GetPresentedRevision();
+    const QJsonObject navigation = source.Navigation();
+    exposure->setValue(-2);
+    REQUIRE(waitForRevision(revision) == true);
+    const QImage darkened = graph->GetImage();
+    CHECK(darkened != authored);
+    CHECK(graph->GetPresentedGeneration() == generation);
+    CHECK(source.Navigation() == navigation);
+    CHECK(workspace.IsDirty() == false);
+
+    const int32 debug = targets->findText(QStringLiteral("Debug: Albedo"));
+    REQUIRE(debug > 0);
+    targets->setCurrentIndex(debug);
+    CHECK(button->isEnabled() == false);
+    CHECK(exposure->isEnabled() == false);
+    targets->setCurrentIndex(0);
+    CHECK(button->isEnabled() == true);
+    CHECK(exposure->value() == -2);
+    CHECK(reset->isEnabled() == true);
+    const uint64 beforeReset = graph->GetPresentedRevision();
+    reset->trigger();
+    REQUIRE(waitForRevision(beforeReset) == true);
+    CHECK(graph->GetImage() == authored);
+    CHECK(graph->GetPresentedGeneration() == generation);
+    CHECK(exposure->value() == 0);
+    CHECK(workspace.IsDirty() == false);
+
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
 }
 
 TEST_CASE("World graph frames wait for import publication without erasing the last view",

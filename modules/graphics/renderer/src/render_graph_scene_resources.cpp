@@ -40,6 +40,50 @@ constexpr usize DRAW_TEXTURE_COUNT = MATERIAL_TEXTURE_COUNT + 1;
 constexpr usize CACHE_TEXTURE_COUNT = format::MAX_ITEMS * DRAW_TEXTURE_COUNT * RETAINED_GENERATION_COUNT;
 constexpr usize CHANNEL_COUNT = 4;
 constexpr usize TRIANGLE_CORNER_COUNT = 3;
+constexpr uint32 DIRECTIONAL_SHADOW_GUTTER_TEXELS = 1;
+constexpr uint32 DIRECTIONAL_SHADOW_INTERIOR_TEXELS = DIRECTIONAL_SHADOW_TEXELS - 2 * DIRECTIONAL_SHADOW_GUTTER_TEXELS;
+/// Padding keeps degenerate scene bounds projectable even with the light parallel to the plane.
+constexpr math::Vector3 DIRECTIONAL_SHADOW_PADDING_METERS{0.5F, 0.5F, 0.5F};
+
+Status BuildDirectionalShadowRegion(BorrowedView<const DirectLight> lights,
+                                    const math::Aabb3& boundsWorld,
+                                    ShadowRegion& outRegion) noexcept
+{
+    if (math::IsEmpty(boundsWorld) == true)
+    {
+        return Status::Ready;
+    }
+    const DirectLight* selectedOrNull = nullptr;
+    for (usize index = 0; index < lights.GetSize(); ++index)
+    {
+        const DirectLight& light = lights[index];
+        if (light.Kind == LightKind::Directional && light.Intensity > 0 && light.Color != math::Vector3{} &&
+            (selectedOrNull == nullptr || light.SourceId < selectedOrNull->SourceId))
+        {
+            selectedOrNull = &light;
+        }
+    }
+    if (selectedOrNull == nullptr)
+    {
+        return Status::Ready;
+    }
+    ShadowRegion region;
+    region.Light = *selectedOrNull;
+    region.Interior = {DIRECTIONAL_SHADOW_GUTTER_TEXELS,
+                       DIRECTIONAL_SHADOW_GUTTER_TEXELS,
+                       DIRECTIONAL_SHADOW_INTERIOR_TEXELS,
+                       DIRECTIONAL_SHADOW_INTERIOR_TEXELS};
+    const Status status = BuildDirectionalShadowMatrix(
+        {boundsWorld.Min - DIRECTIONAL_SHADOW_PADDING_METERS, boundsWorld.Max + DIRECTIONAL_SHADOW_PADDING_METERS},
+        region.Light.Direction,
+        DIRECTIONAL_SHADOW_INTERIOR_TEXELS,
+        region.WorldToClip);
+    if (status == Status::Ready)
+    {
+        outRegion = region;
+    }
+    return status;
+}
 enum MeshKeyPart : uint8
 {
     POSITIONS,
@@ -436,8 +480,8 @@ struct ForwardSceneGeneration::State final
     uint32 MeshLightGridWord = 0;
     /// Shadow casters with allocated atlas faces; empty without a culling grid.
     Array<MeshLightShadowCaster> MeshLightShadowCasters;
-    /// Their atlas; its texture exists exactly when MeshLightShadowCasters is nonempty.
-    MeshLightShadowAtlas MeshLightShadows;
+    /// Shared directional and mesh-light atlas. It exists only when at least one projection is needed.
+    DeferredShadowAtlas Shadows;
     LightClusterDescription Clusters;
     math::Aabb3 BoundsWorld = math::EmptyAabb3();
     EnvironmentMap Environment;
@@ -450,11 +494,11 @@ struct ForwardSceneGeneration::State final
             return;
         }
         static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightBuffer));
-        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightShadows.Sampled));
-        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightShadows.Texture));
-        if (MeshLightShadows.Packets.IsEmpty() == false)
+        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Sampled));
+        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Texture));
+        if (Shadows.Packets.IsEmpty() == false)
         {
-            static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightShadows.Instances));
+            static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Instances));
         }
         for (MaterialVersion& material : Materials)
         {
@@ -549,14 +593,17 @@ usize ForwardSceneGeneration::GetSurfaceChartDrawCount() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->SurfaceChartDraws;
 }
-rhi::TextureViewHandle ForwardSceneGeneration::GetMeshLightShadowView() const noexcept
+rhi::TextureViewHandle ForwardSceneGeneration::GetShadowAtlasView() const noexcept
 {
-    return mState.Get() == nullptr ? rhi::TextureViewHandle{} : mState->MeshLightShadows.Sampled;
+    return mState.Get() == nullptr ? rhi::TextureViewHandle{} : mState->Shadows.Sampled;
 }
-MeshLightShadowAtlas* ForwardSceneGeneration::GetMeshLightShadowAtlasOrNull() noexcept
+bool ForwardSceneGeneration::HasShadowAtlas() const noexcept
 {
-    return mState.Get() == nullptr || mState->MeshLightShadowCasters.IsEmpty() == true ? nullptr
-                                                                                       : &mState->MeshLightShadows;
+    return mState.Get() != nullptr && rhi::IsNull(mState->Shadows.Texture) == false;
+}
+DeferredShadowAtlas* ForwardSceneGeneration::GetShadowAtlasOrNull() noexcept
+{
+    return HasShadowAtlas() == true ? &mState->Shadows : nullptr;
 }
 uint32 ForwardSceneGeneration::GetPendingMeshLightShadowFaces() const noexcept
 {
@@ -564,7 +611,7 @@ uint32 ForwardSceneGeneration::GetPendingMeshLightShadowFaces() const noexcept
     {
         return 0;
     }
-    const MeshLightShadowAtlas& atlas = mState->MeshLightShadows;
+    const DeferredShadowAtlas& atlas = mState->Shadows;
     if (atlas.HasPackets == false)
     {
         uint32 faces = 0;
@@ -577,7 +624,7 @@ uint32 ForwardSceneGeneration::GetPendingMeshLightShadowFaces() const noexcept
         }
         return faces;
     }
-    return static_cast<uint32>(atlas.Faces.GetSize()) - atlas.NextFace;
+    return static_cast<uint32>(atlas.Faces.GetSize()) - atlas.Submitted.NextFace;
 }
 Status ForwardSceneGeneration::Poll() noexcept
 {
@@ -595,18 +642,17 @@ Status ForwardSceneGeneration::Poll() noexcept
             return status;
         }
     }
-    if (state.MeshLightShadowCasters.IsEmpty() == false)
+    if (rhi::IsNull(state.Shadows.Texture) == false)
     {
-        Status status = rhi::GetStatus(owner.Device, state.MeshLightShadows.Texture);
-        if (status == Status::Ready && state.MeshLightShadows.HasSampled == false)
+        Status status = rhi::GetStatus(owner.Device, state.Shadows.Texture);
+        if (status == Status::Ready && state.Shadows.HasSampled == false)
         {
-            status =
-                rhi::CreateTextureView(owner.Device, state.MeshLightShadows.Texture, state.MeshLightShadows.Sampled);
-            state.MeshLightShadows.HasSampled = IsAccepted(status);
+            status = rhi::CreateTextureView(owner.Device, state.Shadows.Texture, state.Shadows.Sampled);
+            state.Shadows.HasSampled = IsAccepted(status);
         }
         if (status == Status::Ready)
         {
-            status = rhi::GetStatus(owner.Device, state.MeshLightShadows.Sampled);
+            status = rhi::GetStatus(owner.Device, state.Shadows.Sampled);
         }
         if (status != Status::Ready)
         {
@@ -653,10 +699,15 @@ Status ForwardSceneGeneration::Poll() noexcept
         LightSelection selection;
         const MaterialProgram program =
             rhi::IsNull(description.Bake.Texture) == false ? owner.SurfaceChartProgram : owner.Program;
-        const Status status = owner.RendererOrNull->CreateLitMaterial(program,
-                                                                      description,
-                                                                      state.Materials[state.PreparedMaterials],
-                                                                      selection);
+        const ShadowRegion& directional = state.Shadows.Directional;
+        const bool hasDirectionalShadow = directional.Light.SourceId != 0;
+        const Status status =
+            owner.RendererOrNull->createLitMaterial(program,
+                                                    description,
+                                                    state.Materials[state.PreparedMaterials],
+                                                    selection,
+                                                    hasDirectionalShadow == true ? &directional : nullptr,
+                                                    state.Shadows.ExtentTexels);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -1017,6 +1068,15 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         // Clustered profiles bound every shaded surface; the resolve then reads only its cell's emitters.
         if (owner.IsClustered == true)
         {
+            const Status directional =
+                BuildDirectionalShadowRegion({candidate.Lights.GetData(), candidate.Lights.GetSize()},
+                                             candidate.BoundsWorld,
+                                             candidate.Shadows.Directional);
+            if (directional != Status::Ready)
+            {
+                return directional;
+            }
+            const bool hasDirectionalShadow = candidate.Shadows.Directional.Light.SourceId != 0;
             // Casters come first: they tag each record, and the grid lists each caster's records together.
             if (candidate.MeshLightCount != 0)
             {
@@ -1027,11 +1087,6 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 if (casters != Status::Ready)
                 {
                     return casters;
-                }
-                if (AllocateRasterMeshLightShadowFaces(candidate.MeshLightShadowCasters,
-                                                       MESH_LIGHT_SHADOW_ATLAS_TEXELS) == false)
-                {
-                    return Status::OutOfMemory;
                 }
             }
             const Status grid = AppendRasterMeshLightGrid(candidate.MeshLightWords,
@@ -1050,6 +1105,12 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             }
             else if (candidate.MeshLightShadowCasters.IsEmpty() == false)
             {
+                if (AllocateRasterMeshLightShadowFaces(candidate.MeshLightShadowCasters,
+                                                       MESH_LIGHT_SHADOW_ATLAS_TEXELS,
+                                                       hasDirectionalShadow) == false)
+                {
+                    return Status::OutOfMemory;
+                }
                 uint32 tableWord = 0;
                 const Status table = AppendRasterMeshLightShadowTable(
                     candidate.MeshLightWords,
@@ -1062,14 +1123,18 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 }
                 candidate.MeshLightWords[candidate.MeshLightGridWord + MESH_LIGHT_GRID_CULL_WORD].Y =
                     static_cast<float32>(tableWord);
-                // One RGBA8 colour attachment with its private depth; faces are drawn after publication.
+            }
+            if (hasDirectionalShadow == true || candidate.MeshLightShadowCasters.IsEmpty() == false)
+            {
+                // One packed-depth colour attachment and its private depth. Pure directional scenes need one square.
+                const uint32 atlasTexels = candidate.MeshLightShadowCasters.IsEmpty() == true
+                                               ? DIRECTIONAL_SHADOW_TEXELS
+                                               : MESH_LIGHT_SHADOW_ATLAS_TEXELS;
+                candidate.Shadows.ExtentTexels = atlasTexels;
                 const Status atlas = rhi::CreateTexture(owner.Device,
-                                                        {MESH_LIGHT_SHADOW_ATLAS_TEXELS,
-                                                         MESH_LIGHT_SHADOW_ATLAS_TEXELS,
-                                                         rhi::RasterFormat::Rgba8Unorm,
-                                                         true},
+                                                        {atlasTexels, atlasTexels, rhi::RasterFormat::Rgba8Unorm, true},
                                                         {},
-                                                        candidate.MeshLightShadows.Texture);
+                                                        candidate.Shadows.Texture);
                 if (IsAccepted(atlas) == false)
                 {
                     return atlas;
