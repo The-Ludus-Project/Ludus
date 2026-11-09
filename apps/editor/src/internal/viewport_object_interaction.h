@@ -177,8 +177,13 @@ Q_SIGNALS:
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
     void TerrainExtentCommitted(const QString& key, foundation::float64 extent);
     void TerrainHeightPicked(foundation::float32 height);
+    /// The stroke being dragged gained a point: the local XZ pairs since the press, in order.
+    /// The first emission of a gesture carries exactly the press point. Finished, Rejected or Cancelled ends it.
+    void TerrainStrokeChanged(const QJsonArray& points);
     void TerrainStrokeFinished(const QJsonArray& points);
     void TerrainStrokeRejected(const QString& message);
+    /// Cancel, or pausing sculpting, discarded the stroke being dragged; no Finished or Rejected follows for it.
+    void TerrainStrokeCancelled();
     /// The terrain was pressed with a brush while sculpting is paused; no stroke or height pick started.
     void TerrainSculptRefused();
 
@@ -223,7 +228,8 @@ private:
                                foundation::math::Vector3& outHitMesh,
                                foundation::float32* outSlopeDegreesOrNull);
     [[nodiscard]] bool updateTerrainBrush(QPointF positionPixel, const QRectF& outerFramePixel);
-    void appendTerrainStrokePoint();
+    /// Returns true when the hit became the stroke's newest point.
+    [[nodiscard]] bool appendTerrainStrokePoint();
     [[nodiscard]] HandleTarget pickTerrainHandle(QPointF positionPixel) const;
     [[nodiscard]] bool beginTerrainDrag(QPointF positionPixel);
     void dragTerrainExtent(QPointF positionPixel);
