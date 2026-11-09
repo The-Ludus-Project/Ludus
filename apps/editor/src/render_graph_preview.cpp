@@ -369,7 +369,9 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                          static_cast<usize>(extraction.Materials.size())};
     for (uint32 i = 0; i < extraction.Scene.AuthoredLights.Count; ++i)
     {
-        extraction.Lights.append(extraction.Scene.AuthoredLights.Lights[i]);
+        graphics::renderer::DirectLight light = extraction.Scene.AuthoredLights.Lights[i];
+        light.ShouldCastRasterShadows = scene.RasterUnshadowedLightIds.contains(light.SourceId) == false;
+        extraction.Lights.append(light);
     }
     extraction.ShaderInputs.Lights = {extraction.Lights.constData(), static_cast<usize>(extraction.Lights.size())};
     for (uint32 i = 0; i < extraction.Scene.Luminaires.Count; ++i)
@@ -436,6 +438,8 @@ struct RenderGraphPreview::State final
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
+        /// A ray renderer draws this generation and an authored raster fallback could replace it (Force raster).
+        bool CanUseRasterFallback = false;
         /// Runtime package and generation identity, for ray path capture of this generation.
         QString PackagePath;
         QByteArray GenerationIdentity;
@@ -464,6 +468,14 @@ struct RenderGraphPreview::State final
     bool HasGpuFrame = false;
     bool HasPendingPreparation = false;
     GraphViewportStatistics Statistics;
+    /// Submission-to-presentation time of the active generation's frames; see SlowFramesDetected.
+    ViewportSlowFrameMonitor SlowFrames;
+    /// Started when advance submits a new frame, before the camera update; read when the frame is published.
+    QElapsedTimer FrameTimer;
+    /// A streak of slow frames completed during this tick; SlowFramesDetected is emitted after it.
+    bool HasSlowFrames = false;
+    /// Active package whose raster fallback was already suggested; it is not suggested again this session.
+    QString SuggestedFallbackPath;
     ViewportFrameTrace Trace;
     QElapsedTimer ReadbackTimer;
     bool HasCompletedStatisticsFrame = false;
@@ -679,6 +691,9 @@ void RenderGraphPreview::Detach() noexcept
     state.HasPendingPreparation = false;
     state.Reader.Release();
     state.Statistics.Reset();
+    state.SlowFrames.Reset();
+    state.FrameTimer.invalidate();
+    state.HasSlowFrames = false;
     state.ReadbackTimer.invalidate();
     state.Inspector.Release();
     state.InspectionTimer.invalidate();
@@ -765,6 +780,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     }
     QString selectedPath = runtimePackagePath;
     QString rendererStatus = QStringLiteral("Raster renderer.");
+    bool canUseRasterFallback = false;
     if (renderer::UsesRayTracing(package->GetPlan()) == true)
     {
         const bool hasNativeRayQueries = renderer::RequiresHardwareRayTracing(package->GetPlan());
@@ -811,6 +827,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             rendererStatus = hasNativeRayQueries == true
                                  ? QStringLiteral("Compute raytracing renderer (native hardware BVH queries).")
                                  : QStringLiteral("Compute raytracing renderer (shader traversal).");
+            canUseRasterFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
         }
     }
     // Denoising only filters the image. Without the optional denoiser, preview the graph as if its
@@ -825,6 +842,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     const renderer::RenderGraphPlan plan = package->GetPlan();
     State::Target target;
     target.RendererStatus = rendererStatus;
+    target.CanUseRasterFallback = canUseRasterFallback;
     bool hasTarget = false;
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
@@ -980,6 +998,26 @@ const QString& RenderGraphPreview::GetRequestedPackagePath() const noexcept
 const QString& RenderGraphPreview::GetActivePackagePath() const noexcept
 {
     return mState->Active.PackagePath;
+}
+bool RenderGraphPreview::CanSwitchToRasterFallback() const noexcept
+{
+    const State& state = *mState;
+    return state.IsAttached == true && state.ShouldForceRaster == false && state.Active.Serial != 0 &&
+           state.Active.CanUseRasterFallback == true && state.Active.PackagePath == state.RequestedPath;
+}
+bool RenderGraphPreview::TakeSlowFrameSuggestion()
+{
+    State& state = *mState;
+    if (CanSwitchToRasterFallback() == false || state.SuggestedFallbackPath == state.Active.PackagePath)
+    {
+        return false;
+    }
+    state.SuggestedFallbackPath = state.Active.PackagePath;
+    return true;
+}
+void RenderGraphPreview::SetSlowFrameMilliseconds(float64 milliseconds) noexcept
+{
+    mState->SlowFrames.SetThresholdMilliseconds(milliseconds);
 }
 const QString& RenderGraphPreview::GetRasterFallbackPath() const noexcept
 {
@@ -1162,6 +1200,11 @@ void RenderGraphPreview::Tick(float64 preparationMilliseconds, RenderGraphPrevie
         {
             Q_EMIT state.Display.FrameReady();
         }
+    }
+    if (state.HasSlowFrames == true)
+    {
+        state.HasSlowFrames = false;
+        Q_EMIT SlowFramesDetected(state.SlowFrames.GetStreakMilliseconds());
     }
 }
 void RenderGraphPreview::tick(RenderGraphPreviewWork work)
@@ -1387,6 +1430,17 @@ void RenderGraphPreview::publishFrame(bool isGpuFrame)
     setStatus(mPresentedRevision == state.MaterialStatusRevision ? state.MaterialStatus : QString{});
     state.IsInspectionRequested = state.IsInspectionEnabled == true && state.InspectedName.isEmpty() == false;
     state.HasCompletedStatisticsFrame = true;
+    if (state.FrameTimer.isValid() == true)
+    {
+        const float64 frameMilliseconds =
+            static_cast<float64>(state.FrameTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND;
+        state.FrameTimer.invalidate();
+        if (state.SlowFrames.AddFrame(state.RenderedGeneration, frameMilliseconds) == true &&
+            CanSwitchToRasterFallback() == true && state.SuggestedFallbackPath != state.Active.PackagePath)
+        {
+            state.HasSlowFrames = true;
+        }
+    }
 }
 void RenderGraphPreview::finishDisplayCopy()
 {
@@ -1418,6 +1472,9 @@ void RenderGraphPreview::finishDisplayCopy()
 void RenderGraphPreview::advance(bool shouldSubmitFrame)
 {
     State& state = *mState;
+    // A frame's time includes the camera and scene update that precedes its submission.
+    QElapsedTimer frameTimer;
+    frameTimer.start();
     // No live frame or export copy is in flight here, so the capture graph may submit its sample.
     if (state.Capture.Advance() == true)
     {
@@ -1480,8 +1537,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                                       static_cast<usize>(state.Extraction.SurfaceCharts.size())};
         shaderInputs.BakedLightIds = {state.Extraction.Scene.AlwaysOnLightIds.constData(),
                                       static_cast<usize>(state.Extraction.Scene.AlwaysOnLightIds.size())};
-        shaderInputs.Lights = {state.Extraction.Scene.AuthoredLights.Lights,
-                               state.Extraction.Scene.AuthoredLights.Count};
+        shaderInputs.Lights = {state.Extraction.Lights.constData(), static_cast<usize>(state.Extraction.Lights.size())};
         shaderInputs.Luminaires = {state.Extraction.Scene.Luminaires.Luminaires,
                                    state.Extraction.Scene.Luminaires.Count};
         const rhi::RasterStatus updated = state.Activation.Update(
@@ -1609,6 +1665,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             ? FIRST_SAMPLE_PRODUCER_MILLISECONDS
             : MAX_PRODUCER_MILLISECONDS;
     Q_EMIT PreparingSubmission();
+    state.FrameTimer = frameTimer;
     submitFrame(*activeOrNull, report.ActiveGeneration, drawable);
 }
 

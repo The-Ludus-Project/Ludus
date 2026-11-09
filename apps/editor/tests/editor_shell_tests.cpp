@@ -38,7 +38,6 @@
 #include <QLabel>
 #include <QLatin1StringView>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
@@ -654,14 +653,14 @@ TEST_CASE("Save and Undo follow the active document tab", "[editor][layout][shel
     REQUIRE(world->Create(path) == true);
     REQUIRE(well.OpenDocument(world) == true);
     CHECK(save->text() == QStringLiteral("&Save World"));
-    QListWidget* entities = world->findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(entities != nullptr);
-    const int32 before = entities->count();
+    QTreeWidget* entitiesOrNull = world->findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    const int32 before = entitiesOrNull->topLevelItemCount();
     QAction* addOrNull = world->findChild<QAction*>(QStringLiteral("worldAdd"));
     REQUIRE(addOrNull != nullptr);
     addOrNull->trigger();
     Settle();
-    CHECK(entities->count() == before + 1);
+    CHECK(entitiesOrNull->topLevelItemCount() == before + 1);
     // Focus in the Properties tool window keeps the World as the active document.
     QPushButton* apply = window.findChild<QPushButton*>(QStringLiteral("worldApply"));
     REQUIRE(apply != nullptr);
@@ -674,12 +673,12 @@ TEST_CASE("Save and Undo follow the active document tab", "[editor][layout][shel
     REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
     CHECK(save->text() == QStringLiteral("&Save Render Graph"));
     REQUIRE(well.OpenDocument(world) == true);
-    entities->setFocus();
+    entitiesOrNull->setFocus();
     Settle();
     CHECK(save->text() == QStringLiteral("&Save World"));
     REQUIRE(undo->isEnabled() == true);
     undo->trigger();
-    CHECK(entities->count() == before);
+    CHECK(entitiesOrNull->topLevelItemCount() == before);
     save->trigger();
     CHECK(world->Dirty() == false);
 }

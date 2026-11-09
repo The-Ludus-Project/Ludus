@@ -110,6 +110,22 @@ paths. Native packages are unchanged.
   available here (it disagrees only on the repo's compact designated-initializer
   brace style and macro-wrap columns).
 
+## Update: browser editor viewport (November 2026)
+
+The browser editor's viewport owns its canvas outside Platform, so Auto's
+`ReplaceCanvas` swap cannot recover it after a WebGPU attempt. The editor
+therefore applies the same policy itself with forced selections: it starts
+WebGPU and, on a startup failure only, removes the canvas, creates a fresh one
+and starts WebGL 2. A device that reached Ready never switches. The page's
+`viewport-backend` query forces either API. See
+[Viewport graphics API](../development/browser-editor.md#viewport-graphics-api).
+
+The WebGL 2 backend now also admits offscreen-only frames
+(`FrameTarget::ShouldPresentToSurface == false`): it binds no default framebuffer,
+so the canvas keeps its last presented image while texture passes, such as shadow
+preparation, run. Surface passes and fullscreen draws are rejected in that mode,
+as on WebGPU.
+
 ## References
 
 - `docs/development/webgl2-backend-evidence.json`

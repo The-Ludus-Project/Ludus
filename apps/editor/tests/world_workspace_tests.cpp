@@ -9,10 +9,12 @@
 #include "internal/material_inspection.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_graph_preview.h"
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
+#include "internal/selection_outline_request.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_document.h"
@@ -49,7 +51,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
-#include <QListWidget>
+#include <QLineF>
 #include <QLockFile>
 #include <QMessageBox>
 #include <QProcess>
@@ -65,6 +67,7 @@
 #include <QTest>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -343,9 +346,9 @@ TEST_CASE("World inspector preserves invalid text disables selection and saves o
     WorldWorkspace view;
     view.SetProject(dir.path(), 1);
     REQUIRE(view.Open(path));
-    auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(list != nullptr);
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     auto* x = Field(view, QStringLiteral("transform/x"));
     auto* name = view.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
     REQUIRE(name != nullptr);
@@ -353,7 +356,7 @@ TEST_CASE("World inspector preserves invalid text disables selection and saves o
     Type(x, QStringLiteral("-"));
     Type(name, QStringLiteral("Artist cube"));
     CHECK(view.Dirty());
-    CHECK_FALSE(list->isEnabled());
+    CHECK_FALSE(listOrNull->isEnabled());
     CHECK_FALSE(view.CanUndo());
     CHECK_FALSE(view.Save());
     CHECK(view.Document().Draft() == before);
@@ -362,8 +365,8 @@ TEST_CASE("World inspector preserves invalid text disables selection and saves o
     Type(x, QStringLiteral("0.5"));
     REQUIRE(view.Save());
     CHECK_FALSE(view.Dirty());
-    CHECK(list->item(0)->text() == QStringLiteral("Artist cube"));
-    CHECK(list->isEnabled());
+    CHECK(listOrNull->topLevelItem(0)->text(0) == QStringLiteral("Artist cube"));
+    CHECK(listOrNull->isEnabled());
     CHECK(view.Document().Entity(QStringLiteral("starter.cube")).value(QStringLiteral("name")) ==
           QJsonValue(QStringLiteral("Artist cube")));
     WorldWorkspace reopened;
@@ -382,8 +385,9 @@ TEST_CASE("World saves refuse changed files schemas locks and symlink paths whil
     WorldWorkspace view;
     view.SetProject(dir.path(), 1);
     REQUIRE(view.Open(path));
-    auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("3"));
     REQUIRE(view.Apply());
     const auto draft = view.Document().Draft();
@@ -403,7 +407,7 @@ TEST_CASE("World saves refuse changed files schemas locks and symlink paths whil
     lock.unlock();
     REQUIRE(view.Save());
     REQUIRE(lock.tryLock());
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("5"));
     REQUIRE(view.Apply());
     CHECK(view.findChild<QLabel*>(QStringLiteral("worldStatus"))
@@ -431,8 +435,9 @@ TEST_CASE("World creation publishes only on Save and recovery is explicit bound 
     WorldWorkspace view;
     view.SetProject(dir.path(), 1);
     REQUIRE(view.Open(path));
-    auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("7"));
     REQUIRE(view.Apply());
     CHECK(Read(path) == Starter());
@@ -500,7 +505,7 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     workspace.show();
     QApplication::processEvents();
     PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
-    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
     QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("worldEntityContextMenu"));
     REQUIRE(viewportOrNull != nullptr);
     REQUIRE(entitiesOrNull != nullptr);
@@ -520,22 +525,22 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     CHECK(deleteOrNull->isEnabled() == false);
     menuOrNull->setActiveAction(addOrNull);
     QTest::keyClick(menuOrNull, Qt::Key_Return);
-    CHECK(entitiesOrNull->count() == 1);
+    CHECK(entitiesOrNull->topLevelItemCount() == 1);
 
     addOrNull->trigger();
-    REQUIRE(entitiesOrNull->count() == 2);
-    const QPoint firstRow = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+    REQUIRE(entitiesOrNull->topLevelItemCount() == 2);
+    const QPoint firstRow = entitiesOrNull->visualItemRect(entitiesOrNull->topLevelItem(0)).center();
     QContextMenuEvent rowEvent(QContextMenuEvent::Mouse, firstRow, entitiesOrNull->viewport()->mapToGlobal(firstRow));
     QApplication::sendEvent(entitiesOrNull->viewport(), &rowEvent);
     REQUIRE(menuOrNull->isVisible() == true);
-    CHECK(entitiesOrNull->item(0)->isSelected() == true);
+    CHECK(entitiesOrNull->topLevelItem(0)->isSelected() == true);
     CHECK(entitiesOrNull->selectedItems().size() == 1);
     CHECK(duplicateOrNull->isEnabled() == true);
     CHECK(deleteOrNull->isEnabled() == true);
     menuOrNull->close();
 
     entitiesOrNull->selectAll();
-    const QPoint selectedRow = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+    const QPoint selectedRow = entitiesOrNull->visualItemRect(entitiesOrNull->topLevelItem(0)).center();
     QTest::mouseClick(entitiesOrNull->viewport(), Qt::RightButton, Qt::NoModifier, selectedRow);
     QContextMenuEvent groupEvent(QContextMenuEvent::Mouse,
                                  selectedRow,
@@ -545,9 +550,9 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     CHECK(entitiesOrNull->selectedItems().size() == 2);
     menuOrNull->close();
     duplicateOrNull->trigger();
-    CHECK(entitiesOrNull->count() == 4);
+    CHECK(entitiesOrNull->topLevelItemCount() == 4);
     workspace.Undo();
-    CHECK(entitiesOrNull->count() == 2);
+    CHECK(entitiesOrNull->topLevelItemCount() == 2);
 
     QAction* cubeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"));
     REQUIRE(cubeOrNull != nullptr);
@@ -565,7 +570,7 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, frameCenter);
     REQUIRE(menuOrNull->isVisible() == true);
     REQUIRE(entitiesOrNull->selectedItems().size() == 1);
-    CHECK(entitiesOrNull->selectedItems().first()->data(Qt::UserRole).toString() == cubeId);
+    CHECK(entitiesOrNull->selectedItems().first()->data(0, Qt::UserRole).toString() == cubeId);
     menuOrNull->close();
 }
 
@@ -584,7 +589,7 @@ TEST_CASE("Double-clicking a World entity frames it from the viewport or hierarc
 
     QAction* cubeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"));
     PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
-    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(cubeOrNull != nullptr);
     REQUIRE(viewportOrNull != nullptr);
     REQUIRE(entitiesOrNull != nullptr);
@@ -618,14 +623,14 @@ TEST_CASE("Double-clicking a World entity frames it from the viewport or hierarc
         CHECK(preview.Navigation() == navigation);
         QTest::mouseClick(viewportOrNull, Qt::LeftButton, Qt::NoModifier, framePixel.center());
         REQUIRE(entitiesOrNull->selectedItems().size() == 1);
-        CHECK(entitiesOrNull->selectedItems().first()->data(Qt::UserRole).toString() == cubeId);
+        CHECK(entitiesOrNull->selectedItems().first()->data(0, Qt::UserRole).toString() == cubeId);
         CHECK(preview.Navigation() == navigation);
         tests::DoubleClick(viewportOrNull, Qt::LeftButton, Qt::NoModifier, framePixel.center());
     }
     SECTION("hierarchy frames the clicked row")
     {
-        REQUIRE(entitiesOrNull->count() == 1);
-        const QPoint rowPixel = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+        REQUIRE(entitiesOrNull->topLevelItemCount() == 1);
+        const QPoint rowPixel = entitiesOrNull->visualItemRect(entitiesOrNull->topLevelItem(0)).center();
         QTest::mouseClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
         tests::DoubleClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
     }
@@ -648,8 +653,9 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     ApplyWorkspaceStyle(&view);
     view.resize(800, 640);
     view.show();
-    view.findChild<QListWidget*>(QStringLiteral("worldEntities"))
-        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* entitiesOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     QTest::qWait(10);
     CHECK(view.minimumSizeHint().width() <= 800);
     for (QLineEdit* field : view.findChildren<QLineEdit*>())
@@ -692,13 +698,14 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK(hint->toolTip().contains(QStringLiteral("orbit")) == true);
     CHECK(isSameRow("viewportNavigationHint", "viewportShading") == true);
     // A long entity name plus persisted UUID must not widen the inspector.
-    auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(1), 0, QItemSelectionModel::ClearAndSelect);
     auto* name = view.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
     Type(name, QString(120, QLatin1Char('T')));
     REQUIRE(view.Apply());
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-    list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(1), 0, QItemSelectionModel::ClearAndSelect);
     QTest::qWait(10);
     CHECK(view.minimumSizeHint().width() <= 800);
 
@@ -715,8 +722,9 @@ TEST_CASE("World failed replacement keeps pending fields and a cancelled close p
     WorldWorkspace view;
     view.SetProject(dir.path(), 1);
     REQUIRE(view.Open(path));
-    view.findChild<QListWidget*>(QStringLiteral("worldEntities"))
-        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* entitiesOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     auto* field = Field(view, QStringLiteral("transform/x"));
     Type(field, QStringLiteral("-"));
     CHECK_FALSE(
@@ -758,8 +766,9 @@ TEST_CASE("World menu Save and history own the active document and Close Project
     REQUIRE(world != nullptr);
     REQUIRE(world->Open(path));
     world->setFocus();
-    world->findChild<QListWidget*>(QStringLiteral("worldEntities"))
-        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* entitiesOrNull = world->findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     Type(Field(*world, QStringLiteral("transform/x")), QStringLiteral("4"));
     auto* save = window.findChild<QAction*>(QStringLiteral("document.save"));
     REQUIRE(save != nullptr);
@@ -768,7 +777,7 @@ TEST_CASE("World menu Save and history own the active document and Close Project
     save->trigger();
     CHECK_FALSE(world->Dirty());
     CHECK(Read(project) == SerializeDescriptor(descriptor));
-    world->findChild<QListWidget*>(QStringLiteral("worldEntities"))->setFocus();
+    entitiesOrNull->setFocus();
     auto* undo = window.findChild<QAction*>(QStringLiteral("document.undo"));
     REQUIRE(undo != nullptr);
     undo->trigger();
@@ -817,8 +826,9 @@ TEST_CASE("World recovery rejects damaged payloads and stale schemas without rep
     WorldWorkspace source;
     source.SetProject(dir.path(), 1);
     REQUIRE(source.Open(path));
-    source.findChild<QListWidget*>(QStringLiteral("worldEntities"))
-        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* entitiesOrNull = source.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     Type(Field(source, QStringLiteral("transform/x")), QStringLiteral("1"));
     REQUIRE(source.Apply());
     const auto recovery = path + QStringLiteral(".ludus-recovery");
@@ -1247,10 +1257,10 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
         REQUIRE(workspace.CanSave());
     };
     drain();
-    auto* entities = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(entities != nullptr);
-    REQUIRE(entities->count() == 1);
-    entities->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(entitiesOrNull->topLevelItemCount() == 1);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldField:scene/position0")) == nullptr);
     // The selected instance shows the decoded material the viewport renders, read-only.
     REQUIRE(workspace.findChild<QGroupBox*>(QStringLiteral("worldMaterial")) != nullptr);
@@ -1328,10 +1338,11 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     auto* service = mixed.findChild<LevelWorkspace*>();
     REQUIRE(service != nullptr);
     CHECK(service->PreviewScene().Objects.size() == 2);
-    CHECK(mixed.findChild<QListWidget*>(QStringLiteral("worldEntities"))->count() == 4);
-    CHECK(mixed.findChild<QListWidget*>(QStringLiteral("worldEntities"))->isEnabled());
-    auto* mixedEntities = mixed.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    mixedEntities->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QTreeWidget* mixedEntitiesOrNull = mixed.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(mixedEntitiesOrNull != nullptr);
+    CHECK(mixedEntitiesOrNull->topLevelItemCount() == 4);
+    CHECK(mixedEntitiesOrNull->isEnabled());
+    mixedEntitiesOrNull->setCurrentItem(mixedEntitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     Type(Field(mixed, QStringLiteral("transform/x")), QStringLiteral("-1"));
     REQUIRE(mixed.Save()); // Save waits for the newly applied render snapshot.
     timer.restart();
@@ -1400,72 +1411,78 @@ TEST_CASE("World selection uses native toggle range and Select All shortcuts", "
     view.show();
     view.activateWindow();
     QApplication::processEvents();
-    QListWidget* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(list != nullptr);
-    REQUIRE(list->count() == 2);
-    list->setFocus();
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, list->visualItemRect(list->item(0)).center());
-    CHECK(list->selectedItems().size() == 1);
-    QTest::mouseClick(list->viewport(),
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    REQUIRE(listOrNull->topLevelItemCount() == 2);
+    listOrNull->setFocus();
+    QTest::mouseClick(listOrNull->viewport(),
+                      Qt::LeftButton,
+                      Qt::NoModifier,
+                      listOrNull->visualItemRect(listOrNull->topLevelItem(0)).center());
+    CHECK(listOrNull->selectedItems().size() == 1);
+    QTest::mouseClick(listOrNull->viewport(),
                       Qt::LeftButton,
                       Qt::ControlModifier,
-                      list->visualItemRect(list->item(1)).center());
-    CHECK(list->selectedItems().size() == 2);
-    QTest::mouseClick(list->viewport(),
+                      listOrNull->visualItemRect(listOrNull->topLevelItem(1)).center());
+    CHECK(listOrNull->selectedItems().size() == 2);
+    QTest::mouseClick(listOrNull->viewport(),
                       Qt::LeftButton,
                       Qt::ControlModifier,
-                      list->visualItemRect(list->item(0)).center());
-    CHECK(list->selectedItems().size() == 1);
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, list->visualItemRect(list->item(0)).center());
-    QTest::mouseClick(list->viewport(),
+                      listOrNull->visualItemRect(listOrNull->topLevelItem(0)).center());
+    CHECK(listOrNull->selectedItems().size() == 1);
+    QTest::mouseClick(listOrNull->viewport(),
+                      Qt::LeftButton,
+                      Qt::NoModifier,
+                      listOrNull->visualItemRect(listOrNull->topLevelItem(0)).center());
+    QTest::mouseClick(listOrNull->viewport(),
                       Qt::LeftButton,
                       Qt::ShiftModifier,
-                      list->visualItemRect(list->item(1)).center());
-    CHECK(list->selectedItems().size() == 2);
-    QTest::keyClick(list, Qt::Key_Escape);
-    CHECK(list->selectedItems().isEmpty() == true);
-    QTest::keySequence(list, QKeySequence(QKeySequence::SelectAll));
-    CHECK(list->selectedItems().size() == 2);
+                      listOrNull->visualItemRect(listOrNull->topLevelItem(1)).center());
+    CHECK(listOrNull->selectedItems().size() == 2);
+    QTest::keyClick(listOrNull, Qt::Key_Escape);
+    CHECK(listOrNull->selectedItems().isEmpty() == true);
+    QTest::keySequence(listOrNull, QKeySequence(QKeySequence::SelectAll));
+    CHECK(listOrNull->selectedItems().size() == 2);
     CHECK(view.findChild<QLineEdit*>(QStringLiteral("worldEntityName")) == nullptr);
     const QJsonObject session = view.Session();
-    QTest::keyClick(list, Qt::Key_Escape);
+    QTest::keyClick(listOrNull, Qt::Key_Escape);
     view.RestoreSession(session);
-    CHECK(list->selectedItems().size() == 2);
-    list->setFocus();
+    CHECK(listOrNull->selectedItems().size() == 2);
+    listOrNull->setFocus();
     QApplication::processEvents();
-    REQUIRE(list->hasFocus() == true);
+    REQUIRE(listOrNull->hasFocus() == true);
     REQUIRE(view.findChild<QAction*>(QStringLiteral("worldDuplicate"))->isEnabled() == true);
-    QTest::keySequence(list, QKeySequence(Qt::CTRL | Qt::Key_D));
+    QTest::keySequence(listOrNull, QKeySequence(Qt::CTRL | Qt::Key_D));
     INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
-    CHECK(list->count() == 4);
-    CHECK(list->selectedItems().size() == 2);
+    CHECK(listOrNull->topLevelItemCount() == 4);
+    CHECK(listOrNull->selectedItems().size() == 2);
     view.Undo();
-    CHECK(list->count() == 2);
+    CHECK(listOrNull->topLevelItemCount() == 2);
     view.Redo();
-    CHECK(list->count() == 4);
-    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-    list->setFocus();
-    QTest::keyClick(list, Qt::Key_F2);
+    CHECK(listOrNull->topLevelItemCount() == 4);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
+    listOrNull->setFocus();
+    QTest::keyClick(listOrNull, Qt::Key_F2);
     QLineEdit* name = view.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
     REQUIRE(name != nullptr);
     CHECK(name->hasFocus() == true);
     CHECK(name->selectedText() == name->text());
     // A focused text field keeps its own Select All; it cannot select entities.
     QTest::keySequence(name, QKeySequence(QKeySequence::SelectAll));
-    CHECK(list->selectedItems().size() == 1);
-    list->setFocus();
-    QTest::keySequence(list, QKeySequence(QKeySequence::SelectAll));
+    CHECK(listOrNull->selectedItems().size() == 1);
+    listOrNull->setFocus();
+    QTest::keySequence(listOrNull, QKeySequence(QKeySequence::SelectAll));
     QTimer::singleShot(0, []() {
         QMessageBox* confirmation = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         REQUIRE(confirmation != nullptr);
         confirmation->button(QMessageBox::Yes)->click();
     });
     REQUIRE(view.findChild<QAction*>(QStringLiteral("worldDelete"))->isEnabled() == true);
-    QTest::keySequence(list, QKeySequence(QKeySequence::Delete));
+    QTest::keySequence(listOrNull, QKeySequence(QKeySequence::Delete));
     INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
-    CHECK(list->count() == 0);
+    CHECK(listOrNull->topLevelItemCount() == 0);
     view.Undo();
-    CHECK(list->count() == 4);
+    CHECK(listOrNull->topLevelItemCount() == 4);
 }
 
 TEST_CASE("World group operations preserve references and publish one transaction", "[editor][world][selection]")
@@ -2436,10 +2453,10 @@ TEST_CASE("World viewport interaction shares hierarchy selection inspector valid
     REQUIRE(propertiesOrNull != nullptr);
     propertiesOrNull->hide();
     interaction.SelectionRequested(id);
-    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(entitiesOrNull != nullptr);
     REQUIRE(entitiesOrNull->currentItem() != nullptr);
-    CHECK(entitiesOrNull->currentItem()->data(Qt::UserRole).toString() == id);
+    CHECK(entitiesOrNull->currentItem()->data(0, Qt::UserRole).toString() == id);
     QAction* toolOrNull = sceneOrNull->GetViewport().findChild<QAction*>(QStringLiteral("viewportObjectToolAction"));
     REQUIRE(toolOrNull != nullptr);
     CHECK(toolOrNull->isVisible() == true);
@@ -2452,7 +2469,7 @@ TEST_CASE("World viewport interaction shares hierarchy selection inspector valid
     CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Rotate);
     QTest::keyClick(entitiesOrNull, Qt::Key_R);
     CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Scale);
-    CHECK(entitiesOrNull->currentItem()->data(Qt::UserRole).toString() == id);
+    CHECK(entitiesOrNull->currentItem()->data(0, Qt::UserRole).toString() == id);
     const QJsonObject before = workspace.Document().Draft();
     QJsonObject placement = workspace.Document().ScenePlacement(workspace.Document().Entity(id));
     QJsonArray position = placement.value(QStringLiteral("position")).toArray();
@@ -2472,8 +2489,12 @@ TEST_CASE("World viewport interaction shares hierarchy selection inspector valid
     placement.insert(QStringLiteral("scale"), QJsonArray{0, 1, 1});
     interaction.PlacementCommitted(id, placement);
     CHECK(workspace.Document().Draft() == accepted);
-    interaction.SelectionRequested(QString());
+    REQUIRE(entitiesOrNull->selectedItems().size() == 1);
+    QTest::keyClick(&sceneOrNull->GetViewport(), Qt::Key_Escape);
     CHECK(entitiesOrNull->selectedItems().isEmpty() == true);
+    CHECK(workspace.Session().value(QStringLiteral("selection")).toString().isEmpty() == true);
+    CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldEntityName")) == nullptr);
+    CHECK(workspace.Document().Draft() == accepted);
 }
 TEST_CASE("World viewport mouse events select objects while Alt keeps camera navigation",
           "[editor][world][object-interaction]")
@@ -2514,6 +2535,16 @@ TEST_CASE("World viewport mouse events select objects while Alt keeps camera nav
     CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Rotate);
     QTest::keyClick(&viewport, Qt::Key_R);
     CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Scale);
+    const QRectF framePixel{0, 0, 800, 600};
+    const QPointF handlePixel = framePixel.center() + QPointF(70, 0);
+    REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+    REQUIRE(interaction.IsDragging() == true);
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    CHECK(interaction.IsDragging() == false);
+    CHECK(selection.count() == 1);
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    REQUIRE(selection.count() == 2);
+    CHECK(selection[1][0].toString().isEmpty() == true);
 }
 
 TEST_CASE("Destroying a viewport renderer cancels its outstanding object gesture",
@@ -2877,6 +2908,75 @@ TEST_CASE("First Person Player preset persists a spawn and uses the imported sta
     CHECK(forwardWorld.Z == Catch::Approx(0).margin(1e-6));
 }
 
+TEST_CASE("A meshless First Person Player shows its collision box and can be framed",
+          "[editor][world][first-person][framing][overlay]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("player-bounds.world.json"))) == true);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(createOrNull != nullptr);
+    REQUIRE(viewportOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    createOrNull->trigger();
+    REQUIRE(entitiesOrNull->topLevelItemCount() == 1);
+    REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave() == true; }) == true);
+    const QTreeWidgetItem* playerOrNull = entitiesOrNull->topLevelItem(0);
+    REQUIRE(playerOrNull != nullptr);
+    const QString id = playerOrNull->data(0, Qt::UserRole).toString();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    math::Aabb3 boundsWorld;
+    CHECK(preview.Scene().TryGetBounds(id, boundsWorld) == false);
+    const QJsonObject draft = workspace.Document().Draft();
+
+    SECTION("frame the player from the viewport keyboard")
+    {
+        QTest::keyClick(viewportOrNull, Qt::Key_F);
+    }
+    SECTION("frame the player from the hierarchy")
+    {
+        const QPoint rowPixel = entitiesOrNull->visualItemRect(playerOrNull).center();
+        tests::DoubleClick(entitiesOrNull->viewport(), Qt::LeftButton, Qt::NoModifier, rowPixel);
+    }
+
+    PreviewStartView view;
+    REQUIRE(preview.TryDescribeStartView(view) == true);
+    // The default eye is 1.65 m above the World origin and 1.60 m above the box base.
+    constexpr float64 TARGET_HEIGHT_METRES = 0.925;
+    constexpr float64 FRAME_TOLERANCE_METRES = 0.001;
+    CHECK(view.TargetWorld.X == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
+    CHECK(view.TargetWorld.Y == Catch::Approx(TARGET_HEIGHT_METRES).margin(FRAME_TOLERANCE_METRES));
+    CHECK(view.TargetWorld.Z == Catch::Approx(0).margin(FRAME_TOLERANCE_METRES));
+
+    ViewportObjectInteraction& interaction = viewportOrNull->GetObjectInteraction();
+    // Offscreen has no presented GPU image. Exercise the production overlay geometry.
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    interaction.SetGpuOutlineEnabled(true);
+    const QRectF framePixel{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    constexpr usize COLLISION_BOX_EDGES = 12;
+    CHECK(overlay.OutlineLinesPixel.GetSize() == COLLISION_BOX_EDGES);
+    SelectionOutlineRequest meshOutline;
+    CHECK(interaction.TryGetGpuOutlineRequest(meshOutline) == false);
+
+    entitiesOrNull->clearSelection();
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.OutlineLinesPixel.IsEmpty() == true);
+    CHECK(workspace.Document().Draft() == draft);
+}
+
 TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity list visible",
           "[editor][world][first-person]")
 {
@@ -2889,7 +2989,7 @@ TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity 
     REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("player.world.json"))) == true);
     QAction* addOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAdd"));
     QAction* createPlayerOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
-    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
     const QPushButton* exploreOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldExploreFirstPerson"));
     REQUIRE(addOrNull != nullptr);
     REQUIRE(createPlayerOrNull != nullptr);
@@ -2902,17 +3002,17 @@ TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity 
         addOrNull->trigger();
     }
     createPlayerOrNull->trigger();
-    REQUIRE(entitiesOrNull->count() == ENTITY_COUNT_BEFORE_PLAYER + 1);
-    entitiesOrNull->setCurrentRow(ENTITY_COUNT_BEFORE_PLAYER - 1);
+    REQUIRE(entitiesOrNull->topLevelItemCount() == ENTITY_COUNT_BEFORE_PLAYER + 1);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(ENTITY_COUNT_BEFORE_PLAYER - 1));
     workspace.resize(1100, 720);
     workspace.show();
     QApplication::processEvents();
     entitiesOrNull->scrollToBottom();
-    const QListWidgetItem* playerOrNull = entitiesOrNull->item(ENTITY_COUNT_BEFORE_PLAYER);
+    const QTreeWidgetItem* playerOrNull = entitiesOrNull->topLevelItem(ENTITY_COUNT_BEFORE_PLAYER);
     REQUIRE(playerOrNull != nullptr);
-    REQUIRE(playerOrNull->text() == QStringLiteral("First Person Player"));
+    REQUIRE(playerOrNull->text(0) == QStringLiteral("First Person Player"));
     REQUIRE(exploreOrNull->isHidden() == true);
-    REQUIRE(entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).bottom() < 0);
+    REQUIRE(entitiesOrNull->visualItemRect(entitiesOrNull->topLevelItem(0)).bottom() < 0);
     const int32 listHeight = entitiesOrNull->height();
     const QRect playerRow = entitiesOrNull->visualItemRect(playerOrNull);
     REQUIRE(entitiesOrNull->viewport()->rect().contains(playerRow) == true);
@@ -3355,6 +3455,89 @@ TEST_CASE("Default World creation preserves drafts on entropy and validation fai
     CHECK(document.Draft() == legacy);
 }
 
+TEST_CASE("The World inspector saves raster shadow eligibility separately from light visibility",
+          "[editor][world][lighting][raster-shadows]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString cube;
+    QString light;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), cube, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), light, error) == true);
+
+    const QJsonObject entity = document.Entity(light);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject values = components.value(QStringLiteral("light")).toObject();
+    values.remove(WORLD_RASTER_SHADOWS);
+    components.insert(QStringLiteral("light"), values);
+    REQUIRE(document.Edit(light, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("shadows.world.json"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(light) == true);
+    QCheckBox* shadowsOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:light/rasterShadows"));
+    REQUIRE(shadowsOrNull != nullptr);
+    CHECK(shadowsOrNull->isChecked() == true);
+
+    RenderScene before;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), before, error) == true);
+    const QByteArray lightingKey = preview_lighting::MakeKey(before);
+    preview_lighting::Inputs shadowed;
+    REQUIRE(preview_lighting::BuildInputs(before, lightingKey, shadowed, preview_lighting::InputsTarget::Raster) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    CHECK(shadowed.ShadowCount == ludus::graphics::renderer::POINT_SHADOW_FACES);
+
+    shadowsOrNull->setChecked(false);
+    REQUIRE(workspace.Apply() == true);
+    REQUIRE(workspace.Save() == true);
+
+    WorldWorkspace reopened;
+    reopened.SetProject(root, 1);
+    REQUIRE(reopened.Open(path) == true);
+    REQUIRE(reopened.SelectEntity(light) == true);
+    QCheckBox* savedShadowsOrNull = reopened.findChild<QCheckBox*>(QStringLiteral("worldField:light/rasterShadows"));
+    REQUIRE(savedShadowsOrNull != nullptr);
+    CHECK(savedShadowsOrNull->isChecked() == false);
+
+    RenderScene after;
+    REQUIRE(RenderScene::Load(root, reopened.Document(), after, error) == true);
+    REQUIRE(after.Definition != nullptr);
+    LightSwitchReport switchReport;
+    REQUIRE(ApplyLightSwitches({}, after, switchReport) == true);
+    CHECK(preview_lighting::MakeKey(after) == lightingKey);
+    preview_lighting::Inputs unshadowed;
+    REQUIRE(preview_lighting::BuildInputs(after, lightingKey, unshadowed, preview_lighting::InputsTarget::Raster) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    CHECK(unshadowed.ShadowCount == 0);
+    REQUIRE(unshadowed.Lights.Count == 1);
+    CHECK(unshadowed.Lights.Lights[0].SourceId == ComputeEntitySourceId(light));
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(after, {}, 1, extraction, error) == true);
+    REQUIRE(extraction.ShaderInputs.Lights.GetSize() == 1);
+    CHECK(extraction.ShaderInputs.Lights[0].ShouldCastRasterShadows == false);
+#endif
+
+    preview_lighting::Inputs reference;
+    REQUIRE(preview_lighting::BuildInputs(after, lightingKey, reference, preview_lighting::InputsTarget::Reference) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    REQUIRE(reference.Lights.Count == 1);
+    CHECK(reference.Lights.Lights[0].SourceId == ComputeEntitySourceId(light));
+    CHECK(reference.Lights.Lights[0].Intensity == unshadowed.Lights.Lights[0].Intensity);
+}
+
 TEST_CASE("The World inspector offers an explicit always-on bake for a static light", "[editor][world][lighting]")
 {
     QTemporaryDir directory;
@@ -3513,7 +3696,182 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
     workspace.StopPreview();
 }
 
-TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation]")
+TEST_CASE("World viewport moves, resizes and scales an unbaked GI probe volume with the inspector hidden",
+          "[editor][world][object-interaction][probe-gi]")
+{
+    namespace math = ludus::foundation::math;
+    namespace renderer = ludus::graphics::renderer;
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    using ludus::foundation::uint32;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString mesh;
+    QString volume;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), mesh, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("probe-gizmo.world.json"));
+    Write(path, document.Encode());
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    RenderPanel* panelOrNull = workspace.findChild<RenderPanel*>();
+    REQUIRE(panelOrNull != nullptr);
+
+    const auto readGrid = [&workspace, &volume, &error]() {
+        const QJsonObject components =
+            workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject();
+        renderer::GiProbeGrid grid;
+        REQUIRE(ReadWorldGiProbeGrid(components, grid, error, true) == true);
+        return grid;
+    };
+    const renderer::GiProbeGrid original = readGrid();
+    const math::Aabb3 boundsWorld = ComputeWorldGiProbeBounds(original);
+    const math::Vector3 centerWorld = (boundsWorld.Min + boundsWorld.Max) * 0.5F;
+    RenderScene scene = MakeInteractionScene();
+    scene.Cameras[0].Sample.Pose.Position = {static_cast<float64>(centerWorld.X),
+                                             static_cast<float64>(centerWorld.Y),
+                                             10};
+    RenderPreview& preview = workspace.GetRenderPreview();
+    ConfigureInteractionPreview(preview, scene);
+
+    ViewportObjectInteraction& interaction = panelOrNull->GetViewport().GetObjectInteraction();
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Move);
+    const QRectF framePixel{0, 0, 800, 600};
+    renderer::ViewDescription view;
+    REQUIRE(preview.DescribeView(static_cast<uint32>(framePixel.width()),
+                                 static_cast<uint32>(framePixel.height()),
+                                 view,
+                                 error) == true);
+    const auto project = [&view, &framePixel](math::Vector3 positionWorld) {
+        const math::Vector4 clip =
+            view.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+        return QPointF((static_cast<float64>(clip.X / clip.W) + 1) * framePixel.width() * 0.5,
+                       (1 - static_cast<float64>(clip.Y / clip.W)) * framePixel.height() * 0.5);
+    };
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.OutlineLinesPixel.GetSize() == 12);
+    REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
+    const QJsonObject before = workspace.Document().Draft();
+
+    SECTION("In Scale mode the maximum face still grows the count without moving the origin")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
+        const QPointF handlePixel = project(faceWorld);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(project(faceWorld + math::Vector3{2 * original.Spacing, 0, 0}), false) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("6 probes")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid resized = readGrid();
+        CHECK(resized.OriginWorld == original.OriginWorld);
+        CHECK(resized.Counts[0] == original.Counts[0] + 2);
+        CHECK(resized.Counts[1] == original.Counts[1]);
+        CHECK(resized.Counts[2] == original.Counts[2]);
+        CHECK(resized.Spacing == original.Spacing);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readGrid().Counts[0] == resized.Counts[0]);
+    }
+
+    SECTION("The minimum face keeps the far corner fixed and clamps to the probe limit")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT) * original.Spacing;
+        REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid resized = readGrid();
+        CHECK(resized.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        CHECK(resized.OriginWorld.X < original.OriginWorld.X);
+        CHECK(ComputeWorldGiProbeBounds(resized).Max == boundsWorld.Max);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+
+    SECTION("Cancelling a face drag leaves the World and bake unchanged")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        REQUIRE(interaction.Move(project(faceWorld + math::Vector3{original.Spacing, 0, 0}), false) == true);
+        interaction.Cancel();
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == before);
+        CHECK(interaction.FrameProbeVolume() == true);
+    }
+
+    SECTION("The Scale handle previews uniform spacing and commits one undoable edit")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        interaction.BuildOverlay(framePixel, overlay);
+        REQUIRE(overlay.HandleFills.GetSize() >= 2);
+        const QPointF handlePixel = project(centerWorld);
+        const ViewportHandleFill& scaleFill = overlay.HandleFills[overlay.HandleFills.GetSize() - 1];
+        CHECK(QLineF((scaleFill.CornersPixel[0] + scaleFill.CornersPixel[2]) * 0.5, handlePixel).length() < 0.01);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeSpacing);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        const QPointF enlargedPixel = handlePixel + QPointF(56, -56);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("2.00 m spacing")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        interaction.Cancel();
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == before);
+
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid scaled = readGrid();
+        CHECK(scaled.Spacing == 2 * original.Spacing);
+        CHECK(scaled.OriginWorld == original.OriginWorld);
+        CHECK(scaled.Counts == original.Counts);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readGrid().Spacing == scaled.Spacing);
+    }
+
+    SECTION("Move handles translate the volume without resizing it")
+    {
+        const QPointF handlePixel = overlay.HandleStrokes[0].LinePixel.pointAt(0.5);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::Axis);
+        REQUIRE(interaction.Move(handlePixel + QPointF(40, 0), true) == true);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid moved = readGrid();
+        CHECK(moved.OriginWorld.X > original.OriginWorld.X);
+        CHECK(moved.Counts == original.Counts);
+        CHECK(moved.Spacing == original.Spacing);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+    workspace.StopPreview();
+}
+
+TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation][framing]")
 {
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
@@ -3533,6 +3891,9 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     const QJsonObject level =
         QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
     REQUIRE(document.ImportScene(level, error) == true);
+    const QString importedId =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    REQUIRE(document.Attach(importedId, error, QStringLiteral("firstPersonPlayer")) == true);
     const QString path = QDir(root).filePath(QStringLiteral("mixed.world.json"));
     Write(path, document.Encode());
     ToolingPaths tools;
@@ -3554,6 +3915,20 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     CHECK(scene->PreviewScene().Objects.size() == 2);
     CHECK(scene->PreviewScene().AuthoredLights.Count == 1);
     CHECK(workspace.Document().Draft() == document.Draft());
+
+    // Imported placement supplies the mesh bounds even when the player lacks a Transform.
+    REQUIRE(HasWorldFirstPersonPlayer(workspace.Document(), importedId) == true);
+    REQUIRE(workspace.Document()
+                .Entity(importedId)
+                .value(QStringLiteral("components"))
+                .toObject()
+                .contains(QStringLiteral("transform")) == false);
+    RenderPreview& preview = workspace.GetRenderPreview();
+    preview.FrameAll();
+    preview.SetFocusDistance(preview.GetFocusDistance() * 3);
+    const ludus::foundation::float32 distanceBefore = preview.GetFocusDistance();
+    scene->GetViewport().GetObjectInteraction().FrameRequested(importedId);
+    CHECK(preview.GetFocusDistance() < distanceBefore);
     workspace.StopPreview();
 }
 
@@ -4660,60 +5035,139 @@ TEST_CASE("World entity search keeps group commands scoped to visible matches", 
     WorldWorkspace workspace;
     workspace.SetProject(directory.path(), 1);
     REQUIRE(workspace.Open(path) == true);
-    QListWidget* entities = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
     QLineEdit* search = workspace.findChild<QLineEdit*>(QStringLiteral("worldEntitySearch"));
     QLabel* count = workspace.findChild<QLabel*>(QStringLiteral("worldEntityCount"));
-    REQUIRE(entities != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
     REQUIRE(search != nullptr);
     REQUIRE(count != nullptr);
-    REQUIRE(entities->count() > 1);
+    REQUIRE(entitiesOrNull->topLevelItemCount() > 1);
     const QByteArray before = workspace.Document().Encode();
-    QListWidgetItem* first = entities->item(0);
-    const QString identity = first->data(Qt::UserRole).toString();
+    QTreeWidgetItem* firstOrNull = entitiesOrNull->topLevelItem(0);
+    REQUIRE(firstOrNull != nullptr);
+    const QString identity = firstOrNull->data(0, Qt::UserRole).toString();
     WorldEntitySearch* controls = workspace.findChild<WorldEntitySearch*>();
     REQUIRE(controls != nullptr);
     QSignalSpy selectionChanges(controls, &WorldEntitySearch::SelectionChanged);
-    entities->selectAll();
+    entitiesOrNull->selectAll();
     search->setText(QStringLiteral("  %1  ").arg(identity.toUpper()));
     CHECK(selectionChanges.count() == 1);
-    CHECK(first->isHidden() == false);
+    CHECK(firstOrNull->isHidden() == false);
     CHECK(workspace.Document().Encode() == before);
-    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entities->count()));
-    REQUIRE(entities->selectedItems().size() == 1);
-    CHECK(entities->selectedItems().front() == first);
-    entities->selectAll();
-    CHECK(entities->selectedItems().size() == 1);
+    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entitiesOrNull->topLevelItemCount()));
+    REQUIRE(entitiesOrNull->selectedItems().size() == 1);
+    CHECK(entitiesOrNull->selectedItems().front() == firstOrNull);
+    entitiesOrNull->selectAll();
+    CHECK(entitiesOrNull->selectedItems().size() == 1);
     workspace.findChild<QAction*>(QStringLiteral("worldDuplicate"))->trigger();
-    CHECK(entities->count() ==
+    CHECK(entitiesOrNull->topLevelItemCount() ==
           QJsonDocument::fromJson(before).object().value(QStringLiteral("entities")).toArray().size() + 1);
     // A document rebuild reapplies the query. The new stable ID does not match it.
-    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entities->count()));
+    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entitiesOrNull->topLevelItemCount()));
     search->setText(QStringLiteral("no matching entity"));
-    CHECK(entities->selectedItems().isEmpty() == true);
+    CHECK(entitiesOrNull->selectedItems().isEmpty() == true);
     CHECK(workspace.findChild<QAction*>(QStringLiteral("worldDuplicate"))->isEnabled() == false);
     CHECK(workspace.findChild<QAction*>(QStringLiteral("worldDelete"))->isEnabled() == false);
     CHECK(count->toolTip().contains(QStringLiteral("Clear or change")) == true);
     const QByteArray filtered = workspace.Document().Encode();
     REQUIRE(workspace.SelectEntity(identity) == true);
     CHECK(search->text().isEmpty() == true);
-    CHECK(entities->selectedItems().size() == 1);
+    CHECK(entitiesOrNull->selectedItems().size() == 1);
     CHECK(workspace.Document().Encode() == filtered);
-    for (ludus::foundation::int32 index = 0; index < entities->count(); ++index)
+    for (ludus::foundation::int32 index = 0; index < entitiesOrNull->topLevelItemCount(); ++index)
     {
-        CHECK(entities->item(index)->isHidden() == false);
+        CHECK(entitiesOrNull->topLevelItem(index)->isHidden() == false);
     }
-    entities->selectAll();
-    CHECK(entities->selectedItems().size() == entities->count());
-    search->setText(entities->item(0)->text().toUpper());
-    CHECK(entities->item(0)->isHidden() == false);
-    entities->clearSelection();
-    entities->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    entitiesOrNull->selectAll();
+    CHECK(entitiesOrNull->selectedItems().size() == entitiesOrNull->topLevelItemCount());
+    search->setText(entitiesOrNull->topLevelItem(0)->text(0).toUpper());
+    CHECK(entitiesOrNull->topLevelItem(0)->isHidden() == false);
+    entitiesOrNull->clearSelection();
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     QLineEdit* name = workspace.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
     REQUIRE(name != nullptr);
     Type(name, QStringLiteral("Pending rename"));
     CHECK(search->isEnabled() == false);
     workspace.findChild<QPushButton*>(QStringLiteral("worldReset"))->click();
     CHECK(search->isEnabled() == true);
+}
+
+TEST_CASE("World hierarchy shows imported descendants and reveals them for selection", "[editor][world][hierarchy]")
+{
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString parentKey = QStringLiteral("b8517f65-8127-4bf4-99c2-e53b1a6d9701");
+    const QString childKey = QStringLiteral("b8517f65-8127-4bf4-99c2-e53b1a6d9702");
+    QJsonObject level = ImportedLevel();
+    QJsonObject grandchild = level.value(QStringLiteral("objects")).toArray().first().toObject();
+    const QString grandchildKey = grandchild.value(QStringLiteral("id")).toString();
+    QJsonObject parent = grandchild;
+    parent.insert(QStringLiteral("id"), parentKey);
+    parent.insert(QStringLiteral("name"), QStringLiteral("Parent"));
+    QJsonObject child = grandchild;
+    child.insert(QStringLiteral("id"), childKey);
+    child.insert(QStringLiteral("name"), QStringLiteral("Child"));
+    child.insert(QStringLiteral("parent"), parentKey);
+    grandchild.insert(QStringLiteral("name"), QStringLiteral("Grandchild"));
+    grandchild.insert(QStringLiteral("parent"), childKey);
+    level.insert(QStringLiteral("objects"), QJsonArray{grandchild, parent, child});
+
+    WorldDocument document = Document();
+    QString error;
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QByteArray before = document.Encode();
+    Write(path, before);
+
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    QTreeWidget* treeOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    QLineEdit* searchOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldEntitySearch"));
+    const QLabel* countOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldEntityCount"));
+    REQUIRE(treeOrNull != nullptr);
+    REQUIRE(searchOrNull != nullptr);
+    REQUIRE(countOrNull != nullptr);
+    REQUIRE(treeOrNull->topLevelItemCount() == document.Draft().value(QStringLiteral("entities")).toArray().size() - 2);
+
+    QTreeWidgetItem* parentRowOrNull = treeOrNull->topLevelItem(treeOrNull->topLevelItemCount() - 1);
+    REQUIRE(parentRowOrNull != nullptr);
+    CHECK(parentRowOrNull->data(0, Qt::UserRole).toString() == parentKey);
+    CHECK(parentRowOrNull->isExpanded() == true);
+    REQUIRE(parentRowOrNull->childCount() == 1);
+    QTreeWidgetItem* childRowOrNull = parentRowOrNull->child(0);
+    REQUIRE(childRowOrNull != nullptr);
+    CHECK(childRowOrNull->data(0, Qt::UserRole).toString() == childKey);
+    REQUIRE(childRowOrNull->childCount() == 1);
+    QTreeWidgetItem* grandchildRowOrNull = childRowOrNull->child(0);
+    REQUIRE(grandchildRowOrNull != nullptr);
+    CHECK(grandchildRowOrNull->data(0, Qt::UserRole).toString() == grandchildKey);
+    CHECK(countOrNull->text() == QStringLiteral("%1 entities").arg(treeOrNull->topLevelItemCount() + 2));
+
+    treeOrNull->setCurrentItem(grandchildRowOrNull);
+    REQUIRE(grandchildRowOrNull->isSelected() == true);
+    parentRowOrNull->setExpanded(false);
+    CHECK(grandchildRowOrNull->isSelected() == false);
+    searchOrNull->setText(grandchildKey);
+    CHECK(parentRowOrNull->isExpanded() == true);
+    CHECK(childRowOrNull->isExpanded() == true);
+    CHECK(parentRowOrNull->isHidden() == false);
+    CHECK(childRowOrNull->isHidden() == false);
+    CHECK(countOrNull->text() == QStringLiteral("1 of %1 entities").arg(treeOrNull->topLevelItemCount() + 2));
+    treeOrNull->selectAll();
+    REQUIRE(treeOrNull->selectedItems().size() == 1);
+    CHECK(treeOrNull->selectedItems().front() == grandchildRowOrNull);
+
+    searchOrNull->setText(QStringLiteral("no matching entity"));
+    parentRowOrNull->setExpanded(false);
+    REQUIRE(workspace.SelectEntity(grandchildKey) == true);
+    CHECK(searchOrNull->text().isEmpty() == true);
+    const QTreeWidgetItem* currentOrNull = treeOrNull->currentItem();
+    REQUIRE(currentOrNull != nullptr);
+    CHECK(currentOrNull->data(0, Qt::UserRole).toString() == grandchildKey);
+    CHECK(currentOrNull->isSelected() == true);
+    CHECK(currentOrNull->parent()->isExpanded() == true);
+    CHECK(currentOrNull->parent()->parent()->isExpanded() == true);
+    CHECK(workspace.Document().Encode() == before);
 }
 
 TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen", "[editor][world][atmosphere]")
@@ -4777,7 +5231,8 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     REQUIRE(reopened.Load(document.Encode(), error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.IsEnabled == true);
-    CHECK(scene.AtmosphereSunSourceId == ComputeEntitySourceId(sunId));
+    CHECK(scene.Atmosphere.SunSourceId == ComputeEntitySourceId(sunId));
+    CHECK(scene.Atmosphere.ShouldLightScene == true);
     REQUIRE(reopened.RemoveEntities({atmosphereId}, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.IsEnabled == false);

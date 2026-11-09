@@ -33,11 +33,11 @@
 #include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMouseEvent>
 #include <QSize>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTreeWidget>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1194,13 +1194,13 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     CHECK(drawn != before.pixelColor(0, 0));
 
     // An applied World edit re-extracts, and the player leaves its old pixel.
-    QListWidget* entities = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    REQUIRE(entities != nullptr);
-    for (int32 row = 0; row < entities->count(); ++row)
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    for (int32 row = 0; row < entitiesOrNull->topLevelItemCount(); ++row)
     {
-        if (entities->item(row)->data(Qt::UserRole).toString() == player)
+        if (entitiesOrNull->topLevelItem(row)->data(0, Qt::UserRole).toString() == player)
         {
-            entities->setCurrentRow(row, QItemSelectionModel::ClearAndSelect);
+            entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(row), 0, QItemSelectionModel::ClearAndSelect);
         }
     }
     QLineEdit* x = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));

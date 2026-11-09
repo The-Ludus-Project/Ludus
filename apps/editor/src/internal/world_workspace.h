@@ -23,7 +23,7 @@ class QComboBox;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
-class QListWidget;
+class QTreeWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QVBoxLayout;
@@ -271,6 +271,10 @@ private:
     void updateViewportInteraction();
     void exploreFirstPerson();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);
+    [[nodiscard]] QJsonObject findEditableProbeVolume(const QString& id) const;
+    void commitProbeVolumeEdit(const QJsonObject& entity, const QJsonObject& components);
+    void commitProbeSpacing(const QString& id, foundation::float64 spacingMetres);
+    void commitProbeFace(const QString& id, foundation::int32 axis, foundation::uint32 count, bool isMinimumFace);
     /// Store the scene viewport's current perspective view as the level start view (one undo step).
     void saveStartView();
     void Changed(const QString& message = {});
@@ -364,7 +368,7 @@ private:
     bool Rendering_ = false;
     bool RecoveryFailed_ = false;
     QMap<QString, QWidget*> Fields_;
-    QListWidget* Entities_;
+    QTreeWidget* mEntities;
     WorldEntitySearch* mEntitySearch;
     QLabel* Status_;
     QLabel* PathLabel_;

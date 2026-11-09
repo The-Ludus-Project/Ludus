@@ -317,6 +317,36 @@ QString FitOverlayText(const QString& text, qreal maxWidth)
     return fitted.join(QLatin1Char('\n'));
 }
 
+QMessageBox* SuggestRasterFallback(QWidget& inoutParent, RenderPreview& inoutSource, float64 frameMilliseconds)
+{
+    constexpr float64 MILLISECONDS_PER_SECOND = 1000;
+    QMessageBox* suggestion = new QMessageBox(&inoutParent);
+    suggestion->setObjectName(QStringLiteral("viewportSlowFrameSuggestion"));
+    suggestion->setAttribute(Qt::WA_DeleteOnClose);
+    suggestion->setIcon(QMessageBox::Question);
+    suggestion->setWindowTitle(QStringLiteral("Slow viewport"));
+    suggestion->setText(
+        QStringLiteral("The project's raytracing render graph took %1 s per frame over the last %2 frames.")
+            .arg(QString::number(frameMilliseconds / MILLISECONDS_PER_SECOND, 'f', 1))
+            .arg(ViewportSlowFrameMonitor::SLOW_FRAME_STREAK));
+    suggestion->setInformativeText(
+        QStringLiteral("Switch this viewport to the engine's default raster renderer? This turns on Force raster in "
+                       "the viewport toolbar; turn it off there to return to raytracing. The render graph and the "
+                       "World are not changed."));
+    QPushButton* switchToRaster = suggestion->addButton(QStringLiteral("Switch to raster"), QMessageBox::AcceptRole);
+    switchToRaster->setObjectName(QStringLiteral("viewportSlowFrameSwitch"));
+    QPushButton* keep = suggestion->addButton(QStringLiteral("Keep current renderer"), QMessageBox::RejectRole);
+    keep->setObjectName(QStringLiteral("viewportSlowFrameKeep"));
+    suggestion->setDefaultButton(switchToRaster);
+    suggestion->setEscapeButton(keep);
+    suggestion->setWindowModality(Qt::WindowModal);
+    QObject::connect(switchToRaster, &QPushButton::clicked, &inoutSource, [&inoutSource]() {
+        inoutSource.SetForceRaster(true);
+    });
+    suggestion->open();
+    return suggestion;
+}
+
 namespace
 {
 /// Top-left of the live shader status panel: below the statistics panel when it is shown.
@@ -1889,8 +1919,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         mState->Layout->activate();
         if (mState->BrowserOrNull->Start() == false)
         {
+            // Start reported why through RenderPreview::Failed, whose handler showed it; a waiting
+            // operation may since have replaced it with its own failure naming that cause.
             mState->BrowserOrNull->hide();
-            mState->MessageOrNull->ShowProblem(mState->Preview->Status());
             mState->MessageOrNull->show();
         }
     });
@@ -2046,6 +2077,17 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     synchronizeProblem();
     mState->ProjectGraph = inoutWorkspace.GetPreviewOrNull();
     mState->ProjectWorkspace = &inoutWorkspace;
+    // Both World viewports present this graph; the first visible one claims the suggestion and asks once.
+    connect(inoutWorkspace.GetPreviewOrNull(),
+            &RenderGraphPreview::SlowFramesDetected,
+            this,
+            [this](float64 frameMilliseconds) {
+                if (isVisible() == false || mState->ProjectGraph->TakeSlowFrameSuggestion() == false)
+                {
+                    return;
+                }
+                static_cast<void>(SuggestRasterFallback(*this, *Preview_, frameMilliseconds));
+            });
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
     mState->GraphViewOrNull->installEventFilter(this);
     mState->GraphViewOrNull->SetObjectInteraction(*mObjectInteraction);
@@ -2688,6 +2730,7 @@ void PreviewViewport::ClearFrame(const QString& text)
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull->ClearFrame();
     mState->BrowserOrNull->hide();
+    mState->BrowserOrNull->PublishPrompt(text);
     mState->MessageOrNull->show();
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)

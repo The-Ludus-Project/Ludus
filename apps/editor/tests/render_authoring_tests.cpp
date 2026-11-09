@@ -32,7 +32,6 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -43,6 +42,7 @@
 #include <QTest>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -394,7 +394,9 @@ TEST_CASE("Renderer controls and inspector remain reachable in a small styled Wo
     world.SetProject(f.Root, 1);
     REQUIRE(world.Open(f.Path(QStringLiteral("rendering.world.json"))));
     ApplyWorkspaceStyle(&world);
-    world.findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
+    QTreeWidget* entitiesOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0));
     world.resize(800, 640);
     world.show();
     world.findChild<QPushButton*>(QStringLiteral("worldPreviewDetails"))->click();
@@ -437,7 +439,9 @@ TEST_CASE("Artists choose display tint into pending linear fields with atomic Ap
     WorldWorkspace world;
     world.SetProject(f.Root, 1);
     REQUIRE(world.Open(f.Path(QStringLiteral("rendering.world.json"))));
-    world.findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
+    QTreeWidget* entitiesOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0));
     auto* panel = world.findChild<RenderPanel*>();
     REQUIRE(panel != nullptr);
     QSignalSpy loaded(panel, &RenderPanel::Loaded);
@@ -506,8 +510,9 @@ TEST_CASE("Tint dialogs preserve data on unchanged color and reject callbacks af
     world.SetProject(f.Root, 1);
     const auto path = f.Path(QStringLiteral("rendering.world.json"));
     REQUIRE(world.Open(path));
-    auto* list = world.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    list->setCurrentRow(0);
+    QTreeWidget* listOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0));
     auto* panel = world.findChild<RenderPanel*>();
     QSignalSpy loaded(panel, &RenderPanel::Loaded);
     REQUIRE(panel->Refresh(false));
@@ -785,7 +790,9 @@ TEST_CASE("Embedded World preview follows valid inspector drafts without committ
     WorldWorkspace world;
     world.SetProject(f.Root, 1);
     REQUIRE(world.Open(f.Path(QStringLiteral("rendering.world.json"))));
-    world.findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
+    QTreeWidget* entitiesOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0));
     auto* panel = world.findChild<RenderPanel*>();
     QSignalSpy loaded(panel, &RenderPanel::Loaded);
     REQUIRE(loaded.wait(5000));

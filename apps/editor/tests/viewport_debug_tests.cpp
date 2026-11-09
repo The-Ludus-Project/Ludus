@@ -625,6 +625,53 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     CHECK(statistics.GetFramesPerSecond(2'100'000'000) == 0);
 }
 
+TEST_CASE("Slow frame monitor reports consecutive slow frames of one generation after its cold first frame",
+          "[editor][viewport][statistics][slow-frames]")
+{
+    constexpr float64 SLOW = ViewportSlowFrameMonitor::DEFAULT_SLOW_FRAME_MILLISECONDS;
+    constexpr float64 FAST = 16;
+    ViewportSlowFrameMonitor monitor;
+    CHECK(monitor.GetStreakMilliseconds() == 0);
+    // The first frame of a generation pays for its preparation and never counts, however slow.
+    CHECK(monitor.AddFrame(1, SLOW * 30) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, SLOW * 2) == false);
+    CHECK(monitor.AddFrame(1, SLOW * 3) == true);
+    CHECK(monitor.GetStreakMilliseconds() == Catch::Approx(SLOW * 2));
+    // A renderer that stays slow is reported again only after another full streak.
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == true);
+    CHECK(monitor.GetStreakMilliseconds() == Catch::Approx(SLOW));
+    // One fast frame means a stall, not a slow renderer: the streak starts over.
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, FAST) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, std::numeric_limits<float64>::quiet_NaN()) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    CHECK(monitor.AddFrame(1, SLOW) == false);
+    // A new generation (a rebuild or Force raster) starts over and skips its own first frame.
+    CHECK(monitor.AddFrame(2, SLOW) == false);
+    CHECK(monitor.AddFrame(2, SLOW) == false);
+    CHECK(monitor.AddFrame(2, SLOW) == false);
+    CHECK(monitor.AddFrame(2, SLOW) == true);
+    CHECK(monitor.AddFrame(0, SLOW) == false);
+    // Reset forgets the generation, so its next frame is treated as a first frame again.
+    monitor.Reset();
+    CHECK(monitor.GetStreakMilliseconds() == 0);
+    CHECK(monitor.AddFrame(2, SLOW) == false);
+    // Zero counts every frame; invalid thresholds are ignored.
+    monitor.SetThresholdMilliseconds(-1);
+    monitor.SetThresholdMilliseconds(std::numeric_limits<float64>::infinity());
+    CHECK(monitor.GetThresholdMilliseconds() == SLOW);
+    monitor.SetThresholdMilliseconds(0);
+    CHECK(monitor.AddFrame(2, 0) == false);
+    CHECK(monitor.AddFrame(2, 0) == false);
+    CHECK(monitor.AddFrame(2, FAST) == true);
+}
+
 TEST_CASE("Viewport size presets have unique keys and start with Fill", "[editor][viewport][viewport-size]")
 {
     QSet<QString> keys;
