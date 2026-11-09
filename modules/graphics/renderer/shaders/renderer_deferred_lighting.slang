@@ -1,7 +1,6 @@
 #define LUDUS_DEFERRED_MESH_LIGHTS 1
 #include "deferred_layout.h"
 #include "display_tone_mapping.slang"
-#include "renderer_clustered_authored.slang"
 #include "renderer_deferred_fullscreen.slang"
 #include "renderer_mesh_lights.slang"
 
@@ -13,6 +12,12 @@ struct DeferredViewParameters
     // X: direct-reference flag. Y: clear depth. Z: graph ToneMap exposure; zero writes clamped linear colour.
     // W: its ToneCurve code (tone_mapping.hpp).
     float4 Options;
+#ifdef LUDUS_ATMOSPHERE_SURFACE
+    float4 AtmosphereRadialUpWorld; // xyz: unit radial up, w: altitude in kilometres.
+    float4 AtmosphereSunWorld;      // xyz: toward the Sun, w: one-based light index.
+    float4 AtmosphereIlluminance;   // xyz: linear RGB illuminance at the top boundary.
+    float4 AtmosphereCameraWorld;   // xyz: eye in metres, w: orthographic flag.
+#endif
 };
 LUDUS_SHADER_BINDING(LUDUS_DEFERRED_NORMAL_BINDING)
 Texture2D<float4> normalRoughnessTexture LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_DEFERRED_NORMAL_BINDING);
@@ -24,6 +29,8 @@ LUDUS_SHADER_BINDING(LUDUS_DEFERRED_DEPTH_BINDING)
 Texture2D<float> geometryDepthTexture LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_DEFERRED_DEPTH_BINDING);
 LUDUS_SHADER_BINDING(LUDUS_DEFERRED_VIEW_BINDING)
 ConstantBuffer<DeferredViewParameters> deferredView LUDUS_SHADER_UNIFORM_REGISTER(LUDUS_DEFERRED_VIEW_BINDING);
+
+#include "renderer_clustered_authored.slang"
 
 struct DeferredLightingOutput
 {
@@ -71,6 +78,9 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
                                                  input.PositionWorld,
                                                  uint(deferredView.TargetSizePixel.z),
                                                  uint(deferredView.TargetSizePixel.w));
+#ifdef LUDUS_ATMOSPHERE_SURFACE
+    output.Color.rgb = ComposeAtmosphereSegment(output.Color.rgb, input.PositionWorld);
+#endif
     // An authored ToneMap after this pass is fused here, before the RGBA8 target quantizes the radiance.
     if (deferredView.Options.z > 0)
     {

@@ -1078,6 +1078,11 @@ void RasterEndPass() noexcept
 void RasterTextureBarrier(usize, RasterTextureUse) noexcept {}
 RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 {
+    // An offscreen-only frame never touches the drawing buffer (see Begin).
+    if (gTarget.ShouldPresentToSurface == false && info.Texture == internal::RASTER_INVALID && info.ColorCount == 0)
+    {
+        return RasterStatus::InvalidState;
+    }
     if (info.Texture == internal::RASTER_INVALID || gRasterFramebuffers[info.Texture] != 0)
     {
         return RasterStatus::Ready;
@@ -1086,6 +1091,11 @@ RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 }
 RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
 {
+    const RasterStatus admitted = RasterPreparePass(info);
+    if (admitted != RasterStatus::Ready)
+    {
+        return admitted;
+    }
     gRasterGlPass = info;
     gRasterGlPassOpen = true;
     const auto& state = info.Description;

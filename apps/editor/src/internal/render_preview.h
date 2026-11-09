@@ -15,6 +15,7 @@
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/platform/native_window.h>
 
+#include "internal/browser_viewport_backend.h"
 #include "internal/editor_camera_controller.h"
 #include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
@@ -56,9 +57,30 @@ public:
     /// Frames are then copied to the CPU by the viewport (see OffscreenFrameReader).
     /// @return False when no preview start is pending or the device cannot start.
     [[nodiscard]] bool AdmitOffscreenDevice();
-    /// Start an engine WebGPU device for a connected, separately owned browser canvas.
-    /// The selector and DOM canvas must outlive Stop; Pending startup is serviced by Tick.
-    [[nodiscard]] bool AdmitBrowserDevice(const char* canvasSelector);
+    /// One browser viewport startup attempt on a connected, separately owned canvas.
+    struct BrowserDeviceRequest final
+    {
+        /// CSS selector of a canvas no graphics API has claimed yet; must outlive Stop.
+        const char* CanvasSelectorOrNull = nullptr;
+        BrowserViewportApi Api = BrowserViewportApi::WebGpu;
+        /// Active-API note for the statistics overlay, for example why WebGL 2 is used.
+        QString ApiNote;
+    };
+    /// Start an engine WebGPU or WebGL 2 device for the request's canvas. Pending startup is serviced by
+    /// Tick. A startup failure, now or later, never shows an error: it stops the device, keeps the reason
+    /// in GetBrowserStartupFailure and (when asynchronous) emits BrowserApiFailed, so the viewport can try
+    /// another API or call ReportBrowserUnavailable. Either way the start stays pending (Running() remains
+    /// true) until the viewport admits another API or reports; a synchronous failure returns false.
+    /// Failures after the device reached Ready are reported as ordinary failures.
+    [[nodiscard]] bool AdmitBrowserDevice(const BrowserDeviceRequest& request);
+    /// Reason the last browser startup attempt failed, for example "no compatible GPU adapter".
+    [[nodiscard]] LUDUS_INLINE const QString& GetBrowserStartupFailure() const noexcept
+    {
+        return mBrowserStartupFailure;
+    }
+    /// End a browser start that no API could satisfy: shows message and emits Failed. An operation waiting
+    /// for the first frame, such as a World scene import, rolls back with message as its cause.
+    void ReportBrowserUnavailable(const QString& message);
     void Stop() noexcept;
     /// Select a view; orbitDegrees contains yaw/pitch in degrees and zoom is the legacy radius scale.
     void Navigate(foundation::int32 camera,
@@ -84,7 +106,7 @@ public:
     [[nodiscard]] bool FrameSelection() noexcept;
     /// Frame the visible mesh bounds of a World entity by stable ID.
     [[nodiscard]] bool FrameEntity(const QString& id) noexcept;
-    /// Fit the given world-space bounds in the editor camera.
+    /// Fit the given world-space bounds in the free editor camera.
     [[nodiscard]] bool FrameBounds(const foundation::math::Aabb3& boundsWorld) noexcept;
     /// Use a transient first-person camera while retaining the editor's navigation and scene.
     [[nodiscard]] bool BeginFirstPerson(const gameplay::camera::CameraSample& spawn, QString& outError);
@@ -351,6 +373,9 @@ Q_SIGNALS:
     void DeviceRequested();
     /// Emitted before the owned device is destroyed; borrowers must release device resources.
     void DeviceStopping();
+    /// A browser device failed before it reached Ready; the device is stopped, the start stays pending
+    /// and no error is shown. The receiver must admit another API or call ReportBrowserUnavailable.
+    void BrowserApiFailed(ludus::editor::BrowserViewportApi api, const QString& reason);
     void Stopped();
     void Failed(const QString& error);
     /// The built-in view shown over a project graph (ShowBuiltInView or ray path inspection) cannot be
@@ -510,6 +535,11 @@ private:
     foundation::uint64 mDeviceSerial = 0;
     ViewportFramePump mFramePump;
     QString Status_;
+    /// Browser viewport API of the current device and whether it has reached Ready at least once.
+    BrowserViewportApi mBrowserApi = BrowserViewportApi::WebGpu;
+    bool mHasBrowserDeviceStarted = false;
+    QString mBrowserApiNote;
+    QString mBrowserStartupFailure;
     /// Reason recorded by the preparation stage that rejected the current generation, if any.
     QString mPreparationFailure;
 };
