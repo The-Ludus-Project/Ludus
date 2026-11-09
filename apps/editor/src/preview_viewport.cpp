@@ -663,6 +663,7 @@ struct PreviewViewport::State final
     /// Shared frame of the presentation widgets; letterboxed by the size preset.
     ViewportFrameLayout* FrameLayoutOrNull = nullptr;
     QToolBar* ControlsOrNull = nullptr;
+    QAction* ObjectToolActionOrNull = nullptr;
     /// View menu action that stores the current view as the start view; created with the controls.
     QAction* StartViewSaveActionOrNull = nullptr;
     QAction* AddTerrainActionOrNull = nullptr;
@@ -945,6 +946,11 @@ private:
     {
         Item = new ImageItem(*this, Window->contentItem());
         Item->setSize(QSizeF(Window->size()));
+        // Changing frame sources can recreate this item after the gizmo overlay already exists.
+        if (ObjectOverlayOrNull != nullptr)
+        {
+            Item->stackBefore(ObjectOverlayOrNull);
+        }
     }
     void createCanvas()
     {
@@ -1724,8 +1730,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     objectTool->setCurrentIndex(static_cast<int32>(ViewportObjectInteraction::Tool::Move));
     objectTool->setToolTip(QStringLiteral("Click an object to select it. Drag an axis handle to transform it. "
                                           "Shift snaps; Escape cancels. Alt-drag or right-drag navigates."));
-    objectTool->hide();
-    controls->addWidget(objectTool);
+    mState->ObjectToolActionOrNull = controls->addWidget(objectTool);
+    mState->ObjectToolActionOrNull->setObjectName(QStringLiteral("viewportObjectToolAction"));
+    mState->ObjectToolActionOrNull->setVisible(false);
     updateObjectInteractionAvailability();
     if (mObjectInteraction->IsActive() == false)
     {
@@ -2316,6 +2323,11 @@ void PreviewViewport::updateGpuSelectionOutline()
         display.ClearSelectionOutline();
     }
 #endif
+}
+void PreviewViewport::ShowObjectTools()
+{
+    LUDUS_REQUIRE(mState->ObjectToolActionOrNull != nullptr);
+    mState->ObjectToolActionOrNull->setVisible(true);
 }
 void PreviewViewport::updateObjectInteractionAvailability()
 {

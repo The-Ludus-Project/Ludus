@@ -206,6 +206,7 @@ Q_SIGNALS:
     void RenderPreviewChanged();
 
 private:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     [[nodiscard]] bool LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo = false);
     [[nodiscard]] bool Inside(const QString& path, bool existing) const;
     /// A blocking scene operation runs, or a full assembly waits for a background placement cook;

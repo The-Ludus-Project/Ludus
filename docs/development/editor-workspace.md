@@ -1273,7 +1273,8 @@ A click tests triangles only for objects whose mesh bounds its ray enters before
 the nearest hit found so far. Those bounds are computed once per published scene.
 
 Choose **Select (Q)**, **Move (W)**, **Rotate (E)** or **Scale (R)** in the viewport
-tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
+tool menu. With one entity selected, these keys also work while the entity list
+has focus. Drag a red X, green Y or blue Z handle. Rotation uses rings. Move
 changes the parent-local position, rotation changes the stored Euler degree
 component, and scale changes one positive local scale component. Hold **Shift**
 for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.

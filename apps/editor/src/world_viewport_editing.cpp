@@ -10,9 +10,10 @@
 #include <ludus/gameplay/camera/camera.hpp>
 
 #include <QAction>
-#include <QComboBox>
 #include <QJsonArray>
+#include <QKeyEvent>
 #include <QKeySequence>
+#include <QListWidget>
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
@@ -28,13 +29,10 @@ constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
 }
 void WorldWorkspace::bindViewportInteraction()
 {
+    Entities_->installEventFilter(this);
     for (PreviewViewport* viewport : {&Render_->GetViewport(), &Scene_->GetViewport()})
     {
-        QComboBox* toolOrNull = viewport->findChild<QComboBox*>(QStringLiteral("viewportObjectTool"));
-        if (toolOrNull != nullptr)
-        {
-            toolOrNull->show();
-        }
+        viewport->ShowObjectTools();
         QShortcut* remove = new QShortcut(QKeySequence::Delete, viewport);
         remove->setContext(Qt::WidgetWithChildrenShortcut);
         connect(remove, &QShortcut::activated, mDeleteEntities, &QAction::trigger);
@@ -69,6 +67,20 @@ void WorldWorkspace::bindViewportInteraction()
     }
     // Only the scene viewport shows a level, so only it can store a start view.
     connect(&Scene_->GetViewport().GetStartViewSaveAction(), &QAction::triggered, this, &WorldWorkspace::saveStartView);
+}
+bool WorldWorkspace::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == Entities_ && event->type() == QEvent::KeyPress && mSelectedEntities.size() == 1)
+    {
+        PreviewViewport& viewport =
+            &GetRenderPreview() == &Scene_->GetRenderPreview() ? Scene_->GetViewport() : Render_->GetViewport();
+        if (viewport.TrySelectObjectTool(*static_cast<QKeyEvent*>(event)) == true)
+        {
+            event->accept();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 void WorldWorkspace::frameEntity(const QString& id)
 {
