@@ -5,7 +5,9 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
 
 #include <ludus/content/scene_format/luscn.h>
 
@@ -31,6 +33,8 @@
 
 namespace ludus::editor
 {
+class StaticLightingJob;
+
 inline constexpr foundation::usize PREVIEW_MESH_CAPACITY = MAX_PREVIEW_MESHES;
 inline constexpr foundation::usize PREVIEW_TEXTURE_CAPACITY = MAX_PREVIEW_TEXTURES;
 /// Material versions: one per lit object, or per surface plus the unlit debug default.
@@ -96,10 +100,12 @@ public:
     {
         return mStage == PreparationStage::Ready && mHasFailed == false;
     }
-    [[nodiscard]] graphics::rhi::RasterStatus
-    CreateLightingMaterial(foundation::usize objectIndex,
-                           bool hasShadows,
-                           graphics::renderer::MaterialVersion& outMaterial) noexcept;
+    /// Lighting summary for a Lit frame or its pending replacement.
+    [[nodiscard]] QString DescribeBake() const;
+    [[nodiscard]] LUDUS_INLINE bool HasPublishedBake() const noexcept
+    {
+        return mHasPublishedBake;
+    }
 
     [[nodiscard]] LUDUS_INLINE graphics::renderer::Mesh GetMesh(foundation::usize index) const noexcept
     {
@@ -179,6 +185,27 @@ private:
     [[nodiscard]] bool prepareSnapshot(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
     [[nodiscard]] bool prepareResources(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
     [[nodiscard]] bool prepareLighting(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
+    [[nodiscard]] bool shouldBakeLighting() const noexcept;
+    [[nodiscard]] graphics::rhi::RasterStatus prepareBake() noexcept;
+    [[nodiscard]] graphics::rhi::RasterStatus prepareBakedSnapshot() noexcept;
+    [[nodiscard]] graphics::rhi::RasterStatus
+    createLitSnapshot(foundation::BorrowedView<const graphics::renderer::MaterialVersion> materials,
+                      bool shouldUseBake,
+                      graphics::renderer::Snapshot& outSnapshot) noexcept;
+    [[nodiscard]] graphics::rhi::RasterStatus
+    createLightingMaterial(foundation::usize objectIndex,
+                           bool hasShadows,
+                           bool shouldUseBake,
+                           graphics::renderer::MaterialVersion& outMaterial) noexcept;
+    void advanceBake() noexcept;
+    void discardBakeCharts() noexcept;
+    foundation::threading::JobSystem mBakeJobs;
+    foundation::UniquePtr<StaticLightingJob> mBakeJob;
+    foundation::Array<graphics::renderer::BakedLighting> mBakeCharts;
+    foundation::Array<graphics::renderer::MaterialVersion> mBakedMaterials;
+    foundation::usize mBakedMaterialCursor = 0;
+    QString mBakeFailure;
+    bool mHasPublishedBake = false;
     foundation::StaticArray<graphics::renderer::Mesh, PREVIEW_MESH_CAPACITY> mMeshes{};
     foundation::StaticArray<graphics::renderer::MaterialVersion, PREVIEW_MATERIAL_CAPACITY> mMaterials{};
     foundation::Array<foundation::usize> mLightingMaterialOwners;

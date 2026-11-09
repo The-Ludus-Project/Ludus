@@ -2383,6 +2383,56 @@ void WorldWorkspace::RenderInspector()
             blockLayout->addWidget(vectorRow);
             rows->addRow(block);
         }
+        if (IsBuiltInWorld(Document_) == true && cid == QStringLiteral("light"))
+        {
+            QCheckBox* staticTransformOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("staticTransform"))));
+            QCheckBox* bakeOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("bakeAlwaysOn"))));
+            QCheckBox* enabledOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("enabled"))));
+            QComboBox* kindOrNull = qobject_cast<QComboBox*>(Fields_.value(FieldKey(cid, QStringLiteral("kind"))));
+            QComboBox* roleOrNull = qobject_cast<QComboBox*>(Fields_.value(FieldKey(cid, WORLD_CELESTIAL_ROLE)));
+            if (staticTransformOrNull != nullptr && bakeOrNull != nullptr && enabledOrNull != nullptr)
+            {
+                QLabel* suggestion = new QLabel(
+                    QStringLiteral("Static light. Enable Bake always-on lighting to precompute its diffuse light."),
+                    group);
+                suggestion->setObjectName(QStringLiteral("worldLightBakeSuggestion"));
+                suggestion->setWordWrap(true);
+                rows->addRow(suggestion);
+                const auto refresh =
+                    [staticTransformOrNull, bakeOrNull, enabledOrNull, kindOrNull, roleOrNull, suggestion, rows]() {
+                        const bool isStatic = staticTransformOrNull->isChecked();
+                        const bool isDynamicCelestial =
+                            kindOrNull != nullptr &&
+                            kindOrNull->currentData().toString() == QStringLiteral("directional") &&
+                            roleOrNull != nullptr && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
+                        if (isStatic == false)
+                        {
+                            bakeOrNull->setChecked(false);
+                        }
+                        const bool hasOptedIn = bakeOrNull->isChecked();
+                        rows->setRowVisible(bakeOrNull,
+                                            isStatic == true && (isDynamicCelestial == false || hasOptedIn == true));
+                        bakeOrNull->setEnabled(enabledOrNull->isChecked());
+                        enabledOrNull->setEnabled(hasOptedIn == false);
+                        suggestion->setVisible(isStatic == true && isDynamicCelestial == false && hasOptedIn == false);
+                    };
+                connect(staticTransformOrNull, &QCheckBox::toggled, group, refresh);
+                connect(bakeOrNull, &QCheckBox::toggled, group, refresh);
+                connect(enabledOrNull, &QCheckBox::toggled, group, refresh);
+                if (kindOrNull != nullptr)
+                {
+                    connect(kindOrNull, &QComboBox::currentIndexChanged, group, refresh);
+                }
+                if (roleOrNull != nullptr)
+                {
+                    connect(roleOrNull, &QComboBox::currentIndexChanged, group, refresh);
+                }
+                refresh();
+            }
+        }
         if (component.value(QStringLiteral("required")).toBool())
         {
             rows->addRow(new QLabel(QStringLiteral("Required by this project"), group));

@@ -820,22 +820,28 @@ rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
     path.Sample = sampleIndex;
     // At a virtual white diffuse receiver, cosine sampling turns the irradiance
     // integral into PI times incoming radiance. Reuse the reference MIS/BSDF
-    // transport after this first event; analytic direct remains the raster term.
+    // transport after this first event. A selected-light bake includes analytic direct here.
     const usize lights = GetReferenceLightCount(job);
     const ReferenceLightChoice lightChoice = SelectReferenceLight(job, path, lights);
     const ReferenceIncidentLight proposal = SampleReferenceIncidentLight(job, path, lightChoice, pointWorld);
+    if (address.ShouldIncludeAnalyticDirect == true && proposal.HasFailed == true)
+    {
+        return rhi::RasterStatus::Failed;
+    }
     const float32 lightProbability = EvaluateSampledLightProbability(job, lightChoice, proposal, pointWorld, lights);
     math::Vector3 directIrradiance;
     const float32 cosine = math::Max(math::Dot(normalWorld, proposal.DirectionWorld), 0.F);
-    if (proposal.IsDelta == false && lightProbability > 0 && cosine > 0)
+    if ((proposal.IsDelta == false || address.ShouldIncludeAnalyticDirect == true) && lightProbability > 0 &&
+        cosine > 0)
     {
         math::Vector3 originWorld = Offset(pointWorld, triangle, proposal.DirectionWorld);
         math::Vector3 directionWorld = proposal.DirectionWorld;
         float32 distance = proposal.Distance;
         if (proposal.HasFiniteEndpoint == true)
         {
-            math::Vector3 endpointWorld;
-            if (math::TryOffsetRayOrigin(
+            math::Vector3 endpointWorld = proposal.PositionWorld;
+            if (proposal.IsDelta == false &&
+                math::TryOffsetRayOrigin(
                     {proposal.PositionWorld, proposal.ErrorWorld, proposal.NormalWorld, -directionWorld},
                     endpointWorld) != math::MathStatus::Success)
             {
@@ -859,8 +865,9 @@ rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
         }
         if (visibility.Hit == 0)
         {
-            directIrradiance = proposal.Radiance * (cosine / lightProbability *
-                                                    ReferencePowerWeight(lightProbability, cosine / math::kPiF));
+            const float32 weight =
+                proposal.IsDelta == true ? 1 : ReferencePowerWeight(lightProbability, cosine / math::kPiF);
+            directIrradiance = proposal.Radiance * (cosine / lightProbability * weight);
         }
     }
     const float32 radius = math::Sqrt(ReferenceRandom(job, path, 0));

@@ -416,20 +416,39 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 return false;
             }
             const QJsonArray celestialProperties = MakeWorldCelestialProperties();
-            for (qsizetype index = 0; index < components.size(); ++index)
+            for (qsizetype i = 0; i < components.size(); ++i)
             {
-                QJsonObject component = components[index].toObject();
-                if (component.value(QStringLiteral("id")).toString() == QStringLiteral("light"))
+                QJsonObject component = components[i].toObject();
+                if (component.value(QStringLiteral("id")) != QJsonValue(QStringLiteral("light")))
                 {
-                    QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
-                    for (const QJsonValue property : celestialProperties)
-                    {
-                        properties.append(property);
-                    }
-                    component.insert(QStringLiteral("properties"), properties);
-                    components[index] = component;
-                    break;
+                    continue;
                 }
+                QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
+                for (const QJsonValue property : celestialProperties)
+                {
+                    properties.append(property);
+                }
+                properties.append(QJsonObject{
+                    {QStringLiteral("id"), QStringLiteral("staticTransform")},
+                    {QStringLiteral("label"), QStringLiteral("Static Transform")},
+                    {QStringLiteral("type"), QStringLiteral("boolean")},
+                    {QStringLiteral("default"), false},
+                    {QStringLiteral("unit"), QString()},
+                    {QStringLiteral("help"), QStringLiteral("This light's transform stays fixed during play.")},
+                });
+                properties.append(QJsonObject{
+                    {QStringLiteral("id"), QStringLiteral("bakeAlwaysOn")},
+                    {QStringLiteral("label"), QStringLiteral("Bake always-on lighting")},
+                    {QStringLiteral("type"), QStringLiteral("boolean")},
+                    {QStringLiteral("default"), false},
+                    {QStringLiteral("unit"), QString()},
+                    {QStringLiteral("help"),
+                     QStringLiteral("Bake this enabled light's diffuse contribution into "
+                                    "the native Lit viewport's shared chart.")},
+                });
+                component.insert(QStringLiteral("properties"), properties);
+                components[i] = component;
+                break;
             }
             components.append(terrainComponent);
             schema.insert(QStringLiteral("components"), components);
@@ -810,6 +829,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             }
             const auto props = c.value().toObject();
             const auto definitions = definition.value(QStringLiteral("properties")).toArray();
+            const bool isBuiltInLight = HasBuiltInSchema() == true && c.key() == QStringLiteral("light");
             qsizetype recognizedPropertyCount = 0;
             for (const QJsonValue field : definitions)
             {
@@ -818,8 +838,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 const QJsonValue v = props.value(property);
                 if (v.isUndefined() == true)
                 {
-                    if (HasBuiltInSchema() == true && c.key() == QStringLiteral("light") &&
-                        IsWorldCelestialProperty(property) == true)
+                    // Older Worlds may omit fields added by the built-in schema extensions.
+                    if (isBuiltInLight == true &&
+                        (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
+                         property == QStringLiteral("bakeAlwaysOn")))
                     {
                         continue;
                     }
@@ -865,6 +887,20 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             if (recognizedPropertyCount + terrainPayloads != props.size())
             {
                 return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
+            }
+            if (isBuiltInLight == true && props.value(QStringLiteral("bakeAlwaysOn")).toBool() == true &&
+                (props.value(QStringLiteral("staticTransform")).toBool() == false ||
+                 props.value(QStringLiteral("enabled")).toBool() == false))
+            {
+                return Fail(error,
+                            QStringLiteral("Always-on baking requires an enabled light with Static Transform. "
+                                           "Clear Bake always-on lighting to disable or move it during play."));
+            }
+            if (isBuiltInLight == true && props.value(QStringLiteral("bakeAlwaysOn")).toBool() == true &&
+                props.value(QStringLiteral("kind")).toString() == QStringLiteral("directional") &&
+                props.value(WORLD_CELESTIAL_ROLE).toString() == WORLD_CELESTIAL_DYNAMIC)
+            {
+                return Fail(error, QStringLiteral("Clear Bake always-on lighting before choosing Dynamic Celestial."));
             }
         }
     }

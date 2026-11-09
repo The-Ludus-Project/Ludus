@@ -152,6 +152,8 @@ struct RenderScene final
     QString LogicalId;
     bool Lit = false;
     graphics::renderer::LightSelection AuthoredLights{};
+    /// Enabled authored analytic sources that opted into the shared always-on bake.
+    QVector<foundation::uint64> AlwaysOnLightIds;
     /// Enabled World panel luminaires (the preview descriptor's `luminaire` binding), admitted by
     /// NormalizePanelLuminaires; each SourceId is its entity key's source identity. They light only scene shaders
     /// that read them, such as the slice-sampling-luminaire template, and Merge keeps the authored snapshot's.

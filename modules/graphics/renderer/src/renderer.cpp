@@ -4636,6 +4636,12 @@ Status Renderer::createLitMaterial(MaterialProgram program,
         return Status::InvalidDescription;
     }
     const auto& bake = description.Bake;
+    if (description.BakedDirectLightIds.IsValid() == false ||
+        description.BakedDirectLightIds.GetSize() > MAX_DIRECT_LIGHTS ||
+        (description.BakedDirectLightIds.IsEmpty() == false && rhi::IsNull(bake.Texture) == true))
+    {
+        return Status::InvalidDescription;
+    }
     if (math::IsFinite(description.Metallic) == false || description.Metallic < 0 || description.Metallic > 1 ||
         math::IsFinite(description.Roughness) == false || description.Roughness < MIN_ROUGHNESS ||
         description.Roughness > 1 || bounded(description.Emission) == false ||
@@ -4877,7 +4883,10 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                                       description.EnvironmentRadiance.Y,
                                       description.EnvironmentRadiance.Z,
                                       0};
-    parameters.BakeScale = {bake.Scale.X, bake.Scale.Y, bake.Scale.Z, 0};
+    parameters.BakeScale = {bake.Scale.X,
+                            bake.Scale.Y,
+                            bake.Scale.Z,
+                            bake.ShouldAddToEnvironment == true ? 1.0F : 0.0F};
     parameters.BakeUv = bake.UvTransform;
     parameters.SurfaceMap = {description.NormalScale,
                              rhi::IsNull(description.SurfaceMap) ? 0.0F : 1.0F,
@@ -4905,9 +4914,14 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                                     static_cast<float32>(light.Kind)};
         parameters.Lights[i * 4 + 1] = {light.Position.X, light.Position.Y, light.Position.Z, light.Range};
         parameters.Lights[i * 4 + 2] = {light.Direction.X, light.Direction.Y, light.Direction.Z, light.OuterCos};
-        const bool shouldReplaceDiffuse = light.SourceId == bake.DirectLightId ||
-                                          (bake.HasStaticAreaDirect == true && (light.Kind == LightKind::AreaOneSided ||
-                                                                                light.Kind == LightKind::AreaTwoSided));
+        bool shouldReplaceDiffuse = light.SourceId == bake.DirectLightId ||
+                                    (bake.HasStaticAreaDirect == true &&
+                                     (light.Kind == LightKind::AreaOneSided || light.Kind == LightKind::AreaTwoSided));
+        for (usize bakedIndex = 0; bakedIndex < description.BakedDirectLightIds.GetSize(); ++bakedIndex)
+        {
+            shouldReplaceDiffuse =
+                shouldReplaceDiffuse == true || light.SourceId == description.BakedDirectLightIds[bakedIndex];
+        }
         parameters.Lights[i * 4 + 3] = {light.InnerCos, shouldReplaceDiffuse == true ? 1.0F : 0.0F, 0, 0};
     }
     const auto packShadowRegion =

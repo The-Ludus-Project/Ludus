@@ -11,7 +11,7 @@ namespace rhi = graphics::rhi;
 StaticLightingJob::StaticLightingJob(const RenderScene& scene, const rr::StaticLightingBakeDescription& description)
     : mScene(scene), mDescription(description)
 {
-    if (description.Surfaces.IsValid() == false)
+    if (description.Surfaces.IsValid() == false || description.AnalyticLightIds.IsValid() == false)
     {
         mStatus = rhi::RasterStatus::InvalidDescription;
     }
@@ -20,7 +20,14 @@ StaticLightingJob::StaticLightingJob(const RenderScene& scene, const rr::StaticL
     {
         mStatus = rhi::RasterStatus::OutOfMemory;
     }
+    if (mStatus == rhi::RasterStatus::Pending && description.AnalyticLightIds.IsEmpty() == false &&
+        mAnalyticLightIds.TryAddRange(
+            {description.AnalyticLightIds.GetDataOrNull(), description.AnalyticLightIds.GetSize()}) == false)
+    {
+        mStatus = rhi::RasterStatus::OutOfMemory;
+    }
     mDescription.Surfaces = {};
+    mDescription.AnalyticLightIds = {};
 }
 StaticLightingJob::~StaticLightingJob() noexcept
 {
@@ -45,6 +52,7 @@ rhi::RasterStatus StaticLightingJob::Start(threading::JobSystem& inoutSystem) no
         return mStatus;
     }
     mDescription.Surfaces = {mSurfaces.GetData(), mSurfaces.GetSize()};
+    mDescription.AnalyticLightIds = {mAnalyticLightIds.GetData(), mAnalyticLightIds.GetSize()};
     // Submit copies the overrides, so the job's array need not stay borrowed.
     mStatus = mBake->Submit(inoutSystem,
                             *mScene.Definition,
@@ -53,6 +61,7 @@ rhi::RasterStatus StaticLightingJob::Start(threading::JobSystem& inoutSystem) no
                                 .RangeCount = STATIC_LIGHTING_RANGE_COUNT,
                             });
     mDescription.Surfaces = {};
+    mDescription.AnalyticLightIds = {};
     return mStatus;
 }
 rhi::RasterStatus StaticLightingJob::Poll() noexcept

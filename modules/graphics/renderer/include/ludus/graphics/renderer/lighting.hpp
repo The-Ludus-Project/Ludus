@@ -197,9 +197,11 @@ struct BakedLighting final
     /// Exact local-to-world used by the bake; moved objects use environment fallback.
     ludus::foundation::math::Affine3 Transform{};
     /// Optional baked direct-light identity; replace that light's diffuse term only for valid bakes.
-    /// Zero replaces no analytic direct term; HasStaticAreaDirect separately declares area diffuse. One chart replaces
-    /// at most one direct diffuse term; dynamic direct specular remains.
+    /// Zero selects no light here. HasStaticAreaDirect separately declares area diffuse, and
+    /// LitMaterialDescription::BakedDirectLightIds selects additional analytic lights.
     ludus::foundation::uint64 DirectLightId = 0;
+    /// Add the valid chart's diffuse irradiance to live environment irradiance. False replaces it.
+    bool ShouldAddToEnvironment = false;
 };
 /// Diagnostic output selected by the debug-view lit recipes (`renderer_lit_debug`,
 /// `renderer_clustered_authored_debug`). Ordinary lit programs ignore it and shade normally.
@@ -258,7 +260,7 @@ struct LitMaterialDescription final
     ludus::foundation::uint32 MaterialUvSet = 0;
     /// Optional ready HDR map on the same device, retained during creation.
     /// Requires an authored recipe. Its SH/prefiltered specular replace the constant
-    /// environment terms; baked diffuse still takes precedence. Null uses constants.
+    /// environment terms. A valid bake may replace or augment diffuse irradiance. Null uses constants.
     const EnvironmentMap* EnvironmentOrNull = nullptr;
     /// Linear surface emission in [0,10000]; does not create a scene light.
     ludus::foundation::math::Vector3 Emission{};
@@ -269,11 +271,11 @@ struct LitMaterialDescription final
     /// Authored recipes only. Shares the selected material UV transform and sampler.
     /// Creation retains its exact view; reference requires CPU bytes at TextureMip.
     rhi::TextureHandle EmissionMap{};
-    /// Constant diffuse irradiance in [0,10000], used when a baked chart is absent/invalid.
+    /// Constant diffuse irradiance in [0,10000], used when no valid chart replaces the environment term.
     ludus::foundation::math::Vector3 EnvironmentIrradiance{};
     /// Hemispheric variation of the constant EnvironmentIrradiance in [0,1]: it is the irradiance of a surface
     /// facing +Y (the sky), and a surface facing -Y receives that much times this scale, blended by the
-    /// normal's Y. One keeps the irradiance constant, as before. Ignored when baked or authored irradiance applies.
+    /// normal's Y. One keeps the irradiance constant. Ignored when authored irradiance or a replacement chart applies.
     ludus::foundation::float32 EnvironmentGroundScale = 1;
     /// Constant filtered environment radiance in [0,10000]; single-scatter Fresnel approximation.
     ludus::foundation::math::Vector3 EnvironmentRadiance{};
@@ -293,6 +295,9 @@ struct LitMaterialDescription final
     MaterialDebugView DebugView = MaterialDebugView::None;
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Additional direct-light IDs whose diffuse terms are in Bake. Borrowed only during material creation.
+    /// Valid charts replace these terms while preserving live specular and shadows.
+    ludus::foundation::BorrowedView<const ludus::foundation::uint64> BakedDirectLightIds{};
 };
 /// Decoded linear surface-map parameters, with a unit positive-hemisphere tangent normal.
 struct SurfaceParameters final

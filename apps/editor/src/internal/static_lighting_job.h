@@ -49,6 +49,7 @@ private:
     graphics::renderer::StaticLightingBakeDescription mDescription;
     foundation::UniquePtr<graphics::renderer::StaticLightingBake> mBake;
     foundation::Array<graphics::renderer::StaticLightingSurfaceDescription> mSurfaces;
+    foundation::Array<foundation::uint64> mAnalyticLightIds;
     graphics::rhi::RasterStatus mStatus = graphics::rhi::RasterStatus::Pending;
     bool mHasStarted = false;
 };

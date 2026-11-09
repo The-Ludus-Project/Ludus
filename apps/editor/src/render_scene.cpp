@@ -154,6 +154,7 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.TransformBinding = authored.TransformBinding;
     // Disabled authored lights stay listed, and switchable, beside the imported ones.
     inoutScene.LightBinding = authored.LightBinding;
+    inoutScene.AlwaysOnLightIds = authored.AlwaysOnLightIds;
     inoutScene.LuminaireBinding = authored.LuminaireBinding;
     inoutScene.Luminaires = authored.Luminaires;
     if (authored.Cameras.isEmpty() == false)
@@ -870,6 +871,15 @@ bool RenderScene::Load(const QString& root,
                     return Fail(outError, QStringLiteral("World exceeds the authored-light capacity."));
                 }
                 candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++] = light;
+                const QJsonObject lightProperties =
+                    entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+                if (IsBuiltInWorld(world) == true &&
+                    lightBinding.value(QStringLiteral("component")) == QJsonValue(QStringLiteral("light")) &&
+                    lightProperties.value(QStringLiteral("staticTransform")).toBool() == true &&
+                    lightProperties.value(QStringLiteral("bakeAlwaysOn")).toBool() == true)
+                {
+                    candidate.AlwaysOnLightIds.append(light.SourceId);
+                }
                 assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("id"), id},
                                                             {QStringLiteral("light"), values},
                                                             {QStringLiteral("transform"), Values(entity, transform)}})
