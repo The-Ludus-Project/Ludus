@@ -297,7 +297,7 @@ struct LitMaterialDescription final
     content::scene_format::MaterialScattering Scattering{};
     /// Additional direct-light IDs whose diffuse terms are in Bake. Borrowed only during material creation.
     /// Valid charts replace these terms while preserving live specular and shadows.
-    ludus::foundation::BorrowedView<const ludus::foundation::uint64> BakedDirectLightIds{};
+    ludus::foundation::BorrowedView<const ludus::foundation::uint64> BakedDirectLightIds;
 };
 /// Decoded linear surface-map parameters, with a unit positive-hemisphere tangent normal.
 struct SurfaceParameters final
