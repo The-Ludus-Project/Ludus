@@ -133,13 +133,20 @@ function(ludus_editor_add_tree_sitter)
         endforeach()
     endforeach()
 
+    # These scanners define tree_sitter_<name>_external_scanner_create() with an empty parameter list
+    # instead of (void), while the runtime calls it through a prototyped `void *(*)(void)` slot. In C11
+    # that definition is unprototyped, a different function type: Clang's function sanitizer (part of
+    # the UBSan presets) aborts on the first parse. C23 reads an empty list as (void), so these grammar
+    # objects compile as C23 and every sanitizer check stays on.
+    #
     # Upstream-only grammar suppressions, scoped to the grammar that needs them (ADR 0026):
-    # - -Wstrict-prototypes: these scanners define tree_sitter_<name>_external_scanner_create() with
-    #   an empty parameter list instead of (void); tree-sitter's generated declaration has the prototype.
+    # - -Wstrict-prototypes: the same empty parameter lists; tree-sitter's generated declaration has
+    #   the prototype.
     # - Luau's scanner also leaves switch fallthrough unannotated, keeps an unused skip_if helper and
     #   ignores valid_symbols in two token readers (-Wimplicit-fallthrough, -Wunused-function,
     #   -Wunused-parameter).
     foreach(grammar IN ITEMS cpp slang luau cmake markdown_inline)
+        set_target_properties(ludus_editor_tree_sitter_${grammar} PROPERTIES C_STANDARD 23)
         target_compile_options(ludus_editor_tree_sitter_${grammar} PRIVATE
             $<$<C_COMPILER_ID:Clang,AppleClang,GNU>:-Wno-strict-prototypes>)
     endforeach()
