@@ -167,6 +167,7 @@ def check_script_debug_session(host, module, replacement, evidence_path):
     compiled_line = program["first_line"] + authored_line - 2
     asset = program["asset"]
     session = Session(host, module, 1)
+    generation = hex_id(1)
 
     def require_status(request, expected="Ok"):
         result = session.status(request)
@@ -176,7 +177,7 @@ def check_script_debug_session(host, module, replacement, evidence_path):
 
     def debug(request, action, expected="Ok", **fields):
         payload = json.dumps({"version": 1, "action": action, **fields}, separators=(",", ":"))
-        session.send(request, "ScriptDebug", extension=1, payload=payload)
+        session.send(request, "ScriptDebug", expected_generation=generation, extension=1, payload=payload)
         result = require_status(request, expected)
         return json.loads(result["message"]) if expected == "Ok" else None
 
@@ -203,9 +204,11 @@ def check_script_debug_session(host, module, replacement, evidence_path):
         finished = debug(8, "continue", **identity(stepped))
         if finished["partial"] or finished["interactions"] != 1:
             raise RuntimeError(f"The resumed Luau tick did not commit exactly once: {finished}")
-        session.send(9, "Reload", expected_generation=hex_id(1), generation=hex_id(2),
+        session.send(9, "Reload", expected_generation=generation, generation=hex_id(2),
                      module_path=str(replacement))
-        require_status(9)
+        generation = require_status(9)["generation"]
+        if generation != hex_id(2):
+            raise RuntimeError(f"Expected the second scripted module, got {generation}")
         reloaded = debug(10, "inspect")
         if reloaded["package"] == finished["package"] or reloaded["interactions"] != 1:
             raise RuntimeError(f"Reload did not activate new script code and retain state: {reloaded}")
