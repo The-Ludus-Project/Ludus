@@ -4454,7 +4454,7 @@ Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer in
     };
     const QStringList programs = findObjects(workspace, format::MaterialModel::Program);
     REQUIRE(programs.size() == 1);
-    const QString program = programs[0];
+    const QString& program = programs[0];
     checkProgram(workspace, program);
 
     PreviewViewport& viewport = GetLevel(workspace).GetViewport();
