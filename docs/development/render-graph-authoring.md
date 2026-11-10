@@ -6144,6 +6144,18 @@ and `ClusteredForward` packages keep their existing lighting ABI and behavior.
 Runtime package version 24 appends four deferred support roles without changing
 record widths or older role IDs; older packages remain readable.
 
+### Material texture minification
+
+The scene resources upload every RGBA8 material texture (base colour, packed
+surface parameters and emission) with its complete 2x2 box-filtered mip chain,
+built at scene preparation from the single retained import level. sRGB colour
+levels average in linear light; linear data levels average their stored codes.
+The material passes select levels from screen-space derivatives with linear
+level blending, so a texture seen from far away shades with its mean instead of
+aliasing level zero. The ray scene interface keeps its fixed-mip policy. The
+`[texture-mips]` regressions check the chain on the CPU and a heavily minified
+checker against a uniform texture of its mean on the GPU.
+
 ### Directional shadows
 
 The default shadows the directional light with the lowest source identity among
@@ -6161,6 +6173,15 @@ normalized light depth. The resolve blends the four visibility results by
 their distance from the receiver in the map. This reduces false self-shadowing
 on surfaces that the light reaches at a grazing angle. Opaque and alpha-masked
 scene geometry cast shadows.
+The resolve rebuilds each receiver from the depth buffer, so the receiver's
+position is uncertain along the view ray by the depth buffer's precision. A
+conventional float32 depth with a centimetre near plane loses centimetres tens
+of metres from the camera. The resolve derives that distance at each pixel from
+four units in the last place of the stored depth, and each comparison adds the
+depth it spans in the map and along the sampled caster's slope to the receiver
+bias. Distant receivers therefore shadow slightly later instead of showing
+dithered false shadows that change with the camera pose. A larger near plane
+keeps the allowance small.
 The material pass clips shading normals to the camera-facing hemisphere on
 geometrically front-facing surfaces. This keeps smooth terrain ridges lit
 where an interpolated normal turns past the camera.

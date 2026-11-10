@@ -15,6 +15,7 @@
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/texture_mip_chain.hpp>
 
 #include <cstring>
 #include <new>
@@ -442,9 +443,28 @@ struct ForwardSceneResources::State final
             TextureEntry& entry = Textures[i];
             if (entry.IsUsed == false)
             {
+                // Material textures are minified by the raster passes, so upload a complete box-filtered
+                // chain and let the samplers select levels. The identity key stays the authored level.
+                rhi::FormatCapabilities capabilities{};
+                uint32 levelCount = CountRgba8MipLevels(source.Width, source.Height);
+                if (rhi::GetFormatCapabilities(Device, source.Format, capabilities) == Status::Ready &&
+                    capabilities.MaxMipLevels != 0 && capabilities.MaxMipLevels < levelCount)
+                {
+                    levelCount = capabilities.MaxMipLevels;
+                }
+                Rgba8MipChain chain;
+                Status status = BuildRgba8MipChain(source, levelCount, chain);
+                if (status != Status::Ready)
+                {
+                    return status;
+                }
                 rhi::TextureDescription description{source.Width, source.Height, source.Format};
+                description.MipLevels = chain.LevelCount;
                 description.AsyncUpload = true;
-                const Status status = rhi::CreateTexture(Device, description, {key.AsSpan(), rowBytes}, entry.Handle);
+                status = rhi::CreateTexture(Device,
+                                            description,
+                                            {chain.Bytes.AsSpan(), 0, {chain.Mips.GetData(), chain.Mips.GetSize()}},
+                                            entry.Handle);
                 if (IsAccepted(status) == true)
                 {
                     IdentityBytes += size;
@@ -1018,9 +1038,12 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                                         1};
             description.Surface.UvTransform = material.UvTransform;
             description.Surface.Sampler = material.Sampler;
+            // The cache uploads every material texture with its minification chain; derivative LOD with
+            // linear level blending keeps distant detail at its mean instead of aliasing level zero.
+            description.Surface.Sampler.MipFilter = rhi::RasterMipFilter::Linear;
             description.Surface.Alpha = material.IsAlphaMasked == true ? MaterialAlpha::Masked : MaterialAlpha::Opaque;
             description.Surface.AlphaCutoff = material.AlphaCutoff;
-            description.Surface.Lod = 0;
+            description.Surface.Lod = -1;
             description.Metallic = material.Metallic;
             description.Roughness = material.Roughness;
             description.Scattering = material.Scattering;
