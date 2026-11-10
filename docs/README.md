@@ -102,7 +102,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus::FoundationGeometry](modules/foundation/geometry.md)
 - [Ludus::FoundationMath](modules/foundation/math.md)
 - [ShaderLanguage: the LUSL front end](modules/tooling/shader-language.md)
-- [Terrain fields, drainage and material rules](modules/content/terrain.md)
+- [Terrain fields, drainage, rivers and material rules](modules/content/terrain.md)
 - [Unicode: pinned ICU4C host service](modules/foundation/unicode.md)
 - [World restore (two-pass)](modules/content/world-restore.md)
 
