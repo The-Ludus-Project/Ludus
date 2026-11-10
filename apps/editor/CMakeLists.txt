@@ -769,6 +769,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_probe_volume.cpp
     src/world_terrain.cpp
     src/world_terrain_editing.cpp
+    src/internal/world_terrain_surface.h
+    src/world_terrain_surface.cpp
     src/world_aperture.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h

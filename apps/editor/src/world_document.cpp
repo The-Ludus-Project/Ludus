@@ -907,7 +907,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     const bool isNewAtmosphereField =
                         HasBuiltInSchema() == true && c.key() == GetWorldAtmosphereComponentId() &&
                         (property == QStringLiteral("moon") || property == QStringLiteral("stars"));
-                    if (isNewAtmosphereField == true ||
+                    const bool isNewTerrainField = HasBuiltInTerrain() == true && c.key() == terrainComponent &&
+                                                   IsTerrainSurfaceProperty(property) == true;
+                    if (isNewAtmosphereField == true || isNewTerrainField == true ||
                         (isBuiltInLight == true &&
                          (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
                           property == QStringLiteral("bakeAlwaysOn") || property == WORLD_RASTER_SHADOWS)))

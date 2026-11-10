@@ -699,7 +699,8 @@ QString ViewportObjectInteraction::pick(QPointF positionPixel,
     for (const PreviewObject& object : scene.Objects)
     {
         math::Affine3 worldToMesh;
-        if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size() ||
+        // Generated terrain water is not an entity, so a click passes through it to the terrain.
+        if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size() || IsTerrainWaterObjectId(object.Id) == true ||
             math::TryInverse(object.Transform, worldToMesh) != math::MathStatus::Success)
         {
             continue;
