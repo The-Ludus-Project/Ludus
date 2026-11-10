@@ -1,0 +1,62 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Closure program block",
+  "description": "A weathered gold block on a grey floor under a square one-sided ceiling light. The block's closure program mixes a rust diffuse lobe, a gold conductor and a cosine-power sheen; its weights read the metallic and base colour inputs. World import, inspection and the program cook tests use it.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "Floor", "model": "diffuse", "base_color": [0.5, 0.5, 0.5]},
+    {
+      "name": "Weathered gold",
+      "model": "program",
+      "base_color": [0.6, 0.3, 0.1],
+      "metallic": 0.7,
+      "roughness": 0.35,
+      "program": {
+        "version": 1,
+        "parameters": [
+          {"name": "metal", "input": "metallic"},
+          {"name": "rust", "one_minus": "metal"},
+          {"name": "color", "input": "base_color"},
+          {"name": "rust_color", "multiply": ["rust", "color"]},
+          {"name": "rough", "input": "roughness"},
+          {"name": "sheen", "lerp": [[0.3, 0.2, 0.1], "rust_color", 0.5]}
+        ],
+        "lobes": [
+          {"operation": "diffuse", "weight": "rust_color"},
+          {"operation": "conductor", "weight": "metal", "roughness": "rough", "eta": [0.143, 0.374, 1.442], "k": [3.983, 2.386, 1.603]},
+          {"operation": "cosine_power", "weight": "sheen", "roughness": "rough", "power": 12}
+        ]
+      }
+    },
+    {"name": "Light", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [12, 12, 12], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "Floor",
+      "positions": [[-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Block",
+      "material": "Weathered gold",
+      "positions": [
+        [-0.4, -0.99, 0.3], [0.4, -0.99, 0.3], [0.4, -0.99, -0.5], [-0.4, -0.99, -0.5],
+        [-0.4, -0.2, 0.3], [0.4, -0.2, 0.3], [0.4, -0.2, -0.5], [-0.4, -0.2, -0.5]
+      ],
+      "polygons": [[4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7], [3, 2, 1, 0]]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [[-0.25, 0.99, -0.25], [0.25, 0.99, -0.25], [0.25, 0.99, 0.25], [-0.25, 0.99, 0.25]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}

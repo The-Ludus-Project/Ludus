@@ -8,6 +8,7 @@
 #include "uuid.h"
 
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -1524,12 +1525,28 @@ struct SourceMaterialRecord final
     std::string_view Name;
     math::Vector3 Reflectance{1, 1, 1};
     format::MaterialScattering Scattering;
+    /// Closure program of a Program material; zero otherwise.
+    format::MaterialProgram Program{};
 };
+/// Hex digits of one program record in a material description's "program" member.
+constexpr usize MATERIAL_PROGRAM_HEX_DIGITS = 2 * format::MATERIAL_PROGRAM_BYTES;
+/// Bits of one hex digit.
+constexpr uint32 HEX_DIGIT_BITS = 4;
+/// Report whether a version 7 or later material record carries typed source parameters: the V7 extension, and the
+/// LUSCN v11 program record after it for a Program material.
+[[nodiscard]] bool IsTypedMaterialRecord(std::span<const uint8> bytes) noexcept
+{
+    return bytes.size() == MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES ||
+           bytes.size() ==
+               MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES + format::MATERIAL_PROGRAM_BYTES;
+}
 [[nodiscard]] bool DecodeSourceMaterial(foundation::BorrowedView<const uint8> bytes,
                                         SourceMaterialRecord& outRecord,
                                         Failure& inoutFailure) noexcept
 {
-    if (bytes.IsValid() == false || bytes.GetSize() != format::MATERIAL_EXTENSION_V7_BYTES)
+    if (bytes.IsValid() == false ||
+        (bytes.GetSize() != format::MATERIAL_EXTENSION_V7_BYTES &&
+         bytes.GetSize() != format::MATERIAL_EXTENSION_V7_BYTES + format::MATERIAL_PROGRAM_BYTES))
     {
         return inoutFailure.FailInvalid("truncated source material");
     }
@@ -1582,6 +1599,18 @@ struct SourceMaterialRecord final
     {
         return inoutFailure.FailInvalid("invalid source material parameters");
     }
+    const bool isProgram = outRecord.Scattering.Model == format::MaterialModel::Program;
+    if (bytes.GetSize() !=
+        format::MATERIAL_EXTENSION_V7_BYTES + (isProgram == true ? format::MATERIAL_PROGRAM_BYTES : 0))
+    {
+        return inoutFailure.FailInvalid("a closure-program material record must be followed by its program alone");
+    }
+    if (isProgram == true && format::DecodeMaterialProgram({bytes.GetDataOrNull() + format::MATERIAL_EXTENSION_V7_BYTES,
+                                                            format::MATERIAL_PROGRAM_BYTES},
+                                                           outRecord.Program) == false)
+    {
+        return inoutFailure.FailInvalid("invalid closure program; recook the material's scene source");
+    }
     return true;
 }
 JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& record) noexcept
@@ -1614,7 +1643,50 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     inoutTree.SetMember(result,
                         "coating_thickness",
                         inoutTree.AddFloat(static_cast<float64>(record.Scattering.CoatingThickness)));
+    if (record.Scattering.Model == format::MaterialModel::Program)
+    {
+        // The exact record bytes keep the description canonical and decode through the shared validator.
+        format::MaterialProgramBytes bytes{};
+        format::EncodeMaterialProgram(record.Program, bytes);
+        constexpr std::string_view HEX = "0123456789abcdef";
+        StaticArray<char, MATERIAL_PROGRAM_HEX_DIGITS> digits{};
+        for (usize byte = 0; byte < bytes.GetSize(); ++byte)
+        {
+            digits[2 * byte] = HEX[bytes[byte] >> HEX_DIGIT_BITS];
+            digits[2 * byte + 1] = HEX[bytes[byte] & ((1U << HEX_DIGIT_BITS) - 1)];
+        }
+        inoutTree.SetMember(result, "program", inoutTree.AddString({digits.GetData(), digits.GetSize()}));
+    }
     return result;
+}
+/// Decode a material description's lowercase hex program record.
+[[nodiscard]] bool ReadSourceMaterialProgram(std::string_view text, format::MaterialProgram& outProgram) noexcept
+{
+    if (text.size() != MATERIAL_PROGRAM_HEX_DIGITS)
+    {
+        return false;
+    }
+    format::MaterialProgramBytes bytes{};
+    for (usize byte = 0; byte < bytes.GetSize(); ++byte)
+    {
+        uint32 value = 0;
+        for (usize digit = 0; digit < 2; ++digit)
+        {
+            const char character = text[2 * byte + digit];
+            constexpr uint32 DECIMAL_DIGITS = 10;
+            const bool isDecimal = character >= '0' && character <= '9';
+            const bool isLetter = character >= 'a' && character <= 'f';
+            if (isDecimal == false && isLetter == false)
+            {
+                return false;
+            }
+            value =
+                (value << HEX_DIGIT_BITS) | (isDecimal == true ? static_cast<uint32>(character - '0')
+                                                               : DECIMAL_DIGITS + static_cast<uint32>(character - 'a'));
+        }
+        bytes[byte] = static_cast<uint8>(value);
+    }
+    return format::DecodeMaterialProgram({bytes.GetData(), bytes.GetSize()}, outProgram);
 }
 [[nodiscard]] bool ReadSourceMaterial(const JsonTree& tree,
                                       JsonIndex source,
@@ -1631,7 +1703,19 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
                                                 "alpha_v",
                                                 "coating_eta",
                                                 "coating_thickness"};
-    if (tree.HasExactKeys(source, KEYS) == false)
+    static constexpr std::string_view PROGRAM_KEYS[] = {"identity",
+                                                        "name",
+                                                        "model",
+                                                        "reflectance",
+                                                        "eta",
+                                                        "k",
+                                                        "alpha_u",
+                                                        "alpha_v",
+                                                        "coating_eta",
+                                                        "coating_thickness",
+                                                        "program"};
+    const JsonIndex program = tree.GetMember(source, "program");
+    if ((program == NO_JSON_NODE ? tree.HasExactKeys(source, KEYS) : tree.HasExactKeys(source, PROGRAM_KEYS)) == false)
     {
         return inoutFailure.FailInvalid("invalid source material fields");
     }
@@ -1641,7 +1725,7 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     constexpr uint32 MAXIMUM_SOURCE_IDENTITY = ~uint32{0};
     if (identity.Kind != JsonKind::Integer || identity.Integer < 0 ||
         identity.Integer > static_cast<int64>(MAXIMUM_SOURCE_IDENTITY) || model.Kind != JsonKind::Integer ||
-        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::ProjectBrdf) ||
+        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::Program) ||
         tree.GetKind(name) != JsonKind::String || tree.GetText(name).size() > format::MAX_MATERIAL_NAME_BYTES)
     {
         return inoutFailure.FailInvalid("invalid source material identity or model");
@@ -1701,6 +1785,14 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     {
         return inoutFailure.FailInvalid("invalid source material optical parameters");
     }
+    const bool isProgram = outRecord.Scattering.Model == format::MaterialModel::Program;
+    if (isProgram != (program != NO_JSON_NODE) ||
+        (isProgram == true && (tree.GetKind(program) != JsonKind::String ||
+                               ReadSourceMaterialProgram(tree.GetText(program), outRecord.Program) == false)))
+    {
+        return inoutFailure.FailInvalid(
+            "invalid closure program in the material description; reimport the material's scene source");
+    }
     return true;
 }
 void AppendSourceMaterial(ByteWriter& inoutWriter, const SourceMaterialRecord& record) noexcept
@@ -1729,6 +1821,12 @@ void AppendSourceMaterial(ByteWriter& inoutWriter, const SourceMaterialRecord& r
     inoutWriter.AppendFloat32(static_cast<float64>(record.Scattering.AlphaV));
     inoutWriter.AppendFloat32(static_cast<float64>(record.Scattering.CoatingEta));
     inoutWriter.AppendFloat32(static_cast<float64>(record.Scattering.CoatingThickness));
+    if (record.Scattering.Model == format::MaterialModel::Program)
+    {
+        format::MaterialProgramBytes bytes{};
+        format::EncodeMaterialProgram(record.Program, bytes);
+        inoutWriter.AppendBytes({bytes.GetData(), bytes.GetSize()});
+    }
 }
 struct BundleMaterial final
 {
@@ -1901,22 +1999,29 @@ struct BundleParts final
         }
         if (version >= format::VERSION_7)
         {
+            const usize extensionStart = inoutReader.GetOffset();
             std::span<const uint8> extension;
             SourceMaterialRecord source;
-            if (inoutReader.Take(format::MATERIAL_EXTENSION_V7_BYTES, extension, inoutFailure) == false ||
-                DecodeSourceMaterial({extension.data(), extension.size()}, source, inoutFailure) == false)
+            if (inoutReader.Take(format::MATERIAL_EXTENSION_V7_BYTES, extension, inoutFailure) == false)
+            {
+                return false;
+            }
+            const bool isProgram = DecodeUint32(extension.data() + offsetof(format::MaterialExtensionV7, Model)) ==
+                                   static_cast<uint32>(format::MaterialModel::Program);
+            std::span<const uint8> program;
+            if (isProgram == true && inoutReader.Take(format::MATERIAL_PROGRAM_BYTES, program, inoutFailure) == false)
+            {
+                return false;
+            }
+            if (DecodeSourceMaterial({data.data() + extensionStart, inoutReader.GetOffset() - extensionStart},
+                                     source,
+                                     inoutFailure) == false)
             {
                 return false;
             }
             if (version < format::GetMaterialModelBundleVersion(source.Scattering.Model))
             {
                 return inoutFailure.FailInvalid("Material model requires a newer LUSCN version");
-            }
-            if (source.Scattering.Model == format::MaterialModel::Program)
-            {
-                return inoutFailure.FailInvalid(
-                    "World import does not support closure-program materials yet. Assign a built-in model "
-                    "such as mix or metallic_roughness to this material in its scene source, then import again.");
             }
         }
         BundleMaterial material;
@@ -2954,7 +3059,7 @@ struct MaterialVariant final
             const JsonIndex model = description.Tree.GetMember(source, "model");
             const JsonNode& value = description.Tree.GetNode(model);
             if (value.Kind == JsonKind::Integer && value.Integer >= 0 &&
-                value.Integer <= static_cast<int64>(format::MaterialModel::ProjectBrdf))
+                value.Integer <= static_cast<int64>(format::MaterialModel::Program))
             {
                 typedVersion =
                     math::Max(typedVersion,
@@ -3026,6 +3131,15 @@ struct MaterialVariant final
                                                    : sizeof(format::MaterialRecordV2)) +
         objectCount * (isVersion3 == true ? sizeof(format::ObjectRecordV3) : sizeof(format::ObjectRecord)) +
         lighting.GetSize();
+    for (const MaterialVariant& variant : variants)
+    {
+        const Document& description = descriptions[variant.SourceIndex];
+        const JsonIndex source = description.Tree.GetMember(description.Root, "source_material");
+        if (source != NO_JSON_NODE && description.Tree.GetMember(source, "program") != NO_JSON_NODE)
+        {
+            bundleBytes += format::MATERIAL_PROGRAM_BYTES;
+        }
+    }
     if (isVersion3 == true && lighting.IsEmpty() == true)
     {
         bundleBytes += sizeof(format::LightingRecord);
@@ -3834,7 +3948,7 @@ struct PreparedImport final
 {
     // Version 1 records (24 bytes) imply the sampler address; version 2 records
     // (pbrt-best-effort-v1) carry it explicitly after the texture index.
-    const bool isVersion7 = material.Bytes.size() == MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES;
+    const bool isVersion7 = IsTypedMaterialRecord(material.Bytes);
     const bool isVersion6 = material.Bytes.size() == MATERIAL_RECORD_V6_BYTES || isVersion7 == true;
     const bool isVersion5 = material.Bytes.size() == MATERIAL_RECORD_V5_BYTES || isVersion6 == true;
     const bool isVersion3 = material.Bytes.size() == MATERIAL_RECORD_V3_BYTES || isVersion5 == true;
@@ -3962,7 +4076,7 @@ struct StoredParts final
             return false;
         }
         bool hasSourceIdentity = false;
-        if (parts.Materials[i].Bytes.size() == MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES)
+        if (IsTypedMaterialRecord(parts.Materials[i].Bytes) == true)
         {
             SourceMaterialRecord source;
             if (DecodeSourceMaterial({parts.Materials[i].Bytes.data() + MATERIAL_RECORD_V6_BYTES,
@@ -4202,7 +4316,7 @@ GetSourceMaterialNames(const BundleParts& parts, Array<std::string_view>& outNam
     for (const BundleMaterial& material : parts.Materials)
     {
         std::string_view name;
-        if (material.Bytes.size() == MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES)
+        if (IsTypedMaterialRecord(material.Bytes) == true)
         {
             SourceMaterialRecord source;
             if (DecodeSourceMaterial({material.Bytes.data() + MATERIAL_RECORD_V6_BYTES,

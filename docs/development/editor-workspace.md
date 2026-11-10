@@ -1722,6 +1722,24 @@ The raster viewport approximates the surface using base color and roughness.
 The reference paths and Wave Tracing evaluate the authored terms. Metropolis
 also requires the program's fixed-dimension reflection declaration.
 
+### Inspect a closure program
+
+Import a Ludus scene source whose material is a
+[closure program](../architecture/scene-source-format.md#closure-program). For an
+example, use `tests/scenes/materials/closure-program-block.luscene.json`. Select
+the program's object. The **Material** group shows **Closure program** as its
+model, then one row per lobe with its operation and parameters, the size of
+the weight and roughness program, and the capabilities that pass requirements
+test. **Metallic (program input)** and **Roughness (program input)** are the
+values the program reads. The raster viewport draws them as a
+metallic-roughness approximation. The reference paths, Wave Tracing and
+Metropolis evaluate the program itself.
+
+A closure program can also replace an unsupported imported material: choose it
+under **Replacement**, as the next section describes. **Save World** and
+reimport keep the program. To change a program, edit its scene source and
+import it again.
+
 ### Repair an unsupported imported material
 
 When a PBRT scene assigns an unsupported named material, World keeps the geometry

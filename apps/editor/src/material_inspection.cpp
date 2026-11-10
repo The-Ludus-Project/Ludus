@@ -7,12 +7,15 @@
 
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include <algorithm>
 #include <string_view>
+
+#include <QStringList>
 
 namespace ludus::editor
 {
@@ -41,6 +44,53 @@ QString FormatRgb(const foundation::math::Vector3& value)
 QString FormatRgb(const foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS>& value)
 {
     return FormatRgb(value[0], value[1], value[2]);
+}
+/// One closure-program lobe: its operation and the parameters it carries.
+QString DescribeProgramLobe(const format::MaterialProgramLobe& lobe)
+{
+    switch (lobe.Operation)
+    {
+        case format::MaterialLobeOperation::Diffuse:
+            return QStringLiteral("Diffuse");
+        case format::MaterialLobeOperation::Conductor:
+            return QStringLiteral("Conductor (η %1; k %2)").arg(FormatRgb(lobe.Eta), FormatRgb(lobe.K));
+        case format::MaterialLobeOperation::CosinePower:
+            return QStringLiteral("Cosine power %1").arg(FormatScalar(lobe.Power));
+        case format::MaterialLobeOperation::None:
+            break;
+    }
+    return QStringLiteral("Unknown");
+}
+/// The capabilities a pass requirement tests, in reading order.
+QString DescribeCapabilities(format::MaterialCapabilityBits capabilities)
+{
+    struct Capability final
+    {
+        format::MaterialCapabilityBits Bit;
+        const char* Label;
+    };
+    constexpr usize CAPABILITY_COUNT = 5;
+    constexpr foundation::StaticArray<Capability, CAPABILITY_COUNT> CAPABILITIES{{
+        {format::LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION, "continuous reflection"},
+        {format::LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER, "fixed three-value sampler"},
+        {format::LUDUS_MATERIAL_CAPABILITY_TRANSMISSION, "transmission"},
+        {format::LUDUS_MATERIAL_CAPABILITY_INTERNAL_WALK, "internal walk"},
+        {format::LUDUS_MATERIAL_CAPABILITY_DELTA, "delta events"},
+    }};
+    QStringList names;
+    for (const Capability& capability : CAPABILITIES)
+    {
+        if ((capabilities & capability.Bit) != 0)
+        {
+            names.append(QString::fromLatin1(capability.Label));
+        }
+    }
+    if (names.isEmpty() == true)
+    {
+        return QStringLiteral("None");
+    }
+    names.front()[0] = names.front()[0].toUpper();
+    return names.join(QStringLiteral(", "));
 }
 QString GetModelName(format::MaterialModel model)
 {
@@ -215,14 +265,35 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                      material.Repeat == true ? QStringLiteral("Repeat") : QStringLiteral("Clamp")});
     }
     const bool isMix = material.Scattering.Model == format::MaterialModel::DiffuseConductorMix;
+    const bool isProgram = material.Scattering.Model == format::MaterialModel::Program;
     if (material.Scattering.Model != format::MaterialModel::ProjectBrdf)
     {
-        rows.append({isMix == true ? QStringLiteral("Conductor weight") : QStringLiteral("Metallic"),
+        rows.append({isMix == true       ? QStringLiteral("Conductor weight")
+                     : isProgram == true ? QStringLiteral("Metallic (program input)")
+                                         : QStringLiteral("Metallic"),
                      FormatScalar(material.Metallic)});
-        rows.append({QStringLiteral("Roughness (perceptual)"), FormatScalar(material.Roughness)});
+        rows.append(
+            {isProgram == true ? QStringLiteral("Roughness (program input)") : QStringLiteral("Roughness (perceptual)"),
+             FormatScalar(material.Roughness)});
     }
     const format::MaterialScattering& scattering = material.Scattering;
-    if (scattering.Model == format::MaterialModel::ProjectBrdf)
+    if (isProgram == true)
+    {
+        const format::MaterialProgram& program = material.Program;
+        for (usize lobe = 0; lobe < program.LobeCount; ++lobe)
+        {
+            rows.append({QStringLiteral("Lobe %1").arg(lobe + 1), DescribeProgramLobe(program.Lobes[lobe])});
+        }
+        rows.append({QStringLiteral("Weights and roughness"),
+                     QStringLiteral("%1 instructions over %2 constants")
+                         .arg(program.InstructionCount)
+                         .arg(program.ConstantCount)});
+        rows.append(
+            {QStringLiteral("Capabilities"), DescribeCapabilities(format::GetMaterialProgramCapabilities(program))});
+        rows.append({QStringLiteral("Raster approximation"),
+                     QStringLiteral("Metallic-roughness from the reflectance, metallic and roughness inputs")});
+    }
+    else if (scattering.Model == format::MaterialModel::ProjectBrdf)
     {
         rows.append({QStringLiteral("Lobe weights"), FormatRgb(scattering.Eta)});
         rows.append({QStringLiteral("Lobe powers"), FormatRgb(scattering.K)});
