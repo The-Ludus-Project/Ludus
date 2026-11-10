@@ -2621,7 +2621,8 @@ RasterStatus GetAllocationTelemetry(DeviceHandle device, AllocationTelemetry& ou
         peak = 0;
         blockPeak = 0;
     }
-    output.ApiBytesAvailable = backend::Kind() == Backend::Metal || backend::Kind() == Backend::Vulkan;
+    output.ApiBytesAvailable = backend::Kind() == Backend::Metal || backend::Kind() == Backend::Vulkan ||
+                               backend::Kind() == Backend::Direct3D12;
     for (usize kind = 0; kind < 2; ++kind)
     {
         for (usize slot = 0; slot < gRecords[kind].GetSize(); ++slot)

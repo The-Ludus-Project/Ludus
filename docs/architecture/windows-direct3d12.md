@@ -1054,6 +1054,12 @@ logical/API allocation peaks under `performance/`. The ordinary WARP suite
 runs the ordered-graph image oracle once as
 `ludus_rhi_windows_profile_smoke`.
 
+Direct3D 12 API allocation telemetry includes adapter-specific padding for committed
+buffers and textures, private depth, retained texture uploads and deferred resource
+retirement. It excludes facade/surface resources, descriptor heaps and transfer
+rings. Physical residency and allocator-block bytes remain unavailable. The Windows
+diagnostics suite checks padding, depth, upload completion and retained backing.
+
 After calibrating limits on the intended device and workload, add
 `--performance-limits <limits.json>`. This JSON file has integer `schema` 1
 and a `scenarios` object with an entry for every measured scenario. Each entry

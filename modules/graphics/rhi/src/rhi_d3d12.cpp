@@ -1480,10 +1480,6 @@ MeasurementAdapter TimingAdapter() noexcept
     output.Software = isSoftwareAdapter == true || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
     return output;
 }
-bool RasterAllocationBytes(internal::RasterKind, usize, uint64&) noexcept
-{
-    return false;
-}
 #if defined(LUDUS_RHI_TEST_READBACK)
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {

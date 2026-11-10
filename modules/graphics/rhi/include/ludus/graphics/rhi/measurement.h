@@ -82,6 +82,8 @@ struct AllocationTelemetry final
     foundation::uint64 LogicalBytes = 0;
     /// Sum of resource API allocation/binding sizes, including native padding. Vulkan reports
     /// VMA suballocation spans; this excludes allocator block slack (see AllocatorBlockBytes).
+    /// Direct3D 12 reports adapter-specific committed-resource size requirements, including
+    /// private depth and retained texture uploads, rather than physical residency.
     /// Meaningful only when ApiBytesAvailable; WebGPU/WebGL texture backing is opaque.
     foundation::uint64 ApiBytes = 0;
     /// Maximum observed API allocation bytes in this session, sampled at each query.

@@ -498,5 +498,10 @@ The shared scenario executor resolves Windows executables with their `.exe`
 suffix. Tagged tables retain minima and maxima for native samples alongside
 median and p95 values, so peak allocation limits can use the observed maximum.
 The GPU timing workload also records logical bytes, API accounting availability
-and peak API bytes. The Windows qualification limits are scoped to the declared
+and peak API bytes. Direct3D 12 queries the selected adapter's padded committed-resource
+requirements for buffers, textures, private depth and retained texture uploads.
+These counts exclude surface/facade allocations, descriptor heaps and transfer
+rings; they do not measure physical residency. Detached resources remain counted
+until their public lifetime dependencies and queue submissions permit retirement.
+The Windows qualification limits are scoped to the declared
 device and workload.
