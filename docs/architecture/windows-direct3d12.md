@@ -954,6 +954,14 @@ preservation, uninstall and failure diagnostics; validate signing for the
 chosen distribution channel. Ship canonical Markdown and checked HTML together
 for offline use through the existing documentation packaging workflow.
 
+D8 tooling now provides explicit portable Release SDK/game/staged-Editor ZIPs,
+loader/dependency/license validation, final-image/PDB identity matching, offline
+documentation, an MSVC Release install helper and candidate-only CI. The
+[Windows distribution guide](../development/game-packaging-publishing.md#windows-portable-release-distributions-d8)
+owns commands and limitations. D7 hardware qualification, a complete D6d Editor
+payload, clean-machine launch/upgrade/uninstall and public signing acceptance
+remain separate gates; implementing the packager does not close those records.
+
 ### Optional feature parity
 
 Track DXR/ray queries, wider native interop and Windows spatial-upscaling
@@ -997,7 +1005,7 @@ these rows remain pending.
 | Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
 | Qualification / CI / documentation | D1, D2; D7 pending | in progress | Clang lane gates promotion today; D7 qualifies MSVC profiles | PR #573; PR #586 | Historical D1/D2 evidence above |
-| Packaging / distribution | unassigned | unreviewed | D8 after D7 | pending | none |
+| Packaging / distribution | D8 | Portable Release tooling and candidate CI implemented | D7, clean-machine/Editor journeys and public signing acceptance pending | pending | Archive/PDB regressions; Windows Release distribution workflow |
 
 ## References
 
