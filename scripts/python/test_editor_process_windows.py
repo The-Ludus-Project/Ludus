@@ -83,6 +83,16 @@ class WindowsEditorProcessTests(unittest.TestCase):
         self.assertIn(b'"ready"', process.stdout)
         self.assertIn(b'"ProtocolError"', process.stdout)
 
+    def test_play_adapter_reports_a_bounded_stdio_protocol_failure(self):
+        root = Path(__file__).resolve().parents[2]
+        process = subprocess.run(
+            [sys.executable, str(root / "scripts/python/play_tool.py"), "--stdio", "--tooling-root", str(root)],
+            input=b"{}\n", stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+        )
+        self.assertEqual(1, process.returncode, process.stderr)
+        self.assertIn(b'"ready"', process.stdout)
+        self.assertIn(b'"fatal"', process.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

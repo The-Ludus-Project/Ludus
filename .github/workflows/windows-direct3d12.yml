@@ -138,6 +138,8 @@ jobs:
           $env:PYTHONPATH = "$PWD/scripts/python"
           & $python -m unittest test_play_session.GenerationPublishTests.test_windows_agility_payload_is_published_and_verified -v
           if ($LASTEXITCODE -ne 0) { throw 'Windows Agility generation publication failed' }
+          & $python -m unittest test_play_documents.PlayDocumentsTests.test_apply_is_dirty_only_and_undo_is_independent_of_disk test_play_documents.PlayDocumentsTests.test_stale_revision_rejected_batch_and_external_save_conflict test_play_documents.PlayDocumentsTests.test_failed_atomic_replace_preserves_saved_document_and_dirty_draft -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows tuning document publication failed' }
       - name: Validate the Windows editor and hosted Play
         if: ${{ !cancelled() && matrix.generator == 'Editor' && steps.windows-runtime-dependencies.outcome == 'success' }}
         run: |
