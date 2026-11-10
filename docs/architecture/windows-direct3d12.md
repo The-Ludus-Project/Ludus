@@ -923,6 +923,10 @@ with optional tooling absent.
   clustered `ZPrepass` cook; the graph build now stages programs under shorter
   names and reports a path at that limit with the repair
   ([authoring guide](../development/render-graph-authoring.md#windows-worker)).
+  DXIL validation accepts layout entries a stage does not read, while every
+  resource the stage reads must match its layout entry. Texture uploads may
+  return `Pending`; the upscaling tests create the texture before copying
+  its handle into the readiness poll.
   The follow-up fixes for MSVC warnings, unread DXIL binding slots and pending
   texture uploads passed the default-graph suite on WARP at `889c5df2`
   ([PR #1122](https://github.com/The-Ludus-Project/Ludus/pull/1122),

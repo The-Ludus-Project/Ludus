@@ -511,10 +511,9 @@ TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges",
     sourceDescription.Width = 2;
     sourceDescription.Height = 2;
     rhi::TextureHandle source;
-    RequireTextureReady(
-        fixture.Device,
-        source,
-        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), 2 * CHANNEL_COUNT}, source));
+    const rhi::RasterStatus sourceStatus =
+        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), 2 * CHANNEL_COUNT}, source);
+    RequireTextureReady(fixture.Device, source, sourceStatus);
     renderer::internal::RenderGraphUpscaleProgram program;
     REQUIRE(program.Initialize(fixture.Device,
                                shaders::renderer_composite::Vertex(),
@@ -663,10 +662,9 @@ TEST_CASE("MetalFX preserves constant RGB through its private output and surface
     sourceDescription.Width = SOURCE_WIDTH;
     sourceDescription.Height = SOURCE_HEIGHT;
     rhi::TextureHandle source;
-    RequireTextureReady(
-        fixture.Device,
-        source,
-        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), SOURCE_WIDTH * TEXEL_BYTES}, source));
+    const rhi::RasterStatus sourceStatus =
+        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), SOURCE_WIDTH * TEXEL_BYTES}, source);
+    RequireTextureReady(fixture.Device, source, sourceStatus);
     renderer::internal::RenderGraphUpscaleProgram program;
     REQUIRE(program.Initialize(fixture.Device,
                                shaders::renderer_composite::Vertex(),
