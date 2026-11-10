@@ -17,14 +17,29 @@ constexpr uint32 GRADIENT_NEGATE_X = 1U;
 /// Gradient bit that negates the Z offset.
 constexpr uint32 GRADIENT_NEGATE_Z = 2U;
 
+/// A lattice point, addressed by its signed global coordinates.
+struct LatticePoint final
+{
+    int32 X = 0;
+    int32 Z = 0;
+};
+
+/// A sample position relative to one lattice point, in lattice units.
+struct LatticeOffset final
+{
+    float64 X = 0;
+    float64 Z = 0;
+};
+
 // Pack the two signed lattice coordinates as their unsigned bit patterns.
 [[nodiscard]] float64
-ComputeGradient(math::RandomKey key, uint32 octave, int32 x, int32 z, float64 offsetX, float64 offsetZ) noexcept
+ComputeGradient(math::RandomKey key, uint32 octave, LatticePoint point, LatticeOffset offset) noexcept
 {
-    const uint64 scope = (static_cast<uint64>(static_cast<uint32>(x)) << COORDINATE_BITS) | static_cast<uint32>(z);
+    const uint64 scope =
+        (static_cast<uint64>(static_cast<uint32>(point.X)) << COORDINATE_BITS) | static_cast<uint32>(point.Z);
     const uint32 gradient = math::SampleUInt32(key, { .Scope = scope, .Event = octave });
-    return ((gradient & GRADIENT_NEGATE_X) == 0 ? offsetX : -offsetX) +
-           ((gradient & GRADIENT_NEGATE_Z) == 0 ? offsetZ : -offsetZ);
+    return ((gradient & GRADIENT_NEGATE_X) == 0 ? offset.X : -offset.X) +
+           ((gradient & GRADIENT_NEGATE_Z) == 0 ? offset.Z : -offset.Z);
 }
 } // namespace
 
@@ -43,6 +58,7 @@ bool CanSampleTerrainNoise(const TerrainNoiseShape& shape, float64 halfExtentMet
            halfExtentMetres / shape.FeatureSizeMetres * HIGHEST_OCTAVE_MULTIPLIER <= MAX_TERRAIN_LATTICE_POSITION;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the octave ordinal and the X then Z position are distinct.
 float64 SampleTerrainNoise(math::RandomKey key, uint32 octave, float64 positionX, float64 positionZ) noexcept
 {
     const int32 x = static_cast<int32>(math::Floor(positionX));
@@ -51,11 +67,11 @@ float64 SampleTerrainNoise(math::RandomKey key, uint32 octave, float64 positionX
     const float64 offsetZ = positionZ - z;
     const float64 fadeX = math::SmoothStep01(offsetX);
     const float64 fadeZ = math::SmoothStep01(offsetZ);
-    const float64 near = math::Lerp(ComputeGradient(key, octave, x, z, offsetX, offsetZ),
-                                    ComputeGradient(key, octave, x + 1, z, offsetX - 1, offsetZ),
+    const float64 near = math::Lerp(ComputeGradient(key, octave, {x, z}, {offsetX, offsetZ}),
+                                    ComputeGradient(key, octave, {x + 1, z}, {offsetX - 1, offsetZ}),
                                     fadeX);
-    const float64 far = math::Lerp(ComputeGradient(key, octave, x, z + 1, offsetX, offsetZ - 1),
-                                   ComputeGradient(key, octave, x + 1, z + 1, offsetX - 1, offsetZ - 1),
+    const float64 far = math::Lerp(ComputeGradient(key, octave, {x, z + 1}, {offsetX, offsetZ - 1}),
+                                   ComputeGradient(key, octave, {x + 1, z + 1}, {offsetX - 1, offsetZ - 1}),
                                    fadeX);
     return math::Clamp(math::Lerp(near, far, fadeZ), -1.0, 1.0);
 }

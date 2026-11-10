@@ -49,6 +49,7 @@ constexpr uint64 GOLDEN_HILLS_DIGEST = 0x9e6a601abac4dadcULL;
     };
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the running digest and the next height are distinct.
 [[nodiscard]] uint64 MixDigest(uint64 digest, float64 elevation)
 {
     const int64 quantized = static_cast<int64>(math::Floor(elevation * DIGEST_SCALE + 0.5));
