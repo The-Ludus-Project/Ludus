@@ -82,6 +82,7 @@ constexpr StaticArray<uint32, WATER_CELL_INDEX_COUNT> WATER_CELL_INDICES = {0, 2
 constexpr usize RULE_COUNT = 5;
 using RuleSet = StaticArray<terrain::TerrainMaterialRule, RULE_COUNT>;
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the arguments follow TerrainMaterialRange's member order.
 [[nodiscard]] terrain::TerrainMaterialRange MakeRange(float32 minimum, float32 maximum, float32 featherWidth)
 {
     terrain::TerrainMaterialRange range;
@@ -101,6 +102,7 @@ using RuleSet = StaticArray<terrain::TerrainMaterialRule, RULE_COUNT>;
     return MakeRange(minimum, terrain::TERRAIN_MATERIAL_RANGE_UNBOUNDED, featherWidth);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the arguments follow TerrainMaterialRule's member order.
 [[nodiscard]] terrain::TerrainMaterialRule MakeRule(uint16 materialId,
                                                     float32 weight,
                                                     terrain::TerrainMaterialRange elevationMetres,
@@ -212,6 +214,7 @@ TryDrain(const terrain::TerrainFieldGrid& grid, const QList<float32>& elevation,
 }
 
 [[nodiscard]] math::Vector3
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): columns then rows, and X then Z, the grid order.
 SampleBilinear(const QList<math::Vector3>& values, uint32 columns, uint32 rows, float32 gridX, float32 gridZ)
 {
     const float32 x = math::Clamp(gridX, 0.0F, static_cast<float32>(columns - 1));
@@ -338,8 +341,8 @@ bool BakeTerrainSurface(const terrain::TerrainFieldGrid& grid,
         math::Vector3 colour{};
         for (usize rule = 0; rule < RULE_COUNT; ++rule)
         {
-            colour = colour + GetMaterialLinear(rules[rule].MaterialId) *
-                                  ruleWeights[static_cast<qsizetype>(rule * samples + sample)];
+            colour =
+                colour + GetMaterialLinear(rules[rule].MaterialId) * ruleWeights.constData()[rule * samples + sample];
         }
         if (waterOrNull != nullptr && waterOrNull->IsWet[static_cast<qsizetype>(sample)] != 0)
         {

@@ -31,7 +31,7 @@ constexpr int32 AUTHORED_TERRAIN_VERSION = 2;
 constexpr int32 SCULPT_TERRAIN_VERSION = 3;
 constexpr int32 MAX_TERRAIN_SAMPLES_PER_AXIS = 64;
 constexpr qsizetype MAX_TERRAIN_STROKES = 16;
-constexpr int64 MAX_TERRAIN_HEIGHTMAP_FILE_BYTES = 64 * 1024;
+constexpr int64 MAX_TERRAIN_HEIGHTMAP_FILE_BYTES = int64{64} * 1024;
 constexpr uint32 HEIGHTMAP_SAMPLE_MAXIMUM = 65535;
 constexpr uint32 GRAYSCALE_BYTE_MAXIMUM = 255;
 constexpr qsizetype PNG_BIT_DEPTH_OFFSET = 24;
@@ -330,6 +330,7 @@ void ApplyTerrainStrokes(const QList<TerrainStroke>& strokes,
     }
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): columns then rows, the grid order used throughout.
 void BuildTerrainNormals(uint32 columns, uint32 rows, PreviewMesh& inoutMesh)
 {
     for (uint32 z = 0; z < rows; ++z)
@@ -620,10 +621,11 @@ bool BuildTerrainParts(const QJsonObject& recipe,
 
     PreviewMesh mesh;
     mesh.Id = outBuild.Mesh.Id;
-    mesh.Positions.reserve(columns * rows);
-    mesh.Uvs.reserve(columns * rows);
-    mesh.Normals.reserve(columns * rows);
-    mesh.Indices.reserve(INDICES_PER_CELL * cellsX * cellsZ);
+    const qsizetype vertexCount = static_cast<qsizetype>(columns) * rows;
+    mesh.Positions.reserve(vertexCount);
+    mesh.Uvs.reserve(vertexCount);
+    mesh.Normals.reserve(vertexCount);
+    mesh.Indices.reserve(static_cast<qsizetype>(INDICES_PER_CELL) * cellsX * cellsZ);
     for (uint32 z = 0; z < rows; ++z)
     {
         const float64 v = static_cast<float64>(z) / cellsZ;
