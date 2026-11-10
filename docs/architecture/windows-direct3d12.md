@@ -933,19 +933,72 @@ with optional tooling absent.
   CPU readback is diagnostic evidence, not interactive GPU presentation
   acceptance; optional path tracing cannot be required for raster navigation.
 
-### D7 and D8: qualify and distribute
+### D7: qualify the Windows profiles
 
-D7 extends MSVC/Ninja batch validation to all required modules, SDK consumers,
-editor, worker and runtime tests, with MSBuild coverage of the admitted closure
-and generator-sensitive journeys. Keep integration PRs targeting `develop`;
-only the existing batch/promotion process qualifies and advances `main`.
-Record one candidate commit, exact toolchain/SDK/OS/driver versions, physical
-adapters from the declared support matrix, required profiles, feature limits
-and reproducible tests. WARP coverage supplements physical-GPU evidence.
-Exercise restart, resize/minimize, device loss/failure recovery, resource and
-performance budgets, debugger/symbol journeys and available sanitizer tooling;
-report unavailable instrumentation explicitly. Every required subsystem row
-must have an owner, implementation PR and accepted evidence before qualification.
+The [Windows batch lane](../development/continuous-integration.md#windows-direct3d-12-lane)
+checks the selected candidate with MSVC/Ninja on WARP. The source runtime suite
+covers the playable World, RHI lifecycle and recovery, renderer pixels, content
+and cooking, gameplay and fluid, text, localization, UI, offline audio, bounded
+network formats, the shader worker, GameHost DLL supervision and Luau.
+The batch also exercises the installed worker, the Visual Studio source
+solution and relocated runtime SDK consumers with Ninja and MSBuild. The
+[SDK flavor mapping](../development/project-sdk-workflow.md#windows-runtime-sdk)
+defines the configurations and dependencies for each installed consumer.
+
+#### Physical runtime evidence
+
+Run the same source runtime suite in an interactive x64 Windows session on
+each adapter under consideration. Start in a clean checkout of the candidate
+with the pinned x64 MSVC and SDK. Prepare the
+[runtime dependencies](../examples/world-demo.md#windows-direct3d-12) and shader tools, then run:
+
+```powershell
+python scripts/script-provider bootstrap
+python scripts/script-provider cook
+Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, PNPDeviceID
+$candidate = git rev-parse HEAD
+$adapter = Read-Host 'Exact name of the physical adapter'
+$driver = Read-Host 'DriverVersion for that adapter'
+python tests/build_contract/windows_qualification.py --candidate $candidate `
+  --adapter hardware --adapter-name "$adapter" --driver "$driver" `
+  --output out/windows-qualification/runtime-hardware
+```
+
+Use a fresh output directory for each run. The script disables software fallback
+in the test runtime, verifies that the packed World actually presented on the
+named adapter, and matches that name and driver to a single PCI device in the
+Windows inventory. Select the intended high-performance GPU in Windows before
+running on a multi-GPU host. Archive `runtime.json`, `inventory.json` and
+`ctest.xml` with the candidate's batch run. The runtime suite covers restarts,
+minimize/restore, resize, injected device removal and recreation, resource
+exhaustion and timing query behavior.
+
+#### Qualification record
+
+D7 remains open. WARP is the software regression lane. The acceptance record
+must name the exact Windows edition, build and update revision, adapter model,
+PCI device and driver for each hardware result, along with the toolchain,
+profile and immutable candidate. Agree on the physical adapter classes and
+minimum supported Windows release before accepting a support matrix. Use the
+same candidate for every required row and link each result and implementation
+PR from the subsystem table.
+
+| Evidence still required | Owning boundary | What to record |
+| --- | --- | --- |
+| Physical runtime and minimum OS | Win32, Direct3D 12, World and SDK | Successful run per declared adapter/driver and minimum OS, with exact runtime and dependency versions |
+| Desktop authoring and hosted Play | D6d editor and GameHost | Selected World and camera, edit/resize and pending/failure recovery, DPI/display transitions, focus, dialogs, cross-process frame delivery and cleanup |
+| Resource and performance budgets | Renderer and runtime | Repeatable workload, declared frame time and memory limits, measured CPU/GPU time and allocation peaks per device |
+| IDE debugger and symbols | Windows project setup and GameHost | Visual Studio and VS Code launch/attach, breakpoint and stack resolution, matching PDBs |
+| Sanitizers | Build and runtime tooling | Native instrumentation runs and positive controls for the admitted compiler. The current MSVC engine preset has no sanitizer path and the bounded sanitizer runner requires POSIX. |
+
+Record unsupported features separately from required profiles. The offline
+audio and wire-format suites cover those scoped modules. Native audio device
+work and full transport/reconnect journeys need evidence before a profile
+promises them. Installed Behavior and shader file delivery also remain open.
+Only the [batch and promotion process](../development/continuous-integration.md#integrate-changes-and-promote-a-validated-batch)
+advances `main`.
+
+### D8: distribute the qualified profiles
 
 D8 produces Release SDK/game/editor packages as scoped, with redistributable
 runtime/Qt dependencies, manifests, assets, shader artifacts, licenses and
@@ -992,11 +1045,11 @@ these rows remain pending.
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
-| SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
+| SDK / project setup / VS Code / Visual Studio | D0, D6b, D7 | Four runtime SDK flavor checks configured; IDE journeys in CI | Same-candidate SDK matrix results and interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
 | Embedded/external shader/script authoring | D6c | Named-pipe shader worker with DXIL | Luau, shader file delivery, graph DXIL; editors with D6d | [PR #1018](https://github.com/The-Ludus-Project/Ludus/pull/1018) | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
 | Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
-| Qualification / CI / documentation | D1, D2; D7 pending | in progress | Clang lane gates promotion today; D7 qualifies MSVC profiles | PR #573; PR #586 | Historical D1/D2 evidence above |
+| Qualification / CI / documentation | D7 | in progress | Collect the [same-candidate qualification record](#qualification-record) | pending | MSVC and Clang WARP batch lanes; physical results pending |
 | Packaging / distribution | unassigned | unreviewed | D8 after D7 | pending | none |
 
 ## References

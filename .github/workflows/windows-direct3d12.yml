@@ -29,14 +29,32 @@ env:
   LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
 jobs:
   msvc:
-    name: MSVC host and D3D12 / ${{ matrix.generator }}
+    name: MSVC host and D3D12 / ${{ matrix.generator }}${{ matrix.flavor && format(' ({0})', matrix.flavor) || '' }}
     runs-on: windows-2022
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # Runtime SDK installs the Ninja runtime closure and consumes it with both generators.
-        generator: [Ninja, MSBuild, Runtime SDK]
+        # Each runtime SDK is built with Ninja and consumed with both generators.
+        include:
+          - generator: Ninja
+          - generator: MSBuild
+          - generator: Runtime SDK
+            flavor: Debug
+            configuration: Debug
+            preset: windows-msvc-runtime-sdk-debug
+          - generator: Runtime SDK
+            flavor: Development
+            configuration: RelWithDebInfo
+            preset: windows-msvc-runtime-sdk
+          - generator: Runtime SDK
+            flavor: Profile
+            configuration: RelWithDebInfo
+            preset: windows-msvc-runtime-sdk-profile
+          - generator: Runtime SDK
+            flavor: Release
+            configuration: Release
+            preset: windows-msvc-runtime-sdk-release
     defaults:
       run:
         shell: pwsh
@@ -89,35 +107,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Luau host tool bootstrap failed' }
           python scripts/script-provider cook
           if ($LASTEXITCODE -ne 0) { throw 'Behavior fixture cook failed' }
-          # D6a: the scene cooker and ludus-cook use Win32 file operations; its goldens run here.
-          # D6c: the named-pipe shader worker emits signed DXIL through the pinned DXC, and
-          # GameHost loads, reloads and retires gameplay DLLs with matching PDBs, supervised
-          # over an inherited loopback control socket.
-          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_BUILD_BEHAVIOR=ON -DLUDUS_BUILD_BEHAVIOR_ACCEPTANCE=ON
-          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime configure failed' }
-          $targets = @('ludus_world_demo', 'ludus_world_frame_renderer_tests', 'ludus_world_demo_tests',
-            'ludus_content_tests', 'ludus_resources_tests', 'ludus_static_game_host_tests',
-            'ludus_text_tests', 'ludus_graphics_text_tests', 'ludus_localization_tests', 'ludus_ui_tests',
-            'ludus_audio_tests', 'ludus_network_core_tests', 'ludus_physics_fluid_tests', 'ludus_platform_pacing_tests',
-            'ludus-shader-worker', 'ludus_shader_compiler_tests', 'ludus_render_graph_dxil_tests',
-            'ludus_behavior_tests', 'ludus_behavior_acceptance', 'ludus_behavior_safety', 'ludus_behavior_allocator_contract',
-            'ludus_game_host_loader_tests', 'ludus_game_host_reload_tests', 'ludus_game_host_protocol_tests',
-            'ludus_game_host_timing_tests', 'ludus_game_host_session_tests', 'ludus_game_host_app',
-            'ludus_cook', 'ludus_scene_cook_tests', 'ludus_scene_assets_tests', 'ludus_best_effort_import_tests',
-            'ludus_scene_import_tests')
-          cmake --build --preset windows-msvc-runtime --target @targets -- -k 0
-          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime build failed' }
-          $testNames = @($targets | Where-Object { $_ -notin @('ludus_world_demo', 'ludus_world_frame_renderer_tests', 'ludus-shader-worker', 'ludus_game_host_app', 'ludus_cook') })
-          $testNames += @('ludus_world_packed_room_d3d12', 'ludus_world_frame_renderer_pixels', 'ludus_shader_worker_protocol',
-            'ludus_game_host_windows_symbols', 'ludus_game_host_windows_supervisor', 'ludus_behavior_cook',
-            'ludus_behavior_profiles', 'ludus_behavior_evidence')
-          $suite = '^(' + ($testNames -join '|') + ')$'
-          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
-          foreach ($name in $testNames) {
-            if ($name -notin $tests.tests.name) { throw "Missing runtime test $name" }
-          }
-          ctest --preset windows-msvc-runtime --tests-regex $suite
-          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime tests failed' }
+          python tests/build_contract/windows_qualification.py --candidate $env:LUDUS_CI_COMMIT_SHA --adapter warp --output out/windows-qualification/runtime-warp
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime qualification failed' }
       - name: Install and verify the tools-only Windows shader worker
         if: matrix.generator == 'Ninja'
         run: |
@@ -135,17 +126,20 @@ jobs:
         if: matrix.generator == 'Runtime SDK'
         env:
           PYTHONUTF8: "1"
+          SDK_CONFIGURATION: ${{ matrix.configuration }}
+          SDK_FLAVOR: ${{ matrix.flavor }}
+          SDK_PRESET: ${{ matrix.preset }}
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-sdk-dependencies"
           conan export third_party/harfbuzz
           if ($LASTEXITCODE -ne 0) { throw 'HarfBuzz recipe export failed' }
-          conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
+          conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$env:SDK_CONFIGURATION" --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK dependencies failed to install' }
           $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
-          & $python scripts/python/engine.py install-sdk windows-msvc-runtime-sdk
+          & $python scripts/python/engine.py install-sdk $env:SDK_PRESET
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK install failed' }
-          & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe"
+          & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe" --flavor $env:SDK_FLAVOR
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK consumers failed' }
       - name: Prepare Catch2 for the four RHI build flavors
         if: matrix.generator != 'Runtime SDK'
@@ -323,16 +317,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-msvc-${{ matrix.generator }}
+          name: windows-msvc-${{ matrix.generator }}${{ matrix.flavor && format('-{0}', matrix.flavor) || '' }}
           path: |
+            out/windows-qualification/
             out/build/windows-msvc-*/CMakeCache.txt
             out/build/windows-msvc-*/Testing/Temporary/
             out/windows-msvc-probe/**/compiler-identity.txt
+            out/windows-msvc-probe/**/LudusSdkManifest.json
             out/windows-msvc-probe/**/CMakeCache.txt
             out/windows-msvc-probe/incremental/**/*.d
             out/windows-msvc-probe/incremental/**/manifest.json
             out/windows-msvc-probe/**/Testing/Temporary/
-            out/build/windows-msvc-runtime-sdk/install_manifest.txt
+            out/build/windows-msvc-runtime-sdk*/install_manifest.txt
           if-no-files-found: warn
           retention-days: 14
   windows:

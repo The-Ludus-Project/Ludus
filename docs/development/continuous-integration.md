@@ -566,9 +566,16 @@ is unavailable and checks that normal exit handlers were bypassed. The filesyste
 probe terminates the writer before and after atomic publication on the runner's
 filesystem, then checks the accepted bytes and retries. This exercises process
 interruption separately from storage power loss.
-The Ninja job's runtime build also enables `LUDUS_BUILD_SHADER_WORKER`. It runs
-the DXIL compiler tests and the named-pipe
-[Windows worker](render-graph-authoring.md#windows-worker) protocol journey (D6c).
+The Ninja runtime job checks out the candidate and runs the D7 source suite
+on WARP. It checks the exact CTest inventory, fails if a required test is skipped,
+and archives the candidate, Windows build, toolchain, inventory and JUnit results
+under `out/windows-qualification`. The suite includes the DXIL compiler and
+named-pipe [worker protocol](render-graph-authoring.md#windows-worker).
+Separate runtime SDK jobs build Debug, Development, Profile and Release with
+Ninja, relocate each prefix, then build and run the same external consumer with
+both generators. The Development SDK also runs the project create, repair and
+launch journey. See the [D7 record](../architecture/windows-direct3d12.md#d7-qualify-the-windows-profiles)
+for physical and desktop acceptance.
 The `windows-msvc-Ninja` and `windows-msvc-MSBuild` artifacts record the build
 configuration and test logs. The historical Clang/WARP job still runs. The MSBuild job also installs all
 four SDKs from the solution, relocates their prefixes and configures a separate

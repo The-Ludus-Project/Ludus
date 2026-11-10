@@ -196,10 +196,9 @@ TEST_CASE("Direct3D 12 device removal invalidates pending timestamps and logs di
     ID3D12Device5* removableOrNull = nullptr;
     const HRESULT interfaceResult =
         d3d12::GetDeviceOrNull()->QueryInterface(IID_ID3D12Device5, d3d12::GetInterfaceOutput(removableOrNull));
-    if (FAILED(interfaceResult) == true)
-    {
-        SKIP("The Windows D3D12 runtime has no ID3D12Device5 removal fixture");
-    }
+    // Device-loss recovery is mandatory for the pinned Agility runtime.
+    REQUIRE(interfaceResult == S_OK);
+    REQUIRE(removableOrNull != nullptr);
     d3d12::ComOwner<ID3D12Device5> removable(removableOrNull);
     REQUIRE(rhi::ArmGpuTiming(session.Device) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::BeginFrame(session.Device, session.Surface) == rhi::DeviceStatus::Ready);
