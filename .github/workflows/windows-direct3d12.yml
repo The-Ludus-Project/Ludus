@@ -16,10 +16,15 @@ on:
   # runs this lane before promotion. Dispatch it on a task branch when a
   # Windows change needs evidence before it reaches develop.
   workflow_dispatch:
+    inputs:
+      editor_only:
+        description: Run the Windows editor and hosted Play acceptance lane only.
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: windows-direct3d12-${{ inputs.batch_sha || github.ref }}
+  group: windows-direct3d12-${{ inputs.batch_sha || github.ref }}${{ inputs.editor_only && '-editor' || '' }}
   cancel-in-progress: false
 env:
   CI: "true"
@@ -35,27 +40,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Each runtime SDK is built with Ninja and consumed with both generators.
-        include:
-          - generator: Ninja
-          - generator: MSBuild
-          - generator: MSVC ASan
-          - generator: Runtime SDK
-            flavor: Debug
-            configuration: Debug
-            preset: windows-msvc-runtime-sdk-debug
-          - generator: Runtime SDK
-            flavor: Development
-            configuration: RelWithDebInfo
-            preset: windows-msvc-runtime-sdk
-          - generator: Runtime SDK
-            flavor: Profile
-            configuration: RelWithDebInfo
-            preset: windows-msvc-runtime-sdk-profile
-          - generator: Runtime SDK
-            flavor: Release
-            configuration: Release
-            preset: windows-msvc-runtime-sdk-release
+        # The full batch includes Editor and every installed runtime flavor.
+        include: >-
+          ${{ fromJSON(inputs.editor_only && '[{"generator":"Editor"}]' ||
+          '[{"generator":"Ninja"},{"generator":"MSBuild"},{"generator":"MSVC ASan"},
+          {"generator":"Editor"},
+          {"generator":"Runtime SDK","flavor":"Debug","configuration":"Debug","preset":"windows-msvc-runtime-sdk-debug"},
+          {"generator":"Runtime SDK","flavor":"Development","configuration":"RelWithDebInfo","preset":"windows-msvc-runtime-sdk"},
+          {"generator":"Runtime SDK","flavor":"Profile","configuration":"RelWithDebInfo","preset":"windows-msvc-runtime-sdk-profile"},
+          {"generator":"Runtime SDK","flavor":"Release","configuration":"Release","preset":"windows-msvc-runtime-sdk-release"}]') }}
     defaults:
       run:
         shell: pwsh
@@ -94,8 +87,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Catch2 recipe export failed' }
       - name: Bootstrap pinned shader tools
         run: python scripts/shader-probe bootstrap
-      - name: Build and exercise the Windows source runtime on WARP
-        if: matrix.generator == 'Ninja'
+      - name: Prepare the Windows runtime dependencies
+        id: windows-runtime-dependencies
+        if: matrix.generator == 'Ninja' || matrix.generator == 'Editor' || matrix.generator == 'MSVC ASan'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
@@ -103,13 +97,81 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'HarfBuzz recipe export failed' }
           conan install --requires=harfbuzz/14.5.1 --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime dependencies failed to install' }
+      - name: Build and exercise the Windows source runtime on WARP
+        if: matrix.generator == 'Ninja' || matrix.generator == 'MSVC ASan'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
           # D6c: the paired Luau host tools build with cl; Behavior cooks its fixtures with them.
           python scripts/script-provider bootstrap
           if ($LASTEXITCODE -ne 0) { throw 'Luau host tool bootstrap failed' }
           python scripts/script-provider cook
           if ($LASTEXITCODE -ne 0) { throw 'Behavior fixture cook failed' }
-          python tests/build_contract/windows_qualification.py --candidate $env:LUDUS_CI_COMMIT_SHA --adapter warp --output out/windows-qualification/runtime-warp
+          $preset = 'windows-msvc-runtime'
+          if ($env:LUDUS_WINDOWS_GENERATOR -eq 'MSVC ASan') { $preset = 'windows-msvc-asan' }
+          python tests/build_contract/windows_qualification.py --candidate $env:LUDUS_CI_COMMIT_SHA --preset $preset --adapter warp --output out/windows-qualification/runtime-warp
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime qualification failed' }
+      - name: Validate Windows editor process and lease ownership
+        if: matrix.generator == 'Editor'
+        run: |
+          $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
+          & $python -m unittest discover -s scripts/python -p test_editor_process_windows.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows process ownership acceptance failed' }
+          $env:PYTHONPATH = "$PWD/scripts/python"
+          & $python -m unittest test_play_session.GenerationPublishTests.test_windows_agility_payload_is_published_and_verified -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Agility generation publication failed' }
+          & $python -m unittest test_play_documents.PlayDocumentsTests.test_apply_is_dirty_only_and_undo_is_independent_of_disk test_play_documents.PlayDocumentsTests.test_stale_revision_rejected_batch_and_external_save_conflict test_play_documents.PlayDocumentsTests.test_failed_atomic_replace_preserves_saved_document_and_dirty_draft -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows tuning document publication failed' }
+      - name: Validate the Windows channel and native gameplay ownership
+        if: matrix.generator == 'Editor'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
+          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_SHADER_WORKER=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime configure failed' }
+          cmake --build --preset windows-msvc-runtime --target ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid -- -k 0
+          if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime build failed' }
+          $testNames = @('ludus_rhi_d3d12_tests', 'ludus_platform_hosted_tests', 'ludus_game_host_windows_supervisor')
+          $suite = '^(' + ($testNames -join '|') + ')$'
+          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+          foreach ($name in $testNames) {
+            if ($name -notin $tests.tests.name) { throw "Missing Windows hosted runtime test $name" }
+          }
+          ctest --preset windows-msvc-runtime --tests-regex $suite --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime acceptance failed' }
+      - name: Validate the Windows editor and hosted Play
+        if: ${{ !cancelled() && matrix.generator == 'Editor' && steps.windows-runtime-dependencies.outcome == 'success' }}
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
+          if ($LASTEXITCODE -ne 0) { throw 'Qt installer setup failed' }
+          python -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 --outputdir "$PWD/out/qt" --archives qtbase qtdeclarative
+          if ($LASTEXITCODE -ne 0) { throw 'Qt setup failed' }
+          $qt = "$PWD/out/qt/6.8.3/msvc2022_64"
+          $env:PATH = "$qt/bin;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies;$qt"
+          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON -DLUDUS_BUILD_SHADER_WORKER=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Windows editor configure failed' }
+          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests -- -k 0
+          if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
+          $testNames = @(
+            'ludus_editor_d3d12_viewport', 'ludus_editor_d3d12_high_dpi', 'ludus_editor_hosted_play',
+            'ludus_editor_tests_0', 'ludus_editor_tests_1', 'ludus_editor_tests_2', 'ludus_editor_tests_3',
+            'ludus_render_graph_configuration_tests_0', 'ludus_render_graph_configuration_tests_1',
+            'ludus_document_well_tests', 'ludus_code_editor_tests', 'ludus_editor_browser_content_tests',
+            'ludus_project_explorer_tests', 'ludus_texture_display_conversion_tests',
+            'ludus_render_graph_pipeline_tests', 'ludus_shader_interface_tests',
+            'ludus_render_graph_live_build_tests', 'ludus_editor_geometry_tests'
+          )
+          $suite = '^(' + ($testNames -join '|') + ')$'
+          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+          foreach ($name in $testNames) {
+            if ($name -notin $tests.tests.name) { throw "Missing Windows editor acceptance test $name" }
+          }
+          ctest --preset windows-msvc-runtime --tests-regex $suite --output-on-failure --output-junit "$PWD/out/windows-msvc-probe/editor.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows editor or Direct3D 12 acceptance failed' }
+          python -c "import sys; sys.path.insert(0, 'tests/build_contract'); from windows_qualification import check_results; check_results('out/windows-msvc-probe/editor.xml', sys.argv[1:])" @testNames
+          if ($LASTEXITCODE -ne 0) { throw 'Windows editor test inventory failed' }
       - name: Install and verify the tools-only Windows shader worker
         if: matrix.generator == 'Ninja'
         run: |
@@ -147,46 +209,22 @@ jobs:
           & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe" --flavor $env:SDK_FLAVOR
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK consumers failed' }
       - name: Prepare Catch2 for the four RHI build flavors
-        if: matrix.generator != 'Runtime SDK'
+        if: matrix.generator == 'Ninja' || matrix.generator == 'MSBuild'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $dependencyConfigurations = @('Debug', 'RelWithDebInfo', 'Release')
-          if ($env:LUDUS_WINDOWS_GENERATOR -eq 'MSVC ASan') {
-            $dependencyConfigurations = @('RelWithDebInfo')
-          }
           foreach ($configuration in $dependencyConfigurations) {
             conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
             if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
           }
-      - name: Validate MSVC AddressSanitizer and its fatal control
+      - name: Validate Windows quality process controls
         if: matrix.generator == 'MSVC ASan'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python
         run: |
-          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
-          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/dependencies"
-          python -m unittest test_quality.ProcessTests test_quality_windows -v
+          $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
+          & $python -m unittest test_quality.ProcessTests test_quality_windows -v
           if ($LASTEXITCODE -ne 0) { throw 'Windows quality process controls failed' }
-          cmake --preset windows-msvc-asan
-          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan runtime probe or configure failed' }
-          $targets = @(
-            'ludus_foundation_base_tests', 'ludus_foundation_memory_tests',
-            'ludus_foundation_containers_tests', 'ludus_foundation_time_tests',
-            'ludus_foundation_threading_tests', 'ludus_threading_startup_tests',
-            'ludus_threading_profiling_tests', 'ludus_foundation_logging_tests',
-            'ludus_foundation_profiling_tests', 'ludus_foundation_identity_tests',
-            'ludus_filesystem_tests', 'ludus_platform_entropy_tests', 'ludus_platform_win32_tests',
-            'ludus_input_tests', 'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests',
-            'ludus_asan_control_child'
-          )
-          cmake --build --preset windows-msvc-asan --target @targets -- -k 0
-          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan build failed' }
-          $tests = @($targets | Where-Object { $_ -ne 'ludus_asan_control_child' }) + @('ludus_asan_control')
-          $suite = '^(' + ($tests -join '|') + ')$'
-          ctest --preset windows-msvc-asan --tests-regex $suite --output-junit "$PWD/out/windows-msvc-probe/asan.xml"
-          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan tests failed' }
-          python -c "import sys; sys.path.insert(0, 'tests/build_contract'); from windows_qualification import check_results; check_results('out/windows-msvc-probe/asan.xml', sys.argv[1:])" @tests
-          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan test inventory failed' }
       - name: Build and test primitives, Foundation host services and the Win32/D3D12 closure
         if: matrix.generator == 'Ninja' || matrix.generator == 'MSBuild'
         env:
@@ -357,7 +395,7 @@ jobs:
           name: windows-msvc-${{ matrix.generator }}${{ matrix.flavor && format('-{0}', matrix.flavor) || '' }}
           path: |
             out/windows-qualification/
-            out/windows-msvc-probe/asan.xml
+            out/windows-msvc-probe/editor.xml
             out/build/windows-msvc-asan/tests/quality/asan-evidence/
             out/build/windows-msvc-asan/CMakeFiles/LudusSanitizerRuntimeProbe/
             out/build/windows-msvc-*/CMakeCache.txt
@@ -372,6 +410,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   windows:
+    if: ${{ !inputs.editor_only }}
     name: Windows Direct3D 12 bring-up
     runs-on: windows-2022
     timeout-minutes: 60

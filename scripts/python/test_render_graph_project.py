@@ -144,6 +144,27 @@ class ProjectGraphToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'prepare them automatically'):
             self.resolve()
 
+    def test_dxil_selects_the_project_dxc_directory_and_requires_both_libraries(self):
+        value = self.builder.value()
+        value['profiles'] = ['dxil']
+        self.builder.manifest.write_text(json.dumps(value))
+        directory = self.project / 'custom tools' / 'dxc'
+        directory.mkdir(parents=True)
+        compiler = directory / 'dxcompiler.dll'
+        signing = directory / 'dxil.dll'
+        compiler.write_bytes(b'pinned compiler fixture')
+        signing.write_bytes(b'pinned signing fixture')
+        (self.project / 'CMakeUserPresets.json').write_text(json.dumps({
+            'version': 6, 'configurePresets': [{'name': 'linux-clang-development', 'cacheVariables': {
+                'LUDUS_DXC_DIRECTORY': str(directory.relative_to(self.project)),
+            }}]}))
+        options, _ = self.resolve()
+        self.assertEqual(directory, options['dxc'])
+        self.assertNotIn('validator', options)
+        signing.unlink()
+        with self.assertRaisesRegex(ToolingError, 'prepare them automatically'):
+            self.resolve()
+
     def test_missing_tools_preserve_existing_build_and_runtime(self):
         self.builder.run_build()
         pointer = self.builder.pointer()

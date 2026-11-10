@@ -6,7 +6,6 @@ JSON is a document format, never a dump of the module's in-memory records.
 from __future__ import annotations
 
 import copy
-import fcntl
 import hashlib
 import json
 import math
@@ -16,6 +15,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    from editor_process_windows import lock_file
+else:
+    import fcntl
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 MAX_PATH_BYTES = 4096
@@ -262,7 +266,10 @@ class TuningDocument:
         if self.path.is_symlink():
             raise DocumentError("tuning document may not be a symlink")
         with self.path.with_name(self.path.name + ".lock").open("a+b") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            if os.name == "nt":
+                lock_file(lock)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_EX)
             if digest(read_bounded(self.path)) != self.saved_digest:
                 raise DocumentError("document changed on disk; reload or resolve the conflict")
             data = self.encoded()
@@ -273,11 +280,12 @@ class TuningDocument:
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(name, self.path)
-                directory_fd = os.open(self.path.parent, os.O_DIRECTORY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+                if os.name != "nt":
+                    directory_fd = os.open(self.path.parent, os.O_DIRECTORY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
             finally:
                 if os.path.exists(name):
                     os.unlink(name)

@@ -134,7 +134,7 @@ class ToolingTests(unittest.TestCase):
         queue = OutputQueue(write_fd)
         queue.emit(dict(type="output", text="é"*1024), log=True)
         original = queue.frames[0]
-        with patch("play_tool.os.write", return_value=7):
+        with patch("play_tool.write_pipe", return_value=7):
             queue.drain()
         self.assertEqual(queue.frames[0], original[7:])
         self.assertEqual(queue.bytes, len(original)-7)

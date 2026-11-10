@@ -882,10 +882,10 @@ with optional tooling absent.
   [S6 audit](behavior-s6.md#nonlocal-jump-and-resource-audit) records how MSVC's
   `longjmp` unwinding fits the exception-free jump region.
 
-  Still open in D6c: porting the editor's live-play tooling (process groups,
-  descriptor passing and generation leases) to Windows, with D6d; the installed
-  Behavior SDK, player and script debugging on Windows; Windows `Ludus::ShaderDevelopment` delivery and render-graph package DXIL;
-  and the embedded editors, which arrive with the D6d editor port. The tools-only
+  D6d owns the Windows editor, including live-play handle inheritance,
+  process jobs and generation leases. The installed Behavior SDK, player and
+  script debugging on Windows and Windows `Ludus::ShaderDevelopment` delivery
+  are tracked separately. The tools-only
   worker install (`LUDUS_SHADER_WORKER_ONLY`) now runs on Windows. The Ninja lane
   installs it and checks it with `tools/shader-worker/verify_install.py`, which
   includes a signed DXIL compile through the installed worker. Runtime render-graph
@@ -933,6 +933,31 @@ with optional tooling absent.
   CPU readback is diagnostic evidence, not interactive GPU presentation
   acceptance; optional path tracing cannot be required for raster navigation.
 
+  The authoring viewport uses Qt Quick's Direct3D 12 device and direct queue on
+  the GUI thread. RHI checks queue provenance, retains the native context, and
+  transitions each leased RGBA8 output for fragment sampling on that queue.
+  After Qt submits, a queue fence retires the read lease and its transition
+  commands. The editor can keep a drawable generation during a pending or
+  failed graph replacement. The Windows viewport regression exercises World
+  extraction, navigation, edits, resize and graph publication through Qt.
+  See [Windows editor setup](../development/editor-workspace.md#windows-authoring-viewport)
+  for the build and test commands.
+
+  Hosted Play uses an owner-only local named pipe with a session token and
+  authenticated peer process. The game exports committed RGBA8 resources, and
+  the editor duplicates their NT handles before acknowledging the generation.
+  The producer selects the editor's adapter LUID. A three-image ring transfers
+  ownership only after the writing or sampling queue's local fence completes.
+  Shared textures start and decay to COMMON, and no frame crosses through CPU
+  memory. The Windows adapter owns game and build processes in kill-on-close
+  jobs, assigns each suspended process before it runs, and confirms cleanup
+  from the job's active process count. Inherited lease guards keep generations
+  available until their last owner exits.
+
+  The Windows workflow's editor step runs the native authoring and
+  hosted Play journeys with WARP. Physical GPU and mixed-DPI display coverage
+  still need desktop evidence.
+
 ### D7: qualify the Windows profiles
 
 The [Windows batch lane](../development/continuous-integration.md#windows-direct3d-12-lane)
@@ -942,11 +967,15 @@ and cooking, gameplay and fluid, text, localization, UI, offline audio, bounded
 network formats, the shader worker, GameHost DLL supervision and Luau.
 The batch also exercises the installed worker, the Visual Studio source
 solution and relocated runtime SDK consumers with Ninja and MSBuild. The
+editor is a required batch lane. It runs the four core editor shards, both
+graph-authoring shards, code/content/layout/geometry suites, the native
+Direct3D 12 viewport at normal and fractional DPI, and hosted Play. Every
+declared CTest case must run and pass. The
 [SDK flavor mapping](../development/project-sdk-workflow.md#windows-runtime-sdk)
 defines the configurations and dependencies for each installed consumer.
 
 The `windows-msvc-asan` configure, build and test presets enable MSVC's
-AddressSanitizer on the Foundation, Win32 and RHI closure. The Windows batch lane
+AddressSanitizer on the Foundation, Win32, RHI and source runtime closure. The Windows batch lane
 requires a clean control process and a fatal heap-buffer-overflow finding from
 the instrumented control. It also tests output limits, timeouts and descendant
 cleanup through Windows Job objects. MSVC's UBSan and TSan requests produce a
@@ -954,6 +983,17 @@ configuration error. The admitted ASan scope keeps the engine's exception policy
 and uses embedded debug information with incremental linking and `/RTC`
 disabled. Catch2's uninstrumented STL boundary shares disabled container
 annotations with its instrumented callers.
+
+#### Hosted evidence
+
+Candidate `f0366e3473fcf1d93a031d5425a629b8ae747964` passed the complete
+MSVC/Ninja runtime, MSBuild source/SDK/IDE journeys, Clang/WARP and all four
+relocated runtime SDK flavor jobs in
+[Windows run 42907754849](https://github.com/The-Ludus-Project/Ludus/actions/runs/42907754849).
+Candidate `67545696` additionally passed the MSVC AddressSanitizer job in
+[run 42912155947](https://github.com/The-Ludus-Project/Ludus/actions/runs/42912155947).
+The combined D6d/D7 candidate requires its own complete run before these
+observations can establish a shared profile result.
 
 #### Candidate hardware requirements
 
@@ -1036,7 +1076,7 @@ PR from the subsystem table.
 | Desktop authoring and hosted Play | D6d editor and GameHost | Selected World and camera, edit/resize and pending/failure recovery, DPI/display transitions, focus, dialogs, cross-process frame delivery and cleanup |
 | Resource and performance budgets | Renderer and runtime | Repeatable workload, declared frame time and memory limits, measured CPU/GPU time and allocation peaks per device |
 | IDE debugger and symbols | Windows project setup and GameHost | Visual Studio and VS Code launch/attach, breakpoint and stack resolution, matching PDBs |
-| Sanitizers | Build and runtime tooling | MSVC AddressSanitizer runs the Foundation, Win32 and RHI closure with a fatal heap-overflow control. Retain its logs alongside the candidate's results; record renderer/editor instrumentation separately. |
+| Sanitizers | Build and runtime tooling | MSVC AddressSanitizer runs Foundation, Win32, RHI, Renderer, content, text, worker, GameHost and Behavior tests with a fatal heap-overflow control. Retain its logs alongside the candidate's results; record editor instrumentation separately. |
 
 Record unsupported features separately from required profiles. The offline
 audio and wire-format suites cover those scoped modules. Native audio device
@@ -1087,14 +1127,14 @@ these rows remain pending.
 | Renderer / graph | D6a, D6c | World raster preset; DXIL graph packages; RG2/RG3, RG4 pool and default-graph pixel suites on WARP | Producer-driven Windows rebuilds; physical GPU | pending | Packed World and renderer pixel tests; `ludus_render_graph_dxil_tests` in the MSVC Ninja lane |
 | Text / localization / UI | D6a | Source targets in runtime preset | Validate MSVC shaping, atlas, localization and UI tests | pending | Windows runtime CI targets |
 | Content / resources | D6a | Packed room loader, Content saves, scene cooker and `ludus-cook` | Run the cooker suites on a physical Windows host | pending | Packed/loose replay and bounded publication tests; cooker goldens and saved-level suites in the MSVC Ninja lane |
-| Runtime / game host | D6a, D6c | Static host; DLL load, reload, PDB checks and socket supervision | Editor live-play tooling on Windows (D6d) | [PR #1021](https://github.com/The-Ludus-Project/Ludus/pull/1021) | Static lifecycle, loader, reload, session, supervisor and PDB tests in the MSVC Ninja lane |
+| Runtime / game host | D6a, D6c | Static host; DLL load, reload, PDB checks and socket supervision | Windows editor live-play acceptance (D6d) | [PR #1021](https://github.com/The-Ludus-Project/Ludus/pull/1021) | Static lifecycle, loader, reload, session, supervisor and PDB tests in the MSVC Ninja lane |
 | Behavior / scripting | D6c | MSVC 19.44 x86_64 admitted; provider suites in CI | Installed SDK/player, debugger and arm64; script authoring with D6d | [PR #1031](https://github.com/The-Ludus-Project/Ludus/pull/1031) | `ludus_behavior_*` suites in the MSVC Ninja lane |
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
 | SDK / project setup / VS Code / Visual Studio | D0, D6b, D7 | Four runtime SDK flavor checks configured; IDE journeys in CI | Same-candidate SDK matrix results and interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
 | Embedded/external shader/script authoring | D6c | Named-pipe shader worker with DXIL | Luau, shader file delivery, graph DXIL; editors with D6d | [PR #1018](https://github.com/The-Ludus-Project/Ludus/pull/1018) | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
-| Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
+| Editor / hosted viewport | D6d | Direct3D 12 authoring and hosted Play | Windows WARP and physical desktop evidence | PR #1135 | Windows viewport, hosted Play, RHI leases and job cleanup regressions |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
 | Qualification / CI / documentation | D7 | in progress | Collect the [same-candidate qualification record](#qualification-record) | pending | MSVC and Clang WARP batch lanes; physical results pending |
 | Packaging / distribution | unassigned | unreviewed | D8 after D7 | pending | none |

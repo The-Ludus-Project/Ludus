@@ -31,13 +31,13 @@ class WindowsQualityTests(unittest.TestCase):
 
     def test_assignment_failure_prevents_child_execution(self):
         from unittest.mock import patch
-        from quality_process_windows import ProcessJob
+        import editor_process_windows
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             marker = root / "started"
             command = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"]
-            with patch.object(ProcessJob, "assign", side_effect=OSError("assignment rejected")):
-                with self.assertRaisesRegex(OSError, "assignment rejected"):
+            with patch.object(editor_process_windows, "assign_job", return_value=False):
+                with self.assertRaises(OSError):
                     run_bounded(command, cwd=root, log=root / "rejected.log")
             self.assertFalse(marker.exists())
 

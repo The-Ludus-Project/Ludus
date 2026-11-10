@@ -37,6 +37,14 @@ OTHER_TESTS = (
     "ludus_behavior_profiles", "ludus_behavior_evidence", "ludus_localization_cooker",
     "ludus_localization_release", "ludus_rhi_windows_profile_smoke",
 )
+SANITIZER_TARGET_TESTS = (
+    "ludus_foundation_base_tests", "ludus_foundation_memory_tests",
+    "ludus_foundation_containers_tests", "ludus_foundation_time_tests",
+    "ludus_foundation_threading_tests", "ludus_threading_startup_tests",
+    "ludus_threading_profiling_tests", "ludus_foundation_logging_tests",
+    "ludus_foundation_profiling_tests", "ludus_foundation_identity_tests",
+    "ludus_filesystem_tests", "ludus_platform_entropy_tests", "ludus_input_tests",
+)
 HOST_IDENTITY = r"""
 $ErrorActionPreference = 'Stop'
 $os = Get-CimInstance Win32_OperatingSystem
@@ -138,7 +146,7 @@ def profile_runtime(args, identity, environment):
     try:
         os.environ.update(environment)
         report = runtime_profile.run_scenarios(
-            ROOT, PRESET, ROOT / "out/build" / PRESET, report_directory, selection, capabilities,
+            ROOT, args.preset, ROOT / "out/build" / args.preset, report_directory, selection, capabilities,
             compiler=identity["host"]["compiler_version"],
             device=f'{args.adapter_name}, driver {args.driver}, Windows {identity["host"]["version"]}',
             controlled_environment=runtime_profile.environment_names(scenarios),
@@ -170,7 +178,7 @@ def qualify(args):
     host = json.loads(run("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                           "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n" + HOST_IDENTITY, capture=True))
     identity = {
-        "candidate": revision, "preset": PRESET, "adapter_mode": args.adapter, "host": host,
+        "candidate": revision, "preset": args.preset, "adapter_mode": args.adapter, "host": host,
         "msvc_toolset": os.environ["VCToolsVersion"], "windows_sdk": os.environ["WindowsSDKVersion"],
         "cmake": run("cmake", "--version", capture=True).splitlines()[0],
         "ninja": run("ninja", "--version", capture=True).strip(),
@@ -183,12 +191,18 @@ def qualify(args):
         environment.pop(variable, None)
     environment[f"LUDUS_TEST_REQUIRE_{args.adapter.upper()}"] = "1"
     environment["LUDUS_DIAGNOSTIC_INTERACTIVE"] = "0"
-    run("cmake", "--fresh", "--preset", PRESET, "-DLUDUS_BUILD_SHADER_WORKER=ON", "-DLUDUS_BUILD_BEHAVIOR=ON",
+    run("cmake", "--fresh", "--preset", args.preset, "-DLUDUS_BUILD_SHADER_WORKER=ON", "-DLUDUS_BUILD_BEHAVIOR=ON",
         "-DLUDUS_BUILD_BEHAVIOR_ACCEPTANCE=ON", environment=environment)
-    run("cmake", "--build", "--preset", PRESET, "--target", *TARGET_TESTS, *OTHER_TARGETS,
+    sanitizer_tests = SANITIZER_TARGET_TESTS if args.preset == "windows-msvc-asan" else ()
+    targets = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TARGETS + sanitizer_tests))
+    if sanitizer_tests:
+        targets += ("ludus_asan_control_child",)
+    run("cmake", "--build", "--preset", args.preset, "--target", *targets,
         "--", "-k", "0", environment=environment)
-    expected = TARGET_TESTS + OTHER_TESTS
-    ctest = ("ctest", "--preset", PRESET, "--tests-regex", test_inventory(expected))
+    expected = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TESTS + sanitizer_tests))
+    if sanitizer_tests:
+        expected += ("ludus_asan_control",)
+    ctest = ("ctest", "--preset", args.preset, "--tests-regex", test_inventory(expected))
     inventory = json.loads(run(*ctest, "--show-only=json-v1", capture=True, environment=environment))
     (args.output / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
     require_inventory(expected, [test["name"] for test in inventory["tests"]])
@@ -210,6 +224,7 @@ def qualify(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True)
+    parser.add_argument("--preset", choices=(PRESET, "windows-msvc-asan"), default=PRESET)
     parser.add_argument("--adapter", choices=("warp", "hardware"), required=True)
     parser.add_argument("--adapter-name")
     parser.add_argument("--driver")

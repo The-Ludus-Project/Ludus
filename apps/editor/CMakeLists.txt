@@ -7,14 +7,16 @@
 # to the installed Ludus SDK export set.
 
 # --- Native-host gating ------------------------------------------------------
-# Native hosts share Qt Widgets and the owned POSIX process adapter.
+# Native hosts share Qt Widgets and use the platform process adapter.
 if(NOT EMSCRIPTEN)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
         # Linux reference host.
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|x86_64|amd64|AMD64)$")
         # Cocoa Qt plugin; Metal belongs to the separately launched game.
+    elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+        # Win32 Qt plugin and Direct3D 12.
     else()
-        message(FATAL_ERROR "The native Editor supports Linux x64 and macOS arm64/x64; browser builds require the pinned Qt WebAssembly toolchain.")
+        message(FATAL_ERROR "The native Editor supports Windows x64, Linux x64 and macOS arm64/x64; browser builds require the pinned Qt WebAssembly toolchain.")
     endif()
 endif()
 
@@ -230,7 +232,11 @@ if(APPLE)
     list(APPEND editor_viewport_sources src/internal/viewport_relative_mouse.h src/viewport_relative_mouse_macos.mm)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
-    find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
+    if(WIN32)
+        find_package(Qt6 6.6 REQUIRED COMPONENTS Quick)
+    else()
+        find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
+    endif()
     list(APPEND editor_viewport_sources src/internal/viewport_object_overlay_item.h
         src/viewport_object_overlay_item.cpp src/viewport_object_overlay_geometry.cpp)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
@@ -263,6 +269,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/play_viewport_source.h src/play_viewport_source.cpp)
     if(APPLE)
         list(APPEND editor_viewport_sources src/qt_viewport_device_metal.mm)
+    elseif(WIN32)
+        list(APPEND editor_viewport_sources src/qt_viewport_device_d3d12.cpp)
     else()
         list(APPEND editor_viewport_sources src/qt_viewport_device_vulkan.cpp)
     endif()
@@ -284,7 +292,7 @@ function(ludus_editor_enable_shader_reload target)
         add_dependencies(${target} ludus-shader-worker)
     endif()
     set(validator "")
-    if(NOT APPLE AND LUDUS_SPIRV_VALIDATOR)
+    if(NOT APPLE AND NOT WIN32 AND LUDUS_SPIRV_VALIDATOR)
         set(validator "${LUDUS_SPIRV_VALIDATOR}")
     endif()
     set(directory "${CMAKE_CURRENT_BINARY_DIR}/shader-reload/${target}/$<CONFIG>")
@@ -314,7 +322,7 @@ endif()
 # The GPU-compute RT1 kernels need only compute support and are always compiled.
 function(ludus_editor_enable_reference_queries target)
     ludus_compile_renderer_shaders(TARGET ${target} SHADERS renderer_reference renderer_reference_reduce)
-    if(LUDUS_SPIRV_CROSS)
+    if(NOT WIN32 AND LUDUS_SPIRV_CROSS)
         ludus_compile_ray_queries(TARGET ${target} NAME ray_query)
         # Public: the reference capture tests check the same capability as the objects they link.
         target_compile_definitions(${target} PUBLIC LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES=1)
@@ -331,6 +339,8 @@ function(ludus_editor_compile_render_graph_host target)
     set(RG2_TEST_PROFILES "[\"spirv\", \"wgsl\"]")
     if(APPLE)
         set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
+    elseif(WIN32)
+        set(RG2_TEST_PROFILES "[\"dxil\"]")
     endif()
     ludus_stage_render_graph_fixture("${input}" "${staged}")
     ludus_compile_render_graph(TARGET ${target} NAME editor_renderer_static
@@ -896,6 +906,9 @@ endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor_application PUBLIC LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
     target_link_libraries(ludus_editor_application PUBLIC ludus_editor_texture_display Ludus::GraphicsRhi Qt6::Quick)
+    if(WIN32)
+        ludus_configure_win32_target(ludus_editor_application)
+    endif()
     ludus_compile_renderer_shaders(TARGET ludus_editor_application SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
         renderer_overlay renderer_grid renderer_selection_mask renderer_selection_outline
@@ -994,6 +1007,10 @@ set(editor_application_resources
     ludus_editor_icon_resources)
 
 qt_add_executable(ludus_editor main.cpp src/main_window.cpp)
+if(WIN32 AND LUDUS_EDITOR_RENDER_PREVIEW)
+    ludus_attach_d3d12_agility(ludus_editor "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+        "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+endif()
 set_target_properties(ludus_editor PROPERTIES AUTOMOC ON)
 if(APPLE)
     target_link_libraries(ludus_editor PRIVATE "-framework AppKit" "-framework CoreGraphics")
@@ -1302,10 +1319,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationTime)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW)
+        target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
+    endif()
+    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)
         # The preview definitions, compiled shaders, render-graph host fixture (whose package
         # path editor_renderer_static_RUNTIME_PACKAGE names) and reference queries come with
         # ludus_editor_application.
-        target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
@@ -1404,7 +1423,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_LIBRARY_CAPTURE_FIXTURE=\"${editor_library_capture_RUNTIME_PACKAGE}\"")
     endif()
-    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
+    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE AND NOT WIN32)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
@@ -1485,6 +1504,22 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         endforeach()
     endfunction()
     ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor")
+    if(WIN32 AND LUDUS_EDITOR_RENDER_PREVIEW)
+        # The other native graph fixtures require SPIR-V or Metal ray traversal.
+        target_sources(ludus_editor_tests PRIVATE tests/d3d12_viewport_tests.cpp)
+        ludus_attach_d3d12_agility(ludus_editor_tests "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+            "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
+        add_test(NAME ludus_editor_d3d12_viewport COMMAND ludus_editor_tests "[windows-native-viewport]")
+        add_test(NAME ludus_editor_d3d12_high_dpi COMMAND ludus_editor_tests "[windows-native-viewport]")
+        add_test(NAME ludus_editor_hosted_play
+            COMMAND ludus_editor_tests "[play][viewport][gpu],[.play-native]")
+        set_tests_properties(ludus_editor_d3d12_viewport ludus_editor_d3d12_high_dpi ludus_editor_hosted_play PROPERTIES
+            LABELS "editor;windows;gpu" TIMEOUT 180 RESOURCE_LOCK ludus_editor
+            ENVIRONMENT "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1")
+        set_property(TEST ludus_editor_d3d12_high_dpi APPEND PROPERTY ENVIRONMENT "QT_SCALE_FACTOR=1.5")
+    endif()
     # Transitional, empty: batch CI runs the workflow definitions on main against
     # the develop candidate, and main's ci.yml still builds this target, which
     # 547148cf removed with SceneDocument. Delete it once a promotion carries the

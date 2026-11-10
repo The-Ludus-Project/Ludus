@@ -32,6 +32,8 @@ import os
 import platform
 import re
 import selectors
+from editor_pipe_io import pipe_selector, read_pipe, set_nonblocking, write_pipe
+from process_cleanup import CleanupReport, KILL_OBSERVE_DEADLINE
 import shutil
 import signal
 import subprocess
@@ -65,7 +67,6 @@ MAX_PROTOCOL_LINE = 256 * 1024          # inbound control line cap (framing)
 STDERR_CAP = 64 * 1024                  # adapter stderr per operation
 READY_REQUEST_TIMEOUT = 5.0             # seconds to receive the one request
 TERM_DEADLINE = 2.0                     # seconds before escalating TERM -> KILL
-KILL_OBSERVE_DEADLINE = 1.0             # seconds to observe termination after KILL
 
 # Keep uncertain leaders waitable. Reaping before descendant absence is proved
 # would allow PID/process-group reuse while a caller still believes it owns it.
@@ -122,13 +123,16 @@ class BuildTreeLock:
         self._handle = None
 
     def acquire(self) -> None:
-        import fcntl
-
         lock_dir = self._build_dir / ".cmake"
         lock_dir.mkdir(parents=True, exist_ok=True)
         handle = (lock_dir / ".ludus-editor.lock").open("a")
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if os.name == "nt":
+                from editor_process_windows import lock_file
+                lock_file(handle, blocking=False)
+            else:
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             handle.close()
             raise BuildTreeBusy(
@@ -140,12 +144,6 @@ class BuildTreeLock:
     def release(self) -> None:
         if self._handle is None:
             return
-        import fcntl
-
-        try:
-            fcntl.flock(self._handle, fcntl.LOCK_UN)
-        except OSError:
-            pass
         try:
             self._handle.close()
         except OSError:
@@ -320,14 +318,6 @@ class ProtocolWriter:
 # --------------------------------------------------------------------------- #
 # Owned child process group and non-reaping cleanup (POSIX)
 # --------------------------------------------------------------------------- #
-@dataclass
-class CleanupReport:
-    confirmed: bool
-    forced: bool = False
-    exit_code: Optional[int] = None
-    signal: Optional[int] = None
-
-
 class OwnedProcess:
     """One Popen child in its own session/process group, with group cleanup.
 
@@ -363,10 +353,10 @@ class OwnedProcess:
         return self._proc.stderr.fileno()
 
     def read_stdout(self, size: int) -> bytes:
-        return os.read(self.stdout_fd, size)
+        return read_pipe(self.stdout_fd, size)
 
     def read_stderr(self, size: int) -> bytes:
-        return os.read(self.stderr_fd, size)
+        return read_pipe(self.stderr_fd, size)
 
     def _observe_exit_nowait(self) -> Optional[tuple[Optional[int], Optional[int]]]:
         """Observe the leader's exit WITHOUT reaping it (WNOWAIT).
@@ -565,6 +555,10 @@ class OwnedProcess:
         return CleanupReport(confirmed=members == [], forced=False, exit_code=exit_code, signal=sig)
 
 
+if os.name == "nt":
+    from editor_process_windows import OwnedWindowsProcess as OwnedProcess
+
+
 # --------------------------------------------------------------------------- #
 # Command planning for the two providers
 # --------------------------------------------------------------------------- #
@@ -757,7 +751,7 @@ class Supervisor:
     def _read_control(self) -> None:
         self._dispatch_control_lines()
         try:
-            chunk = os.read(self._control_fd, CHILD_READ_CHUNK)
+            chunk = read_pipe(self._control_fd, CHILD_READ_CHUNK)
         except (BlockingIOError, InterruptedError):
             return
         except OSError:
@@ -822,10 +816,10 @@ class Supervisor:
 
     def _run_command_loop(self, stage: str, child: OwnedProcess, *, timeout: Optional[float] = None) -> CleanupReport:
         deadline = time.monotonic() + timeout if timeout is not None else None
-        sel = selectors.DefaultSelector()
-        os.set_blocking(self._control_fd, False)
-        os.set_blocking(child.stdout_fd, False)
-        os.set_blocking(child.stderr_fd, False)
+        sel = pipe_selector()
+        set_nonblocking(self._control_fd)
+        set_nonblocking(child.stdout_fd)
+        set_nonblocking(child.stderr_fd)
         sel.register(self._control_fd, selectors.EVENT_READ, "control")
         sel.register(child.stdout_fd, selectors.EVENT_READ, "stdout")
         sel.register(child.stderr_fd, selectors.EVENT_READ, "stderr")
@@ -887,7 +881,7 @@ class Supervisor:
                         if tag not in open_streams:
                             continue
                         try:
-                            data = os.read(fd, CHILD_READ_CHUNK)
+                            data = read_pipe(fd, CHILD_READ_CHUNK)
                         except (BlockingIOError, InterruptedError):
                             continue
                         except OSError:
@@ -1397,14 +1391,14 @@ class _CleanupUnknown(Exception):
 def _read_one_request(control_fd: int, deadline: float) -> tuple[dict, bytes]:
     """Read exactly one request line within the deadline. Raises on timeout/EOF."""
     buf = b""
-    os.set_blocking(control_fd, False)
-    sel = selectors.DefaultSelector()
+    set_nonblocking(control_fd)
+    sel = pipe_selector()
     sel.register(control_fd, selectors.EVENT_READ)
     try:
         while time.monotonic() < deadline:
             for _ in sel.select(timeout=0.1):
                 try:
-                    chunk = os.read(control_fd, CHILD_READ_CHUNK)
+                    chunk = read_pipe(control_fd, CHILD_READ_CHUNK)
                 except (BlockingIOError, InterruptedError):
                     continue
                 if not chunk:
@@ -1478,14 +1472,14 @@ def run_stdio(context: ToolContext, in_fd: int, out_fd: int) -> int:
     """Run the single-operation stdio protocol. Returns the bridge exit code."""
     frames: deque[bytes] = deque()
     queued_bytes = 0
-    os.set_blocking(out_fd, False)
+    set_nonblocking(out_fd, write=True)
     def flush() -> None:
         nonlocal queued_bytes
         for _ in range(64):
             if not frames:
                 break
             try:
-                count = os.write(out_fd, frames[0])
+                count = write_pipe(out_fd, frames[0])
             except (BlockingIOError, InterruptedError):
                 break
             if count <= 0:
@@ -1507,7 +1501,7 @@ def run_stdio(context: ToolContext, in_fd: int, out_fd: int) -> int:
 
     def finish(code: int) -> int:
         deadline = time.monotonic()+2
-        with selectors.DefaultSelector() as selector:
+        with pipe_selector() as selector:
             selector.register(out_fd, selectors.EVENT_WRITE)
             while frames and time.monotonic() < deadline:
                 flush()

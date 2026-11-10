@@ -190,5 +190,5 @@ def identity(path: Path, symbols: Path | None = None) -> dict:
     debug = pdb_identity(symbols)
     if debug["guid"] != image["guid"] or debug["age"] != image["age"]:
         raise _error("PDB GUID/age disagrees with the PE CodeView record")
-    return {"build_id": image["guid"] + format(image["age"], "x"), "machine": image["machine"],
+    return {"build_id": image["guid"] + format(image["age"], "08x"), "machine": image["machine"],
             "embedded_symbols": False, "matching_symbols": True, "artifact_type": image["kind"]}

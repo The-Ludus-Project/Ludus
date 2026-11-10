@@ -58,8 +58,8 @@
     },
     {
       "name": "windows-msvc-asan",
-      "displayName": "Windows MSVC AddressSanitizer (Ninja)",
-      "inherits": "windows-msvc-development",
+      "displayName": "Windows MSVC Runtime AddressSanitizer (Ninja)",
+      "inherits": "windows-msvc-runtime",
       "cacheVariables": {
         "LUDUS_ENABLE_ASAN": "ON",
         "LUDUS_WARNINGS_AS_ERRORS": "ON"

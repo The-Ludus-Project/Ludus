@@ -846,31 +846,33 @@ Each of these lands in every backend in the same change, the hosted backend
 included, so the viewport is never more or less capable than a native window.
 
 Key translation has one owner. Platform publishes its existing native key-code
-maps: Cocoa's `MapKeyCode` and the evdev keymap. The editor's Qt adapter converts
+maps for Cocoa, evdev and Win32. The editor's Qt adapter converts
 `QKeyEvent::nativeVirtualKey`/`nativeScanCode` through those maps, not through a
 second table.
 
 ### Hosted window channel
 
-Platform implements the hosted backend on macOS and Linux, with or without
-Wayland. Browser and Windows builds have none: there the endpoint reports
-Unavailable.
+Platform implements the hosted backend on macOS, Linux and Windows. The browser
+endpoint reports Unavailable.
 
 - **Endpoint.** `HostedWindowEndpoint` (`<ludus/platform/hosted_window.h>`) is
   Qt-free and nonblocking. `Start` creates a `mkdtemp` directory (mode 0700) in a
   caller-chosen parent, binds the socket `window` inside it (mode 0600) and draws
-  a 32-byte token from system entropy. The caller pumps it each frame and sends
+  a 32-byte token from system entropy. Windows creates a private local Win32
+  named pipe and uses the same token exchange. The caller pumps it each frame and sends
   resize, visibility, focus, key and close events through it. It admits one
   window. After admission it removes the socket file, so no other process can
-  connect. `Stop` closes the channel and removes the directory.
+  connect. The Windows pipe has one instance. `Stop` closes the channel and
+  removes any session directory.
 - **Address.** The value of `LUDUS_HOSTED_WINDOW` is
   `1:<64 lowercase hex token digits>:<absolute socket path>`. The path is at most
   103 bytes, so it fits `sockaddr_un` on both systems; keep the parent directory
-  short.
+  short. On Windows the path is a logical `/ludus-viewport-<hex>` name mapped
+  into the local Win32 pipe namespace.
 - **Game side.** When the variable is present, `WindowManager::Initialize` only
   validates the address. It does not start AppKit, so no Dock icon or menu
   appears. `CreateWindow` connects, checks that the endpoint has the same
-  effective uid, sends Hello and waits up to 5 seconds for Welcome. An invalid
+  effective uid or Windows user SID, sends Hello and waits up to 5 seconds for Welcome. An invalid
   address, a refusal or a timeout fails creation; it never falls back to a native
   window. `CreateInfo` dimensions are ignored, because the host decides the
   extent. `NativeWindowInfo` reports `WindowSystem::Hosted` with backing-pixel
@@ -878,13 +880,15 @@ Unavailable.
   [hosted surface](#hosted-surface-channel), reached through
   `NativeWindowInfo::HostedSurfaceOrNull`.
 - **Admission.** The endpoint first checks the peer's effective uid
-  (`getpeereid` on macOS, `SO_PEERCRED` on Linux). It then requires a complete
+  (`getpeereid` on macOS, `SO_PEERCRED` on Linux) or SID from the pipe's Windows
+  peer process. It then requires a complete
   Hello within 5 seconds, carrying the protocol version, `input::KEY_COUNT` and
   the token, which it compares in constant time. A refused peer gets a Refused
   message with the reason (WrongUser, BadToken, IncompatibleVersion,
   MalformedHello or HandshakeTimeout) and is disconnected. The endpoint keeps
   listening for the real window and counts each refusal.
-- **Protocol.** The protocol is version 3. Version 1 had no hosted surface and
+- **Protocol.** The protocol is version 3 on Unix and version 4 on Windows.
+  Version 4 adds NT handle values and a duplication acknowledgment. Version 1 had no hosted surface and
   version 2 no consumer adapter in the Welcome; either side refuses another
   version as IncompatibleVersion. Each message is
   a little-endian 4-byte header (`uint16` kind, `uint16` payload size) followed
@@ -902,7 +906,8 @@ Unavailable.
 | Reset | endpoint → window | FocusEntered, FocusLost or Overflow, plus a held-key bit mask (FocusEntered only) |
 | Key | endpoint → window | physical `input::Key`, Down/Up, repeat flag |
 | Close | endpoint → window | none |
-| Images | window → endpoint | generation, width and height (1 to 32768), format (RGBA8), handle kind, and for Vulkan three allocation sizes, the memory type, `deviceUUID` and `driverUUID`; the handles travel alongside |
+| Images | window → endpoint | generation, width and height (1 to 32768), format (RGBA8), handle kind, Vulkan allocation and adapter identity fields or Windows handle values and adapter LUID |
+| ImagesCopied | endpoint → window | generation whose NT handles the editor duplicated, Windows only |
 | Present | window → endpoint | generation, image index, frame sequence |
 | Release | endpoint → window | generation, image index |
 
@@ -931,7 +936,8 @@ game does not drain it, a send returns Overflow and drops that message. Once
 the queue drains, the endpoint resends the current extent and visibility, an
 Overflow reset and the current FocusEntered baseline, so no key stays stuck. The
 editor converts native keys with `MapCocoaKeyCode` (Qt's `nativeVirtualKey` on
-macOS) or `MapEvdevKeyCode` (Qt's `nativeScanCode` minus 8 on Linux), from
+macOS), `MapEvdevKeyCode` (Qt's `nativeScanCode` minus 8 on Linux), or
+`MapWin32KeyCode` (Qt's `nativeScanCode` and `nativeVirtualKey` on Windows), from
 `<ludus/platform/native_keymap.h>`.
 
 `ludus_platform_hosted_tests` covers this contract over socketpairs: every
@@ -939,7 +945,8 @@ event, focus baselines, sink synchronization, overflow recovery, close,
 channel loss, protocol violations and each refusal. A uid refusal is produced
 by expecting another uid. The same target also runs `WindowManager` against a
 listening endpoint, checking the directory mode, socket removal after
-admission, a forged token and an invalid address.
+admission, a forged token and an invalid address. On Windows this target checks
+token refusal, admission, resize and closure over a real named pipe.
 `ludus_platform_native_keymap_tests` checks that the public maps match the
 backend tables entry for entry.
 
@@ -955,7 +962,7 @@ a swapchain whose presentation engine is the editor:
 | Configure | Allocates three exportable RGBA8 images at the configured size, tagged with a surface generation | Imports each image onto its own Qt-shared device and records the generation |
 | Acquire | `BeginFrame` takes an image the consumer has released. If none is free it returns `FrameStatus::Skipped` without blocking | — |
 | Present | After `EndFrame`'s submission token is Ready, sends Present with image, generation and sequence | Wraps the image as the pending Qt texture through the existing lease path |
-| Release | The image becomes acquirable again | Returns the image after the Qt frame that sampled it ends (`afterFrameEnd`) |
+| Release | The image becomes acquirable again | After Qt submits the frame, waits for the sampling queue to finish before returning the image |
 | Resize | Allocates a new generation on the next frame. Old images retire once all are released | Keeps the old generation's last image until the first new-generation frame arrives |
 
 Completion is fenced on the CPU. The game announces a frame only after its GPU
@@ -989,9 +996,13 @@ Backends:
   and [external memory handle type compatibility](https://docs.vulkan.org/refpages/latest/refpages/source/VkExternalMemoryHandleTypeFlagBits.html)
   reference pages, which define the export, import and UUID-matching contract
   adopted here.
-- **Browser and Windows.** Not covered. The browser editor keeps its separate
-  web-sample player, and Platform has no Win32 backend. Each needs its own
-  decision.
+- **Windows Direct3D 12.** The game creates three shared committed resources on
+  the adapter whose LUID was announced by the editor. The editor duplicates the
+  handles from the authenticated process, opens them on Qt's device and
+  acknowledges the generation. The game retains its handles until the
+  acknowledgment. The producer and consumer order GPU ownership with their local
+  queue fences, and each shared texture crosses the handoff in COMMON state.
+- **Browser.** The editor uses its separate web-sample player.
 
 There is no CPU-readback Play transport. When hosted images are unavailable
 (offscreen Qt, mismatched adapters, a missing extension), the editor states why

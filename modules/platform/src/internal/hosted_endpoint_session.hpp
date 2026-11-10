@@ -17,6 +17,8 @@
 #include "hosted_socket.hpp"
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
 #    include "hosted_mach.hpp"
+#elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include "hosted_pipe.hpp"
 #endif
 
 namespace ludus::platform::hosted
@@ -154,7 +156,11 @@ private:
     RendezvousNonce mNonce = {};
     bool mHasConsumerAdapter = false;
     HostedAdapterIdentity mConsumerAdapter = {};
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    PeerProcess mPeerProcess;
+#else
     int32 mPeerProcessId = -1;
+#endif
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     RendezvousServer mRendezvous;
 #endif

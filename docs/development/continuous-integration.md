@@ -534,6 +534,10 @@ task branch:
 gh workflow run windows-direct3d12.yml --ref <task-branch>
 ```
 
+A manual dispatch also runs the Windows editor lane. For targeted validation,
+pass `-f editor_only=true` to run the editor, hosted Play and supervisor suites
+on WARP by themselves.
+
 A dispatched run checks out the branch head and never cancels an in-progress run
 of the same branch. Its result is advisory evidence for review, not promotion.
 `scripts/python/test_batch_ci.py` rejects a pull-request, push or merge-group
@@ -567,12 +571,13 @@ probe terminates the writer before and after atomic publication on the runner's
 filesystem, then checks the accepted bytes and retries. This exercises process
 interruption separately from storage power loss.
 The MSVC ASan job selects `windows-msvc-asan`, probes the sanitizer runtime
-before building, then exercises the Foundation, Win32 and RHI tests. Its positive
+before building, then exercises Foundation, Win32, RHI and the source runtime
+suite, including renderer, content, text, worker, GameHost and Behavior. Its positive
 control requires both a clean startup and a specific fatal heap-buffer-overflow
 finding. The job archives the probe, control logs and exact CTest results.
-Windows quality subprocesses enter a kill-on-close Job before starting their
-workload, and their tests verify descendant cleanup, output bounds and timeout
-behavior.
+Windows quality subprocesses share the editor's suspended-process admission and
+kill-on-close Job owner. Their tests verify descendant cleanup, output bounds
+and timeout behavior.
 
 The Ninja runtime job checks out the candidate and runs the D7 source suite
 on WARP. It checks the exact CTest inventory, fails if a required test is skipped,
@@ -583,7 +588,10 @@ Separate runtime SDK jobs build Debug, Development, Profile and Release with
 Ninja, relocate each prefix, then build and run the same external consumer with
 both generators. The Development SDK also runs the project create, repair and
 launch journey. See the [D7 record](../architecture/windows-direct3d12.md#d7-qualify-the-windows-profiles)
-for physical and desktop acceptance.
+for physical and desktop acceptance. The required Editor matrix entry runs
+the core and graph-authoring shards and the code/content/layout/geometry suites,
+then the native authoring, fractional-DPI and hosted Play tests. A manual
+`editor_only` dispatch targets that entry during editor-port iteration.
 The `windows-msvc-Ninja` and `windows-msvc-MSBuild` artifacts record the build
 configuration and test logs. The historical Clang/WARP job still runs. The MSBuild job also installs all
 four SDKs from the solution, relocates their prefixes and configures a separate

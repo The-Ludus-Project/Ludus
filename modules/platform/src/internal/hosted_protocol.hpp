@@ -40,7 +40,11 @@ using foundation::uint8;
 using foundation::usize;
 
 /// Wire protocol version carried by Hello and Welcome.
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+inline constexpr uint16 PROTOCOL_VERSION = 4;
+#else
 inline constexpr uint16 PROTOCOL_VERSION = 3;
+#endif
 /// First field of every Hello payload: "LHWN" read as little-endian bytes.
 inline constexpr uint32 HELLO_MAGIC = 0x4E57484C;
 /// Random session token length; the environment carries it as lowercase hexadecimal.
@@ -104,6 +108,8 @@ enum class MessageKind : uint16
     Present = 10,
     /// Endpoint -> window: the consumer has finished with a presented image.
     Release = 11,
+    /// Endpoint -> window (Windows): the endpoint duplicated every handle of the generation.
+    ImagesCopied = 12,
 };
 
 /// Payload sizes; each kind has exactly one.
@@ -120,6 +126,7 @@ inline constexpr usize IMAGES_PAYLOAD_BYTES =
     4 + 4 + 4 + 1 + 1 + 2 + (8 * HOSTED_SURFACE_IMAGE_COUNT) + 4 + (2 * HOSTED_ADAPTER_UUID_BYTES);
 inline constexpr usize PRESENT_PAYLOAD_BYTES = 4 + 1 + 3 + 8;
 inline constexpr usize RELEASE_PAYLOAD_BYTES = 4 + 1 + 3;
+inline constexpr usize IMAGES_COPIED_PAYLOAD_BYTES = sizeof(uint32);
 /// Largest payload of any version-3 message.
 inline constexpr usize MAX_PAYLOAD_BYTES = IMAGES_PAYLOAD_BYTES;
 /// Largest encoded version-3 message.
@@ -183,6 +190,8 @@ struct Message final
     HostedHandleKind HandleKind = HostedHandleKind::None;
     /// Images: exported allocation sizes (Vulkan).
     foundation::StaticArray<uint64, HOSTED_SURFACE_IMAGE_COUNT> AllocationSizes = {};
+    /// Images: source process handle values (Windows), occupying the Vulkan sizes on the wire.
+    foundation::StaticArray<uint64, HOSTED_SURFACE_IMAGE_COUNT> Win32HandleValues = {};
     /// Images: memory type index (Vulkan).
     uint32 MemoryTypeIndex = 0;
     /// Images: the producer's deviceUUID (Vulkan). Welcome: the consumer's, when HasConsumerAdapter.
