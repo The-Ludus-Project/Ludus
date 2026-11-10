@@ -1309,6 +1309,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
+        get_target_property(editor_reference_cold_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_COLD_TIMEOUT_SECONDS)
+        set_source_files_properties(tests/viewport_reference_capture_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+            "LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS=${editor_reference_cold_timeout}")
         target_sources(ludus_editor_tests PRIVATE tests/viewport_performance_tests.cpp tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
             tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp
             tests/render_graph_library_capture_tests.cpp)
@@ -1479,12 +1482,23 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         foreach(shard_index RANGE 0 ${last_shard})
             set(test_name "${target_name}_${shard_index}")
             add_test(NAME "${test_name}" COMMAND "${target_name}" --order decl
-                --shard-count "${shard_count}" --shard-index "${shard_index}" --durations yes)
+                --shard-count "${shard_count}" --shard-index "${shard_index}" --durations yes ${ARGN})
             set_tests_properties("${test_name}" PROPERTIES LABELS "${labels}" TIMEOUT "${timeout}"
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RESOURCE_LOCK ludus_editor)
         endforeach()
     endfunction()
-    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor")
+    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor" "~[reference-compute]")
+    if(LUDUS_EDITOR_RENDER_PREVIEW)
+        # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.
+        get_target_property(editor_reference_case_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS)
+        add_test(NAME ludus_editor_reference_emissive_patches COMMAND ludus_editor_tests
+            "[reference-compute][emissive-patches]" --durations yes)
+        add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests
+            "[reference-compute][oracle-parity]" --durations yes)
+        set_tests_properties(ludus_editor_reference_emissive_patches ludus_editor_reference_oracle_parity
+            PROPERTIES LABELS "unit;editor;gpu" TIMEOUT "${editor_reference_case_timeout}" SKIP_RETURN_CODE 4
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RESOURCE_LOCK ludus_editor)
+    endif()
     # Transitional, empty: batch CI runs the workflow definitions on main against
     # the develop candidate, and main's ci.yml still builds this target, which
     # 547148cf removed with SceneDocument. Delete it once a promotion carries the
