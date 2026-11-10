@@ -41,6 +41,23 @@ namespace shaders = ludus::shaders;
 namespace format = ludus::content::render_graph_format;
 namespace threading = ludus::foundation::threading;
 namespace timing = ludus::foundation::time;
+namespace
+{
+/// Direct3D 12 publishes a texture upload as Pending and completes it through the queue fence;
+/// the other backends return Ready at once. Accept either and wait for Ready.
+void RequireTextureReady(rhi::DeviceHandle device, rhi::TextureHandle texture, rhi::RasterStatus created)
+{
+    REQUIRE((created == rhi::RasterStatus::Ready || created == rhi::RasterStatus::Pending));
+    constexpr usize POLL_ATTEMPTS = 10000;
+    rhi::RasterStatus status = created;
+    for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+    {
+        threading::SleepFor(timing::Milliseconds(1));
+        status = rhi::GetStatus(device, texture);
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+}
+} // namespace
 TEST_CASE("default clustered deferred matches forward material shading and preserves optional prepass pixels",
           "[render-graph][clustered-deferred][gpu]")
 {
@@ -67,7 +84,7 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
         REQUIRE(programs.HasClusteredForward == true);
         REQUIRE(programs.HasClusteredDeferred == (profile != 0));
-        CHECK(package->GetPlan().Passes.GetSize() == (shouldUsePrepass == true ? 2 : 1));
+        CHECK(package->GetPlan().Passes.GetSize() == (shouldUsePrepass == true ? usize{2} : usize{1}));
         if (shouldUsePrepass == true)
         {
             CHECK(package->GetPlan().Passes[0].AllowsRepeatedCoverage == 1);
@@ -199,7 +216,8 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             REQUIRE(update() == rhi::RasterStatus::Ready);
             const renderer::RenderGraphSceneResourceReport report = fixture.Graph.GetReport().Resources;
             CHECK(report.DroppedLights == 0);
-            CHECK(report.OverflowClusters == (areDirectional == true ? 512 : 0));
+            // MSVC C4389: compare the unsigned report field with unsigned operands.
+            CHECK(report.OverflowClusters == (areDirectional == true ? uint32{512} : uint32{0}));
             render();
             CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + 2] > 10);
             const StaticArray<uint8, PIXEL_BYTES> clustered = fixture.Pixels;
@@ -496,8 +514,9 @@ TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges",
     sourceDescription.Width = 2;
     sourceDescription.Height = 2;
     rhi::TextureHandle source;
-    REQUIRE(rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), 2 * CHANNEL_COUNT}, source) ==
-            rhi::RasterStatus::Ready);
+    const rhi::RasterStatus sourceStatus =
+        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), 2 * CHANNEL_COUNT}, source);
+    RequireTextureReady(fixture.Device, source, sourceStatus);
     renderer::internal::RenderGraphUpscaleProgram program;
     REQUIRE(program.Initialize(fixture.Device,
                                shaders::renderer_composite::Vertex(),
@@ -646,9 +665,9 @@ TEST_CASE("MetalFX preserves constant RGB through its private output and surface
     sourceDescription.Width = SOURCE_WIDTH;
     sourceDescription.Height = SOURCE_HEIGHT;
     rhi::TextureHandle source;
-    REQUIRE(
-        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), SOURCE_WIDTH * TEXEL_BYTES}, source) ==
-        rhi::RasterStatus::Ready);
+    const rhi::RasterStatus sourceStatus =
+        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), SOURCE_WIDTH * TEXEL_BYTES}, source);
+    RequireTextureReady(fixture.Device, source, sourceStatus);
     renderer::internal::RenderGraphUpscaleProgram program;
     REQUIRE(program.Initialize(fixture.Device,
                                shaders::renderer_composite::Vertex(),

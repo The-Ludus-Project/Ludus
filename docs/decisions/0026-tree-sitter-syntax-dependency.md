@@ -132,6 +132,12 @@ grammar's node names.
   justification in the recipe or target, and is not applied to engine code. The
   engine's warnings-as-errors policy and `-fno-exceptions` are unchanged; no
   warning is globally weakened to accommodate the grammars.
+- The runtime calls each external scanner's `create` entry point through a
+  prototyped `void *(*)(void)` slot, and the C++, Slang, Luau, CMake and
+  Markdown inline scanners define it with an empty parameter list. In C11 that
+  is an unprototyped, different function type, which Clang's function
+  sanitizer rejects under the UBSan presets. Those grammar objects compile as
+  C23, where an empty list means `(void)`, so every sanitizer check stays on.
 - No exceptions cross the boundary because tree-sitter has none. The editor seam
   values stay Qt-free and tree-sitter-free; the syntax worker owns every
   `TSParser`, `TSTree` and `TSQueryCursor`.

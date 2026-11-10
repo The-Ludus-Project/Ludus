@@ -251,7 +251,10 @@ bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) n
     }
     usize position = UINT32_BYTES + runtimeBytes;
     uint32 count = 0;
-    if (ReadUint32(part, position, count) == false || count != layout.Count)
+    // PSV0 lists the resources the stage reads. A layout may declare more: the renderer's owned
+    // deferred and clustered ABIs bind every slot while each stage reads a subset (D6c). Every
+    // listed resource must still match its layout entry.
+    if (ReadUint32(part, position, count) == false || count > layout.Count)
     {
         return false;
     }

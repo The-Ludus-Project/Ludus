@@ -264,8 +264,10 @@ the MSVC baseline in D0.
 - **Shaders.** Raster DXIL is reflected independently at build time, including
   native registers, uniform member offsets and vertex inputs. Native creation
   checks stage/entry and the complete PSV0 resource table against the copied scalar
-  layout: missing/extra bindings, wrong spaces, ranges, categories and dimensions
-  reject. Bytecode is copied into budgeted storage; D3b consumes it in pipelines.
+  layout: a shader resource without a layout entry, wrong spaces, ranges, categories
+  and dimensions reject. Layout entries the stage does not read are accepted (D6c):
+  the renderer's deferred and clustered ABIs bind every slot while each stage reads
+  a subset. Bytecode is copied into budgeted storage; D3b consumes it in pipelines.
 
 The Windows lane builds `d3d12_resource_tests.cpp` beside D1/D2: partial-profile
 admission, descriptor/resource exhaustion and reuse, retained snapshots, padded
@@ -914,6 +916,10 @@ with optional tooling absent.
   clustered `ZPrepass` cook; the graph build now stages programs under shorter
   names and reports a path at that limit with the repair
   ([authoring guide](../development/render-graph-authoring.md#windows-worker)).
+  The first WARP run then rejected every deferred stage: the PSV0 check required
+  the shader to read every layout slot, which the owned deferred ABI does not; it
+  now accepts unread layout entries. Texture uploads complete as `Pending` on
+  Direct3D 12, so the upscaling cases wait for `Ready` before sampling.
   Still open: producer-driven Windows rebuilds (`ludus_shader_reload_gpu`), and
   the WARP pass of the default-graph suite is recorded once the Windows lane
   passes with the shorter paths.

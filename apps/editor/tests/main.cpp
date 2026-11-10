@@ -1,24 +1,38 @@
-#include <catch2/catch_session.hpp>
+#include "internal/viewport_trace.h"
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/profiling/perfetto_export.hpp>
+#include <ludus/foundation/profiling/trace_system.hpp>
 
 #include <QApplication>
+#include <QByteArray>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-#    include "internal/viewport_trace.h"
-#    include <QByteArray>
-#    include <QFile>
-#    include <QJsonDocument>
-#    include <QJsonObject>
-#    include <ludus/foundation/containers/array.hpp>
-#    include <ludus/foundation/profiling/perfetto_export.hpp>
-#    include <ludus/foundation/profiling/trace_system.hpp>
-#    include <string>
-#endif
 #if !defined(Q_OS_WASM)
 #    include <QProcess>
 #endif
 
+#include <catch2/catch_session.hpp>
+
+#include <string>
+
+namespace
+{
+// Distinct from Catch2's own exit codes so a runtime profile log names the
+// trace request, not a test, as the failure.
+constexpr ludus::foundation::int32 TRACE_FAILURE_EXIT_CODE = 3;
+} // namespace
+
+// The entry point of every editor test executable. `--trace-output <path>`
+// records a FoundationProfiling CPU capture and the editor viewport wall-clock
+// spans around the whole Catch2 session and writes them as one Perfetto JSON
+// trace, independently of which editor configuration the executable links;
+// config/runtime_profile_scenarios.json relies on that for the editor viewport
+// scenario. A profiling-disabled build cannot honour the request, so it fails
+// instead of silently producing no trace.
 int main(int argc, char* argv[])
 {
     // Never read or change the user's editor history in offscreen tests.
@@ -30,10 +44,11 @@ int main(int argc, char* argv[])
     qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
     qputenv("LUDUS_EDITOR_RECOVERY_DIRECTORY", config.filePath(QStringLiteral("source-recovery")).toUtf8());
     QApplication application(argc, argv);
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     Catch::Session session;
     std::string tracePath;
-    session.cli(session.cli() | Catch::Clara::Opt(tracePath, "path")["--trace-output"]("Save a CPU Perfetto capture"));
+    session.cli(session.cli() | Catch::Clara::Opt(tracePath, "path")["--trace-output"](
+                                    "Save a CPU Perfetto capture with the viewport spans (needs a profiling-enabled "
+                                    "Debug, Development or Profile build)"));
     const ludus::foundation::int32 parsed = session.applyCommandLine(argc, argv);
     if (parsed != 0)
     {
@@ -45,12 +60,12 @@ int main(int argc, char* argv[])
         profile::RegisterThreadForTrace("Editor benchmark");
         if (profile::BeginCapture() == false)
         {
-            return 1;
+            return TRACE_FAILURE_EXIT_CODE;
         }
         if (ludus::editor::StartViewportTrace() == false)
         {
             profile::EndCapture();
-            return 1;
+            return TRACE_FAILURE_EXIT_CODE;
         }
     }
     const ludus::foundation::int32 result = session.run();
@@ -61,7 +76,7 @@ int main(int argc, char* argv[])
         ludus::foundation::Array<ludus::foundation::uint8> bytes;
         if (profile::SerializePerfettoTrace(bytes) == false)
         {
-            return 1;
+            return TRACE_FAILURE_EXIT_CODE;
         }
         const QByteArray cpuBytes(reinterpret_cast<const char*>(bytes.GetData()),
                                   static_cast<qsizetype>(bytes.GetSize()));
@@ -72,12 +87,9 @@ int main(int argc, char* argv[])
         if (file.open(QIODevice::WriteOnly | QIODevice::NewOnly) == false ||
             file.write(serialized) != serialized.size())
         {
-            return 1;
+            return TRACE_FAILURE_EXIT_CODE;
         }
     }
-#else
-    const ludus::foundation::int32 result = Catch::Session().run(argc, argv);
-#endif
 #if !defined(Q_OS_WASM)
     // Tests do not run the application event loop through aboutToQuit. Reap
     // native service children whose asynchronous kill just completed instead.

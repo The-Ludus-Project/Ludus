@@ -867,6 +867,13 @@ RasterStatus RequestBufferUpload(DeviceHandle device,
                     return StorageFailure();
                 }
                 std::memcpy(record.Indices.GetData(), gUploadBytes[slot], byteCount);
+                // Draw validation reads these maxima (raster.cpp ComputeIndexRangeMaximum); without them
+                // every indexed draw from an uploaded index buffer is rejected.
+                const usize width = description.Role == BufferRole::Index16 ? 2 : 4;
+                if (BuildIndexBlockMaxima(record.Indices, width, record.IndexBlockMaxima) == false)
+                {
+                    return StorageFailure();
+                }
             }
             return backend::LifetimeUpload(slot, description, {bufferSlot, record.Request}, gUploadBytes[slot], padded);
         },
