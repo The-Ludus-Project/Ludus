@@ -17,6 +17,7 @@
 
 #include <ludus/content/content.h>
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -186,6 +187,9 @@ struct IrMaterial final
     /// terms above. Dielectrics set their model and index here and keep those terms as the
     /// fallback for evaluators without transmission.
     scene_format::MaterialScattering Scattering{};
+    /// Closure program when Scattering.Model is Program; the cook writes it as a LUSCN v11 record.
+    /// Metallic, Roughness and BaseColour stay its surface inputs and the raster approximation.
+    scene_format::MaterialProgram Program{};
     uint32 SourceFile = IR_NONE;
     uint32 Line = 0;
 };

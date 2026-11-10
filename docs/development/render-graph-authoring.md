@@ -9094,6 +9094,16 @@ owns it. Clients never silently switch to an offline compiler after worker failu
 
 ### Windows worker
 
+Windows file APIs accept paths of fewer than 260 characters unless a program
+opts in to long paths, which the pinned Slang and DXC do not. A graph build
+stages each program's sources under
+`<output>/.rg1-<random>/<Program>-<target>/source/`, so a deep build tree with a
+long target or graph name can push a staged include past that limit; the build
+then stops with `RenderGraphBuildSource`, naming the longest staged path and
+asking for a shorter build directory or graph target/NAME, rather than letting
+`slangc` report the include as missing. The Windows lane's
+`ludus_render_graph_dxil_tests` fixtures sit a few characters below the limit.
+
 On a Windows host, bootstrap the pinned tools with `python scripts/shader-probe
 bootstrap`, then add the worker to the MSVC runtime preset. The worker builds only
 on a Windows host because it loads the pinned DXC:

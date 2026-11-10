@@ -87,6 +87,9 @@ struct CookPlan final
 /// Plan scene against the format limits; diagnostics go to inoutLog.
 /// @return Ok, Invalid when no drawable geometry exists or the complete scene
 /// exceeds the bundle budget, Cancelled or OutOfMemory. Failure preserves outPlan.
+/// Bytes of the LUSCN v11 program records the plan's Program slots append to their materials.
+[[nodiscard]] usize CountMaterialProgramBytes(const CookPlan& plan) noexcept;
+
 [[nodiscard]] Status
 PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, const Cancellation* cancelOrNull) noexcept;
 } // namespace ludus::content::scene_cook::importers

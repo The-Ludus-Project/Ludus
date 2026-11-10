@@ -2,6 +2,7 @@
 
 #include <ludus/content/content.h>
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/containers/array.hpp>
@@ -51,6 +52,9 @@ struct SceneMaterial final
     foundation::math::Vector3 Reflectance{1, 1, 1};         ///< Linear RGB factor; legacy NO_TEXTURE remains black.
     content::scene_format::MaterialScattering Scattering{}; ///< Version 7 typed optical parameters.
     bool HasSourceMaterial = false;                         ///< Version 7 retains reflectance even without a texture.
+    /// Version 11 closure program, valid when Scattering.Model is Program and zero-initialized otherwise.
+    /// No renderer evaluates programs yet; installing such a material reports an invalid description.
+    content::scene_format::MaterialProgram Program{};
 };
 /// Owned immutable CPU mesh arrays. Renderer installation copies these attributes.
 struct SceneMesh final
@@ -118,8 +122,8 @@ struct SceneDefinition final
     foundation::math::Vector3 Target;           ///< Finite look-at target distinct from Eye.
     foundation::math::Vector3 Up;               ///< Camera up direction not parallel to its forward direction.
     float32 VerticalFov = 1;                    ///< Perspective vertical field of view in radians, in (0,pi).
-    /// Decode LUSCN01 versions one through seven little-endian interchange, at most 64 MiB for versions one to
-    /// four and 384 MiB for versions five through seven (BundleLimits::BundleBytes). No file I/O or source
+    /// Decode LUSCN01 versions one through eleven little-endian interchange, at most 64 MiB for versions one to
+    /// four and 384 MiB for versions five through eleven (BundleLimits::BundleBytes). No file I/O or source
     /// import. Failure preserves output; allocation failures return OutOfMemory. The caller owns all resulting arrays
     /// and must keep them immutable while any adapter/lease references them.
     [[nodiscard]] static Status Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept;

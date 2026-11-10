@@ -25,6 +25,10 @@ using scene_source::SourceObject;
     {
         return "project_brdf";
     }
+    if (model == SourceMaterialModel::Program)
+    {
+        return "program";
+    }
     return model == SourceMaterialModel::Diffuse ? "diffuse" : "metallic_roughness";
 }
 
@@ -79,6 +83,11 @@ void CopyRgb(math::Vector3d value, float64 (&outRgb)[IR_RGB_CHANNEL_COUNT]) noex
                                   static_cast<float32>(source.Brdf.Powers.Y),
                                   static_cast<float32>(source.Brdf.Powers.Z)}};
         material.Scattering.CoatingThickness = source.Brdf.HasFixedDimensionReflection == true ? 1.0F : 0.0F;
+    }
+    if (source.Model == SourceMaterialModel::Program)
+    {
+        material.Scattering.Model = scene_format::MaterialModel::Program;
+        material.Program = source.Program;
     }
     material.SourceFile = 0;
     return inoutScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == true ? Status::Ok : Status::OutOfMemory;
