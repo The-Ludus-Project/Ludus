@@ -30,8 +30,8 @@ struct SrgbDecodeTable final
 };
 const SrgbDecodeTable& GetSrgbDecodeTable() noexcept
 {
-    static const SrgbDecodeTable table;
-    return table;
+    static const SrgbDecodeTable TABLE;
+    return TABLE;
 }
 uint8 EncodeCode(float32 unit) noexcept
 {
@@ -52,7 +52,7 @@ void FilterTexel(const uint8* parent,
                  bool isSrgb,
                  uint8* outTexel) noexcept
 {
-    const SrgbDecodeTable& table = GetSrgbDecodeTable();
+    const SrgbDecodeTable& decodeTable = GetSrgbDecodeTable();
     const uint32 x0 = x * 2 < parentWidth ? x * 2 : parentWidth - 1;
     const uint32 y0 = y * 2 < parentHeight ? y * 2 : parentHeight - 1;
     const uint32 x1 = x0 + 1 < parentWidth ? x0 + 1 : x0;
@@ -68,7 +68,7 @@ void FilterTexel(const uint8* parent,
         for (const usize offset : offsets)
         {
             const uint8 code = parent[offset + channel];
-            sum += isColor == true ? table.Linear[code] : static_cast<float32>(code) / CODE_MAXIMUM;
+            sum += isColor == true ? decodeTable.Linear[code] : static_cast<float32>(code) / CODE_MAXIMUM;
         }
         const float32 mean = sum / static_cast<float32>(PARENT_TEXELS_PER_TEXEL);
         outTexel[channel] = EncodeCode(isColor == true ? math::EncodeSrgb(mean) : mean);
