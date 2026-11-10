@@ -69,6 +69,7 @@
 #include <QPushButton>
 #include <QQuickWindow>
 #include <QRect>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -3050,19 +3051,27 @@ TEST_CASE("Selecting a First Person Player keeps the bottom of the World entity 
     REQUIRE(entitiesOrNull != nullptr);
     REQUIRE(exploreOrNull != nullptr);
 
-    constexpr int32 ENTITY_COUNT_BEFORE_PLAYER = 30;
-    for (int32 i = 0; i < ENTITY_COUNT_BEFORE_PLAYER; ++i)
-    {
-        addOrNull->trigger();
-    }
-    createPlayerOrNull->trigger();
-    REQUIRE(entitiesOrNull->topLevelItemCount() == ENTITY_COUNT_BEFORE_PLAYER + 1);
-    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(ENTITY_COUNT_BEFORE_PLAYER - 1));
+    // Row height follows the platform font (Linux offscreen rows are shorter than macOS rows), so add
+    // entities until the shown list scrolls instead of assuming a count that overflows everywhere.
+    constexpr int32 MAXIMUM_ENTITY_COUNT_BEFORE_PLAYER = 200;
     workspace.resize(1100, 720);
     workspace.show();
     QApplication::processEvents();
+    int32 entityCountBeforePlayer = 0;
+    while (entityCountBeforePlayer < MAXIMUM_ENTITY_COUNT_BEFORE_PLAYER &&
+           (entityCountBeforePlayer == 0 || entitiesOrNull->verticalScrollBar()->maximum() == 0))
+    {
+        addOrNull->trigger();
+        ++entityCountBeforePlayer;
+        QApplication::processEvents();
+    }
+    REQUIRE(entitiesOrNull->verticalScrollBar()->maximum() > 0);
+    createPlayerOrNull->trigger();
+    REQUIRE(entitiesOrNull->topLevelItemCount() == entityCountBeforePlayer + 1);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(entityCountBeforePlayer - 1));
+    QApplication::processEvents();
     entitiesOrNull->scrollToBottom();
-    const QTreeWidgetItem* playerOrNull = entitiesOrNull->topLevelItem(ENTITY_COUNT_BEFORE_PLAYER);
+    const QTreeWidgetItem* playerOrNull = entitiesOrNull->topLevelItem(entityCountBeforePlayer);
     REQUIRE(playerOrNull != nullptr);
     REQUIRE(playerOrNull->text(0) == QStringLiteral("First Person Player"));
     REQUIRE(exploreOrNull->isHidden() == true);
@@ -3437,8 +3446,9 @@ TEST_CASE("Custom celestial orbits use an authored world spin and survive a Worl
     REQUIRE(rateOrNull != nullptr);
     roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
     driverOrNull->setCurrentText(QStringLiteral("Custom Orbit"));
-    CHECK(orbitTimeOrNull->isHidden() == false);
-    CHECK(earthTimeOrNull->isHidden() == true);
+    // Bounded number fields sit inside a slider row, and the form hides that row, not the field.
+    CHECK(orbitTimeOrNull->isVisibleTo(&workspace) == true);
+    CHECK(earthTimeOrNull->isVisibleTo(&workspace) == false);
 
     const auto enterNumber = [](QLineEdit& inoutField, const QString& number) {
         inoutField.selectAll();
@@ -3457,8 +3467,8 @@ TEST_CASE("Custom celestial orbits use an authored world spin and survive a Worl
     enterNumber(*rateOrNull, QStringLiteral("30"));
     REQUIRE(workspace.Apply() == true);
     driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
-    CHECK(orbitTimeOrNull->isHidden() == true);
-    CHECK(earthTimeOrNull->isHidden() == false);
+    CHECK(orbitTimeOrNull->isVisibleTo(&workspace) == false);
+    CHECK(earthTimeOrNull->isVisibleTo(&workspace) == true);
     REQUIRE(workspace.Apply() == true);
     driverOrNull->setCurrentText(QStringLiteral("Custom Orbit"));
     REQUIRE(workspace.Save() == true);

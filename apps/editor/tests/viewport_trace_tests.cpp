@@ -2,9 +2,17 @@
 
 #include <ludus/foundation/profiling/profiling.hpp>
 
+#include <QCoreApplication>
+#include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QString>
+#include <QStringList>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <catch2/catch_test_macros.hpp>
@@ -195,5 +203,74 @@ TEST_CASE("viewport paint intervals follow the arriving image and superseded ima
     }
     CHECK(hasInterval == true);
     CHECK(hasSupersededImage == true);
+}
+
+namespace
+{
+constexpr int32 CHILD_TEST_MILLISECONDS = 60'000;
+constexpr const char* CHILD_SCOPE_NAME = "TraceOutputChildScope";
+constexpr const char* CHILD_SPAN_NAME = "Trace output child span";
+// CPU scopes export as begin/end pairs; viewport spans as complete events.
+bool HasEventNamed(const QJsonObject& trace, const char* name)
+{
+    for (const QJsonValue& value : trace.value(QStringLiteral("traceEvents")).toArray())
+    {
+        const QJsonObject event = value.toObject();
+        const QString phase = event.value(QStringLiteral("ph")).toString();
+        if ((phase == QStringLiteral("B") || phase == QStringLiteral("X")) &&
+            event.value(QStringLiteral("name")).toString() == QString::fromUtf8(name))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+// Runs inside the executable started below with --trace-output, so the capture
+// is the entry point's: recording into it must succeed and starting another must not.
+TEST_CASE("trace output child records into the entry point capture", "[.trace-output-child]")
+{
+    {
+        LUDUS_PROFILE_SCOPE(TraceOutputChildScope);
+        const ViewportTraceToken token = BeginViewportTrace(CHILD_SPAN_NAME, ViewportTraceLane::Stage, {7, 1, 1});
+        CHECK(token.Capture != 0);
+        EndViewportTrace(token);
+    }
+    CHECK(StartViewportTrace() == false);
+}
+// Regression: the shared Catch2 entry point object library lost the preview
+// definitions, so `--trace-output` was unknown and the editor viewport runtime
+// profile scenario exited with 255 before running a test.
+TEST_CASE("editor test executables write the requested combined trace", "[profiling][editor]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString tracePath = directory.filePath(QStringLiteral("trace.json"));
+    QProcess child;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
+    child.setProcessEnvironment(environment);
+    child.setProcessChannelMode(QProcess::MergedChannels);
+    child.start(QCoreApplication::applicationFilePath(),
+                QStringList{QStringLiteral("[.trace-output-child]"), QStringLiteral("--trace-output"), tracePath});
+    REQUIRE(child.waitForStarted(CHILD_TEST_MILLISECONDS) == true);
+    REQUIRE(child.waitForFinished(CHILD_TEST_MILLISECONDS) == true);
+    INFO(child.readAll().toStdString());
+    REQUIRE(child.exitStatus() == QProcess::NormalExit);
+    REQUIRE(child.exitCode() == 0);
+    QFile file(tracePath);
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    const QJsonObject trace = QJsonDocument::fromJson(file.readAll()).object();
+    REQUIRE(trace.value(QStringLiteral("traceEvents")).toArray().isEmpty() == false);
+    CHECK(HasEventNamed(trace, CHILD_SCOPE_NAME) == true);
+    CHECK(HasEventNamed(trace, CHILD_SPAN_NAME) == true);
+    // The option is parsed before any test runs: an unknown option is the exact failure seen in CI.
+    QProcess rejected;
+    rejected.setProcessEnvironment(environment);
+    rejected.setProcessChannelMode(QProcess::MergedChannels);
+    rejected.start(QCoreApplication::applicationFilePath(),
+                   QStringList{QStringLiteral("[.trace-output-child]"), QStringLiteral("--no-such-option")});
+    REQUIRE(rejected.waitForFinished(CHILD_TEST_MILLISECONDS) == true);
+    CHECK(rejected.exitCode() != 0);
 }
 #endif

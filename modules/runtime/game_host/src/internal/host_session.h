@@ -109,7 +109,7 @@ public:
     // Advance the active instance one frame (deterministic test driver). No I/O.
     void AdvanceOneFrame() noexcept
     {
-        StepFrame();
+        stepFrame();
     }
 
     // Read the active instance's live property values into a caller buffer for
@@ -149,7 +149,7 @@ private:
     [[nodiscard]] protocol::CommandStatus ApplyPropertyEdits(const protocol::Message& command) noexcept;
 
     // Run the active instance's bounded batch of fixed updates for one presentation iteration.
-    void StepFrame(uint64 maximumUpdates = HOST_FAST_FORWARD_TICKS_PER_FRAME) noexcept;
+    void stepFrame(uint64 maximumUpdates = HOST_FAST_FORWARD_TICKS_PER_FRAME) noexcept;
     [[nodiscard]] bool updateGame(bool shouldAdvance) noexcept;
 
     // Whether the active module advertises the Reload capability (gates calls to
