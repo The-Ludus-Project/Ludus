@@ -3,6 +3,8 @@
 #include <ludus/foundation/geometry/point_search.hpp>
 #include <ludus/foundation/math/random.hpp>
 
+#include <limits>
+
 #include <catch2/catch_test_macros.hpp>
 
 namespace
@@ -74,7 +76,7 @@ TEST_CASE("Point search preserves source identities and deterministic ties", "[g
     neighbors[0].PointIndex = ABSENT_POINT_NODE;
     CHECK(tree.FindNearest({}, {neighbors.GetData(), COUNT + 1}) == GeometryStatus::InvalidArgument);
     CHECK(neighbors[0].PointIndex == ABSENT_POINT_NODE);
-    duplicates[0].X = __builtin_inff();
+    duplicates[0].X = std::numeric_limits<float32>::infinity();
     CHECK(tree.Build({duplicates.GetData(), duplicates.GetSize()}) == GeometryStatus::NonFiniteInput);
     CHECK(tree.GetNodes()[root].PointIndex == saved.PointIndex);
 }

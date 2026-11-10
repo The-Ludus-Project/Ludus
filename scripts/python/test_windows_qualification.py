@@ -46,16 +46,26 @@ class WindowsQualificationTests(unittest.TestCase):
     def test_gpu_budgets_require_real_memory_accounting(self):
         report = {"scenarios": [{"id": "rhi-ordered-graph-gpu-timing", "metrics": {
             "R7/layers=1/merge=1/peak_api_bytes_maximum": {"max": 100},
+            "R7/layers=1/merge=1/gpu_duration_p95_ns": {"max": 50},
             "R7/layers=1/merge=1/api_bytes_available_minimum": {"min": 0, "max": 0},
         }}]}
         with tempfile.TemporaryDirectory() as directory:
             limits = Path(directory) / "limits.json"
             limits.write_text(json.dumps({"schema": 1, "scenarios": {
-                "rhi-ordered-graph-gpu-timing": {"R7/layers=1/merge=1/peak_api_bytes_maximum": 100}}}))
+                "rhi-ordered-graph-gpu-timing": {
+                    "R7/layers=1/merge=1/peak_api_bytes_maximum": 100,
+                    "R7/layers=1/merge=1/gpu_duration_p95_ns": 50}}}))
             with self.assertRaisesRegex(RuntimeError, "available API allocation"):
                 qualification.check_performance_limits(report, limits)
             report["scenarios"][0]["metrics"]["R7/layers=1/merge=1/api_bytes_available_minimum"]["min"] = 1
             qualification.check_performance_limits(report, limits)
+            del report["scenarios"][0]["metrics"]["R7/layers=1/merge=1/gpu_duration_p95_ns"]
+            # Removing the metric and its threshold must not turn missing evidence into a pass.
+            thresholds = json.loads(limits.read_text())
+            del thresholds["scenarios"]["rhi-ordered-graph-gpu-timing"]["R7/layers=1/merge=1/gpu_duration_p95_ns"]
+            limits.write_text(json.dumps(thresholds))
+            with self.assertRaisesRegex(RuntimeError, "p95 GPU limits"):
+                qualification.check_performance_limits(report, limits)
 
     def test_physical_evidence_requires_the_reported_adapter_and_driver(self):
         host = {"adapters": [{"Name": "A GPU", "DriverVersion": "1.2.3", "PNPDeviceID": r"PCI\VEN_AAAA"}]}

@@ -129,12 +129,14 @@ def check_performance_limits(report, path):
                 raise RuntimeError(f"{name}: {metric} measured {measured}, exceeding limit {upper_bound}.")
     gpu = scenarios.get("rhi-ordered-graph-gpu-timing")
     if gpu is not None:
-        required = {name for name in gpu["metrics"]
-                    if name.endswith(("/peak_api_bytes_maximum", "/gpu_duration_p95_ns"))}
-        availability = [value for name, value in gpu["metrics"].items()
-                        if name.endswith("/api_bytes_available_minimum")]
-        if (not required or not required.issubset(limits["scenarios"][gpu["id"]]) or not availability
-                or any(value["min"] != 1 for value in availability)):
+        metrics = gpu["metrics"]
+        workloads = {name.rsplit("/", 1)[0] for name in metrics if name.startswith("R7/")}
+        required = {f"{workload}/{metric}" for workload in workloads
+                    for metric in ("peak_api_bytes_maximum", "gpu_duration_p95_ns")}
+        availability = {f"{workload}/api_bytes_available_minimum" for workload in workloads}
+        if (not workloads or not (required | availability).issubset(metrics)
+                or not required.issubset(limits["scenarios"][gpu["id"]])
+                or any(metrics[name]["min"] != 1 for name in availability)):
             raise RuntimeError("GPU qualification requires available API allocation bytes, peak memory limits "
                                "and p95 GPU limits for every workload.")
 
