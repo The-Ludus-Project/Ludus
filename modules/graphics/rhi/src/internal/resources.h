@@ -9,6 +9,8 @@ namespace ludus::graphics::rhi::internal
 /// SPIR-V magic word and fixed module header width, in uint32 words.
 inline constexpr ludus::foundation::uint32 SPIRV_MAGIC = 0x07230203U;
 inline constexpr ludus::foundation::usize SPIRV_HEADER_WORDS = 5;
+/// OpEntryPoint's literal entry name follows the instruction word, execution model and entry ID.
+inline constexpr ludus::foundation::usize SPIRV_ENTRY_POINT_NAME_WORD_OFFSET = 3;
 inline constexpr ludus::foundation::usize RESOURCE_CAPACITY = 8;
 inline constexpr ludus::foundation::usize UNIFORM_CAPACITY = 16384;
 // Stable process storage and monotonically assigned IDs; no application pointers.

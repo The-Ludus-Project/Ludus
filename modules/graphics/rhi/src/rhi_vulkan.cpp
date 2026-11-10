@@ -1582,8 +1582,9 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
         }
         if ((word & 65535U) == 15 && count >= 4)
         {
-            const char* name = reinterpret_cast<const char*>(description.Spirv.GetDataOrNull() + offset + 3);
-            const usize capacity = (count - 3) * sizeof(uint32);
+            const char* name = reinterpret_cast<const char*>(description.Spirv.GetDataOrNull() + offset +
+                                                             internal::SPIRV_ENTRY_POINT_NAME_WORD_OFFSET);
+            const usize capacity = (count - internal::SPIRV_ENTRY_POINT_NAME_WORD_OFFSET) * sizeof(uint32);
             const usize length = description.SpirvEntry.size();
             const uint32 stage = description.Stage == ShaderStage::Vertex ? 0U : 4U;
             found = found || (description.Spirv[offset + 1] == stage && length < capacity && name[length] == '\0' &&

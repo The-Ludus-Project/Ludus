@@ -53,6 +53,7 @@ public:
 
     /// Range-for access to the first borrowed element. Does not extend storage lifetime.
     /// @pre IsValid() and the declared storage remains alive throughout iteration.
+    // NOLINTNEXTLINE(readability-identifier-naming): C++ range-for requires the lowercase name begin.
     [[nodiscard]] LUDUS_INLINE constexpr ElementType* begin() const noexcept
     {
         LUDUS_ASSERT(IsValid() == true);
@@ -60,6 +61,7 @@ public:
     }
     /// Range-for sentinel after the last element; null for a default empty view.
     /// @pre IsValid() and the declared storage remains alive throughout iteration.
+    // NOLINTNEXTLINE(readability-identifier-naming): C++ range-for requires the lowercase name end.
     [[nodiscard]] LUDUS_INLINE constexpr ElementType* end() const noexcept
     {
         LUDUS_ASSERT(IsValid() == true);

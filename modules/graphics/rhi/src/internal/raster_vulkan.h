@@ -1519,13 +1519,14 @@ RasterStatus RasterCreateShader(usize slot,
         }
         if ((word & 65535U) == 15 && count >= 4)
         {
-            const char* name = reinterpret_cast<const char*>(info.Spirv.GetDataOrNull() + offset + 3);
+            const char* name = reinterpret_cast<const char*>(info.Spirv.GetDataOrNull() + offset +
+                                                             internal::SPIRV_ENTRY_POINT_NAME_WORD_OFFSET);
             const auto length = info.SpirvEntry.size();
             found = found || (info.Spirv[offset + 1] == (info.Stage == ShaderStage::Vertex     ? 0U
                                                          : info.Stage == ShaderStage::Fragment ? 4U
                                                                                                : 5U) &&
-                              length < (count - 3) * sizeof(uint32) && name[length] == '\0' &&
-                              std::memcmp(name, info.SpirvEntry.data(), length) == 0);
+                              length < (count - internal::SPIRV_ENTRY_POINT_NAME_WORD_OFFSET) * sizeof(uint32) &&
+                              name[length] == '\0' && std::memcmp(name, info.SpirvEntry.data(), length) == 0);
         }
         if ((word & 65535U) == 15 && count >= 4 && found && entryId == 0)
         {
