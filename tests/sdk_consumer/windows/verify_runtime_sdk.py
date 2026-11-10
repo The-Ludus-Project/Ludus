@@ -19,11 +19,14 @@ CONFIGURATION = "RelWithDebInfo"
 RUNTIME_COMPONENTS = "GraphicsRenderer,GraphicsText,Text,Resources,GameplayWorld,Ui,GameHost"
 
 
-def run(*arguments, cwd=ROOT, contains=None):
+def run(*arguments, cwd=ROOT, contains=None, should_fail=False):
     result = subprocess.run(list(map(str, arguments)), cwd=cwd, text=True, errors="replace",
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800)
     print(result.stdout, end="", flush=True)
-    result.check_returncode()
+    if should_fail:
+        require(result.returncode != 0, f"Expected a failure from {arguments}")
+    else:
+        result.check_returncode()
     if contains is not None and contains not in result.stdout:
         raise RuntimeError(f"Expected {contains!r} from {arguments}")
     return result.stdout
@@ -88,9 +91,22 @@ def consume_behavior(sdk, workspace):
     run("cmake", "--build", build, "--config", CONFIGURATION)
     run("ctest", "--test-dir", build, "-C", CONFIGURATION, "--output-on-failure", "--no-tests=error",
         contains="100% tests passed")
+    module = build / "scripted_game.dll"
+    first_generation = build / "scripted_game_initial.dll"
+    shutil.copyfile(module, first_generation)
+    script = source / "behaviors/encounter.luau"
+    valid_source = script.read_text(encoding="utf-8")
+    script.write_text("--!strict\nreturn function(\n", encoding="utf-8")
+    run("cmake", "--build", build, "--config", CONFIGURATION, "--target", "scripted_game_module",
+        contains="encounter.luau", should_fail=True)
+    require(module.read_bytes() == first_generation.read_bytes(), "Failed cook changed the game DLL")
+    changed = valid_source.replace("state.Interactions += event.Amount", "state.Interactions += event.Amount * 2")
+    require(changed != valid_source, "The scripted-game fixture no longer has the expected increment")
+    script.write_text(changed, encoding="utf-8")
+    run("cmake", "--build", build, "--config", CONFIGURATION, "--target", "scripted_game_module")
     supervisor = ROOT / "modules/runtime/game_host/tests/windows_supervisor_acceptance.py"
     run(sys.executable, supervisor, "--host", build / "scripted_game_host.exe",
-        "--scripted-module", build / "scripted_game.dll")
+        "--scripted-module", first_generation, "--scripted-replacement", module)
 
 
 def run_project(*arguments, contains=None):

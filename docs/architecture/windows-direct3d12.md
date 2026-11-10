@@ -886,8 +886,9 @@ with optional tooling absent.
   Its relocated consumer builds the scripted sample with the installed cooker
   and paired Luau tools. The Windows lane exercises the static player and
   drives real breakpoints, stepping, stale stop rejection and resume through a
-  GameHost process over the inherited socket. Editor live play and the embedded
-  editors arrive with D6d.
+  GameHost process over the inherited socket. It also rejects a broken script
+  build, then reloads an edited DLL and checks that the new script preserves
+  existing state. Editor live play and the embedded editors arrive with D6d.
 
   The tools-only worker install (`LUDUS_SHADER_WORKER_ONLY`) now runs on Windows. The Ninja lane
   installs it and checks it with `tools/shader-worker/verify_install.py`, which

@@ -158,7 +158,7 @@ def check_killed_host_ends_stream(host, module):
         session.close()
 
 
-def check_script_debug_session(host, module):
+def check_script_debug_session(host, module, replacement):
     """Drive the installed SDK sample through the Windows host and the real Luau VM."""
     session = Session(host, module, 1)
 
@@ -198,13 +198,22 @@ def check_script_debug_session(host, module):
         finished = debug(8, "continue", **identity(stepped))
         if finished["partial"] or finished["interactions"] != 1:
             raise RuntimeError(f"The resumed Luau tick did not commit exactly once: {finished}")
-        session.send(9, "Stop")
+        session.send(9, "Reload", expected_generation=hex_id(1), generation=hex_id(2),
+                     module_path=str(replacement))
+        require_status(9)
+        reloaded = debug(10, "inspect")
+        if reloaded["package"] == finished["package"] or reloaded["interactions"] != 1:
+            raise RuntimeError(f"Reload did not activate new script code and retain state: {reloaded}")
+        edited = debug(11, "interact", asset=asset, amount=1, **identity(reloaded))
+        if edited["partial"] or edited["interactions"] != 3:
+            raise RuntimeError(f"Reloaded script did not apply the edited increment: {edited}")
+        session.send(12, "Stop")
         session.await_event(lambda event: event.get("event") == "SessionEnded")
         if session.process.wait(timeout=DEADLINE_SECONDS) != 0:
             raise RuntimeError(f"Scripted GameHost failed to stop: {session.output()}")
     finally:
         session.close()
-    print("Installed Luau debugger breakpoint, step, stale stop and resume passed.")
+    print("Installed Luau breakpoint, step, stale stop, resume and scripted DLL reload passed.")
 
 
 def main():
@@ -214,9 +223,12 @@ def main():
     parser.add_argument("--b", type=Path)
     parser.add_argument("--incompatible", type=Path)
     parser.add_argument("--scripted-module", type=Path)
+    parser.add_argument("--scripted-replacement", type=Path)
     args = parser.parse_args()
-    if args.scripted_module:
-        check_script_debug_session(args.host, args.scripted_module)
+    if args.scripted_module or args.scripted_replacement:
+        if not (args.scripted_module and args.scripted_replacement):
+            parser.error("provide both --scripted-module and --scripted-replacement")
+        check_script_debug_session(args.host, args.scripted_module, args.scripted_replacement)
         return
     if not all((args.a, args.b, args.incompatible)):
         parser.error("provide --a, --b and --incompatible, or --scripted-module")
