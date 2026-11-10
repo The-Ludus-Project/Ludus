@@ -19,9 +19,9 @@
 #include <QSettings>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 
 #include <span>
-#include <time.h>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -138,8 +138,7 @@ TEST_CASE("Startup sound player finishes on failure and plays at most once", "[e
     uint32 waited = 0;
     while (player.IsFinished() == false && waited < MAX_WORKER_WAIT_MILLISECONDS)
     {
-        const timespec delay{0, 1000000};
-        nanosleep(&delay, nullptr);
+        QThread::msleep(1);
         ++waited;
     }
     CHECK(player.IsFinished() == true);

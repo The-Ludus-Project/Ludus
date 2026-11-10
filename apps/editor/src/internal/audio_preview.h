@@ -32,7 +32,7 @@ Q_SIGNALS:
     void Imported(const QString& root);
 
 private:
-    [[nodiscard]] bool Start();
+    [[nodiscard]] bool start();
     struct Impl;
     Impl* Impl_ = nullptr;
 };
