@@ -365,6 +365,11 @@ and resize, and checks that Stop or a game crash restores the authoring viewport
 For mixed-DPI or physical GPU checks, launch the editor on a Windows desktop
 with the normal Qt GPU selection.
 
+Windows GPU-reference capture remains unavailable. Its DXIL kernels fail shader
+validation and are excluded from the Windows editor build. The traversal chooser
+disables that option, and an explicit GPU-reference request reports the missing
+kernel. Windows CPU/GPU reference parity remains unqualified.
+
 ## Launch
 
 `scripts/editor` locates the already-built `ludus_editor` through the shared
