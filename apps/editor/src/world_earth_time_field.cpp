@@ -26,7 +26,7 @@ constexpr int64 MILLISECONDS_PER_DAY = 86'400'000;
 
 QDateTime GetEarthEpoch()
 {
-    return QDateTime(QDate(EPOCH_YEAR, 1, 1), QTime(EPOCH_HOUR_UTC, 0), QTimeZone::utc());
+    return QDateTime(QDate(EPOCH_YEAR, 1, 1), QTime(EPOCH_HOUR_UTC, 0), QTimeZone(QTimeZone::UTC));
 }
 
 QDateTime ConvertDaysToUtc(float64 daysSinceEpoch)
@@ -44,7 +44,7 @@ WorldEarthTimeField::WorldEarthTimeField(float64 daysSinceEpoch, QWidget& inoutP
     mDateTime->setAccessibleName(QStringLiteral("Date and time (UTC)"));
     mDateTime->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-    mDateTime->setTimeZone(QTimeZone::utc());
+    mDateTime->setTimeZone(QTimeZone(QTimeZone::UTC));
 #else
     mDateTime->setTimeSpec(Qt::UTC);
 #endif
