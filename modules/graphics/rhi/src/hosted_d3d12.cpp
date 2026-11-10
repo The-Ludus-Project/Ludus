@@ -23,7 +23,7 @@ platform::HostedAdapterIdentity EncodeHostedAdapter(LUID adapter) noexcept
     const bool hasLowPart = TryWriteLittleEndian<uint32>(static_cast<uint32>(adapter.LowPart), {bytes, sizeof(uint32)});
     const bool hasHighPart =
         TryWriteLittleEndian<uint32>(static_cast<uint32>(adapter.HighPart), {bytes + sizeof(uint32), sizeof(uint32)});
-    LUDUS_ASSERT(hasLowPart == true && hasHighPart == true);
+    LUDUS_REQUIRE(hasLowPart == true && hasHighPart == true);
     return identity;
 }
 
@@ -34,7 +34,7 @@ LUID DecodeHostedAdapter(const platform::HostedAdapterIdentity& adapter) noexcep
     uint32 high = 0;
     const bool hasLowPart = TryReadLittleEndian<uint32>({bytes, sizeof(uint32)}, low);
     const bool hasHighPart = TryReadLittleEndian<uint32>({bytes + sizeof(uint32), sizeof(uint32)}, high);
-    LUDUS_ASSERT(hasLowPart == true && hasHighPart == true);
+    LUDUS_REQUIRE(hasLowPart == true && hasHighPart == true);
     return {static_cast<DWORD>(low), static_cast<LONG>(high)};
 }
 

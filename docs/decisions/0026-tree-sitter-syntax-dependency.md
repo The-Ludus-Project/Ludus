@@ -138,6 +138,7 @@ grammar's node names.
   is an unprototyped, different function type, which Clang's function
   sanitizer rejects under the UBSan presets. Those grammar objects compile as
   C23, where an empty list means `(void)`, so every sanitizer check stays on.
+  MSVC compiles those grammars as C11 and has no Clang function sanitizer.
 - No exceptions cross the boundary because tree-sitter has none. The editor seam
   values stay Qt-free and tree-sitter-free; the syntax worker owns every
   `TSParser`, `TSTree` and `TSQueryCursor`.

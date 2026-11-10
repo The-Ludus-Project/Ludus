@@ -137,7 +137,8 @@ function(ludus_editor_add_tree_sitter)
     # instead of (void), while the runtime calls it through a prototyped `void *(*)(void)` slot. In C11
     # that definition is unprototyped, a different function type: Clang's function sanitizer (part of
     # the UBSan presets) aborts on the first parse. C23 reads an empty list as (void), so these grammar
-    # objects compile as C23 and every sanitizer check stays on.
+    # objects compile as C23 and every sanitizer check stays on. MSVC uses the
+    # C11 dialect from the common options and has no Clang function sanitizer.
     #
     # Upstream-only grammar suppressions, scoped to the grammar that needs them (ADR 0026):
     # - -Wstrict-prototypes: the same empty parameter lists; tree-sitter's generated declaration has
@@ -146,7 +147,9 @@ function(ludus_editor_add_tree_sitter)
     #   ignores valid_symbols in two token readers (-Wimplicit-fallthrough, -Wunused-function,
     #   -Wunused-parameter).
     foreach(grammar IN ITEMS cpp slang luau cmake markdown_inline)
-        set_target_properties(ludus_editor_tree_sitter_${grammar} PROPERTIES C_STANDARD 23)
+        if(NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+            set_target_properties(ludus_editor_tree_sitter_${grammar} PROPERTIES C_STANDARD 23)
+        endif()
         target_compile_options(ludus_editor_tree_sitter_${grammar} PRIVATE
             $<$<C_COMPILER_ID:Clang,AppleClang,GNU>:-Wno-strict-prototypes>)
     endforeach()
