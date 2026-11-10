@@ -181,14 +181,13 @@ struct DrainageScratch final
 }
 
 [[nodiscard]] bool TryGetNeighbour(const TerrainFieldGrid& grid,
-                                   uint32 x,
-                                   uint32 z,
+                                   uint32 sample,
                                    TerrainFlowDirection direction,
                                    uint32& outNeighbour) noexcept
 {
     const TerrainFlowOffset offset = GetTerrainFlowOffset(direction);
-    const int32 neighbourX = static_cast<int32>(x) + offset.X;
-    const int32 neighbourZ = static_cast<int32>(z) + offset.Z;
+    const int32 neighbourX = static_cast<int32>(sample % grid.Columns) + offset.X;
+    const int32 neighbourZ = static_cast<int32>(sample / grid.Columns) + offset.Z;
     if (neighbourX < 0 || neighbourZ < 0 || static_cast<uint32>(neighbourX) >= grid.Columns ||
         static_cast<uint32>(neighbourZ) >= grid.Rows)
     {
@@ -221,12 +220,10 @@ void FillDepressions(const TerrainFieldGrid& grid,
     while (queue.IsEmpty() == false)
     {
         const uint32 sample = queue.Pop();
-        const uint32 x = sample % grid.Columns;
-        const uint32 z = sample / grid.Columns;
         for (uint32 ordinal = 0; ordinal < TERRAIN_FLOW_NEIGHBOURS; ++ordinal)
         {
             uint32 neighbour = 0;
-            if (TryGetNeighbour(grid, x, z, static_cast<TerrainFlowDirection>(ordinal), neighbour) == false ||
+            if (TryGetNeighbour(grid, sample, static_cast<TerrainFlowDirection>(ordinal), neighbour) == false ||
                 inoutScratch.IsVisited[neighbour] != 0)
             {
                 continue;
@@ -256,7 +253,7 @@ void RouteFlow(const TerrainFieldGrid& grid, DrainageScratch& inoutScratch) noex
             {
                 const TerrainFlowDirection direction = static_cast<TerrainFlowDirection>(ordinal);
                 uint32 neighbour = 0;
-                if (TryGetNeighbour(grid, x, z, direction, neighbour) == false)
+                if (TryGetNeighbour(grid, sample, direction, neighbour) == false)
                 {
                     continue;
                 }
@@ -287,11 +284,7 @@ void RouteFlow(const TerrainFieldGrid& grid, DrainageScratch& inoutScratch) noex
     {
         uint32 target = 0;
         if (inoutScratch.Direction[sample] != TerrainFlowDirection::Outlet &&
-            TryGetNeighbour(grid,
-                            sample % grid.Columns,
-                            sample / grid.Columns,
-                            inoutScratch.Direction[sample],
-                            target) == true)
+            TryGetNeighbour(grid, sample, inoutScratch.Direction[sample], target) == true)
         {
             ++inoutScratch.Inflow[target];
         }
@@ -312,11 +305,7 @@ void RouteFlow(const TerrainFieldGrid& grid, DrainageScratch& inoutScratch) noex
         ++head;
         uint32 target = 0;
         if (inoutScratch.Direction[sample] == TerrainFlowDirection::Outlet ||
-            TryGetNeighbour(grid,
-                            sample % grid.Columns,
-                            sample / grid.Columns,
-                            inoutScratch.Direction[sample],
-                            target) == false)
+            TryGetNeighbour(grid, sample, inoutScratch.Direction[sample], target) == false)
         {
             continue;
         }
