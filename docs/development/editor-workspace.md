@@ -285,7 +285,7 @@ cmake --preset linux-clang-development -DLUDUS_USE_INIT_OPTIONS=OFF -DLUDUS_BUIL
 cmake --build --preset linux-clang-development --target ludus_editor
 ```
 
-Native `LUDUS_BUILD_EDITOR=ON` supports Linux x64 and macOS arm64/x64.
+Native `LUDUS_BUILD_EDITOR=ON` has Linux x64, macOS arm64/x64 and Windows x64 build paths.
 Apple silicon is the validated macOS host; native Intel acceptance remains pending.
 Browser editor builds use
 the separate pinned Qt WebAssembly toolchain; ordinary browser engine setup does
@@ -332,6 +332,35 @@ an installed/signable Editor application bundle to the runtime SDK. The local
 macOS build produces `ludus_editor.app`, with the required Qt frameworks supplied
 by the opted-in development installation; the File API launcher resolves its
 executable inside the bundle.
+
+### Windows authoring viewport
+
+Use the [Windows runtime toolchain and dependencies](../architecture/windows-direct3d12.md),
+the x64 MSVC Qt build with Qt Quick 6.6 or later, and the pinned Slang and DXC
+tools. From a Visual Studio developer shell, include the Qt prefix in
+`LUDUS_WINDOWS_DEPENDENCIES` alongside the prepared runtime dependencies.
+
+```powershell
+python scripts/shader-probe bootstrap
+cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON
+cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests
+ctest --preset windows-msvc-runtime -R '^(ludus_editor_d3d12_viewport|ludus_rhi_d3d12_tests)$' --output-on-failure
+```
+
+With Qt's `bin` on `PATH`, run the editor from the repository root so it can
+find the tooling checkout and bundled graph sources.
+
+```powershell
+$python = (Get-Command python).Source
+& .\out\build\windows-msvc-runtime\apps\editor\ludus_editor.exe --tooling-root "$PWD" --python "$python"
+```
+
+The viewport renders the open World's camera and authored
+scene through the shared Direct3D 12 queue. Use a raster graph with a DXIL profile
+for ordinary navigation and editing. The native viewport test requires an
+interactive Windows desktop and uses Qt's software renderer preference for WARP
+coverage. Cross-process Play and the desktop and physical GPU acceptance run
+remain open.
 
 ## Launch
 

@@ -405,7 +405,44 @@ void EnableDebugLayer() noexcept
     return true;
 }
 
-[[nodiscard]] bool CreateQueueObjects() noexcept
+// Thanks to Microsoft, "IDXGIFactory4::EnumAdapterByLuid method", DXGI API
+// reference, for resolving the adapter from the retained device's LUID.
+// https://learn.microsoft.com/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgifactory4-enumadapterbyluid
+[[nodiscard]] bool AdoptNativeDevice(const NativeDeviceIdentity& identity) noexcept
+{
+    ID3D12Device* device = static_cast<ID3D12Device*>(identity.Device.GetObject());
+    ID3D12CommandQueue* queue = static_cast<ID3D12CommandQueue*>(identity.CommandQueue.GetObject());
+    LUDUS_ASSERT(device != nullptr && queue != nullptr);
+    if (queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT || device->GetNodeCount() != 1 ||
+        device->GetDeviceRemovedReason() != S_OK)
+    {
+        return false;
+    }
+    ID3D12Device* queueDeviceOrNull = nullptr;
+    const HRESULT queueResult =
+        queue->GetDevice(GetInterfaceId(queueDeviceOrNull), GetInterfaceOutput(queueDeviceOrNull));
+    const ComOwner<ID3D12Device> queueDevice = Adopt(queueDeviceOrNull);
+    if (FAILED(queueResult) == true || queueDevice.Get() != device)
+    {
+        return false;
+    }
+    IDXGIAdapter1* adapterOrNull = nullptr;
+    const HRESULT adapterResult = gFactory->EnumAdapterByLuid(device->GetAdapterLuid(),
+                                                              GetInterfaceId(adapterOrNull),
+                                                              GetInterfaceOutput(adapterOrNull));
+    if (FAILED(adapterResult) == true || adapterOrNull == nullptr)
+    {
+        return false;
+    }
+    gAdapter = Adopt(adapterOrNull);
+    device->AddRef();
+    queue->AddRef();
+    gDevice = Adopt(device);
+    gQueue = Adopt(queue);
+    return true;
+}
+
+[[nodiscard]] bool CreateDirectQueue() noexcept
 {
     const D3D12_COMMAND_QUEUE_DESC queueDescription =
     {
@@ -423,6 +460,15 @@ void EnableDebugLayer() noexcept
     }
     gQueue = Adopt(queueOrNull);
     static_cast<void>(gQueue->SetName(L"Ludus/DirectQueue"));
+    return true;
+}
+
+[[nodiscard]] bool CreateQueueObjects() noexcept
+{
+    if (gQueue.Get() == nullptr && CreateDirectQueue() == false)
+    {
+        return false;
+    }
     ID3D12Fence* fenceOrNull = nullptr;
     if (FAILED(gDevice->CreateFence(0,
                                     D3D12_FENCE_FLAG_NONE,
@@ -778,6 +824,14 @@ bool WaitForQueue() noexcept
 {
     return WaitForIdle();
 }
+bool SignalQueueFence(uint64& outValue) noexcept
+{
+    return SignalFence(outValue);
+}
+bool WaitForQueueFence(uint64 value) noexcept
+{
+    return WaitForFence(value);
+}
 bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept
 {
     LUDUS_ASSERT(commands != nullptr);
@@ -837,14 +891,13 @@ bool Initialize(const ApplicationInfo&) noexcept
     {
         return gCommands.Get() != nullptr;
     }
-    // Native device import is a Metal/Vulkan interop contract.
-    if (internal::NativeDeviceRequest() != nullptr)
-    {
-        return false;
-    }
-    ConfigureDred();
+    const NativeDeviceDescription* importedOrNull = internal::NativeDeviceRequest();
     InitializePixMarkers();
-    EnableDebugLayer();
+    if (importedOrNull == nullptr)
+    {
+        ConfigureDred();
+        EnableDebugLayer();
+    }
     UINT factoryFlags = 0;
 #if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
     factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
@@ -862,9 +915,10 @@ bool Initialize(const ApplicationInfo&) noexcept
         return false;
     }
     gFactory = Adopt(factoryOrNull);
-    if (SelectAdapter() == false)
+    const bool hasDevice = importedOrNull != nullptr ? AdoptNativeDevice(importedOrNull->Identity) : SelectAdapter();
+    if (hasDevice == false)
     {
-        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: no adapter supports feature level 11_0");
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: no compatible device and direct queue");
         return false;
     }
     if (CreateQueueObjects() == false || CreateRootSignature() == false)
@@ -912,7 +966,7 @@ void ShutdownRendering() noexcept
     gSlot = 0;
     isRendering = false;
 }
-void Shutdown() noexcept
+void NativeInteropDetachSurface() noexcept
 {
     ShutdownRendering();
     ReleaseBackBuffers();
@@ -925,9 +979,13 @@ void Shutdown() noexcept
     gSwapWidth = 0;
     gSwapHeight = 0;
     gWindowOrNull = nullptr;
-    ReleaseDevice();
     gTarget = {};
     isConnected = false;
+}
+void Shutdown() noexcept
+{
+    NativeInteropDetachSurface();
+    ReleaseDevice();
     gToken = 0;
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept

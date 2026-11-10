@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/graphics/rhi/device.h>
@@ -68,7 +69,7 @@ private:
     void* mObject = nullptr;
 };
 
-/// Distinct borrowed Vulkan logical device or Metal device identity. No ownership or validation is added.
+/// Distinct borrowed Vulkan, Metal or Direct3D 12 device identity. No ownership or validation is added.
 /// Construct from the matching native object on its owner thread; a source lifetime
 /// handshake or native lease must keep that object alive during every use.
 class NativeLogicalDevice final
@@ -96,7 +97,7 @@ private:
     void* mObject = nullptr;
 };
 
-/// Distinct borrowed Vulkan queue or Metal command queue identity. No ownership or validation is added.
+/// Distinct borrowed Vulkan, Metal or Direct3D 12 command queue identity. No ownership or validation is added.
 /// Construct from the matching native object on its owner thread; a source lifetime
 /// handshake or native lease must keep that object alive during every use.
 class NativeCommandQueue final
@@ -152,6 +153,35 @@ private:
     void* mObject = nullptr;
 };
 
+/// Distinct borrowed Direct3D 12 resource identity. No ownership or validation is added.
+/// Construct from the matching native object on its owner thread; a source lifetime
+/// handshake or native lease must keep the ID3D12Resource alive during every use.
+class NativeDirect3D12Resource final
+{
+public:
+    /// Construct an empty identity; no native object is borrowed.
+    constexpr NativeDirect3D12Resource() noexcept = default;
+    /// Wrap a matching live native object, or nullptr; never retain or destroy it.
+    explicit constexpr NativeDirect3D12Resource(void* objectOrNull) noexcept : mObjectOrNull(objectOrNull) {}
+    /// Return the borrowed native object for an explicit framework/backend conversion.
+    /// The caller must hold its lifetime pin; nullptr denotes an empty identity.
+    [[nodiscard]] LUDUS_INLINE constexpr void* GetObject() const noexcept
+    {
+        return mObjectOrNull;
+    }
+    /// Whether this identity contains no native object; does not query device health.
+    [[nodiscard]] LUDUS_INLINE constexpr bool IsNull() const noexcept
+    {
+        return mObjectOrNull == nullptr;
+    }
+    /// Compare native object identities only; this does not validate a lease incarnation.
+    [[nodiscard]] LUDUS_INLINE constexpr bool
+    operator==(const NativeDirect3D12Resource& other) const noexcept = default;
+
+private:
+    void* mObjectOrNull = nullptr;
+};
+
 /// Distinct borrowed Vulkan image identity, represented by its native 64-bit bits.
 /// Copies do not pin the image; use only while its NativeTextureRead remains open.
 class NativeVulkanImage final
@@ -183,19 +213,19 @@ private:
 /// Dispatchable Vulkan handles are converted to void*; do not pass pointers to handles.
 struct NativeDeviceIdentity final
 {
-    /// Metal or Vulkan; browser APIs have no native sharing profile.
+    /// Metal, Vulkan or Direct3D 12; browser APIs have no native sharing profile.
     Backend Api = Backend::Vulkan;
-    /// VkInstance for Vulkan; null for Metal.
+    /// VkInstance for Vulkan; null otherwise.
     NativeInstance Instance{nullptr};
-    /// VkPhysicalDevice for Vulkan; null for Metal. Matching this alone is insufficient.
+    /// VkPhysicalDevice for Vulkan; null otherwise. Matching this alone is insufficient.
     NativePhysicalDevice PhysicalDevice{nullptr};
-    /// VkDevice or id<MTLDevice>, borrowed on the owning thread.
+    /// VkDevice, id<MTLDevice> or ID3D12Device*, borrowed on the owning thread.
     NativeLogicalDevice Device{nullptr};
-    /// VkQueue or id<MTLCommandQueue>. Both producers and consumers use this exact queue.
+    /// VkQueue, id<MTLCommandQueue> or a direct ID3D12CommandQueue*. Both producers and consumers use this exact queue.
     NativeCommandQueue CommandQueue{nullptr};
-    /// Created graphics queue family for Vulkan; zero for Metal.
+    /// Created graphics queue family for Vulkan; zero otherwise.
     ludus::foundation::uint32 QueueFamily = 0;
-    /// Created queue index in QueueFamily for Vulkan; zero for Metal.
+    /// Created queue index in QueueFamily for Vulkan; zero otherwise.
     ludus::foundation::uint32 QueueIndex = 0;
 };
 
@@ -232,25 +262,25 @@ struct NativeDeviceDescription final
     NativeDeviceIdentity Identity{};
     /// Required lifetime handshake; the source controls destruction of its context.
     NativeDeviceLifetime Lifetime{};
-    /// Vulkan instance API version in Vulkan's packed encoding, at least 1.1; zero for Metal.
+    /// Vulkan instance API version in Vulkan's packed encoding, at least 1.1; zero on other backends.
     ludus::foundation::uint32 InstanceApiVersion = 0;
     /// Require producer and consumer queue submissions to be serialized on the RHI
     /// owner thread. Different queues and concurrent external submission are unsupported.
     bool SerializedOwnerQueue = false;
-    /// Vulkan only, None for Metal: the calibrated-timestamp extension the source enabled on Device.
+    /// Vulkan only, None on other backends: the calibrated-timestamp extension the source enabled on Device.
     /// RHI places timed passes on the CPU trace clock only after confirming that the physical device
     /// also supports the extension with the device and host time domains; otherwise the timings stay
     /// duration-only. Declaring an extension that the device did not enable is invalid usage.
     NativeCalibratedTimestamps CalibratedTimestamps = NativeCalibratedTimestamps::None;
-    /// Vulkan only, false for Metal: the source enabled the fillModeNonSolid device feature, so raster pipelines
-    /// may use RasterFillMode::Lines. Declaring a feature that the device did not enable is invalid usage.
+    /// Vulkan only, false on other backends: the source enabled the fillModeNonSolid device feature, so raster
+    /// pipelines may use RasterFillMode::Lines. Declaring a feature that the device did not enable is invalid usage.
     bool HasFillModeNonSolid = false;
 };
 
 /// Negotiated native sharing profile; query only after device startup is Ready.
 struct NativeInteropCapabilities final
 {
-    /// Headless RHI rendering on an existing Metal/Vulkan device and queue.
+    /// Headless RHI rendering on an existing Metal, Vulkan or Direct3D 12 device and queue.
     bool DeviceAdmission = false;
     /// Leased single-sample, single-mip/layer D2 Rgba8Unorm color attachment reads.
     bool ColorTextureReads = false;
@@ -290,11 +320,11 @@ struct NativeDeviceInfo final
     NativeDeviceIdentity Identity{};
     /// RHI session incarnation; native pointer reuse does not revive an old lease.
     ludus::foundation::uint64 Incarnation = 0;
-    /// Metal registry ID, or zero on Vulkan.
+    /// Metal registry ID, or zero on other backends.
     ludus::foundation::uint64 RegistryId = 0;
-    /// Vulkan device UUID, or all zeros on Metal.
+    /// Vulkan device UUID, or all zeros on other backends.
     ludus::foundation::uint8 DeviceUuid[16]{};
-    /// Vulkan instance API version, or zero on Metal.
+    /// Vulkan instance API version, or zero on other backends.
     ludus::foundation::uint32 InstanceApiVersion = 0;
     /// Shutdown has invalidated ordinary RHI handles; leased native objects remain
     /// alive until consumer completion and lease release. No new reads may be acquired.
@@ -318,18 +348,22 @@ struct NativeTextureInfo final
     ludus::foundation::uint32 Width = 0;
     /// Pixel height of the single mip/layer; no scaling is performed by the bridge.
     ludus::foundation::uint32 Height = 0;
-    /// id<MTLTexture> for Metal; null for Vulkan. Valid only during the read lease.
+    /// id<MTLTexture> for Metal; null otherwise. Valid only during the read lease.
     NativeMetalTexture MetalTexture{nullptr};
-    /// VkImage bits for Vulkan; zero for Metal. Convert according to the native VkImage type.
+    /// VkImage bits for Vulkan; zero otherwise. Convert according to the native VkImage type.
     NativeVulkanImage VulkanImage{0};
-    /// Current Vulkan image layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; zero for Metal.
+    /// Current Vulkan image layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; zero otherwise.
     ludus::foundation::uint32 VulkanLayout = 0;
+    /// ID3D12Resource* in PIXEL_SHADER_RESOURCE state for Direct3D 12; null otherwise.
+    /// Valid during the read lease. Use only fragment sampling and preserve that resource state.
+    NativeDirect3D12Resource Direct3D12Resource{};
     /// Native image is borrowed for sampled reads only; foreign writes/ownership transfers reject.
     bool SampledReadOnly = true;
 };
 
 /// Admit a retained foreign device for headless RHI rendering, without creating or
-/// destroying that source's instance/device/queue. Width/height are initial pixels.
+/// destroying that source's instance/device/queue. Direct3D 12 requires a direct
+/// queue from the supplied device on a single-node adapter. Width/height are initial pixels.
 /// @pre Native objects and queue provenance are valid; all calls/submissions use the owner thread.
 /// @return Ready on success; Unsupported for unsupported backend/profile, or an explicit
 /// admission failure. Device/surface outputs are preserved on rejection. Vulkan ray queries

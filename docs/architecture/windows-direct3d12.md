@@ -933,6 +933,20 @@ with optional tooling absent.
   CPU readback is diagnostic evidence, not interactive GPU presentation
   acceptance; optional path tracing cannot be required for raster navigation.
 
+  The authoring viewport uses Qt Quick's Direct3D 12 device and direct queue on
+  the GUI thread. RHI checks queue provenance, retains the native context, and
+  transitions each leased RGBA8 output for fragment sampling on that queue.
+  After Qt submits, a queue fence retires the read lease and its transition
+  commands. The editor can keep a drawable generation during a pending or
+  failed graph replacement. The Windows viewport regression exercises World
+  extraction, navigation, edits, resize and graph publication through Qt.
+  See [Windows editor setup](../development/editor-workspace.md#windows-authoring-viewport)
+  for the build and test commands.
+
+  Cross-process Play still needs the hosted window channel, exported Direct3D 12
+  textures with adapter matching, and Windows supervisor cleanup. Native
+  desktop and physical GPU validation remain open.
+
 ### D7 and D8: qualify and distribute
 
 D7 extends MSVC/Ninja batch validation to all required modules, SDK consumers,
@@ -994,7 +1008,7 @@ these rows remain pending.
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
 | SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
 | Embedded/external shader/script authoring | D6c | Named-pipe shader worker with DXIL | Luau, shader file delivery, graph DXIL; editors with D6d | [PR #1018](https://github.com/The-Ludus-Project/Ludus/pull/1018) | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
-| Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
+| Editor / hosted viewport | D6d | In-process Direct3D 12 authoring path | Native Windows validation and cross-process Play transport | pending | Windows viewport and RHI lease regressions |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
 | Qualification / CI / documentation | D1, D2; D7 pending | in progress | Clang lane gates promotion today; D7 qualifies MSVC profiles | PR #573; PR #586 | Historical D1/D2 evidence above |
 | Packaging / distribution | unassigned | unreviewed | D8 after D7 | pending | none |
