@@ -190,7 +190,9 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
         Ludus::GraphicsRenderer Ludus::FoundationContainers Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
-if(TARGET ludus_rhi_render_tests)
+# The Windows raster closure uses ludus_render_graph_dxil_tests below.
+# The complete renderer oracle suite also needs translated reference kernels.
+if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     # Software-adapter shader preparation belongs to correctness qualification.
     # Sanitizer allocation interception also affects the driver's compiler;
     # give that cold work room without changing warm-frame or numerical checks.
