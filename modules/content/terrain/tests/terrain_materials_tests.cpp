@@ -38,6 +38,7 @@ constexpr float32 LARGEST_FINITE = 3.0e38F;
 }
 
 /// A range spelled by its three members, so partial designated initializers are not needed.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the arguments follow TerrainMaterialRange's member order.
 [[nodiscard]] TerrainMaterialRange MakeRange(float32 minimum, float32 maximum, float32 featherWidth)
 {
     TerrainMaterialRange range;
@@ -57,6 +58,7 @@ constexpr float32 LARGEST_FINITE = 3.0e38F;
     return MakeRange(minimum, TERRAIN_MATERIAL_RANGE_UNBOUNDED, featherWidth);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the arguments follow TerrainMaterialRule's member order.
 [[nodiscard]] TerrainMaterialRule MakeRule(uint16 materialId,
                                            float32 weight,
                                            TerrainMaterialRange elevationMetres,
@@ -336,7 +338,8 @@ TEST_CASE("terrain patch palettes are ascending, shared at edges and quantized t
     for (uint32 localZ = 0; localZ <= CELLS_PER_PATCH; ++localZ)
     {
         const TerrainMaterialWeights& westSample = patches.Weights[localZ * (CELLS_PER_PATCH + 1) + 2];
-        const TerrainMaterialWeights& eastSample = patches.Weights[patchSamples + localZ * (CELLS_PER_PATCH + 1)];
+        const TerrainMaterialWeights& eastSample =
+            patches.Weights[patchSamples + static_cast<usize>(localZ) * (CELLS_PER_PATCH + 1)];
         // Mud (weight two) over grass (weight one): 170 and 85 of 255.
         CHECK(westSample.Channels[1] == 170);
         CHECK(westSample.Channels[0] == 85);

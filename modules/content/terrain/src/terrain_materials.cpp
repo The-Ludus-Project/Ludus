@@ -89,7 +89,7 @@ ComputeFootprint(const TerrainFieldGrid& grid, const TerrainPatchLayout& layout,
     {
         for (uint32 x = footprint.MinimumX; x < footprint.MaximumX; ++x)
         {
-            if (ruleWeights[rule * samples + z * grid.Columns + x] > 0)
+            if (ruleWeights[rule * samples + static_cast<usize>(z) * grid.Columns + x] > 0)
             {
                 return true;
             }

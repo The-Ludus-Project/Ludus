@@ -144,7 +144,7 @@ TEST_CASE("terrain field grid validation", "[content][terrain]")
     CHECK(IsTerrainFieldGridValid(
               { .Columns = 4, .Rows = 4, .SpacingXMetres = MakeNonFinite(), .SpacingZMetres = MakeNonFinite() }) ==
           false);
-    CHECK(GetTerrainSampleCount(MakeGrid()) == TEST_COLUMNS * TEST_ROWS);
+    CHECK(GetTerrainSampleCount(MakeGrid()) == static_cast<usize>(TEST_COLUMNS) * TEST_ROWS);
 }
 
 TEST_CASE("terrain slope of a plane is its gradient", "[content][terrain]")
@@ -250,8 +250,8 @@ TEST_CASE("terrain drainage on a tilted plane flows downhill to one edge", "[con
     CHECK(drainage.Summary.OutletSamples == TEST_ROWS);
     for (uint32 z = 0; z < grid.Rows; ++z)
     {
-        CHECK(drainage.Direction[z * grid.Columns] == TerrainFlowDirection::Outlet);
-        CHECK(drainage.Accumulation[z * grid.Columns] == TEST_COLUMNS);
+        CHECK(drainage.Direction[static_cast<usize>(z) * grid.Columns] == TerrainFlowDirection::Outlet);
+        CHECK(drainage.Accumulation[static_cast<usize>(z) * grid.Columns] == TEST_COLUMNS);
         for (uint32 x = 1; x < grid.Columns; ++x)
         {
             CHECK(drainage.Direction[z * grid.Columns + x] == TerrainFlowDirection::NegativeX);
@@ -277,7 +277,7 @@ TEST_CASE("terrain drainage fills a bowl to its spill level", "[content][terrain
     Drainage drainage(GetTerrainSampleCount(grid));
     REQUIRE(drainage.Solve(grid, elevation) == TerrainFieldStatus::Success);
     CheckDrainageInvariants(grid, elevation, drainage);
-    CHECK(drainage.Summary.FilledSamples == (TEST_COLUMNS - 2) * (TEST_ROWS - 2));
+    CHECK(drainage.Summary.FilledSamples == static_cast<usize>(TEST_COLUMNS - 2) * (TEST_ROWS - 2));
     CHECK(drainage.Summary.MaximumFillMetres == Catch::Approx(SPILL_METRES - FLOOR_METRES));
     for (uint32 z = 1; z + 1 < grid.Rows; ++z)
     {
@@ -320,7 +320,7 @@ TEST_CASE("terrain drainage splits a saddle between two basins", "[content][terr
     uint64 east = 0;
     for (uint32 z = 0; z < grid.Rows; ++z)
     {
-        west += drainage.Accumulation[z * grid.Columns];
+        west += drainage.Accumulation[static_cast<usize>(z) * grid.Columns];
         east += drainage.Accumulation[z * grid.Columns + grid.Columns - 1];
     }
     // The ridge samples tie between -X and +X and resolve to the first direction in enum order (+X).
