@@ -1,0 +1,9 @@
+include(windows-msvc-probe-x86_64)
+
+[conf]
+# Thanks to HarfBuzz, CMakeLists.txt (14.5.1), for the FreeType feature list.
+# https://github.com/harfbuzz/harfbuzz/blob/14.5.1/CMakeLists.txt
+# CMake 3.31's Debug try_compile cannot export the nested CMakeDeps import.
+# FreeType 2.14.3 provides all four symbols. The installed Debug SDK consumer
+# links the real libraries, so a missing symbol still fails qualification.
+harfbuzz/14.5.1:tools.cmake.cmaketoolchain:extra_variables={"HAVE_FT_GET_VAR_BLEND_COORDINATES":"ON","HAVE_FT_SET_VAR_BLEND_COORDINATES":"ON","HAVE_FT_DONE_MM_VAR":"ON","HAVE_FT_GET_TRANSFORM":"ON"}

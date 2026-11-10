@@ -134,7 +134,11 @@ jobs:
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-sdk-dependencies"
           conan export third_party/harfbuzz
           if ($LASTEXITCODE -ne 0) { throw 'HarfBuzz recipe export failed' }
-          conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$env:SDK_CONFIGURATION" --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
+          $hostProfile = 'config/conan/profiles/windows-msvc-probe-x86_64'
+          if ($env:SDK_CONFIGURATION -eq 'Debug') {
+            $hostProfile = 'config/conan/profiles/windows-msvc-debug-x86_64'
+          }
+          conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial --profile:host $hostProfile --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$env:SDK_CONFIGURATION" --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK dependencies failed to install' }
           $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
           & $python scripts/python/engine.py install-sdk $env:SDK_PRESET

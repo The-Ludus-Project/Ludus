@@ -341,7 +341,10 @@ in `--components`.
 
 Use a separate CMakeDeps folder for each dependency configuration and install
 each flavor to its own prefix. Switch the Conan host `build_type` in the command
-above to match the selected SDK preset.
+above to match the selected SDK preset. For Debug, pass
+`config/conan/profiles/windows-msvc-debug-x86_64` as the host profile.
+It supplies the pinned FreeType feature results to HarfBuzz because CMake's
+Debug feature probe cannot resolve the nested Conan import.
 
 | Flavor | SDK preset and install directory name | Conan host build type |
 | --- | --- | --- |
