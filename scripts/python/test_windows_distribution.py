@@ -178,6 +178,16 @@ class WindowsDistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, "candidate revision"):
             self.create("wrong-sdk")
 
+    def test_cmake_off_sanitizer_variant_is_a_release_identity(self):
+        identity = json.loads(self.manifest.read_text())
+        identity["sdk_variant"] = "assert-v2-Release-Release-dialogs-0-asan-OFF-ubsan-OFF-tsan-OFF"
+        self.manifest.write_text(json.dumps(identity))
+        self.create()
+        identity["sdk_variant"] = identity["sdk_variant"].replace("asan-OFF", "asan-ON")
+        self.manifest.write_text(json.dumps(identity))
+        with self.assertRaisesRegex(ToolingError, "without sanitizers"):
+            self.create("sanitized")
+
     def test_editor_requires_deployed_platform_plugin_and_relative_qt_paths(self):
         self.spec["kind"] = "editor"
         with self.assertRaisesRegex(ToolingError, "qwindows.dll"):

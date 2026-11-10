@@ -211,7 +211,7 @@ def _validate_sdk(sdk: SdkIdentity) -> None:
             or sdk.compiler_id != "MSVC" or sdk.cxx_standard != "C++23" or sdk.cxx_runtime_abi != "msvc-stl"
             or not isinstance(sdk.compiler_version, str) or not sdk.compiler_version.startswith("19.44.")
             or not isinstance(sdk.sdk_variant, str)
-            or re.fullmatch(r"assert-v[0-9]+-Release-(?:Release|MinSizeRel)-dialogs-0-asan-0-ubsan-0-tsan-0", sdk.sdk_variant) is None
+            or re.fullmatch(r"assert-v[0-9]+-Release-(?:Release|MinSizeRel)-dialogs-0-asan-(?:0|OFF)-ubsan-(?:0|OFF)-tsan-(?:0|OFF)", sdk.sdk_variant) is None
             or policy.get("enable_asserts") is not False or policy.get("break_on_check") is not False
             or policy.get("dialogs_available") is not False):
         fail("use a Windows x64 MSVC C++23 Release SDK without sanitizers", "SdkIncompatible")
