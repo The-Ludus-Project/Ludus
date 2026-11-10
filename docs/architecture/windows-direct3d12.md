@@ -972,7 +972,8 @@ and cooking, gameplay and fluid, text, localization, UI, offline audio, bounded
 network formats, the shader worker, GameHost DLL supervision and Luau.
 The batch also exercises the installed worker, the Visual Studio source
 solution and relocated runtime SDK consumers with Ninja and MSBuild. The
-editor is a required batch lane. It runs the four core editor shards, both
+editor has required ordinary and MSVC AddressSanitizer batch lanes. Each runs
+the four core editor shards, both
 graph-authoring shards, code/content/layout/geometry suites, the native
 Direct3D 12 viewport at normal and fractional DPI, and hosted Play. Every
 declared CTest case must run and pass. The
@@ -1091,7 +1092,7 @@ PR from the subsystem table.
 | Desktop authoring and hosted Play | D6d editor and GameHost | Selected World and camera, edit/resize and pending/failure recovery, DPI/display transitions, focus, dialogs, cross-process frame delivery and cleanup |
 | Resource and performance budgets | Renderer and runtime | Repeatable workload, declared frame time and memory limits, measured CPU/GPU time and allocation peaks per device |
 | IDE debugger and symbols | Windows project setup and GameHost | Visual Studio and VS Code launch/attach, breakpoint and stack resolution, matching PDBs |
-| Sanitizers | Build and runtime tooling | MSVC AddressSanitizer runs Foundation, Win32, RHI, Renderer, content, text, worker, GameHost and Behavior tests with a fatal heap-overflow control. Retain its logs alongside the candidate's results; record editor instrumentation separately. |
+| Sanitizers | Build, runtime and editor tooling | MSVC AddressSanitizer runs Foundation, Win32, RHI, Renderer, content, text, worker, GameHost and Behavior tests with a fatal heap-overflow control, plus the complete Windows editor suite in its own job. Retain its logs alongside the candidate's results. |
 
 Record unsupported features separately from required profiles. The offline
 audio and wire-format suites cover those scoped modules. Native audio device

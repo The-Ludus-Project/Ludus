@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       editor_only:
-        description: Run the Windows editor and hosted Play acceptance lane only.
+        description: Run the Windows editor and hosted Play acceptance lanes only.
         type: boolean
         default: false
 permissions:
@@ -40,11 +40,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The full batch includes Editor and every installed runtime flavor.
+        # The full batch includes both editor modes and every installed runtime flavor.
         include: >-
-          ${{ fromJSON(inputs.editor_only && '[{"generator":"Editor"}]' ||
+          ${{ fromJSON(inputs.editor_only && '[{"generator":"Editor"},{"generator":"Editor ASan"}]' ||
           '[{"generator":"Ninja"},{"generator":"MSBuild"},{"generator":"MSVC ASan"},
-          {"generator":"Editor"},
+          {"generator":"Editor"},{"generator":"Editor ASan"},
           {"generator":"Runtime SDK","flavor":"Debug","configuration":"Debug","preset":"windows-msvc-runtime-sdk-debug"},
           {"generator":"Runtime SDK","flavor":"Development","configuration":"RelWithDebInfo","preset":"windows-msvc-runtime-sdk"},
           {"generator":"Runtime SDK","flavor":"Profile","configuration":"RelWithDebInfo","preset":"windows-msvc-runtime-sdk-profile"},
@@ -56,6 +56,7 @@ jobs:
       CONAN_HOME: ${{ github.workspace }}/out/windows-msvc-probe/conan-home
       CONAN_NON_INTERACTIVE: "1"
       LUDUS_WINDOWS_GENERATOR: ${{ matrix.generator }}
+      LUDUS_WINDOWS_EDITOR_PRESET: ${{ matrix.generator == 'Editor ASan' && 'windows-msvc-asan' || 'windows-msvc-runtime' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,7 +90,7 @@ jobs:
         run: python scripts/shader-probe bootstrap
       - name: Prepare the Windows runtime dependencies
         id: windows-runtime-dependencies
-        if: matrix.generator == 'Ninja' || matrix.generator == 'Editor' || matrix.generator == 'MSVC ASan'
+        if: matrix.generator == 'Ninja' || (matrix.generator == 'Editor' || matrix.generator == 'Editor ASan') || matrix.generator == 'MSVC ASan'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
@@ -112,7 +113,7 @@ jobs:
           python tests/build_contract/windows_qualification.py --candidate $env:LUDUS_CI_COMMIT_SHA --preset $preset --adapter warp --output out/windows-qualification/runtime-warp
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime qualification failed' }
       - name: Validate Windows editor process and lease ownership
-        if: matrix.generator == 'Editor'
+        if: (matrix.generator == 'Editor' || matrix.generator == 'Editor ASan')
         run: |
           $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
           & $python -m unittest discover -s scripts/python -p test_editor_process_windows.py -v
@@ -123,24 +124,24 @@ jobs:
           & $python -m unittest test_play_documents.PlayDocumentsTests.test_apply_is_dirty_only_and_undo_is_independent_of_disk test_play_documents.PlayDocumentsTests.test_stale_revision_rejected_batch_and_external_save_conflict test_play_documents.PlayDocumentsTests.test_failed_atomic_replace_preserves_saved_document_and_dirty_draft -v
           if ($LASTEXITCODE -ne 0) { throw 'Windows tuning document publication failed' }
       - name: Validate the Windows channel and native gameplay ownership
-        if: matrix.generator == 'Editor'
+        if: (matrix.generator == 'Editor' || matrix.generator == 'Editor ASan')
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
-          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_SHADER_WORKER=ON
+          cmake --preset $env:LUDUS_WINDOWS_EDITOR_PRESET -DLUDUS_BUILD_SHADER_WORKER=ON
           if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime configure failed' }
-          cmake --build --preset windows-msvc-runtime --target ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid -- -k 0
+          cmake --build --preset $env:LUDUS_WINDOWS_EDITOR_PRESET --target ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid -- -k 0
           if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime build failed' }
           $testNames = @('ludus_rhi_d3d12_tests', 'ludus_platform_hosted_tests', 'ludus_game_host_windows_supervisor')
           $suite = '^(' + ($testNames -join '|') + ')$'
-          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+          $tests = ctest --preset $env:LUDUS_WINDOWS_EDITOR_PRESET --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
           foreach ($name in $testNames) {
             if ($name -notin $tests.tests.name) { throw "Missing Windows hosted runtime test $name" }
           }
-          ctest --preset windows-msvc-runtime --tests-regex $suite --output-on-failure
+          ctest --preset $env:LUDUS_WINDOWS_EDITOR_PRESET --tests-regex $suite --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime acceptance failed' }
       - name: Validate the Windows editor and hosted Play
-        if: ${{ !cancelled() && matrix.generator == 'Editor' && steps.windows-runtime-dependencies.outcome == 'success' }}
+        if: ${{ !cancelled() && (matrix.generator == 'Editor' || matrix.generator == 'Editor ASan') && steps.windows-runtime-dependencies.outcome == 'success' }}
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0
@@ -150,9 +151,9 @@ jobs:
           $qt = "$PWD/out/qt/6.8.3/msvc2022_64"
           $env:PATH = "$qt/bin;$env:PATH"
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies;$qt"
-          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON -DLUDUS_BUILD_SHADER_WORKER=ON
+          cmake --preset $env:LUDUS_WINDOWS_EDITOR_PRESET -DLUDUS_BUILD_EDITOR=ON -DLUDUS_BUILD_SHADER_WORKER=ON
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor configure failed' }
-          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests -- -k 0
+          cmake --build --preset $env:LUDUS_WINDOWS_EDITOR_PRESET --target ludus_editor ludus_editor_tests -- -k 0
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
           $testNames = @(
             'ludus_editor_d3d12_viewport', 'ludus_editor_d3d12_high_dpi', 'ludus_editor_hosted_play',
@@ -165,11 +166,11 @@ jobs:
             'ludus_render_graph_live_build_tests', 'ludus_editor_geometry_tests'
           )
           $suite = '^(' + ($testNames -join '|') + ')$'
-          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+          $tests = ctest --preset $env:LUDUS_WINDOWS_EDITOR_PRESET --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
           foreach ($name in $testNames) {
             if ($name -notin $tests.tests.name) { throw "Missing Windows editor acceptance test $name" }
           }
-          ctest --preset windows-msvc-runtime --tests-regex $suite --output-on-failure --output-junit "$PWD/out/windows-msvc-probe/editor.xml"
+          ctest --preset $env:LUDUS_WINDOWS_EDITOR_PRESET --tests-regex $suite --output-on-failure --output-junit "$PWD/out/windows-msvc-probe/editor.xml"
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor or Direct3D 12 acceptance failed' }
           python -c "import sys; sys.path.insert(0, 'tests/build_contract'); from windows_qualification import check_results; check_results('out/windows-msvc-probe/editor.xml', sys.argv[1:])" @testNames
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor test inventory failed' }
