@@ -2554,7 +2554,7 @@ def windows_runtime_sdk_artifacts(prefix: Path) -> list[Path]:
     ]
 
 
-def install_windows_runtime_sdk(root: Path, preset: str) -> int:
+def install_windows_runtime_sdk(root: Path, preset: str, *, behavior: bool = False) -> int:
     """Build, install and bundle the MSVC/Ninja runtime SDK from a developer shell.
 
     The Visual Studio solution installs the four-flavor Foundation/Input/Platform/RHI
@@ -2579,7 +2579,10 @@ def install_windows_runtime_sdk(root: Path, preset: str) -> int:
     cmake_command = cmake(root) if cmake(root).is_file() else Path("cmake")
     build_dir = root / "out" / "build" / preset
     prefix = root / "out" / "install" / preset
-    run([cmake_command, "--preset", preset], cwd=root, env=env)
+    if behavior:
+        run([sys.executable, root / "scripts/script-provider", "verify-tools"], cwd=root, env=env)
+    behavior_option = "ON" if behavior else "OFF"
+    run([cmake_command, "--preset", preset, f"-DLUDUS_BUILD_BEHAVIOR={behavior_option}"], cwd=root, env=env)
     # Keep going after a failure so one build reports every module that does not compile.
     run([cmake_command, "--build", "--preset", preset, "--", "-k", "0"], cwd=root, env=env)
     # An SDK prefix holds one installed configuration; start from an empty one.
@@ -2616,7 +2619,9 @@ def command_install_sdk(args: argparse.Namespace) -> int:
     root = repo_root()
     preset = args.preset
     if preset.startswith("windows-msvc-"):
-        return install_windows_runtime_sdk(root, preset)
+        return install_windows_runtime_sdk(root, preset, behavior=args.behavior)
+    if args.behavior:
+        raise EngineError("--behavior is for the Windows runtime SDK; enable LUDUS_BUILD_BEHAVIOR in your native preset.")
     ensure_bootstrap_for_preset(root, preset)
     cmake_configure(root, preset)
     cmake_build(root, preset)
@@ -3211,6 +3216,8 @@ def make_parser() -> argparse.ArgumentParser:
 
     install_parser = subparsers.add_parser("install-sdk", help="install the SDK and run the external consumer")
     install_parser.add_argument("preset", nargs="?", default=DEFAULT_PRESET)
+    install_parser.add_argument("--behavior", action="store_true",
+                                help="include the opt-in Behavior provider and paired tools in the Windows runtime SDK")
     install_parser.set_defaults(func=command_install_sdk)
 
     bundle_parser = subparsers.add_parser("bundle-sdk-dependencies", help="bundle prepared SDK dependencies without rebuilding")

@@ -4,6 +4,7 @@ The SDK comes from ``scripts/install-sdk.ps1 windows-msvc-runtime-sdk``. This
 moves it to a path with spaces, then builds the external runtime consumer and a
 project created by the shipped CLI against the relocated prefix only.
 """
+import argparse
 import os
 from pathlib import Path
 import shutil
@@ -77,6 +78,21 @@ def consume(sdk, workspace, visual_studio):
         contains="100% tests passed")
 
 
+def consume_behavior(sdk, workspace):
+    print("\n=== Behavior SDK / cook, play and debug ===", flush=True)
+    source = workspace / "scripted game" / "source files"
+    build = source.parent / "build"
+    shutil.copytree(ROOT / "examples/scripted-game", source, dirs_exist_ok=True)
+    run("cmake", "-S", source, "-B", build, "-G", "Ninja", "-DCMAKE_CXX_COMPILER=cl.exe",
+        f"-DCMAKE_BUILD_TYPE={CONFIGURATION}", f"-DCMAKE_PREFIX_PATH={sdk}")
+    run("cmake", "--build", build, "--config", CONFIGURATION)
+    run("ctest", "--test-dir", build, "-C", CONFIGURATION, "--output-on-failure", "--no-tests=error",
+        contains="100% tests passed")
+    supervisor = ROOT / "modules/runtime/game_host/tests/windows_supervisor_acceptance.py"
+    run(sys.executable, supervisor, "--host", build / "scripted_game_host.exe",
+        "--scripted-module", build / "scripted_game.dll")
+
+
 def run_project(*arguments, contains=None):
     environment = dict(os.environ, PYTHONPATH=str(ROOT / "scripts/python"))
     result = subprocess.run([sys.executable, "-m", "ludus_tools", "project", *map(str, arguments)], cwd=ROOT,
@@ -106,8 +122,14 @@ def verify_project(sdk, workspace):
 
 
 if __name__ == "__main__":
-    workspace = Path(sys.argv[1]).resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("workspace", type=Path)
+    parser.add_argument("--behavior", action="store_true", help="exercise the opt-in installed Behavior component")
+    args = parser.parse_args()
+    workspace = args.workspace.resolve()
     sdk = relocate(workspace)
     for visual_studio in (False, True):
         consume(sdk, workspace, visual_studio)
     verify_project(sdk, workspace)
+    if args.behavior:
+        consume_behavior(sdk, workspace)

@@ -9127,13 +9127,25 @@ The tools-only install works on Windows too. `windows-msvc-development` with
 `LUDUS_SHADER_WORKER_ONLY=ON` installs the worker, `luslc`, Slang, DXC and their
 licenses, as described in [Build and run the headless compiler](#build-and-run-the-headless-compiler).
 
-Current limits: render-graph packages cannot be built through the Windows worker
-until graph DXIL profiles exist. The editor's embedded editors and live viewport arrive with the Windows
-editor port. The Windows lane runs `ludus_shader_compiler_tests` and
-`ludus_shader_worker_protocol`. They cover DXIL compilation with include edits,
-syntax and missing-entry diagnostics, stale identities and client cancellation.
-They also cover malformed frames, occupied and invalid endpoints, stop during a
-compile, owner exit and worker exit. See the
+To rebuild a runtime graph through this worker, list `dxil` in the manifest's
+profiles and pass the named pipe and pinned DXC directory to `render-graph build`
+or `render-graph watch`. For example, after starting the worker on
+`\\.\pipe\ludus-shader-dev`, run this from your project with `$SDK` and `$tools`
+set to the runtime SDK prefix and the pinned `out/shader-tools` directory:
+
+```powershell
+ludus --json render-graph watch graphs/main.lushader.json out/graph-build `
+  --helper "$SDK/lib/cmake/Ludus/shaders" --compiler "$tools/slang/bin/slangc.exe" `
+  --dxc-path "$tools/dxc" --worker-socket '\\.\pipe\ludus-shader-dev' `
+  --runtime-package out/render-graph/main.lurgrt
+```
+
+The producer checks the worker's Slang and DXC library hashes before it reuses
+cached stages or compiles new ones. The editor's embedded editors and live
+viewport arrive with the Windows editor port. The Windows lane runs
+`ludus_shader_compiler_tests` and
+`ludus_shader_worker_protocol` for compilation and protocol failures, and
+`ludus_shader_reload_gpu` for producer-to-renderer reload. See the
 [Windows D6c milestone](../architecture/windows-direct3d12.md#d6-deliver-runtime-and-developer-workflows).
 
 ### Editor and game clients
@@ -9166,13 +9178,12 @@ buffer is reused. Failed reads/decodes never stage a partial generation. Inspect
 `ReloadReport` separately from the activation report and presented image.
 
 `Ludus::ShaderDevelopment` also builds on Windows, where the producer publishes DXIL
-generations. On the Windows lane, `ludus_render_graph_dxil_tests` covers it on
-Direct3D 12 (WARP):
-
-- It publishes the DXIL `surface` generation, stages and activates it, and draws red.
-- A truncated publication then fails delivery while the red frame stays drawable.
-- A generation whose color callback was edited to green replaces it through the
-  file watcher.
+generations for Direct3D 12 (WARP in CI). The `ludus_shader_reload_gpu` journey starts the named-pipe
+worker and uses the same producer as the build and watch commands. It runs the
+renderer with the first DXIL package, rejects an invalid source edit while
+preserving the published package, then publishes a compatible edit and checks
+that the running renderer changes from red to green. A truncated replacement
+then fails delivery while the green frame stays drawable.
 
 Applications needing direct source compilation can link
 `Ludus::ShaderCompilerClient`. `Client::Submit` copies an immutable set of relative

@@ -339,9 +339,31 @@ prefix with `--sdk` for the `windows-msvc-development` or
 `windows-msvc-visual-studio-development` profile, and list the modules you link
 in `--components`.
 
-Debug, Profile and Release runtime SDKs are not installed yet. The runtime SDK
-includes the scene cooker (`SceneCook`). It omits shader file delivery (`ShaderDevelopment`),
-the development diagnostic session, Behavior, Unicode and the OIDN denoiser.
+The runtime SDK includes the scene cooker (`SceneCook`) and shader file delivery
+(`ShaderDevelopment`). Debug, Profile and Release runtime SDKs are still pending.
+
+To include the optional Luau Behavior provider and its paired cooking tools,
+run these commands from the same x64 developer shell:
+
+```powershell
+python scripts/script-provider bootstrap
+./scripts/install-sdk.ps1 windows-msvc-runtime-sdk --behavior
+```
+
+Configure the scripted game sample against this prefix to cook its assets and
+build the static player, host and reloadable DLL:
+
+```powershell
+cmake -S examples/scripted-game -B out/scripted-game -G Ninja `
+  -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+  "-DCMAKE_PREFIX_PATH=$PWD/out/install/windows-msvc-runtime-sdk"
+cmake --build out/scripted-game
+ctest --test-dir out/scripted-game --output-on-failure
+```
+
+See [S5](../architecture/behavior-s5.md) for the debugger contract. The Windows SDK lane relocates the prefix before building the
+sample, launches the static player, and exercises the module's script debugger
+through the host's inherited socket.
 
 ### VS Code and Visual Studio on Windows
 

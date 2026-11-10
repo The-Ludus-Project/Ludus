@@ -158,13 +158,68 @@ def check_killed_host_ends_stream(host, module):
         session.close()
 
 
+def check_script_debug_session(host, module):
+    """Drive the installed SDK sample through the Windows host and the real Luau VM."""
+    session = Session(host, module, 1)
+
+    def require_status(request, expected="Ok"):
+        result = session.status(request)
+        if result["status"] != expected:
+            raise RuntimeError(f"Expected {expected} for request {request}: {result}")
+        return result
+
+    def debug(request, action, expected="Ok", **fields):
+        payload = json.dumps({"version": 1, "action": action, **fields}, separators=(",", ":"))
+        session.send(request, "ScriptDebug", extension=1, payload=payload)
+        result = require_status(request, expected)
+        return json.loads(result["message"]) if expected == "Ok" else None
+
+    def identity(snapshot):
+        return {field: snapshot[field] for field in ("session", "execution", "stop")}
+
+    try:
+        session.send(1, "Hello")
+        require_status(1)
+        session.send(2, "Load", generation=hex_id(1))
+        require_status(2)
+        initial = debug(3, "inspect")
+        if initial["provider"] != "luau" or initial["partial"] or initial["interactions"] != 0:
+            raise RuntimeError(f"Unexpected initial Luau state: {initial}")
+        # The installed example's text asset first changes state at line 4.
+        asset = "0000000000000101"
+        debug(4, "breakpoint", asset=asset, line=4, enabled=True, **identity(initial))
+        stopped = debug(5, "interact", asset=asset, amount=1, **identity(initial))
+        if not stopped["partial"] or stopped["interactions"] != 0 or not stopped["frames"]:
+            raise RuntimeError(f"The Luau breakpoint did not preserve the unpublished tick: {stopped}")
+        stepped = debug(6, "into", **identity(stopped))
+        if not stepped["partial"] or stepped["stop"] == stopped["stop"] or not stepped["frames"]:
+            raise RuntimeError(f"The Luau step did not reach a new stop: {stepped}")
+        debug(7, "continue", expected="InvalidRequest", **identity(stopped))
+        finished = debug(8, "continue", **identity(stepped))
+        if finished["partial"] or finished["interactions"] != 1:
+            raise RuntimeError(f"The resumed Luau tick did not commit exactly once: {finished}")
+        session.send(9, "Stop")
+        session.await_event(lambda event: event.get("event") == "SessionEnded")
+        if session.process.wait(timeout=DEADLINE_SECONDS) != 0:
+            raise RuntimeError(f"Scripted GameHost failed to stop: {session.output()}")
+    finally:
+        session.close()
+    print("Installed Luau debugger breakpoint, step, stale stop and resume passed.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True)
-    parser.add_argument("--a", type=Path, required=True)
-    parser.add_argument("--b", type=Path, required=True)
-    parser.add_argument("--incompatible", type=Path, required=True)
+    parser.add_argument("--a", type=Path)
+    parser.add_argument("--b", type=Path)
+    parser.add_argument("--incompatible", type=Path)
+    parser.add_argument("--scripted-module", type=Path)
     args = parser.parse_args()
+    if args.scripted_module:
+        check_script_debug_session(args.host, args.scripted_module)
+        return
+    if not all((args.a, args.b, args.incompatible)):
+        parser.error("provide --a, --b and --incompatible, or --scripted-module")
     with tempfile.TemporaryDirectory(prefix="ludus-supervisor-") as directory:
         root = Path(directory)
         generations = []

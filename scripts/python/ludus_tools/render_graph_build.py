@@ -1209,7 +1209,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     preserve the prior package pointer. No download, device pipeline creation or
     GPU execution. Return an immutable package path and separate hit/miss counts.
     helper names the installed SDK shaders directory (or checkout cmake/shaders).
-    Runs on macOS/Linux, with one nonblocking writer per output tree.
+    Runs on macOS, Linux and Windows, with one nonblocking writer per output tree.
     ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
     variant from the same snapshot. Its stages have their own cache identities, and the
     result is never cooked into a runtime package.
@@ -1253,6 +1253,13 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         require(descriptor.get('library_sha256') in tool_hashes.values(), 'Tools', 'native worker', 'loaded API library differs from the selected toolchain')
         inventory = ''.join(key.removeprefix('slang/') + ':' + value + '\n'
                             for key, value in sorted(tool_hashes.items()) if key.startswith('slang/'))
+        if os.name == 'nt':
+            # The Windows worker inventories DXC after its Slang libraries, even for non-DXIL requests.
+            dxc_root = Path(dxc) if dxc else Path(compiler).resolve().parent.parent.parent / 'dxc'
+            for library in ('dxcompiler.dll', 'dxil.dll'):
+                path = dxc_root / library
+                require(path.is_file(), 'Tools', 'native worker', f'cannot verify worker DXC library {path}; set --dxc-path')
+                inventory += f'dxc/{library}:{hash_file(path)}\n'
         require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
                 'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
         worker_identity = descriptor.get('implementation')
