@@ -243,6 +243,11 @@ TEST_CASE("DXIL scalar raster bindings match the complete PSV table", "[rhi][dxi
         return rhi::internal::HasDxilBindings(bytes.AsSpan(), layout);
     };
     CHECK(matches(shape) == true);
+    // D6c: the owned deferred/clustered ABIs bind slots a stage does not read.
+    layout.Count = 2;
+    layout.Entries[1] = { .Binding = 4, .Kind = rhi::RasterBindingKind::Texture2D };
+    CHECK(matches(shape) == true);
+    layout.Count = 1;
     SECTION("wrong register space")
     {
         shape.ResourceSpace = 1;
@@ -267,10 +272,6 @@ TEST_CASE("DXIL scalar raster bindings match the complete PSV table", "[rhi][dxi
     SECTION("extra native binding")
     {
         layout.Count = 0;
-    }
-    SECTION("extra metadata binding")
-    {
-        layout.Count = 2;
     }
     SECTION("runtime array")
     {
