@@ -12,6 +12,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
@@ -20,14 +21,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <chrono>
-#include <thread>
-
 namespace
 {
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
+namespace threading = ludus::foundation::threading;
 using rhi::RasterStatus;
 constexpr uint32 EXTENT = 4;
 constexpr usize QUAD_VERTICES = 4;
@@ -36,7 +35,7 @@ constexpr usize TABLE_COUNT = 2;
 constexpr usize CAMERA_COUNT = 1;
 constexpr uint64 COLD_CAPTURE_TIMEOUT_NANOSECONDS =
     LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
-constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
+constexpr time::Duration COMPLETION_POLL_INTERVAL = time::Milliseconds(1);
 struct Session final
 {
     LUDUS_INLINE Session() noexcept
@@ -147,7 +146,7 @@ void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::Met
                time::NowTicks() - beginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
         {
             capture.Service();
-            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
         }
         REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
         const usize itemCount = screen == 0 ? 1 : TABLE_COUNT;
@@ -163,7 +162,7 @@ void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::Met
                time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
         {
             capture.Service();
-            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
         }
         const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
         CAPTURE(pass,
@@ -392,7 +391,7 @@ TEST_CASE("Scene optical template captures a supplied cooked test scene", "[.wav
            time::NowTicks() - start < SCENE_TIMEOUT)
     {
         capture.Service();
-        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
     }
     REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
     const RasterStatus submitted = capture.SubmitScene({meshes.GetData(), meshes.GetSize()},
@@ -407,7 +406,7 @@ TEST_CASE("Scene optical template captures a supplied cooked test scene", "[.wav
            capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed && time::NowTicks() - start < SCENE_TIMEOUT)
     {
         capture.Service();
-        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
     }
     INFO("scene " << sceneDirectoryOrNull << " triangles " << triangleCount << " status "
                   << static_cast<uint32>(capture.GetStatus()) << " problem "

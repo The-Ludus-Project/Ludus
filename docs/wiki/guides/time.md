@@ -133,6 +133,13 @@ bool ExampleDeadline() noexcept
 }
 ```
 
+`Seconds`, `Milliseconds` and `Microseconds` build a `Duration` from a whole
+unit count, so a five-second timeout reads `timeout.Arm(timing::Now(),
+timing::Seconds(5))`. Counts past the nanosecond range saturate to the maximum
+interval instead of wrapping. To wait inside such a loop, call
+FoundationThreading's `SleepFor` rather than `std::this_thread::sleep_for`
+(see [FoundationThreading](../../modules/foundation/threading.md#threads-sleeping-and-yielding)).
+
 Use simulation ticks for a cooldown that should stop during game pause. A
 real-time deadline keeps advancing when simulation stops.
 

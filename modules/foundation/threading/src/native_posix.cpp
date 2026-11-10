@@ -1,8 +1,15 @@
 #include "internal/native.hpp"
 
+#include <ludus/foundation/time/time.hpp>
+
 #if defined(LUDUS_THREADING_NATIVE_FAULT_TESTING)
 #    include "internal/native_test_hooks.hpp"
 #endif
+
+#include <cerrno>
+#include <cstring>
+#include <ctime>
+#include <sched.h>
 
 namespace ludus::foundation::threading::detail
 {
@@ -82,5 +89,29 @@ void NativeThread::Join() noexcept
     test::RecordThreadJoin();
 #endif
     LUDUS_REQUIRE(pthread_join(Handle, nullptr) == 0);
+}
+
+void NativeSleep(uint64 nanoseconds) noexcept
+{
+    timespec remaining{};
+    remaining.tv_sec = static_cast<time_t>(nanoseconds / time::NANOSECONDS_PER_SECOND);
+    remaining.tv_nsec = static_cast<long>(nanoseconds % time::NANOSECONDS_PER_SECOND);
+    // nanosleep(2) writes the unslept remainder when a signal interrupts it; resume from there.
+    while (nanosleep(&remaining, &remaining) != 0 && errno == EINTR)
+    {
+    }
+}
+void NativeYield() noexcept
+{
+    (void)sched_yield();
+}
+uint64 NativeCallingThreadId() noexcept
+{
+    // pthread_t is an integer on Linux and a pointer on macOS; copy its bytes into the identity.
+    static_assert(sizeof(pthread_t) <= sizeof(uint64), "pthread_t must fit the thread identity");
+    const pthread_t self = pthread_self();
+    uint64 identity = 0;
+    std::memcpy(&identity, &self, sizeof(self));
+    return identity;
 }
 } // namespace ludus::foundation::threading::detail

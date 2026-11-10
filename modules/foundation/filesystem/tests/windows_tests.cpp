@@ -5,6 +5,7 @@
 #include <ludus/foundation/filesystem/pack.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
 #include <ludus/foundation/filesystem/watch.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "pack_fixture.hpp"
 
@@ -12,13 +13,13 @@
 
 #include <filesystem>
 #include <string>
-#include <thread>
 
 #include <windows.h>
 #include <winioctl.h>
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::filesystem;
+namespace threading = ludus::foundation::threading;
 
 namespace
 {
@@ -183,7 +184,7 @@ TEST_CASE("Windows mounts native packs and reads their revisions through the asy
     const uint64 deadline = AsyncNow() + 5'000'000'000;
     while (reader.Poll(completion) == false && AsyncNow() < deadline)
     {
-        std::this_thread::yield();
+        threading::YieldThread();
     }
     REQUIRE(reader.Shutdown() == AsyncStatus::Ok);
     REQUIRE(completion.Handle.Scheduler == request.Scheduler);

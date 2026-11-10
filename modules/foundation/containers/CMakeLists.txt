@@ -76,7 +76,7 @@ if(LUDUS_BUILD_TESTS)
     target_include_directories(ludus_foundation_containers_tests PRIVATE tests)
     target_link_libraries(
         ludus_foundation_containers_tests
-        PRIVATE
+        PRIVATE Ludus::FoundationThreading
             Ludus::FoundationContainers
             Ludus::FoundationMemory
             Catch2::Catch2WithMain

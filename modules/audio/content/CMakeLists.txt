@@ -34,7 +34,7 @@ if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND NOT EM
     ludus_apply_project_defaults(ludus_audio_content_worker_test_backend)
     add_executable(ludus_audio_content_worker_tests tests/worker_tests.cpp)
     target_include_directories(ludus_audio_content_worker_tests PRIVATE src "${PROJECT_SOURCE_DIR}/modules/audio/tests")
-    target_link_libraries(ludus_audio_content_worker_tests PRIVATE ludus_audio_content_worker_test_backend Catch2::Catch2WithMain)
+    target_link_libraries(ludus_audio_content_worker_tests PRIVATE Ludus::FoundationThreading ludus_audio_content_worker_test_backend Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_audio_content_worker_tests)
     ludus_enable_test_exceptions(ludus_audio_content_worker_tests)
     add_test(NAME ludus_audio_content_worker_tests COMMAND ludus_audio_content_worker_tests)

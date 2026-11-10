@@ -134,7 +134,7 @@ if(LUDUS_BUILD_TESTS)
     )
     target_link_libraries(
         ludus_foundation_logging_tests
-        PRIVATE
+        PRIVATE Ludus::FoundationThreading Ludus::FoundationTime
             Ludus::FoundationLogging
             Catch2::Catch2WithMain
     )

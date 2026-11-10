@@ -512,6 +512,58 @@ compilation. `tests/sdk_consumer` showed no consistent difference (10 of 18
 pairs, differences from −1.7 to +0.9 s). Six pairs at `--parallel 2` pointed
 the same way for the two examples but are too few to quantify.
 
+## Thread and clock headers in tests
+
+The batch profile of [run 42522837843](https://github.com/The-Ludus-Project/Ludus/actions/runs/42522837843)
+(2026-11-08, 723 compilations, 328.5 s frontend, 315.8 s normalized against the
+320 s budget) listed only ten headers. Re-analysing its `-cba.bin` artifact with
+`header = 70` in `ClangBuildAnalyzer.ini` showed three standard headers that no
+project header includes, yet which cost 28.8 s between them:
+
+| Header | Inclusions | Average | Total | Reached through |
+| --- | ---: | ---: | ---: | --- |
+| `<filesystem>` | 29 | 429 ms | 12.4 s | test sources and three test fixtures |
+| `<chrono>` | 19 | 511 ms | 9.7 s | test sources (18 direct) |
+| `<thread>` | 29 | 229 ms | 6.7 s | test sources (26 direct), Logging's backend (3) |
+
+On libstdc++ 14 in C++23 mode `<thread>` and `<chrono>` include `<format>`
+(`std::formatter<std::thread::id>` and the chrono formatters), so
+`std::vformat_to` was instantiated in 64 translation units for 14.2 s although
+no Ludus header includes `<format>`. Test translation units were 186 s of the
+328 s; the 421 production units were 142 s.
+
+FoundationThreading now provides `Thread`, `SleepFor`, `YieldThread` and
+`GetCallingThreadId` over its existing native backends, and FoundationTime
+provides `Seconds`, `Milliseconds` and `Microseconds`
+([threading guide](../modules/foundation/threading.md#threads-sleeping-and-yielding),
+ADR 0003). Every test, benchmark and tool source outside the editor that
+included `<thread>` or `<chrono>` uses them instead. One file keeps `<thread>`:
+`modules/foundation/base/tests/assert_child.cpp`, whose fake-platform
+executable must not link FoundationBase. Logging's `backend.hpp` is unchanged
+and keeps its documented override.
+
+Frontend time of six migrated sources on a 10-core Apple M5 (pinned Clang 23,
+libc++, `macos-clang-debug` flags, `-ftime-trace` "Total Frontend", minimum of
+three serial runs, the same headers on both sides and only the source file
+swapped for its `origin/develop` version):
+
+| Translation unit | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `modules/foundation/strings/tests/strings_tests.cpp` | 1649 ms | 1177 ms | -29% |
+| `modules/foundation/filesystem/tests/async_tests.cpp` | 803 ms | 558 ms | -31% |
+| `modules/foundation/logging/tests/regression_tests.cpp` | 808 ms | 545 ms | -33% |
+| `modules/graphics/rhi/tests/raster_render_tests.cpp` | 713 ms | 460 ms | -35% |
+| `modules/runtime/game_host/tests/session_tests.cpp` | 583 ms | 350 ms | -40% |
+| `modules/graphics/renderer/tests/render_graph_reload_render_tests.cpp` | 799 ms | 613 ms | -23% |
+| Sum | 5356 ms | 3703 ms | -31% |
+
+These are libc++ numbers from one host, not the budget's metric. No Linux host
+was available, so the effect on libstdc++, where the two headers also bring
+`<format>`, is not measured here: the profile above bounds it at the 16.4 s the
+two headers cost, and the next **Build-time budget** summary is the measurement. The aggregate budget is unchanged. `<filesystem>` in test
+fixtures (12.4 s) is the next candidate and needs a test-support library that
+keeps `<filesystem>` behind one `.cpp`.
+
 ## Build graph check
 
 Header parse budgets miss work that the build graph itself repeats: a source

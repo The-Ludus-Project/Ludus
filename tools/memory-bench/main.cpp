@@ -15,13 +15,13 @@
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 
 #include <atomic>
 #include <cstdio>
 #include <new>
 #include <string_view>
-#include <thread> // std::thread drives the remote-free and multi-producer workloads
 
 namespace
 {
@@ -33,6 +33,9 @@ using ludus::foundation::uint64;
 using ludus::foundation::uint8;
 using ludus::foundation::usize;
 using ludus::foundation::core::StaticArray;
+using ludus::foundation::threading::Thread;
+using ludus::foundation::threading::ThreadStatus;
+using ludus::foundation::threading::YieldThread;
 using ludus::foundation::time::NowTicks;
 
 constexpr usize SAMPLE_COUNT = 7;
@@ -209,14 +212,13 @@ Sample RunContendedChurn(const BackendType& backend)
     std::atomic<bool> shouldStart{false};
     std::atomic<uint64> lastFinish{0};
     StaticArray<Sample, THREAD_COUNT> results{};
-    Array<std::thread> threads;
-    threads.EnsureCapacity(THREAD_COUNT);
+    StaticArray<Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
-        threads.AddInPlace([&backend, &shouldStart, &lastFinish, &results, t] {
+        LUDUS_REQUIRE(threads[t].Start([&backend, &shouldStart, &lastFinish, &results, t] {
             while (shouldStart.load(std::memory_order_acquire) == false)
             {
-                std::this_thread::yield();
+                YieldThread();
             }
             results[t] = RunSmallChurn(backend, OPERATIONS_PER_THREAD, RANDOM_SEED + t);
             const uint64 now = NowTicks();
@@ -225,13 +227,13 @@ Sample RunContendedChurn(const BackendType& backend)
                    lastFinish.compare_exchange_weak(previous, now, std::memory_order_relaxed) == false)
             {
             }
-        });
+        }) == ThreadStatus::Ok);
     }
     const uint64 start = NowTicks();
     shouldStart.store(true, std::memory_order_release);
-    for (std::thread& thread : threads)
+    for (Thread& thread : threads)
     {
-        thread.join();
+        LUDUS_REQUIRE(thread.Join() == ThreadStatus::Ok);
     }
     Sample sample;
     sample.Operations = THREAD_COUNT * OPERATIONS_PER_THREAD;
@@ -307,15 +309,16 @@ Sample RunSystemRemoteFree()
     sample.Operations = blocks.GetSize();
     sample.Bytes = blocks.GetSize() * BLOCK_BYTES;
     std::atomic<uint64> elapsed{0};
-    std::thread remote([&] {
+    Thread remote;
+    LUDUS_REQUIRE(remote.Start([&] {
         const uint64 start = NowTicks();
         for (usize i = 0; i < blocks.GetSize(); ++i)
         {
             domain.Free(blocks[i], BLOCK_BYTES, BLOCK_ALIGNMENT);
         }
         elapsed.store(NowTicks() - start, std::memory_order_relaxed);
-    });
-    remote.join();
+    }) == ThreadStatus::Ok);
+    LUDUS_REQUIRE(remote.Join() == ThreadStatus::Ok);
     sample.Nanoseconds = elapsed.load(std::memory_order_relaxed);
     sample.Checksum = blocks.GetSize();
     return sample;
@@ -452,14 +455,13 @@ Sample RunTraceEmitFourThreads()
     std::atomic<bool> shouldStart{false};
     std::atomic<uint32> finished{0};
     std::atomic<uint64> lastFinish{0};
-    Array<std::thread> threads;
-    threads.EnsureCapacity(THREAD_COUNT);
+    StaticArray<Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
-        threads.AddInPlace([&] {
+        LUDUS_REQUIRE(threads[t].Start([&] {
             while (shouldStart.load(std::memory_order_acquire) == false)
             {
-                std::this_thread::yield();
+                YieldThread();
             }
             EmitMarks(EVENTS_PER_THREAD);
             const uint64 now = NowTicks();
@@ -469,13 +471,13 @@ Sample RunTraceEmitFourThreads()
             {
             }
             finished.fetch_add(1, std::memory_order_release);
-        });
+        }) == ThreadStatus::Ok);
     }
     const uint64 start = NowTicks();
     shouldStart.store(true, std::memory_order_release);
-    for (std::thread& thread : threads)
+    for (Thread& thread : threads)
     {
-        thread.join();
+        LUDUS_REQUIRE(thread.Join() == ThreadStatus::Ok);
     }
     sample.Nanoseconds = lastFinish.load(std::memory_order_relaxed) - start;
     profiling::EndCapture();

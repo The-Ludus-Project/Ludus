@@ -13,16 +13,18 @@
 #include "test_socket.h"
 
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/runtime/game_host/host.h>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
-#include <chrono>
 #include <string>
-#include <thread>
 #include <utility>
 
 using namespace ludus::runtime::game_host;
@@ -32,6 +34,8 @@ using protocol::EncodeFrame;
 using protocol::FrameReader;
 using protocol::Message;
 using namespace ludus::runtime::game_host::tests;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 
 namespace
 {
@@ -40,26 +44,27 @@ uint64 CurrentGeneration = 1;
 class HostWorker
 {
 public:
-    template <typename Fn>
-    HostWorker(int fd, Fn&& fn) : Fd_(fd), Thread_(std::forward<Fn>(fn))
+    template <typename Function>
+    HostWorker(int fd, Function&& function) : Fd_(fd)
     {
+        LUDUS_REQUIRE(mThread.Start(std::forward<Function>(function)) == threading::ThreadStatus::Ok);
     }
     ~HostWorker()
     {
-        if (Thread_.joinable())
+        if (mThread.IsJoinable() == true)
         {
             ShutdownSocket(Fd_);
-            Thread_.join();
+            static_cast<void>(mThread.Join());
         }
     }
     void join()
     {
-        Thread_.join();
+        LUDUS_REQUIRE(mThread.Join() == threading::ThreadStatus::Ok);
     }
 
 private:
     int Fd_ = -1;
-    std::thread Thread_;
+    threading::Thread mThread;
 };
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void SendCommand(int fd, const Message& m)
@@ -96,8 +101,9 @@ void SendCommand(int fd, const Message& m)
 Array<Message> DrainEvents(int fd, FrameReader& reader, int budgetMs)
 {
     Array<Message> events;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs);
-    while (std::chrono::steady_clock::now() < deadline)
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Milliseconds(static_cast<uint64>(budgetMs))) == timing::TimeStatus::Ok);
+    while (deadline.IsExpired(timing::Now()) == false)
     {
         if (WaitReadable(fd, 5) == true)
         {
@@ -176,8 +182,9 @@ template <typename Predicate>
 Array<Message> AwaitEvents(int fd, FrameReader& reader, const Predicate& complete)
 {
     Array<Message> events;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (complete(events) == false && std::chrono::steady_clock::now() < deadline)
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(2)) == timing::TimeStatus::Ok);
+    while (complete(events) == false && deadline.IsExpired(timing::Now()) == false)
     {
         const Array<Message> batch = DrainEvents(fd, reader, 20);
         events.AddRange(batch);
@@ -768,9 +775,10 @@ TEST_CASE("Status reports runtime-computed frame timing", "[session][timing]")
     constexpr ludus::foundation::uint64 MEASURED_FRAMES = 5;
     TimingReport report;
     ludus::foundation::uint64 ticks = 0;
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
     ludus::foundation::uint64 request = 1;
-    while (report.WindowFrames < MEASURED_FRAMES && std::chrono::steady_clock::now() < deadline)
+    while (report.WindowFrames < MEASURED_FRAMES && deadline.IsExpired(timing::Now()) == false)
     {
         Message status;
         status.SetString("command", "Status");
@@ -831,7 +839,7 @@ TEST_CASE("Stop is bounded under output backpressure without corrupting frames",
         status.SetHexId("request", i);
         SendCommand(editorEnd, status);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    threading::SleepFor(timing::Milliseconds(400));
     Message stop;
     stop.SetString("command", "Stop");
     stop.SetHexId("request", 513);

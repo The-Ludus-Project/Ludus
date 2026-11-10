@@ -8,6 +8,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/elliptical_cone.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/wave_tracing.hpp>
 #include <ludus/graphics/rhi/compute.h>
@@ -15,20 +16,18 @@
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
-#include <chrono>
-#include <thread>
-
 namespace
 {
 using namespace ludus::foundation;
 using namespace ludus::graphics::renderer;
 namespace math = ludus::foundation::math;
 namespace rhi = ludus::graphics::rhi;
+namespace threading = ludus::foundation::threading;
 using rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
 constexpr uint64 COLD_GPU_TIMEOUT_NANOSECONDS =
     LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
-constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
+constexpr time::Duration COMPLETION_POLL_INTERVAL = time::Milliseconds(1);
 constexpr usize CASE_COUNT = LUDUS_WAVE_PARITY_CASE_COUNT;
 constexpr usize WORDS_PER_RECORD = 4;
 constexpr usize CASE_WORDS = CASE_COUNT * LUDUS_WAVE_PARITY_CASE_RECORDS * WORDS_PER_RECORD;
@@ -49,7 +48,7 @@ void WaitReady(rhi::DeviceHandle device,
     while (status == RasterStatus::Pending && time::NowTicks() - start < timeoutNanoseconds)
     {
         REQUIRE(rhi::PollLifetime(device) == RasterStatus::Ready);
-        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
         status = rhi::GetStatus(device, handle);
     }
     const uint64 elapsedNanoseconds = time::NowTicks() - start;

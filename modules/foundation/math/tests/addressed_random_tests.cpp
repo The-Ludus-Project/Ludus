@@ -1,13 +1,14 @@
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "internal/addressed_random.hpp"
 
 #include <array>
-#include <thread>
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation::math;
+namespace threading = ludus::foundation::threading;
 using ludus::foundation::core::usize;
 
 TEST_CASE("Philox4x32-10 matches Random123 known answers", "[math][random]")
@@ -243,10 +244,10 @@ TEST_CASE("Event samples survive worker count, task order and unrelated draws", 
     {
         std::array<Result, count> actual{};
         {
-            std::array<std::thread, 4> threads;
+            std::array<threading::Thread, 4> threads;
             for (usize worker = 0; worker < workers; ++worker)
             {
-                threads[worker] = std::thread([&, worker] {
+                REQUIRE(threads[worker].Start([&, worker] {
                     for (usize task = worker; task < count; task += workers)
                     {
                         const usize entity = (task * 37u) % count;
@@ -254,11 +255,11 @@ TEST_CASE("Event samples survive worker count, task order and unrelated draws", 
                         (void)SampleUInt32(key, {static_cast<uint64>(entity), 100, 1235});
                         actual[entity] = evaluate(entity);
                     }
-                });
+                }) == threading::ThreadStatus::Ok);
             }
             for (usize worker = 0; worker < workers; ++worker)
             {
-                threads[worker].join();
+                REQUIRE(threads[worker].Join() == threading::ThreadStatus::Ok);
             }
         } // Join before examining disjoint writes.
         for (usize entity = 0; entity < count; ++entity)

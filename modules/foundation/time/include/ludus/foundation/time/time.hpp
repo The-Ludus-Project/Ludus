@@ -37,6 +37,40 @@ enum class TimeStatus : uint8
 
 /// Exact conversion factor from seconds to stored nanoseconds.
 inline constexpr uint64 NANOSECONDS_PER_SECOND = 1'000'000'000;
+/// Exact conversion factor from milliseconds to stored nanoseconds.
+inline constexpr uint64 NANOSECONDS_PER_MILLISECOND = 1'000'000;
+/// Exact conversion factor from microseconds to stored nanoseconds.
+inline constexpr uint64 NANOSECONDS_PER_MICROSECOND = 1'000;
+
+namespace detail
+{
+/// Multiply a unit count into nanoseconds; counts past the uint64 range saturate to the maximum.
+[[nodiscard]] constexpr Duration ScaleToNanoseconds(uint64 count, uint64 nanosecondsPerUnit) noexcept
+{
+    constexpr uint64 MAXIMUM_NANOSECONDS = ~uint64{0};
+    if (count > MAXIMUM_NANOSECONDS / nanosecondsPerUnit)
+    {
+        return {MAXIMUM_NANOSECONDS};
+    }
+    return {count * nanosecondsPerUnit};
+}
+} // namespace detail
+
+/// Interval of whole seconds; counts past the uint64 nanosecond range saturate to the maximum interval.
+[[nodiscard]] constexpr Duration Seconds(uint64 count) noexcept
+{
+    return detail::ScaleToNanoseconds(count, NANOSECONDS_PER_SECOND);
+}
+/// Interval of whole milliseconds; counts past the uint64 nanosecond range saturate to the maximum interval.
+[[nodiscard]] constexpr Duration Milliseconds(uint64 count) noexcept
+{
+    return detail::ScaleToNanoseconds(count, NANOSECONDS_PER_MILLISECOND);
+}
+/// Interval of whole microseconds; counts past the uint64 nanosecond range saturate to the maximum interval.
+[[nodiscard]] constexpr Duration Microseconds(uint64 count) noexcept
+{
+    return detail::ScaleToNanoseconds(count, NANOSECONDS_PER_MICROSECOND);
+}
 
 /// @brief Read the monotonic clock shared with profiling and logging, in nanoseconds.
 ///

@@ -6,11 +6,11 @@
 // flags; run manually and paste output into the evidence doc.
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/input/input_debug.h>
 #include <ludus/input/keyboard.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -20,7 +20,7 @@ using namespace ludus::input;
 using ludus::foundation::Array;
 using ludus::foundation::float64;
 using ludus::foundation::usize;
-using Clock = std::chrono::steady_clock;
+namespace timing = ludus::foundation::time;
 
 namespace
 {
@@ -81,10 +81,10 @@ Timing measure(Fn&& batch, MeasureConfig config)
     samples.EnsureCapacity(static_cast<usize>(config.iterations));
     for (int i = 0; i < config.iterations; ++i)
     {
-        const auto start = Clock::now();
+        const timing::Timestamp start = timing::Now();
         batch();
-        const auto end = Clock::now();
-        samples.Add(std::chrono::duration<float64, std::nano>(end - start).count());
+        const timing::Timestamp end = timing::Now();
+        samples.Add(static_cast<float64>(end.Nanoseconds - start.Nanoseconds));
     }
     return Timing{percentile(samples, 0.5), percentile(samples, 0.95)};
 }

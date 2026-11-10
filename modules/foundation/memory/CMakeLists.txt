@@ -29,7 +29,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_foundation_memory_tests
         tests/owned_object_tests.cpp tests/recording_domain.hpp tests/shared_ptr_tests.cpp tests/accounting_tests.cpp)
     target_link_libraries(ludus_foundation_memory_tests
-        PRIVATE Ludus::FoundationMemory Ludus::FoundationContainers Catch2::Catch2WithMain Threads::Threads)
+        PRIVATE Ludus::FoundationThreading Ludus::FoundationMemory Ludus::FoundationContainers Catch2::Catch2WithMain Threads::Threads)
     # Reduced-width saturation tests instantiate the private count transitions,
     # and accounting tests drive the private counter updates with injected
     # near-limit values; these headers are never installed.

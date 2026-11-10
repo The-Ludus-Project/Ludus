@@ -104,7 +104,7 @@ if(LUDUS_BUILD_TESTS)
     target_include_directories(ludus_audio_tests PRIVATE src include)
     target_link_libraries(
         ludus_audio_tests
-        PRIVATE
+        PRIVATE Ludus::FoundationThreading Ludus::FoundationTime
             Ludus::Audio
             Ludus::FoundationBase
             Catch2::Catch2WithMain

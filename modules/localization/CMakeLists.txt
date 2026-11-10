@@ -37,7 +37,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_localization_tests tests/catalog_tests.cpp tests/release_tests.cpp tests/formatter_tests.cpp
         "${_localization_fixture}")
     target_include_directories(ludus_localization_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    target_link_libraries(ludus_localization_tests PRIVATE Ludus::Localization Ludus::FoundationContainers Catch2::Catch2WithMain)
+    target_link_libraries(ludus_localization_tests PRIVATE Ludus::FoundationThreading Ludus::Localization Ludus::FoundationContainers Catch2::Catch2WithMain)
     if(LUDUS_BUILD_UNICODE)
         target_compile_definitions(ludus_localization_tests PRIVATE LUDUS_LOCALIZATION_TEST_HAS_ICU=1)
         target_link_libraries(ludus_localization_tests PRIVATE Ludus::Unicode)

@@ -10,8 +10,8 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
+#include <ludus/foundation/time/time.hpp>
 
-#include <chrono>
 #include <cstdlib>
 #include <type_traits>
 
@@ -354,10 +354,9 @@ bool Semantics() noexcept
     passed &= DebugProbe();
     // End-to-end batch timing includes VM creation, setup, load and destruction.
     // This diagnostic is not a shipping latency budget or a pure-call benchmark.
-    const auto start = std::chrono::steady_clock::now();
+    const foundation::time::Timestamp start = foundation::time::Now();
     const Outcome dispatch = Run(DISPATCH, sizeof(DISPATCH), "@dispatch.luau");
-    const auto elapsed =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+    const uint64 elapsed = foundation::time::Now().Nanoseconds - start.Nanoseconds;
     passed &= Check(dispatch.CallStatus == LUA_OK && dispatch.Execution.Result == 10000 &&
                         dispatch.Execution.BindingCalls == 10000 && dispatch.Memory.Live == 0,
                     "dispatch-batch");

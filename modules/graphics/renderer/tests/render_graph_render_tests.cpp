@@ -19,15 +19,14 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <chrono>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::graphics::renderer::testing;
@@ -36,6 +35,8 @@ namespace rhi = ludus::graphics::rhi;
 namespace packages = ludus::render_graph_packages;
 namespace shaders = ludus::shaders;
 namespace format = ludus::content::render_graph_format;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 constexpr PackageLocation SURFACE_PACKAGE{LUDUS_RG3_SURFACE_DIRECTORY, "rg2_surface.lurgrt"};
@@ -371,7 +372,7 @@ TEST_CASE("RG3 runtime generation renders the same pixels as its compiled header
     rhi::RasterStatus polled = activation.Poll();
     for (usize attempt = 0; polled == rhi::RasterStatus::Pending && attempt < 1000; ++attempt)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         polled = activation.Poll();
     }
     REQUIRE(polled == rhi::RasterStatus::Ready);
@@ -388,7 +389,7 @@ TEST_CASE("RG3 runtime generation renders the same pixels as its compiled header
     REQUIRE((restaged == rhi::RasterStatus::Ready || restaged == rhi::RasterStatus::Pending));
     for (usize attempt = 0; activation.GetReport().ActiveGeneration != 2 && attempt < 1000; ++attempt)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         REQUIRE(activation.Poll() == rhi::RasterStatus::Ready);
         if (activation.GetReport().Candidate == renderer::RenderGraphCandidateState::NeedsUpdate)
         {
@@ -588,7 +589,7 @@ TEST_CASE("RG3 bound runtime generation carries the compiled uniform tables and 
     rhi::RasterStatus polled = activation.Poll();
     for (usize attempt = 0; polled == rhi::RasterStatus::Pending && attempt < 1000; ++attempt)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         polled = activation.Poll();
     }
     REQUIRE(polled == rhi::RasterStatus::Ready);
@@ -745,7 +746,7 @@ TEST_CASE("independent entry points render different colors in one graph", "[ren
     rhi::RasterStatus initialized = fixture.Graph.Initialize(fixture.Device, plan, programs);
     for (usize attempt = 0; attempt < 10000 && initialized == rhi::RasterStatus::Pending; ++attempt)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         initialized = fixture.Graph.Poll();
     }
     REQUIRE(initialized == rhi::RasterStatus::Ready);

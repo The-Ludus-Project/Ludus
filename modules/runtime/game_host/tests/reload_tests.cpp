@@ -16,6 +16,7 @@
 #include "internal/host_session.h"
 #include "internal/identity.h"
 
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/runtime/game_api/checkpoint.h>
 #include <ludus/runtime/game_api/properties.h>
 #include <ludus/runtime/game_host/host.h>
@@ -23,7 +24,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -42,6 +42,7 @@
 #endif
 
 using namespace ludus::runtime::game_host;
+namespace timing = ludus::foundation::time;
 using ludus::foundation::uint32;
 using ludus::foundation::uint64;
 using ludus::foundation::uint8;
@@ -525,10 +526,9 @@ TEST_CASE("100 distinct successful generations bound allocations mappings and RS
         // Every attempt has a never-reused path/inode. Reopening two images
         // cannot establish a bound on accumulated loader/ASan registrations.
         const auto path = modulePath(i);
-        const auto begin = std::chrono::steady_clock::now();
+        const timing::Timestamp begin = timing::Now();
         const auto status = session.ReloadTo(path, static_cast<uint64>(i) + 1);
-        const auto micros =
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count();
+        const uint64 micros = (timing::Now().Nanoseconds - begin.Nanoseconds) / timing::NANOSECONDS_PER_MICROSECOND;
         (void)SetFixtureFailure(nullptr);
         if (inject)
         {

@@ -1,10 +1,12 @@
 // Optional CPU microbenchmark. Real screens/GPU budgets require separate captures.
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/ui/context.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <span>
+
+namespace timing = ludus::foundation::time;
 int main()
 {
     using namespace ludus::ui;
@@ -32,7 +34,7 @@ int main()
         usize sample = 0;
         for (usize j = 0; j < 2100; ++j)
         {
-            const auto start = std::chrono::steady_clock::now();
+            const timing::Timestamp start = timing::Now();
             if (ui.TrySetDocument(elements, {{0, 0, 1280, 1536}}) != Status::Ok)
             {
                 return 2;
@@ -45,9 +47,9 @@ int main()
             {
                 return 3;
             }
-            auto elapsed =
-                std::chrono::duration<ludus::foundation::float64, std::micro>(std::chrono::steady_clock::now() - start)
-                    .count();
+            const ludus::foundation::float64 elapsed =
+                static_cast<ludus::foundation::float64>(timing::Now().Nanoseconds - start.Nanoseconds) /
+                static_cast<ludus::foundation::float64>(timing::NANOSECONDS_PER_MICROSECOND);
             if (j >= 100)
             {
                 samples[sample++] = elapsed;

@@ -53,6 +53,12 @@ struct NativeThread
     void Join() noexcept;
 };
 
+// Calling-thread operations behind the same OS boundary. The serial browser backend
+// has one thread: sleeping returns at once and yielding does nothing.
+void NativeSleep(uint64 nanoseconds) noexcept;
+void NativeYield() noexcept;
+[[nodiscard]] uint64 NativeCallingThreadId() noexcept;
+
 class GateLock final
 {
 public:

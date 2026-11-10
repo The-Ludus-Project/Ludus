@@ -30,7 +30,7 @@ if(LUDUS_BUILD_TESTS)
         tests/uuid_tests.cpp)
     # The lifetime tests drive a local counter through the private issuance seam.
     target_include_directories(ludus_foundation_identity_tests PRIVATE src)
-    target_link_libraries(ludus_foundation_identity_tests PRIVATE
+    target_link_libraries(ludus_foundation_identity_tests PRIVATE Ludus::FoundationThreading
         Ludus::FoundationIdentity Catch2::Catch2WithMain Threads::Threads)
     ludus_apply_project_defaults(ludus_foundation_identity_tests)
     ludus_enable_test_exceptions(ludus_foundation_identity_tests)

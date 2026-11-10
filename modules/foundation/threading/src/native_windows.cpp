@@ -4,6 +4,8 @@
 #    include "internal/native_test_hooks.hpp"
 #endif
 
+#include <ludus/foundation/time/time.hpp>
+
 #include <process.h>
 
 namespace ludus::foundation::threading::detail
@@ -73,5 +75,22 @@ void NativeThread::Join() noexcept
     LUDUS_REQUIRE(WaitForSingleObject(Handle, INFINITE) == WAIT_OBJECT_0);
     (void)CloseHandle(Handle);
     Handle = nullptr;
+}
+
+void NativeSleep(uint64 nanoseconds) noexcept
+{
+    // Sleep() counts whole milliseconds; round up so the wait is never shorter than requested.
+    const uint64 milliseconds =
+        (nanoseconds + time::NANOSECONDS_PER_MILLISECOND - 1) / time::NANOSECONDS_PER_MILLISECOND;
+    const uint64 maximum = static_cast<uint64>(INFINITE) - 1;
+    Sleep(static_cast<DWORD>(milliseconds < maximum ? milliseconds : maximum));
+}
+void NativeYield() noexcept
+{
+    (void)SwitchToThread();
+}
+uint64 NativeCallingThreadId() noexcept
+{
+    return static_cast<uint64>(GetCurrentThreadId());
 }
 } // namespace ludus::foundation::threading::detail

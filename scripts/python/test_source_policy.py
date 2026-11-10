@@ -86,6 +86,29 @@ target_sources(example PRIVATE extra.cpp)
                                      ["main.cpp", "extra.cpp"])
                     self.assertEqual(self.diagnose(source, ".cmake"), [])
 
+    def test_thread_and_clock_headers_use_the_ludus_owners(self):
+        for header in ["thread", "chrono"]:
+            with self.subTest(header=header):
+                findings = self.diagnose(f"#include <{header}>\n  #  include <{header}>\n")
+                self.assertEqual(len(findings), 2, findings)
+                self.assertIn("<ludus/foundation/threading/thread.hpp>", findings[0][1])
+                self.assertIn(f"<{header}>", findings[0][1])
+        accepted = '#include <ludus/foundation/threading/thread.hpp>\n// #include <thread>\nconst char* text = "#include <chrono>";\n#include <atomic>\n'
+        self.assertEqual(self.diagnose(accepted), [])
+        source = "#include <chrono>\n#include <thread>\n"
+        everything = set(range(1, 4))
+        for owner in [
+            "modules/foundation/time/src/clock.cpp",
+            "modules/foundation/logging/src/internal/backend.hpp",
+            "modules/foundation/base/tests/assert_child.cpp",
+            "apps/editor/src/main_window.cpp",
+        ]:
+            with self.subTest(owner=owner):
+                self.assertEqual(violations(owner, source, everything), [])
+        self.assertEqual(len(violations("modules/foundation/time/tests/time_tests.cpp", source, everything)), 2)
+        # Only changed lines are reported: an untouched legacy include is not a new finding.
+        self.assertEqual(violations("modules/example/source.cpp", source, {3}), [])
+
     def test_admission_capacity_literals_use_their_owner(self):
         paths = ["modules/content/scene_cook/src/scene_cook.cpp",
                  "modules/content/scene_cook/src/scene_assets.cpp",

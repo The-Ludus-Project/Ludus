@@ -1,16 +1,18 @@
 #include <ludus/foundation/base/config.h>
 
 #include <ludus/audio/audio_system.h>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include "wav_fixture.h"
 
-#include <chrono>
 #include <cstdlib>
-#include <thread>
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::audio;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 
 TEST_CASE("Native device renders resident and streaming voices and joins on shutdown", "[audio][.device]")
 {
@@ -74,7 +76,7 @@ TEST_CASE("Native device renders resident and streaming voices and joins on shut
                 progressed = true;
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         REQUIRE(progressed);
         REQUIRE(system.RetireStream(stream) == Status::Ok);

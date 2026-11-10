@@ -8,7 +8,9 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -16,12 +18,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string_view>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::graphics::renderer::testing;
@@ -29,6 +29,8 @@ namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace shaders = ludus::shaders;
 namespace format = ludus::content::render_graph_format;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 TEST_CASE("Native compiler publications reload a running renderer without losing its drawable generation",
           "[shader][reload][gpu][.native-reload]")
 {
@@ -78,7 +80,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
             {
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            threading::SleepFor(timing::Microseconds(100));
         }
         FAIL("Timed out waiting for runtime publication delivery");
     };
@@ -107,7 +109,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
             {
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         FAIL("Timed out waiting for ready pipelines and scene activation");
     };
@@ -160,12 +162,12 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
         const uint32 started = rhi::backend::GetNativePreparationStarted();
         awaitDelivery(ReloadState::Staged);
         CHECK(activation.GetReport().Candidate == renderer::RenderGraphCandidateState::Preparing);
-        const std::chrono::steady_clock::time_point deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (rhi::backend::GetNativePreparationStarted() == started && std::chrono::steady_clock::now() < deadline)
+        timing::Deadline deadline;
+        REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
+        while (rhi::backend::GetNativePreparationStarted() == started && deadline.IsExpired(timing::Now()) == false)
         {
             static_cast<void>(activation.Poll());
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         REQUIRE(rhi::backend::GetNativePreparationStarted() > started);
         for (usize frame = 0; frame < 8; ++frame)
@@ -203,13 +205,13 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
     REQUIRE(publication.Publish("main.lurgrt", rejected.AsSpan()).Published == true);
     reload.RequestReload();
     awaitDelivery(ReloadState::Staged);
-    const std::chrono::steady_clock::time_point failureDeadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    timing::Deadline failureDeadline;
+    REQUIRE(failureDeadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
     while (activation.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed &&
-           std::chrono::steady_clock::now() < failureDeadline)
+           failureDeadline.IsExpired(timing::Now()) == false)
     {
         CHECK(activation.Poll() == rhi::RasterStatus::Ready);
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
     }
     REQUIRE(activation.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed);
     CHECK(activation.GetReport().ActiveGeneration == 3);

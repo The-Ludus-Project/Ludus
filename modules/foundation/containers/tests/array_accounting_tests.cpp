@@ -9,10 +9,11 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/memory/allocation_statistics.hpp>
-
-#include <thread>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+
+namespace threading = ludus::foundation::threading;
 
 namespace
 {
@@ -164,8 +165,9 @@ TEST_CASE("An Array destroyed on another thread charges the Containers domain", 
     const AllocationStatistics before = SampleContainers();
     Array<uint32> values;
     values.EnsureCapacity(512);
-    std::thread destroyer([owned = Move(values)]() mutable { owned.TrimCapacity(); });
-    destroyer.join();
+    threading::Thread destroyer;
+    REQUIRE(destroyer.Start([owned = Move(values)]() mutable { owned.TrimCapacity(); }) == threading::ThreadStatus::Ok);
+    REQUIRE(destroyer.Join() == threading::ThreadStatus::Ok);
     const AllocationStatistics after = SampleContainers();
     REQUIRE(after.LiveRequestedBytes == before.LiveRequestedBytes);
     REQUIRE(after.LiveBlocks == before.LiveBlocks);

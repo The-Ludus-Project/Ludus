@@ -23,7 +23,7 @@ if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     find_package(Threads REQUIRED)
     add_executable(ludus_foundation_time_tests tests/time_tests.cpp)
-    target_link_libraries(ludus_foundation_time_tests PRIVATE
+    target_link_libraries(ludus_foundation_time_tests PRIVATE Ludus::FoundationThreading
         Ludus::FoundationTime Catch2::Catch2WithMain Threads::Threads)
     ludus_apply_project_defaults(ludus_foundation_time_tests)
     ludus_enable_test_exceptions(ludus_foundation_time_tests)

@@ -9,6 +9,7 @@
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
@@ -25,13 +26,11 @@
 
 #include <windows.h>
 
-#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <span>
 #include <string>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::graphics::renderer::testing;
@@ -39,6 +38,8 @@ namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace packages = ludus::render_graph_packages;
 namespace shaders = ludus::shaders;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 // DXBC header: code, 16-byte hash, version and total size; unsigned output has a constant hash.
@@ -136,7 +137,7 @@ TEST_CASE("Windows shader file delivery reloads a DXIL render graph without losi
             {
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         FAIL("Timed out waiting for runtime publication delivery");
     };
@@ -166,7 +167,7 @@ TEST_CASE("Windows shader file delivery reloads a DXIL render graph without losi
             {
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         FAIL("Timed out waiting for ready pipelines and scene activation");
     };

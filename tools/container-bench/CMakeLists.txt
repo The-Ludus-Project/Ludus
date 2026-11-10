@@ -1,6 +1,6 @@
 option(LUDUS_BUILD_CONTAINER_BENCHMARKS "Build standalone associative container benchmarks" OFF)
 if(LUDUS_BUILD_CONTAINER_BENCHMARKS)
     add_executable(ludus_container_bench main.cpp)
-    target_link_libraries(ludus_container_bench PRIVATE Ludus::FoundationContainers)
+    target_link_libraries(ludus_container_bench PRIVATE Ludus::FoundationTime Ludus::FoundationContainers)
     ludus_apply_project_defaults(ludus_container_bench)
 endif()
