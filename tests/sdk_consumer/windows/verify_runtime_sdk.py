@@ -5,6 +5,7 @@ moves it to a path with spaces, then builds the external runtime consumer and a
 project created by the shipped CLI against the relocated prefix only.
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -94,11 +95,16 @@ def consume_behavior(sdk, workspace):
     module = build / "scripted_game.dll"
     first_generation = build / "scripted_game_initial.dll"
     shutil.copyfile(module, first_generation)
+    cook = build / "encounter"
+    pointer = cook / "current.json"
+    original_pointer = pointer.read_bytes()
+    evidence = cook / json.loads(original_pointer)["directory"] / "evidence.json"
     script = source / "behaviors/encounter.luau"
     valid_source = script.read_text(encoding="utf-8")
     script.write_text("--!strict\nreturn function(\n", encoding="utf-8")
     run("cmake", "--build", build, "--config", CONFIGURATION, "--target", "scripted_game_module",
-        contains="encounter.luau", should_fail=True)
+        contains="SyntaxError", should_fail=True)
+    require(pointer.read_bytes() == original_pointer, "Failed cook changed the current script package")
     require(module.read_bytes() == first_generation.read_bytes(), "Failed cook changed the game DLL")
     changed = valid_source.replace("state.Interactions += event.Amount", "state.Interactions += event.Amount * 2")
     require(changed != valid_source, "The scripted-game fixture no longer has the expected increment")
@@ -106,7 +112,7 @@ def consume_behavior(sdk, workspace):
     run("cmake", "--build", build, "--config", CONFIGURATION, "--target", "scripted_game_module")
     supervisor = ROOT / "modules/runtime/game_host/tests/windows_supervisor_acceptance.py"
     run(sys.executable, supervisor, "--host", build / "scripted_game_host.exe",
-        "--scripted-module", first_generation, "--scripted-replacement", module)
+        "--scripted-module", first_generation, "--scripted-replacement", module, "--script-evidence", evidence)
 
 
 def run_project(*arguments, contains=None):

@@ -158,8 +158,14 @@ def check_killed_host_ends_stream(host, module):
         session.close()
 
 
-def check_script_debug_session(host, module, replacement):
+def check_script_debug_session(host, module, replacement, evidence_path):
     """Drive the installed SDK sample through the Windows host and the real Luau VM."""
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    program = next(item for item in evidence["programs"] if item["path"] == "encounter.luau")
+    # Line 4 in the source changes state. The cooker replaces the strict line with its contract prelude.
+    authored_line = 4
+    compiled_line = program["first_line"] + authored_line - 2
+    asset = program["asset"]
     session = Session(host, module, 1)
 
     def require_status(request, expected="Ok"):
@@ -183,11 +189,10 @@ def check_script_debug_session(host, module, replacement):
         session.send(2, "Load", generation=hex_id(1))
         require_status(2)
         initial = debug(3, "inspect")
-        if initial["provider"] != "luau" or initial["partial"] or initial["interactions"] != 0:
+        if (initial["provider"] != "luau" or initial["package"] != evidence["key"] or initial["partial"]
+                or initial["interactions"] != 0):
             raise RuntimeError(f"Unexpected initial Luau state: {initial}")
-        # The installed example's text asset first changes state at line 4.
-        asset = "0000000000000101"
-        debug(4, "breakpoint", asset=asset, line=4, enabled=True, **identity(initial))
+        debug(4, "breakpoint", asset=asset, line=compiled_line, enabled=True, **identity(initial))
         stopped = debug(5, "interact", asset=asset, amount=1, **identity(initial))
         if not stopped["partial"] or stopped["interactions"] != 0 or not stopped["frames"]:
             raise RuntimeError(f"The Luau breakpoint did not preserve the unpublished tick: {stopped}")
@@ -224,11 +229,13 @@ def main():
     parser.add_argument("--incompatible", type=Path)
     parser.add_argument("--scripted-module", type=Path)
     parser.add_argument("--scripted-replacement", type=Path)
+    parser.add_argument("--script-evidence", type=Path)
     args = parser.parse_args()
-    if args.scripted_module or args.scripted_replacement:
-        if not (args.scripted_module and args.scripted_replacement):
-            parser.error("provide both --scripted-module and --scripted-replacement")
-        check_script_debug_session(args.host, args.scripted_module, args.scripted_replacement)
+    scripted = (args.scripted_module, args.scripted_replacement, args.script_evidence)
+    if any(scripted):
+        if not all(scripted):
+            parser.error("provide --scripted-module, --scripted-replacement and --script-evidence together")
+        check_script_debug_session(args.host, *scripted)
         return
     if not all((args.a, args.b, args.incompatible)):
         parser.error("provide --a, --b and --incompatible, or --scripted-module")
