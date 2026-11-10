@@ -64,7 +64,7 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
         REQUIRE(programs.HasClusteredForward == true);
         REQUIRE(programs.HasClusteredDeferred == (profile != 0));
-        CHECK(package->GetPlan().Passes.GetSize() == (shouldUsePrepass == true ? 2 : 1));
+        CHECK(package->GetPlan().Passes.GetSize() == (shouldUsePrepass == true ? usize{2} : usize{1}));
         if (shouldUsePrepass == true)
         {
             CHECK(package->GetPlan().Passes[0].AllowsRepeatedCoverage == 1);
@@ -196,7 +196,8 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             REQUIRE(update() == rhi::RasterStatus::Ready);
             const renderer::RenderGraphSceneResourceReport report = fixture.Graph.GetReport().Resources;
             CHECK(report.DroppedLights == 0);
-            CHECK(report.OverflowClusters == (areDirectional == true ? 512 : 0));
+            // MSVC C4389: compare the unsigned report field with unsigned operands.
+            CHECK(report.OverflowClusters == (areDirectional == true ? uint32{512} : uint32{0}));
             render();
             CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + 2] > 10);
             const StaticArray<uint8, PIXEL_BYTES> clustered = fixture.Pixels;
