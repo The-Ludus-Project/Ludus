@@ -608,7 +608,6 @@ struct LuauProvider::Impl
             }
         }
         scripting::Reject(state, 1, "unknown state field");
-        return current.Owner->Schema.State[0];
     }
     static int32 ReadState(lua_State* state) noexcept
     {
