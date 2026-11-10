@@ -1512,11 +1512,13 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
         add_test(NAME ludus_editor_d3d12_viewport COMMAND ludus_editor_tests "[windows-native-viewport]")
+        add_test(NAME ludus_editor_d3d12_high_dpi COMMAND ludus_editor_tests "[windows-native-viewport]")
         add_test(NAME ludus_editor_hosted_play
             COMMAND ludus_editor_tests "[play][viewport][gpu],[.play-native]")
-        set_tests_properties(ludus_editor_d3d12_viewport ludus_editor_hosted_play PROPERTIES
+        set_tests_properties(ludus_editor_d3d12_viewport ludus_editor_d3d12_high_dpi ludus_editor_hosted_play PROPERTIES
             LABELS "editor;windows;gpu" TIMEOUT 180 RESOURCE_LOCK ludus_editor
             ENVIRONMENT "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1")
+        set_property(TEST ludus_editor_d3d12_high_dpi APPEND PROPERTY ENVIRONMENT "QT_SCALE_FACTOR=1.5")
     endif()
     # Transitional, empty: batch CI runs the workflow definitions on main against
     # the develop candidate, and main's ci.yml still builds this target, which

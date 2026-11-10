@@ -21,6 +21,8 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts" / "python"))
 from editor_process_windows import OwnedWindowsProcess  # noqa: E402
+from play_probe import ModuleProbe, native_identity  # noqa: E402
+from play_session import GenerationLease, publish_generation, read_manifest  # noqa: E402
 
 PROJECT_ID = "0000000000000011"
 GAME_ID = "0000000000000022"
@@ -178,6 +180,43 @@ def check_killed_host_ends_stream(host, module):
         session.close()
 
 
+def check_published_generation(root, host, module):
+    def inspect_staged(staging, module_name, host_name, lease_fd):
+        identities = [native_identity(staging / name) for name in (module_name, host_name)]
+        assert identities[0]["machine"] == identities[1]["machine"]
+        probe = ModuleProbe(staging / host_name, staging / module_name,
+                            cwd=staging, env=dict(os.environ), lease_fd=lease_fd)
+        try:
+            metadata = probe.poll()
+            while metadata is None:
+                time.sleep(0.01)
+                metadata = probe.poll()
+            return {**metadata, "module_build_id": identities[0]["build_id"],
+                    "host_build_id": identities[1]["build_id"], "embedded_symbols": False}
+        finally:
+            assert probe.cancel(), "generation probe cleanup was not confirmed"
+
+    generation = publish_generation(
+        generations_root=root / "generations", module_artifact=module, host_artifact=host,
+        symbol_artifact=module.with_suffix(".pdb"), host_symbol_artifact=host.with_suffix(".pdb"),
+        manifest_fields=dict(project_id=PROJECT_ID, game_id=GAME_ID, module_target="fixture",
+                             host_target="host", build_request_revision="windows-acceptance"),
+        declared_source_inputs=[module], validate_payloads=inspect_staged)
+    with GenerationLease(generation):
+        manifest = read_manifest(generation)
+        session = Session(generation / manifest["host_file"], generation / manifest["module_file"], 1)
+        try:
+            session.send(1, "Hello")
+            assert session.status(1)["status"] == "Ok"
+            session.send(2, "Load", generation=hex_id(1))
+            assert session.status(2)["status"] == "Ok"
+            session.send(3, "Stop")
+            session.await_event(lambda event: event.get("event") == "SessionEnded")
+            assert session.wait_exit() == 0, session.output()
+        finally:
+            session.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True)
@@ -187,6 +226,7 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="ludus-supervisor-") as directory:
         root = Path(directory)
+        check_published_generation(root, args.host, args.a)
         generations = []
         for index, source in enumerate((args.a, args.b, args.incompatible, args.a, args.a), start=1):
             destination = root / f"generation-{index}.dll"

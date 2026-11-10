@@ -344,7 +344,7 @@ tools. From a Visual Studio developer shell, include the Qt prefix in
 python scripts/shader-probe bootstrap
 cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON
 cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests
-ctest --preset windows-msvc-runtime -R '^(ludus_editor_d3d12_viewport|ludus_editor_hosted_play|ludus_rhi_d3d12_tests)$' --output-on-failure
+ctest --preset windows-msvc-runtime -R '^(ludus_editor_d3d12_viewport|ludus_editor_d3d12_high_dpi|ludus_editor_hosted_play|ludus_rhi_d3d12_tests)$' --output-on-failure
 ```
 
 With Qt's `bin` on `PATH`, run the editor from the repository root so it can
@@ -359,7 +359,8 @@ The viewport renders the open World's camera and authored
 scene through the shared Direct3D 12 queue. Use a raster graph with a DXIL profile
 for ordinary navigation and editing. The native viewport test requires an
 interactive Windows desktop and uses Qt's software renderer preference for WARP
-coverage. The hosted Play test also opens a second process, exercises game input
+coverage. The high-DPI test repeats the authoring journey at a 1.5 scale factor.
+The hosted Play test also opens a second process, exercises game input
 and resize, and checks that Stop or a game crash restores the authoring viewport.
 For mixed-DPI or physical GPU checks, launch the editor on a Windows desktop
 with the normal Qt GPU selection.

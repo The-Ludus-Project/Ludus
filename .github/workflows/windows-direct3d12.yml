@@ -155,7 +155,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor configure failed' }
           cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
-          $testNames = @('ludus_editor_d3d12_viewport', 'ludus_editor_hosted_play', 'ludus_rhi_d3d12_tests',
+          $testNames = @('ludus_editor_d3d12_viewport', 'ludus_editor_d3d12_high_dpi', 'ludus_editor_hosted_play', 'ludus_rhi_d3d12_tests',
             'ludus_platform_hosted_tests', 'ludus_game_host_windows_supervisor')
           $suite = '^(' + ($testNames -join '|') + ')$'
           $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
