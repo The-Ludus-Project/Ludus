@@ -75,7 +75,7 @@ constexpr float32 LARGEST_FINITE = 3.0e38F;
 /// Fields and storage for one grid; the tests fill the samples they care about.
 struct Scene final
 {
-    TerrainFieldGrid Grid{ .Columns = TEST_COLUMNS, .Rows = TEST_ROWS, .SpacingMetres = 1 };
+    TerrainFieldGrid Grid{ .Columns = TEST_COLUMNS, .Rows = TEST_ROWS, .SpacingXMetres = 1, .SpacingZMetres = 1 };
     Array<float32> Elevation;
     Array<float32> Slope;
     Array<float32> Wetness;
@@ -273,7 +273,7 @@ TEST_CASE("terrain material weights follow the fields and normalize", "[content]
 
 TEST_CASE("terrain patch layout must tile the grid", "[content][terrain]")
 {
-    const TerrainFieldGrid grid{ .Columns = TEST_COLUMNS, .Rows = TEST_ROWS, .SpacingMetres = 1 };
+    const TerrainFieldGrid grid{ .Columns = TEST_COLUMNS, .Rows = TEST_ROWS, .SpacingXMetres = 1, .SpacingZMetres = 1 };
     uint32 patchesX = 0;
     uint32 patchesZ = 0;
     CHECK(TryGetTerrainPatchCounts(grid, { .CellsPerPatch = CELLS_PER_PATCH, .HaloSamples = 1 }, patchesX, patchesZ) ==

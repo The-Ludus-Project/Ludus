@@ -46,14 +46,19 @@ inline constexpr uint32 MIN_TERRAIN_FIELD_AXIS_SAMPLES = 2;
 inline constexpr uint32 TERRAIN_FLOW_NEIGHBOURS = 8;
 
 /// @brief Regular sample grid shared by every field: Columns along X, Rows along Z, row-major storage.
+///
+/// Cells may be rectangular: a terrain whose width and depth differ but whose sample counts match has different
+/// spacing on each axis. Every distance, slope and area below uses the spacing of its own axis.
 struct TerrainFieldGrid final
 {
     /// Samples along X, MIN_TERRAIN_FIELD_AXIS_SAMPLES through MAX_TERRAIN_FIELD_AXIS_SAMPLES.
     uint32 Columns = 0;
     /// Samples along Z, MIN_TERRAIN_FIELD_AXIS_SAMPLES through MAX_TERRAIN_FIELD_AXIS_SAMPLES.
     uint32 Rows = 0;
-    /// Distance between neighbouring samples along either axis, in metres; finite and positive.
-    float32 SpacingMetres = 1;
+    /// Distance between neighbouring columns, in metres; finite and positive.
+    float32 SpacingXMetres = 1;
+    /// Distance between neighbouring rows, in metres; finite and positive.
+    float32 SpacingZMetres = 1;
 };
 
 /// @brief Samples in a grid; Columns times Rows, without range checks.
@@ -62,7 +67,13 @@ struct TerrainFieldGrid final
     return static_cast<usize>(grid.Columns) * grid.Rows;
 }
 
-/// @brief Whether both axes lie within the admitted sample range and the spacing is finite and positive.
+/// @brief Ground area one sample represents, SpacingXMetres times SpacingZMetres, in square metres.
+[[nodiscard]] constexpr float32 GetTerrainSampleAreaSquareMetres(const TerrainFieldGrid& grid) noexcept
+{
+    return grid.SpacingXMetres * grid.SpacingZMetres;
+}
+
+/// @brief Whether both axes lie within the admitted sample range and both spacings are finite and positive.
 [[nodiscard]] bool IsTerrainFieldGridValid(const TerrainFieldGrid& grid) noexcept;
 
 /// @brief Outcome of a field operation. Any failure leaves every output view unchanged.
@@ -167,7 +178,8 @@ struct TerrainDrainageSummary final
 /// @brief Fill depressions from the border, route every sample downhill by D8 and count contributing samples.
 ///
 /// Depressions fill to their spill level; flats and filled lakes drain along the flood's spanning forest toward
-/// their spill point, so the routing has no cycles and every sample reaches an Outlet. Ties between equally steep
+/// their spill point, so the routing has no cycles and every sample reaches an Outlet. Steepness is the drop over
+/// the metric distance to the neighbour, so rectangular cells route correctly. Ties between equally steep
 /// neighbours resolve in TerrainFlowDirection order. The result depends only on the inputs, never on scratch
 /// or traversal order. Accumulation counts the sample itself plus every sample upstream of it.
 /// @param grid The complete drainage domain.
@@ -205,8 +217,9 @@ struct TerrainWetnessParameters final
 
 /// @brief Wetness in [0, 1] from ln(a / tan b): specific catchment area over slope, remapped by the parameters.
 ///
-/// The specific catchment area is accumulation times spacing (upslope area over the contour length of one
-/// sample). Slopes below MinimumSlope are clamped up to it.
+/// The specific catchment area is the upslope area, accumulation times GetTerrainSampleAreaSquareMetres, over the
+/// contour length of one sample, sqrt(SpacingXMetres * SpacingZMetres). Slopes below MinimumSlope are clamped up
+/// to it.
 /// @param grid The sample grid.
 /// @param slope Dimensionless slope per sample, as TryComputeTerrainSlope writes it.
 /// @param accumulation Contributing samples per sample, as TryComputeTerrainDrainage writes it; at least one.

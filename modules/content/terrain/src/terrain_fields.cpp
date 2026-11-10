@@ -5,6 +5,7 @@
 #include <ludus/content/terrain/terrain_fields.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::content::terrain
@@ -18,10 +19,6 @@ using foundation::core::float64;
 
 /// Marks a flood root (a border sample) that no neighbour pushed.
 constexpr uint32 NO_PARENT = 0xffffffffU;
-/// Distance to a diagonal neighbour in sample units; D8 drops divide by it.
-constexpr float32 DIAGONAL_DISTANCE = 1.41421356237309504880F;
-/// Distance to an axis-aligned neighbour in sample units.
-constexpr float32 AXIS_DISTANCE = 1;
 
 [[nodiscard]] bool AreAllFinite(BorrowedView<const float32> values) noexcept
 {
@@ -41,10 +38,20 @@ template <typename ElementType>
     return view.IsValid() == true && view.GetSize() == samples;
 }
 
-[[nodiscard]] float32 GetNeighbourDistance(TerrainFlowDirection direction) noexcept
+/// Metric distance to each D8 neighbour, in TerrainFlowDirection order; D8 drops divide by it.
+using NeighbourDistances = foundation::StaticArray<float32, TERRAIN_FLOW_NEIGHBOURS>;
+
+[[nodiscard]] NeighbourDistances ComputeNeighbourDistances(const TerrainFieldGrid& grid) noexcept
 {
-    const TerrainFlowOffset offset = GetTerrainFlowOffset(direction);
-    return offset.X != 0 && offset.Z != 0 ? DIAGONAL_DISTANCE : AXIS_DISTANCE;
+    NeighbourDistances distances = {};
+    for (uint32 ordinal = 0; ordinal < TERRAIN_FLOW_NEIGHBOURS; ++ordinal)
+    {
+        const TerrainFlowOffset offset = GetTerrainFlowOffset(static_cast<TerrainFlowDirection>(ordinal));
+        const float32 x = static_cast<float32>(offset.X) * grid.SpacingXMetres;
+        const float32 z = static_cast<float32>(offset.Z) * grid.SpacingZMetres;
+        distances[ordinal] = math::Sqrt(x * x + z * z);
+    }
+    return distances;
 }
 
 /// Flow direction from a sample to one of its eight neighbours, given the column and row steps.
@@ -236,6 +243,7 @@ void FillDepressions(const TerrainFieldGrid& grid,
 /// D8 on the filled surface; a sample without a strictly lower neighbour follows its flood parent.
 void RouteFlow(const TerrainFieldGrid& grid, DrainageScratch& inoutScratch) noexcept
 {
+    const NeighbourDistances distances = ComputeNeighbourDistances(grid);
     for (uint32 z = 0; z < grid.Rows; ++z)
     {
         for (uint32 x = 0; x < grid.Columns; ++x)
@@ -252,8 +260,7 @@ void RouteFlow(const TerrainFieldGrid& grid, DrainageScratch& inoutScratch) noex
                 {
                     continue;
                 }
-                const float32 drop =
-                    (elevation - inoutScratch.FilledElevation[neighbour]) / GetNeighbourDistance(direction);
+                const float32 drop = (elevation - inoutScratch.FilledElevation[neighbour]) / distances[ordinal];
                 if (drop > steepestDrop)
                 {
                     steepestDrop = drop;
@@ -329,7 +336,8 @@ bool IsTerrainFieldGridValid(const TerrainFieldGrid& grid) noexcept
 {
     return grid.Columns >= MIN_TERRAIN_FIELD_AXIS_SAMPLES && grid.Columns <= MAX_TERRAIN_FIELD_AXIS_SAMPLES &&
            grid.Rows >= MIN_TERRAIN_FIELD_AXIS_SAMPLES && grid.Rows <= MAX_TERRAIN_FIELD_AXIS_SAMPLES &&
-           math::IsFinite(grid.SpacingMetres) == true && grid.SpacingMetres > 0;
+           math::IsFinite(grid.SpacingXMetres) == true && grid.SpacingXMetres > 0 &&
+           math::IsFinite(grid.SpacingZMetres) == true && grid.SpacingZMetres > 0;
 }
 
 TerrainFieldStatus TryComputeTerrainSlope(const TerrainFieldGrid& grid,
@@ -357,8 +365,8 @@ TerrainFieldStatus TryComputeTerrainSlope(const TerrainFieldGrid& grid,
         {
             const uint32 previousX = x == 0 ? x : x - 1;
             const uint32 nextX = math::Min(x + 1, grid.Columns - 1);
-            const float32 runX = static_cast<float32>(nextX - previousX) * grid.SpacingMetres;
-            const float32 runZ = static_cast<float32>(nextZ - previousZ) * grid.SpacingMetres;
+            const float32 runX = static_cast<float32>(nextX - previousX) * grid.SpacingXMetres;
+            const float32 runZ = static_cast<float32>(nextZ - previousZ) * grid.SpacingZMetres;
             const float32 riseX =
                 elevationMetres[z * grid.Columns + nextX] - elevationMetres[z * grid.Columns + previousX];
             const float32 riseZ =
@@ -466,10 +474,12 @@ TerrainFieldStatus TryComputeTerrainWetness(const TerrainFieldGrid& grid,
     const float64 minimumIndex = static_cast<float64>(parameters.MinimumIndex);
     const float64 indexRange = static_cast<float64>(parameters.MaximumIndex) - minimumIndex;
     const float64 minimumSlope = static_cast<float64>(parameters.MinimumSlope);
-    const float64 spacingMetres = static_cast<float64>(grid.SpacingMetres);
+    const float64 sampleAreaSquareMetres = static_cast<float64>(GetTerrainSampleAreaSquareMetres(grid));
+    const float64 contourWidthMetres = math::Sqrt(sampleAreaSquareMetres);
     for (usize sample = 0; sample < samples; ++sample)
     {
-        const float64 catchmentArea = static_cast<float64>(accumulation[sample]) * spacingMetres;
+        const float64 catchmentArea =
+            static_cast<float64>(accumulation[sample]) * sampleAreaSquareMetres / contourWidthMetres;
         const float64 tangent = math::Max(static_cast<float64>(slope[sample]), minimumSlope);
         const float64 index = math::Log(catchmentArea / tangent);
         outWetness[sample] = static_cast<float32>(math::Clamp((index - minimumIndex) / indexRange, 0.0, 1.0));
