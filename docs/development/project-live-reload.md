@@ -1,11 +1,10 @@
 # Native gameplay live editing
 
-Supported hosts are Linux x64 and macOS arm64/x64 with pinned Clang 23 and a
-matching Debug or Development SDK. CMake resolves the module's actual artifact;
-Linux uses ELF and macOS uses thin Mach-O. macOS requires the pinned compiler's
+Supported hosts are Linux x64 and macOS arm64/x64 with pinned Clang 23, and
+Windows x64 with pinned MSVC. Use the matching Debug or Development SDK. CMake
+resolves the module's actual artifact. Linux uses ELF, macOS uses thin Mach-O,
+and Windows uses PE and detached PDBs. macOS requires the pinned compiler's
 sibling `dsymutil`; automatic setup does not install a different LLVM toolchain.
-Windows hosts load and reload gameplay DLLs and check their PDBs, but the editor
-cannot start live play there yet; see [Windows DLLs and PDBs](#windows-dlls-and-pdbs).
 
 The editor reads project metadata without loading game code or preparing a
 build. It reports missing/stale CMake setup through the shared setup validator.
@@ -112,9 +111,12 @@ Winsock, puts the socket in nonblocking mode and never closes it. The framing an
 commands are the same as on Linux and macOS. Closing the supervisor's end, including
 a reset, ends the session.
 
-Limits: the editor still cannot build, publish or supervise Windows generations. Its
-live-play tooling (`play_tool.py`, `editor_tool.py`) depends on POSIX process groups,
-Windows handle inheritance and generation guards, described in the Windows editor port (D6d).
+The Windows editor validates the host's and module's PDBs before publication.
+When the host uses the Agility SDK, each generation carries the loader files
+beside the executable in its `D3D12` directory. The supervisor inherits only
+the required handles into a kill-on-close job. It confirms that the job is empty
+before releasing its lease, and an inherited guard prevents collection while a
+host still owns the generation.
 Standalone runs (`--module`), in-process sessions and a supervisor that speaks the
 protocol directly load, reload and retire DLLs. In the MSVC Ninja lane,
 `ludus_game_host_loader_tests`, `ludus_game_host_reload_tests`,

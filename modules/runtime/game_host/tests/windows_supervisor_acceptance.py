@@ -15,9 +15,12 @@ from pathlib import Path
 import shutil
 import socket
 import struct
-import subprocess
+import sys
 import tempfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts" / "python"))
+from editor_process_windows import OwnedWindowsProcess  # noqa: E402
 
 PROJECT_ID = "0000000000000011"
 GAME_ID = "0000000000000022"
@@ -36,20 +39,23 @@ class Session:
         self.buffer = bytearray()
         self.session = None
         parent, child = socket.socketpair()
-        os.set_handle_inheritable(child.fileno(), True)
-        info = subprocess.STARTUPINFO()
-        # Inherit exactly the control socket, as the play supervisor does with pass_fds.
-        info.lpAttributeList = {"handle_list": [child.fileno()]}
         argv = [str(host), "--module", str(module), "--control-fd", str(child.fileno()),
                 "--project-id", PROJECT_ID, "--game-id", GAME_ID, "--project-epoch", EPOCH,
                 "--generation", hex_id(generation), "--await-load", "--headless"]
-        self.process = subprocess.Popen(argv, startupinfo=info, close_fds=True,
-                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        child.close()
         self.control = parent
-        self.control.settimeout(0.05)
-        ready = self.await_event(lambda event: event.get("event") == "SessionReady")
-        self.session = ready["session"]
+        try:
+            with child:
+                self.process = OwnedWindowsProcess(argv, None, dict(os.environ), pass_handles=(child.fileno(),))
+        except BaseException:
+            self.control.close()
+            raise
+        try:
+            self.control.settimeout(0.05)
+            ready = self.await_event(lambda event: event.get("event") == "SessionReady")
+            self.session = ready["session"]
+        except BaseException:
+            self.close()
+            raise
 
     def send(self, request, command, **fields):
         payload = json.dumps({"protocol": 1, "session": self.session, "epoch": EPOCH, "request": hex_id(request),
@@ -94,16 +100,30 @@ class Session:
         return any(event.get("event") == "ReloadPhase" and event.get("phase") == phase for event in self.events)
 
     def output(self):
-        if self.process.poll() is None:
-            return ""
-        return self.process.stdout.read().decode("utf-8", "replace")
+        output = []
+        for read in (self.process.read_stdout, self.process.read_stderr):
+            while True:
+                try:
+                    chunk = read(65536)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                output.append(chunk)
+        return b"".join(output).decode("utf-8", "replace")
+
+    def wait_exit(self):
+        deadline = time.monotonic() + DEADLINE_SECONDS
+        while time.monotonic() < deadline:
+            observed = self.process.wait_exit_nowait()
+            if observed is not None:
+                return observed[0]
+            time.sleep(0.01)
+        raise AssertionError(f"host exit deadline: {self.output()}")
 
     def close(self):
         self.control.close()
-        if self.process.poll() is None:
-            self.process.kill()
-        self.process.wait(timeout=DEADLINE_SECONDS)
-        self.process.stdout.close()
+        assert self.process.cleanup(cancelled=True).confirmed, "game host job did not empty"
 
 
 def check_reload_session(host, generation_a, generation_b, incompatible):
@@ -127,7 +147,7 @@ def check_reload_session(host, generation_a, generation_b, incompatible):
         assert session.status(6)["status"] == "Ok"
         session.send(7, "Stop")
         session.await_event(lambda event: event.get("event") == "SessionEnded")
-        assert session.process.wait(timeout=DEADLINE_SECONDS) == 0, session.output()
+        assert session.wait_exit() == 0, session.output()
     finally:
         session.close()
 
@@ -141,7 +161,7 @@ def check_supervisor_close_ends_host(host, module):
         assert session.status(2)["status"] == "Ok"
         # End of stream cancels the session (design 10); the host must not linger.
         session.control.close()
-        session.process.wait(timeout=DEADLINE_SECONDS)
+        session.wait_exit()
     finally:
         session.close()
 
@@ -149,8 +169,8 @@ def check_supervisor_close_ends_host(host, module):
 def check_killed_host_ends_stream(host, module):
     session = Session(host, module, 1)
     try:
-        session.process.kill()
-        session.process.wait(timeout=DEADLINE_SECONDS)
+        session.process.request_terminate()
+        session.wait_exit()
         deadline = time.monotonic() + DEADLINE_SECONDS
         while session.pump():
             assert time.monotonic() < deadline, "supervisor stream outlived its host"

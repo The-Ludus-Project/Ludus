@@ -882,10 +882,10 @@ with optional tooling absent.
   [S6 audit](behavior-s6.md#nonlocal-jump-and-resource-audit) records how MSVC's
   `longjmp` unwinding fits the exception-free jump region.
 
-  Still open in D6c: porting the editor's live-play tooling (process groups,
-  descriptor passing and generation leases) to Windows, with D6d; the installed
-  Behavior SDK, player and script debugging on Windows; Windows `Ludus::ShaderDevelopment` delivery and render-graph package DXIL;
-  and the embedded editors, which arrive with the D6d editor port. The tools-only
+  D6d owns the Windows editor, including live-play handle inheritance,
+  process jobs and generation leases. The installed Behavior SDK, player and
+  script debugging on Windows and Windows `Ludus::ShaderDevelopment` delivery
+  are tracked separately. The tools-only
   worker install (`LUDUS_SHADER_WORKER_ONLY`) now runs on Windows. The Ninja lane
   installs it and checks it with `tools/shader-worker/verify_install.py`, which
   includes a signed DXIL compile through the installed worker. Runtime render-graph

@@ -52,6 +52,8 @@ else:
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_PAYLOAD_FILES = 16
 MANIFEST_SCHEMA = 3
+# Exact files staged beside an executable by cmake/StageD3D12Agility.cmake.
+AGILITY_PAYLOADS = ("D3D12/D3D12Core.dll", "D3D12/d3d12SDKLayers.dll", "D3D12/LICENSE.txt")
 
 # Default retention: active, candidate and previous generation (design 5).
 DEFAULT_RETENTION = 3
@@ -193,8 +195,10 @@ def _publish_generation_locked(
     if not host_artifact.is_file():
         raise PublishError(f"host artifact missing: {host_artifact}")
     artifacts = [module_artifact, host_artifact] + [p for p in (symbol_artifact, host_symbol_artifact) if p is not None]
-    if any(path.stat().st_size > 512 * 1024 * 1024 for path in artifacts) or \
-            sum(path.stat().st_size for path in artifacts) > 1024 * 1024 * 1024:
+    agility_files = _agility_files(host_artifact)
+    bounded_artifacts = [*artifacts, *agility_files.values()]
+    if any(path.stat().st_size > 512 * 1024 * 1024 for path in bounded_artifacts) or \
+            sum(path.stat().st_size for path in bounded_artifacts) > 1024 * 1024 * 1024:
         raise PublishError("native payload exceeds the bounded generation inventory")
 
     current_digest = source_input_digest(declared_source_inputs)
@@ -239,6 +243,14 @@ def _publish_generation_locked(
         if authored_payload is not None:
             (staging / "authored.bin").write_bytes(authored_payload)
             payload_files["authored.bin"] = sha256_file(staging / "authored.bin")
+
+        if agility_files:
+            (staging / "D3D12").mkdir()
+            for name, source in agility_files.items():
+                shutil.copy2(source, staging / name)
+                payload_files[name] = sha256_file(staging / name)
+                if payload_files[name] != sha256_file(source):
+                    raise PublishError(f"Agility SDK payload changed during publication: {name}")
 
         if len(payload_files) > MAX_PAYLOAD_FILES:
             raise PublishError(f"too many payload files ({len(payload_files)} > {MAX_PAYLOAD_FILES})")
@@ -298,7 +310,8 @@ def _publish_generation_locked(
         _validate_manifest(staging, json.loads(manifest_text), gen_id)
         if source_input_digest(declared_source_inputs) != current_digest:
             raise PublishError("source inputs changed during publication; result is Superseded")
-        for child in staging.iterdir():
+        for name in (*payload_files, "manifest.json"):
+            child = staging / name
             os.chmod(child, 0o444 | (child.stat().st_mode & 0o111))
         if sys.platform not in ("darwin", "win32"):
             os.chmod(staging, 0o555)
@@ -322,10 +335,21 @@ def _publish_generation_locked(
             if staging.exists() and not staging.is_symlink():
                 os.chmod(staging, 0o755)
             if os.name == "nt" and staging.is_dir():
-                for child in staging.iterdir():
-                    os.chmod(child, 0o644)
+                _make_payloads_writable(staging)
             shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def _agility_files(host: Path) -> dict[str, Path]:
+    directory = host.parent / "D3D12"
+    if host.suffix.lower() != ".exe" or not directory.exists():
+        return {}
+    if directory.is_symlink() or not directory.is_dir():
+        raise PublishError("Agility SDK directory must be a regular build output")
+    files = {name: host.parent / name for name in AGILITY_PAYLOADS}
+    if any(path.is_symlink() or not path.is_file() for path in files.values()):
+        raise PublishError("Agility SDK output is incomplete; rebuild the Win32 host")
+    return files
 
 
 def _payload_name(name: Any) -> bool:
@@ -375,15 +399,25 @@ def _validate_manifest(generation_dir: Path, data: Any, generation_id: str) -> N
         required.add(data["host_symbol_file"])
     if data["authored_file"] is not None:
         required.add(data["authored_file"])
-    if set(files) != required or len(required) < 2:
-        raise PublishError("payload inventory disagrees with declared artifacts")
-    if {p.name for p in generation_dir.iterdir()} != set(files) | {"manifest.json"}:
+    if len(required) < 2 or any(not _payload_name(name) for name in required):
+        raise PublishError("invalid declared payload filename")
+    agility_names = set(files) - required
+    if agility_names and (agility_names != set(AGILITY_PAYLOADS) or not data["host_file"].lower().endswith(".exe")):
+        raise PublishError("undeclared or incomplete Agility SDK payload")
+    expected_contents = required | {"manifest.json"}
+    if agility_names:
+        directory = generation_dir / "D3D12"
+        if directory.is_symlink() or not directory.is_dir() or {
+                f"D3D12/{path.name}" for path in directory.iterdir()} != agility_names:
+            raise PublishError("undeclared Agility SDK contents")
+        expected_contents.add("D3D12")
+    if not required.issubset(files) or {p.name for p in generation_dir.iterdir()} != expected_contents:
         raise PublishError("undeclared generation contents")
     for name, digest in files.items():
-        if not _payload_name(name) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            raise PublishError("invalid payload name/hash")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise PublishError("invalid payload hash")
         payload = generation_dir / name
-        if payload.is_symlink() or payload.resolve().parent != generation_dir.resolve() or not payload.is_file():
+        if payload.is_symlink() or not payload.resolve().is_relative_to(generation_dir.resolve()) or not payload.is_file():
             raise PublishError("payload escapes generation or is missing")
         if payload.stat().st_size > 512 * 1024 * 1024:
             raise PublishError("native payload exceeds 512 MiB")
@@ -581,7 +615,12 @@ def _delete_generation(target: Path) -> bool:
     # Re-enable writes after claiming the lease and verifying the manifest.
     os.chmod(target, 0o755)
     if os.name == "nt":
-        for child in target.iterdir():
-            os.chmod(child, 0o644)
+        _make_payloads_writable(target)
     shutil.rmtree(target)
     return True
+
+
+def _make_payloads_writable(directory: Path) -> None:
+    for child in directory.rglob("*"):
+        if child.is_file() and not child.is_symlink():
+            os.chmod(child, 0o644)

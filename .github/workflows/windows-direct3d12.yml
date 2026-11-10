@@ -16,10 +16,15 @@ on:
   # runs this lane before promotion. Dispatch it on a task branch when a
   # Windows change needs evidence before it reaches develop.
   workflow_dispatch:
+    inputs:
+      editor_only:
+        description: Run the Windows editor and hosted Play acceptance lane only.
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: windows-direct3d12-${{ inputs.batch_sha || github.ref }}
+  group: windows-direct3d12-${{ inputs.batch_sha || github.ref }}${{ inputs.editor_only && '-editor' || '' }}
   cancel-in-progress: false
 env:
   CI: "true"
@@ -36,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         # Runtime SDK installs the Ninja runtime closure and consumes it with both generators.
-        generator: [Ninja, MSBuild, Runtime SDK]
+        generator: ${{ fromJSON(inputs.editor_only && '["Editor"]' || (github.event_name == 'workflow_dispatch' && '["Ninja", "MSBuild", "Runtime SDK", "Editor"]') || '["Ninja", "MSBuild", "Runtime SDK"]') }}
     defaults:
       run:
         shell: pwsh
@@ -75,8 +80,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Catch2 recipe export failed' }
       - name: Bootstrap pinned shader tools
         run: python scripts/shader-probe bootstrap
-      - name: Build and exercise the Windows source runtime on WARP
-        if: matrix.generator == 'Ninja'
+      - name: Prepare the Windows runtime dependencies
+        if: matrix.generator == 'Ninja' || matrix.generator == 'Editor'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
@@ -84,6 +89,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'HarfBuzz recipe export failed' }
           conan install --requires=harfbuzz/14.5.1 --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime dependencies failed to install' }
+      - name: Build and exercise the Windows source runtime on WARP
+        if: matrix.generator == 'Ninja'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
           # D6c: the paired Luau host tools build with cl; Behavior cooks its fixtures with them.
           python scripts/script-provider bootstrap
           if ($LASTEXITCODE -ne 0) { throw 'Luau host tool bootstrap failed' }
@@ -118,8 +128,17 @@ jobs:
           }
           ctest --preset windows-msvc-runtime --tests-regex $suite
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime tests failed' }
+      - name: Validate Windows editor process and lease ownership
+        if: matrix.generator == 'Editor'
+        run: |
+          $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
+          & $python -m unittest discover -s scripts/python -p test_editor_process_windows.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows process ownership acceptance failed' }
+          $env:PYTHONPATH = "$PWD/scripts/python"
+          & $python -m unittest test_play_session.GenerationPublishTests.test_windows_agility_payload_is_published_and_verified -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Agility generation publication failed' }
       - name: Validate the Windows editor and hosted Play
-        if: matrix.generator == 'Ninja' && github.event_name == 'workflow_dispatch'
+        if: matrix.generator == 'Editor'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0
@@ -131,12 +150,17 @@ jobs:
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies;$qt"
           cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON -DLUDUS_BUILD_SHADER_WORKER=ON
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor configure failed' }
-          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests
+          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
-          ctest --preset windows-msvc-runtime --tests-regex '^(ludus_editor_d3d12_viewport|ludus_editor_hosted_play|ludus_rhi_d3d12_tests)$' --output-on-failure
+          $testNames = @('ludus_editor_d3d12_viewport', 'ludus_editor_hosted_play', 'ludus_rhi_d3d12_tests',
+            'ludus_platform_hosted_tests', 'ludus_game_host_windows_supervisor')
+          $suite = '^(' + ($testNames -join '|') + ')$'
+          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+          foreach ($name in $testNames) {
+            if ($name -notin $tests.tests.name) { throw "Missing Windows editor acceptance test $name" }
+          }
+          ctest --preset windows-msvc-runtime --tests-regex $suite --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor or Direct3D 12 acceptance failed' }
-          python -m unittest discover -s scripts/python -p test_editor_process_windows.py -v
-          if ($LASTEXITCODE -ne 0) { throw 'Windows process ownership acceptance failed' }
       - name: Install and verify the tools-only Windows shader worker
         if: matrix.generator == 'Ninja'
         run: |
@@ -167,7 +191,7 @@ jobs:
           & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe"
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK consumers failed' }
       - name: Prepare Catch2 for the four RHI build flavors
-        if: matrix.generator != 'Runtime SDK'
+        if: matrix.generator == 'Ninja' || matrix.generator == 'MSBuild'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $dependencyConfigurations = @('Debug', 'RelWithDebInfo', 'Release')
@@ -176,7 +200,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
           }
       - name: Build and test primitives, Foundation host services and the Win32/D3D12 closure
-        if: matrix.generator != 'Runtime SDK'
+        if: matrix.generator == 'Ninja' || matrix.generator == 'MSBuild'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python
         run: |
@@ -355,6 +379,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   windows:
+    if: ${{ !inputs.editor_only }}
     name: Windows Direct3D 12 bring-up
     runs-on: windows-2022
     timeout-minutes: 60
