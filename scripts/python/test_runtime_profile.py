@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import runtime_profile
 
@@ -383,6 +385,8 @@ class Parsers(unittest.TestCase):
         self.assertEqual(metrics["R5/layers=1/merge=0/execute_cpu_p95_ns"], 4000.0)
         self.assertEqual(metrics["R5/layers=1/merge=1/samples"], 2.0)
         self.assertEqual(metrics["R7/layers=1/merge=0/gpu_duration_median_ns"], 1200.0)
+        self.assertEqual(metrics["R7/layers=1/merge=0/gpu_duration_ns_minimum"], 1200.0)
+        self.assertEqual(metrics["R7/layers=1/merge=0/gpu_duration_ns_maximum"], 1400.0)
         self.assertEqual(metrics["R7/layers=1/merge=1/samples"], 1.0, "pending/unavailable samples are not durations")
         self.assertEqual(metrics["R7/layers=1/merge=1/gpu_duration_median_ns"], 1300.0)
 
@@ -496,6 +500,15 @@ class Execution(unittest.TestCase):
         self.assertEqual((metric["median"], metric["min"], metric["max"]), (30.0, 20.0, 40.0))
         self.assertIn("process/wall_ns", result["metrics"])
         self.assertEqual(len(result["logs"]), 4)
+
+    def test_windows_scenarios_resolve_the_native_executable_suffix(self):
+        scenario = self.scenario(warmup=0, repetitions=1)
+        (self.build / "bin/sample.exe").touch()
+        runner = FakeRunner(["workers=1 median_ns=10\n"])
+        with patch.object(runtime_profile, "os", SimpleNamespace(name="nt", environ={})):
+            result = runtime_profile.run_scenario(scenario, self.build, self.output, runner=runner)
+        self.assertEqual(result["status"], "passed", result.get("reason"))
+        self.assertTrue(runner.commands[0][0].endswith("sample.exe"))
 
     def test_trace_scenarios_pass_an_output_path_and_keep_one_trace(self):
         scenario = self.scenario(trace=True, parser={"kind": "perfetto-scopes"}, arguments=["--headless"])

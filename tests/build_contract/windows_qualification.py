@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -27,14 +28,14 @@ TARGET_TESTS = (
     "ludus_scene_import_tests",
 )
 OTHER_TARGETS = (
-    "ludus_world_demo", "ludus_world_frame_renderer_tests", "ludus-shader-worker",
+    "ludus_world_demo", "ludus_world_frame_renderer_tests", "ludus_rhi_render_tests", "ludus-shader-worker",
     "ludus_game_host_app", "ludus_cook",
 )
 OTHER_TESTS = (
     "ludus_world_packed_room_d3d12", "ludus_world_frame_renderer_pixels", "ludus_shader_worker_protocol",
     "ludus_game_host_windows_symbols", "ludus_game_host_windows_supervisor", "ludus_behavior_cook",
     "ludus_behavior_profiles", "ludus_behavior_evidence", "ludus_localization_cooker",
-    "ludus_localization_release",
+    "ludus_localization_release", "ludus_rhi_windows_profile_smoke",
 )
 HOST_IDENTITY = r"""
 $ErrorActionPreference = 'Stop'
@@ -91,6 +92,71 @@ def check_adapter(host, test_output, adapter, driver):
     return matches[0]
 
 
+def check_performance_limits(report, path):
+    limits = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(limits, dict) or set(limits) != {"schema", "scenarios"}
+            or isinstance(limits["schema"], bool) or limits["schema"] != 1):
+        raise RuntimeError("Performance limits require schema 1 and a scenarios object.")
+    scenarios = {entry["id"]: entry for entry in report["scenarios"]}
+    if not isinstance(limits["scenarios"], dict) or set(limits["scenarios"]) != set(scenarios):
+        raise RuntimeError("Declare performance limits for every measured scenario.")
+    for name, thresholds in limits["scenarios"].items():
+        metrics = scenarios[name]["metrics"]
+        if not isinstance(thresholds, dict) or not thresholds:
+            raise RuntimeError(f"Declare at least one measured limit for {name}.")
+        for metric, upper_bound in thresholds.items():
+            if (isinstance(upper_bound, bool) or not isinstance(upper_bound, (float, int))
+                    or not math.isfinite(upper_bound) or upper_bound <= 0 or metric not in metrics):
+                raise RuntimeError(f"{name}: invalid or unmeasured limit {metric!r}.")
+            measured = metrics[metric]["max"]
+            if not math.isfinite(measured) or measured < 0 or measured > upper_bound:
+                raise RuntimeError(f"{name}: {metric} measured {measured}, exceeding limit {upper_bound}.")
+    gpu = scenarios.get("rhi-ordered-graph-gpu-timing")
+    if gpu is not None:
+        required = {name for name in gpu["metrics"]
+                    if name.endswith(("/peak_api_bytes_maximum", "/gpu_duration_p95_ns"))}
+        availability = [value for name, value in gpu["metrics"].items()
+                        if name.endswith("/api_bytes_available_minimum")]
+        if (not required or not required.issubset(limits["scenarios"][gpu["id"]]) or not availability
+                or any(value["min"] != 1 for value in availability)):
+            raise RuntimeError("GPU qualification requires available API allocation bytes, peak memory limits "
+                               "and p95 GPU limits for every workload.")
+
+
+
+def profile_runtime(args, identity, environment):
+    sys.path.insert(0, str(ROOT / "scripts/python"))
+    import runtime_profile
+    scenarios = runtime_profile.load_manifest(ROOT / runtime_profile.MANIFEST_PATH)
+    requested = ("world-headless", "world-presented", "rhi-ordered-graph", "rhi-ordered-graph-gpu-timing")
+    capabilities = {"shader-tools", "presentation", "gpu", "gpu-windows-qualification"}
+    selection = runtime_profile.select_scenarios(scenarios, requested, capabilities)
+    report_directory = args.output / "performance"
+    # The scenario runner already owns logs, traces, warmups and repetitions.
+    # Supply the validated adapter requirement to every spawned workload.
+    previous = os.environ.copy()
+    try:
+        os.environ.update(environment)
+        report = runtime_profile.run_scenarios(
+            ROOT, PRESET, ROOT / "out/build" / PRESET, report_directory, selection, capabilities,
+            compiler=identity["host"]["compiler_version"],
+            device=f'{args.adapter_name}, driver {args.driver}, Windows {identity["host"]["version"]}',
+            controlled_environment=runtime_profile.environment_names(scenarios),
+            system_gpus=lambda: identity["host"]["adapters"])
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
+    if any(entry["status"] != "passed" for entry in report["scenarios"]):
+        raise RuntimeError(f"Windows performance workload failed. Inspect {report_directory / 'report.json'}")
+    identity["performance_report"] = "performance/report.json"
+    identity["has_passed_performance_limits"] = False
+    if args.performance_limits is not None:
+        check_performance_limits(report, args.performance_limits)
+        identity["performance_limits"] = json.loads(args.performance_limits.read_text(encoding="utf-8"))
+        identity["has_passed_performance_limits"] = True
+
+
+
 def qualify(args):
     if os.name != "nt":
         raise RuntimeError("Use an x64 Windows developer shell for the pinned MSVC and Windows SDK.")
@@ -135,6 +201,8 @@ def qualify(args):
     if args.adapter == "hardware":
         identity["physical_adapter"] = check_adapter(host, packed_world,
                                                       args.adapter_name, args.driver)
+    if args.performance:
+        profile_runtime(args, identity, environment)
     identity["passed_tests"] = sorted(results)
     evidence.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
 
@@ -145,16 +213,24 @@ def main():
     parser.add_argument("--adapter", choices=("warp", "hardware"), required=True)
     parser.add_argument("--adapter-name")
     parser.add_argument("--driver")
+    parser.add_argument("--performance-limits", type=Path,
+                        help="Schema 1 JSON limits for every measured workload, including peak GPU API bytes")
+    parser.add_argument("--performance", action="store_true",
+                        help="Record native World and ordered-graph CPU/GPU and allocation workloads")
     parser.add_argument("--output", type=Path, required=True, help="New directory for evidence and test results")
     args = parser.parse_args()
     if args.adapter == "hardware" and not (args.adapter_name and args.driver):
         parser.error("hardware evidence requires --adapter-name and --driver")
+    if args.performance_limits is not None and not args.performance:
+        parser.error("--performance-limits requires --performance")
+    if args.performance and args.adapter != "hardware":
+        parser.error("--performance requires a named physical adapter")
     if args.adapter == "warp" and (args.adapter_name or args.driver):
         parser.error("--adapter-name and --driver apply only to physical hardware")
     args.output = args.output.resolve()
     try:
         qualify(args)
-    except (RuntimeError, OSError, ValueError, KeyError, ET.ParseError, subprocess.SubprocessError) as error:
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, ET.ParseError, subprocess.SubprocessError) as error:
         print(f"Windows runtime qualification: {error}", file=sys.stderr)
         return 1
     return 0

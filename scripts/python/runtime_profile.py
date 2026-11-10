@@ -438,6 +438,8 @@ def parse_tagged_rows(output: str, tables: Sequence[Mapping[str, object]]) -> di
                 median_name, p95_name = distribution_names(column)
                 add_metric(metrics, f"{prefix}/{median_name}", median(samples))
                 add_metric(metrics, f"{prefix}/{p95_name}", percentile(samples, 0.95))
+                add_metric(metrics, f"{prefix}/{column}_minimum", min(samples))
+                add_metric(metrics, f"{prefix}/{column}_maximum", max(samples))
             add_metric(metrics, f"{prefix}/samples", float(len(next(iter(group.values())))))
     return metrics
 
@@ -566,6 +568,8 @@ def run_scenario(scenario: Scenario, build_dir: Path, output_dir: Path,
     """
     count = repetitions if repetitions is not None else scenario.repetitions
     executable = build_dir / scenario.executable
+    if os.name == "nt":
+        executable = executable.with_suffix(".exe")
     work = output_dir / "work" / scenario.id
     logs = output_dir / "logs"
     traces = output_dir / "traces"

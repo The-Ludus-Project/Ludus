@@ -489,3 +489,14 @@ after these steps:
   runs until its window closes; neither is a scenario yet.
 - Calibrated timing gates (above) and base/head comparison jobs remain future
   work in the engineering quality plan.
+
+## Windows qualification measurements
+
+The [Windows qualification runner](../architecture/windows-direct3d12.md#physical-runtime-evidence)
+reuses the World and ordered-graph scenarios on a named physical adapter.
+The shared scenario executor resolves Windows executables with their `.exe`
+suffix. Tagged tables retain minima and maxima for native samples alongside
+median and p95 values, so peak allocation limits can use the observed maximum.
+The GPU timing workload also records logical bytes, API accounting availability
+and peak API bytes. The Windows qualification limits are scoped to the declared
+device and workload.

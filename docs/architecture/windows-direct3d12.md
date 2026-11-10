@@ -955,6 +955,25 @@ and uses embedded debug information with incremental linking and `/RTC`
 disabled. Catch2's uninstrumented STL boundary shares disabled container
 annotations with its instrumented callers.
 
+#### Candidate hardware requirements
+
+The baseline raster profile requires an x64 Direct3D 12 device at feature level
+11_0 or higher, shader model 6.0, and successful admission of the portable raster,
+compute, indirect and ordered-graph capabilities. Format and resource limits
+come from the device's reported RHI profile. The editor additionally requires
+the D6d shared-device and cross-process presentation contracts on the selected
+adapter. A model name alone cannot establish those driver capabilities.
+
+The runtime loader floor is Windows 10 version 1909 with revision 1350 or later,
+or Windows 10 2004/20H2 with revision 789 or later, or a later Windows release.
+Qt 6.8's x64 Windows floor is version 1809, so Agility supplies the stricter
+loader requirement. These dependency floors guide the hardware test matrix.
+The currently exercised Windows host is the hosted Windows Server 2022 WARP
+lane. Physical adapter models and a minimum supported desktop OS need accepted
+device results before the support matrix can be published.
+See [Microsoft's Agility setup](https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/)
+and [Qt 6.8 supported platforms](https://doc.qt.io/qt-6.8/supported-platforms.html).
+
 #### Physical runtime evidence
 
 Run the same source runtime suite in an interactive x64 Windows session on
@@ -982,6 +1001,24 @@ running on a multi-GPU host. Archive `runtime.json`, `inventory.json` and
 `ctest.xml` with the candidate's batch run. The runtime suite covers restarts,
 minimize/restore, resize, injected device removal and recreation, resource
 exhaustion and timing query behavior.
+
+The same runner accepts `--performance` on a named physical adapter. It reuses
+the existing World simulation/presentation and ordered-graph workloads, retaining
+warmups, repeated CPU/GPU measurements, traces, exact adapter identity and
+logical/API allocation peaks under `performance/`. The ordinary WARP suite
+runs the ordered-graph image oracle once as
+`ludus_rhi_windows_profile_smoke`.
+
+After calibrating limits on the intended device and workload, add
+`--performance-limits <limits.json>`. This JSON file has integer `schema` 1
+and a `scenarios` object with an entry for every measured scenario. Each entry
+maps exact metric names from `performance/report.json` to positive finite
+upper bounds in the metric's recorded units. The checker applies each bound
+to the largest measured repetition. Every ordered-graph GPU workload requires
+a `gpu_duration_p95_ns` and `peak_api_bytes_maximum` limit, and all samples
+must expose API allocation accounting. Missing metrics, unavailable accounting
+and exceeded limits fail the run. `runtime.json` distinguishes collected
+performance reports from passed limits.
 
 #### Qualification record
 
