@@ -92,9 +92,12 @@ def consume_behavior(sdk, workspace):
     run("cmake", "--build", build, "--config", CONFIGURATION)
     run("ctest", "--test-dir", build, "-C", CONFIGURATION, "--output-on-failure", "--no-tests=error",
         contains="100% tests passed")
+    for executable_directory in (build, build / "shipping"):
+        require((executable_directory / "D3D12/D3D12Core.dll").is_file(), "The Agility runtime was not staged")
     module = build / "scripted_game.dll"
     first_generation = build / "scripted_game_initial.dll"
-    shutil.copyfile(module, first_generation)
+    for suffix in (".dll", ".pdb"):
+        shutil.copyfile(module.with_suffix(suffix), first_generation.with_suffix(suffix))
     cook = build / "encounter"
     pointer = cook / "current.json"
     original_pointer = pointer.read_bytes()
@@ -110,8 +113,11 @@ def consume_behavior(sdk, workspace):
     require(changed != valid_source, "The scripted-game fixture no longer has the expected increment")
     script.write_text(changed, encoding="utf-8")
     run("cmake", "--build", build, "--config", CONFIGURATION, "--target", "scripted_game_module")
-    supervisor = ROOT / "modules/runtime/game_host/tests/windows_supervisor_acceptance.py"
-    run(sys.executable, supervisor, "--host", build / "scripted_game_host.exe",
+    acceptance = ROOT / "modules/runtime/game_host/tests"
+    run(sys.executable, acceptance / "windows_symbols_acceptance.py",
+        "--a", first_generation, "--a-pdb", first_generation.with_suffix(".pdb"),
+        "--b", module, "--b-pdb", module.with_suffix(".pdb"))
+    run(sys.executable, acceptance / "windows_supervisor_acceptance.py", "--host", build / "scripted_game_host.exe",
         "--scripted-module", first_generation, "--scripted-replacement", module, "--script-evidence", evidence)
 
 
