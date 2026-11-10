@@ -29,12 +29,9 @@
     {
       "kind": "variant",
       "sources": [
-        "modules/graphics/renderer/src/*",
-        "modules/graphics/rhi/src/*",
-        "modules/graphics/rhi/tests/reference_raster.cpp",
         "modules/graphics/renderer/tests/*_oracle.cpp"
       ],
-      "reason": "ludus_renderer_tests and ludus_rhi_lifecycle_tests compile the renderer and RHI against the deterministic reference backend instead of the platform device, and the renderer tests compile with -ffp-contract=off; the oracles are compiled with each test executable's floating-point flags."
+      "reason": "Renderer oracles are compiled with each test executable's floating-point flags."
     },
     {
       "kind": "variant",
