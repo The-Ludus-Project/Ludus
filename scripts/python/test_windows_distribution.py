@@ -217,8 +217,11 @@ class WindowsDistributionTests(unittest.TestCase):
                     self.create()
 
     def test_offline_docs_and_release_identity_are_required(self):
+        with patch.object(distribution, "MAX_ENTRIES", 2):
+            with self.assertRaisesRegex(ToolingError, "ZIP metadata exceeds"):
+                distribution._validate_docs_archive(self.docs)
         self.docs.write_bytes(b"broken archive")
-        with self.assertRaises(zipfile.BadZipFile):
+        with self.assertRaises(ToolingError):
             self.create()
         self.manifest.write_text(json.dumps(_manifest_json(build_flavor="Development")))
         with self.assertRaisesRegex(ToolingError, "Release SDK"):

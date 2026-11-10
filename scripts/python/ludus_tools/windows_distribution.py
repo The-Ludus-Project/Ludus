@@ -95,6 +95,27 @@ def _require_file(root: Path, relative: str) -> Path:
     return path
 
 
+def _check_zip_metadata(archive: Path) -> None:
+    from .package_limits import MAX_CENTRAL_DIRECTORY_BYTES
+    with archive.open("rb") as handle:
+        end = zipfile._EndRecData(handle)
+    if (end is None or end[zipfile._ECD_ENTRIES_TOTAL] > MAX_ENTRIES
+            or end[zipfile._ECD_SIZE] > MAX_CENTRAL_DIRECTORY_BYTES):
+        fail("distribution ZIP metadata exceeds limits", "InvalidPackage")
+
+
+def _validate_docs_archive(archive: Path) -> None:
+    _check_zip_metadata(archive)
+    with zipfile.ZipFile(archive) as reader:
+        names = {item.filename for item in reader.infolist()}
+        if not {"docs/README.md", "site/index.html", "site/documentation-sources.json"} <= names:
+            fail("offline docs are incomplete; run scripts/package-docs after wiki checks", "InvalidPackage")
+        for name in names:
+            payload_path(name)
+        if sum(item.file_size for item in reader.infolist()) > MAX_EXPANDED:
+            fail("offline docs exceed the expanded-byte budget", "InvalidPackage")
+
+
 def _verify_signature(path: Path, signtool: str | None) -> None:
     if sys.platform != "win32" or not signtool:
         fail("public bundles require Windows and --signtool to verify Authenticode", "MissingTools")
@@ -281,11 +302,8 @@ def create_distribution(payload: Path, destination: Path, spec_path: Path, *, sd
                 _verify_signature(target, signtool)
         # package-docs remains the sole producer of the checked offline archive.
         # It contains both canonical Markdown and the HTML site's source ledger.
-        with zipfile.ZipFile(docs) as reader:
-            required = {"docs/README.md", "site/index.html", "site/documentation-sources.json"}
-            if not required <= set(reader.namelist()):
-                fail("offline docs are incomplete; run scripts/package-docs after wiki checks", "InvalidPackage")
         shutil.copyfile(docs, root / "ludus-docs-offline.zip")
+        _validate_docs_archive(root / "ludus-docs-offline.zip")
         (root / "README.txt").write_text(
             "Ludus Windows portable Release\n\n"
             "Extract into a new, short directory (for example C:\\Ludus\\version).\n"
@@ -335,12 +353,7 @@ def create_distribution(payload: Path, destination: Path, spec_path: Path, *, sd
 
 def verify_distribution(archive: Path, *, signtool=None) -> dict:
     """Verify bytes, loader closure and matching symbols after private extraction."""
-    from .package_limits import MAX_CENTRAL_DIRECTORY_BYTES
-    with archive.open("rb") as handle:
-        end = zipfile._EndRecData(handle)
-    if (end is None or end[zipfile._ECD_ENTRIES_TOTAL] > MAX_ENTRIES
-            or end[zipfile._ECD_SIZE] > MAX_CENTRAL_DIRECTORY_BYTES):
-        fail("distribution ZIP metadata exceeds limits", "InvalidPackage")
+    _check_zip_metadata(archive)
     with tempfile.TemporaryDirectory(prefix="ludus-windows-verify-") as temporary:
         root = Path(temporary)
         with zipfile.ZipFile(archive) as reader:
@@ -411,9 +424,7 @@ def verify_distribution(archive: Path, *, signtool=None) -> dict:
             installed = SdkIdentity.from_json(read_json(_require_file(root / "payload", "share/Ludus/LudusSdkManifest.json")))
             if asdict(installed) != manifest["sdk"] or installed.source_revision != manifest["revision"]:
                 fail("distribution SDK identity disagrees with installed SDK", "SdkIncompatible")
-        with zipfile.ZipFile(_require_file(root, "ludus-docs-offline.zip")) as reader:
-            if not {"docs/README.md", "site/index.html", "site/documentation-sources.json"} <= set(reader.namelist()):
-                fail("distribution offline docs are incomplete", "InvalidPackage")
+        _validate_docs_archive(_require_file(root, "ludus-docs-offline.zip"))
         if manifest["channel"] == "public" and (root / "prerequisites/VC_redist.x64.exe").exists():
             _verify_signature(root / "prerequisites/VC_redist.x64.exe", signtool)
         return manifest
