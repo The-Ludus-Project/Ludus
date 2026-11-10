@@ -125,6 +125,7 @@ struct GgxReflection final
     float32 Visibility = 0;
     float32 Pdf = 0;
 };
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): GGX alpha and the view, light and half-vector cosines.
 [[nodiscard]] GgxReflection EvaluateGgxReflection(float32 alpha, float32 nv, float32 nl, float32 nh) noexcept
 {
     const float32 alphaSquared = alpha * alpha;
@@ -142,6 +143,7 @@ struct GgxReflection final
 }
 /// Reflect the view about a visible GGX normal sampled from a unit-disk point; unnormalized.
 [[nodiscard]] math::Vector3
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): GGX alpha, then the unit-disk point's two coordinates.
 SampleGgxReflection(const Basis& frame, math::Vector3 view, float32 alpha, float32 diskX, float32 diskY) noexcept
 {
     const math::Vector3 localView = frame.Local(view);
@@ -293,6 +295,8 @@ struct ProgramMixture final
     return mixture;
 }
 /// One lobe's value without its weight, and its own solid-angle density.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): normal, view and light directions, then their cosines,
+// in the order of every BSDF evaluation in this file.
 [[nodiscard]] ReferenceBsdfEvaluation EvaluateProgramLobe(const format::MaterialProgramLobe& lobe,
                                                           float32 roughness,
                                                           math::Vector3 n,
@@ -300,6 +304,7 @@ struct ProgramMixture final
                                                           math::Vector3 l,
                                                           float32 nv,
                                                           float32 nl) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     if (lobe.Operation == format::MaterialLobeOperation::Diffuse)
     {
@@ -353,12 +358,14 @@ struct ProgramMixture final
 }
 /// Select one lobe with sample.X in proportion to its selection weight and sample its direction
 /// with the remaining two values; unnormalized, and zero for a program without positive weight.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the view direction, then the three uniform values.
 [[nodiscard]] math::Vector3 SampleMaterialProgram(const ReferenceBsdf& bsdf,
                                                   const Basis& frame,
                                                   math::Vector3 view,
                                                   math::Vector3 sample,
                                                   float32 diskX,
                                                   float32 diskY) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const ProgramMixture mixture = RunMaterialProgram(bsdf);
     if (mixture.SelectionTotal <= 0)
