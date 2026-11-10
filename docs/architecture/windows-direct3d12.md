@@ -264,8 +264,10 @@ the MSVC baseline in D0.
 - **Shaders.** Raster DXIL is reflected independently at build time, including
   native registers, uniform member offsets and vertex inputs. Native creation
   checks stage/entry and the complete PSV0 resource table against the copied scalar
-  layout: missing/extra bindings, wrong spaces, ranges, categories and dimensions
-  reject. Bytecode is copied into budgeted storage; D3b consumes it in pipelines.
+  layout: a shader resource without a layout entry, wrong spaces, ranges, categories
+  and dimensions reject. Layout entries the stage does not read are accepted (D6c):
+  the renderer's deferred and clustered ABIs bind every slot while each stage reads
+  a subset. Bytecode is copied into budgeted storage; D3b consumes it in pipelines.
 
 The Windows lane builds `d3d12_resource_tests.cpp` beside D1/D2: partial-profile
 admission, descriptor/resource exhaustion and reuse, retained snapshots, padded
