@@ -1256,10 +1256,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         if os.name == 'nt':
             # The Windows worker inventories DXC after its Slang libraries, even for non-DXIL requests.
             dxc_root = Path(dxc) if dxc else Path(compiler).resolve().parent.parent.parent / 'dxc'
-            for library in ('dxcompiler.dll', 'dxil.dll'):
-                path = dxc_root / library
+            for library_name in ('dxcompiler.dll', 'dxil.dll'):
+                path = dxc_root / library_name
                 require(path.is_file(), 'Tools', 'native worker', f'cannot verify worker DXC library {path}; set --dxc-path')
-                inventory += f'dxc/{library}:{hash_file(path)}\n'
+                inventory += f'dxc/{library_name}:{hash_file(path)}\n'
         require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
                 'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
         worker_identity = descriptor.get('implementation')
