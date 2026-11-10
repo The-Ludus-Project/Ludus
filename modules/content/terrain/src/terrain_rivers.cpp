@@ -203,6 +203,7 @@ struct ChannelProfile final
 
 [[nodiscard]] ChannelProfile ComputeProfile(const TerrainFieldGrid& grid,
                                             const TerrainRiverParameters& parameters,
+                                            // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): count, metres.
                                             uint32 accumulation,
                                             float32 filledMetres) noexcept
 {
@@ -238,6 +239,7 @@ struct ChannelProfile final
 
 /// Elevation the profile allows at distance from the channel centre: the bed inside the half-width, a smooth
 /// bank blending to the original beyond it.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a horizontal distance and an elevation are distinct.
 [[nodiscard]] float32 ComputeProfileTarget(const ChannelProfile& profile, float32 distance, float32 original) noexcept
 {
     if (distance <= profile.HalfWidthMetres)

@@ -24,6 +24,7 @@ namespace math = ludus::foundation::math;
 namespace
 {
 constexpr uint32 CONFLUENCE_SIDE = 7;
+constexpr usize CONFLUENCE_SAMPLES = static_cast<usize>(CONFLUENCE_SIDE) * CONFLUENCE_SIDE;
 constexpr float32 LARGEST_FINITE = 3.0e38F;
 
 [[nodiscard]] float32 MakeNonFinite()
@@ -85,6 +86,7 @@ struct Network final
     Array<TerrainRiverSegment> Segments;
     TerrainRiverNetworkSummary Summary;
 
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): point and segment capacities are distinct.
     Network(usize points, usize segments) : Points(points, 0U), Segments(segments) {}
 
     [[nodiscard]] TerrainRiverStatus Extract(const TerrainFieldGrid& grid,
@@ -215,7 +217,7 @@ TEST_CASE("terrain rivers split a confluence into ordered segments", "[content][
     const Array<uint32> accumulation = Accumulate(grid, directions);
     REQUIRE(accumulation[GetIndex(grid, 3, 0)] == 10);
     const TerrainRiverParameters parameters = MakeSampleCountParameters(2, grid);
-    Network network(CONFLUENCE_SIDE * CONFLUENCE_SIDE, CONFLUENCE_SIDE * CONFLUENCE_SIDE);
+    Network network(CONFLUENCE_SAMPLES, CONFLUENCE_SAMPLES);
     REQUIRE(network.Extract(grid, directions, accumulation, parameters) == TerrainRiverStatus::Success);
     CHECK(network.Summary.ChannelSamples == 8);
     CHECK(network.Summary.SegmentCount == 3);
@@ -254,7 +256,7 @@ TEST_CASE("terrain rivers split a confluence into ordered segments", "[content][
 
     SECTION("a raised threshold keeps only the trunk below the confluence")
     {
-        Network trunkOnly(CONFLUENCE_SIDE * CONFLUENCE_SIDE, CONFLUENCE_SIDE * CONFLUENCE_SIDE);
+        Network trunkOnly(CONFLUENCE_SAMPLES, CONFLUENCE_SAMPLES);
         REQUIRE(trunkOnly.Extract(grid, directions, accumulation, MakeSampleCountParameters(7, grid)) ==
                 TerrainRiverStatus::Success);
         CHECK(trunkOnly.Summary.SegmentCount == 1);
@@ -275,7 +277,7 @@ TEST_CASE("terrain rivers reject inconsistent routing and storage", "[content][t
     Array<TerrainFlowDirection> directions = MakeConfluence(grid);
     Array<uint32> accumulation = Accumulate(grid, directions);
     const TerrainRiverParameters parameters = MakeSampleCountParameters(2, grid);
-    Network network(CONFLUENCE_SIDE * CONFLUENCE_SIDE, CONFLUENCE_SIDE * CONFLUENCE_SIDE);
+    Network network(CONFLUENCE_SAMPLES, CONFLUENCE_SAMPLES);
     network.Points[0] = 77;
 
     Array<uint32> flat = accumulation;
