@@ -331,7 +331,15 @@ it builds anything.
 
 The world demo scenarios use the demo's `--trace-output <path>` option. With
 `--headless`, `--frames N` selects the number of simulation ticks (see the
-[world demo guide](../examples/world-demo.md#run-the-application)).
+[world demo guide](../examples/world-demo.md#run-the-application)). The editor
+scenario uses the same option of the editor test executables: their shared
+Catch2 entry point accepts `--trace-output <path>` in every editor
+configuration, records a CPU capture with the viewport wall-clock spans around
+the whole session, and fails with exit code 3 instead of writing nothing when
+the build has profiling disabled or the file cannot be written. An unknown
+option is rejected by Catch2 before any test runs, so a scenario log that
+reads `Unrecognised token: --trace-output` means the entry point was built
+without the option, not that the viewport failed.
 
 The GPU scenarios run the benchmark sections of `ludus_rhi_render_tests` and
 `ludus_renderer_render_tests` with the same environment switches and sample-set

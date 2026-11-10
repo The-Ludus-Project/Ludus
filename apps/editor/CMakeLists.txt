@@ -475,8 +475,25 @@ target_link_libraries(ludus_editor_core
 ludus_apply_project_defaults(ludus_editor_core)
 
 
+# Bounded wall-clock viewport span recording. The application's profiling
+# objects and every editor test executable's Catch2 entry point link it, so a
+# test's `--trace-output` capture appends viewport spans in every editor
+# configuration rather than only when the preview definitions reach the entry
+# point.
+add_library(ludus_editor_viewport_trace STATIC src/internal/viewport_trace.h src/viewport_trace.cpp)
+target_include_directories(ludus_editor_viewport_trace PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(ludus_editor_viewport_trace PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+target_link_libraries(ludus_editor_viewport_trace
+    PUBLIC
+        Qt6::Core
+        Ludus::FoundationBase
+        Ludus::FoundationContainers
+    PRIVATE
+        Ludus::FoundationProfiling
+)
+ludus_apply_project_defaults(ludus_editor_viewport_trace)
+
 set(editor_profiling_sources
-    src/internal/viewport_trace.h src/viewport_trace.cpp
     src/internal/profiling_controller.h src/profiling_controller.cpp
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
@@ -824,6 +841,7 @@ ludus_editor_add_objects(ludus_editor_application
 )
 target_link_libraries(ludus_editor_application
     PUBLIC
+        ludus_editor_viewport_trace
         ludus_editor_render_graph_authoring
         ludus_editor_content
         ludus_editor_project_explorer
@@ -1070,9 +1088,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
-    # One Catch2 session entry point for every editor test executable.
+    # One Catch2 session entry point for every editor test executable. Its
+    # `--trace-output` option captures CPU scopes and viewport spans for the
+    # runtime profile scenarios, so the trace libraries come with it.
     ludus_editor_add_objects(ludus_editor_test_main tests/main.cpp)
-    target_link_libraries(ludus_editor_test_main PUBLIC Qt6::Widgets Catch2::Catch2 Ludus::FoundationBase)
+    target_link_libraries(ludus_editor_test_main PUBLIC Qt6::Widgets Catch2::Catch2 Ludus::FoundationBase
+        Ludus::FoundationContainers Ludus::FoundationProfiling ludus_editor_viewport_trace)
     ludus_enable_test_exceptions(ludus_editor_test_main)
     add_executable(ludus_document_well_tests tests/document_pair_tests.cpp)
     set_target_properties(ludus_document_well_tests PROPERTIES AUTOMOC ON)
@@ -1611,6 +1632,7 @@ list(REMOVE_ITEM editor_precompiled_header_objects ludus_editor_geometry_model)
 ludus_editor_apply_precompiled_headers(
     ludus_editor_core
     ludus_editor_code
+    ludus_editor_viewport_trace
     ${editor_precompiled_header_objects}
     ludus_editor_texture_display
     ludus_editor_crash_reporting
