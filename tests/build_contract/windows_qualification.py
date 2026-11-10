@@ -13,6 +13,13 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 PRESET = "windows-msvc-runtime"
 TARGET_TESTS = (
+    "ludus_foundation_strings_tests", "ludus_foundation_math_tests", "ludus_gaussian_tests",
+    "ludus_foundation_geometry_tests", "ludus_foundation_parsing_tests",
+    "ludus_renderer_tests", "ludus_reference_material_tests", "ludus_metropolis_tests",
+    "ludus_one_more_vertex_oracle_tests", "ludus_reflection_tests",
+    "ludus_content_identity_tests", "ludus_geometry_format_tests", "ludus_scene_format_tests",
+    "ludus_scene_source_tests", "ludus_content_world_restore_tests",
+    "ludus_string_dictionary_tests", "ludus_string_dictionary_format_tests",
     "ludus_platform_win32_tests", "ludus_rhi_d3d12_tests", "ludus_rhi_lifecycle_tests",
     "ludus_world_demo_tests", "ludus_content_tests", "ludus_resources_tests",
     "ludus_gameplay_world_tests", "ludus_gameplay_camera_tests", "ludus_gameplay_sequencer_tests",
@@ -37,6 +44,7 @@ OTHER_TESTS = (
     "ludus_behavior_profiles", "ludus_behavior_evidence", "ludus_localization_cooker",
     "ludus_localization_release", "ludus_rhi_windows_profile_smoke",
 )
+ALLOCATION_TARGET_TESTS = ("ludus_text_alloc_tests", "ludus_audio_alloc_tests")
 SANITIZER_TARGET_TESTS = (
     "ludus_foundation_base_tests", "ludus_foundation_memory_tests",
     "ludus_foundation_containers_tests", "ludus_foundation_time_tests",
@@ -194,12 +202,13 @@ def qualify(args):
     run("cmake", "--fresh", "--preset", args.preset, "-DLUDUS_BUILD_SHADER_WORKER=ON", "-DLUDUS_BUILD_BEHAVIOR=ON",
         "-DLUDUS_BUILD_BEHAVIOR_ACCEPTANCE=ON", environment=environment)
     sanitizer_tests = SANITIZER_TARGET_TESTS if args.preset == "windows-msvc-asan" else ()
-    targets = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TARGETS + sanitizer_tests))
+    allocation_tests = () if sanitizer_tests else ALLOCATION_TARGET_TESTS
+    targets = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TARGETS + sanitizer_tests + allocation_tests))
     if sanitizer_tests:
         targets += ("ludus_asan_control_child",)
     run("cmake", "--build", "--preset", args.preset, "--target", *targets,
         "--", "-k", "0", environment=environment)
-    expected = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TESTS + sanitizer_tests))
+    expected = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TESTS + sanitizer_tests + allocation_tests))
     if sanitizer_tests:
         expected += ("ludus_asan_control",)
     ctest = ("ctest", "--preset", args.preset, "--tests-regex", test_inventory(expected))
