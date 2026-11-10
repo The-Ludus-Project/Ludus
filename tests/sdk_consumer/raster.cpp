@@ -583,13 +583,21 @@ void Tick() noexcept
         }
         gTimingArmed = true;
     }
-    // Both browser backends admit offscreen-only frames (editor shadow preparation records them);
-    // the graph frame below then restores presentation and its pixels are compared as before.
+    // Both browser backends admit offscreen-only frames (editor shadow preparation records them).
+    // Vulkan and Metal reject them with Unsupported and keep the previous target; Direct3D 12 admits
+    // them. The graph frame below then restores presentation and its pixels are compared as before.
     static bool hasCheckedOffscreenTarget = false;
     if (Variant() >= 3 && hasCheckedOffscreenTarget == false)
     {
-        if (rhi::SetFrameTarget(gDevice, gSurface, { .Width = 96, .Height = 64, .ShouldPresentToSurface = false }) !=
-            rhi::DeviceStatus::Ready)
+        const rhi::DeviceStatus offscreenStatus =
+            rhi::SetFrameTarget(gDevice, gSurface, { .Width = 96, .Height = 64, .ShouldPresentToSurface = false });
+#if defined(LUDUS_PLATFORM_WEB)
+        const bool isOffscreenStatusExpected = offscreenStatus == rhi::DeviceStatus::Ready;
+#else
+        const bool isOffscreenStatusExpected =
+            offscreenStatus == rhi::DeviceStatus::Ready || offscreenStatus == rhi::DeviceStatus::Unsupported;
+#endif
+        if (isOffscreenStatusExpected == false)
         {
             Stop(true);
             return;

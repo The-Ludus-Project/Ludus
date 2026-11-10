@@ -73,7 +73,14 @@ math::Vector4 GpuVector(math::Vector3 value, float32 w = 0) noexcept
     return {value.X, value.Y, value.Z, w};
 }
 // AreCapturesEqual names every field; extend it whenever ReferenceCaptureDescription changes.
-constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = 168;
+// The description holds two borrowed pointers and a usize, so its size follows the pointer width:
+// 168 bytes on 64-bit targets and 152 bytes on 32-bit targets such as wasm32.
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT = 168;
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_32_BIT = 152;
+constexpr usize POINTER_BYTES_64_BIT = 8;
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = sizeof(void*) == POINTER_BYTES_64_BIT
+                                                         ? EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT
+                                                         : EXPECTED_CAPTURE_DESCRIPTION_BYTES_32_BIT;
 static_assert(sizeof(ReferenceCaptureDescription) == EXPECTED_CAPTURE_DESCRIPTION_BYTES,
               "compare every ReferenceCaptureDescription field in AreCapturesEqual");
 /// Every field: equal captures of one scene build, fingerprint and pack identical GPU scene data.
