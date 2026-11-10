@@ -156,6 +156,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
           $testNames = @(
             'ludus_editor_d3d12_viewport', 'ludus_editor_d3d12_high_dpi', 'ludus_editor_hosted_play',
+            'ludus_editor_startup_sound',
             'ludus_editor_tests_0', 'ludus_editor_tests_1', 'ludus_editor_tests_2', 'ludus_editor_tests_3',
             'ludus_render_graph_configuration_tests_0', 'ludus_render_graph_configuration_tests_1',
             'ludus_document_well_tests', 'ludus_code_editor_tests', 'ludus_editor_browser_content_tests',
