@@ -1059,6 +1059,10 @@ buffers and textures, private depth, retained texture uploads and deferred resou
 retirement. It excludes facade/surface resources, descriptor heaps and transfer
 rings. Physical residency and allocator-block bytes remain unavailable. The Windows
 diagnostics suite checks padding, depth, upload completion and retained backing.
+Native shader and pipeline creation is currently synchronous, and pass timing
+reports GPU durations without CPU-clock calibration. The asynchronous native
+preparation fixtures apply to Metal and Vulkan; editor graph preparation uses its
+own worker and publication path.
 
 After calibrating limits on the intended device and workload, add
 `--performance-limits <limits.json>`. This JSON file has integer `schema` 1

@@ -1152,9 +1152,9 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
         options.ViewNumerator = 1;
         options.ViewDenominator = 2;
         const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
-        const format::Resource& resource = package->GetPlan().Resources[0];
-        CHECK(resource.ViewNumerator == (version >= format::VIEW_PACKAGE_VERSION ? 1 : 0));
-        CHECK(resource.ViewDenominator == (version >= format::VIEW_PACKAGE_VERSION ? 2 : 1));
+        const format::Resource resource = package->GetPlan().Resources[0];
+        CHECK(resource.ViewNumerator == (version >= format::VIEW_PACKAGE_VERSION ? 1U : 0U));
+        CHECK(resource.ViewDenominator == (version >= format::VIEW_PACKAGE_VERSION ? 2U : 1U));
         CHECK(package->GetPlan().PassNames.IsEmpty() == (version == format::LEGACY_PACKAGE_VERSION));
     }
     PackageOptions invalid;
@@ -1556,8 +1556,9 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
             REQUIRE(package.Decode({writer.Bytes.GetData(), writer.Bytes.GetSize()}) ==
                     renderer::RenderGraphPackageStatus::Ready);
             const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
-            CHECK(programs.RayCompute.WorkgroupSize[0] == (version >= format::RAY_WORKGROUP_PACKAGE_VERSION ? 8 : 64));
-            CHECK(programs.RayCompute.WorkgroupSize[1] == (version >= format::RAY_WORKGROUP_PACKAGE_VERSION ? 8 : 1));
+            CHECK(programs.RayCompute.WorkgroupSize[0] ==
+                  (version >= format::RAY_WORKGROUP_PACKAGE_VERSION ? 8U : 64U));
+            CHECK(programs.RayCompute.WorkgroupSize[1] == (version >= format::RAY_WORKGROUP_PACKAGE_VERSION ? 8U : 1U));
             CHECK(programs.RayCompute.WorkgroupSize[2] == 1);
             if (version >= format::RAY_WORKGROUP_PACKAGE_VERSION)
             {

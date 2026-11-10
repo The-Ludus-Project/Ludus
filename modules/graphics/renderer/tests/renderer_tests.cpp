@@ -1512,7 +1512,7 @@ TEST_CASE("L5 groups reject complete ranges and LOD preserves retained incarnati
     {
         items[i].Geometry = session.Mesh;
         items[i].SourceId = i + 1;
-        items[i].Transform.Translation.X = i < 32 ? 5 : 0;
+        items[i].Transform.Translation.X = i < 32 ? 5.0F : 0.0F;
     }
     rr::Snapshot snapshot;
     REQUIRE(session.Renderer.CreateSnapshot(items, 64, snapshot) == rhi::RasterStatus::Ready);

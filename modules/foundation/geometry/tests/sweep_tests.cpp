@@ -8,6 +8,8 @@
 #include <ludus/foundation/geometry/sweep.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <limits>
+
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation::geometry;
@@ -357,7 +359,8 @@ TEST_CASE("Sweeps reject singular frames, corners and bad profiles and enforce b
                              MakeRequest(SweepSection::Ribbon, BorrowedView<const SweepProfileKey>(unordered)),
                              plan,
                              nullptr) == GeometryStatus::InvalidArgument);
-    const SweepProfileKey infinite[] = {{ .Distance = PathDistance{}, .Scale = math::kPi / 0.0 }};
+    const SweepProfileKey infinite[] = {
+        { .Distance = PathDistance{}, .Scale = std::numeric_limits<float64>::infinity() }};
     REQUIRE(TryPlanSweepMesh(path,
                              map,
                              frames,

@@ -6,6 +6,8 @@
 #include <ludus/foundation/geometry/frame.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <limits>
+
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation::geometry;
@@ -530,8 +532,11 @@ TEST_CASE("Frame caches report missing, stale and invalid inputs and exhausted l
             GeometryStatus::StaleRevision);
     REQUIRE(TryEvaluateFrame(fixture.Path.GetView(), frames.GetView(), SegmentParameter{ .U = 1.5 }, 0.0, frame) ==
             GeometryStatus::InvalidDomain);
-    REQUIRE(TryEvaluateFrame(fixture.Path.GetView(), frames.GetView(), SegmentParameter{}, math::kPi / 0.0, frame) ==
-            GeometryStatus::NonFiniteInput);
+    REQUIRE(TryEvaluateFrame(fixture.Path.GetView(),
+                             frames.GetView(),
+                             SegmentParameter{},
+                             std::numeric_limits<float64>::infinity(),
+                             frame) == GeometryStatus::NonFiniteInput);
 
     FramePreparation invalid = preparation;
     invalid.MinimumSinAngle = 1.0;
@@ -541,7 +546,7 @@ TEST_CASE("Frame caches report missing, stale and invalid inputs and exhausted l
     invalid.SeedUp = Vector3d{};
     REQUIRE(TryBuildFrames(fixture.Path.GetView(), fixture.Map.GetView(), invalid, frames, nullptr) ==
             GeometryStatus::InvalidArgument);
-    invalid.SeedUp = Vector3d{0.0, math::kPi / 0.0, 0.0};
+    invalid.SeedUp = Vector3d{0.0, std::numeric_limits<float64>::infinity(), 0.0};
     REQUIRE(TryBuildFrames(fixture.Path.GetView(), fixture.Map.GetView(), invalid, frames, nullptr) ==
             GeometryStatus::NonFiniteInput);
 

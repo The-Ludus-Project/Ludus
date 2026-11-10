@@ -486,6 +486,9 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
 #if defined(LUDUS_PLATFORM_MACOS)
             // Metal maps stage-boundary counters onto the CPU trace clock.
             CHECK(calibratedPassCount == passes.Count);
+#elif defined(LUDUS_PLATFORM_WINDOWS)
+            // Direct3D 12 currently exposes duration-only pass timings.
+            CHECK(calibratedPassCount == 0);
 #else
             // Vulkan maps timestamp queries through calibrated timestamps when the device admitted
             // them; without the extension every pass stays duration-only.
@@ -624,6 +627,8 @@ TEST_CASE("Native upload and readback rings preserve bytes across source destruc
     }
 }
 
+// Windows native shader/pipeline preparation is synchronous; its profile workload uses the image oracle above.
+#if defined(LUDUS_PLATFORM_MACOS) || defined(LUDUS_PLATFORM_LINUX)
 TEST_CASE("Native asynchronous compute preparation retains detached dependencies and drains on shutdown",
           "[rhi][gpu][async-preparation]")
 {
@@ -698,3 +703,4 @@ TEST_CASE("Native asynchronous compute preparation retains detached dependencies
     }
     REQUIRE(rhi::GetStatus(device, pipeline) == rhi::RasterStatus::InvalidHandle);
 }
+#endif

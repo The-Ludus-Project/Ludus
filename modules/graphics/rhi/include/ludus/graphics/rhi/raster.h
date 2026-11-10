@@ -532,6 +532,7 @@ struct RasterShaderDescription final
     bool HasVerifiedArrayBounds = false;
     /// Native development preparation copies sources and compiles on a dedicated worker.
     /// Pending owns the handle; poll GetStatus. Browser keeps its existing backend policy.
+    /// Direct3D 12 currently prepares synchronously even when this hint is true.
     bool ShouldPrepareAsynchronously = false;
 };
 /// One immutable binding snapshot entry; exactly the resource matching Kind is used.
@@ -720,6 +721,7 @@ struct RasterPipelineDescription final
     /// Eight-bit reference, set by each accepted draw.
     ludus::foundation::uint32 StencilReference = 0;
     /// Queue native driver creation; also enabled by either asynchronous shader input.
+    /// Direct3D 12 currently prepares synchronously even when this hint is true.
     bool ShouldPrepareAsynchronously = false;
     /// Enable writes to every color channel/attachment. False permits a void fragment
     /// stage and preserves color during draws; attachment load/store operations still apply.

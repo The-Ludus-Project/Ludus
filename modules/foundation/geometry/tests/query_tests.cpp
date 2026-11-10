@@ -6,6 +6,8 @@
 #include <ludus/foundation/geometry/query.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <limits>
+
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation::geometry;
@@ -280,8 +282,10 @@ TEST_CASE("Projection validates inputs and scratch capacity before searching", "
                                     ProjectionQuery{ .Point = Vector3d{1.5, 0.0, 0.0}, .MaxIterations = 64 },
                                     small,
                                     result) == GeometryStatus::CapacityExceeded);
-    REQUIRE(TryProjectPoint(view, ProjectionQuery{ .Point = Vector3d{math::kPi / 0.0, 0.0, 0.0} }, small, result) ==
-            GeometryStatus::NonFiniteInput);
+    REQUIRE(TryProjectPoint(view,
+                            ProjectionQuery{ .Point = Vector3d{std::numeric_limits<float64>::infinity(), 0.0, 0.0} },
+                            small,
+                            result) == GeometryStatus::NonFiniteInput);
     REQUIRE(TryProjectPoint(PathView{}, ProjectionQuery{}, small, result) == GeometryStatus::InvalidArgument);
     REQUIRE(result.IterationCount == 5);
 
