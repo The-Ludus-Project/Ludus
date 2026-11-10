@@ -41,8 +41,7 @@ template <typename ElementType>
 
 [[nodiscard]] float64 GetCatchmentSquareMetres(const TerrainFieldGrid& grid, uint32 accumulation) noexcept
 {
-    const float64 spacing = static_cast<float64>(grid.SpacingMetres);
-    return static_cast<float64>(accumulation) * spacing * spacing;
+    return static_cast<float64>(accumulation) * static_cast<float64>(GetTerrainSampleAreaSquareMetres(grid));
 }
 
 [[nodiscard]] bool
@@ -197,7 +196,8 @@ struct ChannelProfile final
     float32 WaterLevelMetres = 0;
     float32 HalfWidthMetres = 0;
     float32 BankWidthMetres = 0;
-    uint32 RadiusSamples = 0;
+    uint32 RadiusXSamples = 0;
+    uint32 RadiusZSamples = 0;
     bool IsClamped = false;
 };
 
@@ -212,8 +212,10 @@ struct ChannelProfile final
     float64 halfWidth = static_cast<float64>(parameters.WidthCoefficientMetres) *
                         math::Pow(area, static_cast<float64>(parameters.WidthExponent));
     float64 bankWidth = depth / static_cast<float64>(parameters.BankSlope);
-    const float64 spacing = static_cast<float64>(grid.SpacingMetres);
-    const float64 limit = static_cast<float64>(MAX_TERRAIN_RIVER_STENCIL_SAMPLES) * spacing;
+    const float64 spacingX = static_cast<float64>(grid.SpacingXMetres);
+    const float64 spacingZ = static_cast<float64>(grid.SpacingZMetres);
+    // The reach fits the stencil on the finer axis, so neither axis exceeds it.
+    const float64 limit = static_cast<float64>(MAX_TERRAIN_RIVER_STENCIL_SAMPLES) * math::Min(spacingX, spacingZ);
     ChannelProfile profile;
     if (halfWidth + bankWidth > limit)
     {
@@ -226,8 +228,11 @@ struct ChannelProfile final
                                                     static_cast<float64>(parameters.WaterFraction) * depth);
     profile.HalfWidthMetres = static_cast<float32>(halfWidth);
     profile.BankWidthMetres = static_cast<float32>(bankWidth);
-    profile.RadiusSamples = static_cast<uint32>(math::Ceil((halfWidth + bankWidth) / spacing));
-    profile.RadiusSamples = math::Min(profile.RadiusSamples, MAX_TERRAIN_RIVER_STENCIL_SAMPLES);
+    const float64 reach = halfWidth + bankWidth;
+    profile.RadiusXSamples =
+        math::Min(static_cast<uint32>(math::Ceil(reach / spacingX)), MAX_TERRAIN_RIVER_STENCIL_SAMPLES);
+    profile.RadiusZSamples =
+        math::Min(static_cast<uint32>(math::Ceil(reach / spacingZ)), MAX_TERRAIN_RIVER_STENCIL_SAMPLES);
     return profile;
 }
 
@@ -432,18 +437,19 @@ TerrainRiverStatus TryCarveTerrainRivers(const TerrainFieldGrid& grid,
         }
         const int64 centreX = channel % grid.Columns;
         const int64 centreZ = channel / grid.Columns;
-        const int64 radius = profile.RadiusSamples;
+        const int64 radiusX = profile.RadiusXSamples;
+        const int64 radiusZ = profile.RadiusZSamples;
         const float32 reach = profile.HalfWidthMetres + profile.BankWidthMetres;
-        for (int64 z = math::Max<int64>(centreZ - radius, 0); z <= math::Min<int64>(centreZ + radius, grid.Rows - 1);
+        for (int64 z = math::Max<int64>(centreZ - radiusZ, 0); z <= math::Min<int64>(centreZ + radiusZ, grid.Rows - 1);
              ++z)
         {
-            for (int64 x = math::Max<int64>(centreX - radius, 0);
-                 x <= math::Min<int64>(centreX + radius, grid.Columns - 1);
+            for (int64 x = math::Max<int64>(centreX - radiusX, 0);
+                 x <= math::Min<int64>(centreX + radiusX, grid.Columns - 1);
                  ++x)
             {
-                const float32 stepX = static_cast<float32>(x - centreX);
-                const float32 stepZ = static_cast<float32>(z - centreZ);
-                const float32 distance = math::Sqrt(stepX * stepX + stepZ * stepZ) * grid.SpacingMetres;
+                const float32 stepX = static_cast<float32>(x - centreX) * grid.SpacingXMetres;
+                const float32 stepZ = static_cast<float32>(z - centreZ) * grid.SpacingZMetres;
+                const float32 distance = math::Sqrt(stepX * stepX + stepZ * stepZ);
                 if (distance > reach && distance > 0)
                 {
                     continue;

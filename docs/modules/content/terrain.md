@@ -81,7 +81,7 @@ changes it.
 ## River channels (`terrain_rivers.h`)
 
 Rivers read the drainage outputs of one complete domain. A sample is a channel
-when its contributing area, accumulation times spacing squared, reaches
+when its contributing area, accumulation times the sample area, reaches
 `TerrainRiverParameters::MinimumCatchmentSquareMetres`. Contributing area grows
 downstream, so every channel drains through channels to an outlet.
 
@@ -105,8 +105,9 @@ bank of width depth over `BankSlope` blends back to the original surface. The
 carved surface is the minimum over every profile and the original, so it never
 raises terrain and does not depend on traversal order. Each sample takes its
 water level from the channel that set its lowest target, so the cut and the
-water agree. A profile reaches at most `MAX_TERRAIN_RIVER_STENCIL_SAMPLES`
-samples; wider profiles are clamped and counted.
+water agree. Profile distances are in metres, so rectangular cells cut the
+same shape. A profile reaches at most `MAX_TERRAIN_RIVER_STENCIL_SAMPLES`
+samples of the finer axis; wider profiles are clamped and counted.
 
 Carving can move a watershed. Rerun `TryComputeTerrainDrainage` on the carved
 surface before deriving slope, wetness or materials from it.

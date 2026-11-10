@@ -166,17 +166,17 @@ struct Carve final
         {
             const float32 across =
                 static_cast<float32>(math::Abs(static_cast<float64>(static_cast<int32>(x) - centre)));
-            elevation[GetIndex(grid, x, z)] =
-                (across * SIDE_SLOPE + static_cast<float32>(z) * VALLEY_SLOPE) * grid.SpacingMetres;
+            elevation[GetIndex(grid, x, z)] = across * SIDE_SLOPE * grid.SpacingXMetres +
+                                              static_cast<float32>(z) * VALLEY_SLOPE * grid.SpacingZMetres;
         }
     }
     return elevation;
 }
 
-[[nodiscard]] TerrainRiverParameters MakeSampleCountParameters(float32 minimumSamples, float32 spacing)
+[[nodiscard]] TerrainRiverParameters MakeSampleCountParameters(float32 minimumSamples, const TerrainFieldGrid& grid)
 {
     TerrainRiverParameters parameters;
-    parameters.MinimumCatchmentSquareMetres = minimumSamples * spacing * spacing;
+    parameters.MinimumCatchmentSquareMetres = minimumSamples * GetTerrainSampleAreaSquareMetres(grid);
     return parameters;
 }
 } // namespace
@@ -204,11 +204,17 @@ TEST_CASE("terrain river parameter validation", "[content][terrain]")
 
 TEST_CASE("terrain rivers split a confluence into ordered segments", "[content][terrain]")
 {
-    const TerrainFieldGrid grid{ .Columns = CONFLUENCE_SIDE, .Rows = CONFLUENCE_SIDE, .SpacingMetres = 1 };
+    const TerrainFieldGrid grid
+    {
+        .Columns = CONFLUENCE_SIDE,
+        .Rows = CONFLUENCE_SIDE,
+        .SpacingXMetres = 1,
+        .SpacingZMetres = 1,
+    };
     const Array<TerrainFlowDirection> directions = MakeConfluence(grid);
     const Array<uint32> accumulation = Accumulate(grid, directions);
     REQUIRE(accumulation[GetIndex(grid, 3, 0)] == 10);
-    const TerrainRiverParameters parameters = MakeSampleCountParameters(2, grid.SpacingMetres);
+    const TerrainRiverParameters parameters = MakeSampleCountParameters(2, grid);
     Network network(CONFLUENCE_SIDE * CONFLUENCE_SIDE, CONFLUENCE_SIDE * CONFLUENCE_SIDE);
     REQUIRE(network.Extract(grid, directions, accumulation, parameters) == TerrainRiverStatus::Success);
     CHECK(network.Summary.ChannelSamples == 8);
@@ -249,7 +255,7 @@ TEST_CASE("terrain rivers split a confluence into ordered segments", "[content][
     SECTION("a raised threshold keeps only the trunk below the confluence")
     {
         Network trunkOnly(CONFLUENCE_SIDE * CONFLUENCE_SIDE, CONFLUENCE_SIDE * CONFLUENCE_SIDE);
-        REQUIRE(trunkOnly.Extract(grid, directions, accumulation, MakeSampleCountParameters(7, 1)) ==
+        REQUIRE(trunkOnly.Extract(grid, directions, accumulation, MakeSampleCountParameters(7, grid)) ==
                 TerrainRiverStatus::Success);
         CHECK(trunkOnly.Summary.SegmentCount == 1);
         CHECK(trunkOnly.Summary.MaximumOrder == 1);
@@ -259,10 +265,16 @@ TEST_CASE("terrain rivers split a confluence into ordered segments", "[content][
 
 TEST_CASE("terrain rivers reject inconsistent routing and storage", "[content][terrain]")
 {
-    const TerrainFieldGrid grid{ .Columns = CONFLUENCE_SIDE, .Rows = CONFLUENCE_SIDE, .SpacingMetres = 1 };
+    const TerrainFieldGrid grid
+    {
+        .Columns = CONFLUENCE_SIDE,
+        .Rows = CONFLUENCE_SIDE,
+        .SpacingXMetres = 1,
+        .SpacingZMetres = 1,
+    };
     Array<TerrainFlowDirection> directions = MakeConfluence(grid);
     Array<uint32> accumulation = Accumulate(grid, directions);
-    const TerrainRiverParameters parameters = MakeSampleCountParameters(2, 1);
+    const TerrainRiverParameters parameters = MakeSampleCountParameters(2, grid);
     Network network(CONFLUENCE_SIDE * CONFLUENCE_SIDE, CONFLUENCE_SIDE * CONFLUENCE_SIDE);
     network.Points[0] = 77;
 
@@ -294,7 +306,13 @@ TEST_CASE("terrain rivers on generated terrain form a joined, ordered forest", "
     constexpr uint64 SEED = 11;
     constexpr float32 SPACING_METRES = 4;
     constexpr float64 SPACING_METRES_WIDE = static_cast<float64>(SPACING_METRES);
-    const TerrainFieldGrid grid{ .Columns = SIDE, .Rows = SIDE, .SpacingMetres = SPACING_METRES };
+    const TerrainFieldGrid grid
+    {
+        .Columns = SIDE,
+        .Rows = SIDE,
+        .SpacingXMetres = SPACING_METRES,
+        .SpacingZMetres = SPACING_METRES,
+    };
     math::RandomKey key;
     REQUIRE(math::TryMakeRandomKey(SEED, NOISE_DOMAIN, key) == math::MathStatus::Success);
     const TerrainNoiseShape shape
@@ -362,10 +380,16 @@ TEST_CASE("terrain river carving cuts a descending bed without raising terrain",
     constexpr uint32 COLUMNS = 21;
     constexpr uint32 ROWS = 41;
     constexpr float32 SPACING_METRES = 2;
-    const TerrainFieldGrid grid{ .Columns = COLUMNS, .Rows = ROWS, .SpacingMetres = SPACING_METRES };
+    const TerrainFieldGrid grid
+    {
+        .Columns = COLUMNS,
+        .Rows = ROWS,
+        .SpacingXMetres = SPACING_METRES,
+        .SpacingZMetres = SPACING_METRES,
+    };
     const Array<float32> elevation = MakeValley(grid);
     const Drainage drainage(grid, elevation);
-    TerrainRiverParameters parameters = MakeSampleCountParameters(8, SPACING_METRES);
+    TerrainRiverParameters parameters = MakeSampleCountParameters(8, grid);
     parameters.DepthCoefficientMetres = 0.1F;
     parameters.WidthCoefficientMetres = 0.05F;
     Carve carve(GetTerrainSampleCount(grid));
@@ -443,7 +467,13 @@ TEST_CASE("terrain river carving cuts a descending bed without raising terrain",
         Array<float32> broken = elevation;
         broken[3] = MakeNonFinite();
         CHECK(untouched.Run(grid, broken, drainage, parameters) == TerrainRiverStatus::NonFiniteInput);
-        const TerrainFieldGrid other{ .Columns = COLUMNS, .Rows = ROWS - 1, .SpacingMetres = SPACING_METRES };
+        const TerrainFieldGrid other
+        {
+            .Columns = COLUMNS,
+            .Rows = ROWS - 1,
+            .SpacingXMetres = SPACING_METRES,
+            .SpacingZMetres = SPACING_METRES,
+        };
         CHECK(untouched.Run(other, elevation, drainage, parameters) == TerrainRiverStatus::InvalidStorage);
         for (usize sample = 0; sample < elevation.GetSize(); ++sample)
         {
@@ -452,4 +482,37 @@ TEST_CASE("terrain river carving cuts a descending bed without raising terrain",
         }
         CHECK(untouched.Summary.ChannelSamples == 0);
     }
+}
+
+TEST_CASE("terrain river carving measures its profile in metres on rectangular cells", "[content][terrain]")
+{
+    constexpr uint32 COLUMNS = 41;
+    constexpr uint32 ROWS = 21;
+    constexpr float32 SPACING_X_METRES = 1;
+    constexpr float32 SPACING_Z_METRES = 4;
+    const TerrainFieldGrid grid
+    {
+        .Columns = COLUMNS,
+        .Rows = ROWS,
+        .SpacingXMetres = SPACING_X_METRES,
+        .SpacingZMetres = SPACING_Z_METRES,
+    };
+    const Array<float32> elevation = MakeValley(grid);
+    const Drainage drainage(grid, elevation);
+    TerrainRiverParameters parameters = MakeSampleCountParameters(4, grid);
+    parameters.DepthCoefficientMetres = 0.1F;
+    parameters.WidthCoefficientMetres = 0.2F;
+    Carve carve(GetTerrainSampleCount(grid));
+    REQUIRE(carve.Run(grid, elevation, drainage, parameters) == TerrainRiverStatus::Success);
+    CHECK(carve.Summary.CarvedSamples > 0);
+    for (usize sample = 0; sample < elevation.GetSize(); ++sample)
+    {
+        CHECK(carve.Carved[sample] <= elevation[sample]);
+        CHECK(carve.Depth[sample] >= 0);
+    }
+    // Across the valley, one-metre columns let the profile cut more than one sample on each side of the floor.
+    const uint32 centre = COLUMNS / 2;
+    const uint32 row = 1;
+    CHECK(carve.Carved[GetIndex(grid, centre + 1, row)] < elevation[GetIndex(grid, centre + 1, row)]);
+    CHECK(carve.Carved[GetIndex(grid, 0, row)] == elevation[GetIndex(grid, 0, row)]);
 }

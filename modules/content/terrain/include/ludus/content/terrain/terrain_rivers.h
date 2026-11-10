@@ -29,7 +29,8 @@ namespace ludus::content::terrain
 inline constexpr uint32 TERRAIN_RIVERS_LAYOUT_VERSION = 1;
 /// Segment index meaning "no segment": an outlet has no downstream segment.
 inline constexpr uint32 TERRAIN_RIVER_NONE = 0xffffffffU;
-/// Most samples a channel profile reaches from its centre sample, in each direction.
+/// Most samples a channel profile reaches from its centre sample along either axis; wider profiles are clamped to
+/// this many samples of the finer axis.
 inline constexpr uint32 MAX_TERRAIN_RIVER_STENCIL_SAMPLES = 16;
 
 /// Default contributing area at which a channel starts, in square metres.
@@ -49,7 +50,7 @@ inline constexpr float32 DEFAULT_TERRAIN_RIVER_WATER_FRACTION = 0.8F;
 
 /// @brief Authored channel rule and profile, shared by extraction and carving.
 ///
-/// A sample is a channel when its contributing area, accumulation times spacing squared, reaches
+/// A sample is a channel when its contributing area, accumulation times GetTerrainSampleAreaSquareMetres, reaches
 /// MinimumCatchmentSquareMetres. Contributing area grows downstream, so the channel set is closed downstream.
 /// Channel depth and half-width are Coefficient * area^Exponent with area in square metres.
 struct TerrainRiverParameters final
