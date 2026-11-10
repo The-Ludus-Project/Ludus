@@ -83,7 +83,7 @@ struct HostedFrame final
     /// queue, so commands submitted there afterwards sample it with no barrier of their own.
     foundation::uint32 VulkanLayout = 0;
     /// Windows: the consumer-local RGBA8 resource in COMMON, for fragment sampling.
-    NativeDirect3D12Resource Direct3D12Resource{};
+    NativeDirect3D12Resource Direct3D12Resource{nullptr};
 };
 
 /// @brief Identify the adapter a HostedSurfaceConsumer started on `device` imports onto.
