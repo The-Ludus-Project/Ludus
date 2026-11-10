@@ -122,6 +122,48 @@ void PackMeshPowerSelection(const ReferenceJob& job, math::Vector4* inoutBoundsW
             GpuBits(static_cast<uint32>(cumulative));
     }
 }
+/// Packed words of one closure program; see LUDUS_GPU_PREVIEW_PROGRAM_HEADER_WORDS.
+[[nodiscard]] usize CountGpuProgramWords(const content::scene_format::MaterialProgram& program) noexcept
+{
+    return LUDUS_GPU_PREVIEW_PROGRAM_HEADER_WORDS + program.ConstantCount + program.InstructionCount +
+           usize{program.LobeCount} * LUDUS_GPU_PREVIEW_PROGRAM_LOBE_WORDS;
+}
+/// Pack a valid closure program into CountGpuProgramWords consecutive words.
+void PackGpuProgram(const content::scene_format::MaterialProgram& program, math::Vector4* outWords) noexcept
+{
+    outWords[0] = {GpuBits(program.InstructionCount), GpuBits(program.LobeCount), GpuBits(program.ConstantCount), 0};
+    usize word = LUDUS_GPU_PREVIEW_PROGRAM_HEADER_WORDS;
+    for (usize constant = 0; constant < program.ConstantCount; ++constant)
+    {
+        const StaticArray<float32, content::scene_format::MATERIAL_PROGRAM_COMPONENTS>& value =
+            program.Constants[constant];
+        outWords[word] = {value[0], value[1], value[2], 0};
+        ++word;
+    }
+    for (usize index = 0; index < program.InstructionCount; ++index)
+    {
+        const content::scene_format::MaterialProgramInstruction& instruction = program.Instructions[index];
+        outWords[word] = {
+            GpuBits(static_cast<uint32>(instruction.Opcode)),
+            GpuBits(uint32{instruction.Destination}),
+            GpuBits(uint32{instruction.OperandA}),
+            GpuBits(uint32{instruction.OperandB} |
+                    (uint32{instruction.OperandC} << LUDUS_GPU_PREVIEW_PROGRAM_OPERAND_SHIFT)),
+        };
+        ++word;
+    }
+    for (usize index = 0; index < program.LobeCount; ++index)
+    {
+        const content::scene_format::MaterialProgramLobe& lobe = program.Lobes[index];
+        outWords[word] = {GpuBits(static_cast<uint32>(lobe.Operation)),
+                          GpuBits(uint32{lobe.WeightRegister}),
+                          GpuBits(uint32{lobe.RoughnessRegister}),
+                          lobe.Power};
+        outWords[word + 1] = {lobe.Eta[0], lobe.Eta[1], lobe.Eta[2], 0};
+        outWords[word + 2] = {lobe.K[0], lobe.K[1], lobe.K[2], 0};
+        word += LUDUS_GPU_PREVIEW_PROGRAM_LOBE_WORDS;
+    }
+}
 Status PackGpuScene(const ReferenceJob& job,
                     bool shouldPackVisibility,
                     bool shouldPartitionNativeOpacity,
@@ -150,8 +192,18 @@ Status PackGpuScene(const ReferenceJob& job,
     const uint64 luminairesWide = lightsWide + uint64(job.Description.LightCount) * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
     const uint64 environmentWide = luminairesWide + LUDUS_GPU_PREVIEW_LUMINAIRE_HEADER_WORDS +
                                    uint64(job.LuminaireCount) * LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS;
-    const uint64 sizeWide =
+    const uint64 programsWide =
         environmentWide + (job.EnvironmentOrNull != nullptr ? 1 + job.EnvironmentOrNull->Pixels.GetSize() : 0);
+    uint64 programWords = 0;
+    for (usize i = 0; i < scene.InstanceCount; ++i)
+    {
+        const internal::ReferenceSurfaceData& surface = *scene.Instances[i].Surface;
+        if (surface.Bsdf.Scattering.Model == content::scene_format::MaterialModel::Program)
+        {
+            programWords += CountGpuProgramWords(surface.Program);
+        }
+    }
+    const uint64 sizeWide = programsWide + programWords;
     if (sizeWide > ~uint32{0})
     {
         return Status::CapacityExceeded;
@@ -307,6 +359,7 @@ Status PackGpuScene(const ReferenceJob& job,
             {GpuBits(bounds.IsEmissionTwoSided == true ? LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED : 0U), 0, 0, 0};
     }
     PackMeshPowerSelection(job, boundsWords);
+    usize nextProgram = static_cast<usize>(programsWide);
     for (usize i = 0; i < scene.InstanceCount; ++i)
     {
         const internal::ReferenceInstance& instance = scene.Instances[i];
@@ -321,10 +374,17 @@ Status PackGpuScene(const ReferenceJob& job,
                                                              scattering.K[1],
                                                              scattering.K[2],
                                                              scattering.AlphaU};
+        uint32 programWord = 0;
+        if (scattering.Model == content::scene_format::MaterialModel::Program)
+        {
+            programWord = static_cast<uint32>(nextProgram);
+            PackGpuProgram(surface.Program, data.GetData() + nextProgram);
+            nextProgram += CountGpuProgramWords(surface.Program);
+        }
         surfaceWords[LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD] = {scattering.AlphaV,
                                                                  scattering.CoatingEta,
                                                                  scattering.CoatingThickness,
-                                                                 0};
+                                                                 GpuBits(programWord)};
         surfaceWords[LUDUS_GPU_PREVIEW_BASE_COLOR_WORD] = GpuVector(surface.Bsdf.BaseColor, surface.Bsdf.Metallic);
         surfaceWords[LUDUS_GPU_PREVIEW_ROUGHNESS_WORD] =
         {
@@ -494,8 +554,9 @@ Status PackGpuScene(const ReferenceJob& job,
     {
         const internal::ReferenceSurfaceData& surface = *scene.Instances[i].Surface;
         isOpaque = isOpaque == true && surface.Alpha == MaterialAlpha::Opaque;
-        hasExtendedBsdf = hasExtendedBsdf == true ||
-                          content::scene_format::SupportsFixedDimensionReflection(surface.Bsdf.Scattering) == false;
+        hasExtendedBsdf =
+            hasExtendedBsdf == true ||
+            content::scene_format::SupportsFixedDimensionReflection(surface.Bsdf.Scattering, surface.Program) == false;
     }
     outUniform.Sampling[2] |= isOpaque == true ? LUDUS_GPU_PREVIEW_OPAQUE_FLAG : 0;
     uint32 nativeOpaqueTriangleCount = 0;
