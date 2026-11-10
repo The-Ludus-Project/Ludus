@@ -363,7 +363,9 @@ ctest --test-dir out/scripted-game --output-on-failure
 
 See [S5](../architecture/behavior-s5.md) for the debugger contract. The Windows SDK lane relocates the prefix before building the
 sample, launches the static player, and exercises the module's script debugger
-through the host's inherited socket.
+through the host's inherited socket. The Windows game helper places the static
+player and its PDB under `shipping/` in the build directory. The development
+DLL and its matching PDB stay beside the host executable.
 
 ### VS Code and Visual Studio on Windows
 
