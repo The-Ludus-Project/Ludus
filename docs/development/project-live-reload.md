@@ -114,7 +114,7 @@ a reset, ends the session.
 
 Limits: the editor still cannot build, publish or supervise Windows generations. Its
 live-play tooling (`play_tool.py`, `editor_tool.py`) depends on POSIX process groups,
-descriptor passing and lease locks, which arrive with the Windows editor (D6d).
+Windows handle inheritance and generation guards, described in the Windows editor port (D6d).
 Standalone runs (`--module`), in-process sessions and a supervisor that speaks the
 protocol directly load, reload and retire DLLs. In the MSVC Ninja lane,
 `ludus_game_host_loader_tests`, `ludus_game_host_reload_tests`,

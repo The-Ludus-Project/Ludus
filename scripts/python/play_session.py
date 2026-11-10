@@ -22,11 +22,30 @@ import shutil
 import sys
 import tempfile
 import time
-import fcntl
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    from editor_process_windows import assert_unleased, lock_file, open_guard
+
+
+else:
+    import fcntl
+
+    def lock_file(handle, *, blocking=True):
+        fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+
+    def open_guard(path, *, blocking=True):
+        handle = path.open("a+b")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_SH | (0 if blocking else fcntl.LOCK_NB))
+        except BaseException:
+            handle.close()
+            raise
+        return handle
+
 
 # Manifest bounds (design 5): manifest <= 64 KiB, at most 16 payload files; v1
 # payload is module + symbols, not a dynamic plugin graph.
@@ -134,7 +153,7 @@ def publish_generation(**kwargs: Any) -> Path:
     if before is not None and source_input_digest(kwargs["declared_source_inputs"]) != before:
         raise PublishError("source inputs changed during build; result is Superseded")
     with (root / ".publication.lock").open("a+b") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        lock_file(lock)
         sequence_file = root / ".sequence"
         sequence = int(sequence_file.read_text()) + 1 if sequence_file.exists() else 1
         if not 0 < sequence < 2**64:
@@ -281,7 +300,7 @@ def _publish_generation_locked(
             raise PublishError("source inputs changed during publication; result is Superseded")
         for child in staging.iterdir():
             os.chmod(child, 0o444 | (child.stat().st_mode & 0o111))
-        if sys.platform != "darwin":
+        if sys.platform not in ("darwin", "win32"):
             os.chmod(staging, 0o555)
 
         final = generations_root / gen_id
@@ -302,6 +321,9 @@ def _publish_generation_locked(
         if getattr(exc, "cleanup_confirmed", True):
             if staging.exists() and not staging.is_symlink():
                 os.chmod(staging, 0o755)
+            if os.name == "nt" and staging.is_dir():
+                for child in staging.iterdir():
+                    os.chmod(child, 0o644)
             shutil.rmtree(staging, ignore_errors=True)
         raise
 
@@ -432,17 +454,11 @@ class GenerationLease:
         generation_dir = generation_dir.resolve()
         root = generation_dir.parent
         with (root / ".publication.lock").open("a+b") as publication:
-            fcntl.flock(publication, fcntl.LOCK_EX)
+            lock_file(publication)
             read_manifest(generation_dir)
             lease_dir = root / ".leases"
             lease_dir.mkdir(exist_ok=True)
-            handle = (lease_dir / generation_dir.name).open("a+b")
-            try:
-                fcntl.flock(handle, fcntl.LOCK_SH)
-            except BaseException:
-                handle.close()
-                raise
-            self._handle = handle
+            self._handle = open_guard(lease_dir / generation_dir.name)
 
     def close(self) -> None:
         if self._handle is not None:
@@ -478,12 +494,12 @@ class GenerationStoreLease:
     def __init__(self, root: Path) -> None:
         lease_dir = root / ".leases"
         lease_dir.mkdir(parents=True, exist_ok=True)
-        self._handle = (lease_dir / ".store").open("a+b")
-        try:
-            fcntl.flock(self._handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BaseException:
-            self._handle.close()
-            raise
+        if os.name == "nt":
+            with (root / ".publication.lock").open("a+b") as publication:
+                lock_file(publication)
+                self._handle = open_guard(lease_dir / ".store")
+        else:
+            self._handle = open_guard(lease_dir / ".store", blocking=False)
 
     def fileno(self) -> int:
         return self._handle.fileno()
@@ -509,7 +525,7 @@ def collect_generations(
     if not generations_root.is_dir():
         return []
     with (generations_root / ".publication.lock").open("a+b") as publication:
-        fcntl.flock(publication, fcntl.LOCK_EX)
+        lock_file(publication)
         gens = sorted(
             p.name for p in generations_root.iterdir()
             if p.is_dir() and not p.is_symlink()
@@ -517,9 +533,15 @@ def collect_generations(
         )
         lease_dir = generations_root / ".leases"
         lease_dir.mkdir(exist_ok=True)
+        if os.name == "nt":
+            try:
+                assert_unleased(lease_dir / ".store")
+            except BlockingIOError:
+                return []
+            return _collect_unleased(generations_root, lease_dir, gens[:-retention], leases)
         with (lease_dir / ".store").open("a+b") as store:
             try:
-                fcntl.flock(store, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_file(store, blocking=False)
             except BlockingIOError:
                 return []
             return _collect_unleased(generations_root, lease_dir, gens[:-retention], leases)
@@ -531,20 +553,35 @@ def _collect_unleased(generations_root: Path, lease_dir: Path, generations: list
         if leases.is_leased(gen_id):
             continue
         lease_path = lease_dir / gen_id
-        with lease_path.open("a+b") as handle:
+        if os.name == "nt":
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                assert_unleased(lease_path)
             except BlockingIOError:
                 continue
-            target = generations_root / gen_id
+            if _delete_generation(generations_root / gen_id):
+                lease_path.unlink(missing_ok=True)
+                deleted.append(gen_id)
+            continue
+        with lease_path.open("a+b") as handle:
             try:
-                read_manifest(target)
-            except (PublishError, OSError):
+                lock_file(handle, blocking=False)
+            except BlockingIOError:
                 continue
-            # Re-enable writes only after taking the exclusive lease and
-            # validating the immutable generation. Never follow symlink targets.
-            os.chmod(target, 0o755)
-            shutil.rmtree(target)
-            deleted.append(gen_id)
-            lease_path.unlink()
+            if _delete_generation(generations_root / gen_id):
+                deleted.append(gen_id)
+                lease_path.unlink()
     return deleted
+
+
+def _delete_generation(target: Path) -> bool:
+    try:
+        read_manifest(target)
+    except (PublishError, OSError):
+        return False
+    # Re-enable writes after claiming the lease and verifying the manifest.
+    os.chmod(target, 0o755)
+    if os.name == "nt":
+        for child in target.iterdir():
+            os.chmod(child, 0o644)
+    shutil.rmtree(target)
+    return True

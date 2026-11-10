@@ -199,7 +199,7 @@ RasterStatus RasterCreatePipeline(usize slot, const RasterPipelineInfo& info, ui
         if (color < native.NumRenderTargets)
         {
             native.RTVFormats[color] = info.ColorCount != 0 ? GetRasterFormat(info.ColorFormats[color])
-                                       : info.Target == RasterTarget::Surface     ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                       : info.Target == RasterTarget::Surface     ? GetSurfaceColorFormat()
                                        : info.Target == RasterTarget::Rgba8Srgb   ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
                                        : info.Target == RasterTarget::Rgba16Float ? DXGI_FORMAT_R16G16B16A16_FLOAT
                                                                                   : DXGI_FORMAT_R8G8B8A8_UNORM;

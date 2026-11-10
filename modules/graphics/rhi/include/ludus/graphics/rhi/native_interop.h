@@ -354,9 +354,11 @@ struct NativeTextureInfo final
     NativeVulkanImage VulkanImage{0};
     /// Current Vulkan image layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; zero otherwise.
     ludus::foundation::uint32 VulkanLayout = 0;
-    /// ID3D12Resource* in PIXEL_SHADER_RESOURCE state for Direct3D 12; null otherwise.
-    /// Valid during the read lease. Use only fragment sampling and preserve that resource state.
+    /// ID3D12Resource* for Direct3D 12; null otherwise. Valid during the read lease.
+    /// Use only fragment sampling. An in-process texture remains in PIXEL_SHADER_RESOURCE.
     NativeDirect3D12Resource Direct3D12Resource{};
+    /// True for imported simultaneous-access hosted textures which start and decay to COMMON.
+    bool IsDirect3D12ResourceInCommonState = false;
     /// Native image is borrowed for sampled reads only; foreign writes/ownership transfers reject.
     bool SampledReadOnly = true;
 };

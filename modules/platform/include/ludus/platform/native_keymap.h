@@ -42,4 +42,10 @@ namespace ludus::platform
 /// @return The mapped key; Key::Unknown for an unmapped, vendor or out-of-range code.
 [[nodiscard]] input::Key MapEvdevKeyCode(foundation::uint32 code) noexcept;
 #endif
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+/// Map a Win32 scan code (including its E0 prefix) and virtual key to a physical key.
+/// Qt's Windows platform plugin supplies these as nativeScanCode and nativeVirtualKey.
+/// The same mapping is used by standalone Win32 windows. Unknown codes return Key::Unknown.
+[[nodiscard]] input::Key MapWin32KeyCode(foundation::uint32 scanCode, foundation::uint32 virtualKey) noexcept;
+#endif
 } // namespace ludus::platform

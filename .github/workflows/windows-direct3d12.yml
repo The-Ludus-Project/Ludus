@@ -118,6 +118,25 @@ jobs:
           }
           ctest --preset windows-msvc-runtime --tests-regex $suite
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime tests failed' }
+      - name: Validate the Windows editor and hosted Play
+        if: matrix.generator == 'Ninja' && github.event_name == 'workflow_dispatch'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
+          if ($LASTEXITCODE -ne 0) { throw 'Qt installer setup failed' }
+          python -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 --outputdir "$PWD/out/qt" --archives qtbase qtdeclarative
+          if ($LASTEXITCODE -ne 0) { throw 'Qt setup failed' }
+          $qt = "$PWD/out/qt/6.8.3/msvc2022_64"
+          $env:PATH = "$qt/bin;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies;$qt"
+          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON -DLUDUS_BUILD_SHADER_WORKER=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Windows editor configure failed' }
+          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests
+          if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
+          ctest --preset windows-msvc-runtime --tests-regex '^(ludus_editor_d3d12_viewport|ludus_editor_hosted_play|ludus_rhi_d3d12_tests)$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Windows editor or Direct3D 12 acceptance failed' }
+          python -m unittest discover -s scripts/python -p test_editor_process_windows.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows process ownership acceptance failed' }
       - name: Install and verify the tools-only Windows shader worker
         if: matrix.generator == 'Ninja'
         run: |

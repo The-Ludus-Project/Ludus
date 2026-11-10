@@ -7,6 +7,8 @@
 
 #include <d3d12.h>
 
+#undef GetObject
+
 namespace ludus::editor
 {
 namespace
@@ -78,13 +80,14 @@ QSGTexture* QtViewportDevice::WrapTexture(QQuickWindow& inoutWindow, const rhi::
     }
     return QNativeInterface::QSGD3D12Texture::fromNative(
         image.Direct3D12Resource.GetObject(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        image.IsDirect3D12ResourceInCommonState == true ? D3D12_RESOURCE_STATE_COMMON
+                                                        : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         &inoutWindow,
         QSize(static_cast<foundation::int32>(image.Width), static_cast<foundation::int32>(image.Height)));
 }
 
 bool QtViewportDevice::CanImportHostedImages() const noexcept
 {
-    return false;
+    return true;
 }
 } // namespace ludus::editor

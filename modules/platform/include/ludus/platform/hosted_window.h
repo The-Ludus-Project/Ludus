@@ -174,6 +174,7 @@ public:
     ///
     /// Valid until Stop() or destruction. Provided so callers can report or verify
     /// the location; the endpoint removes the directory itself.
+    /// Windows uses a named pipe and returns an empty directory.
     [[nodiscard]] std::string_view GetDirectory() const noexcept;
 
     /// Current connection state.

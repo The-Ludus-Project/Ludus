@@ -40,7 +40,7 @@ inline constexpr usize MAX_QUEUED_RELEASES = 4 * HOSTED_SURFACE_IMAGE_COUNT;
 [[nodiscard]] foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept;
 
 /// Send the Hello for `token` on a freshly connected socket.
-[[nodiscard]] bool TrySendHello(int32 descriptor, const Token& token) noexcept;
+[[nodiscard]] bool TrySendHello(NativeStream descriptor, const Token& token) noexcept;
 
 /// @brief Wait for the Welcome on a connection whose Hello was sent, then build the window.
 ///

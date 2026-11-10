@@ -82,6 +82,8 @@ struct HostedFrame final
     /// AcquireFrame() has already transferred the image to the identity's queue family on its
     /// queue, so commands submitted there afterwards sample it with no barrier of their own.
     foundation::uint32 VulkanLayout = 0;
+    /// Windows: the consumer-local RGBA8 resource in COMMON, for fragment sampling.
+    NativeDirect3D12Resource Direct3D12Resource{};
 };
 
 /// @brief Identify the adapter a HostedSurfaceConsumer started on `device` imports onto.
@@ -95,9 +97,9 @@ struct HostedFrame final
 /// `Instance` and `PhysicalDevice`; no other object is used.
 /// @param outAdapter Vulkan: the adapter's `deviceUUID` and `driverUUID`, queried through
 /// `Instance`. Unchanged unless true is returned.
-/// @return true on Vulkan. false on Metal, where IOSurfaces work across GPUs and the game
-/// needs no adapter; for another API, an incomplete identity, a build without hosted import,
-/// or when `vkGetPhysicalDeviceProperties2` cannot be loaded.
+/// @return true on Vulkan or Direct3D 12, which returns the adapter LUID. false on Metal, where IOSurfaces work across
+/// GPUs and the game needs no adapter; for another API, an incomplete identity, a build without hosted import, or when
+/// `vkGetPhysicalDeviceProperties2` cannot be loaded.
 [[nodiscard]] bool TryGetHostedConsumerAdapter(const NativeDeviceIdentity& device,
                                                platform::HostedAdapterIdentity& outAdapter) noexcept;
 
@@ -126,6 +128,9 @@ struct HostedFrame final
 ///   `deviceUUID` and `driverUUID` equal the consumer's; otherwise the consumer
 ///   refuses with AdapterMismatch. The consumer device must have been created with
 ///   `VK_KHR_external_memory_fd` enabled, on Vulkan 1.1 or later.
+/// - Windows: the endpoint duplicates NT handles for shared committed textures.
+///   The consumer opens them on the same adapter LUID and samples on its direct queue.
+///   Both sides use COMMON at handoff and complete their local fences before transfer.
 ///
 /// Qt-free and not synchronized: use it on the thread that owns the device and
 /// pumps the endpoint. The endpoint and the device must outlive Stop().

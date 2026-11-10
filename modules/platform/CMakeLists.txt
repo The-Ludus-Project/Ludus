@@ -196,12 +196,17 @@ endif()
 # time from LUDUS_HOSTED_WINDOW (docs/architecture/editor-gui-systems.md,
 # "The hosted window").
 set(LUDUS_PLATFORM_HOSTED_AVAILABLE OFF)
-if(NOT EMSCRIPTEN AND (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+if(NOT EMSCRIPTEN AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
     set(LUDUS_PLATFORM_HOSTED_AVAILABLE ON)
     target_sources(ludus_platform PRIVATE
         src/hosted_endpoint_session.cpp
-        src/hosted_socket.cpp
         src/window_hosted.cpp)
+    if(WIN32)
+        target_sources(ludus_platform PRIVATE src/hosted_pipe.cpp)
+        target_link_libraries(ludus_platform PRIVATE advapi32)
+    else()
+        target_sources(ludus_platform PRIVATE src/hosted_socket.cpp)
+    endif()
     target_compile_definitions(ludus_platform PRIVATE LUDUS_PLATFORM_HOSTED=1)
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         # Hosted surface images cross the per-session Mach rendezvous; libbsm reads
@@ -258,7 +263,7 @@ if(LUDUS_BUILD_TESTS)
     set_tests_properties(ludus_platform_native_keymap_tests PROPERTIES LABELS "unit;platform;input")
 endif()
 
-if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE)
+if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE AND NOT WIN32)
     # Hosted-window channel: codec, endpoint session and window over socketpairs,
     # plus one end-to-end WindowManager run against a listening endpoint.
     add_executable(ludus_platform_hosted_tests tests/hosted_window_tests.cpp tests/hosted_surface_tests.cpp)
