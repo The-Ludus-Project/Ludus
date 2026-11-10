@@ -4,6 +4,7 @@
 #include "profile.h"
 
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 // Private implementation included only by rhi_metal.mm: native device/frame
 // ownership remains in the existing backend translation unit.
 // Thanks to Apple, "Resource Fundamentals", Metal Programming Guide (retained
@@ -635,12 +636,15 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     return RasterStatus::Ready;
 }
 void ComputeBufferBarrier(usize, GraphAccessMode) noexcept {}
-RasterStatus RasterCreateBuffer(usize slot, const BufferDescription&, std::span<const uint8> bytes, uint32) noexcept
+RasterStatus RasterCreateBuffer(usize slot,
+                                const BufferDescription&,
+                                ludus::foundation::BorrowedView<const uint8> bytes,
+                                uint32) noexcept
 {
     @autoreleasepool
     {
-        gRasterBuffers[slot] = [gDevice newBufferWithBytes:bytes.data()
-                                                    length:bytes.size()
+        gRasterBuffers[slot] = [gDevice newBufferWithBytes:bytes.GetDataOrNull()
+                                                    length:bytes.GetSize()
                                                    options:MTLResourceStorageModeShared];
     }
     return gRasterBuffers[slot] != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
@@ -683,7 +687,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
             uint32 width = info.Width, height = info.Height;
             for (usize level = 0; level < info.MipLevels; ++level)
             {
-                const auto mip = upload.Mips.empty() ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
+                const TextureMipUpload mip =
+                    upload.Mips.IsEmpty() == true ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
                 const usize imagePitch = mip.RowPitch * internal::TextureBlockRows(info.Format, height);
                 if (info.Dimension == TextureDimension::D3)
                 {
@@ -695,7 +700,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                                                            internal::TextureSlices(info, static_cast<uint32>(level)))
                                mipmapLevel:level
                                      slice:0
-                                 withBytes:upload.Bytes.data() + mip.Offset
+                                 withBytes:upload.Bytes.GetDataOrNull() + mip.Offset
                                bytesPerRow:mip.RowPitch
                              bytesPerImage:imagePitch];
                 }
@@ -706,7 +711,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                         [texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
                                    mipmapLevel:level
                                          slice:slice
-                                     withBytes:upload.Bytes.data() + mip.Offset + slice * imagePitch
+                                     withBytes:upload.Bytes.GetDataOrNull() + mip.Offset + slice * imagePitch
                                    bytesPerRow:mip.RowPitch
                                  bytesPerImage:imagePitch];
                     }

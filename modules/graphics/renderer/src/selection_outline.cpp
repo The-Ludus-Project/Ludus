@@ -1,3 +1,4 @@
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/renderer/selection_outline.hpp>
 
 #include <ludus/foundation/containers/static_array.hpp>
@@ -248,7 +249,7 @@ struct SelectionOutlineRenderer::State final
         }
         const StaticArray<rhi::RasterBindingResource, EDGE_FRAGMENT_BINDING_COUNT> resources{
             {{ .Texture = MaskView }, { .Binding = 1, .Sampler = Sampler }}};
-        status = rhi::CreateBindingSet(Device, EdgeLayout, resources.AsSpan(), MaskBindings);
+        status = rhi::CreateBindingSet(Device, EdgeLayout, {resources.GetData(), resources.GetSize()}, MaskBindings);
         if (Accepted(status) == false)
         {
             DropMask();
@@ -308,10 +309,10 @@ Status SelectionOutlineRenderer::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidState;
     }
-    if (maskVertex.Inputs.size() != MASK_VERTEX_INPUT_COUNT || maskVertex.Bindings.empty() == false ||
-        maskFragment.Inputs.empty() == false || maskFragment.Bindings.empty() == false ||
-        edgeVertex.Inputs.size() != EDGE_VERTEX_INPUT_COUNT || edgeVertex.Bindings.empty() == false ||
-        edgeFragment.Inputs.empty() == false || edgeFragment.Bindings.size() != EDGE_FRAGMENT_BINDING_COUNT ||
+    if (maskVertex.Inputs.GetSize() != MASK_VERTEX_INPUT_COUNT || maskVertex.Bindings.IsEmpty() == false ||
+        maskFragment.Inputs.IsEmpty() == false || maskFragment.Bindings.IsEmpty() == false ||
+        edgeVertex.Inputs.GetSize() != EDGE_VERTEX_INPUT_COUNT || edgeVertex.Bindings.IsEmpty() == false ||
+        edgeFragment.Inputs.IsEmpty() == false || edgeFragment.Bindings.GetSize() != EDGE_FRAGMENT_BINDING_COUNT ||
         maskVertex.Artifact.Stage != rhi::ShaderStage::Vertex ||
         maskFragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
         edgeVertex.Artifact.Stage != rhi::ShaderStage::Vertex ||
@@ -465,8 +466,8 @@ Status SelectionOutlineRenderer::Poll() noexcept
             description.Vertex = state.MaskVertex;
             description.Fragment = state.MaskFragment;
             description.Layout = state.EmptyLayout;
-            description.Streams = maskStreams.AsSpan();
-            description.Attributes = maskAttributes.AsSpan();
+            description.Streams = {maskStreams.GetData(), maskStreams.GetSize()};
+            description.Attributes = {maskAttributes.GetData(), maskAttributes.GetSize()};
             description.Blend = false;
             description.Target = rhi::RasterTarget::Rgba8Unorm;
         }
@@ -475,8 +476,8 @@ Status SelectionOutlineRenderer::Poll() noexcept
             description.Vertex = state.EdgeVertex;
             description.Fragment = state.EdgeFragment;
             description.Layout = state.EdgeLayout;
-            description.Streams = edgeStreams.AsSpan();
-            description.Attributes = edgeAttributes.AsSpan();
+            description.Streams = {edgeStreams.GetData(), edgeStreams.GetSize()};
+            description.Attributes = {edgeAttributes.GetData(), edgeAttributes.GetSize()};
             description.Blend = true;
             description.Target =
                 state.Phase == EDGE_SURFACE_PIPELINE ? rhi::RasterTarget::Surface : rhi::RasterTarget::Rgba8Unorm;
@@ -819,7 +820,7 @@ Status SelectionOutlineRenderer::Draw(PreparedSelectionOutline prepared,
     status = rhi::DrawIndexed(state.Device,
                               {state.Pipelines[MASK_PIPELINE],
                                state.EmptyBindings,
-                               maskSlices.AsSpan(),
+                               {maskSlices.GetData(), maskSlices.GetSize()},
                                state.MeshIndices,
                                0,
                                state.MeshIndexCount,
@@ -845,7 +846,7 @@ Status SelectionOutlineRenderer::Draw(PreparedSelectionOutline prepared,
     return rhi::DrawIndexed(state.Device,
                             {state.Pipelines[isSurface == true ? EDGE_SURFACE_PIPELINE : EDGE_ATTACHMENT_PIPELINE],
                              state.MaskBindings,
-                             edgeSlices.AsSpan(),
+                             {edgeSlices.GetData(), edgeSlices.GetSize()},
                              state.QuadIndices,
                              0,
                              QUAD_INDEX_COUNT,

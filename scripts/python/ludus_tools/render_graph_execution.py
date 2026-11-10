@@ -786,7 +786,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines += [f'    static constexpr foundation::usize {constant} = {len(input_values)};',
                           f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {declaration}Inputs', '{', '        {']
                 lines += ['            {' + str(value['location']) + ', rhi::RasterVertexFormat::' + value['format'] + '},' for value in input_values]
-                lines += ['        },', '    };', f'    result.{member}.Inputs = {declaration}Inputs.AsSpan();']
+                lines += ['        },', '    };', f'    result.{member}.Inputs = {{{declaration}Inputs.GetData(), {declaration}Inputs.GetSize()}};']
             if program_name in ('RayTracing', 'NativeRayStages'):
                 lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer, ' + ('true' if ray.requires_native_queries(contents['plan']) else 'false') + ');']
             if program_name == 'RayTracing' and stage == 'compute':
@@ -809,11 +809,11 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                           f'    static constexpr foundation::StaticArray<rhi::RasterBinding, {constant}> {declaration}Bindings', '{', '        {']
                 lines += ['            {' + str(b['slot']) + ', rhi::RasterBindingKind::' + b.get('kind', 'UniformBuffer') + ', rhi::RasterVisibility::' +
                           b['visibility'] + ', ' + str(b['size']) + '},' for b in stage_bindings]
-                lines += ['        },', '    };', f'    result.{member}.Bindings = {declaration}Bindings.AsSpan();']
+                lines += ['        },', '    };', f'    result.{member}.Bindings = {{{declaration}Bindings.GetData(), {declaration}Bindings.GetSize()}};']
             for key in sorted(keys, key=lambda k: TARGET_CODES[k[2]]):
                 label, item = artifact_labels[key]
                 field = TARGET_FIELDS[key[2]]
-                value = label + '.AsSpan();' if key[2] == 'spirv' else label + ';'
+                value = f'{{{label}.GetData(), {label}.GetSize()}};' if key[2] == 'spirv' else label + ';'
                 lines += [f'    result.{member}.Artifact.{field} = ' + value,
                           f'    result.{member}.Artifact.{field}Entry = ' + json.dumps(item['entry']) + ';']
                 for slot, block in item['blocks']:

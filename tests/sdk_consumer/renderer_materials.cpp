@@ -341,7 +341,7 @@ void Tick() noexcept
 int main()
 {
     const auto layout = ludus::shaders::l3_layout::Fragment();
-    if (layout.Bindings.size() != 1 || layout.Bindings[0].MinSize != 240 || layout.UniformMembers.size() != 4)
+    if (layout.Bindings.GetSize() != 1 || layout.Bindings[0].MinSize != 240 || layout.UniformMembers.GetSize() != 4)
     {
         return 1;
     }

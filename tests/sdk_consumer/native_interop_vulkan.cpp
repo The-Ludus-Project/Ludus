@@ -615,7 +615,7 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
         {
             .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
             .codeSize = shaders[i].Spirv.size_bytes(),
-            .pCode = shaders[i].Spirv.data(),
+            .pCode = shaders[i].Spirv.GetDataOrNull(),
         };
         NATIVE_VK(api.vkCreateShaderModule(source.Device, &module, nullptr, &source.Shaders[i]));
         stages[i] =

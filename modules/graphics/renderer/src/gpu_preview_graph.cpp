@@ -1,5 +1,6 @@
 #include "internal/gpu_preview_graph.h"
 #include "internal/ltc_table_data.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -412,7 +413,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     const StaticArray<rhi::RasterVertexSlice, IMAGE_VERTEX_SLICE_COUNT> slices{{{state.Quad, 0, QUAD_BYTES}}};
     const rhi::RasterDraw draw{state.ImagePipeline,
                                job.ImageBindings,
-                               slices.AsSpan(),
+                               {slices.GetData(), slices.GetSize()},
                                state.Indices,
                                0,
                                QUAD_INDEX_COUNT,

@@ -51,6 +51,21 @@ public:
         return mDataOrNull[index];
     }
 
+    /// Range-for access to the first borrowed element. Does not extend storage lifetime.
+    /// @pre IsValid() and the declared storage remains alive throughout iteration.
+    [[nodiscard]] LUDUS_INLINE constexpr ElementType* begin() const noexcept
+    {
+        LUDUS_ASSERT(IsValid() == true);
+        return mDataOrNull;
+    }
+    /// Range-for sentinel after the last element; null for a default empty view.
+    /// @pre IsValid() and the declared storage remains alive throughout iteration.
+    [[nodiscard]] LUDUS_INLINE constexpr ElementType* end() const noexcept
+    {
+        LUDUS_ASSERT(IsValid() == true);
+        return mSize == 0 ? mDataOrNull : mDataOrNull + mSize;
+    }
+
 private:
     ElementType* mDataOrNull = nullptr;
     usize mSize = 0;

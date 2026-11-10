@@ -1,5 +1,7 @@
 #pragma once
 
+#include "resources.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include "profile.h"
@@ -462,7 +464,9 @@ VkResult RasterAllocator() noexcept
     info.pVulkanFunctions = &functions;
     return vmaCreateAllocator(&info, &gRasterAllocator);
 }
-VkResult RasterUploadBuffer(VkBufferUsageFlags usage, std::span<const uint8> bytes, RasterVulkanBuffer& buffer) noexcept
+VkResult RasterUploadBuffer(VkBufferUsageFlags usage,
+                            ludus::foundation::BorrowedView<const uint8> bytes,
+                            RasterVulkanBuffer& outBuffer) noexcept
 {
     auto result = RasterAllocator();
     if (result != VK_SUCCESS)
@@ -471,13 +475,13 @@ VkResult RasterUploadBuffer(VkBufferUsageFlags usage, std::span<const uint8> byt
     }
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    info.size = bytes.size();
+    info.size = bytes.GetSize();
     info.usage = usage;
     VmaAllocationCreateInfo allocation{};
     allocation.usage = VMA_MEMORY_USAGE_AUTO;
     allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     VmaAllocationInfo mapped{};
-    result = vmaCreateBuffer(gRasterAllocator, &info, &allocation, &buffer.Object, &buffer.Allocation, &mapped);
+    result = vmaCreateBuffer(gRasterAllocator, &info, &allocation, &outBuffer.Object, &outBuffer.Allocation, &mapped);
     if (result != VK_SUCCESS)
     {
         return result;
@@ -486,8 +490,8 @@ VkResult RasterUploadBuffer(VkBufferUsageFlags usage, std::span<const uint8> byt
     {
         return VK_ERROR_MEMORY_MAP_FAILED;
     }
-    std::memcpy(mapped.pMappedData, bytes.data(), bytes.size());
-    return vmaFlushAllocation(gRasterAllocator, buffer.Allocation, 0, bytes.size());
+    std::memcpy(mapped.pMappedData, bytes.GetDataOrNull(), bytes.GetSize());
+    return vmaFlushAllocation(gRasterAllocator, outBuffer.Allocation, 0, bytes.GetSize());
 }
 VkDescriptorType RasterDescriptor(RasterBindingKind kind, bool hasDynamicOffset = false) noexcept
 {
@@ -1195,8 +1199,10 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
         buffer.Access |= access;
     }
 }
-RasterStatus
-RasterCreateBuffer(usize slot, const BufferDescription& info, std::span<const uint8> bytes, uint32) noexcept
+RasterStatus RasterCreateBuffer(usize slot,
+                                const BufferDescription& info,
+                                ludus::foundation::BorrowedView<const uint8> bytes,
+                                uint32) noexcept
 {
     const auto usage = info.Role == BufferRole::Uniform   ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
                        : info.Role == BufferRole::Vertex  ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
@@ -1354,7 +1360,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         uint32 width = info.Width, height = info.Height;
         for (uint32 level = 0; level < info.MipLevels; ++level)
         {
-            const auto mip = upload.Mips.empty() ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
+            const TextureMipUpload mip =
+                upload.Mips.IsEmpty() == true ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
             const auto channels = internal::TextureBlockBytes(info.Format);
             const auto block = internal::TextureBlockWidth(info.Format);
             copies[level].bufferOffset = mip.Offset;
@@ -1502,17 +1509,17 @@ RasterStatus RasterCreateShader(usize slot,
     bool found = false;
     uint32 entryId = 0;
     bool localSize = info.Stage != ShaderStage::Compute;
-    for (usize offset = 5; offset < info.Spirv.size();)
+    for (usize offset = internal::SPIRV_HEADER_WORDS; offset < info.Spirv.GetSize();)
     {
         const auto word = info.Spirv[offset];
         const usize count = word >> 16;
-        if (count == 0 || count > info.Spirv.size() - offset)
+        if (count == 0 || count > info.Spirv.GetSize() - offset)
         {
             return RasterStatus::InvalidDescription;
         }
         if ((word & 65535U) == 15 && count >= 4)
         {
-            const auto* name = reinterpret_cast<const char*>(info.Spirv.data() + offset + 3);
+            const char* name = reinterpret_cast<const char*>(info.Spirv.GetDataOrNull() + offset + 3);
             const auto length = info.SpirvEntry.size();
             found = found || (info.Spirv[offset + 1] == (info.Stage == ShaderStage::Vertex     ? 0U
                                                          : info.Stage == ShaderStage::Fragment ? 4U
@@ -1541,11 +1548,11 @@ RasterStatus RasterCreateShader(usize slot,
     {
         return internal::StorageFailure();
     }
-    if (task->Code.TryResize(info.Spirv.size()) == false)
+    if (task->Code.TryResize(info.Spirv.GetSize()) == false)
     {
         return internal::StorageFailure();
     }
-    std::memcpy(task->Code.GetData(), info.Spirv.data(), info.Spirv.size_bytes());
+    std::memcpy(task->Code.GetData(), info.Spirv.GetDataOrNull(), (info.Spirv.GetSize() * sizeof(uint32)));
     std::memcpy(task->Shader.Entry, info.SpirvEntry.data(), info.SpirvEntry.size());
     task->Device = gDevice;
     task->ResourceSlot = slot;
