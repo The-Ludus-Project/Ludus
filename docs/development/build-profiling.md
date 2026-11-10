@@ -42,6 +42,10 @@ recognizes Clang 19 and later header trace events. Thanks to
 Each analyzer version has its own source/build directory, so an older cached
 binary cannot silently satisfy a newer pin. Existing profiling budgets remain
 unchanged.
+The repository-root `ClangBuildAnalyzer.ini` sets `[counts] header = 50`, so
+the per-header budget sees the top 50 expensive headers instead of the default
+ten, including test fixtures that rank below widely included engine headers.
+`profile-build` runs the analyzer from that directory so it reads the ini.
 Bootstrap also adds the explicit `<cstdlib>`, `<type_traits>` and `<exception>`
 includes required by its bundled enkiTS and LLVM demangler with libc++ 23.
 These marked include edits preserve upstream bodies and licenses, accept an
@@ -117,9 +121,10 @@ Limitations:
   reference headers' cost. Their paths then disappear from the report or the
   factor shifts, so re-baseline `runner_speed_reference` from a CI profile and
   recalibrate the aggregate in the same change.
-- ClangBuildAnalyzer lists only its ten most expensive headers, and the cheaper
-  reference headers can drop out as project headers grow (run 41110487152 lost
-  `<string_view>`). The factor uses the reference headers listed, comparing the
+- ClangBuildAnalyzer lists only its 50 most expensive headers with the repository
+  configuration, and cheaper reference headers can still drop out as project
+  headers grow (run 41110487152 lost `<string_view>` with the former top-ten
+  report). The factor uses the reference headers listed, comparing the
   same headers' baseline averages. With fewer than `minimum_headers` (two) listed,
   for example on a local libc++ host, or a factor outside the configured bounds,
   the gate falls back to raw timings and prints why.
