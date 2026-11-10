@@ -140,6 +140,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows Agility generation publication failed' }
           & $python -m unittest test_play_documents.PlayDocumentsTests.test_apply_is_dirty_only_and_undo_is_independent_of_disk test_play_documents.PlayDocumentsTests.test_stale_revision_rejected_batch_and_external_save_conflict test_play_documents.PlayDocumentsTests.test_failed_atomic_replace_preserves_saved_document_and_dirty_draft -v
           if ($LASTEXITCODE -ne 0) { throw 'Windows tuning document publication failed' }
+      - name: Validate the Windows channel and native gameplay ownership
+        if: matrix.generator == 'Editor'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
+          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_SHADER_WORKER=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime configure failed' }
+          cmake --build --preset windows-msvc-runtime --target ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid -- -k 0
+          if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime build failed' }
+          $testNames = @('ludus_rhi_d3d12_tests', 'ludus_platform_hosted_tests', 'ludus_game_host_windows_supervisor')
+          $suite = '^(' + ($testNames -join '|') + ')$'
+          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+          foreach ($name in $testNames) {
+            if ($name -notin $tests.tests.name) { throw "Missing Windows hosted runtime test $name" }
+          }
+          ctest --preset windows-msvc-runtime --tests-regex $suite --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Windows hosted runtime acceptance failed' }
       - name: Validate the Windows editor and hosted Play
         if: ${{ !cancelled() && matrix.generator == 'Editor' && steps.windows-runtime-dependencies.outcome == 'success' }}
         run: |
@@ -153,10 +170,9 @@ jobs:
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies;$qt"
           cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON -DLUDUS_BUILD_SHADER_WORKER=ON
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor configure failed' }
-          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid -- -k 0
+          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests -- -k 0
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
-          $testNames = @('ludus_editor_d3d12_viewport', 'ludus_editor_d3d12_high_dpi', 'ludus_editor_hosted_play', 'ludus_rhi_d3d12_tests',
-            'ludus_platform_hosted_tests', 'ludus_game_host_windows_supervisor')
+          $testNames = @('ludus_editor_d3d12_viewport', 'ludus_editor_d3d12_high_dpi', 'ludus_editor_hosted_play')
           $suite = '^(' + ($testNames -join '|') + ')$'
           $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
           foreach ($name in $testNames) {
