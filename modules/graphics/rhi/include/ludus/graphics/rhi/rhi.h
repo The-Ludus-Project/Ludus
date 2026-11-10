@@ -173,9 +173,9 @@ struct FrameTarget final
     ludus::foundation::float64 Blue = 0;
     ludus::foundation::float64 Alpha = 1;
     /// False records an offscreen-only frame without acquiring, clearing or
-    /// presenting the surface. Currently supported by WebGPU and WebGL 2 (which
-    /// leaves the canvas drawing buffer untouched); other backends reject
-    /// SetFrameTarget with Unsupported and preserve the previous target.
+    /// presenting the surface. Currently supported by WebGPU, WebGL 2 (which
+    /// leaves the canvas drawing buffer untouched) and Direct3D 12; Vulkan and
+    /// Metal reject SetFrameTarget with Unsupported and preserve the previous target.
     /// Dimensions still describe the logical frame extent and must be nonzero
     /// to open a frame. Surface passes and compatibility fullscreen draws are
     /// invalid in this mode; explicit texture passes and compute remain usable.
