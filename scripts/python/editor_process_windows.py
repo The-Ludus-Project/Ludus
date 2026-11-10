@@ -321,15 +321,17 @@ class OwnedWindowsProcess:
         if self._active_processes() != 0:
             self.request_terminate()
         deadline = now() + KILL_OBSERVE_DEADLINE
-        while self._active_processes() != 0 and now() < deadline:
+        while True:
+            # Job accounting can reach zero before the leader's handle is signaled.
+            if self.wait_exit_nowait() is not None and self._active_processes() == 0:
+                self._close()
+                return CleanupReport(True, forced=self._was_terminated, exit_code=self._exit)
+            if now() >= deadline:
+                break
             sleep(MAX_IO_SLICE)
-        observed = self.wait_exit_nowait()
-        confirmed = observed is not None and self._active_processes() == 0
-        if confirmed:
-            self._close()
-        elif self not in _UNCONFIRMED:
+        if self not in _UNCONFIRMED:
             _UNCONFIRMED.append(self)
-        return CleanupReport(confirmed, forced=self._was_terminated, exit_code=self._exit)
+        return CleanupReport(False, forced=self._was_terminated, exit_code=self._exit)
 
     def finalize_normal(self):
         return self.cleanup(cancelled=False)

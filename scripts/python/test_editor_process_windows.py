@@ -15,7 +15,7 @@ class WindowsEditorProcessTests(unittest.TestCase):
         import _winapi
         from editor_process_windows import OwnedWindowsProcess, assert_unleased, open_guard
 
-        with tempfile.TemporaryDirectory(prefix="Ludus process test ") as directory:
+        with tempfile.TemporaryDirectory(prefix="Ludus process test ", ignore_cleanup_errors=True) as directory:
             guard_path = Path(directory) / ".lease"
             program = (
                 "import subprocess,sys,time; "
@@ -39,7 +39,7 @@ class WindowsEditorProcessTests(unittest.TestCase):
                 with self.assertRaises(BlockingIOError):
                     assert_unleased(guard_path)
                 report = game.cleanup(cancelled=True)
-                self.assertTrue(report.confirmed)
+                self.assertTrue(report.confirmed, report)
                 self.assertEqual(0, _winapi.WaitForSingleObject(descendant, 1000))
                 assert_unleased(guard_path)
             finally:

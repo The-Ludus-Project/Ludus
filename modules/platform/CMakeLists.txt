@@ -263,10 +263,14 @@ if(LUDUS_BUILD_TESTS)
     set_tests_properties(ludus_platform_native_keymap_tests PROPERTIES LABELS "unit;platform;input")
 endif()
 
-if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE AND NOT WIN32)
-    # Hosted-window channel: codec, endpoint session and window over socketpairs,
-    # plus one end-to-end WindowManager run against a listening endpoint.
-    add_executable(ludus_platform_hosted_tests tests/hosted_window_tests.cpp tests/hosted_surface_tests.cpp)
+if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE)
+    if(WIN32)
+        add_executable(ludus_platform_hosted_tests tests/hosted_pipe_tests.cpp)
+        ludus_configure_win32_target(ludus_platform_hosted_tests)
+    else()
+        # Codec, endpoint session and window over socketpairs and a listening endpoint.
+        add_executable(ludus_platform_hosted_tests tests/hosted_window_tests.cpp tests/hosted_surface_tests.cpp)
+    endif()
     target_include_directories(ludus_platform_hosted_tests PRIVATE src)
     target_compile_definitions(ludus_platform_hosted_tests PRIVATE LUDUS_PLATFORM_HOSTED=1)
     target_link_libraries(ludus_platform_hosted_tests PRIVATE

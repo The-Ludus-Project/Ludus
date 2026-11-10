@@ -81,6 +81,7 @@ jobs:
       - name: Bootstrap pinned shader tools
         run: python scripts/shader-probe bootstrap
       - name: Prepare the Windows runtime dependencies
+        id: windows-runtime-dependencies
         if: matrix.generator == 'Ninja' || matrix.generator == 'Editor'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
@@ -138,7 +139,7 @@ jobs:
           & $python -m unittest test_play_session.GenerationPublishTests.test_windows_agility_payload_is_published_and_verified -v
           if ($LASTEXITCODE -ne 0) { throw 'Windows Agility generation publication failed' }
       - name: Validate the Windows editor and hosted Play
-        if: matrix.generator == 'Editor'
+        if: ${{ !cancelled() && matrix.generator == 'Editor' && steps.windows-runtime-dependencies.outcome == 'success' }}
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0

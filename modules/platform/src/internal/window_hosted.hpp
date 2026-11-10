@@ -1,6 +1,6 @@
 #pragma once
 
-// Hosted window backend (macOS and Linux). WindowManager selects it when
+// Hosted window backend (macOS, Linux and Windows). WindowManager selects it when
 // HOSTED_WINDOW_ENVIRONMENT_VARIABLE is present. OpenWindow() is the
 // connection-independent half, so tests can drive it over a socketpair.
 

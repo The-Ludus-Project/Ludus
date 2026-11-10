@@ -2798,7 +2798,7 @@ For this adapter's **Play saved World**, configure Project settings to build
 directory, or absolute). Save Project settings. The action saves the World, then
 uses the existing supervised Build/Run workflow.
 
-**Play in the viewport (macOS and Linux).** The game opens in the World viewport, which
+**Play in the viewport (macOS, Linux and Windows).** The game opens in the World viewport, which
 becomes its window; the World stays as edited until the game's first frame
 arrives. Click the viewport to give the game the keyboard. Keys go to the game by
 physical key, and editor shortcuts do not take them. **Shift+F1** gives the
@@ -2809,7 +2809,8 @@ viewport resizes or hides the game's window. When the game exits, crashes or is
 stopped, the viewport edits the World again. The game receives no mouse input
 yet, because Platform has none. On Linux the viewport needs an X11 or Wayland
 display and a Vulkan adapter with `VK_KHR_external_memory_fd`, and the game must
-render on the same adapter and driver as the editor.
+render on the same adapter and driver as the editor. On Windows it needs the
+Qt Windows display plugin, Direct3D 12 and the same adapter as the editor.
 
 **Play mode.** The **Play mode** box next to **Play saved World** chooses **In
 viewport** (the default) or **In separate window**. The choice is an editor
@@ -2828,9 +2829,9 @@ unchanged. Play never switches modes silently. See
 
 The child independently reads and validates that saved file before activation;
 simulation never writes authored transforms back to the Editor. The action does
-not rewrite project settings or execute a different target implicitly. On macOS
-this sample Build/Run is distinct from the still-unavailable native Live Play /
-hot-reload protocol. `--headless --level <file>` and `--frames 3 --level <file>`
+not rewrite project settings or execute a different target implicitly. This
+sample Build/Run and [native gameplay live editing](project-live-reload.md) use
+separate editor actions. `--headless --level <file>` and `--frames 3 --level <file>`
 provide bounded player acceptance paths.
 
 World widget/persistence tests cover invalid buffers, save/reopen, runtime
