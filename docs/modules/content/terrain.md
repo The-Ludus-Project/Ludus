@@ -31,8 +31,11 @@ new layout version, because it would move every saved default World's terrain.
 
 ## Derived fields (`terrain_fields.h`)
 
-All fields share a `TerrainFieldGrid` (columns along X, rows along Z, metres
-between samples) and borrow caller storage through `BorrowedView`. Each
+All fields share a `TerrainFieldGrid` (columns along X, rows along Z, and the
+metres between samples on each axis) and borrow caller storage through
+`BorrowedView`. Cells may be rectangular, as when a terrain's width and depth
+differ but its sample counts match; distances, slopes and areas use each axis's
+own spacing. Each
 operation validates its inputs, allocates scratch, then writes; any failure
 leaves every output unchanged and returns a `TerrainFieldStatus`.
 
@@ -40,7 +43,7 @@ leaves every output unchanged and returns a `TerrainFieldStatus`.
 | --- | --- | --- |
 | `TryComputeTerrainSlope` | Rise over run per sample | Central differences, one-sided at the border |
 | `TryComputeTerrainDrainage` | Filled elevation, `TerrainFlowDirection`, accumulation and a `TerrainDrainageSummary` | Whole-domain Priority-Flood depression filling, then D8 steepest descent on the filled surface |
-| `TryComputeTerrainWetness` | Wetness in [0, 1] | Topographic wetness index `ln(a / tan b)` remapped by `TerrainWetnessParameters` |
+| `TryComputeTerrainWetness` | Wetness in [0, 1] | Topographic wetness index `ln(a / tan b)` remapped by `TerrainWetnessParameters`; `a` is the upslope area over one sample's contour width |
 
 Drainage is deterministic and acyclic by construction. Depressions fill to
 their spill level. A sample without a strictly lower neighbour, which happens on

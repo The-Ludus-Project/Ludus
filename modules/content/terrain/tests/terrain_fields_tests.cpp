@@ -58,7 +58,13 @@ struct Drainage final
 
 [[nodiscard]] TerrainFieldGrid MakeGrid()
 {
-    return { .Columns = TEST_COLUMNS, .Rows = TEST_ROWS, .SpacingMetres = TEST_SPACING_METRES };
+    return
+    {
+        .Columns = TEST_COLUMNS,
+        .Rows = TEST_ROWS,
+        .SpacingXMetres = TEST_SPACING_METRES,
+        .SpacingZMetres = TEST_SPACING_METRES,
+    };
 }
 
 template <typename Surface>
@@ -130,11 +136,14 @@ void CheckDrainageInvariants(const TerrainFieldGrid& grid, const Array<float32>&
 TEST_CASE("terrain field grid validation", "[content][terrain]")
 {
     CHECK(IsTerrainFieldGridValid(MakeGrid()) == true);
-    CHECK(IsTerrainFieldGridValid({ .Columns = 1, .Rows = 4, .SpacingMetres = 1 }) == false);
-    CHECK(IsTerrainFieldGridValid({ .Columns = 4, .Rows = MAX_TERRAIN_FIELD_AXIS_SAMPLES + 1, .SpacingMetres = 1 }) ==
+    CHECK(IsTerrainFieldGridValid({ .Columns = 1, .Rows = 4, .SpacingXMetres = 1, .SpacingZMetres = 1 }) == false);
+    CHECK(IsTerrainFieldGridValid(
+              { .Columns = 4, .Rows = MAX_TERRAIN_FIELD_AXIS_SAMPLES + 1, .SpacingXMetres = 1, .SpacingZMetres = 1 }) ==
           false);
-    CHECK(IsTerrainFieldGridValid({ .Columns = 4, .Rows = 4, .SpacingMetres = 0 }) == false);
-    CHECK(IsTerrainFieldGridValid({ .Columns = 4, .Rows = 4, .SpacingMetres = MakeNonFinite() }) == false);
+    CHECK(IsTerrainFieldGridValid({ .Columns = 4, .Rows = 4, .SpacingXMetres = 0, .SpacingZMetres = 0 }) == false);
+    CHECK(IsTerrainFieldGridValid(
+              { .Columns = 4, .Rows = 4, .SpacingXMetres = MakeNonFinite(), .SpacingZMetres = MakeNonFinite() }) ==
+          false);
     CHECK(GetTerrainSampleCount(MakeGrid()) == TEST_COLUMNS * TEST_ROWS);
 }
 
@@ -169,7 +178,7 @@ TEST_CASE("terrain slope of a plane is its gradient", "[content][terrain]")
         broken[4] = MakeNonFinite();
         CHECK(TryComputeTerrainSlope(grid, BorrowedView<const float32>(broken.GetData(), broken.GetSize()), outSlope) ==
               TerrainFieldStatus::NonFiniteInput);
-        CHECK(TryComputeTerrainSlope({ .Columns = 1, .Rows = 1, .SpacingMetres = 1 },
+        CHECK(TryComputeTerrainSlope({ .Columns = 1, .Rows = 1, .SpacingXMetres = 1, .SpacingZMetres = 1 },
                                      BorrowedView<const float32>(elevation.GetData(), 1),
                                      BorrowedView<float32>(untouched.GetData(), 1)) == TerrainFieldStatus::InvalidGrid);
         for (usize sample = 0; sample < untouched.GetSize(); ++sample)
@@ -177,6 +186,56 @@ TEST_CASE("terrain slope of a plane is its gradient", "[content][terrain]")
             CHECK(untouched[sample] == -1.0F);
         }
     }
+}
+
+TEST_CASE("terrain fields use each axis's spacing on rectangular cells", "[content][terrain]")
+{
+    constexpr float32 SPACING_X_METRES = 1;
+    constexpr float32 SPACING_Z_METRES = 4;
+    const TerrainFieldGrid grid
+    {
+        .Columns = TEST_COLUMNS,
+        .Rows = TEST_ROWS,
+        .SpacingXMetres = SPACING_X_METRES,
+        .SpacingZMetres = SPACING_Z_METRES,
+    };
+    CHECK(GetTerrainSampleAreaSquareMetres(grid) == SPACING_X_METRES * SPACING_Z_METRES);
+    // One metre of rise per sample on both axes.
+    const Array<float32> elevation =
+        MakeElevation(grid, [](uint32 x, uint32 z) { return static_cast<float32>(x + z); });
+
+    Array<float32> slope(GetTerrainSampleCount(grid), -1.0F);
+    REQUIRE(TryComputeTerrainSlope(grid,
+                                   BorrowedView<const float32>(elevation.GetData(), elevation.GetSize()),
+                                   BorrowedView<float32>(slope.GetData(), slope.GetSize())) ==
+            TerrainFieldStatus::Success);
+    const float32 gradientX = 1 / SPACING_X_METRES;
+    const float32 gradientZ = 1 / SPACING_Z_METRES;
+    CHECK(slope[GetTerrainSampleCount(grid) / 2] ==
+          Catch::Approx(math::Sqrt(gradientX * gradientX + gradientZ * gradientZ)));
+
+    // Per metre the drop toward -X (1 / 1) beats the diagonal (2 / sqrt(17)) and -Z (1 / 4); on square cells the
+    // diagonal would win.
+    Drainage drainage(GetTerrainSampleCount(grid));
+    REQUIRE(drainage.Solve(grid, elevation) == TerrainFieldStatus::Success);
+    CheckDrainageInvariants(grid, elevation, drainage);
+    for (uint32 z = 1; z < grid.Rows; ++z)
+    {
+        for (uint32 x = 1; x < grid.Columns; ++x)
+        {
+            CHECK(drainage.Direction[z * grid.Columns + x] == TerrainFlowDirection::NegativeX);
+        }
+    }
+    const TerrainFieldGrid square
+    {
+        .Columns = TEST_COLUMNS,
+        .Rows = TEST_ROWS,
+        .SpacingXMetres = SPACING_X_METRES,
+        .SpacingZMetres = SPACING_X_METRES,
+    };
+    Drainage squareDrainage(GetTerrainSampleCount(square));
+    REQUIRE(squareDrainage.Solve(square, elevation) == TerrainFieldStatus::Success);
+    CHECK(squareDrainage.Direction[TEST_COLUMNS + 1] == TerrainFlowDirection::NegativeXNegativeZ);
 }
 
 TEST_CASE("terrain drainage on a tilted plane flows downhill to one edge", "[content][terrain]")
@@ -275,7 +334,13 @@ TEST_CASE("terrain drainage of a noisy surface is conservative and reproducible"
     constexpr uint32 NOISY_ROWS = 25;
     constexpr uint32 NOISE_DOMAIN = 5;
     constexpr float32 NOISE_SCALE = 1.0F / 4294967296.0F;
-    const TerrainFieldGrid grid{ .Columns = NOISY_COLUMNS, .Rows = NOISY_ROWS, .SpacingMetres = 1 };
+    const TerrainFieldGrid grid
+    {
+        .Columns = NOISY_COLUMNS,
+        .Rows = NOISY_ROWS,
+        .SpacingXMetres = 1,
+        .SpacingZMetres = 1,
+    };
     math::RandomKey key;
     REQUIRE(math::TryMakeRandomKey(3, NOISE_DOMAIN, key) == math::MathStatus::Success);
     const Array<float32> elevation = MakeElevation(grid, [&](uint32 x, uint32 z) {
@@ -302,7 +367,7 @@ TEST_CASE("terrain drainage failures preserve the outputs", "[content][terrain]"
     Array<float32> elevation = MakeElevation(grid, [](uint32 x, uint32) { return static_cast<float32>(x); });
     Drainage drainage(GetTerrainSampleCount(grid));
     drainage.Accumulation[0] = 77;
-    CHECK(TryComputeTerrainDrainage({ .Columns = 1, .Rows = 2, .SpacingMetres = 1 },
+    CHECK(TryComputeTerrainDrainage({ .Columns = 1, .Rows = 2, .SpacingXMetres = 1, .SpacingZMetres = 1 },
                                     BorrowedView<const float32>(elevation.GetData(), 2),
                                     BorrowedView<float32>(drainage.Filled.GetData(), 2),
                                     BorrowedView<TerrainFlowDirection>(drainage.Direction.GetData(), 2),
@@ -324,7 +389,7 @@ TEST_CASE("terrain drainage failures preserve the outputs", "[content][terrain]"
 
 TEST_CASE("terrain wetness grows with catchment and falls with slope", "[content][terrain]")
 {
-    const TerrainFieldGrid grid{ .Columns = 4, .Rows = 2, .SpacingMetres = 1 };
+    const TerrainFieldGrid grid{ .Columns = 4, .Rows = 2, .SpacingXMetres = 1, .SpacingZMetres = 1 };
     const Array<float32> slope{0.0F, 0.5F, 0.0F, 0.5F, 0.0F, 0.0F, 0.0F, 0.0F};
     const Array<uint32> accumulation{1U, 1U, 1000U, 1000U, 1U, 1U, 1U, 1U};
     Array<float32> wetness(GetTerrainSampleCount(grid), -1.0F);
