@@ -99,8 +99,12 @@ function(ludus_editor_add_tree_sitter)
     #   such as U_PLATFORM that the trimmed copy never defines; ICU relies on them evaluating to 0.
     # - -Wmissing-format-attribute and -Wformat-nonliteral (from -Wformat=2): lexer.c's internal
     #   ts_lexer__log forwards a printf format to vsnprintf without declaring the attribute.
+    # - MSVC C4232: alloc.c initializes allocator callbacks with imported CRT function addresses.
+    # - MSVC C4244/C4018: node.c and query.c narrow internal symbol/capture indices and compare
+    #   signed capture bounds with array counts. These upstream C diagnostics stay local here.
     target_compile_options(ludus_editor_tree_sitter PRIVATE
-        $<$<C_COMPILER_ID:Clang,AppleClang,GNU>:-Wno-undef -Wno-missing-format-attribute -Wno-format-nonliteral>)
+        $<$<C_COMPILER_ID:Clang,AppleClang,GNU>:-Wno-undef -Wno-missing-format-attribute -Wno-format-nonliteral>
+        $<$<C_COMPILER_ID:MSVC>:/wd4018 /wd4232 /wd4244>)
 
     # One object library per grammar, because each grammar compiles against its own generated
     # src/tree_sitter/parser.h. Their objects join ludus_editor_tree_sitter, so consumers link one

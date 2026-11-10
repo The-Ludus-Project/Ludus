@@ -153,7 +153,7 @@ jobs:
           $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies;$qt"
           cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON -DLUDUS_BUILD_SHADER_WORKER=ON
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor configure failed' }
-          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid
+          cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests ludus_platform_hosted_tests ludus_game_host_app ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid -- -k 0
           if ($LASTEXITCODE -ne 0) { throw 'Windows editor build failed' }
           $testNames = @('ludus_editor_d3d12_viewport', 'ludus_editor_d3d12_high_dpi', 'ludus_editor_hosted_play', 'ludus_rhi_d3d12_tests',
             'ludus_platform_hosted_tests', 'ludus_game_host_windows_supervisor')

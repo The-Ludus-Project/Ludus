@@ -139,6 +139,10 @@ grammar's node names.
   sanitizer rejects under the UBSan presets. Those grammar objects compile as
   C23, where an empty list means `(void)`, so every sanitizer check stays on.
   MSVC compiles those grammars as C11 and has no Clang function sanitizer.
+- MSVC runtime diagnostics C4018, C4232 and C4244 are scoped out on the upstream
+  runtime target for its signed capture bounds, imported CRT allocator callback
+  initializers and internal symbol/capture narrowing. The editor's own sources
+  retain those warnings as errors.
 - No exceptions cross the boundary because tree-sitter has none. The editor seam
   values stay Qt-free and tree-sitter-free; the syntax worker owns every
   `TSParser`, `TSTree` and `TSQueryCursor`.
