@@ -41,6 +41,7 @@
 #include <QStandardItemModel>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtEndian>
 
 #include <catch2/catch_test_macros.hpp>
@@ -58,6 +59,9 @@ constexpr uint32 TEST_SAMPLES = 2;
 constexpr uint32 TEST_DEPTH = 3;
 /// Generous wall-time bound for preparation plus tracing on a loaded machine.
 constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 120000;
+constexpr int64 MILLISECONDS_PER_SECOND = 1000;
+constexpr int64 GPU_CAPTURE_TIMEOUT_MILLISECONDS =
+    LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND;
 constexpr uint64 TEST_SERVICE_BUDGET_NANOSECONDS = 50'000'000;
 constexpr usize LUHDR_HEADER_BYTES = 256;
 /// Byte offset of the LUHDR01 flags word, and its centre-ray bit (scripts/reference-hdr).
@@ -137,9 +141,17 @@ ViewportReferencePhase RunToEnd(ViewportReferenceCapture& inoutCapture,
     QElapsedTimer timer;
     timer.start();
     ViewportReferencePhase phase = inoutCapture.GetPhase();
-    while ((phase == ViewportReferencePhase::Preparing || phase == ViewportReferencePhase::Tracing) &&
-           timer.elapsed() < timeoutMilliseconds)
+    while (phase == ViewportReferencePhase::Preparing || phase == ViewportReferencePhase::Tracing)
     {
+        const int64 elapsedMilliseconds = timer.elapsed();
+        if (elapsedMilliseconds >= timeoutMilliseconds)
+        {
+            WARN("Reference capture was still "
+                 << (phase == ViewportReferencePhase::Preparing ? "preparing" : "tracing") << " after "
+                 << elapsedMilliseconds << " ms (budget " << timeoutMilliseconds << " ms)");
+            break;
+        }
+        QThread::msleep(1);
         phase = inoutCapture.Service(TEST_SERVICE_BUDGET_NANOSECONDS);
     }
     return phase;
@@ -384,7 +396,7 @@ TEST_CASE("A reference capture traces pixel centres when asked and records it in
 }
 
 TEST_CASE("GPU compute reference capture completes with more emissive patches than raster lights",
-          "[editor][reference-capture][gpu]")
+          "[editor][reference-capture][gpu][reference-compute][emissive-patches]")
 {
     DeviceFixture device;
     if (device.IsAvailable == false)
@@ -406,7 +418,7 @@ TEST_CASE("GPU compute reference capture completes with more emissive patches th
     ViewportReferenceCapture capture;
     QString error;
     REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
-    const ViewportReferencePhase phase = RunToEnd(capture);
+    const ViewportReferencePhase phase = RunToEnd(capture, GPU_CAPTURE_TIMEOUT_MILLISECONDS);
     INFO(capture.GetError().toStdString());
     REQUIRE(phase == ViewportReferencePhase::Complete);
     CHECK(capture.GetLightCount() == static_cast<usize>(tests::LAMP_COUNT));
@@ -451,7 +463,7 @@ TEST_CASE("Native query reference capture completes where the device supports ra
 }
 
 TEST_CASE("GPU compute reference capture matches the CPU oracle on the viewport scene",
-          "[editor][reference-capture][gpu]")
+          "[editor][reference-capture][gpu][reference-compute][oracle-parity]")
 {
     DeviceFixture device;
     if (device.IsAvailable == false)
@@ -483,7 +495,10 @@ TEST_CASE("GPU compute reference capture matches the CPU oracle on the viewport 
         ViewportReferenceCapture capture;
         QString error;
         REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
-        const ViewportReferencePhase phase = RunToEnd(capture);
+        const int64 timeoutMilliseconds = traversals[index] == renderer::ReferenceTraversal::GpuCompute
+                                              ? GPU_CAPTURE_TIMEOUT_MILLISECONDS
+                                              : CAPTURE_TIMEOUT_MILLISECONDS;
+        const ViewportReferencePhase phase = RunToEnd(capture, timeoutMilliseconds);
         INFO(capture.GetError().toStdString());
         REQUIRE(phase == ViewportReferencePhase::Complete);
         CheckCompleteCapture(capture, extent);
