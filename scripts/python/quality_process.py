@@ -62,8 +62,11 @@ def run_bounded(argv: Sequence[object], *, cwd: Path, log: Path,
     """
     if timeout <= 0 or limit < 1:
         raise ValueError("Process timeout and log limit must be positive")
+    if os.name == "nt":
+        from quality_process_windows import run_bounded_windows
+        return run_bounded_windows(argv, cwd=cwd, log=log, env=env, timeout=timeout, limit=limit, budget=budget)
     if os.name != "posix":
-        raise OSError("Bounded quality processes currently require a POSIX host")
+        raise OSError("Bounded quality processes require Windows or POSIX")
     log.parent.mkdir(parents=True, exist_ok=True)
     written = 0
     truncated = False

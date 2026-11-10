@@ -39,6 +39,7 @@ jobs:
         include:
           - generator: Ninja
           - generator: MSBuild
+          - generator: MSVC ASan
           - generator: Runtime SDK
             flavor: Debug
             configuration: Debug
@@ -150,12 +151,44 @@ jobs:
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $dependencyConfigurations = @('Debug', 'RelWithDebInfo', 'Release')
+          if ($env:LUDUS_WINDOWS_GENERATOR -eq 'MSVC ASan') {
+            $dependencyConfigurations = @('RelWithDebInfo')
+          }
           foreach ($configuration in $dependencyConfigurations) {
             conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
             if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
           }
+      - name: Validate MSVC AddressSanitizer and its fatal control
+        if: matrix.generator == 'MSVC ASan'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/python
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/dependencies"
+          python -m unittest test_quality.ProcessTests test_quality_windows -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows quality process controls failed' }
+          cmake --preset windows-msvc-asan
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan runtime probe or configure failed' }
+          $targets = @(
+            'ludus_foundation_base_tests', 'ludus_foundation_memory_tests',
+            'ludus_foundation_containers_tests', 'ludus_foundation_time_tests',
+            'ludus_foundation_threading_tests', 'ludus_threading_startup_tests',
+            'ludus_threading_profiling_tests', 'ludus_foundation_logging_tests',
+            'ludus_foundation_profiling_tests', 'ludus_foundation_identity_tests',
+            'ludus_filesystem_tests', 'ludus_platform_entropy_tests', 'ludus_platform_win32_tests',
+            'ludus_input_tests', 'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests',
+            'ludus_asan_control_child'
+          )
+          cmake --build --preset windows-msvc-asan --target @targets -- -k 0
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan build failed' }
+          $tests = @($targets | Where-Object { $_ -ne 'ludus_asan_control_child' }) + @('ludus_asan_control')
+          $suite = '^(' + ($tests -join '|') + ')$'
+          ctest --preset windows-msvc-asan --tests-regex $suite --output-junit "$PWD/out/windows-msvc-probe/asan.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan tests failed' }
+          python -c "import sys; sys.path.insert(0, 'tests/build_contract'); from windows_qualification import check_results; check_results('out/windows-msvc-probe/asan.xml', sys.argv[1:])" @tests
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC ASan test inventory failed' }
       - name: Build and test primitives, Foundation host services and the Win32/D3D12 closure
-        if: matrix.generator != 'Runtime SDK'
+        if: matrix.generator == 'Ninja' || matrix.generator == 'MSBuild'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python
         run: |
@@ -324,6 +357,9 @@ jobs:
           name: windows-msvc-${{ matrix.generator }}${{ matrix.flavor && format('-{0}', matrix.flavor) || '' }}
           path: |
             out/windows-qualification/
+            out/windows-msvc-probe/asan.xml
+            out/build/windows-msvc-asan/tests/quality/asan-evidence/
+            out/build/windows-msvc-asan/CMakeFiles/LudusSanitizerRuntimeProbe/
             out/build/windows-msvc-*/CMakeCache.txt
             out/build/windows-msvc-*/Testing/Temporary/
             out/windows-msvc-probe/**/compiler-identity.txt

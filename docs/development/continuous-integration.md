@@ -566,6 +566,14 @@ is unavailable and checks that normal exit handlers were bypassed. The filesyste
 probe terminates the writer before and after atomic publication on the runner's
 filesystem, then checks the accepted bytes and retries. This exercises process
 interruption separately from storage power loss.
+The MSVC ASan job selects `windows-msvc-asan`, probes the sanitizer runtime
+before building, then exercises the Foundation, Win32 and RHI tests. Its positive
+control requires both a clean startup and a specific fatal heap-buffer-overflow
+finding. The job archives the probe, control logs and exact CTest results.
+Windows quality subprocesses enter a kill-on-close Job before starting their
+workload, and their tests verify descendant cleanup, output bounds and timeout
+behavior.
+
 The Ninja runtime job checks out the candidate and runs the D7 source suite
 on WARP. It checks the exact CTest inventory, fails if a required test is skipped,
 and archives the candidate, Windows build, toolchain, inventory and JUnit results

@@ -945,6 +945,16 @@ solution and relocated runtime SDK consumers with Ninja and MSBuild. The
 [SDK flavor mapping](../development/project-sdk-workflow.md#windows-runtime-sdk)
 defines the configurations and dependencies for each installed consumer.
 
+The `windows-msvc-asan` configure, build and test presets enable MSVC's
+AddressSanitizer on the Foundation, Win32 and RHI closure. The Windows batch lane
+requires a clean control process and a fatal heap-buffer-overflow finding from
+the instrumented control. It also tests output limits, timeouts and descendant
+cleanup through Windows Job objects. MSVC's UBSan and TSan requests produce a
+configuration error. The admitted ASan scope keeps the engine's exception policy
+and uses embedded debug information with incremental linking and `/RTC`
+disabled. Catch2's uninstrumented STL boundary shares disabled container
+annotations with its instrumented callers.
+
 #### Physical runtime evidence
 
 Run the same source runtime suite in an interactive x64 Windows session on
@@ -989,7 +999,7 @@ PR from the subsystem table.
 | Desktop authoring and hosted Play | D6d editor and GameHost | Selected World and camera, edit/resize and pending/failure recovery, DPI/display transitions, focus, dialogs, cross-process frame delivery and cleanup |
 | Resource and performance budgets | Renderer and runtime | Repeatable workload, declared frame time and memory limits, measured CPU/GPU time and allocation peaks per device |
 | IDE debugger and symbols | Windows project setup and GameHost | Visual Studio and VS Code launch/attach, breakpoint and stack resolution, matching PDBs |
-| Sanitizers | Build and runtime tooling | Native instrumentation runs and positive controls for the admitted compiler. The current MSVC engine preset has no sanitizer path and the bounded sanitizer runner requires POSIX. |
+| Sanitizers | Build and runtime tooling | MSVC AddressSanitizer runs the Foundation, Win32 and RHI closure with a fatal heap-overflow control. Retain its logs alongside the candidate's results; record renderer/editor instrumentation separately. |
 
 Record unsupported features separately from required profiles. The offline
 audio and wire-format suites cover those scoped modules. Native audio device
