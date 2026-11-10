@@ -317,11 +317,14 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         src/internal/preview_shader_reload.h src/preview_shader_reload.cpp)
 endif()
 
-# Viewport reference capture offers native RT1 traversal only with the fixed query kernel, which
-# needs the pinned SPIR-V Cross translator; without it the editor offers the CPU oracle alone.
-# The GPU-compute RT1 kernels need only compute support and are always compiled.
+# Native RT1 traversal additionally needs the fixed query kernel and pinned SPIR-V Cross translator.
+# Direct3D 12 reference kernels remain unqualified. Ordinary raster and hosted Play
+# do not depend on them, and the reference UI admits only compiled capabilities.
 function(ludus_editor_enable_reference_queries target)
-    ludus_compile_renderer_shaders(TARGET ${target} SHADERS renderer_reference renderer_reference_reduce)
+    if(NOT WIN32)
+        ludus_compile_renderer_shaders(TARGET ${target} SHADERS renderer_reference renderer_reference_reduce)
+        target_compile_definitions(${target} PUBLIC LUDUS_EDITOR_REFERENCE_COMPUTE=1)
+    endif()
     if(NOT WIN32 AND LUDUS_SPIRV_CROSS)
         ludus_compile_ray_queries(TARGET ${target} NAME ray_query)
         # Public: the reference capture tests check the same capability as the objects they link.

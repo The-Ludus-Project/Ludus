@@ -1,11 +1,13 @@
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
+#include "internal/reference_capture_window.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
 #include "internal/world_document.h"
 
+#include <QComboBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -17,6 +19,7 @@
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QSize>
+#include <QStandardItemModel>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QWindow>
@@ -129,6 +132,14 @@ TEST_CASE("Windows viewport presents the authored World and retains its frame th
     REQUIRE(preview.SetScene(scene) == true);
     preview.SetShading(PreviewShading::Solid);
     REQUIRE(preview.Start() == true);
+    QComboBox traversal;
+    PopulateReferenceTraversalChoices(traversal, ludus::graphics::renderer::ReferenceTraversal::CpuOracle);
+    UpdateReferenceTraversalAvailability(traversal, &preview, true);
+    const QStandardItemModel* choicesOrNull = qobject_cast<QStandardItemModel*>(traversal.model());
+    REQUIRE(choicesOrNull != nullptr);
+    CHECK(choicesOrNull->item(static_cast<int32>(ludus::graphics::renderer::ReferenceTraversal::GpuCompute))
+              ->isEnabled() == false);
+    CHECK(traversal.currentIndex() == static_cast<int32>(ludus::graphics::renderer::ReferenceTraversal::CpuOracle));
     REQUIRE(WaitForPresentation([&viewport]() { return viewport.PresentedFrames() > 0; }) == true);
 
     QQuickWindow* surfaceOrNull = FindGpuWindowOrNull();

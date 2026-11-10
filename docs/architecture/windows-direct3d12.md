@@ -943,6 +943,11 @@ with optional tooling absent.
   See [Windows editor setup](../development/editor-workspace.md#windows-authoring-viewport)
   for the build and test commands.
 
+  Windows GPU-reference capture remains a coverage gap. The reference compute
+  kernels fail DXIL validation, so the editor excludes them and disables that
+  traversal explicitly. CPU/GPU reference parity on Direct3D 12 is unqualified.
+  Raster authoring and hosted Play have independent build and runtime paths.
+
   Hosted Play uses an owner-only local named pipe with a session token and
   authenticated peer process. The game exports committed RGBA8 resources, and
   the editor duplicates their NT handles before acknowledging the generation.
