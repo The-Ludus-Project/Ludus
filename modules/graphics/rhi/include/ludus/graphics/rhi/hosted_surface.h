@@ -91,15 +91,15 @@ struct HostedFrame final
 /// Pass the result as platform::HostedWindowEndpoint::StartInfo::ConsumerAdapterOrNull. The
 /// endpoint announces it in its Welcome, and a Vulkan game connected to the hosted window
 /// tries that adapter before any other, so a multi-GPU host renders where the editor can
-/// import. Without a matching adapter the game selects as usual and the consumer refuses
-/// its images with AdapterMismatch.
+/// import. Without a matching adapter Vulkan selects as usual and the consumer refuses
+/// its images with AdapterMismatch. Direct3D 12 requires the announced adapter LUID.
 /// @param device The consumer's device, as for HostedSurfaceConsumer::Start(). Vulkan needs
-/// `Instance` and `PhysicalDevice`; no other object is used.
+/// `Instance` and `PhysicalDevice`. Direct3D 12 needs its `Device`.
 /// @param outAdapter Vulkan: the adapter's `deviceUUID` and `driverUUID`, queried through
-/// `Instance`. Unchanged unless true is returned.
-/// @return true on Vulkan or Direct3D 12, which returns the adapter LUID. false on Metal, where IOSurfaces work across
-/// GPUs and the game needs no adapter; for another API, an incomplete identity, a build without hosted import, or when
-/// `vkGetPhysicalDeviceProperties2` cannot be loaded.
+/// `Instance`. Direct3D 12 returns the device's LUID in `DeviceUuid`. Unchanged on failure.
+/// @return true on Vulkan or Direct3D 12. Returns false on Metal, where IOSurfaces work across
+/// GPUs, for another API, an incomplete identity, a build without hosted import, or when
+/// Vulkan's `vkGetPhysicalDeviceProperties2` cannot be loaded.
 [[nodiscard]] bool TryGetHostedConsumerAdapter(const NativeDeviceIdentity& device,
                                                platform::HostedAdapterIdentity& outAdapter) noexcept;
 
@@ -157,6 +157,8 @@ public:
     /// Vulkan: `Api` Vulkan with `Instance`, `PhysicalDevice`, `Device`, `CommandQueue` and its
     /// `QueueFamily`; the instance must use Vulkan 1.1 or later. The consumer submits its queue
     /// family transfers and release fences to that queue.
+    /// Direct3D 12 requires its `Device` and that device's direct `CommandQueue`. The caller
+    /// serializes submissions on the owning thread, including the consumer's release fences.
     /// @return Ok; InvalidState when already started; InvalidArgument for an incomplete
     /// identity or an API without a hosted import in this build; Unavailable when the
     /// target has no hosted surface, the device's entry points cannot be loaded or allocation

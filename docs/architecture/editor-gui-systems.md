@@ -937,7 +937,7 @@ the queue drains, the endpoint resends the current extent and visibility, an
 Overflow reset and the current FocusEntered baseline, so no key stays stuck. The
 editor converts native keys with `MapCocoaKeyCode` (Qt's `nativeVirtualKey` on
 macOS), `MapEvdevKeyCode` (Qt's `nativeScanCode` minus 8 on Linux), or
-`MapWin32ScanCode` (Qt's `nativeScanCode` on Windows), from
+`MapWin32KeyCode` (Qt's `nativeScanCode` and `nativeVirtualKey` on Windows), from
 `<ludus/platform/native_keymap.h>`.
 
 `ludus_platform_hosted_tests` covers this contract over socketpairs: every

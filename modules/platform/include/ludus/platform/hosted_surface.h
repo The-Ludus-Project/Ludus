@@ -259,6 +259,7 @@ public:
     /// adapter with these UUIDs when it connects a device to the window. It is a preference,
     /// not a guarantee: without a matching adapter, RHI selects as usual and the consumer
     /// refuses the images.
+    /// Direct3D 12 uses the announced adapter LUID and fails device creation if it is unavailable.
     /// @param outAdapter The consumer's adapter; unchanged unless true is returned.
     /// @return true when the endpoint announced an adapter.
     [[nodiscard]] virtual bool TryGetConsumerAdapter(HostedAdapterIdentity& outAdapter) const noexcept = 0;

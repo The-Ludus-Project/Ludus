@@ -102,9 +102,11 @@ function(ludus_editor_add_tree_sitter)
     # - MSVC C4232: alloc.c initializes allocator callbacks with imported CRT function addresses.
     # - MSVC C4244/C4018: node.c and query.c narrow internal symbol/capture indices and compare
     #   signed capture bounds with array counts. These upstream C diagnostics stay local here.
+    # - MSVC C4701: node.c reads last_iterator only while has_last_iterator is true, set alongside
+    #   its initialization. MSVC's optimizer does not preserve that guard correlation.
     target_compile_options(ludus_editor_tree_sitter PRIVATE
         $<$<C_COMPILER_ID:Clang,AppleClang,GNU>:-Wno-undef -Wno-missing-format-attribute -Wno-format-nonliteral>
-        $<$<C_COMPILER_ID:MSVC>:/wd4018 /wd4232 /wd4244>)
+        $<$<C_COMPILER_ID:MSVC>:/wd4018 /wd4232 /wd4244 /wd4701>)
 
     # One object library per grammar, because each grammar compiles against its own generated
     # src/tree_sitter/parser.h. Their objects join ludus_editor_tree_sitter, so consumers link one
@@ -159,4 +161,17 @@ function(ludus_editor_add_tree_sitter)
     endforeach()
     target_compile_options(ludus_editor_tree_sitter_luau PRIVATE
         $<$<C_COMPILER_ID:Clang,AppleClang,GNU>:-Wno-implicit-fallthrough -Wno-unused-function -Wno-unused-parameter>)
+    # MSVC scanner-only diagnostics. C4244 covers the upstream wctype calls with UTF-32 lookahead
+    # on Windows' 16-bit wint_t. C4267 covers the C++/Slang serialized delimiter length and the
+    # Markdown indentation counters. Luau's C4146 is intentional unsigned hash negation and its
+    # C4100 mirrors the unused valid_symbols parameters documented above. Markdown inline's
+    # C4005 is the scanner redefining parser.h's UNUSED macro for MSVC.
+    foreach(grammar IN ITEMS cpp slang luau cmake)
+        target_compile_options(ludus_editor_tree_sitter_${grammar} PRIVATE $<$<C_COMPILER_ID:MSVC>:/wd4244>)
+    endforeach()
+    foreach(grammar IN ITEMS cpp slang markdown)
+        target_compile_options(ludus_editor_tree_sitter_${grammar} PRIVATE $<$<C_COMPILER_ID:MSVC>:/wd4267>)
+    endforeach()
+    target_compile_options(ludus_editor_tree_sitter_luau PRIVATE $<$<C_COMPILER_ID:MSVC>:/wd4100 /wd4146>)
+    target_compile_options(ludus_editor_tree_sitter_markdown_inline PRIVATE $<$<C_COMPILER_ID:MSVC>:/wd4005>)
 endfunction()

@@ -164,8 +164,8 @@ public:
 
     /// @brief Channel address to publish in HOSTED_WINDOW_ENVIRONMENT_VARIABLE.
     ///
-    /// Format "1:<64 hexadecimal token digits>:<path>". The path is an absolute
-    /// Unix socket path or a logical Windows named-pipe address. The view
+    /// Format `1:TOKEN:PATH` with 64 lowercase hexadecimal token digits. The path
+    /// is an absolute Unix socket path or a logical Windows named-pipe address. The view
     /// points into the endpoint and stays valid until Stop() or destruction. It is
     /// a secret for the session: pass it only to the child's environment.
     /// @return The address, or an empty view when stopped.
