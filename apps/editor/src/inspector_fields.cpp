@@ -353,8 +353,9 @@ void SetNumberFieldMinimumWidth(QLineEdit& inoutField)
 
 namespace
 {
-/// Puts every label of a form above its field while the label column would take more than half the form's width,
-/// so a long label such as "Reflectance (linear RGB)" does not squeeze every value into a sliver.
+/// Puts every label of a form above its field while the field column beside the widest label would be too narrow
+/// for a number and a colour chip, so a long label such as "Reflectance (linear RGB)" does not squeeze every value
+/// into a sliver. Labels above their fields take the caption colour, so the values stand out.
 class FormWrapFilter final : public QObject
 {
 public:
@@ -386,12 +387,26 @@ private:
         }
         const QMargins margins = mForm.contentsMargins();
         const int32 width = owner.contentsRect().width() - margins.left() - margins.right();
-        const bool shouldWrapAll = (widestLabel + std::max(mForm.horizontalSpacing(), 0)) * 2 > width;
+        const int32 fieldColumn = width - widestLabel - std::max(mForm.horizontalSpacing(), 0);
+        const int32 readableField =
+            owner.fontMetrics().horizontalAdvance(NUMBER_FIELD_SAMPLE.toString()) + design::SPACING_EXTRA_LARGE;
+        const bool shouldWrapAll = widestLabel > 0 && fieldColumn < readableField;
         const QFormLayout::RowWrapPolicy policy =
             shouldWrapAll == true ? QFormLayout::WrapAllRows : QFormLayout::WrapLongRows;
-        if (mForm.rowWrapPolicy() != policy)
+        if (mForm.rowWrapPolicy() == policy)
         {
-            mForm.setRowWrapPolicy(policy);
+            return;
+        }
+        mForm.setRowWrapPolicy(policy);
+        for (int32 row = 0; row < mForm.rowCount(); ++row)
+        {
+            const QLayoutItem* labelOrNull = mForm.itemAt(row, QFormLayout::LabelRole);
+            QWidget* labelWidgetOrNull = labelOrNull != nullptr ? labelOrNull->widget() : nullptr;
+            if (labelWidgetOrNull != nullptr)
+            {
+                labelWidgetOrNull->setForegroundRole(shouldWrapAll == true ? QPalette::PlaceholderText
+                                                                           : QPalette::WindowText);
+            }
         }
     }
 

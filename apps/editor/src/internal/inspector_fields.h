@@ -128,9 +128,9 @@ private:
 void SetNumberFieldMinimumWidth(QLineEdit& inoutField);
 
 /// Arranges an inspector form for a narrow panel: a field that does not fit beside its label wraps below it rather
-/// than being clipped, every label moves above its field while the label column would take more than half the
-/// width, and fields fill the row on every platform (macOS otherwise keeps them at their size hint). Call it once
-/// the form is installed on its widget.
+/// than being clipped, every label moves above its field (in the caption colour) while the field column beside the
+/// widest label would be too narrow for a number, and fields fill the row on every platform (macOS otherwise keeps
+/// them at their size hint). Call it once the form is installed on its widget.
 void ConfigureInspectorForm(QFormLayout& inoutForm);
 
 /// Lays its items out in one row while their minimum widths fit, and otherwise stacks them, one per row at the full
