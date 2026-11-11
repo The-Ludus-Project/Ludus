@@ -107,6 +107,46 @@
       "unit": "",
       "min": 2,
       "max": 64
+    },
+    {
+      "id": "surface",
+      "label": "Surface",
+      "type": "enum",
+      "default": "Generated",
+      "help": "Generated paints grass, dirt, rock, mud and snow from slope, wetness and elevation. Plain keeps one untextured surface.",
+      "unit": "",
+      "choices": [
+        "Generated",
+        "Plain"
+      ]
+    },
+    {
+      "id": "snowLine",
+      "label": "Snow line",
+      "type": "number",
+      "default": 6,
+      "help": "Elevation above which snow settles on gentle slopes, relative to the entity origin.",
+      "unit": "m",
+      "min": -128,
+      "max": 128
+    },
+    {
+      "id": "rivers",
+      "label": "Carve rivers",
+      "type": "boolean",
+      "default": false,
+      "help": "Carve channels where water collects and fill them with water.",
+      "unit": ""
+    },
+    {
+      "id": "riverSource",
+      "label": "River sources",
+      "type": "number",
+      "default": 0.03,
+      "help": "Start a river where this share of the terrain drains to one point. Smaller values carve more streams.",
+      "unit": "",
+      "min": 0.002,
+      "max": 0.5
     }
   ]
 }

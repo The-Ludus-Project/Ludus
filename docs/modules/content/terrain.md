@@ -6,7 +6,8 @@ slice T1 from the [terrain generation architecture](../../architecture/terrain-g
 It is Foundation-only (`FoundationBase`, `FoundationContainers`, `FoundationMath`),
 builds for native and browser targets, and is in-tree until an SDK consumer
 needs it. The World editor's default terrain samples its elevation through this
-module, so a cooker, a test and the editor agree on every height.
+module, so a cooker, a test and the editor agree on every height, and it carves
+rivers and bakes its surface colour with the kernels below.
 
 The module computes fields; it owns no file format, streaming or rendering.
 Those stay with the [terrain systems](../../architecture/terrain.md) proposal,
@@ -125,8 +126,10 @@ surface before deriving slope, wetness or materials from it.
 Implemented: elevation recipe, slope, drainage, wetness, rules and palettes,
 river networks and carving, with regression tests in
 `modules/content/terrain/tests`. Not yet implemented from the pipeline: imports
-and stamps as module operations, thermal and hydraulic erosion, cooked pages,
-river water meshes and the editor's use of these fields.
+and stamps as module operations, thermal and hydraulic erosion, cooked pages
+and tiling material textures blended in the renderer. The World editor uses
+these kernels to carve rivers and bake its terrain surface; see
+[World authoring](../../development/editor-workspace.md#s4-scene-authoring).
 
 ## References
 

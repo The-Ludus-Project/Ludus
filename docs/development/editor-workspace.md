@@ -749,14 +749,34 @@ source change. If shrinking the footprint would clip a stroke, the
 confirmation names how many strokes the edit removes. Replacing an embedded
 heightmap also requires confirmation.
 
+**Paint surface materials** colours the terrain from its own shape. Gentle,
+dry ground is grass, steeper ground turns to dirt and then rock, ground where
+water collects turns to mud, and gentle ground above **Snow line** is snow. The
+snow line is a local height in metres. The colours come from slope, wetness
+and elevation computed on the final surface, after sculpt strokes, so a stroke
+that steepens a bank or fills a hollow repaints it. Clear the box to keep one
+plain surface. The baked colour reaches the raster viewport and the path
+tracers through the same World surface.
+
+**Carve rivers** routes water downhill across the whole terrain and cuts a
+channel wherever enough ground drains to one point. **River sources** is that
+share of the terrain's area; smaller values carve more and shorter streams.
+Channels deepen and widen downstream, and water fills each channel below its
+banks. Rivers are carved into the generated or imported base before sculpt
+strokes, so a stroke can still fill or deepen a channel. Water is presentation
+of the terrain: clicks pass through it to the terrain, and it adds no walking
+collision. Carving depends on the sample grid, so changing **Samples per side**
+moves the channels. The fields, routing and carving are described in
+[terrain fields, drainage, rivers and material rules](../modules/content/terrain.md).
+
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
 shows the terrain's surface colour without adding mesh lights.
 [Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
 mesh for walking collision when the Terrain entity has **Static Collider**.
-Material paint, erosion and streaming are future
-work. See the
+Hand-painted materials, tiling material textures, erosion and streaming are
+future work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
 
