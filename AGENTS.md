@@ -460,6 +460,9 @@ rejects the explicit `== true`/`== false` style.
 
 ### Reference comments and attribution
 
+Use the [reference review workflow](docs/wiki/contribute/index.md#turn-a-reference-or-tip-into-a-ludus-change)
+when evaluating external material, tips, conventions or anecdotes for Ludus.
+
 - Whenever a paper, article, book chapter, or technical document materially
   informs a design, algorithm, or implementation, acknowledge and thank its
   authors with a concise reference comment near the affected code. For a design
