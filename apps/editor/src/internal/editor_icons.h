@@ -59,10 +59,20 @@ enum class EditorIcon : foundation::uint8
     Copy,
     AutoLayout,
     Minimap,
+    Texture,
+    Material,
+    Mesh,
+    Scene,
+    Lighting,
+    License,
+    Geometry,
+    Music,
+    AudioSource,
+    UnknownAsset,
 };
 
 /// Number of icons in EditorIcon.
-inline constexpr foundation::usize EDITOR_ICON_COUNT = 36;
+inline constexpr foundation::usize EDITOR_ICON_COUNT = 46;
 
 /// Side of the grid every icon is drawn on, in SVG units.
 inline constexpr qreal EDITOR_ICON_GRID = 24.0;

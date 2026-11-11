@@ -2968,9 +2968,22 @@ See [rendering/platform obligations](../architecture/editor-gui-systems.md#rende
 
 ## S3 content browser
 
-The **Content** work area projects the saved `content/catalog.json` into a
-searchable table of resource IDs, kinds and paths. Search is case-insensitive
-and checks all three columns. Selected rows retain their resource IDs, so filtering,
+The **Content** work area projects the saved audio `content/catalog.json` and
+the cooked scene asset catalog `assets/catalog.json` into one table of names,
+types, operation status and paths. Textures, materials, meshes, scenes,
+lighting and licences appear beside audio sources, sounds, music and cooked
+geometry; a material shows its source material name. A file watcher refreshes
+the list a quarter of a second after either catalog changes, so a recook from
+the command line appears without pressing **Refresh**.
+
+Search is live and case-insensitive. Every space-separated word must appear in
+the name, resource ID, type name or path, so `brick wall` finds the material
+named "Red brick wall" and `.wav` finds audio sources. The type chips under the
+search box (**Textures**, **Materials**, **Meshes**, **Scenes**, **Audio**,
+**Other**) narrow the list: none checked shows every type, and each checked chip
+adds its category. Each chip shows how many rows match the current search, and
+a chip with nothing to add is disabled. When nothing matches, the list says so
+instead of going blank. Selected rows retain their resource IDs, so filtering,
 sorting and refreshing cannot reinterpret a row number as another resource. Hidden selections
 are restored when their ID becomes visible again. Unchanged refreshes preserve
 the model and focused search buffer; changed paths update their roles. Structural
@@ -3025,13 +3038,44 @@ view: population, 20 searches (p50/p95), and stable-ID lookup. The optional-edit
 CI records host/OS/architecture, Qt version and the Development profile in its
 `editor-content-scale` artifact. This is a reproducible model baseline, not a
 claim that larger catalogs are admitted or that native scrolling/accessibility
-has been qualified. Native input/scroll measurements, thumbnail budgets and
-non-audio importers remain follow-up work.
+has been qualified. Native input/scroll measurements and non-audio importers in
+the browser remain follow-up work. The `[content][thumbnail][scale]` fixture
+checks that a 5,000-row list generates thumbnails only for the rows it paints.
+
+Rows draw a thumbnail where one is cheap to make from the cooked bytes alone:
+textures show a box-filtered copy of their RGBA8 texels over a checkerboard where
+they are translucent, and materials show a sphere lit by one key light with their
+base colour texture, roughness, metalness and emission. Every other type shows
+its typed icon. Thumbnails are requested only by rows the view actually paints,
+generated on a private pool of two worker threads (one request per event loop
+turn on the browser), and kept in a 16 MiB cache keyed by resource ID and
+artifact key. A recook changes the key, so the old thumbnail is never shown and
+an unchanged asset is never redrawn. The waiting queue holds at most 256
+requests and drops the oldest first, because those rows have scrolled away.
+Failures are cached per key and the row keeps its icon. Texture decoding reads
+only the texel rows it samples and admits SceneFormat's 4096 texel limit.
+
+Imports queue: **Import** while another import runs adds the file to the queue,
+and its row appears at once as *Queued*. The running import reports its stage
+(waiting, reading source, validating dependencies, checking for changes,
+publishing) and a fraction from the worker's import gate. The row's status
+column shows the stage and percentage over a thin progress bar, and the strip
+under the list shows
+"Importing 2 of 3", the resource ID, the stage and the overall fraction across
+the batch. A failed import keeps its row with *Failed:* and the worker's reason,
+the problem panel names the resource and offers **Retry import**, and the
+**Retry import** button and the row's context menu retry the same file and ID
+(the context menu can also dismiss the failure). Cancel stops the running
+import and drops the queue. Cooking scene assets stays in the C++ engine; the
+browser only reads its published catalog and artifacts.
 
 Regressions exercise immutable reimport, malformed source rejection, saved-loop
 constraints, dependency/catalog conflicts, cancellation before publication,
 late-cancel semantics, ID selection across filtering, unchanged-role updates,
-stale operation/project results, GUI-owned completion and shutdown. CI runs
+stale operation/project results, GUI-owned completion and shutdown, search
+terms and type chips, texture and material thumbnails, thumbnail cache keys,
+failures and queue limits, scene catalog listing, queued import progress, and
+failure and retry. CI runs
 those fixtures under Clang 18 analysis and ASan/UBSan.
 
 ## The project descriptor (version 1)
@@ -3265,8 +3309,8 @@ implement the path rules.
 
 ## Editor icons
 
-The outline icons for the toolbars, Project Explorer, Error List and tool window tabs are taken
-unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
+The outline icons for the toolbars, Project Explorer, Error List, content types and tool
+window tabs are taken unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
 `2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
 [lucide-icons/lucide](https://github.com/lucide-icons/lucide).
 Thanks to the Lucide authors for these drawings. Lucide is ISC licensed; some

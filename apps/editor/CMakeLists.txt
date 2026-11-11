@@ -712,10 +712,14 @@ target_link_libraries(ludus_editor_render_graph_authoring
 # differs between the native editor and the browser scheduler test.
 ludus_editor_add_objects(ludus_editor_content
     src/internal/content_browser.h src/content_catalog_model.cpp src/content_import.cpp src/content_workspace.cpp
+    src/internal/content_types.h src/content_types.cpp src/content_filter.cpp src/content_asset_catalog.cpp
+    src/internal/content_thumbnails.h src/content_thumbnails.cpp
     src/internal/state_view.h src/state_view.cpp
     src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp)
+# Thumbnails decode cooked SceneFormat texture records; the scene catalog limits come from SceneCook's header only.
 target_link_libraries(ludus_editor_content PUBLIC ludus_editor_presentation Qt6::Core Qt6::Widgets
-    Ludus::AudioContent Ludus::FoundationMath ludus_stb_image)
+    Ludus::AudioContent Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
+    PRIVATE "$<COMPILE_ONLY:Ludus::SceneCook>")
 
 ludus_editor_add_objects(ludus_editor_project_explorer
     src/internal/project_explorer.h src/project_explorer.cpp

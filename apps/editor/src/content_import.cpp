@@ -26,7 +26,26 @@ QString Text(std::string_view text)
 {
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
 }
+
+/// Share of the progress bar each ContentImportStage starts at, plus the end. Validation visits every dependent
+/// definition and dominates the import; reading and publication are single bounded file operations.
+constexpr double STAGE_STARTS[CONTENT_IMPORT_STAGE_COUNT + 1] = {0.0, 0.02, 0.15, 0.7, 0.85, 1.0};
 } // namespace
+
+double GetContentImportFraction(const ContentImportProgress& progress) noexcept
+{
+    const usize stage = static_cast<usize>(progress.Stage);
+    if (stage >= CONTENT_IMPORT_STAGE_COUNT)
+    {
+        return 1.0;
+    }
+    const double start = STAGE_STARTS[stage];
+    const double end = STAGE_STARTS[stage + 1];
+    const double steps = progress.TotalSteps == 0
+                             ? 0.0
+                             : static_cast<double>(progress.CompletedSteps) / static_cast<double>(progress.TotalSteps);
+    return start + (end - start) * (steps < 1.0 ? steps : 1.0);
+}
 
 // Reuses Content's bounded codecs, dependency validation and compare-and-swap
 // saves. Immutable candidates adapt the publication contract in
@@ -57,6 +76,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(CS::Invalid, QStringLiteral("Use a stable lowercase resource ID, with digits, slash or hyphen."));
     }
+    gate.ReportProgress({ .Stage = ContentImportStage::Reading, .CompletedSteps = 0, .TotalSteps = 1 });
     const auto suffix = QFileInfo(file).suffix().toLower();
     if (suffix != QStringLiteral("wav") && suffix != QStringLiteral("flac"))
     {
@@ -86,6 +106,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(CS::Invalid, QStringLiteral("Source decoding failed; the last valid artifact is retained."));
     }
+    gate.ReportProgress({ .Stage = ContentImportStage::Reading, .CompletedSteps = 1, .TotalSteps = 1 });
     content::Bytes oldCatalog;
     auto status = content::ReadFile(rootView, "catalog.json", content::MAX_DOCUMENT_BYTES, oldCatalog);
     const bool fresh = status == CS::NotFound;
@@ -107,6 +128,14 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         return failed(CS::Conflict, QStringLiteral("This ID belongs to a different resource kind."));
     }
     QHash<QString, content::Digest> dependencies;
+    uint32 dependentCount = 0;
+    for (const content::Resource& dependent : catalog.Entries())
+    {
+        dependentCount += dependent.Type == content::Kind::Sound || dependent.Type == content::Kind::Music ? 1 : 0;
+    }
+    uint32 validatedCount = 0;
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Validating, .CompletedSteps = validatedCount, .TotalSteps = dependentCount });
     for (const auto& dependent : catalog.Entries())
     {
         if (cancelled())
@@ -117,6 +146,12 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         {
             continue;
         }
+        gate.ReportProgress(
+        {
+            .Stage = ContentImportStage::Validating,
+            .CompletedSteps = ++validatedCount,
+            .TotalSteps = dependentCount,
+        });
         content::Bytes document;
         status = content::ReadFile(rootView, dependent.Path.View(), content::MAX_DOCUMENT_BYTES, document);
         if (status != CS::Ok)
@@ -236,18 +271,26 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     }
     // Revalidate every consulted dependency and the source snapshot before the
     // publication boundary. SaveFile still supplies the final catalog CAS.
+    uint32 checkedCount = 0;
+    const uint32 checkCount = static_cast<uint32>(dependencies.size()) + 1;
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Checking, .CompletedSteps = checkedCount, .TotalSteps = checkCount });
     QFile currentInput(file);
     if (currentInput.open(QIODevice::ReadOnly) == false || currentInput.size() != data.size() ||
         currentInput.read(readCap) != data)
     {
         return failed(CS::Conflict, QStringLiteral("Source changed during validation; retry."));
     }
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Checking, .CompletedSteps = ++checkedCount, .TotalSteps = checkCount });
     for (auto dependency = dependencies.constBegin(); dependency != dependencies.constEnd(); ++dependency)
     {
         if (cancelled())
         {
             return failed(CS::Cancelled, QStringLiteral("Import cancelled during revision checks."));
         }
+        gate.ReportProgress(
+            { .Stage = ContentImportStage::Checking, .CompletedSteps = ++checkedCount, .TotalSteps = checkCount });
         content::Bytes current;
         const auto path = dependency.key().toUtf8();
         if (content::ReadFile(rootView, View(path), audio::BROWSER_ENCODED_CAP_BYTES, current) != CS::Ok ||
@@ -260,6 +303,9 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(CS::Cancelled, QStringLiteral("Import cancelled before publication."));
     }
+    constexpr uint32 PUBLICATION_STEPS = 2;
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Publishing, .CompletedSteps = 0, .TotalSteps = PUBLICATION_STEPS });
     if (QDir().mkpath(root + QStringLiteral("/sources")) == false)
     {
         return failed(CS::IoError, QStringLiteral("Cannot create the content source directory."));
@@ -278,6 +324,8 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(status, QStringLiteral("Candidate publication failed; the old catalog is retained."));
     }
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Publishing, .CompletedSteps = 1, .TotalSteps = PUBLICATION_STEPS });
     status = content::SaveFile(rootView, "catalog.json", next.Data(), fresh ? nullptr : &catalogDigest);
     if (status != CS::Ok)
     {
@@ -286,6 +334,12 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
                     relative,
                 relative};
     }
+    gate.ReportProgress(
+    {
+        .Stage = ContentImportStage::Publishing,
+        .CompletedSteps = PUBLICATION_STEPS,
+        .TotalSteps = PUBLICATION_STEPS,
+    });
     return {CS::Ok, QStringLiteral("Imported source; stable ID retained: ") + id, relative};
 }
 } // namespace ludus::editor

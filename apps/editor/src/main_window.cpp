@@ -1130,7 +1130,8 @@ void MainWindow::OnStateChanged()
             mProjectExplorer->SetProject(root, state.Saved.Name);
         }
         Audio_->SetRoot(QDir(root).absoluteFilePath(QStringLiteral("content")));
-        Content_->SetProject(QDir(root).absoluteFilePath(QStringLiteral("content")), state.ProjectEpoch);
+        // The browser lists the audio catalog under content/ and the cooked scene assets under assets/.
+        Content_->SetProject(QDir(root).absoluteFilePath(QStringLiteral("content")), state.ProjectEpoch, root);
     }
 
     else
