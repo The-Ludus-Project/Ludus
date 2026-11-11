@@ -69,6 +69,15 @@ class ContentStatusDelegate final : public QStyledItemDelegate
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
 
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        // A status reads from its start ("Failed: Source decoding…"); the tooltip carries the whole reason.
+        option->textElideMode = Qt::ElideRight;
+    }
+
+public:
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
     {
         QStyledItemDelegate::paint(painter, option, index);
@@ -137,6 +146,10 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     ConfigureItemSelection(*Table_);
     Table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     Table_->setSortingEnabled(true);
+    // One line per row keeps the list scannable and every row the same height; long IDs and paths lose their
+    // middle, where catalog keys differ least, and the tooltip carries the full text.
+    Table_->setWordWrap(false);
+    Table_->setTextElideMode(Qt::ElideMiddle);
     Table_->sortByColumn(0, Qt::AscendingOrder);
     Table_->setIconSize(QSize(CONTENT_THUMBNAIL_SIZE, CONTENT_THUMBNAIL_SIZE));
     Table_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -202,7 +215,13 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
         }
         Refresh();
     });
-    layout->addWidget(mProblemOrNull, 0, Qt::AlignHCenter);
+    // Centre the problem with stretches, not an alignment flag: an aligned item loses its height-for-width, which
+    // clipped the wrapped sentence, cause and fix.
+    QHBoxLayout* problemRow = new QHBoxLayout;
+    problemRow->addStretch();
+    problemRow->addWidget(mProblemOrNull, 1);
+    problemRow->addStretch();
+    layout->addLayout(problemRow);
     layout->addWidget(Status_);
     Jobs_ = new ContentJobs(this);
     connect(Jobs_, &ContentJobs::Completed, this, &ContentWorkspace::Accept);
