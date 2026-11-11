@@ -16,6 +16,48 @@ are authoritative. Read them before editing code. In particular:
 - Credit actually consulted technical sources near the affected implementation.
 - Build warning-clean and run appropriate unit, sanitizer, formatting and tidy gates.
 
+## Turn a reference or tip into a Ludus change
+
+Start with a link, PDF, paper, book excerpt, slides, talk, practical tip, coding
+convention or anecdote. Include the Ludus problem if you have one. Otherwise,
+identify a concrete use from the source and the current engine.
+
+1. **Read and assess the input.** For a publication or talk, record the author,
+   title, version and the relevant pages, sections, slides or timestamps. Use
+   the primary material and check figures, equations or demos when they carry the
+   argument. State what you could access and distinguish the source's claims,
+   evidence and assumptions from your interpretation. For an informal tip,
+   capture the problem, proposed practice and conditions where it might help.
+   Use anecdotes to form hypotheses and check them against Ludus.
+2. **Compare it with Ludus today.** Inspect the owning module, architecture
+   decisions, implementation and tests. Identify a real gap or an existing
+   equivalent. Check the tradeoffs that matter for that subsystem, such as
+   compatibility, performance, determinism, portability or maintenance cost.
+   For a convention, check existing guidance and representative call sites.
+3. **Decide and act.** Adopt or adapt an idea when it has a clear benefit and
+   fits the engine. Use a bounded prototype with a baseline and a success
+   criterion when an important uncertainty can be tested. Defer with a concrete
+   prerequisite when evidence or support is missing. Close the review with the
+   reason when the idea is already covered or unsuitable. Carry a supported
+   decision through implementation in the owning module using the normal
+   worktree and pull request workflow. If the source exposes a larger change,
+   implement the smallest useful, verifiable slice and record what remains.
+   For an adopted convention, update the owning guidance and enforce it where
+   the rule is mechanically checkable and enforcement is warranted.
+4. **Validate and record the result.** Match the check to the claim. Use a
+   regression for behavior, a representative baseline comparison for
+   performance, and the existing platform or parity checks where relevant.
+   Record the decision, its rationale, significant departures and evidence in
+   the owning design, contributor guidance or pull request. Follow Ludus's
+   attribution rule beside materially influenced code, and check license terms
+   before incorporating third-party code or assets. Keep supplied files and
+   private anecdotes out of published documentation.
+
+A short review can live in the pull request or task response. Give a substantial
+review its own page only when it needs a durable evidence or design record. The
+[reference reading paths](../learn/references.md) link to examples. If the
+request is review-only, stop at the assessment and decision.
+
 ## Standard native validation
 
 Prepare tests with initialization, then use the pinned tools:
