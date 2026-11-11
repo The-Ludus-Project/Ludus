@@ -324,6 +324,7 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
         overrideSurface.Metallic = surface.Metallic;
         overrideSurface.Roughness = surface.Roughness;
         overrideSurface.Scattering = surface.Scattering;
+        overrideSurface.Program = surface.Program;
         overrideSurface.Emission = surface.Emission;
         overrideSurface.IsEmissionTwoSided = material.IsEmissionTwoSided;
         overrideSurface.ShouldRepeatTexture = surface.Repeat;

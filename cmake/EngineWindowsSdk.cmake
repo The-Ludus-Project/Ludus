@@ -68,6 +68,7 @@ function(ludus_install_windows_sdk)
     install(EXPORT LudusTargets NAMESPACE Ludus:: DESTINATION "${package_directory}")
     install(FILES "${PROJECT_BINARY_DIR}/cmake/LudusConfigVersion.cmake"
         "${PROJECT_SOURCE_DIR}/cmake/LudusShaders.cmake"
+        "${PROJECT_SOURCE_DIR}/cmake/LudusWindowsDistribution.cmake"
         "${PROJECT_SOURCE_DIR}/cmake/LudusDependencies.cmake"
         DESTINATION "${package_directory}")
     install(FILES "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/shaders/raster_bindings.slang"
@@ -81,6 +82,7 @@ function(ludus_install_windows_sdk)
     ludus_install_d3d12_agility("${package_directory}")
     install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/cmake/sdk/THIRD_PARTY_NOTICES.md"
         DESTINATION "${data_directory}/licenses")
+    install(FILES "${PROJECT_SOURCE_DIR}/cmake/sdk/THIRD_PARTY_NOTICES.md" DESTINATION . RENAME NOTICE.txt)
     install(FILES "${PROJECT_SOURCE_DIR}/third_party/xxhash/LICENSE"
         DESTINATION "${data_directory}/licenses" RENAME xxhash-LICENSE)
     # Publish the manifest after the libraries, exports and shader tools.

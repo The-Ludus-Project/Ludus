@@ -15,6 +15,7 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -154,8 +155,8 @@ usize GetBindingBytes(const RenderGraphPlan& plan, usize binding) noexcept
 bool HasShaderArtifact(const rhi::RasterShaderDescription& description) noexcept
 {
     const rhi::ShaderDescription& artifact = description.Artifact;
-    return artifact.Wgsl.empty() == false || artifact.Msl.empty() == false || artifact.Spirv.empty() == false ||
-           artifact.GlslEs.empty() == false || artifact.Dxil.empty() == false;
+    return artifact.Wgsl.empty() == false || artifact.Msl.empty() == false || artifact.Spirv.IsEmpty() == false ||
+           artifact.GlslEs.empty() == false || artifact.Dxil.IsEmpty() == false;
 }
 bool IsReadByStage(format::Visibility stages, rhi::ShaderStage stage) noexcept
 {
@@ -195,7 +196,7 @@ bool HasPlanBindings(const rhi::RasterShaderDescription& description,
             return false;
         }
     }
-    return description.Bindings.size() == expected;
+    return description.Bindings.GetSize() == expected;
 }
 bool HasFlatInterface(const rhi::RasterShaderDescription& vertex,
                       const rhi::RasterShaderDescription& fragment,
@@ -203,12 +204,12 @@ bool HasFlatInterface(const rhi::RasterShaderDescription& vertex,
                       format::Technique technique) noexcept
 {
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        (vertex.Inputs.size() != FLAT_INPUT_COUNT && vertex.Inputs.size() != format::VISIBILITY_INPUT_COUNT) ||
+        (vertex.Inputs.GetSize() != FLAT_INPUT_COUNT && vertex.Inputs.GetSize() != format::VISIBILITY_INPUT_COUNT) ||
         HasPlanBindings(vertex, plan, technique) == false || HasPlanBindings(fragment, plan, technique) == false)
     {
         return false;
     }
-    for (usize i = 0; i < vertex.Inputs.size(); ++i)
+    for (usize i = 0; i < vertex.Inputs.GetSize(); ++i)
     {
         const rhi::RasterShaderInput& input = vertex.Inputs[i];
         if (input.Location != i || input.Format != (i == 0                 ? rhi::RasterVertexFormat::Float3
@@ -224,13 +225,14 @@ bool AreArtifactsEqual(const rhi::ShaderDescription& left, const rhi::ShaderDesc
 {
     if (left.Wgsl != right.Wgsl || left.Msl != right.Msl || left.GlslEs != right.GlslEs ||
         left.WgslEntry != right.WgslEntry || left.MslEntry != right.MslEntry || left.GlslEsEntry != right.GlslEsEntry ||
-        left.SpirvEntry != right.SpirvEntry || left.Spirv.size() != right.Spirv.size() ||
-        left.DxilEntry != right.DxilEntry || left.Dxil.size() != right.Dxil.size() ||
-        (left.Dxil.empty() == false && std::memcmp(left.Dxil.data(), right.Dxil.data(), left.Dxil.size()) != 0))
+        left.SpirvEntry != right.SpirvEntry || left.Spirv.GetSize() != right.Spirv.GetSize() ||
+        left.DxilEntry != right.DxilEntry || left.Dxil.GetSize() != right.Dxil.GetSize() ||
+        (left.Dxil.IsEmpty() == false &&
+         std::memcmp(left.Dxil.GetDataOrNull(), right.Dxil.GetDataOrNull(), left.Dxil.GetSize()) != 0))
     {
         return false;
     }
-    for (usize i = 0; i < left.Spirv.size(); ++i)
+    for (usize i = 0; i < left.Spirv.GetSize(); ++i)
     {
         if (left.Spirv[i] != right.Spirv[i])
         {
@@ -280,7 +282,7 @@ ViewDescription MakeRasterPassView(const ViewDescription& source,
                                    format::Technique technique) noexcept
 {
     ViewDescription view = source;
-    if (GetStage(programs, technique, rhi::ShaderStage::Vertex).Inputs.size() == format::VISIBILITY_INPUT_COUNT ||
+    if (GetStage(programs, technique, rhi::ShaderStage::Vertex).Inputs.GetSize() == format::VISIBILITY_INPUT_COUNT ||
         format::GetTechniqueFamily(technique) == format::Technique::DepthOnly)
     {
         view.WorldGrid.IsVisible = false;
@@ -728,7 +730,10 @@ Status CreateZeroedGraphBuffer(rhi::DeviceHandle device, uint32 capacity, rhi::B
     {
         return Status::OutOfMemory;
     }
-    return rhi::CreateBuffer(device, {rhi::BufferRole::Storage, capacity}, zeros.AsSpan(), outBuffer);
+    return rhi::CreateBuffer(device,
+                             {rhi::BufferRole::Storage, capacity},
+                             {zeros.GetData(), zeros.GetSize()},
+                             outBuffer);
 }
 } // namespace
 Status ResolveRenderGraphResource(const format::Resource& resource,
@@ -960,7 +965,7 @@ struct RenderGraph::State final
     }
     [[nodiscard]] LUDUS_INLINE bool HasForwardProfile() const noexcept
     {
-        return Programs.ForwardVertex.Inputs.empty() == false;
+        return Programs.ForwardVertex.Inputs.IsEmpty() == false;
     }
     struct Scene final
     {
@@ -1632,7 +1637,7 @@ struct RenderGraph::State final
             description.ColorStore = static_cast<rhi::RasterStore>(operation.ColorStore);
             description.DepthLoad = static_cast<rhi::RasterLoad>(operation.DepthLoad);
             description.DepthStore = static_cast<rhi::RasterStore>(operation.DepthStore);
-            if (GetStage(Programs, operation.Program, rhi::ShaderStage::Vertex).Inputs.size() ==
+            if (GetStage(Programs, operation.Program, rhi::ShaderStage::Vertex).Inputs.GetSize() ==
                 format::VISIBILITY_INPUT_COUNT)
             {
                 // Raster-only visibility exports share the codec's zero-background contract.
@@ -2056,7 +2061,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
          &programs.LightingFragment,
          &programs.LightingShadow},
     };
-    const bool hasForwardProfile = programs.ForwardVertex.Inputs.empty() == false;
+    const bool hasForwardProfile = programs.ForwardVertex.Inputs.IsEmpty() == false;
     for (const rhi::RasterShaderDescription* stage : forwardStages)
     {
         const bool hasArtifact = HasShaderArtifact(*stage);
@@ -2274,10 +2279,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             hasVisibility = true;
             const format::Technique producer = plan.Passes[index - 1].Program;
-            if (GetStage(programs, producer, rhi::ShaderStage::Vertex).Inputs.size() !=
+            if (GetStage(programs, producer, rhi::ShaderStage::Vertex).Inputs.GetSize() !=
                     format::VISIBILITY_INPUT_COUNT ||
-                GetStage(programs, producer, rhi::ShaderStage::Vertex).Bindings.empty() == false ||
-                GetStage(programs, producer, rhi::ShaderStage::Fragment).Bindings.empty() == false)
+                GetStage(programs, producer, rhi::ShaderStage::Vertex).Bindings.IsEmpty() == false ||
+                GetStage(programs, producer, rhi::ShaderStage::Fragment).Bindings.IsEmpty() == false)
             {
                 return Status::Unsupported;
             }
@@ -2290,7 +2295,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     }
     // A graph ray kernel's failure summary is its last binding; the LTC table, when the programs declare it,
     // precedes it.
-    const std::span<const rhi::RasterBinding> allRayBindings = programs.RayCompute.Bindings;
+    const std::span<const rhi::RasterBinding> allRayBindings = {programs.RayCompute.Bindings.GetDataOrNull(),
+                                                                programs.RayCompute.Bindings.GetSize()};
     const bool hasFailureBinding =
         allRayBindings.empty() == false && allRayBindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING;
     if (hasFailureBinding == true && (allRayBindings.back().Kind != rhi::RasterBindingKind::StorageReadWrite ||
@@ -2361,7 +2367,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         // Runtime-package stage metadata never names the diagnostic slot; generated headers reflect it.
         // The capture slot precedes the trailing LTC table and failure summary bindings, keeping slot order.
-        const std::span<const rhi::RasterBinding> bindings = programs.RayCompute.Bindings;
+        const std::span<const rhi::RasterBinding> bindings = {programs.RayCompute.Bindings.GetDataOrNull(),
+                                                              programs.RayCompute.Bindings.GetSize()};
         const usize kernelCount = bindings.size() - (hasLtcBinding == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) -
                                   (hasFailureBinding == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0);
         const bool hasCaptureBinding =

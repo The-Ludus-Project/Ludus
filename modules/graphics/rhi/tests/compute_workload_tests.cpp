@@ -234,8 +234,10 @@ TEST_CASE("Prepared compute borrows external buffers and tracks their producer r
     Session session;
     Fixture fixture;
     BufferHandle external;
-    REQUIRE(CreateBuffer(session.Device, {BufferRole::Storage, BUFFER_BYTES}, fixture.Weights.AsSpan(), external) ==
-            Status::Ready);
+    REQUIRE(CreateBuffer(session.Device,
+                         {BufferRole::Storage, BUFFER_BYTES},
+                         {fixture.Weights.GetData(), fixture.Weights.GetSize()},
+                         external) == Status::Ready);
     fixture.Buffers[0].InitialBytes = {};
     fixture.Buffers[0].External = external;
     ComputeWorkload workload;
@@ -314,8 +316,10 @@ TEST_CASE("Compute cache rejects external candidate writes while permitting shar
     Fixture fixture;
     ComputeCache cache;
     BufferHandle external;
-    REQUIRE(CreateBuffer(session.Device, {BufferRole::Storage, BUFFER_BYTES}, fixture.Weights.AsSpan(), external) ==
-            Status::Ready);
+    REQUIRE(CreateBuffer(session.Device,
+                         {BufferRole::Storage, BUFFER_BYTES},
+                         {fixture.Weights.GetData(), fixture.Weights.GetSize()},
+                         external) == Status::Ready);
     fixture.Buffers[1].External = external;
     CHECK(cache.Stage(session.Device, {1, 1}, fixture.Describe()) == Status::InvalidDescription);
     CHECK(cache.HasActive() == false);

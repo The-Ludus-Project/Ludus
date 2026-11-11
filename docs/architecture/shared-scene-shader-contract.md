@@ -96,7 +96,7 @@ bundle, not a device pointer or an independently mutable global.
 | --- | --- |
 | `SurfaceHit` | Incoming Ray; instance, mesh-local primitive, material and optional emitter indices; barycentric weights; PositionWorld; conservative PositionErrorWorld; DistanceWorld; unflipped GeometricNormalWorld; ShadingNormalWorld; tangent frame and UV; explicit front-face flag |
 | `MaterialData` | Base-color factor, tint, metallic, perceptual roughness, emission factor, emission sidedness, texture references, UV transforms, normal scale and alpha domain |
-| `MaterialSample` | Texture-resolved BaseColor, Metallic, Roughness, Emission, ShadingNormalWorld and alpha; raw data does not include lighting |
+| `MaterialSample` | Texture-resolved BaseColor, Metallic, Roughness, Emission, ShadingNormalWorld and alpha; raw data does not include lighting. A closure-program material also carries `ProgramOffset`, which the standard BSDF calls interpret |
 | `LightReceiver` | PositionWorld, PositionErrorWorld, GeometricNormalWorld and ShadingNormalWorld; records the actual unoffset shading point |
 | `TextureEvaluation` | Explicit mip policy; the same policy applies to camera hits, secondary hits and sampled emitter emission |
 | `TriangleData` | Three world positions, geometric normal, world area, per-corner UVs, material index and source primitive mapping; no BVH-private offsets |

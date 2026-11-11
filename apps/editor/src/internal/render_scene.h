@@ -72,6 +72,8 @@ struct PreviewSurface final
     foundation::float32 Metallic = 0;
     foundation::float32 Roughness = .5F;
     content::scene_format::MaterialScattering Scattering{};
+    /// Closure program of a Program-model surface; zero otherwise.
+    content::scene_format::MaterialProgram Program{};
     foundation::math::Vector3 Emission{};
     bool IsEmissionTwoSided = false;
     bool HasEmissionPower = false;

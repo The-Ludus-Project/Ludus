@@ -117,6 +117,21 @@ includes the original Microsoft DirectX Software License Terms as `LICENSE.txt`
 beside those binaries under `lib/cmake/Ludus/agility/`.
 https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.620.1
 
+## Microsoft Visual C++ Redistributable (Windows distribution prerequisite)
+
+Portable Windows Release distributions can include the official
+`VC_redist.x64.exe` installer under `prerequisites/`, separately from SDK/app
+files. Its exact version and SHA-256 are recorded in `distribution.json`.
+The Microsoft installer carries its own license terms and displays them during
+interactive installation. Distribution is subject to the release producer's
+Microsoft/Visual Studio license and the applicable Distributable Code terms;
+including this notice does not grant permission. Review the exact installer and
+terms before public distribution. Do not copy arbitrary compiler-runtime DLLs
+from a developer installation.
+
+Microsoft, [Redistribute Visual C++ files](https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files)
+and [Visual Studio License Directory](https://visualstudio.microsoft.com/license-terms/).
+
 ## xxHash 0.8.3
 
 Yann Collet and contributors, BSD-2-Clause. https://github.com/Cyan4973/xxHash/tree/v0.8.3

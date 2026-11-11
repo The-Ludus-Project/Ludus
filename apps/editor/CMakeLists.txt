@@ -888,6 +888,7 @@ target_link_libraries(ludus_editor_application
         Ludus::SceneCook
         # Scene source apertures import as editable World aperture entities.
         Ludus::SceneSource
+        Ludus::ContentTerrain
         Ludus::FoundationThreading
         ludus_stb_image
         # World documents share the version-2 record constants with their owner (object handles stage 3).

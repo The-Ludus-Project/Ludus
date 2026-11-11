@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/strings/static_string.hpp>
 
@@ -128,7 +129,7 @@ ValidateDescription(DeviceHandle device, const ComputeWorkloadDescription& descr
                                                     : description.Kernels[kernel.UseProgramFrom].Shader;
         if (kernel.NameOrNull == nullptr || kernel.NameOrNull[0] == '\0' || kernel.Bindings.IsValid() == false ||
             kernel.Bindings.GetSize() > internal::WORKLOAD_BINDINGS || shader.Artifact.Stage != ShaderStage::Compute ||
-            shader.Bindings.size() != kernel.Bindings.GetSize())
+            shader.Bindings.GetSize() != kernel.Bindings.GetSize())
         {
             return RasterStatus::InvalidDescription;
         }

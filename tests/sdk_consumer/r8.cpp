@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/graph.h>
@@ -8,7 +9,6 @@
 #include "raster.h"
 
 #include <cstring>
-#include <span>
 
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
@@ -86,7 +86,7 @@ bool Complete(T ticket) noexcept
     return status == rhi::RasterStatus::Ready;
 }
 template <typename T, usize N>
-std::span<const uint8> Bytes(const T (&values)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> Bytes(const T (&values)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(values), sizeof(values)};
 }

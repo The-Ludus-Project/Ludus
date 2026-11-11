@@ -1,4 +1,5 @@
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/render.h>
@@ -63,7 +64,8 @@ TEST_CASE("Explicit device path preserves facade fullscreen pixels and dependenc
                      ? rhi::CreatePipeline(device, {vertex, fragment, uniform}, pipeline)
                      : rhi::CreatePipeline({vertex, fragment, uniform}, pipeline)) == rhi::ResourceStatus::Ready);
         const float32 values[12] = {96, 64, 2, 0, 0.2F, 0.4F, 0.6F, 0, 0.6F, 0.4F, 0.2F, 1};
-        const std::span<const uint8> bytes{reinterpret_cast<const uint8*>(values), sizeof(values)};
+        const ludus::foundation::BorrowedView<const uint8> bytes{reinterpret_cast<const uint8*>(values),
+                                                                 sizeof(values)};
         REQUIRE((explicitOwner ? rhi::UpdateUniform(device, uniform, bytes) : rhi::UpdateUniform(uniform, bytes)) ==
                 rhi::ResourceStatus::Ready);
         if (explicitOwner)

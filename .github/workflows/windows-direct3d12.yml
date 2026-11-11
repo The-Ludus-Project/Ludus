@@ -119,7 +119,7 @@ jobs:
           cmake --build --preset windows-msvc-runtime --target @targets -- -k 0
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime build failed' }
           $testNames = @($targets | Where-Object { $_ -notin @('ludus_world_demo', 'ludus_world_frame_renderer_tests', 'ludus-shader-worker', 'ludus_game_host_app', 'ludus_cook') })
-          $testNames += @('ludus_world_packed_room_d3d12', 'ludus_world_frame_renderer_pixels', 'ludus_shader_worker_protocol',
+          $testNames += @('ludus_world_packed_room_d3d12', 'ludus_world_frame_renderer_pixels', 'ludus_shader_worker_protocol', 'ludus_shader_reload_gpu',
             'ludus_game_host_windows_symbols', 'ludus_game_host_windows_supervisor', 'ludus_behavior_cook',
             'ludus_behavior_profiles', 'ludus_behavior_evidence')
           $suite = '^(' + ($testNames -join '|') + ')$'
@@ -205,9 +205,11 @@ jobs:
           conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK dependencies failed to install' }
           $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
-          & $python scripts/python/engine.py install-sdk windows-msvc-runtime-sdk
+          & $python scripts/script-provider bootstrap
+          if ($LASTEXITCODE -ne 0) { throw 'Behavior host tool bootstrap failed' }
+          & $python scripts/python/engine.py install-sdk windows-msvc-runtime-sdk --behavior
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK install failed' }
-          & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe"
+          & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe" --behavior
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK consumers failed' }
       - name: Prepare Catch2 for the four RHI build flavors
         if: matrix.generator == 'Ninja' || matrix.generator == 'MSBuild'
