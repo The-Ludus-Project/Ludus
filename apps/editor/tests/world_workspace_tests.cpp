@@ -349,7 +349,7 @@ TEST_CASE("World typed conversion rejects partial nonfinite fractional and unkno
     auto entities = malformed.value(QStringLiteral("entities")).toArray();
     entities.append(entities[0]);
     malformed.insert(QStringLiteral("entities"), entities);
-    CHECK_FALSE(document.Restore(malformed, error));
+    CHECK_FALSE(document.Restore(malformed, error, "Restore World"));
     CHECK(document.Draft() == before);
 }
 TEST_CASE("World inspector preserves invalid text disables selection and saves one atomic edit", "[editor][world]")
@@ -495,7 +495,7 @@ TEST_CASE("World schema and document resource limits are enforced", "[editor][wo
         entities.append(entity);
     }
     bounded.insert(QStringLiteral("entities"), entities);
-    REQUIRE(document.Restore(bounded, error) == true);
+    REQUIRE(document.Restore(bounded, error, "Restore World") == true);
     const auto before = document.Draft();
     CHECK_FALSE(
         document.CreateEntity(ludus::platform::GetSystemEntropySource(), error, QStringLiteral("Overflow"), id));
@@ -1555,7 +1555,7 @@ TEST_CASE("World group duplication rolls back when only the first copy fits", "[
     }
     bounded.insert(QStringLiteral("entities"), entities);
     QString error;
-    REQUIRE(document.Restore(bounded, error) == true);
+    REQUIRE(document.Restore(bounded, error, "Restore World") == true);
     const QStringList unchanged{QStringLiteral("unchanged")};
     QStringList copies = unchanged;
     CHECK(document.DuplicateEntities(ludus::platform::GetSystemEntropySource(),

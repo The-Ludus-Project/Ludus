@@ -1,5 +1,6 @@
 #include "internal/controller.h"
 #include "internal/document_history.h"
+#include "internal/document_well.h"
 #include "internal/edit_history.h"
 #include "internal/main_window.h"
 #include "internal/render_graph_document.h"
@@ -384,6 +385,9 @@ TEST_CASE("Undo and Redo name their command, confirm it and jump from History", 
         QTest::qWait(50);
     }
     REQUIRE(controller.Caps().CanEdit == true);
+    QWidget* settings = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
+    REQUIRE(settings != nullptr);
+    REQUIRE(window.GetDocumentWell().OpenDocument(settings) == true);
     if (QApplication::focusWidget() != nullptr)
     {
         QApplication::focusWidget()->clearFocus();

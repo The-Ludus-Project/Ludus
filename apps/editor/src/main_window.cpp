@@ -10,6 +10,7 @@
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
+#include "internal/edit_history.h"
 #include "internal/editor_commands.h"
 #include "internal/editor_files.h"
 #include "internal/editor_icons.h"

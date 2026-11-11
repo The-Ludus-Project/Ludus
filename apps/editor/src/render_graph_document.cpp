@@ -1559,14 +1559,15 @@ RenderGraphDocument::RemoveNodes(const QString& file, const QString& configurati
             }
             for (const QString& identity : identities)
             {
-                if (RemoveNodeEdit(inoutConfiguration, {identity}) == false, "Delete Nodes")
+                if (RemoveNodeEdit(inoutConfiguration, {identity}) == false)
                 {
                     return false;
                 }
             }
             return true;
         },
-        false);
+        false,
+        "Delete Nodes");
 }
 
 RenderGraphDocumentStatus
