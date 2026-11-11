@@ -274,8 +274,9 @@ SetupNoticeContent DescribeSetupNotice(const QString& problem, const QString& re
                                                         "that it builds.")
                                        : repairBlocker);
     }
+    const QString toolDetail = guidance.Detail.isEmpty() == true ? ReplaceResultCodeNames(problem) : guidance.Detail;
     content.Tooltip =
-        QStringLiteral("%1\n\n%2\n\n%3").arg(content.Headline, ReplaceResultCodeNames(problem), content.ActionTooltip);
+        QStringLiteral("%1\n\nFrom the setup check: %2\n\n%3").arg(content.Headline, toolDetail, content.ActionTooltip);
     return content;
 }
 
