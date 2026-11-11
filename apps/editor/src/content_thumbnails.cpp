@@ -182,7 +182,7 @@ struct SrgbTable final
                 outFailure = QStringLiteral("The cooked texture changed or became unreadable while it was read.");
                 return false;
             }
-            const auto* texels = reinterpret_cast<const unsigned char*>(row.constData());
+            const unsigned char* texels = reinterpret_cast<const unsigned char*>(row.constData());
             for (int x = 0; x < outWidth; ++x)
             {
                 const uint32 firstColumn = static_cast<uint32>(static_cast<uint64>(x) * width / outWidth);
@@ -346,7 +346,7 @@ bool TryMakeMaterialThumbnail(const QString& path,
     const qreal radius = centre * (1.0 - 2.0 * SPHERE_MARGIN);
     for (int y = 0; y < side; ++y)
     {
-        auto* line = reinterpret_cast<QRgb*>(image.scanLine(y));
+        QRgb* line = reinterpret_cast<QRgb*>(image.scanLine(y));
         for (int x = 0; x < side; ++x)
         {
             const qreal offsetX = (static_cast<qreal>(x) + 0.5 - centre) / radius;
@@ -610,7 +610,7 @@ void ContentThumbnailCache::deliver()
 
 void ContentThumbnailCache::accept(const ContentThumbnailResult& result)
 {
-    auto* entry = new (std::nothrow) Entry;
+    Entry* entry = new (std::nothrow) Entry;
     if (entry == nullptr)
     {
         return;

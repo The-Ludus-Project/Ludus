@@ -34,7 +34,7 @@ constexpr double STAGE_STARTS[CONTENT_IMPORT_STAGE_COUNT + 1] = {0.0, 0.02, 0.15
 
 double GetContentImportFraction(const ContentImportProgress& progress) noexcept
 {
-    const auto stage = static_cast<usize>(progress.Stage);
+    const usize stage = static_cast<usize>(progress.Stage);
     if (stage >= CONTENT_IMPORT_STAGE_COUNT)
     {
         return 1.0;
@@ -129,7 +129,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     }
     QHash<QString, content::Digest> dependencies;
     uint32 dependentCount = 0;
-    for (const auto& dependent : catalog.Entries())
+    for (const content::Resource& dependent : catalog.Entries())
     {
         dependentCount += dependent.Type == content::Kind::Sound || dependent.Type == content::Kind::Music ? 1 : 0;
     }
@@ -266,7 +266,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     // Revalidate every consulted dependency and the source snapshot before the
     // publication boundary. SaveFile still supplies the final catalog CAS.
     uint32 checkedCount = 0;
-    const auto checkCount = static_cast<uint32>(dependencies.size()) + 1;
+    const uint32 checkCount = static_cast<uint32>(dependencies.size()) + 1;
     gate.ReportProgress(ContentImportStage::Checking, checkedCount, checkCount);
     QFile currentInput(file);
     if (currentInput.open(QIODevice::ReadOnly) == false || currentInput.size() != data.size() ||

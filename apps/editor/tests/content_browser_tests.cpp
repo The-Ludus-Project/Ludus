@@ -272,14 +272,14 @@ TEST_CASE("Content workspace preserves focused search and selection and rejects 
     REQUIRE(ImportAudioSource({ .Root = root.path(), .File = file, .Id = QStringLiteral("source/hit") }, gate).Status ==
             content::Status::Ok);
     ContentWorkspace workspace;
-    auto* jobs = workspace.findChild<ContentJobs*>();
+    ContentJobs* jobs = workspace.findChild<ContentJobs*>();
     REQUIRE(jobs != nullptr);
     ContentResult old;
     QObject::connect(jobs, &ContentJobs::Completed, &workspace, [&old](const ContentResult& result) { old = result; });
     workspace.SetProject(root.path(), 1);
     Wait(workspace);
-    auto* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
-    auto* search = workspace.findChild<QLineEdit*>(QStringLiteral("contentSearch"));
+    QTableView* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    QLineEdit* search = workspace.findChild<QLineEdit*>(QStringLiteral("contentSearch"));
     REQUIRE(table != nullptr);
     REQUIRE(search != nullptr);
     workspace.show();
@@ -428,10 +428,10 @@ TEST_CASE("Browser imports acknowledge publication and refresh the selected stab
     CHECK_FALSE(workspace.Import(file, QStringLiteral("source/other")));
     Wait(workspace);
     CHECK(workspace.SelectedId() == QStringLiteral("source/hit"));
-    auto* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    QTableView* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
     REQUIRE(table != nullptr);
     CHECK(table->model()->rowCount() == 1);
-    const auto path = table->model()->index(0, static_cast<int>(ContentColumn::Path)).data().toString();
+    const QString path = table->model()->index(0, static_cast<int>(ContentColumn::Path)).data().toString();
     (void)Wav(exported, 700);
     REQUIRE(workspace.Import(file, QStringLiteral("source/hit")));
     Wait(workspace);
@@ -516,7 +516,7 @@ TEST_CASE("Mesh catalog entries retain identity during audio import and never ac
     QSignalSpy opened(&workspace, &ContentWorkspace::OpenAudio);
     workspace.SetProject(root.path(), 1);
     Wait(workspace);
-    auto* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    QTableView* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
     REQUIRE(table != nullptr);
     QModelIndex selected;
     for (int row = 0; row < table->model()->rowCount(); ++row)
@@ -645,13 +645,13 @@ bool IsNear(QRgb actual, QRgb expected)
            std::abs(qGreen(actual) - qGreen(expected)) <= COLOUR_TOLERANCE &&
            std::abs(qBlue(actual) - qBlue(expected)) <= COLOUR_TOLERANCE;
 }
-void WaitForThumbnails(ContentThumbnailCache& cache)
+void WaitForThumbnails(ContentThumbnailCache& inoutCache)
 {
-    for (uint32 attempt = 0; cache.IsIdle() == false && attempt < 1000; ++attempt)
+    for (uint32 attempt = 0; inoutCache.IsIdle() == false && attempt < 1000; ++attempt)
     {
         QTest::qWait(10);
     }
-    REQUIRE(cache.IsIdle() == true);
+    REQUIRE(inoutCache.IsIdle() == true);
 }
 QStringList GetVisibleIds(const QTableView& table)
 {
@@ -888,7 +888,7 @@ TEST_CASE("A long content list asks only for the thumbnails it paints", "[editor
     QTest::qWait(50);
     const qint64 firstPaint = timer.elapsed();
     WaitForThumbnails(cache);
-    const auto visibleGenerated = cache.GetGeneratedCount();
+    const usize visibleGenerated = cache.GetGeneratedCount();
     // About 400 / 32 rows fit; nothing like 5000 thumbnails is drawn.
     CHECK(visibleGenerated > 0);
     CHECK(visibleGenerated < 64);
@@ -907,12 +907,12 @@ TEST_CASE("The content browser lists cooked scene assets with thumbnails, chips 
     ContentWorkspace workspace;
     workspace.SetProject(QDir(root.path()).filePath(QStringLiteral("content")), 1, root.path());
     Wait(workspace);
-    auto* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
-    auto* search = workspace.findChild<QLineEdit*>(QStringLiteral("contentSearch"));
-    auto* textures = workspace.findChild<QToolButton*>(QStringLiteral("contentFilterTextures"));
-    auto* materials = workspace.findChild<QToolButton*>(QStringLiteral("contentFilterMaterials"));
-    auto* audio = workspace.findChild<QToolButton*>(QStringLiteral("contentFilterAudio"));
-    auto* noMatches = workspace.findChild<QLabel*>(QStringLiteral("contentNoMatches"));
+    QTableView* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    QLineEdit* search = workspace.findChild<QLineEdit*>(QStringLiteral("contentSearch"));
+    QToolButton* textures = workspace.findChild<QToolButton*>(QStringLiteral("contentFilterTextures"));
+    QToolButton* materials = workspace.findChild<QToolButton*>(QStringLiteral("contentFilterMaterials"));
+    QToolButton* audio = workspace.findChild<QToolButton*>(QStringLiteral("contentFilterAudio"));
+    QLabel* noMatches = workspace.findChild<QLabel*>(QStringLiteral("contentNoMatches"));
     REQUIRE(table != nullptr);
     REQUIRE(search != nullptr);
     REQUIRE(textures != nullptr);
@@ -991,7 +991,8 @@ TEST_CASE("Import progress advances through every stage and finishes at one", "[
           GetContentImportFraction({ .Stage = ContentImportStage::Validating, .CompletedSteps = 0, .TotalSteps = 1 }) +
               1e-9);
 
-    QTemporaryDir root, exported;
+    QTemporaryDir root;
+    QTemporaryDir exported;
     ContentImportGate gate;
     CHECK(gate.GetProgress().Stage == ContentImportStage::Waiting);
     REQUIRE(
@@ -1004,18 +1005,19 @@ TEST_CASE("Import progress advances through every stage and finishes at one", "[
 TEST_CASE("Queued imports show overall progress, keep failures readable and retry them",
           "[editor][content][widget][progress]")
 {
-    QTemporaryDir root, exported;
+    QTemporaryDir root;
+    QTemporaryDir exported;
     ContentWorkspace workspace;
     workspace.SetProject(root.path(), 3);
     Wait(workspace);
     const QString good = Wav(exported, 500);
     const QString bad = exported.filePath(QStringLiteral("broken.wav"));
     Write(bad, QByteArrayLiteral("RIFF this is not audio"));
-    auto* progress = workspace.findChild<QWidget*>(QStringLiteral("contentProgress"));
-    auto* progressLabel = workspace.findChild<QLabel*>(QStringLiteral("contentProgressLabel"));
-    auto* progressBar = workspace.findChild<QProgressBar*>(QStringLiteral("contentProgressBar"));
-    auto* retry = workspace.findChild<QPushButton*>(QStringLiteral("contentRetry"));
-    auto* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    QWidget* progress = workspace.findChild<QWidget*>(QStringLiteral("contentProgress"));
+    QLabel* progressLabel = workspace.findChild<QLabel*>(QStringLiteral("contentProgressLabel"));
+    QProgressBar* progressBar = workspace.findChild<QProgressBar*>(QStringLiteral("contentProgressBar"));
+    QPushButton* retry = workspace.findChild<QPushButton*>(QStringLiteral("contentRetry"));
+    QTableView* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
     REQUIRE(progress != nullptr);
     REQUIRE(progressLabel != nullptr);
     REQUIRE(progressBar != nullptr);
@@ -1055,7 +1057,7 @@ TEST_CASE("Queued imports show overall progress, keep failures readable and retr
     table->setCurrentIndex(table->model()->index(badRow, 0));
     REQUIRE(workspace.SelectedId() == QStringLiteral("source/bad"));
     CHECK(retry->isEnabled() == true);
-    const auto fixed = audio::test::MakeSineWav(44100, 1, 300);
+    const Array<uint8> fixed = audio::test::MakeSineWav(44100, 1, 300);
     Write(bad, QByteArray(reinterpret_cast<const char*>(fixed.data()), static_cast<qsizetype>(fixed.size())));
     retry->click();
     CHECK(workspace.Importing() == true);

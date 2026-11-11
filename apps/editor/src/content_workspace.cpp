@@ -107,12 +107,12 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     Search_->setClearButtonEnabled(true);
     layout->addWidget(Search_);
     // Type filter chips: none checked shows every type; each checked chip adds its category.
-    auto* chips = new QHBoxLayout;
+    QHBoxLayout* chips = new QHBoxLayout;
     chips->setSpacing(design::SPACING_EXTRA_SMALL);
     for (foundation::usize index = 0; index < CONTENT_CATEGORY_COUNT; ++index)
     {
-        const auto category = static_cast<ContentCategory>(index);
-        auto* chip = new QToolButton(this);
+        const ContentCategory category = static_cast<ContentCategory>(index);
+        QToolButton* chip = new QToolButton(this);
         chip->setObjectName(QStringLiteral("contentFilter") + GetContentCategoryName(category));
         chip->setCheckable(true);
         chip->setAutoRaise(true);
@@ -160,7 +160,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     // Overall import progress: which import of how many, its stage, and the bar for the whole batch.
     mProgressRowOrNull = new QWidget(this);
     mProgressRowOrNull->setObjectName(QStringLiteral("contentProgress"));
-    auto* progressLayout = new QHBoxLayout(mProgressRowOrNull);
+    QHBoxLayout* progressLayout = new QHBoxLayout(mProgressRowOrNull);
     progressLayout->setContentsMargins(0, 0, 0, 0);
     progressLayout->setSpacing(design::SPACING_SMALL);
     mProgressLabelOrNull = new QLabel(mProgressRowOrNull);
@@ -241,7 +241,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
         }
     });
     connect(Table_, &QTableView::activated, this, [this](const QModelIndex& index) {
-        const auto* row = Model_->Row(mFilterOrNull->mapToSource(index));
+        const ContentRow* row = Model_->Row(mFilterOrNull->mapToSource(index));
         if (row != nullptr && (row->Type == ContentType::Sound || row->Type == ContentType::Music))
         {
             Q_EMIT OpenAudio(row->Id);
@@ -694,7 +694,7 @@ void ContentWorkspace::renderChips()
     const QVector<int> counts = mFilterOrNull->CountCategories();
     for (qsizetype index = 0; index < mChips.size(); ++index)
     {
-        const auto category = static_cast<ContentCategory>(index);
+        const ContentCategory category = static_cast<ContentCategory>(index);
         QToolButton* chip = mChips[index];
         chip->setText(QStringLiteral("%1 %2").arg(GetContentCategoryName(category)).arg(counts[index]));
         // An empty category stays visible, so the row of chips never shifts, but cannot be chosen unless it is on.
@@ -804,7 +804,7 @@ bool ContentWorkspace::event(QEvent* event)
 }
 void ContentWorkspace::RestoreSelection()
 {
-    const auto index = mFilterOrNull->mapFromSource(Model_->FindId(SelectedId_));
+    const QModelIndex index = mFilterOrNull->mapFromSource(Model_->FindId(SelectedId_));
     Applying_ = true;
     Table_->selectionModel()->clearSelection();
     for (const QString& id : mSelectedIds)
@@ -834,7 +834,7 @@ void ContentWorkspace::RenderActions()
     Refresh_->setEnabled(isAvailable);
     // Imports queue behind the active one, so Import stays available while another runs.
     Import_->setEnabled(canImport);
-    const auto* row = Model_->Row(mFilterOrNull->mapToSource(Table_->currentIndex()));
+    const ContentRow* row = Model_->Row(mFilterOrNull->mapToSource(Table_->currentIndex()));
     Reimport_->setEnabled(canImport && row != nullptr && row->Type == ContentType::AudioSource &&
                           row->IsPending == false);
     mRetryOrNull->setEnabled(canImport && row != nullptr && mFailedImports.contains(row->Id) == true);
