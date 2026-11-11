@@ -103,6 +103,9 @@ public:
     }
     /// Lighting summary for a Lit frame or its pending replacement.
     [[nodiscard]] QString DescribeBake() const;
+    /// Switch probe inputs while keeping the prepared realtime snapshot available for drawing.
+    [[nodiscard]] bool SetProbeGrid(const graphics::renderer::GiProbeGrid& grid) noexcept;
+    /// The preview supplies bake data only from the current extraction and grid.
     void SetSurfaceBake(const QSharedPointer<const WorldSurfaceBake>& bake, const QString& failure);
     [[nodiscard]] LUDUS_INLINE bool HasPublishedBake() const noexcept
     {
@@ -115,7 +118,7 @@ public:
     }
     [[nodiscard]] LUDUS_INLINE graphics::renderer::Snapshot GetSnapshot() const noexcept
     {
-        return mSnapshot;
+        return mHasPublishedBake == true ? mBakedSnapshot : mSnapshot;
     }
     // Generation-local handles used by viewport and shadow preparation.
     const graphics::rhi::DeviceHandle Device;
@@ -201,6 +204,9 @@ private:
                            graphics::renderer::MaterialVersion& outMaterial) noexcept;
     void advanceBake() noexcept;
     void discardBakeCharts() noexcept;
+    void discardBakedSnapshot() noexcept;
+    graphics::renderer::GiProbeGrid mProbeGrid{};
+    graphics::renderer::Snapshot mBakedSnapshot{};
     QSharedPointer<const WorldSurfaceBake> mSurfaceBake;
     foundation::Array<graphics::renderer::BakedLighting> mBakeCharts;
     graphics::renderer::BakedGiProbeVolume mProbeVolume{};

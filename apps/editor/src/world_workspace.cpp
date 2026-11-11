@@ -1343,6 +1343,18 @@ void WorldWorkspace::RefreshScene()
     {
         return;
     }
+    if (Scene_->PublishProbeVolume(level, Document_) == true)
+    {
+        if (Scene_->GetPlacementValidation() == PlacementValidation::Ready)
+        {
+            ValidatedWorld_ = Document_.Encode();
+        }
+        else
+        {
+            mPlacementWorld = Document_.Encode();
+        }
+        return;
+    }
     // Switching imported lights changes no cooked asset: the presented scene is re-derived at once.
     const PlacementPublication switched = Scene_->PublishLightSwitches(level, Document_);
     if (switched == PlacementPublication::Published)
@@ -3172,6 +3184,13 @@ void WorldWorkspace::PreviewDraft()
 {
     if (Document_.Loaded() == false || isTerrainAuthoringOpen() == true)
     {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    if (IsBuiltInWorld(Document_) == true &&
+        IsStandaloneWorldGiProbeVolume(entity, entity.value(QStringLiteral("components")).toObject()) == true)
+    {
+        // Probe inspector edits affect the viewport when applied, through the same path as the gizmo.
         return;
     }
     if (isSceneWorkerActive() == true)

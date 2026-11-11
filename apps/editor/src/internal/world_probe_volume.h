@@ -11,6 +11,8 @@
 
 namespace ludus::editor
 {
+struct RenderScene;
+class WorldDocument;
 [[nodiscard]] QString GetGiProbeVolumeComponentId();
 [[nodiscard]] QString GetGiProbeReceiverComponentId();
 /// The component property that stores the layout choice.
@@ -66,6 +68,13 @@ struct WorldGiProbeVolume final
 
 /// Add the built-in components without changing the bundled schema's recovery fingerprint.
 void AppendGiProbeComponents(QJsonArray& inoutComponents);
+
+/// Accept a built-in World edit that changes only an existing standalone volume's probe inputs.
+[[nodiscard]] bool TryReadStandaloneProbeEdit(const QJsonObject& before,
+                                              const QJsonObject& after,
+                                              const WorldDocument& world,
+                                              const RenderScene& scene,
+                                              graphics::renderer::GiProbeGrid& outGrid);
 
 /// Read an attached volume, including one whose bake is disabled. Absent components produce zero counts.
 /// Fails with a message naming the repair when the grid cannot be represented.
