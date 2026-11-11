@@ -6,6 +6,7 @@ hang. Poll it from the persistent supervisor alongside control and log I/O.
 from __future__ import annotations
 
 import os
+from editor_pipe_io import read_pipe, set_nonblocking
 from pathlib import Path
 import struct
 import sys
@@ -137,6 +138,8 @@ def validate_metadata(value: Any, expected: dict | None = None) -> dict:
 
 
 def debugger_stopped(pid: int) -> bool:
+    if sys.platform == "win32":
+        return False
     if sys.platform == "darwin":
         from editor_process_macos import process_stopped
         return process_stopped(pid)
@@ -172,8 +175,8 @@ class ModuleProbe:
         self.metadata: dict | None = None
         self.finished = False
         self.cleanup_confirmed = False
-        os.set_blocking(self.child.stdout_fd, False)
-        os.set_blocking(self.child.stderr_fd, False)
+        set_nonblocking(self.child.stdout_fd)
+        set_nonblocking(self.child.stderr_fd)
 
     def _fail(self, message: str) -> None:
         report = self.child.cleanup(cancelled=True)
@@ -186,7 +189,7 @@ class ModuleProbe:
             for fd, buffer in ((self.child.stdout_fd, self.stdout), (self.child.stderr_fd, self.stderr)):
                 for _ in range(17):
                     try:
-                        data = os.read(fd, 4096)
+                        data = read_pipe(fd, 4096)
                     except (BlockingIOError, InterruptedError):
                         break
                     if not data:

@@ -93,6 +93,15 @@ bool EditorController::CanPlay() const
     return State_.Document == DocumentState::ProjectLoaded && State_.Busy() == false &&
            BrowserPlayer(State_.DescriptorPath).isEmpty() == false;
 #else
+#    if defined(Q_OS_WIN)
+    const bool hasPlayablePreset = State_.Saved.Preset == QStringLiteral("windows-msvc-debug") ||
+                                   State_.Saved.Preset == QStringLiteral("windows-msvc-development");
+#    else
+    const bool hasPlayablePreset = State_.Saved.Preset == QStringLiteral("linux-clang-debug") ||
+                                   State_.Saved.Preset == QStringLiteral("linux-clang-development") ||
+                                   State_.Saved.Preset == QStringLiteral("macos-clang-debug") ||
+                                   State_.Saved.Preset == QStringLiteral("macos-clang-development");
+#    endif
     return QFileInfo(Tooling_.PythonPath).isExecutable() && QFileInfo::exists(Tooling_.AdapterPath) &&
            QFileInfo::exists(QDir(Tooling_.ToolingRoot).filePath(QStringLiteral("scripts/python/play_tool.py"))) &&
            State_.Document == DocumentState::ProjectLoaded && State_.HasSaved && SetupCheckPending_ == false &&
@@ -101,10 +110,7 @@ bool EditorController::CanPlay() const
            TuningDocumentDirty_ == false && PlayState_.Phase == PlayPhase::Stopped &&
            QFileInfo::exists(
                QDir(QFileInfo(State_.DescriptorPath).absolutePath()).filePath(QStringLiteral("ludus.play.json"))) &&
-           (State_.Saved.Preset == QStringLiteral("linux-clang-debug") ||
-            State_.Saved.Preset == QStringLiteral("linux-clang-development") ||
-            State_.Saved.Preset == QStringLiteral("macos-clang-debug") ||
-            State_.Saved.Preset == QStringLiteral("macos-clang-development"));
+           hasPlayablePreset == true;
 #endif
 }
 

@@ -52,9 +52,9 @@ enum class HostedConnectionState : foundation::uint8
 {
     /// Not started, stopped, or Start() failed.
     Stopped,
-    /// The socket accepts connections; no window has been admitted yet.
+    /// The channel accepts connections and has yet to admit a window.
     Listening,
-    /// One authenticated window is connected. The socket no longer accepts connections.
+    /// One authenticated window is connected. The endpoint has stopped accepting connections.
     Connected,
     /// The admitted window disconnected or violated the protocol. The session is over.
     Disconnected,
@@ -79,8 +79,8 @@ enum class HostedEndpointStatus : foundation::uint8
     /// The call does not apply now: the endpoint is stopped or already started, a key
     /// was sent without focus, or a message followed SendClose().
     InvalidState,
-    /// The target has no hosted-window support (browser, Windows) or the operating
-    /// system refused a directory or socket operation.
+    /// The target has no hosted-window support (browser) or the operating system
+    /// refused to create the rendezvous.
     Unavailable,
     /// The endpoint could not allocate its session state, or system entropy for the
     /// token was unavailable.
@@ -89,14 +89,13 @@ enum class HostedEndpointStatus : foundation::uint8
 
 /// @brief Editor-side endpoint of one hosted-window session.
 ///
-/// Start() creates a private directory (mode 0700) inside a caller-chosen parent,
-/// listens on a Unix stream socket in it and draws a 32-byte random token. Pass
+/// Start() creates a Unix stream socket in a private directory (mode 0700) on
+/// macOS and Linux, or a local named pipe on Windows. It draws a 32-byte random token. Pass
 /// GetChannelAddress() to the game process as HOSTED_WINDOW_ENVIRONMENT_VARIABLE.
 /// Pump() admits at most one window: the peer must run under this process's user
-/// id and present the token and protocol version in its first message. Once a
-/// window is admitted the socket file is removed, so no further process can
-/// connect. Refused peers are disconnected and counted; the endpoint keeps
-/// listening for the real window.
+/// identity and present the token and protocol version in its first message.
+/// Admission closes the listener. Refused peers are disconnected and counted,
+/// and the endpoint keeps listening for the real window.
 ///
 /// The Send calls mirror the native window vocabulary: extent in backing pixels
 /// plus scale, visibility, focus enter (with the held-key baseline) and loss,
@@ -105,8 +104,8 @@ enum class HostedEndpointStatus : foundation::uint8
 ///
 /// All I/O is nonblocking and bounded; no call waits for the game. The endpoint
 /// owns no toolkit objects and has no thread affinity, but it is not
-/// synchronized: use one instance from one thread at a time. Available on macOS
-/// and Linux; elsewhere Start() returns Unavailable.
+/// synchronized: use one instance from one thread at a time. Available on macOS,
+/// Linux and Windows. Elsewhere Start() returns Unavailable.
 class HostedWindowEndpoint final
 {
 public:
@@ -114,8 +113,9 @@ public:
     struct StartInfo final
     {
         /// Existing absolute directory in which Start() creates the private session
-        /// directory. Borrowed for the call. The resulting socket path must fit in
-        /// 103 bytes, so prefer a short temporary directory.
+        /// directory on macOS and Linux. Borrowed for the call. The resulting socket
+        /// path must fit in 103 bytes, so prefer a short temporary directory.
+        /// Windows ignores this field and creates a local named pipe.
         std::string_view ParentDirectory;
         /// Initial extent in backing pixels; at most 32768 per axis. Zero is allowed.
         foundation::uint32 Width = 0;
@@ -130,7 +130,7 @@ public:
         ///
         /// Borrowed for the call; the endpoint copies it and sends it in the Welcome. The
         /// window then reports it from HostedSurfaceChannel::TryGetConsumerAdapter(), and a
-        /// Vulkan game prefers the matching adapter.
+        /// Vulkan or Direct3D 12 game selects the announced adapter.
         const HostedAdapterIdentity* ConsumerAdapterOrNull = nullptr;
     };
 
@@ -139,19 +139,19 @@ public:
     HostedWindowEndpoint() noexcept;
     /// Stop the session, closing the channel and removing its directory.
     ~HostedWindowEndpoint() noexcept;
-    /// Not copyable: one endpoint owns the session's socket, directory and token.
+    /// Not copyable: one endpoint owns the session's channel, directory and token.
     HostedWindowEndpoint(const HostedWindowEndpoint&) = delete;
-    /// Not copyable: one endpoint owns the session's socket, directory and token.
+    /// Not copyable: one endpoint owns the session's channel, directory and token.
     HostedWindowEndpoint& operator=(const HostedWindowEndpoint&) = delete;
     /// Not movable: the editor keeps one endpoint per session in place for its lifetime.
     HostedWindowEndpoint(HostedWindowEndpoint&&) = delete;
     /// Not movable: the editor keeps one endpoint per session in place for its lifetime.
     HostedWindowEndpoint& operator=(HostedWindowEndpoint&&) = delete;
 
-    /// @brief Create the session directory, socket and token, and start listening.
+    /// @brief Create the channel and token, and start listening.
     /// @param info Session parameters; the initial state reaches the window in its Welcome.
     /// @return Ok and state Listening; InvalidState when already started; InvalidArgument
-    /// for a relative, empty or overlong parent or an invalid initial state; OutOfMemory
+    /// for an invalid initial state or a relative, empty or overlong Unix parent; OutOfMemory
     /// or Unavailable on resource failure. On failure the endpoint stays Stopped and
     /// leaves no directory behind.
     [[nodiscard]] HostedEndpointStatus Start(const StartInfo& info) noexcept;
@@ -164,7 +164,8 @@ public:
 
     /// @brief Channel address to publish in HOSTED_WINDOW_ENVIRONMENT_VARIABLE.
     ///
-    /// Format "1:<64 hexadecimal token digits>:<absolute socket path>". The view
+    /// Format `1:TOKEN:PATH` with 64 lowercase hexadecimal token digits. The path
+    /// is an absolute Unix socket path or a logical Windows named-pipe address. The view
     /// points into the endpoint and stays valid until Stop() or destruction. It is
     /// a secret for the session: pass it only to the child's environment.
     /// @return The address, or an empty view when stopped.
@@ -174,6 +175,7 @@ public:
     ///
     /// Valid until Stop() or destruction. Provided so callers can report or verify
     /// the location; the endpoint removes the directory itself.
+    /// Windows uses a named pipe and returns an empty directory.
     [[nodiscard]] std::string_view GetDirectory() const noexcept;
 
     /// Current connection state.

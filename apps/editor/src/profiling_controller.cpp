@@ -220,7 +220,7 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
         Q_EMIT Changed();
         return false;
     }
-    if (LUDUS_PROFILING_ENABLED == 0)
+    if constexpr (LUDUS_PROFILING_ENABLED == 0)
     {
         mStatus = QStringLiteral("Profiling is disabled in this build. Use a Debug, Development or Profile editor.");
         Q_EMIT Changed();

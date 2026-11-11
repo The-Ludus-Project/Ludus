@@ -79,7 +79,8 @@ class WindowsSymbolTests(unittest.TestCase):
         self.write("game.pdb", make_pdb())
         result = play_windows.identity(module)
         self.assertEqual(result["artifact_type"], "module")
-        self.assertEqual(result["build_id"], GUID.hex() + "3")
+        self.assertEqual(result["build_id"], GUID.hex() + "00000003")
+        self.assertEqual(len(bytes.fromhex(result["build_id"])), len(GUID) + 4)
         self.assertTrue(result["matching_symbols"])
         self.assertFalse(result["embedded_symbols"])
 

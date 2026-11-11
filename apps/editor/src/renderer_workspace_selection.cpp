@@ -710,9 +710,9 @@ bool RendererWorkspace::CopySelectedNodes()
         return false;
     }
     const QByteArray bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    QMimeData* data = new QMimeData;
-    data->setData(NODE_MIME, bytes);
-    QApplication::clipboard()->setMimeData(data);
+    QMimeData* clipboardData = new QMimeData;
+    clipboardData->setData(NODE_MIME, bytes);
+    QApplication::clipboard()->setMimeData(clipboardData);
     mStatus->setText(QStringLiteral("Copied %1 nodes and their internal connections.").arg(mSelectedNodes.size()));
     return true;
 }

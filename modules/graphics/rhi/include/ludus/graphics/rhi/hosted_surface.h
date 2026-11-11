@@ -82,6 +82,8 @@ struct HostedFrame final
     /// AcquireFrame() has already transferred the image to the identity's queue family on its
     /// queue, so commands submitted there afterwards sample it with no barrier of their own.
     foundation::uint32 VulkanLayout = 0;
+    /// Windows: the consumer-local RGBA8 resource in COMMON, for fragment sampling.
+    NativeDirect3D12Resource Direct3D12Resource{nullptr};
 };
 
 /// @brief Identify the adapter a HostedSurfaceConsumer started on `device` imports onto.
@@ -89,15 +91,15 @@ struct HostedFrame final
 /// Pass the result as platform::HostedWindowEndpoint::StartInfo::ConsumerAdapterOrNull. The
 /// endpoint announces it in its Welcome, and a Vulkan game connected to the hosted window
 /// tries that adapter before any other, so a multi-GPU host renders where the editor can
-/// import. Without a matching adapter the game selects as usual and the consumer refuses
-/// its images with AdapterMismatch.
+/// import. Without a matching adapter Vulkan selects as usual and the consumer refuses
+/// its images with AdapterMismatch. Direct3D 12 requires the announced adapter LUID.
 /// @param device The consumer's device, as for HostedSurfaceConsumer::Start(). Vulkan needs
-/// `Instance` and `PhysicalDevice`; no other object is used.
+/// `Instance` and `PhysicalDevice`. Direct3D 12 needs its `Device`.
 /// @param outAdapter Vulkan: the adapter's `deviceUUID` and `driverUUID`, queried through
-/// `Instance`. Unchanged unless true is returned.
-/// @return true on Vulkan. false on Metal, where IOSurfaces work across GPUs and the game
-/// needs no adapter; for another API, an incomplete identity, a build without hosted import,
-/// or when `vkGetPhysicalDeviceProperties2` cannot be loaded.
+/// `Instance`. Direct3D 12 returns the device's LUID in `DeviceUuid`. Unchanged on failure.
+/// @return true on Vulkan or Direct3D 12. Returns false on Metal, where IOSurfaces work across
+/// GPUs, for another API, an incomplete identity, a build without hosted import, or when
+/// Vulkan's `vkGetPhysicalDeviceProperties2` cannot be loaded.
 [[nodiscard]] bool TryGetHostedConsumerAdapter(const NativeDeviceIdentity& device,
                                                platform::HostedAdapterIdentity& outAdapter) noexcept;
 
@@ -126,6 +128,9 @@ struct HostedFrame final
 ///   `deviceUUID` and `driverUUID` equal the consumer's; otherwise the consumer
 ///   refuses with AdapterMismatch. The consumer device must have been created with
 ///   `VK_KHR_external_memory_fd` enabled, on Vulkan 1.1 or later.
+/// - Windows: the endpoint duplicates NT handles for shared committed textures.
+///   The consumer opens them on the same adapter LUID and samples on its direct queue.
+///   Both sides use COMMON at handoff and complete their local fences before transfer.
 ///
 /// Qt-free and not synchronized: use it on the thread that owns the device and
 /// pumps the endpoint. The endpoint and the device must outlive Stop().
@@ -152,6 +157,8 @@ public:
     /// Vulkan: `Api` Vulkan with `Instance`, `PhysicalDevice`, `Device`, `CommandQueue` and its
     /// `QueueFamily`; the instance must use Vulkan 1.1 or later. The consumer submits its queue
     /// family transfers and release fences to that queue.
+    /// Direct3D 12 requires its `Device` and that device's direct `CommandQueue`. The caller
+    /// serializes submissions on the owning thread, including the consumer's release fences.
     /// @return Ok; InvalidState when already started; InvalidArgument for an incomplete
     /// identity or an API without a hosted import in this build; Unavailable when the
     /// target has no hosted surface, the device's entry points cannot be loaded or allocation

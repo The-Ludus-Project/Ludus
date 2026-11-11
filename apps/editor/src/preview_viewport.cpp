@@ -1121,8 +1121,7 @@ private:
         {
             Preview->Stop();
             MessageOrNull->ShowProblem(
-                QStringLiteral("This display cannot show the GPU viewport (needs macOS Metal, or "
-                               "X11/Wayland with Vulkan)."));
+                QStringLiteral("Open the editor on a Windows, macOS, X11 or Wayland desktop to use the GPU viewport."));
             return;
         }
         // Basic rendering keeps all RHI calls and native queue submissions on
@@ -1130,6 +1129,8 @@ private:
         qputenv("QSG_RENDER_LOOP", QByteArrayLiteral("basic"));
 #    if defined(Q_OS_MACOS)
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Metal);
+#    elif defined(Q_OS_WIN)
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D12);
 #    else
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
 #    endif
@@ -1143,7 +1144,7 @@ private:
         if (Device.Get() == nullptr || Device->PrepareWindow(*Window) == false)
         {
             destroyWindow();
-#    if defined(Q_OS_MACOS)
+#    if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
             Preview->Stop();
             MessageOrNull->ShowProblem(QStringLiteral("Qt GPU initialization failed. Editing remains available."));
 #    else
@@ -2959,6 +2960,12 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
             case QEvent::Show:
                 mState->noteWindowShown();
                 break;
+#    if defined(Q_OS_WIN)
+            case QEvent::DevicePixelRatioChange:
+                // Moving to another monitor can change the backing extent at the same logical size.
+                resizeSurface();
+                break;
+#    endif
             default:
                 break;
         }
@@ -3090,6 +3097,9 @@ ViewportPresentation PreviewViewport::GetPresentation() noexcept
     const QString platform = QGuiApplication::platformName();
 #    if defined(Q_OS_MACOS)
     return platform == QStringLiteral("cocoa") ? ViewportPresentation::SharedDevice : ViewportPresentation::Unavailable;
+#    elif defined(Q_OS_WIN)
+    return platform == QStringLiteral("windows") ? ViewportPresentation::SharedDevice
+                                                 : ViewportPresentation::Unavailable;
 #    else
     if (qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT") == QStringLiteral("offscreen"))
     {

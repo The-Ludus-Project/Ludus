@@ -4,25 +4,24 @@
 #include "internal/startup_sound.h"
 
 #include <ludus/audio/audio_system.h>
+#include <ludus/foundation/base/assert.hpp>
 #include <ludus/foundation/logging/category.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/foundation/threading/worker_queue.hpp>
 
 #include <QByteArray>
 #include <QFile>
 #include <QString>
+#include <QThread>
 
 #include <atomic>
 #include <new>
-#include <pthread.h>
 #include <string_view>
-#include <time.h>
 
 namespace ludus::editor
 {
 namespace
 {
-using foundation::int32;
-using foundation::int64;
 using foundation::uint32;
 using foundation::uint8;
 using foundation::usize;
@@ -30,7 +29,7 @@ using foundation::usize;
 LUDUS_DEFINE_LOG_CATEGORY(LOG_STARTUP_SOUND, "Editor.StartupSound");
 
 /// The worker checks for the end of playback, or for Stop, about once per 60 Hz frame.
-constexpr int64 POLL_INTERVAL_NANOSECONDS = 16666667;
+constexpr uint32 POLL_INTERVAL_MICROSECONDS = 16667;
 /// Polls allowed for the stop fade before the system shuts down anyway: about a quarter second.
 constexpr uint32 STOP_FADE_POLLS = 15;
 } // namespace
@@ -39,7 +38,7 @@ struct StartupSoundPlayer::Impl final
 {
     explicit Impl(const QByteArray& encoded) : Encoded(encoded) {}
     QByteArray Encoded;
-    pthread_t Thread{};
+    foundation::threading::WorkerQueue Worker;
     std::atomic<bool> IsStopRequested{false};
     std::atomic<bool> IsDone{false};
 
@@ -88,8 +87,7 @@ struct StartupSoundPlayer::Impl final
                 static_cast<void>(system.Stop(voice));
                 isStopping = true;
             }
-            const timespec delay{0, POLL_INTERVAL_NANOSECONDS};
-            nanosleep(&delay, nullptr);
+            QThread::usleep(POLL_INTERVAL_MICROSECONDS);
         }
         static_cast<void>(system.BeginShutdown());
     }
@@ -100,7 +98,7 @@ StartupSoundPlayer::~StartupSoundPlayer()
     if (mImplOrNull != nullptr)
     {
         Stop();
-        pthread_join(mImplOrNull->Thread, nullptr);
+        static_cast<void>(mImplOrNull->Worker.Shutdown());
         delete mImplOrNull;
     }
 }
@@ -116,17 +114,16 @@ bool StartupSoundPlayer::Play(const QByteArray& encoded)
     {
         return false;
     }
-    const int32 result = pthread_create(
-        &implOrNull->Thread,
-        nullptr,
-        [](void* input) -> void* {
-            Impl* impl = static_cast<Impl*>(input);
-            impl->Run();
-            impl->IsDone.store(true, std::memory_order_release);
-            return nullptr;
-        },
-        implOrNull);
-    if (result != 0)
+    if (implOrNull->Worker.Initialize() != foundation::threading::WorkerQueueStatus::Ready ||
+        implOrNull->Worker.Submit(
+            [](void* context) noexcept {
+                LUDUS_ASSERT(context != nullptr);
+                Impl* implementation = static_cast<Impl*>(context);
+                implementation->Run();
+                implementation->IsDone.store(true, std::memory_order_release);
+            },
+            [](void*) noexcept {},
+            implOrNull) != foundation::threading::WorkerQueueStatus::Ready)
     {
         delete implOrNull;
         return false;

@@ -280,8 +280,8 @@ HostedSurfaceConsumer::~HostedSurfaceConsumer() noexcept
 bool TryGetHostedConsumerAdapter(const NativeDeviceIdentity& device,
                                  platform::HostedAdapterIdentity& outAdapter) noexcept
 {
-    if (device.Api != Backend::Vulkan || device.Instance.IsNull() == true || device.PhysicalDevice.IsNull() == true ||
-        internal::IsHostedImportAvailable(device.Api) == false)
+    if (internal::IsHostedImportAvailable(device.Api) == false ||
+        (device.Api == Backend::Vulkan && (device.Instance.IsNull() == true || device.PhysicalDevice.IsNull() == true)))
     {
         return false;
     }
@@ -304,7 +304,8 @@ HostedConsumerStatus HostedSurfaceConsumer::Start(platform::HostedWindowEndpoint
     if (device.Device.IsNull() == true || internal::IsHostedImportAvailable(device.Api) == false)
     {
         return internal::IsHostedImportAvailable(Backend::Metal) == false &&
-                       internal::IsHostedImportAvailable(Backend::Vulkan) == false
+                       internal::IsHostedImportAvailable(Backend::Vulkan) == false &&
+                       internal::IsHostedImportAvailable(Backend::Direct3D12) == false
                    ? HostedConsumerStatus::Unavailable
                    : HostedConsumerStatus::InvalidArgument;
     }

@@ -8,6 +8,7 @@ import hashlib
 import os
 from pathlib import Path
 import selectors
+from editor_pipe_io import pipe_selector, set_nonblocking
 import sys
 
 from editor_tool import (Operation, OperationResult, Plan, configure_argv, FILE_API_CLIENT,
@@ -76,14 +77,16 @@ class GenerationOperation(Operation):
     def _probe(self, staging, module_name, host_name, lease_fd):
         module = native_identity(staging / module_name, staging / (module_name + ".dwarf") if sys.platform == "darwin" else None)
         host = native_identity(staging / host_name, staging / (host_name + ".dwarf") if sys.platform == "darwin" else None)
-        if module["artifact_type"] != "module" or (sys.platform == "darwin" and host["artifact_type"] != "host"):
+        if module["artifact_type"] != "module" or (
+                sys.platform in ("darwin", "win32") and host["artifact_type"] != "host"):
             raise ProbeError("generation requires a gameplay module and a native host executable")
-        if sys.platform == "darwin" and module["cpu"] != host["cpu"]:
+        machine_field = {"darwin": "cpu", "win32": "machine"}.get(sys.platform)
+        if machine_field is not None and module[machine_field] != host[machine_field]:
             raise ProbeError("gameplay module and host architectures disagree")
         probe = ModuleProbe(staging / host_name, staging / module_name, cwd=self._plan.run_cwd,
                             env=self._plan.env, lease_fd=lease_fd)
-        selector = selectors.DefaultSelector()
-        os.set_blocking(self._supervisor._control_fd, False)
+        selector = pipe_selector()
+        set_nonblocking(self._supervisor._control_fd)
         selector.register(self._supervisor._control_fd, selectors.EVENT_READ)
         try:
             while True:
@@ -106,6 +109,8 @@ class GenerationOperation(Operation):
                 "embedded_symbols": module["embedded_symbols"] and host["embedded_symbols"]}
 
     def _symbols(self, module, host, plan):
+        if sys.platform == "win32":
+            return module.with_suffix(".pdb"), host.with_suffix(".pdb")
         if sys.platform != "darwin":
             return None, None
         # Prefer dsymutil from the selected pinned compiler, never an unrelated Homebrew LLVM.
@@ -126,7 +131,9 @@ class GenerationOperation(Operation):
         sidecar = read_play_descriptor(self._project_path.parent)
         if sidecar is None:
             raise PublishError("project has no ludus.play.json; executable Run remains available")
-        if plan.descriptor.preset not in ("linux-clang-debug", "linux-clang-development", "macos-clang-debug", "macos-clang-development"):
+        if plan.descriptor.preset not in (
+                "linux-clang-debug", "linux-clang-development", "macos-clang-debug", "macos-clang-development",
+                "windows-msvc-debug", "windows-msvc-development"):
             raise PublishError("live editing requires a Debug or Development native build")
         try:
             validate_project_presets(plan.cmake[0], plan.source_dir, plan.env, plan.descriptor.preset)

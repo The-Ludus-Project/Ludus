@@ -2,6 +2,8 @@
 
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
 #    include "internal/hosted_mach.hpp"
+#elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include "internal/hosted_pipe.hpp"
 #endif
 
 #include <ludus/foundation/containers/static_array.hpp>
@@ -17,8 +19,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
-#include <sys/socket.h>
-#include <sys/un.h>
+#if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
+#    include <sys/socket.h>
+#    include <sys/un.h>
+#endif
 
 // The hosted window reproduces the Cocoa and Wayland event vocabulary from a
 // host channel; see docs/architecture/editor-gui-systems.md, "The hosted window".
@@ -198,6 +202,12 @@ private:
                 return true;
             case MessageKind::Release:
                 return queueRelease(message);
+            case MessageKind::ImagesCopied:
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+                return acceptCopiedImages(message.Generation);
+#else
+                return false;
+#endif
             case MessageKind::Hello:
             case MessageKind::Welcome:
             case MessageKind::Refused:
@@ -360,6 +370,12 @@ private:
         message.Height = images.Height;
         message.Format = images.Format;
         message.HandleKind = images.Handles[0].GetKind();
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+        for (usize i = 0; i < HOSTED_SURFACE_IMAGE_COUNT; ++i)
+        {
+            message.Win32HandleValues[i] = reinterpret_cast<usize>(images.Handles[i].GetWin32Handle());
+        }
+#endif
         message.AllocationSizes = images.AllocationSizes;
         message.MemoryTypeIndex = images.MemoryTypeIndex;
         message.DeviceUuid = images.DeviceUuid;
@@ -367,6 +383,41 @@ private:
         return message;
     }
 
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    [[nodiscard]] HostedSurfaceStatus publishWin32Handles(HostedSurfaceImages& inoutImages) noexcept
+    {
+        for (HostedSurfaceImages& retained : mPendingCopies)
+        {
+            if (retained.Generation == 0)
+            {
+                if (enqueueSend(makeImagesMessage(inoutImages)) == false)
+                {
+                    return HostedSurfaceStatus::Busy;
+                }
+                retained.Generation = inoutImages.Generation;
+                retained.Handles = foundation::Move(inoutImages.Handles);
+                // Ownership transferred when queued. A subsequent pipe error is
+                // reported by the next operation and closes all pending copies.
+                static_cast<void>(flushSend());
+                return HostedSurfaceStatus::Ok;
+            }
+        }
+        return HostedSurfaceStatus::Busy;
+    }
+
+    [[nodiscard]] bool acceptCopiedImages(uint32 generation) noexcept
+    {
+        for (HostedSurfaceImages& retained : mPendingCopies)
+        {
+            if (retained.Generation == generation)
+            {
+                retained = {};
+                return true;
+            }
+        }
+        return false;
+    }
+#else
     [[nodiscard]] HostedSurfaceStatus publishDescriptors(HostedSurfaceImages& inoutImages) noexcept
     {
         // The descriptors ride on the message's first byte, so the queue must be empty.
@@ -410,6 +461,8 @@ private:
         }
         return HostedSurfaceStatus::Ok;
     }
+
+#endif
 
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     [[nodiscard]] HostedSurfaceStatus publishMachPorts(HostedSurfaceImages& inoutImages) noexcept
@@ -463,10 +516,17 @@ public:
             return HostedSurfaceStatus::InvalidArgument;
         }
         HostedSurfaceStatus status = HostedSurfaceStatus::Unavailable;
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+        if (inoutImages.Handles[0].GetKind() == HostedHandleKind::Win32SharedResource)
+        {
+            status = publishWin32Handles(inoutImages);
+        }
+#else
         if (inoutImages.Handles[0].GetKind() == HostedHandleKind::OpaqueFileDescriptor)
         {
             status = publishDescriptors(inoutImages);
         }
+#endif
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
         if (inoutImages.Handles[0].GetKind() == HostedHandleKind::MachPort)
         {
@@ -611,6 +671,12 @@ private:
         mIsFocused = false;
         mHeldKeys = {};
         mConnection.Reset();
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+        for (HostedSurfaceImages& retained : mPendingCopies)
+        {
+            retained = {};
+        }
+#endif
         mNativeWindowInfo.Width = 0;
         mNativeWindowInfo.Height = 0;
         mVisibility = WindowVisibility::Occluded;
@@ -619,6 +685,10 @@ private:
 
 private:
     SocketDescriptor mConnection;
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    static constexpr usize MAX_PENDING_COPIES = MAX_QUEUED_RELEASES / HOSTED_SURFACE_IMAGE_COUNT;
+    foundation::StaticArray<HostedSurfaceImages, MAX_PENDING_COPIES> mPendingCopies{};
+#endif
     /// Authenticates Mach rendezvous messages (macOS only).
     [[maybe_unused]] Token mToken = {};
     RendezvousNonce mNonce = {};
@@ -693,7 +763,7 @@ bool Initialize() noexcept
     return true;
 }
 
-bool TrySendHello(int32 descriptor, const Token& token) noexcept
+bool TrySendHello(NativeStream descriptor, const Token& token) noexcept
 {
     Message hello;
     hello.Kind = MessageKind::Hello;
@@ -740,6 +810,15 @@ foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexc
                         std::string_view(HOSTED_WINDOW_ENVIRONMENT_VARIABLE));
         return nullptr;
     }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    SocketDescriptor connection = ConnectToPipe(socketPath);
+    if (connection.IsOpen() == false || TryConfigureSocket(connection.Get()) == false ||
+        OpenPipePeer(connection.Get(), false).Get() == nullptr)
+    {
+        LUDUS_LOG_ERROR(LOG_PLATFORM, "Cannot connect to the hosted-window pipe. Restart Play from the editor.");
+        return nullptr;
+    }
+#else
     sockaddr_un address{};
     static_assert(MAX_SOCKET_PATH_BYTES < sizeof(address.sun_path));
     address.sun_family = AF_UNIX;
@@ -759,6 +838,7 @@ foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexc
         LUDUS_LOG_ERROR(LOG_PLATFORM, "The hosted-window endpoint runs under another user; refusing it");
         return nullptr;
     }
+#endif
     if (TrySendHello(connection.Get(), token) == false)
     {
         LUDUS_LOG_ERROR(LOG_PLATFORM, "Cannot send the hosted-window handshake");
