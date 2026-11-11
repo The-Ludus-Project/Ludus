@@ -777,7 +777,14 @@ TEST_CASE("canvas pipeline edits keep active controls and Save commits the activ
             REQUIRE(field->hasFocus() == true);
             field->selectAll();
             QTest::keyClicks(field, QStringLiteral("latest"));
-            REQUIRE(workspace.Save() == true);
+            const bool isSaved = workspace.Save();
+            INFO(workspace.GetStatusText().toStdString());
+            CHECK(isSaved == true);
+            if (isSaved == false)
+            {
+                dialogOrNull->reject();
+                return;
+            }
             CHECK(workspace.GetDocument().GetSaved(ROOT_GRAPH).contains("latest") == true);
             CHECK(workspace.GetDocument().IsDirty() == false);
             dialogOrNull->reject();

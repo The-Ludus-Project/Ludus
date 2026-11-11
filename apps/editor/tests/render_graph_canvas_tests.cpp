@@ -1190,6 +1190,7 @@ TEST_CASE("scene ray query budgets share Properties and canvas history with Prop
     const QByteArray originalGraph = workspace.GetDocument().GetDraft(GetRootGraph());
     const uint64 revision = workspace.GetDocument().GetRevision();
     bool hasExercised = false;
+    QByteArray editedManifest;
     const auto exercise = [&](QWidget& inoutControls) {
         QSpinBox* surfaceOrNull = inoutControls.findChild<QSpinBox*>(QStringLiteral("renderGraphSurfaceQueries"));
         QSpinBox* visibilityOrNull = inoutControls.findChild<QSpinBox*>(QStringLiteral("renderGraphVisibilityQueries"));
@@ -1213,20 +1214,13 @@ TEST_CASE("scene ray query budgets share Properties and canvas history with Prop
         CHECK(edited.VisibilityQueries == 0);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()) == originalGraph);
         CHECK(workspace.GetDocument().GetSaved(manifestFile) == originalManifest);
-        const QByteArray editedManifest = workspace.GetDocument().GetDraft(manifestFile);
+        editedManifest = workspace.GetDocument().GetDraft(manifestFile);
         workspace.Undo();
         workspace.Undo();
         CHECK(workspace.GetDocument().GetDraft(manifestFile) == originalManifest);
         workspace.Redo();
         workspace.Redo();
         CHECK(workspace.GetDocument().GetDraft(manifestFile) == editedManifest);
-        REQUIRE(workspace.Save() == true);
-        CHECK(ReadFile(QDir(package).filePath(manifestFile)) == editedManifest);
-        RenderGraphDocument reloaded;
-        REQUIRE(reloaded.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
-        REQUIRE(reloaded.GetSceneQueryBudgets(edited) == true);
-        CHECK(edited.SurfaceQueries == 2);
-        CHECK(edited.VisibilityQueries == 0);
         hasExercised = true;
     };
     SECTION("Properties")
@@ -1257,7 +1251,17 @@ TEST_CASE("scene ray query budgets share Properties and canvas history with Prop
         QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
         QApplication::sendEvent(canvas.viewport(), &context);
     }
-    CHECK(hasExercised == true);
+    REQUIRE(hasExercised == true);
+    const bool isSaved = workspace.Save();
+    INFO(workspace.GetStatusText().toStdString());
+    REQUIRE(isSaved == true);
+    CHECK(ReadFile(QDir(package).filePath(manifestFile)) == editedManifest);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphSceneQueryBudgets saved;
+    REQUIRE(reloaded.GetSceneQueryBudgets(saved) == true);
+    CHECK(saved.SurfaceQueries == 2);
+    CHECK(saved.VisibilityQueries == 0);
 }
 
 TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidden",

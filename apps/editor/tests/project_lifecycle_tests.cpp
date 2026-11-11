@@ -333,10 +333,12 @@ TEST_CASE("Friendly build profiles preserve preset identity and require explicit
     CHECK_FALSE(check->isEnabled());
     CHECK_FALSE(repair->isEnabled());
     CHECK(controller.State().ActiveJob == 0);
+    const QString selectedPreset = profile->currentData().toString();
+    REQUIRE(selectedPreset.isEmpty() == false);
     save->click();
     CHECK_FALSE(controller.State().Dirty());
-    CHECK(controller.Store().Load(path).Parse.Descriptor.Preset == QStringLiteral("macos-clang-release"));
-    CHECK(identity->text().contains(QStringLiteral("macos-clang-release")));
+    CHECK(controller.Store().Load(path).Parse.Descriptor.Preset == selectedPreset);
+    CHECK(identity->text().contains(selectedPreset));
     CHECK(check->isEnabled() == controller.Caps().CanProjectCheck);
     CHECK(repair->isEnabled() == controller.Caps().CanProjectSetup);
     CHECK(run->isEnabled() == controller.Caps().CanBuildRun);
