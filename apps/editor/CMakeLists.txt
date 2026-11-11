@@ -432,9 +432,10 @@ function(ludus_editor_add_default_render_graph target)
         PREFIX "/render-graph/default" BASE "${default_graph}" FILES ${default_graph_files})
 endfunction()
 
-# Source provenance admission follows the offline compiler's existing expanded-node/pass bounds.
-set_source_files_properties(tests/render_graph_execution_plan_tests.cpp PROPERTIES
+# Interpreter-driven fixtures use the configured host Python.
+set_source_files_properties(tests/external_code_editor_tests.cpp tests/render_graph_execution_plan_tests.cpp PROPERTIES
     COMPILE_DEFINITIONS "LUDUS_EDITOR_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
+# Source provenance admission follows the offline compiler's existing expanded-node/pass bounds.
 set(graph_plan_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${graph_plan_policy}")
 execute_process(COMMAND "${Python3_EXECUTABLE}" -c
