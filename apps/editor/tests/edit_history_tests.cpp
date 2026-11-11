@@ -17,6 +17,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
+#include <QFontMetrics>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QListView>
@@ -418,6 +419,8 @@ TEST_CASE("Undo and Redo name their command, confirm it and jump from History", 
     REQUIRE(toast != nullptr);
     CHECK(toast->isVisible() == true);
     CHECK(toast->GetText() == QStringLiteral("Undid: Change Build Preset"));
+    // The note fits its whole text rather than eliding a short command name.
+    CHECK(toast->width() >= QFontMetrics(toast->font()).horizontalAdvance(toast->GetText()));
     redo->trigger();
     CHECK(toast->GetText() == QStringLiteral("Redid: Change Build Preset"));
 

@@ -261,6 +261,8 @@ void UndoFeedbackToast::ShowNotice(const QString& text, const QWidget& anchor)
 {
     mText = text;
     setAccessibleName(text);
+    // Measure with the polished font that paintEvent uses; a tool-tip window takes its font on polish.
+    ensurePolished();
     const QFontMetrics metrics(font());
     const QSize size(metrics.horizontalAdvance(text) + 2 * TOAST_HORIZONTAL_PADDING,
                      metrics.height() + 2 * TOAST_VERTICAL_PADDING);
