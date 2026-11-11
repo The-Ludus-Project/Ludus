@@ -798,9 +798,9 @@ void PlaceUnsavedRenderGraphCards(const QVector<RenderGraphLayoutWire>& wires,
     {
         isPlaced[index] = savedCards.contains(inoutCards.at(index).Identity) == true ? 1 : 0;
     }
-    const auto median = [](QVector<float64>& values) {
-        std::sort(values.begin(), values.end());
-        return values.at(values.size() / 2);
+    const auto median = [](QVector<float64>& inoutValues) {
+        std::sort(inoutValues.begin(), inoutValues.end());
+        return inoutValues.at(inoutValues.size() / 2);
     };
     // Each round places the cards wired to an already placed card, so a chain of unsaved cards grows outward
     // from the saved layout one column at a time. Cards placed in one round only anchor the next.

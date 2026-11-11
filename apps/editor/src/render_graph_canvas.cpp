@@ -1607,7 +1607,8 @@ void RenderGraphCanvas::Rebuild()
     }
     {
         QSet<QString> savedCards;
-        for (auto iterator = authored.cbegin(); iterator != authored.cend(); ++iterator)
+        for (QHash<QString, QPointF>::const_iterator iterator = authored.cbegin(); iterator != authored.cend();
+             ++iterator)
         {
             savedCards.insert(iterator.key());
         }
@@ -2657,7 +2658,7 @@ void RenderGraphCanvas::placeDisplayCards(const QSet<QString>& savedCards)
         placedMeasure.Crossings < columnMeasure.Crossings ||
         (placedMeasure.Crossings == columnMeasure.Crossings && placedMeasure.TotalLength < columnMeasure.TotalLength);
     const QHash<QString, QPointF>& chosen = isPlacedBetter == true ? placed : columns;
-    for (auto iterator = chosen.cbegin(); iterator != chosen.cend(); ++iterator)
+    for (QHash<QString, QPointF>::const_iterator iterator = chosen.cbegin(); iterator != chosen.cend(); ++iterator)
     {
         mNodes.value(iterator.key())->Frame->setPos(iterator.value());
     }

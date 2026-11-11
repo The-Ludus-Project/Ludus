@@ -674,7 +674,7 @@ TEST_CASE("the first move in an unsaved graph saves every shown card where it is
     canvas.EndDrag();
     const QJsonArray saved = ReadSavedPositions(workspace.GetDocument());
     REQUIRE(saved.size() == 2 * FAN_COUNT);
-    for (auto iterator = shown.cbegin(); iterator != shown.cend(); ++iterator)
+    for (QHash<QString, QPointF>::const_iterator iterator = shown.cbegin(); iterator != shown.cend(); ++iterator)
     {
         const QPointF expected = iterator.value() + (iterator.key() == QStringLiteral("c0") ? delta : QPointF());
         CHECK(canvas.GetNodePosition(iterator.key()) == expected);
