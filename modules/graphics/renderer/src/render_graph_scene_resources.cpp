@@ -16,6 +16,7 @@
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/texture_mip_chain.hpp>
 
 #include <cstring>
 #include <new>
@@ -260,6 +261,8 @@ struct ForwardSceneResources::State final
         rhi::RasterFormat Format = rhi::RasterFormat::Rgba8Unorm;
         usize Pins = 0;
         bool IsUsed = false;
+        /// Uploaded with its minification chain; a single-level entry of the same texels is a different texture.
+        bool HasMipChain = false;
     };
     rhi::DeviceHandle Device{};
     Renderer* RendererOrNull = nullptr;
@@ -371,7 +374,10 @@ struct ForwardSceneResources::State final
         }
         return Status::CapacityExceeded;
     }
-    Status AcquireTexture(const rhi::TextureCpuContent& source, usize& outIndex) noexcept
+    /// Pin the cached texture of these texels, uploading it first when absent.
+    /// @param shouldBuildMipChain True for material textures the raster passes minify: the upload carries a complete
+    ///        box-filtered chain. False keeps one level, as baked charts require; they are read texel by texel.
+    Status AcquireTexture(const rhi::TextureCpuContent& source, bool shouldBuildMipChain, usize& outIndex) noexcept
     {
         if (source.Bytes == nullptr && source.Size == 0 && source.Width == 0 && source.Height == 0)
         {
@@ -401,7 +407,8 @@ struct ForwardSceneResources::State final
         {
             TextureEntry& entry = Textures[i];
             if (entry.IsUsed == true && entry.Width == source.Width && entry.Height == source.Height &&
-                entry.Format == source.Format && AreBytesEqual(entry.Key, key) == true)
+                entry.Format == source.Format && entry.HasMipChain == shouldBuildMipChain &&
+                AreBytesEqual(entry.Key, key) == true)
             {
                 const Status status = rhi::GetStatus(Device, entry.Handle);
                 if (IsAccepted(status) == false)
@@ -443,10 +450,29 @@ struct ForwardSceneResources::State final
             TextureEntry& entry = Textures[i];
             if (entry.IsUsed == false)
             {
+                // Material textures are minified by the raster passes, so upload a complete box-filtered
+                // chain and let the samplers select levels. The identity key stays the authored level.
+                rhi::FormatCapabilities capabilities{};
+                uint32 levelCount = shouldBuildMipChain == true ? CountRgba8MipLevels(source.Width, source.Height) : 1;
+                if (rhi::GetFormatCapabilities(Device, source.Format, capabilities) == Status::Ready &&
+                    capabilities.MaxMipLevels != 0 && capabilities.MaxMipLevels < levelCount)
+                {
+                    levelCount = capabilities.MaxMipLevels;
+                }
+                Rgba8MipChain chain;
+                Status status = BuildRgba8MipChain(source, levelCount, chain);
+                if (status != Status::Ready)
+                {
+                    return status;
+                }
                 rhi::TextureDescription description{source.Width, source.Height, source.Format};
+                description.MipLevels = chain.LevelCount;
                 description.AsyncUpload = true;
-                const Status status =
-                    rhi::CreateTexture(Device, description, {{key.GetData(), key.GetSize()}, rowBytes}, entry.Handle);
+                status = rhi::CreateTexture(
+                    Device,
+                    description,
+                    {{chain.Bytes.GetData(), chain.Bytes.GetSize()}, 0, {chain.Mips.GetData(), chain.Mips.GetSize()}},
+                    entry.Handle);
                 if (IsAccepted(status) == true)
                 {
                     IdentityBytes += size;
@@ -454,6 +480,7 @@ struct ForwardSceneResources::State final
                     entry.Width = source.Width;
                     entry.Height = source.Height;
                     entry.Format = source.Format;
+                    entry.HasMipChain = shouldBuildMipChain;
                     entry.IsUsed = true;
                     entry.Pins = 1;
                     ++Report.CreatedTextures;
@@ -903,7 +930,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 chartOrNull->Scale.X >= 0 && chartOrNull->Scale.Y >= 0 && chartOrNull->Scale.Z >= 0 &&
                 BuildSurfaceChartMesh(mesh.Geometry, layout, expandedMesh, placementGeometry) == true)
             {
-                const Status status = owner.AcquireTexture(texture, chartTexture);
+                const Status status = owner.AcquireTexture(texture, false, chartTexture);
                 if (IsAccepted(status) == true && chartTexture != NO_RESOURCE)
                 {
                     static_cast<void>(candidate.TexturePins.TryAdd(chartTexture));
@@ -1020,9 +1047,12 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                                         1};
             description.Surface.UvTransform = material.UvTransform;
             description.Surface.Sampler = material.Sampler;
+            // The cache uploads every material texture with its minification chain; derivative LOD with
+            // linear level blending keeps distant detail at its mean instead of aliasing level zero.
+            description.Surface.Sampler.MipFilter = rhi::RasterMipFilter::Linear;
             description.Surface.Alpha = material.IsAlphaMasked == true ? MaterialAlpha::Masked : MaterialAlpha::Opaque;
             description.Surface.AlphaCutoff = material.AlphaCutoff;
-            description.Surface.Lod = 0;
+            description.Surface.Lod = -1;
             description.Metallic = material.Metallic;
             description.Roughness = material.Roughness;
             description.Scattering = material.Scattering;
@@ -1040,7 +1070,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             for (usize texture = 0; texture < MATERIAL_TEXTURE_COUNT; ++texture)
             {
                 usize index = NO_RESOURCE;
-                status = owner.AcquireTexture(sources[texture], index);
+                status = owner.AcquireTexture(sources[texture], true, index);
                 if (IsAccepted(status) == false)
                 {
                     return status;

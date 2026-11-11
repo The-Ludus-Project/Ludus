@@ -1279,6 +1279,191 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         }
         CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
     }
+    SECTION("far perspective camera keeps steep receivers free of self-shadowing")
+    {
+        // The World viewport uses conventional depth with a centimetre near plane. Tens of metres above a
+        // scene, several texels of the whole-scene map fall in each pixel and the receiver position carries
+        // the depth buffer's rounding. A flat receiver under one steep light must stay uniformly lit.
+        materials[1].Emission = {};
+        constexpr float32 RECEIVER_HALF_EXTENT_METERS = 20;
+        constexpr float32 RECEIVER_HEIGHT_METERS = .5F;
+        constexpr usize QUAD_VERTEX_COUNT = 4;
+        constexpr usize QUAD_INDEX_COUNT = 6;
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{
+            {{-RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {-RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS}}};
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+        const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+        meshes[0].Geometry = {quadPositions.GetData(),
+                              quadPositions.GetSize(),
+                              quadIndices.GetData(),
+                              quadIndices.GetSize()};
+        meshes[0].Geometry.Normals = quadNormals.GetData();
+
+        const float32 eyeHeightMeters = GENERATE(50.0F, 150.0F);
+        const float32 lightAngleDegrees = GENERATE(30.0F, 60.0F, 80.0F);
+        constexpr float32 NEAR_PLANE_METERS = .01F;
+        constexpr float32 FAR_PLANE_METERS = 400;
+        // The view spans the same ten metres of receiver around the centre at every eye height.
+        constexpr float32 VIEW_HALF_EXTENT_METERS = 10;
+        const float32 focal = eyeHeightMeters / VIEW_HALF_EXTENT_METERS;
+        const math::Vector3 eyeWorld{0, 0, RECEIVER_HEIGHT_METERS + eyeHeightMeters};
+        const float32 depthScale = FAR_PLANE_METERS / (FAR_PLANE_METERS - NEAR_PLANE_METERS);
+        renderer::ViewDescription& farCamera = fixture.Cameras[0];
+        farCamera.OrthographicCamera = false;
+        farCamera.Depth = renderer::DepthConvention::Conventional;
+        farCamera.CameraPosition = eyeWorld;
+        farCamera.CameraForward = {0, 0, -1};
+        farCamera.WorldToClip.Columns[0] = {focal, 0, 0, 0};
+        farCamera.WorldToClip.Columns[1] = {0, focal, 0, 0};
+        farCamera.WorldToClip.Columns[2] = {0, 0, -depthScale, -1};
+        farCamera.WorldToClip.Columns[3] = {0, 0, depthScale * (eyeWorld.Z - NEAR_PLANE_METERS), eyeWorld.Z};
+
+        // Only the red light casts. Its otherwise identical green control shows the unoccluded contribution.
+        const float32 lightAngleRadians = math::DegreesToRadians(lightAngleDegrees);
+        StaticArray<renderer::DirectLight, 2> lights;
+        lights[0].SourceId = 1;
+        lights[0].Kind = renderer::LightKind::Directional;
+        lights[0].Color = {1, 0, 0};
+        lights[0].Intensity = 8;
+        lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
+        lights[1] = lights[0];
+        lights[1].SourceId = 2;
+        lights[1].Color = {0, 1, 0};
+        lights[1].ShouldCastRasterShadows = false;
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        REQUIRE(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+        constexpr uint32 PROBE_HALF_WIDTH_PIXELS = 24;
+        constexpr uint32 PROBE_HALF_HEIGHT_PIXELS = 16;
+        constexpr float32 MAX_CHANNEL_DIFFERENCE = 2;
+        float32 maximumDifference = 0;
+        uint32 darkenedPixels = 0;
+        for (uint32 y = HEIGHT / 2 - PROBE_HALF_HEIGHT_PIXELS; y < HEIGHT / 2 + PROBE_HALF_HEIGHT_PIXELS; ++y)
+        {
+            for (uint32 x = WIDTH / 2 - PROBE_HALF_WIDTH_PIXELS; x < WIDTH / 2 + PROBE_HALF_WIDTH_PIXELS; ++x)
+            {
+                const usize pixel = GetPixel(x, y);
+                REQUIRE(fixture.Pixels[pixel + 1] > 32);
+                const float32 difference =
+                    math::Abs(float32(fixture.Pixels[pixel]) - float32(fixture.Pixels[pixel + 1]));
+                maximumDifference = math::Max(maximumDifference, difference);
+                darkenedPixels += difference > MAX_CHANNEL_DIFFERENCE ? 1 : 0;
+            }
+        }
+        CAPTURE(eyeHeightMeters, lightAngleDegrees, darkenedPixels);
+        CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
+    }
+    SECTION("oblique far cameras keep a grazing-lit receiver free of reconstruction acne")
+    {
+        // The resolve rebuilds each receiver from a conventional depth buffer. With a centimetre near plane the
+        // rebuilt position is uncertain by centimetres tens of metres away, differently at every pixel and for
+        // every camera pose. A grazing light turns that into dithered false shadows unless the comparison
+        // allows for it, so sweep sub-pixel poses of a camera that sees the receiver at varying depth.
+        materials[1].Emission = {};
+        constexpr float32 RECEIVER_HALF_EXTENT_METERS = 40;
+        constexpr float32 RECEIVER_HEIGHT_METERS = .5F;
+        constexpr usize QUAD_VERTEX_COUNT = 4;
+        constexpr usize QUAD_INDEX_COUNT = 6;
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{
+            {{-RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {-RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS}}};
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+        const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+        meshes[0].Geometry = {quadPositions.GetData(),
+                              quadPositions.GetSize(),
+                              quadIndices.GetData(),
+                              quadIndices.GetSize()};
+        meshes[0].Geometry.Normals = quadNormals.GetData();
+
+        constexpr float32 LIGHT_ANGLE_DEGREES = 75;
+        const float32 lightAngleRadians = math::DegreesToRadians(LIGHT_ANGLE_DEGREES);
+        // Only the red light casts. Its otherwise identical green control shows the unoccluded contribution.
+        StaticArray<renderer::DirectLight, 2> lights;
+        lights[0].SourceId = 1;
+        lights[0].Kind = renderer::LightKind::Directional;
+        lights[0].Color = {1, 0, 0};
+        lights[0].Intensity = 8;
+        lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
+        lights[1] = lights[0];
+        lights[1].SourceId = 2;
+        lights[1].Color = {0, 1, 0};
+        lights[1].ShouldCastRasterShadows = false;
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+
+        const float32 eyeDistanceMeters = GENERATE(50.0F, 120.0F);
+        constexpr float32 NEAR_PLANE_METERS = .01F;
+        constexpr float32 FAR_PLANE_METERS = 400;
+        constexpr float32 VERTICAL_FOV_RADIANS = .2F;
+        constexpr int32 POSE_COUNT = 8;
+        // A few millimetres between poses: far below a pixel, enough to change every rounding in the view.
+        constexpr float32 POSE_STEP_METERS = .0037F;
+        constexpr uint32 PROBE_HALF_WIDTH_PIXELS = 24;
+        constexpr uint32 PROBE_HALF_HEIGHT_PIXELS = 16;
+        constexpr float32 MAX_CHANNEL_DIFFERENCE = 2;
+        renderer::ViewMapping cameraMapping;
+        REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                             {0, 0, WIDTH, HEIGHT},
+                                             WIDTH,
+                                             HEIGHT,
+                                             cameraMapping) == rhi::RasterStatus::Ready);
+        float32 maximumDifference = 0;
+        uint32 darkenedPixels = 0;
+        for (int32 pose = 0; pose < POSE_COUNT; ++pose)
+        {
+            // Forty-five degrees above the receiver, so depth varies from pixel to pixel.
+            const float32 offset = eyeDistanceMeters * math::Sqrt(0.5F);
+            const math::Vector3 targetWorld{0, 0, RECEIVER_HEIGHT_METERS};
+            const math::Vector3 eyeWorld{static_cast<float32>(pose) * POSE_STEP_METERS,
+                                         -offset,
+                                         RECEIVER_HEIGHT_METERS + offset};
+            renderer::ProjectionDescription projection;
+            projection.Kind = renderer::ProjectionKind::Perspective;
+            REQUIRE(math::TryLookAt(eyeWorld, targetWorld, {0, 0, 1}, projection.WorldToView) ==
+                    math::MathStatus::Success);
+            projection.VerticalFovRadians = VERTICAL_FOV_RADIANS;
+            projection.Near = NEAR_PLANE_METERS;
+            projection.Far = FAR_PLANE_METERS;
+            renderer::ViewDescription& obliqueCamera = fixture.Cameras[0];
+            REQUIRE(renderer::BuildViewDescription(projection, cameraMapping, obliqueCamera) ==
+                    rhi::RasterStatus::Ready);
+            // The same finite reverse-Z to conventional rewrite the editor viewport applies: clip z becomes w - z.
+            for (math::Vector4& column : obliqueCamera.WorldToClip.Columns)
+            {
+                column.Z = column.W - column.Z;
+            }
+            obliqueCamera.Depth = renderer::DepthConvention::Conventional;
+            obliqueCamera.InfiniteFar = false;
+            obliqueCamera.OrthographicCamera = false;
+            obliqueCamera.CameraPosition = eyeWorld;
+            REQUIRE(math::TryNormalize(targetWorld - eyeWorld, obliqueCamera.CameraForward) ==
+                    math::MathStatus::Success);
+
+            REQUIRE(update(1) == rhi::RasterStatus::Ready);
+            render();
+            REQUIRE(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+            for (uint32 y = HEIGHT / 2 - PROBE_HALF_HEIGHT_PIXELS; y < HEIGHT / 2 + PROBE_HALF_HEIGHT_PIXELS; ++y)
+            {
+                for (uint32 x = WIDTH / 2 - PROBE_HALF_WIDTH_PIXELS; x < WIDTH / 2 + PROBE_HALF_WIDTH_PIXELS; ++x)
+                {
+                    const usize pixel = GetPixel(x, y);
+                    REQUIRE(fixture.Pixels[pixel + 1] > 32);
+                    const float32 difference =
+                        math::Abs(float32(fixture.Pixels[pixel]) - float32(fixture.Pixels[pixel + 1]));
+                    maximumDifference = math::Max(maximumDifference, difference);
+                    darkenedPixels += difference > MAX_CHANNEL_DIFFERENCE ? 1 : 0;
+                }
+            }
+        }
+        CAPTURE(eyeDistanceMeters, darkenedPixels);
+        CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
+    }
     SECTION("front-facing geometry stays lit at the shading-normal horizon")
     {
         materials[1].Emission = {};
@@ -1303,6 +1488,180 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         render();
         CHECK(fixture.Pixels[center] > 32);
     }
+}
+
+TEST_CASE("default deferred samples minified material textures at their mean", "[texture-mips][gpu]")
+{
+    // A one-texel black and white checker tiled thousands of times across a receiver seen from fifty
+    // metres has many checks per pixel. The chain's coarser levels hold the checker's linear mean, so
+    // the render must match the same receiver carrying a uniform texture of that mean.
+    constexpr usize POLL_ATTEMPTS = 10000;
+    constexpr usize QUAD_VERTEX_COUNT = 4;
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint8 CODE_MAXIMUM = 255;
+    constexpr uint32 CHECKER_EXTENT = 64;
+    // Not a power of two: pixel centres then land at varying texel phases, so level zero alone cannot
+    // average the checks by coincidence.
+    constexpr float32 CHECKER_REPEATS = 61;
+    constexpr float32 RECEIVER_HALF_EXTENT_METERS = 20;
+    constexpr float32 RECEIVER_HEIGHT_METERS = .5F;
+    constexpr float32 EYE_HEIGHT_METERS = 50;
+    constexpr float32 VIEW_HALF_EXTENT_METERS = 10;
+    constexpr float32 NEAR_PLANE_METERS = .01F;
+    constexpr float32 FAR_PLANE_METERS = 400;
+    constexpr uint32 PROBE_HALF_WIDTH_PIXELS = 24;
+    constexpr uint32 PROBE_HALF_HEIGHT_PIXELS = 16;
+    constexpr float32 MAX_CHANNEL_DIFFERENCE = 2;
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const auto poll = [&](rhi::RasterStatus status) {
+        for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    rhi::TextureHandle outputTexture;
+    rhi::TextureAspect outputAspect;
+    REQUIRE(fixture.Graph.GetExportAllocation(0, outputTexture, outputAspect) == rhi::RasterStatus::Ready);
+    renderer::Renderer compositor;
+    REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                       shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::Presentation presentation;
+    REQUIRE(compositor.PreparePresentation(outputTexture, mapping, presentation) == rhi::RasterStatus::Ready);
+    const auto render = [&]() {
+        REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+        REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus status = fixture.Graph.ConfirmSubmission(completion);
+        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    };
+
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{
+        {{-RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+         {RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+         {RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+         {-RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    const StaticArray<math::Vector2, QUAD_VERTEX_COUNT> quadUvs{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}};
+    const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+    StaticArray<renderer::RenderGraphMesh, 1> meshes{{fixture.Meshes[0]}};
+    meshes[0].Geometry = {quadPositions.GetData(),
+                          quadPositions.GetSize(),
+                          quadIndices.GetData(),
+                          quadIndices.GetSize()};
+    meshes[0].Geometry.Normals = quadNormals.GetData();
+    meshes[0].Geometry.Texcoords = quadUvs.GetData();
+    const uint32 receiverMaterial = 0;
+    meshes[0].MaterialBindings = {&receiverMaterial, 1};
+    StaticArray<renderer::RenderGraphItem, 1> items{{fixture.Items[0]}};
+
+    Array<uint8> checker;
+    REQUIRE(checker.TryResize(usize{CHECKER_EXTENT} * CHECKER_EXTENT * CHANNEL_COUNT) == true);
+    for (uint32 y = 0; y < CHECKER_EXTENT; ++y)
+    {
+        for (uint32 x = 0; x < CHECKER_EXTENT; ++x)
+        {
+            const uint8 code = ((x + y) & 1) == 0 ? 0 : CODE_MAXIMUM;
+            uint8* texel = checker.GetData() + (usize{y} * CHECKER_EXTENT + x) * CHANNEL_COUNT;
+            texel[0] = code;
+            texel[1] = code;
+            texel[2] = code;
+            texel[3] = CODE_MAXIMUM;
+        }
+    }
+    const uint8 meanCode =
+        static_cast<uint8>(math::Floor(static_cast<float64>(math::EncodeSrgb(0.5F)) * CODE_MAXIMUM + 0.5));
+    const StaticArray<uint8, CHANNEL_COUNT> uniform{{meanCode, meanCode, meanCode, CODE_MAXIMUM}};
+    StaticArray<renderer::SceneShaderMaterial, 1> materials{};
+    materials[0].BaseColor = {1, 1, 1};
+    materials[0].UvTransform = {CHECKER_REPEATS, CHECKER_REPEATS, 0, 0};
+    materials[0].Sampler.Filter = rhi::RasterFilter::Linear;
+    materials[0].Sampler.U = rhi::RasterAddress::Repeat;
+    materials[0].Sampler.V = rhi::RasterAddress::Repeat;
+    renderer::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = renderer::LightKind::Directional;
+    light.Direction = {0, 0, -1};
+    light.Intensity = 2;
+    light.ShouldCastRasterShadows = false;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    inputs.Lights = {&light, 1};
+
+    const math::Vector3 eyeWorld{0, 0, RECEIVER_HEIGHT_METERS + EYE_HEIGHT_METERS};
+    const float32 focal = EYE_HEIGHT_METERS / VIEW_HALF_EXTENT_METERS;
+    const float32 depthScale = FAR_PLANE_METERS / (FAR_PLANE_METERS - NEAR_PLANE_METERS);
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.OrthographicCamera = false;
+    camera.Depth = renderer::DepthConvention::Conventional;
+    camera.CameraPosition = eyeWorld;
+    camera.CameraForward = {0, 0, -1};
+    camera.WorldToClip.Columns[0] = {focal, 0, 0, 0};
+    camera.WorldToClip.Columns[1] = {0, focal, 0, 0};
+    camera.WorldToClip.Columns[2] = {0, 0, -depthScale, -1};
+    camera.WorldToClip.Columns[3] = {0, 0, depthScale * (eyeWorld.Z - NEAR_PLANE_METERS), eyeWorld.Z};
+
+    uint64 revision = 0;
+    const auto update = [&]() {
+        renderer::RenderGraphReport report;
+        ++revision;
+        return poll(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                         {items.GetData(), items.GetSize()},
+                                         {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                         revision,
+                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                         report,
+                                         &inputs,
+                                         revision));
+    };
+    materials[0]
+        .ColorTexture = {uniform.GetData(), uniform.GetSize(), CHANNEL_COUNT, 1, 1, rhi::RasterFormat::Rgba8Srgb};
+    REQUIRE(update() == rhi::RasterStatus::Ready);
+    render();
+    const StaticArray<uint8, PIXEL_BYTES> uniformPixels = fixture.Pixels;
+    REQUIRE(uniformPixels[GetPixel(WIDTH / 2, HEIGHT / 2)] > 32);
+
+    materials[0].ColorTexture = {checker.GetData(),
+                                 checker.GetSize(),
+                                 usize{CHECKER_EXTENT} * CHANNEL_COUNT,
+                                 CHECKER_EXTENT,
+                                 CHECKER_EXTENT,
+                                 rhi::RasterFormat::Rgba8Srgb};
+    REQUIRE(update() == rhi::RasterStatus::Ready);
+    render();
+    float32 maximumDifference = 0;
+    uint32 differingPixels = 0;
+    for (uint32 y = HEIGHT / 2 - PROBE_HALF_HEIGHT_PIXELS; y < HEIGHT / 2 + PROBE_HALF_HEIGHT_PIXELS; ++y)
+    {
+        for (uint32 x = WIDTH / 2 - PROBE_HALF_WIDTH_PIXELS; x < WIDTH / 2 + PROBE_HALF_WIDTH_PIXELS; ++x)
+        {
+            const usize pixel = GetPixel(x, y);
+            const float32 difference = math::Abs(float32(fixture.Pixels[pixel]) - float32(uniformPixels[pixel]));
+            maximumDifference = math::Max(maximumDifference, difference);
+            differingPixels += difference > MAX_CHANNEL_DIFFERENCE ? 1 : 0;
+        }
+    }
+    CAPTURE(differingPixels);
+    CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
 }
 
 namespace
