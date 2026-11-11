@@ -54,6 +54,11 @@ public:
                                    foundation::math::Vector2 orbitDegrees,
                                    foundation::float32 distance) noexcept;
     [[nodiscard]] bool TryRotate(foundation::float32 deltaX, foundation::float32 deltaY, bool isOrbit) noexcept;
+    /// Move the eye and pivot across the view by a pointer delta in logical pixels, so the scene
+    /// follows the pointer; heightLogical is the drawable height and aspect its width over height.
+    /// In an axis view the movement stays exactly in the plane across the viewed world axis (XZ for
+    /// Top and Bottom, XY for Front and Back, YZ for Right and Left), so the eye and pivot keep
+    /// their coordinate along that axis. Failure preserves the camera.
     [[nodiscard]] bool TryPan(foundation::float32 deltaX,
                               foundation::float32 deltaY,
                               foundation::float32 heightLogical,

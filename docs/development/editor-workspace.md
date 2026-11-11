@@ -1482,7 +1482,10 @@ The toolbar's **View** menu switches the editor camera between **Perspective** a
 looks along −Z). Axis views keep the pivot and the visible size there, and move the
 eye outside the scene bounds so no geometry is clipped. The button names the current
 view; after orbiting away from an axis it reads **Orthographic**. Top and Bottom
-stop 0.1° short of vertical so orbiting continues smoothly from them. Choosing
+stop 0.1° short of vertical so orbiting continues smoothly from them. Panning in an
+axis view (middle drag, or Shift+Alt/Option+left drag) moves the camera only in the
+plane across the viewed axis: XZ in Top and Bottom, XY in Front and Back, YZ in Right
+and Left. The camera and its orbit pivot keep their coordinate along that axis. Choosing
 **Perspective** again restores the field of view and the same framing at the pivot.
 **FOV**, near the bottom of the same menu, sets the perspective vertical field of view
 from 10° to 120°; it is disabled in orthographic views. Like other navigation, these detach an authored camera,
