@@ -7,14 +7,15 @@
 
 #include <QAbstractButton>
 #include <QAction>
-#include <QApplication>
 #include <QComboBox>
 #include <QDir>
 #include <QImage>
 #include <QList>
 #include <QMenu>
+#include <QObject>
 #include <QPixmap>
 #include <QRect>
+#include <QSignalSpy>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -156,14 +157,14 @@ TEST_CASE("Viewport toolbar keeps every label whole and apart at every width", "
             // The chevron opens a menu of the commands that did not fit, so none becomes unreachable.
             QToolButton* chevron = toolbar->findChild<QToolButton*>(QStringLiteral("qt_toolbar_ext_button"));
             REQUIRE(chevron != nullptr);
+            QMenu* menu = chevron->menu();
+            REQUIRE(menu != nullptr);
+            const QSignalSpy menuShown(menu, &QMenu::aboutToShow);
             QStringList overflowTexts;
-            QTimer::singleShot(SETTLE_MILLISECONDS, &viewport, [&overflowTexts, &screenshotDirectory, width]() {
-                QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-                if (menuOrNull == nullptr)
-                {
-                    return;
-                }
-                for (const QAction* action : menuOrNull->actions())
+            QTimer closeMenu;
+            closeMenu.setSingleShot(true);
+            QObject::connect(&closeMenu, &QTimer::timeout, menu, [menu, &overflowTexts, &screenshotDirectory, width]() {
+                for (const QAction* action : menu->actions())
                 {
                     overflowTexts.append(action->text());
                 }
@@ -171,12 +172,13 @@ TEST_CASE("Viewport toolbar keeps every label whole and apart at every width", "
                 {
                     const QString path =
                         QDir(screenshotDirectory).filePath(QStringLiteral("toolbar-%1-overflow-open.png").arg(width));
-                    CHECK(menuOrNull->grab().save(path) == true);
+                    CHECK(menu->grab().save(path) == true);
                 }
-                menuOrNull->close();
+                menu->close();
             });
-            chevron->click();
-            QTest::qWait(SETTLE_MILLISECONDS * 2);
+            closeMenu.start(SETTLE_MILLISECONDS);
+            chevron->showMenu();
+            REQUIRE(menuShown.size() == 1);
             INFO(overflowTexts.join(QStringLiteral(", ")).toStdString());
             for (QAction* action : toolbar->actions())
             {

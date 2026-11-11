@@ -2,6 +2,18 @@
 #include "math.slang"
 #include "renderer_gpu_preview_layout.h"
 
+// Thanks to Romain Guy and Mathias Agopian, "Physically Based Rendering in Filament", section 4.4.2,
+// https://google.github.io/filament/Filament.html#toc4.4.2. The cross product preserves sine squared near the
+// highlight. The reference paths use binary32 without Filament's fp16 clamp.
+float ComputeGgxNormalDistribution(float3 normalWorld, float3 halfWorld, float alphaSquared)
+{
+    float halfCosine = saturate(dot(normalWorld, halfWorld));
+    float3 crossWorld = cross(normalWorld, halfWorld);
+    float halfSineSquared = halfCosine > 0 ? dot(crossWorld, crossWorld) : 1;
+    float denominator = halfSineSquared + halfCosine * halfCosine * alphaSquared;
+    return alphaSquared / (PI * denominator * denominator);
+}
+
 // Thanks to Pharr, Jakob and Humphreys, Physically Based Rendering, 4th ed., section 9.3,
 // https://pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission:
 // complex-IOR unpolarized Fresnel, matching reference_bsdf.cpp's RGB proxy.

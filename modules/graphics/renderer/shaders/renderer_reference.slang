@@ -728,13 +728,10 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     if (bsdf.Model == MaterialModel::Diffuse || (isMix == true && bsdf.Metallic == 0))
         return float4(bsdf.BaseColor / PI, nl / PI);
     float3 halfWorld = NormalizeOrZero(viewWorld + lightWorld);
-    float nh = clamp(dot(normalWorld, halfWorld), 0, 1);
     float vh = clamp(dot(viewWorld, halfWorld), 0, 1);
     float alpha = ComputeMaterialAlpha(bsdf.Model, bsdf.Roughness, bsdf.Alpha);
     float alphaSquared = alpha * alpha;
-    // This stable equivalent avoids cancellation at low roughness and nh~=1.
-    float denominator = (1 - nh * nh) + nh * nh * alphaSquared;
-    float distribution = alphaSquared / (PI * denominator * denominator);
+    float distribution = ComputeGgxNormalDistribution(normalWorld, halfWorld, alphaSquared);
     float lambdaView = sqrt(nv * nv * (1 - alphaSquared) + alphaSquared);
     float lambdaLight = sqrt(nl * nl * (1 - alphaSquared) + alphaSquared);
     float visibility = .5 / max(nl * lambdaView + nv * lambdaLight, SMITH_DENOMINATOR_FLOOR);

@@ -149,12 +149,10 @@ float4 EvaluateMaterialProgramLobe(MaterialProgramLobe lobe,
     if (lobe.Operation == MaterialLobeOperation::Conductor)
     {
         float3 halfWorld = NormalizeOrZero(viewWorld + lightWorld);
-        float nh = clamp(dot(normalWorld, halfWorld), 0, 1);
         float vh = clamp(dot(viewWorld, halfWorld), 0, 1);
         float alpha = lobe.Roughness * lobe.Roughness;
         float alphaSquared = alpha * alpha;
-        float denominator = (1 - nh * nh) + nh * nh * alphaSquared;
-        float distribution = alphaSquared / (PI * denominator * denominator);
+        float distribution = ComputeGgxNormalDistribution(normalWorld, halfWorld, alphaSquared);
         float lambdaView = sqrt(nv * nv * (1 - alphaSquared) + alphaSquared);
         float lambdaLight = sqrt(nl * nl * (1 - alphaSquared) + alphaSquared);
         float visibility = .5 / max(nl * lambdaView + nv * lambdaLight, MATERIAL_PROGRAM_SMITH_FLOOR);
