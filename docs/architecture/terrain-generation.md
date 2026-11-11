@@ -2,8 +2,12 @@
 
 Status: the World editor supports a bounded, versioned heightfield recipe and
 mesh preview in default Worlds. See [World authoring](../development/editor-workspace.md#s4-scene-authoring).
-The terrain content formats, reusable cooker, erosion, and streamed terrain
-described below are proposed alongside [terrain systems](terrain.md).
+[`Ludus::ContentTerrain`](../modules/content/terrain.md) implements the first T1
+kernels headlessly: the editor's elevation recipe, slope, whole-domain D8
+drainage over a depression-filled surface, a wetness field and material rules
+with bounded patch palettes. The terrain content formats, imports and stamps as
+cooker stages, erosion, and streamed terrain described below remain proposed
+alongside [terrain systems](terrain.md).
 
 Generate a terrain as an editable base plus explicit authored layers, then cook
 the result into canonical height/material/hole pages. The default is a finite
