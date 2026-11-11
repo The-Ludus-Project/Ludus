@@ -389,12 +389,18 @@ void SynchronizeWorldGiProbeLayout(const QJsonObject& previousComponents, QJsonO
     QJsonObject volume = inoutComponents.value(component).toObject();
     if (next == GiProbeLayout::Volume)
     {
-        // The counts' extent at the new spacing becomes the size, so the grid keeps its probes.
+        // Keep any scale edits made alongside the layout change. Untouched edges inherit the counts' extent.
+        const QJsonObject previousTransform = previousComponents.value(QStringLiteral("transform")).toObject();
+        const QJsonObject editedTransform = inoutComponents.value(QStringLiteral("transform")).toObject();
         const float64 spacing = volume.value(QStringLiteral("spacing")).toDouble();
         for (usize axis = 0; axis < POSITION_AXES.GetSize(); ++axis)
         {
-            const float64 intervals = volume.value(GetProbeCountKey(POSITION_AXES[axis])).toDouble() - 1;
-            WriteWorldGiProbeSize(inoutComponents, axis, math::Max(intervals, 1.0) * spacing);
+            const QString scaleKey = GetScaleKey(POSITION_AXES[axis]);
+            if (editedTransform.value(scaleKey) == previousTransform.value(scaleKey))
+            {
+                const float64 intervals = volume.value(GetProbeCountKey(POSITION_AXES[axis])).toDouble() - 1;
+                WriteWorldGiProbeSize(inoutComponents, axis, math::Max(intervals, 1.0) * spacing);
+            }
         }
         return;
     }

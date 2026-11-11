@@ -3890,18 +3890,6 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
 
 namespace
 {
-/// Switch an authored volume to the given layout through the document, as the inspector's Apply would.
-void SetGiProbeLayout(WorldDocument& inoutDocument, const QString& volume, GiProbeLayout layout)
-{
-    const QJsonObject entity = inoutDocument.Entity(volume);
-    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
-    QJsonObject values = components.value(GetGiProbeVolumeComponentId()).toObject();
-    values.insert(GetGiProbeLayoutKey(), GetGiProbeLayoutWord(layout));
-    components.insert(GetGiProbeVolumeComponentId(), values);
-    QString error;
-    REQUIRE(inoutDocument.Edit(volume, components, entity.value(QStringLiteral("name")).toString(), error) == true);
-}
-
 /// The volume's Transform scale on one axis, as the World stores it.
 ludus::foundation::float64 ReadGiProbeScale(const WorldDocument& document, const QString& volume, const QString& key)
 {
@@ -4174,7 +4162,7 @@ TEST_CASE("World viewport resizes a volume-layout GI probe box and its probes fo
         CHECK(readVolume().Grid.Counts[0] == 6);
     }
 
-    SECTION("The minimum face keeps the far corner fixed, stops at the probe limit and outlines the gap")
+    SECTION("The minimum face grows past the probe limit, keeping the far corner fixed")
     {
         const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
         REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
@@ -4182,7 +4170,7 @@ TEST_CASE("World viewport resizes a volume-layout GI probe box and its probes fo
         const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT);
         REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
         interaction.BuildOverlay(framePixel, overlay);
-        CHECK(overlay.ReadoutText.contains(QStringLiteral("(limit)")) == true);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("(probe limit)")) == true);
         REQUIRE(interaction.Release() == true);
         const WorldGiProbeVolume resized = readVolume();
         CHECK(resized.Grid.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
@@ -4239,7 +4227,13 @@ TEST_CASE("World viewport moves, resizes and scales an unbaked counts-layout GI 
     QString volume;
     REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), mesh, error) == true);
     REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
-    SetGiProbeLayout(document, volume, GiProbeLayout::Counts);
+    const QJsonObject entity = document.Entity(volume);
+    QJsonObject legacyComponents = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject legacyProbe = legacyComponents.value(GetGiProbeVolumeComponentId()).toObject();
+    legacyProbe.remove(GetGiProbeLayoutKey());
+    legacyComponents.insert(GetGiProbeVolumeComponentId(), legacyProbe);
+    WriteWorldGiProbeSize(legacyComponents, 1, 1);
+    REQUIRE(document.Edit(volume, legacyComponents, entity.value(QStringLiteral("name")).toString(), error) == true);
     const QString path = QDir(root).filePath(QStringLiteral("probe-gizmo.world.json"));
     Write(path, document.Encode());
     WorldWorkspace workspace;
@@ -4315,18 +4309,81 @@ TEST_CASE("World viewport moves, resizes and scales an unbaked counts-layout GI 
         CHECK(readGrid().Counts[0] == resized.Counts[0]);
     }
 
-    SECTION("The minimum face keeps the far corner fixed and clamps to the probe limit")
+    SECTION("Dragging the minimum face past the probe limit offers a layout change and resize")
     {
         const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
-        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
-        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
         const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT) * original.Spacing;
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        REQUIRE(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
         REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
-        REQUIRE(interaction.Release() == true);
-        const renderer::GiProbeGrid resized = readGrid();
-        CHECK(resized.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
-        CHECK(resized.OriginWorld.X < original.OriginWorld.X);
-        CHECK(ComputeWorldGiProbeBounds(resized).Max == boundsWorld.Max);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("Release to switch layout")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        const auto closeConfirmation = [](bool shouldResize) {
+            QTimer::singleShot(0, [shouldResize]() {
+                QMessageBox* boxOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                REQUIRE(boxOrNull != nullptr);
+                CHECK(boxOrNull->defaultButton() == boxOrNull->button(QMessageBox::Cancel));
+                if (shouldResize == true)
+                {
+                    QPushButton* resizeOrNull =
+                        boxOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmProbeVolumeResize"));
+                    REQUIRE(resizeOrNull != nullptr);
+                    resizeOrNull->click();
+                }
+                else
+                {
+                    boxOrNull->defaultButton()->click();
+                }
+            });
+        };
+        SECTION("Cancel keeps the legacy layout and bounds")
+        {
+            closeConfirmation(false);
+            REQUIRE(interaction.Release() == true);
+            CHECK(workspace.Document().Draft() == before);
+        }
+        SECTION("Confirm switches layouts and resizes in one undoable edit")
+        {
+            closeConfirmation(true);
+            REQUIRE(interaction.Release() == true);
+            const QJsonObject components =
+                workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject();
+            WorldGiProbeVolume resized;
+            REQUIRE(ReadWorldGiProbeVolume(components, resized, error) == true);
+            CHECK(resized.Layout == GiProbeLayout::Volume);
+            CHECK(resized.Grid.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+            CHECK(resized.Grid.Spacing == original.Spacing);
+            CHECK(resized.IsCoverageLimited() == true);
+            CHECK(resized.SizeWorld.X == boundsWorld.Max.X - boundsWorld.Min.X + dragMetres);
+            CHECK(ComputeWorldGiProbeVolumeBounds(resized).Max == boundsWorld.Max);
+            workspace.Undo();
+            CHECK(workspace.Document().Draft() == before);
+            workspace.Redo();
+            CHECK(readGrid().OriginWorld == resized.Grid.OriginWorld);
+        }
+    }
+
+    SECTION("The inspector applies a legacy volume's new layout and explicit edge length together")
+    {
+        QComboBox* layoutOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:giProbeVolume/layout"));
+        REQUIRE(layoutOrNull != nullptr);
+        CHECK(layoutOrNull->currentData().toString() == GetGiProbeLayoutWord(GiProbeLayout::Counts));
+        layoutOrNull->setCurrentIndex(layoutOrNull->findData(GetGiProbeLayoutWord(GiProbeLayout::Volume)));
+        QLineEdit* scaleOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sx"));
+        REQUIRE(scaleOrNull != nullptr);
+        Type(scaleOrNull, QStringLiteral("43"));
+        REQUIRE(workspace.Apply() == true);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sx")) == 43);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sy")) ==
+              static_cast<float64>(boundsWorld.Max.Y - boundsWorld.Min.Y));
+        CHECK(readGrid().Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        QLabel* summaryOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldProbeSummary"));
+        REQUIRE(summaryOrNull != nullptr);
+        CHECK(summaryOrNull->text().contains(QStringLiteral("Volume size 43 × 3 × 3 m")) == true);
+        QLineEdit* derivedScaleOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sy"));
+        REQUIRE(derivedScaleOrNull != nullptr);
+        CHECK(derivedScaleOrNull->text() == QStringLiteral("3"));
         workspace.Undo();
         CHECK(workspace.Document().Draft() == before);
     }
