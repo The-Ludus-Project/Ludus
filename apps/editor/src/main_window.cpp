@@ -85,6 +85,8 @@ namespace
 constexpr foundation::int32 BUILD_ERRORS_DELAY_MILLISECONDS = 250;
 /// How long a game playing in the viewport gets to close its window before Stop ends its process.
 constexpr foundation::int32 PLAY_CLOSE_GRACE_MILLISECONDS = 3000;
+/// How long the status bar confirms a Tab Moves Focus change.
+constexpr foundation::int32 TAB_FOCUS_MESSAGE_MILLISECONDS = 4000;
 } // namespace
 
 MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QString& workspaceSettingsFile)
@@ -114,6 +116,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mOptionsAction(CreateEditorCommand(TOOLS_OPTIONS_COMMAND, this)),
       mCommandPaletteAction(CreateEditorCommand(TOOLS_COMMAND_PALETTE_COMMAND, this)),
       mRunInContextAction(CreateEditorCommand(TOOLS_RUN_IN_CONTEXT_COMMAND, this)),
+      mTabMovesFocusAction(CreateEditorCommand(EDITOR_TAB_MOVES_FOCUS_COMMAND, this)),
       mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
       mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this)),
       mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this)),
@@ -369,6 +372,15 @@ void MainWindow::BuildMenus()
     });
     editMenu->addSeparator();
     editMenu->addAction(mRemoveUnusedShadersAction);
+    editMenu->addSeparator();
+    editMenu->addAction(mTabMovesFocusAction);
+    mTabMovesFocusAction->setChecked(IsCodeEditorTabMovingFocus());
+    connect(mTabMovesFocusAction, &QAction::toggled, this, [this](bool isTabMovingFocus) {
+        SetCodeEditorTabMovesFocus(isTabMovingFocus);
+        statusBar()->showMessage(isTabMovingFocus == true ? QStringLiteral("Tab now moves focus out of code editors.")
+                                                          : QStringLiteral("Tab now indents in code editors."),
+                                 TAB_FOCUS_MESSAGE_MILLISECONDS);
+    });
     connect(mRemoveUnusedShadersAction, &QAction::triggered, this, [this]() {
         static_cast<void>(Renderer_->RemoveUnusedShaders());
         renderGraphCommands();
@@ -2002,14 +2014,14 @@ void MainWindow::OnCloseProject()
 void MainWindow::ShowShortcuts()
 {
     // The same entries as the command palette: whatever the menus hold, grouped by menu.
-    ShortcutList* list = new ShortcutList(CollectPaletteEntries(*menuBar()), this);
+    ShortcutList* list = new ShortcutList(CollectWindowPaletteEntries(*this), this);
     list->open();
 }
 
 void MainWindow::showCommandPalette(bool isEnabledOnly)
 {
     // Built on demand and deleted on close, so a closed palette costs nothing.
-    CommandPalette* palette = new CommandPalette(CollectPaletteEntries(*menuBar()), isEnabledOnly, this);
+    CommandPalette* palette = new CommandPalette(CollectWindowPaletteEntries(*this), isEnabledOnly, this);
     palette->open();
 }
 

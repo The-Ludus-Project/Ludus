@@ -2,7 +2,9 @@
 
 #include "internal/render_scene.h"
 #include "internal/world_document.h"
+#include "internal/world_terrain_surface.h"
 
+#include <ludus/content/terrain/terrain_fields.h>
 #include <ludus/content/terrain/terrain_noise.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/addressed_random.hpp>
@@ -29,7 +31,7 @@ constexpr int32 AUTHORED_TERRAIN_VERSION = 2;
 constexpr int32 SCULPT_TERRAIN_VERSION = 3;
 constexpr int32 MAX_TERRAIN_SAMPLES_PER_AXIS = 64;
 constexpr qsizetype MAX_TERRAIN_STROKES = 16;
-constexpr int64 MAX_TERRAIN_HEIGHTMAP_FILE_BYTES = 64 * 1024;
+constexpr int64 MAX_TERRAIN_HEIGHTMAP_FILE_BYTES = int64{64} * 1024;
 constexpr uint32 HEIGHTMAP_SAMPLE_MAXIMUM = 65535;
 constexpr uint32 GRAYSCALE_BYTE_MAXIMUM = 255;
 constexpr qsizetype PNG_BIT_DEPTH_OFFSET = 24;
@@ -47,6 +49,19 @@ constexpr QLatin1StringView RAISE_LOWER_KIND("RaiseLower");
 constexpr QLatin1StringView SMOOTH_KIND("Smooth");
 constexpr QLatin1StringView HEIGHTMAP_SHAPE("Heightmap");
 constexpr uint32 TERRAIN_RANDOM_DOMAIN = 1;
+/// Random domain of the baked surface's brightness variation; independent of the elevation noise.
+constexpr uint32 TERRAIN_SURFACE_RANDOM_DOMAIN = 2;
+constexpr QLatin1StringView SURFACE_FIELD("surface");
+constexpr QLatin1StringView SNOW_LINE_FIELD("snowLine");
+constexpr QLatin1StringView RIVERS_FIELD("rivers");
+constexpr QLatin1StringView RIVER_SOURCE_FIELD("riverSource");
+constexpr QLatin1StringView PLAIN_SURFACE("Plain");
+/// Defaults of the surface fields, read when an older World omits them; terrain.component.json declares the same
+/// values, which world_terrain_tests checks.
+constexpr float64 DEFAULT_SNOW_LINE_METRES = 6;
+constexpr float64 DEFAULT_RIVER_SOURCE_SHARE = 0.03;
+/// Suffix of generated water object identifiers; entity keys cannot contain '#'.
+constexpr QLatin1StringView WATER_OBJECT_SUFFIX("#water");
 constexpr uint32 INDICES_PER_CELL = 6;
 struct TerrainStroke final
 {
@@ -315,6 +330,7 @@ void ApplyTerrainStrokes(const QList<TerrainStroke>& strokes,
     }
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): columns then rows, the grid order used throughout.
 void BuildTerrainNormals(uint32 columns, uint32 rows, PreviewMesh& inoutMesh)
 {
     for (uint32 z = 0; z < rows; ++z)
@@ -535,7 +551,28 @@ bool AppendTerrainStroke(QJsonObject& inoutRecipe,
     return true;
 }
 
-bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError)
+bool IsTerrainSurfaceProperty(const QString& property)
+{
+    return property == SURFACE_FIELD || property == SNOW_LINE_FIELD || property == RIVERS_FIELD ||
+           property == RIVER_SOURCE_FIELD;
+}
+
+QString GetTerrainWaterObjectId(const QString& entityKey)
+{
+    return entityKey + WATER_OBJECT_SUFFIX;
+}
+
+bool IsTerrainWaterObjectId(const QString& objectId)
+{
+    return objectId.endsWith(WATER_OBJECT_SUFFIX);
+}
+
+namespace
+{
+bool BuildTerrainParts(const QJsonObject& recipe,
+                       bool shouldBuildPresentation,
+                       TerrainBuild& outBuild,
+                       QString& outError)
 {
     TerrainPayload payload;
     if (ReadTerrainPayload(recipe, payload, outError) == false)
@@ -583,11 +620,12 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
     }
 
     PreviewMesh mesh;
-    mesh.Id = outMesh.Id;
-    mesh.Positions.reserve(columns * rows);
-    mesh.Uvs.reserve(columns * rows);
-    mesh.Normals.reserve(columns * rows);
-    mesh.Indices.reserve(INDICES_PER_CELL * cellsX * cellsZ);
+    mesh.Id = outBuild.Mesh.Id;
+    const qsizetype vertexCount = static_cast<qsizetype>(columns) * rows;
+    mesh.Positions.reserve(vertexCount);
+    mesh.Uvs.reserve(vertexCount);
+    mesh.Normals.reserve(vertexCount);
+    mesh.Indices.reserve(static_cast<qsizetype>(INDICES_PER_CELL) * cellsX * cellsZ);
     for (uint32 z = 0; z < rows; ++z)
     {
         const float64 v = static_cast<float64>(z) / cellsZ;
@@ -621,9 +659,84 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
             }
         }
     }
+    const content::terrain::TerrainFieldGrid grid
+    {
+        .Columns = columns,
+        .Rows = rows,
+        .SpacingXMetres = static_cast<float32>(width / cellsX),
+        .SpacingZMetres = static_cast<float32>(depth / cellsZ),
+    };
+    // Rivers shape the base before authored strokes, which may still fill or deepen a channel.
+    TerrainWaterLevels water;
+    const bool hasRivers = recipe.value(RIVERS_FIELD).toBool(false);
+    if (hasRivers == true &&
+        CarveTerrainRivers(grid,
+                           static_cast<float32>(recipe.value(RIVER_SOURCE_FIELD).toDouble(DEFAULT_RIVER_SOURCE_SHARE)),
+                           mesh.Positions,
+                           water,
+                           outError) == false)
+    {
+        return false;
+    }
     ApplyTerrainStrokes(payload.Strokes, columns, rows, mesh.Positions);
     BuildTerrainNormals(columns, rows, mesh);
-    outMesh = Move(mesh);
+    TerrainBuild build;
+    if (shouldBuildPresentation == true && recipe.value(SURFACE_FIELD).toString() != PLAIN_SURFACE)
+    {
+        math::RandomKey variationKey;
+        if (math::TryMakeRandomKey(static_cast<uint64>(recipe.value(QStringLiteral("seed")).toInt()),
+                                   TERRAIN_SURFACE_RANDOM_DOMAIN,
+                                   variationKey) != math::MathStatus::Success ||
+            BakeTerrainSurface(grid,
+                               mesh.Positions,
+                               hasRivers == true ? &water : nullptr,
+                               static_cast<float32>(recipe.value(SNOW_LINE_FIELD).toDouble(DEFAULT_SNOW_LINE_METRES)),
+                               variationKey,
+                               build.BaseColor,
+                               build.BaseColorMean,
+                               outError) == false)
+        {
+            if (outError.isEmpty() == true)
+            {
+                outError = QStringLiteral("Choose a valid terrain seed.");
+            }
+            return false;
+        }
+    }
+    if (shouldBuildPresentation == true && hasRivers == true)
+    {
+        BuildTerrainWaterMesh(grid, mesh.Positions, mesh.Uvs, water, build.Water);
+    }
+    build.Mesh = Move(mesh);
+    outBuild = Move(build);
+    return true;
+}
+} // namespace
+
+bool BuildTerrain(const QJsonObject& recipe, TerrainBuild& outBuild, QString& outError)
+{
+    TerrainBuild build;
+    build.Mesh.Id = outBuild.Mesh.Id;
+    build.Water.Id = outBuild.Water.Id;
+    if (BuildTerrainParts(recipe, true, build, outError) == false)
+    {
+        return false;
+    }
+    build.Mesh.Id = outBuild.Mesh.Id;
+    build.Water.Id = outBuild.Water.Id;
+    outBuild = Move(build);
+    return true;
+}
+
+bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError)
+{
+    TerrainBuild build;
+    if (BuildTerrainParts(recipe, false, build, outError) == false)
+    {
+        return false;
+    }
+    build.Mesh.Id = outMesh.Id;
+    outMesh = Move(build.Mesh);
     return true;
 }
 

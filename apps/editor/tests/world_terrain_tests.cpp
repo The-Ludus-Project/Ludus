@@ -119,6 +119,118 @@ TEST_CASE("Terrain extraction is seeded, resolution independent and safe at the 
     CHECK(world.Draft() == applied);
 }
 
+TEST_CASE("Terrain bakes a surface from its fields and carves rivers with water", "[editor][world][terrain]")
+{
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    const QJsonObject defaults = GetDefaultRecipe(world);
+    INFO(error.toStdString());
+
+    TerrainBuild generated;
+    REQUIRE(BuildTerrain(defaults, generated, error) == true);
+    REQUIRE(generated.BaseColor.isNull() == false);
+    const qsizetype cells = defaults.value(QStringLiteral("samples")).toInt() - 1;
+    CHECK(generated.BaseColor.width() == 4 * cells);
+    CHECK(generated.BaseColor.height() == 4 * cells);
+    CHECK(generated.Water.Positions.isEmpty() == true);
+    CHECK(generated.BaseColorMean.X > 0);
+    CHECK(generated.BaseColorMean.X < 1);
+
+    SECTION("an older recipe without the surface fields builds as the schema defaults")
+    {
+        QJsonObject older = defaults;
+        for (const QString& key : {QStringLiteral("surface"),
+                                   QStringLiteral("snowLine"),
+                                   QStringLiteral("rivers"),
+                                   QStringLiteral("riverSource")})
+        {
+            CHECK(IsTerrainSurfaceProperty(key) == true);
+            older.remove(key);
+        }
+        TerrainBuild rebuilt;
+        REQUIRE(BuildTerrain(older, rebuilt, error) == true);
+        CHECK(rebuilt.BaseColor == generated.BaseColor);
+        CHECK(rebuilt.Mesh.Positions == generated.Mesh.Positions);
+        QString key;
+        CHECK(EditWorldTerrain(world, tests::MakeFixedEntropySource(), {}, older, key, error) == true);
+    }
+
+    SECTION("a plain surface bakes nothing")
+    {
+        QJsonObject plain = defaults;
+        plain.insert(QStringLiteral("surface"), QStringLiteral("Plain"));
+        TerrainBuild build;
+        REQUIRE(BuildTerrain(plain, build, error) == true);
+        CHECK(build.BaseColor.isNull() == true);
+        CHECK(build.Mesh.Positions == generated.Mesh.Positions);
+    }
+
+    SECTION("the snow line moves snow over the whole terrain")
+    {
+        QJsonObject snowy = defaults;
+        snowy.insert(QStringLiteral("snowLine"), -100);
+        TerrainBuild covered;
+        REQUIRE(BuildTerrain(snowy, covered, error) == true);
+        snowy.insert(QStringLiteral("snowLine"), 100);
+        TerrainBuild bare;
+        REQUIRE(BuildTerrain(snowy, bare, error) == true);
+        CHECK(covered.BaseColorMean.Y > 0.6F);
+        CHECK(bare.BaseColorMean.Y < 0.3F);
+    }
+
+    SECTION("rivers lower the base, hold water and extract as presentation of the terrain")
+    {
+        QJsonObject recipe = defaults;
+        recipe.insert(QStringLiteral("shape"), QStringLiteral("Ridges"));
+        recipe.insert(QStringLiteral("width"), 128);
+        recipe.insert(QStringLiteral("depth"), 96);
+        recipe.insert(QStringLiteral("maximumElevation"), 24);
+        recipe.insert(QStringLiteral("featureSize"), 64);
+        recipe.insert(QStringLiteral("samples"), 64);
+        TerrainBuild dry;
+        REQUIRE(BuildTerrain(recipe, dry, error) == true);
+        recipe.insert(QStringLiteral("rivers"), true);
+        recipe.insert(QStringLiteral("riverSource"), 0.02);
+        TerrainBuild wet;
+        REQUIRE(BuildTerrain(recipe, wet, error) == true);
+        REQUIRE(wet.Water.Positions.isEmpty() == false);
+        CHECK(wet.Water.Indices.size() % 6 == 0);
+        bool isLowered = false;
+        for (qsizetype index = 0; index < dry.Mesh.Positions.size(); ++index)
+        {
+            CHECK(wet.Mesh.Positions[index].Y <= dry.Mesh.Positions[index].Y);
+            isLowered = isLowered == true || wet.Mesh.Positions[index].Y < dry.Mesh.Positions[index].Y;
+        }
+        CHECK(isLowered == true);
+
+        QString key;
+        REQUIRE(EditWorldTerrain(world, tests::MakeFixedEntropySource(), {}, recipe, key, error) == true);
+        QTemporaryDir root;
+        REQUIRE(root.isValid() == true);
+        RenderScene scene;
+        REQUIRE(RenderScene::Load(root.path(), world, scene, error, false) == true);
+        REQUIRE(scene.Objects.size() == 2);
+        const PreviewObject& terrain = scene.Objects[0];
+        const PreviewObject& water = scene.Objects[1];
+        CHECK(terrain.Id == key);
+        CHECK(water.Id == GetTerrainWaterObjectId(key));
+        CHECK(IsTerrainWaterObjectId(water.Id) == true);
+        CHECK(IsTerrainWaterObjectId(key) == false);
+        REQUIRE(terrain.Surface >= 0);
+        REQUIRE(water.Surface >= 0);
+        CHECK(terrain.Texture >= 0);
+        CHECK(scene.Surfaces[terrain.Surface].Roughness == TERRAIN_SURFACE_ROUGHNESS);
+        CHECK(scene.Surfaces[water.Surface].Roughness == TERRAIN_WATER_ROUGHNESS);
+        CHECK(scene.Surfaces[water.Surface].Texture == -1);
+        CHECK(scene.Meshes[water.Mesh].Positions == wet.Water.Positions);
+        CHECK(scene.StaticColliderEntityIds.contains(water.Id) == false);
+    }
+}
+
 TEST_CASE("Explore as Player uses explicit Static Colliders after World extraction",
           "[editor][world][terrain][first-person]")
 {

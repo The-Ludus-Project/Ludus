@@ -137,6 +137,11 @@ struct Varying
 #ifdef LUDUS_CLUSTERED
     float IsDirectReference : TEXCOORD6;
 #endif
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    // How far PositionWorld may lie from the surface along the view ray, in metres. The resolve rebuilds the
+    // position from the depth buffer and fills this from that buffer's precision; interpolated positions leave zero.
+    float3 PositionUncertaintyWorld : TEXCOORD11;
+#endif
 #ifdef LUDUS_DEBUG_VIEW
     // Last member, so ordinary shadow fragments still match the earlier varying locations.
     float2 DebugDepthRange : TEXCOORD10;
@@ -185,6 +190,9 @@ struct Varying
     output.IsBakeValid = input.Color.x;
 #ifdef LUDUS_CLUSTERED
     output.IsDirectReference = input.Color.y;
+#endif
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    output.PositionUncertaintyWorld = float3(0);
 #endif
 #ifdef LUDUS_DEBUG_VIEW
     output.DebugDepthRange = input.Color.zw;
@@ -260,6 +268,15 @@ float ComputeShadowVisibility(int light, Varying input)
         float2 receiverTexel = uv / settings.zw;
         float2 lowerTexel = floor(receiverTexel - 0.5) + 0.5;
         float2 fraction = receiverTexel - lowerTexel;
+        // A receiver rebuilt from depth may sit off its surface by PositionUncertaintyWorld. Express that
+        // displacement in map texels and light depth, so each tap can allow for it below.
+        float3 uncertaintyClip =
+            float3(dot(material.ShadowData[region * SHADOW_REGION_WORDS].xyz, input.PositionUncertaintyWorld),
+                   dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz, input.PositionUncertaintyWorld),
+                   dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz, input.PositionUncertaintyWorld)) /
+            clip.w;
+        float2 uncertaintyTexel = abs(uncertaintyClip.xy) * 0.5 * (rect.zw - rect.xy + settings.zw) / settings.zw;
+        float uncertaintyDepth = abs(uncertaintyClip.z);
 #else
         float2 uv = lerp(rect.xy, rect.zw, projectedUv);
 #endif
@@ -277,15 +294,20 @@ float ComputeShadowVisibility(int light, Varying input)
             // for comparing depths at matching locations across a PCF filter.
             // The orthographic atlas lets us project each caster plane to the
             // receiver's location from the slope stored at the sampled texel.
-            float stored = DecodeShadowDepth(code.rg) + dot(DecodeShadowSlope(code.ba), receiverTexel - centerTexel);
+            float2 slope = DecodeShadowSlope(code.ba);
+            float stored = DecodeShadowDepth(code.rg) + dot(slope, receiverTexel - centerTexel);
             float2 weights = lerp(1 - fraction, fraction, corner);
             float weight = weights.x * weights.y;
+            // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
+            // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
+            float tolerance = settings.x + uncertaintyDepth + dot(abs(slope), uncertaintyTexel);
 #else
             float2 sampleUv = clamp(uv + (corner - 0.5) * settings.zw, rect.xy, rect.zw);
             float stored = DecodeShadowDepth(shadowTexture.SampleLevel(shadowSampler, sampleUv, 0).rg);
             float weight = 1.0 / SHADOW_FILTER_TAP_COUNT;
+            float tolerance = settings.x;
 #endif
-            visible += ndc.z - settings.x <= stored ? weight : 0;
+            visible += ndc.z - tolerance <= stored ? weight : 0;
         }
         return visible;
     }

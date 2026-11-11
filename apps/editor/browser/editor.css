@@ -9,7 +9,7 @@
   --ludus-surface-log: #111a21;
   --ludus-text-primary: #e9f2f1;
   --ludus-text-secondary: #b5c5c9;
-  --ludus-text-tertiary: #9bafb4;
+  --ludus-text-tertiary: #a5b7bc;
   --ludus-text-disabled: #71858c;
   --ludus-text-log: #d7e3e2;
   --ludus-text-hud: #e8ecf0;
@@ -58,8 +58,8 @@
     --ludus-text-hud: #e8ecf0;
     --ludus-text-hud-quiet: #9bafb4;
     --ludus-border-subtle: #d3d0c8;
-    --ludus-border-control: #71878b;
-    --ludus-accent-primary: #14786f;
+    --ludus-border-control: #6d8387;
+    --ludus-accent-primary: #127066;
     --ludus-accent-primary-active: #0f5f58;
     --ludus-accent-on-primary: #ffffff;
     --ludus-accent-surface: #d5eee8;
@@ -121,9 +121,9 @@
     --ludus-accent-primary-active: #003b36;
     --ludus-accent-on-primary: #ffffff;
     --ludus-accent-surface: #bfeae2;
-    --ludus-status-success: #0b5a22;
+    --ludus-status-success: #0a5520;
     --ludus-status-warning: #6b4000;
-    --ludus-status-danger: #8f1a10;
+    --ludus-status-danger: #85170e;
     --ludus-status-success-surface: #d8f0df;
     --ludus-status-warning-surface: #f8e8bd;
     --ludus-status-danger-surface: #f8d9d5;

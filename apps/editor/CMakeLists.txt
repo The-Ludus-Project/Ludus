@@ -221,6 +221,8 @@ set(editor_viewport_sources
     src/viewport_object_interaction.cpp
     src/internal/viewport_gizmo_readout.h
     src/viewport_gizmo_readout.cpp
+    src/internal/viewport_overlay_layer.h
+    src/viewport_overlay_layer.cpp
     src/viewport_navigation.cpp
     src/viewport_walk_collision.cpp
     src/internal/orientation_widget.h
@@ -799,6 +801,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_probe_volume.cpp
     src/world_terrain.cpp
     src/world_terrain_editing.cpp
+    src/internal/world_terrain_surface.h
+    src/world_terrain_surface.cpp
     src/world_aperture.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
@@ -1255,6 +1259,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/workspace_layout_tests.cpp
         tests/editor_shell_tests.cpp
         tests/command_palette_tests.cpp
+        tests/keyboard_navigation_tests.cpp
         tests/recent_projects_tests.cpp
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp

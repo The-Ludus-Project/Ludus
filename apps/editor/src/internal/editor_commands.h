@@ -158,6 +158,23 @@ inline constexpr EditorCommand EDITOR_TOGGLE_BREAKPOINT_COMMAND
     .Help = "Toggle a breakpoint on the current line of the active code editor.",
     .IsCheckable = false,
 };
+// Tab indents in a code editor, so a keyboard user needs a way out (WCAG 2.1.2, no keyboard trap). As in
+// VS Code, Ctrl+M switches Tab to moving focus; macOS keeps Command+M for Minimize, so there it is
+// Control+Shift+M (Qt's Meta is the physical Control key on macOS).
+#if defined(Q_OS_MACOS)
+inline constexpr const char* TAB_MOVES_FOCUS_SHORTCUT = "Meta+Shift+M";
+#else
+inline constexpr const char* TAB_MOVES_FOCUS_SHORTCUT = "Ctrl+M";
+#endif
+inline constexpr EditorCommand EDITOR_TAB_MOVES_FOCUS_COMMAND
+{
+    .Id = "editor.tabMovesFocus",
+    .Text = "Tab &Moves Focus",
+    .ToolbarText = "",
+    .Shortcut = TAB_MOVES_FOCUS_SHORTCUT,
+    .Help = "Make Tab and Shift+Tab move focus out of code editors instead of indenting. Run again to indent.",
+    .IsCheckable = true,
+};
 // The fold commands carry no catalogue default: their binding differs between
 // keymap profiles (VS Code uses Ctrl+K chords, which the Ludus profile cannot
 // use because it keeps Ctrl+K for the palette), so the keymap owns it. The

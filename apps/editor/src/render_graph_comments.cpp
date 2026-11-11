@@ -766,6 +766,8 @@ void RenderGraphComments::editFrame(QJsonObject frame, bool isNew)
     title->setMaxLength(2 * layout_policy::MAX_COMMENT_TITLE_CODEPOINTS);
     QPlainTextEdit* notes = new QPlainTextEdit(frame.value(QStringLiteral("notes")).toString(), &dialog);
     notes->setObjectName(QStringLiteral("renderGraphCommentNotes"));
+    // Notes are prose, not code: Tab moves on to the next field instead of trapping the keyboard here.
+    notes->setTabChangesFocus(true);
     QLineEdit* colour = new QLineEdit(frame.value(QStringLiteral("colour")).toString(), &dialog);
     colour->setObjectName(QStringLiteral("renderGraphCommentColour"));
     QPushButton* chooseColour = new QPushButton(QStringLiteral("Choose Colour…"), &dialog);

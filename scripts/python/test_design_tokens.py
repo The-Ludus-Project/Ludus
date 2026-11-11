@@ -38,6 +38,37 @@ class TokenFileTests(unittest.TestCase):
         document["colours"]["text.primary"]["dark"] = document["colours"]["surface.panel"]["dark"]
         self.assertTrue(any("dark" in failure for failure in design_tokens.failing_pairs(document)))
 
+    def test_every_colour_is_checked_or_exempt(self):
+        unchecked = json.loads(json.dumps(self.document))
+        unchecked["colours"]["text.unchecked"] = {"dark": "#123456", "light": "#654321", "use": "Nothing"}
+        with self.assertRaisesRegex(design_tokens.TokenError, "no contrast pair"):
+            design_tokens.validate(unchecked)
+        exempt = json.loads(json.dumps(unchecked))
+        exempt["colours"]["text.unchecked"]["contrastExempt"] = "Decorative"
+        design_tokens.validate(exempt)
+        blank = json.loads(json.dumps(unchecked))
+        blank["colours"]["text.unchecked"]["contrastExempt"] = " "
+        with self.assertRaisesRegex(design_tokens.TokenError, "reason"):
+            design_tokens.validate(blank)
+        both = json.loads(json.dumps(self.document))
+        both["colours"]["text.primary"]["contrastExempt"] = "Not really"
+        with self.assertRaisesRegex(design_tokens.TokenError, "both checked"):
+            design_tokens.validate(both)
+
+    def test_widget_pairs_meet_wcag_aa(self):
+        # Pairs the editor style draws beyond plain text on a surface: focus ring and edges on raised controls,
+        # text and the ring on a selected row, and status text on its own banner.
+        labels = {pair["label"]: pair for pair in self.document["contrast"]}
+        for label, minimum in (("Accent text, links and focus ring on raised", 4.5),
+                               ("Control edge on raised", 3),
+                               ("Focus ring on a selected row", 3),
+                               ("Secondary text on a selected row", 4.5),
+                               ("Hint text on a selected row", 4.5),
+                               ("Danger text on the error banner", 4.5)):
+            with self.subTest(pair=label):
+                self.assertIn(label, labels)
+                self.assertGreaterEqual(labels[label]["minimum"], minimum)
+
     def test_high_contrast_pairs_reach_seven_to_one_for_text(self):
         for appearance in design_tokens.APPEARANCES:
             for pair in self.document["contrast"]:

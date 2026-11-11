@@ -327,6 +327,7 @@ private:
     QAction* mOptionsAction;
     QAction* mCommandPaletteAction;
     QAction* mRunInContextAction;
+    QAction* mTabMovesFocusAction;
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
     QAction* mFocusViewportAction;
