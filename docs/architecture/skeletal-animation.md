@@ -296,6 +296,13 @@ caller-owned decoder scratch. Keep cursors/contexts private to a player or job;
 generation changes force rebinding. Two instances never share a mutable decoder
 context. Seek, reverse playback, and a clip switch are first-class operations.
 
+ACL can omit a subtrack whose samples match a nonidentity default. Bind the
+writer to the exact defaults used by the cooker, indexed by cooked output
+track. Validate the track-to-joint map and default-pose identity with the clip
+binding. Exercise both full-pose and single-track decode with a nonidentity
+default and reject an incompatible binding before sampling.
+[ACL 2.1.0 transform track description](https://github.com/nfrechette/acl/blob/414689d5cff4286a7898487a46dc5e48005d38da/includes/acl/core/track_desc.h#L94-L110).
+
 Sparse requests do not guarantee sparse decode cost. Measure all-track decode,
 single-track loops, range/block decode, and mask-aware output using the pinned
 codec. Skipping a writer store may still read/decode the track. Select a dense
@@ -314,6 +321,31 @@ preserve licenses, and match native/Wasm behavior within documented tolerances.
 Review ACL's floating-point control assumptions on every worker; CPU FP traps are
 a separate issue from C++ exceptions. Do not change a thread's FP mode invisibly
 inside unrelated game work.
+
+### Admission and allocation
+
+Thanks to Nicholas Frechette and the ACL contributors for the codec and its
+integration interfaces. Review these two boundaries again for the version
+selected in A2.
+
+- **Clip admission.** ACL 2.1.0's `compressed_tracks::is_valid` checks alignment,
+  tag, algorithm, version, and optionally a hash. It accepts no buffer extent,
+  and the hash length comes from the blob itself. Validate the package span,
+  alignment, and declared sizes before calling ACL. Admit blobs from a trusted
+  cook path. Accept externally supplied ACL bytes only after bounded structural
+  validation of the selected payload version, including the ranges the decoder
+  reads. Test that a truncated header, an inconsistent declared size, or an
+  out-of-range internal offset is rejected before decode, with the published
+  generation preserved.
+  [ACL 2.1.0 compressed track validation](https://github.com/nfrechette/acl/blob/414689d5cff4286a7898487a46dc5e48005d38da/includes/acl/core/impl/compressed_tracks.impl.h#L278-L324).
+- **Cooker allocation.** ACL 2.1.0 writes to the allocated transform output
+  buffer immediately. A fallible allocator that returns null cannot make that
+  path recoverable. An in-process compressor needs verified allocation failure
+  handling or a reservation that covers a proven bound on all codec allocations.
+  With an isolated cook process, the caller can report failure and discard the
+  candidate before publication. Keep fallible runtime preparation in Ludus and
+  verify zero allocations during seek and decode.
+  [ACL 2.1.0 transform output allocation](https://github.com/nfrechette/acl/blob/414689d5cff4286a7898487a46dc5e48005d38da/includes/acl/compression/impl/compress.transform.impl.h#L382-L389).
 
 ### Quality means reconstructed motion
 
@@ -863,7 +895,7 @@ inspectable baseline. A phase is complete when its fixtures and evidence exist.
 | --- | --- | --- |
 | A0 | Skeleton/pose vocabulary, scalar FK, package validation, headless inspector | Invalid hierarchy/IDs/scales rejected; rest/bind distinctions verified; affine composition matches Math; failure leaves published outputs unchanged |
 | A1 | Reference sampler, clip players, events, root trajectory | Seek/reverse/large wraps/endpoints tested; control behaves identically with visible and invisible meshes; blocked root movement does not apply twice |
-| A2 | ACL cooker/private decoder adapter | Exception-free native/Wasm build; size/decode/quality report against original and reference; malformed blobs and allocation failures rejected safely |
+| A2 | ACL cooker/private decoder adapter | Exception-free native/Wasm build; size/decode/quality report against original and reference; clip admission, default-pose binding, and allocation behavior verified |
 | A3 | Masks, blends, additives, state tree, compiled plans | Identity and reconstruction properties; deterministic transition selection; no duplicate player/event advancement; bounded buffers; author-node trace mapping |
 | A4 | Two-bone/aim, contact manager, native game modifier | Singular and unreachable fixtures remain finite; continuity/reset behavior; shared-joint ordering; moving-platform release; declared write sets |
 | A5 | Character renderer integration and vertical demo | Rest/bind skinning oracle, scale and LOD remaps, bounds and motion vectors; actual walk/run plus upper-body action, recoil, feet and two-hand interaction |
