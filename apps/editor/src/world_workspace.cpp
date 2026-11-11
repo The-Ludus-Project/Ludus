@@ -1343,6 +1343,18 @@ void WorldWorkspace::RefreshScene()
     {
         return;
     }
+    if (Scene_->PublishProbeVolume(level, Document_) == true)
+    {
+        if (Scene_->GetPlacementValidation() == PlacementValidation::Ready)
+        {
+            ValidatedWorld_ = Document_.Encode();
+        }
+        else
+        {
+            mPlacementWorld = Document_.Encode();
+        }
+        return;
+    }
     // Switching imported lights changes no cooked asset: the presented scene is re-derived at once.
     const PlacementPublication switched = Scene_->PublishLightSwitches(level, Document_);
     if (switched == PlacementPublication::Published)
@@ -2961,7 +2973,7 @@ void WorldWorkspace::configureProbeVolumeFields(QGroupBox& inoutGroup,
     QString volumeSummary;
     if (hasVolume == true && volume.Layout == GiProbeLayout::Volume)
     {
-        volumeSummary = QStringLiteral("%1 × %2 × %3 probes fill the %4 × %5 × %6 m volume at %7 m spacing.")
+        volumeSummary = QStringLiteral("%1 × %2 × %3 probes at %7 m spacing. Volume size %4 × %5 × %6 m.")
                             .arg(volume.Grid.Counts[0])
                             .arg(volume.Grid.Counts[1])
                             .arg(volume.Grid.Counts[2])
@@ -2986,7 +2998,7 @@ void WorldWorkspace::configureProbeVolumeFields(QGroupBox& inoutGroup,
             const bool isAuthoredLayout = (authoredLayout == GiProbeLayout::Counts) == isCountsLayout;
             summary->setText(isAuthoredLayout == true
                                  ? volumeSummary
-                                 : QStringLiteral("Apply changes to place probes by the Transform scale."));
+                                 : QStringLiteral("Click Apply Changes to enable volume resizing in the viewport."));
             inoutRows.setRowVisible(summary, isCountsLayout == false);
             inoutRows.setRowVisible(cover,
                                     isCountsLayout == false && isAuthoredLayout == true && isCoverageLimited == true);
@@ -3063,7 +3075,13 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                 continue;
             }
             const QJsonValue authored = values.value(pid);
-            const QJsonValue current = authored.isUndefined() == true ? p.value(QStringLiteral("default")) : authored;
+            // A legacy probe volume's effective layout is counts, even though new volumes default to volume.
+            const bool isLegacyProbeLayout = authored.isUndefined() == true && Document_.HasBuiltInSchema() == true &&
+                                             c.key() == GetGiProbeVolumeComponentId() && pid == GetGiProbeLayoutKey();
+            const QJsonValue defaultValue = isLegacyProbeLayout == true
+                                                ? QJsonValue(GetGiProbeLayoutWord(GiProbeLayout::Counts))
+                                                : p.value(QStringLiteral("default"));
+            const QJsonValue current = authored.isUndefined() == true ? defaultValue : authored;
             QJsonValue candidate;
             if (QCheckBox* checkOrNull = qobject_cast<QCheckBox*>(fieldOrNull); checkOrNull != nullptr)
             {
@@ -3166,6 +3184,13 @@ void WorldWorkspace::PreviewDraft()
 {
     if (Document_.Loaded() == false || isTerrainAuthoringOpen() == true)
     {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    if (IsBuiltInWorld(Document_) == true &&
+        IsStandaloneWorldGiProbeVolume(entity, entity.value(QStringLiteral("components")).toObject()) == true)
+    {
+        // Probe inspector edits affect the viewport when applied, through the same path as the gizmo.
         return;
     }
     if (isSceneWorkerActive() == true)
@@ -3317,9 +3342,20 @@ bool WorldWorkspace::Apply()
         Changed(error);
         return false;
     }
+    const QJsonObject previousComponents = Document_.Entity(Selected_).value(QStringLiteral("components")).toObject();
+    const QJsonObject appliedComponents = candidate.Entity(Selected_).value(QStringLiteral("components")).toObject();
+    const QString probeComponent = GetGiProbeVolumeComponentId();
+    const bool isProbeLayoutChanged =
+        Document_.HasBuiltInSchema() == true && appliedComponents.contains(probeComponent) == true &&
+        ReadWorldGiProbeLayout(previousComponents) != ReadWorldGiProbeLayout(appliedComponents);
     DraftTimer_.stop();
     Document_ = candidate;
     Pending_ = false;
+    if (isProbeLayoutChanged == true)
+    {
+        // The layout change can derive new scale or count values. Show the values the document accepted.
+        RenderInspector();
+    }
     // Update labels in place so Save preserves the focused field's text buffer.
     mEntitySearch->UpdateLabels(Document_);
     for (auto* field : Fields_)

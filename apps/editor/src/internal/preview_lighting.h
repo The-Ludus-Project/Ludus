@@ -45,6 +45,11 @@ inline uint64 ReadRevision(const QByteArray& key, int32 start) noexcept
     return result == 0 ? 1 : result;
 }
 
+[[nodiscard]] LUDUS_INLINE bool AreProbeGridsEqual(const rr::GiProbeGrid& left, const rr::GiProbeGrid& right) noexcept
+{
+    return left.OriginWorld == right.OriginWorld && left.Spacing == right.Spacing && left.Counts == right.Counts;
+}
+
 // Camera state is absent. Typed geometry is tightly packed (asserted below);
 // hash it directly without allocating a second scene-sized serialization buffer.
 inline QByteArray MakeKey(const RenderScene& scene)

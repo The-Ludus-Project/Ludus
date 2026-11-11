@@ -1,5 +1,6 @@
 #include "widget_fixture.h"
 
+#include "internal/editor_style.h"
 #include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
 
@@ -11,6 +12,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCommonStyle>
 #include <QDialog>
 #include <QDir>
 #include <QDockWidget>
@@ -25,6 +27,7 @@
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
+#include <QPainter>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -367,6 +370,73 @@ TEST_CASE("A mode toggle that is on fills with the accent; a disclosure button d
     on->setEnabled(false);
     QApplication::processEvents();
     CHECK(sampleInside(on) != accent);
+}
+
+namespace
+{
+/// The grey a platform style paints when it draws a push button's bevel natively.
+constexpr QRgb NATIVE_BEVEL_RGB = 0x313b43;
+
+/// A platform style that draws push-button bevels itself instead of through PE_PanelButtonCommand, the way macOS
+/// does, so a test on any platform can check the editor's primary fill survives it.
+class NativeBevelStyle final : public QCommonStyle
+{
+public:
+    void drawControl(ControlElement element,
+                     const QStyleOption* option,
+                     QPainter* painter,
+                     const QWidget* widgetOrNull) const override
+    {
+        if (element == CE_PushButtonBevel)
+        {
+            painter->fillRect(option->rect, QColor::fromRgb(NATIVE_BEVEL_RGB));
+            return;
+        }
+        QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+    }
+};
+} // namespace
+
+TEST_CASE("A primary button fills with the accent even where the platform draws bevels natively", "[editor][style]")
+{
+    // On macOS the Repair project button kept its accent label colour on the grey native bevel: dark text on grey,
+    // which read as a disabled button although it was enabled.
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    EditorStyle style(new NativeBevelStyle);
+    style.Refresh();
+    QHBoxLayout* layout = new QHBoxLayout(&root);
+    QPushButton* primary = new QPushButton(QStringLiteral("Repair project"), &root);
+    primary->setProperty("visualRole", QStringLiteral("primary"));
+    QPushButton* plain = new QPushButton(QStringLiteral("Check again"), &root);
+    for (QPushButton* button : {primary, plain})
+    {
+        button->setStyle(&style);
+        button->setFocusPolicy(Qt::NoFocus);
+        layout->addWidget(button);
+    }
+    root.show();
+    QApplication::processEvents();
+    const QColor accent = root.palette().color(QPalette::Link);
+    const QColor nativeBevel = QColor::fromRgb(NATIVE_BEVEL_RGB);
+    // Sample the padding left of the label: inside the one-pixel edge, clear of the rounded corners.
+    constexpr qreal BODY_SAMPLE_X = 3.0;
+    const auto sampleInside = [](QPushButton* button) {
+        const QImage image = button->grab().toImage();
+        const qreal scale = image.devicePixelRatio();
+        return image.pixelColor(static_cast<int>(BODY_SAMPLE_X * scale), image.height() / 2);
+    };
+    CHECK(sampleInside(primary) == accent);
+    CHECK(sampleInside(plain) != accent);
+    CHECK(sampleInside(plain) != nativeBevel);
+    // A disabled primary button drops the accent, so enabled and disabled stay distinguishable.
+    primary->setEnabled(false);
+    QApplication::processEvents();
+    CHECK(sampleInside(primary) != accent);
+    for (QPushButton* button : {primary, plain})
+    {
+        button->setStyle(nullptr);
+    }
 }
 
 TEST_CASE("Tabs below their content draw the accent rule on the edge facing it", "[editor][style]")

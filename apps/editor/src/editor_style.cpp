@@ -95,6 +95,14 @@ bool IsDarkPalette(const QPalette& palette)
     return palette.color(QPalette::Window).lightness() < DARK_LIGHTNESS_LIMIT;
 }
 
+/// Whether the editor paints this push button's bevel and label itself: every framed push button. Flat buttons and
+/// command links keep the platform look.
+bool IsStyledPushButton(const QStyleOptionButton* buttonOrNull)
+{
+    return buttonOrNull != nullptr && buttonOrNull->features.testFlag(QStyleOptionButton::Flat) == false &&
+           buttonOrNull->features.testFlag(QStyleOptionButton::CommandLinkButton) == false;
+}
+
 bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* value)
 {
     return widgetOrNull != nullptr && widgetOrNull->property(name).toString() == QLatin1String(value);
@@ -234,7 +242,9 @@ QPalette MakeEditorPalette(const QPalette& platform, bool isDark, bool isHighCon
     return palette;
 }
 
-EditorStyle::EditorStyle() : QProxyStyle(QStyleFactory::create(QApplication::style()->name()))
+EditorStyle::EditorStyle() : EditorStyle(QStyleFactory::create(QApplication::style()->name())) {}
+
+EditorStyle::EditorStyle(QStyle* baseStyle) : QProxyStyle(baseStyle)
 {
     setObjectName(QString::fromLatin1(STYLE_OBJECT_NAME));
 }
@@ -560,22 +570,43 @@ void EditorStyle::drawControl(ControlElement element,
     const bool isEnabled = option->state.testFlag(State_Enabled);
     switch (element)
     {
+        case CE_PushButtonBevel: {
+            // Some platform styles, macOS's among them, draw a push button's bevel natively and never ask for
+            // PE_PanelButtonCommand, so the accent fill of a primary button was lost while its label still took the
+            // text colour meant for the accent: dark text on a grey native bevel, which reads as a disabled button.
+            // The common style paints the bevel through PE_PanelButtonCommand, so every platform gets the same
+            // body, focus ring and primary fill, inside the rectangle the platform style keeps for the bevel.
+            const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+            if (IsStyledPushButton(button) == false)
+            {
+                break;
+            }
+            QStyleOptionButton bevel = *button;
+            bevel.rect = proxy()->subElementRect(SE_PushButtonBevel, button, widgetOrNull);
+            QCommonStyle::drawControl(element, &bevel, painter, widgetOrNull);
+            return;
+        }
         case CE_PushButtonLabel: {
             const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+            if (IsStyledPushButton(button) == false)
+            {
+                break;
+            }
             const bool isSelectedSegment = isEnabled == true && option->state.testFlag(State_On) == true &&
                                            HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "segment") == true;
             const bool isPrimary =
-                isEnabled == true && button != nullptr &&
+                isEnabled == true &&
                 (isSelectedSegment == true || HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
                  button->features.testFlag(QStyleOptionButton::DefaultButton));
+            // The common style draws the label in the palette's button text; a platform style may swap that colour
+            // for its own bevel (white on a default macOS button), which would not suit the editor's body.
+            QStyleOptionButton label = *button;
             if (isPrimary == true)
             {
-                QStyleOptionButton primary = *button;
-                primary.palette.setColor(QPalette::ButtonText, mColours.AccentText);
-                QProxyStyle::drawControl(element, &primary, painter, widgetOrNull);
-                return;
+                label.palette.setColor(QPalette::ButtonText, mColours.AccentText);
             }
-            break;
+            QCommonStyle::drawControl(element, &label, painter, widgetOrNull);
+            return;
         }
         case CE_ToolButtonLabel: {
             const QStyleOptionToolButton* tool = qstyleoption_cast<const QStyleOptionToolButton*>(option);

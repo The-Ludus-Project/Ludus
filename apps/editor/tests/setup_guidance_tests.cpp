@@ -30,6 +30,8 @@ namespace
 {
 constexpr int32 SETUP_TIMEOUT_MILLISECONDS = 10000;
 constexpr int32 LAST_RESULT_CODE = static_cast<int32>(ResultCode::CleanupUnknown);
+/// The settings-file version of a CMake project, the only kind Repair prepares.
+constexpr ludus::foundation::uint32 CMAKE_PROJECT_VERSION = 2;
 
 void WriteFile(const QString& path, const QByteArray& bytes)
 {
@@ -167,7 +169,9 @@ TEST_CASE("The setup notice guides a repair from problem to progress to ready", 
         SETUP_TIMEOUT_MILLISECONDS));
     REQUIRE(noticeOrNull->isVisible() == true);
     CHECK(headlineOrNull->text() == QStringLiteral("Build tools need to be prepared."));
-    CHECK(detailOrNull->text() == QStringLiteral("slangc was not found"));
+    CHECK(detailOrNull->text().startsWith(QStringLiteral("slangc was not found")) == true);
+    CHECK(detailOrNull->text().contains(QStringLiteral("Repair project refreshes")) == true);
+    CHECK(repairOrNull->isEnabled() == true);
     CHECK(repairOrNull->text() == QStringLiteral("Repair project"));
     CHECK(repairOrNull->isVisible() == true);
     CHECK(repairOrNull->property("visualRole").toString() == QStringLiteral("primary"));
@@ -209,8 +213,9 @@ TEST_CASE("Changed SDK or tool inputs offer a repair, not the settings file", "[
     // an unreadable settings file and offered only Open Project Settings, a page that cannot refresh the setup.
     const SetupGuidance stale = DescribeSetupProblem(
         QStringLiteral("BootstrapStale: SDK or tool inputs changed; run repair to refresh presets and caches"));
-    CHECK(stale.Headline == QStringLiteral("Build tools are out of date."));
+    CHECK(stale.Headline == QStringLiteral("This project's build setup is out of date."));
     CHECK(stale.Detail == QStringLiteral("SDK or tool inputs changed; run repair to refresh presets and caches"));
+    CHECK(stale.PlainCause == QStringLiteral("Ludus or its build tools changed since this project was set up."));
     CHECK(stale.IsRepairable == true);
 
     QTemporaryDir directory;
@@ -230,9 +235,13 @@ TEST_CASE("Changed SDK or tool inputs offer a repair, not the settings file", "[
     QLabel* headlineOrNull = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeText"));
     REQUIRE(primaryOrNull != nullptr);
     REQUIRE(headlineOrNull != nullptr);
-    CHECK(headlineOrNull->text() == QStringLiteral("Build tools are out of date."));
+    CHECK(headlineOrNull->text() == QStringLiteral("This project's build setup is out of date."));
     CHECK(primaryOrNull->text() == QStringLiteral("Repair project"));
     CHECK(primaryOrNull->property("opensSettings").toBool() == false);
+    // Repair is the fix, so it is enabled, primary, and says what pressing it does.
+    CHECK(primaryOrNull->isEnabled() == true);
+    CHECK(primaryOrNull->property("visualRole").toString() == QStringLiteral("primary"));
+    CHECK(primaryOrNull->toolTip().contains(QStringLiteral("builds and tests the project")) == true);
 }
 
 TEST_CASE("A settings problem offers Project Settings, not a repair that cannot help", "[editor][setup][guidance]")
@@ -292,4 +301,128 @@ TEST_CASE("The Start Page explains a project that could not be opened", "[editor
         INFO(text.toStdString());
         CHECK(ContainsResultCodeName(text) == false);
     }
+}
+
+TEST_CASE("The setup banner says what Repair will do, and why it can't start when it can't",
+          "[editor][setup][notice][guidance]")
+{
+    const QString stale =
+        QStringLiteral("BootstrapStale: SDK or tool inputs changed; run repair to refresh presets and caches");
+
+    // Repair can start: the cause in plain words, then what pressing the button does, and the button is enabled.
+    const SetupNoticeContent ready = DescribeSetupNotice(stale, QString());
+    CHECK(ready.Headline == QStringLiteral("This project's build setup is out of date."));
+    CHECK(ready.Detail == QStringLiteral("Ludus or its build tools changed since this project was set up. Repair "
+                                         "project refreshes its build settings, then checks that it builds."));
+    CHECK(ready.ActionLabel == QStringLiteral("Repair project"));
+    CHECK(ready.IsActionEnabled == true);
+    CHECK(ready.IsOpeningSettings == false);
+    CHECK(ready.ActionTooltip.contains(QStringLiteral("builds and tests the project")) == true);
+    // The tools' own message stays reachable in the tooltip, without its code name.
+    CHECK(ready.Tooltip.contains(QStringLiteral("refresh presets and caches")) == true);
+    for (const QString& text : {ready.Headline, ready.Detail, ready.Tooltip, ready.ActionLabel, ready.ActionTooltip})
+    {
+        INFO(text.toStdString());
+        CHECK(ContainsResultCodeName(text) == false);
+    }
+
+    // Repair can't start yet: the reason replaces the promise, in the line and on the button.
+    const QString blocker = QStringLiteral("Save project settings first; repair works from the saved settings.");
+    const SetupNoticeContent blocked = DescribeSetupNotice(stale, blocker);
+    CHECK(blocked.IsActionEnabled == false);
+    CHECK(blocked.ActionLabel == QStringLiteral("Repair project"));
+    CHECK(blocked.ActionTooltip == blocker);
+    CHECK(blocked.Detail.endsWith(blocker) == true);
+    CHECK(blocked.Tooltip.contains(blocker) == true);
+
+    // A problem repair cannot fix offers Project Settings, which is always available.
+    const SetupNoticeContent settings =
+        DescribeSetupNotice(QStringLiteral("InvalidProject: 'preset' must be linux-clang-debug"), blocker);
+    CHECK(settings.ActionLabel == QStringLiteral("Open Project Settings"));
+    CHECK(settings.IsActionEnabled == true);
+    CHECK(settings.IsOpeningSettings == true);
+}
+
+TEST_CASE("Every reason Repair can't start has words, and none when it can", "[editor][setup][notice][guidance]")
+{
+    WorkspaceState state;
+    state.Document = DocumentState::ProjectLoaded;
+    state.HasSaved = true;
+    state.Saved.Version = CMAKE_PROJECT_VERSION;
+    state.Saved.ProviderKind = Provider::Cmake;
+    state.Draft = state.Saved;
+    RepairGate gate;
+    gate.IsRepairAllowed = true;
+    CHECK(GetRepairBlocker(state, gate).isEmpty() == true);
+    // Even an otherwise blocked state says nothing when the controller allows the repair.
+    WorkspaceState dirty = state;
+    dirty.Draft.Name = QStringLiteral("Edited");
+    CHECK(GetRepairBlocker(dirty, gate).isEmpty() == true);
+
+    gate.IsRepairAllowed = false;
+    CHECK(GetRepairBlocker(dirty, gate).contains(QStringLiteral("Save project settings")) == true);
+
+    WorkspaceState busy = state;
+    busy.OperationPhase = Phase::Building;
+    CHECK(GetRepairBlocker(busy, gate).contains(QStringLiteral("current task finishes")) == true);
+    WorkspaceState stopping = state;
+    stopping.OperationPhase = Phase::Stopping;
+    CHECK(GetRepairBlocker(stopping, gate).contains(QStringLiteral("has stopped")) == true);
+    WorkspaceState cleanup = state;
+    cleanup.OperationPhase = Phase::CleanupUnknown;
+    CHECK(GetRepairBlocker(cleanup, gate).contains(QStringLiteral("cleanup is confirmed")) == true);
+    WorkspaceState closed = state;
+    closed.Document = DocumentState::NoProject;
+    CHECK(GetRepairBlocker(closed, gate).contains(QStringLiteral("Open the project")) == true);
+    WorkspaceState otherBuild = state;
+    otherBuild.Saved.ProviderKind = Provider::Ludus;
+    otherBuild.Draft = otherBuild.Saved;
+    CHECK(GetRepairBlocker(otherBuild, gate).contains(QStringLiteral("CMake")) == true);
+
+    RepairGate playing = gate;
+    playing.IsPlaySessionActive = true;
+    CHECK(GetRepairBlocker(state, playing).contains(QStringLiteral("play session")) == true);
+    RepairGate browser = gate;
+    browser.IsBrowser = true;
+    CHECK(GetRepairBlocker(state, browser).contains(QStringLiteral("desktop editor")) == true);
+    // A state with no named reason still explains itself rather than leaving a silent grey button.
+    CHECK(GetRepairBlocker(state, gate).isEmpty() == false);
+}
+
+TEST_CASE("The banner's Repair button is enabled whenever repair can start, and explains itself when not",
+          "[editor][setup][notice][guidance]")
+{
+    QTemporaryDir directory;
+    QFile fixture(QStringLiteral(LUDUS_EDITOR_SOURCE_DIR) + QStringLiteral("/tests/fixtures/valid_v2_cmake.json"));
+    REQUIRE(fixture.open(QIODevice::ReadOnly));
+    const QString descriptor = directory.filePath(QStringLiteral("ludus.project.json"));
+    WriteFile(descriptor, fixture.readAll());
+    EditorController controller(ToolingPaths{});
+    MainWindow window(&controller);
+    window.show();
+    controller.OpenProject(descriptor);
+    QCoreApplication::processEvents();
+    controller.ReportProjectSetupProblem(
+        QStringLiteral("BootstrapStale: SDK or tool inputs changed; run repair to refresh presets and caches"));
+    QCoreApplication::processEvents();
+    QPushButton* repairOrNull = window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"));
+    QLabel* detailOrNull = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeDetail"));
+    REQUIRE(repairOrNull != nullptr);
+    REQUIRE(detailOrNull != nullptr);
+    REQUIRE(controller.Caps().CanProjectSetup == true);
+    CHECK(repairOrNull->isEnabled() == true);
+    CHECK(detailOrNull->text().contains(QStringLiteral("Repair project refreshes")) == true);
+
+    ProjectDescriptor draft = controller.State().Draft;
+    draft.Name = QStringLiteral("Changed project settings");
+    controller.EditDraft(draft);
+    QCoreApplication::processEvents();
+    CHECK(repairOrNull->isEnabled() == false);
+    CHECK(repairOrNull->toolTip().contains(QStringLiteral("Save project settings")) == true);
+    CHECK(detailOrNull->text().contains(QStringLiteral("Save project settings")) == true);
+
+    controller.UndoProjectEdit();
+    QCoreApplication::processEvents();
+    CHECK(repairOrNull->isEnabled() == true);
+    CHECK(repairOrNull->toolTip().contains(QStringLiteral("Save project settings")) == false);
 }

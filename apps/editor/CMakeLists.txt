@@ -929,6 +929,9 @@ target_link_libraries(ludus_editor_application
         ludus_stb_image
         # World documents share the version-2 record constants with their owner (object handles stage 3).
         Ludus::ContentIdentity)
+if(NOT EMSCRIPTEN)
+    target_link_libraries(ludus_editor_application PRIVATE Qt6::Concurrent)
+endif()
 if(TARGET Qt6::Positioning AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_application PUBLIC Qt6::Positioning)
     target_compile_definitions(ludus_editor_application PRIVATE LUDUS_EDITOR_EARTH_POSITIONING=1)
@@ -1273,6 +1276,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/editor_style_tests.cpp
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
+        tests/viewport_toolbar_layout_tests.cpp
         tests/editor_icons_tests.cpp
         tests/editor_visual_consistency_tests.cpp
         tests/path_text_tests.cpp

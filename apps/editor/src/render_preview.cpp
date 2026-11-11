@@ -18,6 +18,7 @@
 
 #include <ludus/content/scene_format/luscn.h>
 
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/overlays.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -411,6 +412,15 @@ QSize RenderPreview::GetDrawableSize() const noexcept
 {
     return mDrawableSize;
 }
+void RenderPreview::SetProbeGrid(const rr::GiProbeGrid& grid) noexcept
+{
+    if (preview_lighting::AreProbeGridsEqual(Scene_.ProbeGrid, grid) == false)
+    {
+        Scene_.ProbeGrid = grid;
+        mSurfaceBake.InvalidateProbeGrid();
+        mFramePump.Wake();
+    }
+}
 void RenderPreview::SetSurfaceBakeWorldPath(const QString& path)
 {
     mSurfaceBake.SetWorldPath(path);
@@ -483,6 +493,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
         // The start view is level metadata outside Identity; take a changed one without reloading.
         Scene_.StartView = scene.StartView;
         Scene_.HasStartView = scene.HasStartView;
+        SetProbeGrid(scene.ProbeGrid);
         return true;
     }
     // One vertex pass per published scene; per-frame conventional views and framing reuse it.
@@ -1965,10 +1976,10 @@ bool RenderPreview::prepare()
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const bool hasPublishedBake = mResources->HasPublishedBake();
     const QString previousBakeStatus = mResources->DescribeBake();
-    if (mResources->Source.Identity == Scene_.Identity)
-    {
-        mResources->SetSurfaceBake(mSurfaceBake.GetReady(), mSurfaceBake.GetFailure());
-    }
+    // Tick services the replacement generation before this call. A reused generation has
+    // matching lighting inputs, even when a camera edit changed the extraction identity.
+    const bool hasChangedProbeGrid = mResources->SetProbeGrid(Scene_.ProbeGrid);
+    mResources->SetSurfaceBake(mSurfaceBake.GetReady(), mSurfaceBake.GetFailure());
     const PreviewPreparationStatus status = mResources->Prepare(Surface_, mPreparationFailure);
     if (status == PreviewPreparationStatus::Failed)
     {
@@ -1978,7 +1989,8 @@ bool RenderPreview::prepare()
     {
         return true;
     }
-    ViewDirty_ = ViewDirty_ == true || hasPublishedBake != mResources->HasPublishedBake();
+    ViewDirty_ = ViewDirty_ == true || hasPublishedBake != mResources->HasPublishedBake() ||
+                 (hasChangedProbeGrid == true && hasPublishedBake == true);
     FreshReport_ = FreshReport_ == true || previousBakeStatus != mResources->DescribeBake();
     if (Width_ == 0 || Height_ == 0 || mHasViewport == false)
     {

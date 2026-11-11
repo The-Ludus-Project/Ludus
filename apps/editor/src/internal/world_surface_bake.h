@@ -1,19 +1,20 @@
 #pragma once
 
-#include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/vector.hpp>
-#include <ludus/foundation/threading/jobs.hpp>
 
 #include <QByteArray>
 #include <QSharedPointer>
 #include <QString>
 #include <QVector>
+#if !defined(Q_OS_WASM)
+#    include <QFuture>
+#    include <QPromise>
+#endif
 
 namespace ludus::editor
 {
 struct RenderScene;
-class StaticLightingJob;
 
 struct WorldSurfaceChart final
 {
@@ -49,19 +50,40 @@ public:
     ~WorldSurfaceBakeState() noexcept;
     void SetWorldPath(const QString& path);
     void SetScene(const RenderScene& scene);
+    /// Invalidate the previous grid. The next poll queues a bake for the current scene and grid.
+    void InvalidateProbeGrid() noexcept;
     void Poll(const RenderScene& scene);
     [[nodiscard]] bool Save();
     [[nodiscard]] QSharedPointer<const WorldSurfaceBake> GetReady() const;
     [[nodiscard]] QString GetFailure() const;
 
 private:
-    void resetJob() noexcept;
+    void invalidateBake() noexcept;
+#if !defined(Q_OS_WASM)
+    struct BakeResult final
+    {
+        QByteArray LightingKey;
+        QSharedPointer<const WorldSurfaceBake> Bake;
+        QString Failure;
+    };
+
+    [[nodiscard]] static BakeResult bakeScene(const RenderScene& scene,
+                                              QByteArray key,
+                                              const QSharedPointer<const WorldSurfaceBake>& saved,
+                                              const QPromise<BakeResult>& promise);
+    enum class BakeJobState : foundation::uint8
+    {
+        Idle,
+        Current,
+        Superseded
+    };
+    QFuture<BakeResult> mBakeJob;
+    BakeJobState mBakeJobState = BakeJobState::Idle;
+#endif
     QString mPath;
     QString mFailure;
     QByteArray mLightingKey;
     QSharedPointer<const WorldSurfaceBake> mReady;
     QSharedPointer<const WorldSurfaceBake> mSaved;
-    foundation::threading::JobSystem mJobs;
-    foundation::UniquePtr<StaticLightingJob> mJob;
 };
 } // namespace ludus::editor

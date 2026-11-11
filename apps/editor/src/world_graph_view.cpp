@@ -19,7 +19,8 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSignalBlocker>
-#include <QToolButton>
+#include <QStyle>
+#include <QStyleOptionComboBox>
 #include <QVBoxLayout>
 #include <QWidgetAction>
 
@@ -28,6 +29,8 @@ namespace ludus::editor
 namespace
 {
 constexpr foundation::int32 MINIMUM_TARGET_TEXT_CHARACTERS = 4;
+/// Marks a combo box whose minimum width already follows its current choice.
+constexpr const char* IS_FITTED_TO_CURRENT_TEXT_PROPERTY = "isFittedToCurrentText";
 constexpr foundation::int32 EXPOSURE_DECIMALS = 2;
 constexpr foundation::float64 EXPOSURE_STEP_STOPS = 0.25;
 constexpr foundation::int32 STATISTICS_REFRESH_MILLISECONDS = 250;
@@ -43,7 +46,7 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setMinimumSize(1, 1);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    mTargets->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    mTargets->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     mTargets->setMinimumContentsLength(MINIMUM_TARGET_TEXT_CHARACTERS);
     mTargets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mTargets->setObjectName(QStringLiteral("worldGraphTargets"));
@@ -87,20 +90,54 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     refreshTargets();
     refreshFrame();
 }
-QWidget* WorldGraphView::TakeControls(QWidget* parent, RenderPreview& inoutSource)
+foundation::int32 ComputeComboBoxWidth(const QComboBox& comboBox, const QString& text)
 {
+    // Mirrors QComboBox's own size hint for one item: the text's advance, grown by the style's
+    // frame, padding and arrow.
+    QStyleOptionComboBox option;
+    option.initFrom(&comboBox);
+    option.editable = comboBox.isEditable();
+    option.frame = comboBox.hasFrame();
+    option.currentText = text;
+    const QFontMetrics metrics = comboBox.fontMetrics();
+    const QSize contents(metrics.horizontalAdvance(text), metrics.height());
+    return comboBox.style()->sizeFromContents(QStyle::CT_ComboBox, &option, contents, &comboBox).width();
+}
+void FitComboBoxToCurrentText(QComboBox& inoutComboBox)
+{
+    inoutComboBox.setMinimumWidth(ComputeComboBoxWidth(inoutComboBox, inoutComboBox.currentText()));
+    if (inoutComboBox.property(IS_FITTED_TO_CURRENT_TEXT_PROPERTY).toBool() == true)
+    {
+        return;
+    }
+    inoutComboBox.setProperty(IS_FITTED_TO_CURRENT_TEXT_PROPERTY, true);
+    QObject::connect(&inoutComboBox, &QComboBox::currentTextChanged, &inoutComboBox, [comboBox = &inoutComboBox]() {
+        comboBox->setMinimumWidth(ComputeComboBoxWidth(*comboBox, comboBox->currentText()));
+    });
+}
+WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& inoutSource)
+{
+    // Sized by its contents, so the toolbar overflows the group whole when it does not fit
+    // rather than squeezing both choices until their text disappears.
     QWidget* controls = new QWidget(parent);
-    controls->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    controls->setObjectName(QStringLiteral("worldGraphOutputControls"));
+    controls->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     QHBoxLayout* layout = new QHBoxLayout(controls);
     layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(design::SPACING_SMALL);
     QComboBox* configurations = new QComboBox(controls);
     configurations->setObjectName(QStringLiteral("worldGraphConfigurations"));
     configurations->setAccessibleName(QStringLiteral("Render graph configuration"));
+    configurations->setToolTip(QStringLiteral("Render graph configuration this viewport builds. Shown when the "
+                                              "project graph defines more than one."));
     const auto refresh = [this, configurations]() {
         const QSignalBlocker blocker(configurations);
         configurations->clear();
         configurations->addItems(mWorkspace.GetConfigurations());
         configurations->setCurrentText(mWorkspace.GetConfiguration());
+        // A single configuration offers no choice, and none leaves nothing to show.
+        configurations->setVisible(configurations->count() > 1);
+        FitComboBoxToCurrentText(*configurations);
     };
     connect(&mWorkspace, &RendererWorkspace::DocumentChanged, this, refresh);
     refresh();
@@ -110,14 +147,13 @@ QWidget* WorldGraphView::TakeControls(QWidget* parent, RenderPreview& inoutSourc
     mTargets->setParent(controls);
     mTargets->show();
     layout->addWidget(configurations);
-    layout->addWidget(mTargets, 1);
+    layout->addWidget(mTargets);
 
-    QToolButton* exposureButton = new QToolButton(controls);
-    exposureButton->setObjectName(QStringLiteral("viewportExposure"));
-    exposureButton->setText(QStringLiteral("Exposure"));
-    exposureButton->setPopupMode(QToolButton::InstantPopup);
-    QMenu* exposureMenu = new QMenu(exposureButton);
-    exposureButton->setMenu(exposureMenu);
+    // An action with a menu: on the row it is a drop-down button, and in the overflow menu a submenu.
+    QAction* exposureAction = new QAction(QStringLiteral("Exposure"), parent);
+    exposureAction->setObjectName(QStringLiteral("viewportExposureAction"));
+    QMenu* exposureMenu = new QMenu(parent);
+    exposureAction->setMenu(exposureMenu);
     QDoubleSpinBox* exposure = new QDoubleSpinBox(exposureMenu);
     exposure->setObjectName(QStringLiteral("viewportExposureStops"));
     exposure->setAccessibleName(QStringLiteral("Exposure compensation in stops"));
@@ -137,14 +173,14 @@ QWidget* WorldGraphView::TakeControls(QWidget* parent, RenderPreview& inoutSourc
         inoutSource.SetRasterExposureStops(static_cast<foundation::float32>(stops));
     });
     connect(reset, &QAction::triggered, &inoutSource, [&inoutSource]() { inoutSource.SetRasterExposureStops(0); });
-    const auto refreshExposure = [this, exposureButton, exposure, reset, &inoutSource]() {
+    const auto refreshExposure = [this, exposureAction, exposure, reset, &inoutSource]() {
         const bool canAdjust =
             mTargets->currentIndex() == 0 && mPreview.CanAdjustRasterExposure() == true &&
             (inoutSource.Scene().Objects.isEmpty() == false || inoutSource.Scene().Atmosphere.IsEnabled == true);
         const foundation::float32 stops = inoutSource.GetRasterExposureStops();
-        exposureButton->setEnabled(canAdjust);
+        exposureAction->setEnabled(canAdjust);
         exposure->setEnabled(canAdjust);
-        exposureButton->setToolTip(
+        exposureAction->setToolTip(
             canAdjust == true ? QStringLiteral("Adjust this viewport in stops relative to the graph's exposure.")
                               : QStringLiteral("Exposure needs Final output from a clustered deferred raster "
                                                "graph with ToneMap enabled and a World with geometry or atmosphere."));
@@ -152,15 +188,14 @@ QWidget* WorldGraphView::TakeControls(QWidget* parent, RenderPreview& inoutSourc
         exposure->setValue(static_cast<foundation::float64>(stops));
         reset->setEnabled(canAdjust == true && stops != 0);
     };
-    connect(&mPreview, &RenderGraphPreview::Changed, exposureButton, refreshExposure);
-    connect(&mPreview, &RenderGraphPreview::TargetsChanged, exposureButton, refreshExposure);
-    connect(&mPreview, &RenderGraphPreview::RayPathCaptureChanged, exposureButton, refreshExposure);
-    connect(&inoutSource, &RenderPreview::Changed, exposureButton, refreshExposure);
-    connect(&inoutSource, &RenderPreview::RasterExposureChanged, exposureButton, refreshExposure);
-    connect(mTargets, &QComboBox::currentIndexChanged, exposureButton, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::Changed, exposureAction, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::TargetsChanged, exposureAction, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::RayPathCaptureChanged, exposureAction, refreshExposure);
+    connect(&inoutSource, &RenderPreview::Changed, exposureAction, refreshExposure);
+    connect(&inoutSource, &RenderPreview::RasterExposureChanged, exposureAction, refreshExposure);
+    connect(mTargets, &QComboBox::currentIndexChanged, exposureAction, refreshExposure);
     refreshExposure();
-    layout->addWidget(exposureButton);
-    return controls;
+    return { .OutputOrNull = controls, .ExposureOrNull = exposureAction };
 }
 void WorldGraphView::SetCanPresent(bool canPresent)
 {
@@ -273,6 +308,8 @@ void WorldGraphView::refreshTargets()
                                         ? mTargets->findData(selectedDebugView, DEBUG_VIEW_ROLE)
                                         : mTargets->findData(selected);
     mTargets->setCurrentIndex(index >= 0 ? index : 0);
+    // The blocker hides this change from the fitting connection, so fit the new choice here.
+    FitComboBoxToCurrentText(*mTargets);
     mPreview.SetOutputTarget(mTargets->currentData().toString());
 }
 void WorldGraphView::refreshFrame()

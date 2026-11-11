@@ -22,6 +22,8 @@ constexpr float64 BEND_HEIGHT = 0;
 constexpr qsizetype CROSSING_SWEEPS = 12;
 /// Row-relaxation passes; each is linear in slots.
 constexpr qsizetype PLACEMENT_SWEEPS = 8;
+/// Adjacent-swap passes after the barycentre sweeps; each pass stops early once no swap helps.
+constexpr qsizetype TRANSPOSE_SWEEPS = 4;
 
 bool AreBoundsValid(const QRectF& bounds)
 {
@@ -54,6 +56,119 @@ void SortUnique(QVector<qsizetype>& inoutValues)
 {
     std::sort(inoutValues.begin(), inoutValues.end());
     inoutValues.erase(std::unique(inoutValues.begin(), inoutValues.end()), inoutValues.end());
+}
+
+/// Crossings between the wires of two adjacent columns: pairs whose ends are in opposite order. Counts inversions
+/// with a merge sort, so a column pair costs O(E log E) rather than O(E^2).
+qsizetype CountInversions(QVector<qsizetype>& inoutValues, QVector<qsizetype>& inoutScratch)
+{
+    qsizetype inversions = 0;
+    const qsizetype count = inoutValues.size();
+    inoutScratch.resize(count);
+    for (qsizetype width = 1; width < count; width *= 2)
+    {
+        for (qsizetype start = 0; start < count; start += 2 * width)
+        {
+            const qsizetype middle = qMin(start + width, count);
+            const qsizetype end = qMin(start + 2 * width, count);
+            qsizetype left = start;
+            qsizetype right = middle;
+            qsizetype out = start;
+            while (left < middle && right < end)
+            {
+                if (inoutValues.at(right) < inoutValues.at(left))
+                {
+                    inversions += middle - left;
+                    inoutScratch[out++] = inoutValues.at(right++);
+                }
+                else
+                {
+                    inoutScratch[out++] = inoutValues.at(left++);
+                }
+            }
+            while (left < middle)
+            {
+                inoutScratch[out++] = inoutValues.at(left++);
+            }
+            while (right < end)
+            {
+                inoutScratch[out++] = inoutValues.at(right++);
+            }
+        }
+        std::swap(inoutValues, inoutScratch);
+    }
+    return inversions;
+}
+
+/// Strongly connected components of a directed graph, without recursion (Tarjan). Each node maps to the smallest
+/// index in its component, so a cycle is placed as one unit and the result does not depend on edge order.
+QVector<qsizetype> FindComponents(qsizetype count, const QVector<QVector<qsizetype>>& successors)
+{
+    constexpr qsizetype UNVISITED = -1;
+    QVector<qsizetype> order(count, UNVISITED);
+    QVector<qsizetype> lowest(count, 0);
+    QVector<uint8> isOnStack(count, 0);
+    QVector<qsizetype> stack;
+    QVector<QPair<qsizetype, qsizetype>> work; // node, next successor to visit
+    QVector<qsizetype> components(count, 0);
+    qsizetype nextOrder = 0;
+    for (qsizetype root = 0; root < count; ++root)
+    {
+        if (order.at(root) != UNVISITED)
+        {
+            continue;
+        }
+        work.append({root, 0});
+        order[root] = lowest[root] = nextOrder++;
+        stack.append(root);
+        isOnStack[root] = 1;
+        while (work.isEmpty() == false)
+        {
+            const qsizetype node = work.last().first;
+            const qsizetype next = work.last().second;
+            if (next < successors.at(node).size())
+            {
+                ++work.last().second;
+                const qsizetype successor = successors.at(node).at(next);
+                if (order.at(successor) == UNVISITED)
+                {
+                    order[successor] = lowest[successor] = nextOrder++;
+                    stack.append(successor);
+                    isOnStack[successor] = 1;
+                    work.append({successor, 0});
+                }
+                else if (isOnStack.at(successor) != 0)
+                {
+                    lowest[node] = qMin(lowest.at(node), order.at(successor));
+                }
+                continue;
+            }
+            work.removeLast();
+            if (work.isEmpty() == false)
+            {
+                const qsizetype parent = work.last().first;
+                lowest[parent] = qMin(lowest.at(parent), lowest.at(node));
+            }
+            if (lowest.at(node) == order.at(node))
+            {
+                const qsizetype first = stack.size();
+                qsizetype start = first;
+                qsizetype representative = node;
+                do
+                {
+                    --start;
+                    representative = qMin(representative, stack.at(start));
+                } while (stack.at(start) != node);
+                for (qsizetype index = start; index < first; ++index)
+                {
+                    components[stack.at(index)] = representative;
+                    isOnStack[stack.at(index)] = 0;
+                }
+                stack.resize(start);
+            }
+        }
+    }
+    return components;
 }
 
 /// Mean rank of the neighbours as a fraction of their column, so columns of different sizes compare.
@@ -190,15 +305,107 @@ void PlaceLayeredNodes(const QVector<RenderGraphLayoutNode>& nodes,
         members = reordered;
         refreshFractions(column);
     };
-    for (qsizetype sweep = 0; sweep < CROSSING_SWEEPS; ++sweep)
+    // Crossings are counted between adjacent columns from slot ranks; bends make every wire span one column pair.
+    QVector<qsizetype> ranks(slots.size(), 0);
+    const auto refreshRanks = [&](qsizetype column) {
+        const QVector<qsizetype>& members = columnSlots.at(column);
+        for (qsizetype rank = 0; rank < members.size(); ++rank)
+        {
+            ranks[members.at(rank)] = rank;
+        }
+    };
+    QVector<qsizetype> wireEnds;
+    QVector<qsizetype> scratch;
+    QVector<qsizetype> targetRanks;
+    const auto countCrossings = [&]() {
+        qsizetype total = 0;
+        for (qsizetype column = 0; column + 1 < count; ++column)
+        {
+            wireEnds.clear();
+            for (const qsizetype slotIndex : std::as_const(columnSlots.at(column)))
+            {
+                targetRanks.clear();
+                for (const qsizetype after : std::as_const(slots.at(slotIndex).After))
+                {
+                    targetRanks.append(ranks.at(after));
+                }
+                std::sort(targetRanks.begin(), targetRanks.end());
+                wireEnds.append(targetRanks);
+            }
+            total += CountInversions(wireEnds, scratch);
+        }
+        return total;
+    };
+    for (qsizetype column = 0; column < count; ++column)
+    {
+        refreshRanks(column);
+    }
+    // Barycentre sweeps can oscillate; keep the ordering with the fewest crossings seen, not the last one.
+    qsizetype fewestCrossings = countCrossings();
+    QVector<QVector<qsizetype>> bestColumns = columnSlots;
+    for (qsizetype sweep = 0; sweep < CROSSING_SWEEPS && fewestCrossings > 0; ++sweep)
     {
         for (qsizetype column = 1; column < count; ++column)
         {
             sortColumn(column, true);
+            refreshRanks(column);
         }
         for (qsizetype column = count - 2; column >= 0; --column)
         {
             sortColumn(column, false);
+            refreshRanks(column);
+        }
+        const qsizetype crossings = countCrossings();
+        if (crossings < fewestCrossings)
+        {
+            fewestCrossings = crossings;
+            bestColumns = columnSlots;
+        }
+    }
+    columnSlots = bestColumns;
+    for (qsizetype column = 0; column < count; ++column)
+    {
+        refreshRanks(column);
+    }
+    // Then swap neighbours in a column whenever that alone removes crossings (the transpose step of layered
+    // drawing), which fixes local tangles the barycentres average away.
+    const auto countPairCrossings = [&](qsizetype upper, qsizetype lower) {
+        qsizetype crossings = 0;
+        for (const QVector<qsizetype> LayeredSlot::* side : {&LayeredSlot::Before, &LayeredSlot::After})
+        {
+            for (const qsizetype upperNeighbour : (slots.at(upper).*side))
+            {
+                for (const qsizetype lowerNeighbour : (slots.at(lower).*side))
+                {
+                    crossings += ranks.at(upperNeighbour) > ranks.at(lowerNeighbour) ? 1 : 0;
+                }
+            }
+        }
+        return crossings;
+    };
+    for (qsizetype sweep = 0; sweep < TRANSPOSE_SWEEPS; ++sweep)
+    {
+        bool hasSwapped = false;
+        for (qsizetype column = 0; column < count; ++column)
+        {
+            QVector<qsizetype>& members = columnSlots[column];
+            for (qsizetype rank = 0; rank + 1 < members.size(); ++rank)
+            {
+                const qsizetype upper = members.at(rank);
+                const qsizetype lower = members.at(rank + 1);
+                if (countPairCrossings(lower, upper) < countPairCrossings(upper, lower))
+                {
+                    members[rank] = lower;
+                    members[rank + 1] = upper;
+                    ranks[lower] = rank;
+                    ranks[upper] = rank + 1;
+                    hasSwapped = true;
+                }
+            }
+        }
+        if (hasSwapped == false)
+        {
+            break;
         }
     }
     // Rows: stack each column, then pull cards toward their neighbours' middle while keeping order.
@@ -274,70 +481,68 @@ void ArrangeNodes(const QVector<RenderGraphLayoutNode>& nodes,
 {
     const qsizetype count = nodes.size();
     QHash<QString, qsizetype> indices;
-    QVector<QVector<uint8>> reachable(count, QVector<uint8>(count, 0));
     for (qsizetype index = 0; index < count; ++index)
     {
         indices.insert(nodes.at(index).Identity, index);
-        reachable[index][index] = 1;
     }
+    QVector<QVector<qsizetype>> successors(count);
     for (const RenderGraphLayoutEdge& edge : edges)
     {
         if (indices.contains(edge.Source) == true && indices.contains(edge.Destination) == true)
         {
-            reachable[indices.value(edge.Source)][indices.value(edge.Destination)] = 1;
+            successors[indices.value(edge.Source)].append(indices.value(edge.Destination));
         }
     }
-    // Bounded transitive closure (MAX_NODES = 128) makes cyclic draft components explicit.
-    // Mutual reachability gives one representative per component, without recursive traversal.
-    for (qsizetype via = 0; via < count; ++via)
+    for (QVector<qsizetype>& next : successors)
     {
-        for (qsizetype source = 0; source < count; ++source)
+        SortUnique(next);
+    }
+    // Cyclic draft components share one column; linear in cards and wires, so large graphs stay fast.
+    const QVector<qsizetype> components = FindComponents(count, successors);
+    // Longest-path columns over the acyclic component graph, in topological (Kahn) order.
+    QVector<qsizetype> columns(count, 0);
+    QVector<qsizetype> pending(count, 0);
+    for (qsizetype source = 0; source < count; ++source)
+    {
+        for (const qsizetype destination : std::as_const(successors.at(source)))
         {
-            if (reachable[source][via] == 0)
+            if (components.at(source) != components.at(destination))
             {
-                continue;
-            }
-            for (qsizetype destination = 0; destination < count; ++destination)
-            {
-                reachable[source][destination] |= reachable[via][destination];
+                ++pending[components.at(destination)];
             }
         }
     }
-    QVector<qsizetype> components(count);
-    QVector<qsizetype> columns(count, 0);
+    QVector<QVector<qsizetype>> members(count);
     for (qsizetype index = 0; index < count; ++index)
     {
-        components[index] = index;
-        for (qsizetype previous = 0; previous < index; ++previous)
+        members[components.at(index)].append(index);
+    }
+    QVector<qsizetype> ready;
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        if (components.at(index) == index && pending.at(index) == 0)
         {
-            if (reachable[index][previous] != 0 && reachable[previous][index] != 0)
-            {
-                components[index] = components[previous];
-                break;
-            }
+            ready.append(index);
         }
     }
-    // The component graph is acyclic. Longest-path columns therefore converge within count passes.
-    for (qsizetype pass = 0; pass < count; ++pass)
+    for (qsizetype next = 0; next < ready.size(); ++next)
     {
-        bool hasChanged = false;
-        for (const RenderGraphLayoutEdge& edge : edges)
+        const qsizetype component = ready.at(next);
+        for (const qsizetype member : std::as_const(members.at(component)))
         {
-            if (indices.contains(edge.Source) == false || indices.contains(edge.Destination) == false)
+            for (const qsizetype destination : std::as_const(successors.at(member)))
             {
-                continue;
+                const qsizetype target = components.at(destination);
+                if (target == component)
+                {
+                    continue;
+                }
+                columns[target] = qMax(columns.at(target), columns.at(component) + 1);
+                if (--pending[target] == 0)
+                {
+                    ready.append(target);
+                }
             }
-            const qsizetype source = components.at(indices.value(edge.Source));
-            const qsizetype destination = components.at(indices.value(edge.Destination));
-            if (source != destination && columns.at(destination) <= columns.at(source))
-            {
-                columns[destination] = columns.at(source) + 1;
-                hasChanged = true;
-            }
-        }
-        if (hasChanged == false)
-        {
-            break;
         }
     }
     PlaceLayeredNodes(nodes, edges, indices, components, columns, outPositions);
@@ -349,7 +554,7 @@ bool ComputeRenderGraphLayout(const QVector<RenderGraphLayoutNode>& nodes,
                               RenderGraphLayoutOperation operation,
                               QVector<RenderGraphNodePosition>& outPositions)
 {
-    if (nodes.isEmpty() == true || nodes.size() > RenderGraphDocument::MAX_NODES ||
+    if (nodes.isEmpty() == true || nodes.size() > MAXIMUM_RENDER_GRAPH_LAYOUT_CARDS ||
         (operation != RenderGraphLayoutOperation::Arrange && nodes.size() < 2) ||
         ((operation == RenderGraphLayoutOperation::DistributeHorizontal ||
           operation == RenderGraphLayoutOperation::DistributeVertical) &&
@@ -503,6 +708,154 @@ void ResolveRenderGraphOverlaps(const QVector<QRectF>& fixedCards, float64 gap, 
             card.translate(0, offsetScene);
         }
         placed.append(card);
+    }
+}
+
+RenderGraphWireMeasure MeasureRenderGraphWires(const QVector<QLineF>& wires)
+{
+    RenderGraphWireMeasure measure;
+    QVector<QLineF> sorted;
+    sorted.reserve(wires.size());
+    for (const QLineF& wire : wires)
+    {
+        measure.TotalLength += wire.length();
+        sorted.append(wire.x1() <= wire.x2() ? wire : QLineF(wire.p2(), wire.p1()));
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const QLineF& left, const QLineF& right) {
+        return left.x1() < right.x1();
+    });
+    // Wires that share a port touch there by construction; a fan from one output is not a tangle.
+    constexpr float64 SHARED_PORT_DISTANCE = 0.5;
+    const auto isShared = [](QPointF left, QPointF right) {
+        return (left - right).manhattanLength() < SHARED_PORT_DISTANCE;
+    };
+    for (qsizetype first = 0; first < sorted.size(); ++first)
+    {
+        const QLineF& wire = sorted.at(first);
+        const float64 top = qMin(wire.y1(), wire.y2());
+        const float64 bottom = qMax(wire.y1(), wire.y2());
+        for (qsizetype second = first + 1; second < sorted.size() && sorted.at(second).x1() <= wire.x2(); ++second)
+        {
+            const QLineF& other = sorted.at(second);
+            if (qMax(other.y1(), other.y2()) < top || qMin(other.y1(), other.y2()) > bottom ||
+                isShared(wire.p1(), other.p1()) == true || isShared(wire.p1(), other.p2()) == true ||
+                isShared(wire.p2(), other.p1()) == true || isShared(wire.p2(), other.p2()) == true)
+            {
+                continue;
+            }
+            QPointF intersection;
+            if (wire.intersects(other, &intersection) == QLineF::BoundedIntersection)
+            {
+                ++measure.Crossings;
+            }
+        }
+    }
+    return measure;
+}
+
+void PlaceUnsavedRenderGraphCards(const QVector<RenderGraphLayoutWire>& wires,
+                                  const QSet<QString>& savedCards,
+                                  float64 columnSpacing,
+                                  QVector<RenderGraphLayoutNode>& inoutCards)
+{
+    QHash<QString, qsizetype> indices;
+    for (qsizetype index = 0; index < inoutCards.size(); ++index)
+    {
+        indices.insert(inoutCards.at(index).Identity, index);
+    }
+    if (savedCards.isEmpty() == true)
+    {
+        QVector<RenderGraphLayoutEdge> edges;
+        for (const RenderGraphLayoutWire& wire : wires)
+        {
+            edges.append({wire.Source, wire.Destination});
+        }
+        QVector<RenderGraphNodePosition> positions;
+        if (ComputeRenderGraphLayout(inoutCards, edges, RenderGraphLayoutOperation::Arrange, positions) == true)
+        {
+            for (const RenderGraphNodePosition& position : std::as_const(positions))
+            {
+                inoutCards[indices.value(position.Node)].Bounds.moveTopLeft(QPointF(position.X, position.Y));
+            }
+        }
+        return;
+    }
+    // Wire indices per card, as producer and as consumer.
+    QVector<QVector<qsizetype>> outgoing(inoutCards.size());
+    QVector<QVector<qsizetype>> incoming(inoutCards.size());
+    for (qsizetype wire = 0; wire < wires.size(); ++wire)
+    {
+        const RenderGraphLayoutWire& value = wires.at(wire);
+        if (indices.contains(value.Source) == true && indices.contains(value.Destination) == true &&
+            value.Source != value.Destination)
+        {
+            outgoing[indices.value(value.Source)].append(wire);
+            incoming[indices.value(value.Destination)].append(wire);
+        }
+    }
+    QVector<uint8> isPlaced(inoutCards.size(), 0);
+    for (qsizetype index = 0; index < inoutCards.size(); ++index)
+    {
+        isPlaced[index] = savedCards.contains(inoutCards.at(index).Identity) == true ? 1 : 0;
+    }
+    const auto median = [](QVector<float64>& inoutValues) {
+        std::sort(inoutValues.begin(), inoutValues.end());
+        return inoutValues.at(inoutValues.size() / 2);
+    };
+    // Each round places the cards wired to an already placed card, so a chain of unsaved cards grows outward
+    // from the saved layout one column at a time. Cards placed in one round only anchor the next.
+    for (qsizetype round = 0; round < inoutCards.size(); ++round)
+    {
+        QVector<QPair<qsizetype, QPointF>> placements;
+        for (qsizetype index = 0; index < inoutCards.size(); ++index)
+        {
+            if (isPlaced.at(index) == 1)
+            {
+                continue;
+            }
+            QVector<float64> tops;
+            float64 left = std::numeric_limits<float64>::max();
+            for (const qsizetype wire : std::as_const(outgoing.at(index)))
+            {
+                const qsizetype consumer = indices.value(wires.at(wire).Destination);
+                if (isPlaced.at(consumer) == 1)
+                {
+                    tops.append(inoutCards.at(consumer).Bounds.top() + wires.at(wire).DestinationY -
+                                wires.at(wire).SourceY);
+                    left = qMin(left, inoutCards.at(consumer).Bounds.left());
+                }
+            }
+            if (tops.isEmpty() == false)
+            {
+                placements.append({index, QPointF(left - columnSpacing, median(tops))});
+                continue;
+            }
+            float64 right = std::numeric_limits<float64>::lowest();
+            for (const qsizetype wire : std::as_const(incoming.at(index)))
+            {
+                const qsizetype producer = indices.value(wires.at(wire).Source);
+                if (isPlaced.at(producer) == 1)
+                {
+                    tops.append(inoutCards.at(producer).Bounds.top() + wires.at(wire).SourceY -
+                                wires.at(wire).DestinationY);
+                    right = qMax(right, inoutCards.at(producer).Bounds.left());
+                }
+            }
+            if (tops.isEmpty() == false)
+            {
+                placements.append({index, QPointF(right + columnSpacing, median(tops))});
+            }
+        }
+        if (placements.isEmpty() == true)
+        {
+            break;
+        }
+        for (const QPair<qsizetype, QPointF>& placement : std::as_const(placements))
+        {
+            inoutCards[placement.first].Bounds.moveTopLeft(
+                QPointF(qRound(placement.second.x()), qRound(placement.second.y())));
+            isPlaced[placement.first] = 1;
+        }
     }
 }
 } // namespace ludus::editor

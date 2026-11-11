@@ -29,16 +29,19 @@
 #include <QFocusEvent>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QFrame>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsTextItem>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineF>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
@@ -47,6 +50,7 @@
 #include <QPalette>
 #include <QPen>
 #include <QPointingDevice>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QRubberBand>
 #include <QScrollBar>
@@ -57,6 +61,7 @@
 #include <QToolButton>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -111,6 +116,10 @@ constexpr float64 LINK_HINT_OFFSET = 16;
 constexpr float64 NODE_ROW_GAP = 30;
 // Clicking an output offers Quick Add for a node one ordinary column gap to its right.
 constexpr float64 QUICK_ADD_PORT_GAP = COLUMN_SPACING - NODE_WIDTH;
+/// Below this many crossings a saved layout reads fine; Tidy layout is not worth suggesting.
+constexpr int32 TIDY_MINIMUM_CROSSINGS = 20;
+/// Tidy layout is suggested only when Auto Layout keeps at most this share of the current crossings.
+constexpr float64 TIDY_REMAINING_SHARE = 0.5;
 /// Reserved display key for configuration outputs; not a valid authored identifier.
 [[nodiscard]] LUDUS_INLINE QString GetOutputsNode()
 {
@@ -685,7 +694,8 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
       mFitSelectionAction(new QAction(QStringLiteral("Fit Selection"), this)),
       mAutoLayoutAction(new QAction(QStringLiteral("Auto Layout"), this)),
       mMinimapAction(new QAction(QStringLiteral("Minimap"), this)), mZoomLabel(new QLabel(this)),
-      mAvailabilityNotice(new QLabel(viewport())), mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
+      mAvailabilityNotice(new QLabel(viewport())), mTidyNotice(new QFrame(viewport())),
+      mTidyNoticeText(new QLabel(mTidyNotice)), mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
 {
     setObjectName(QStringLiteral("renderGraphCanvas"));
     setAccessibleName(QStringLiteral("Render graph canvas"));
@@ -757,6 +767,39 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
         mAvailabilityNotice->setPalette(palette);
     }
     mAvailabilityNotice->hide();
+    {
+        mTidyNotice->setObjectName(QStringLiteral("renderGraphTidyNotice"));
+        mTidyNotice->setAccessibleName(QStringLiteral("Tangled layout"));
+        mTidyNotice->setFrameShape(QFrame::StyledPanel);
+        mTidyNotice->setAutoFillBackground(true);
+        QHBoxLayout* row = new QHBoxLayout(mTidyNotice);
+        row->setContentsMargins(design::SPACING_SMALL,
+                                design::SPACING_SMALL,
+                                design::SPACING_SMALL,
+                                design::SPACING_SMALL);
+        row->setSpacing(design::SPACING_SMALL);
+        mTidyNoticeText->setObjectName(QStringLiteral("renderGraphTidyNoticeText"));
+        mTidyNoticeText->setTextFormat(Qt::PlainText);
+        row->addWidget(mTidyNoticeText, 1);
+        QPushButton* tidy = new QPushButton(QStringLiteral("Tidy layout"), mTidyNotice);
+        tidy->setObjectName(QStringLiteral("renderGraphTidyButton"));
+        tidy->setProperty("visualRole", QStringLiteral("primary"));
+        tidy->setToolTip(QStringLiteral("Lay every card out left to right by dependency order, as Auto Layout does. "
+                                        "One undo step; saved positions change only when you press it."));
+        row->addWidget(tidy);
+        QPushButton* dismiss = new QPushButton(QStringLiteral("Keep my layout"), mTidyNotice);
+        dismiss->setObjectName(QStringLiteral("renderGraphTidyDismiss"));
+        dismiss->setToolTip(QStringLiteral("Hide this suggestion for this configuration until the editor restarts."));
+        row->addWidget(dismiss);
+        connect(tidy, &QPushButton::clicked, this, [this]() {
+            static_cast<void>(ApplyLayout(RenderGraphLayoutOperation::Arrange, true));
+        });
+        connect(dismiss, &QPushButton::clicked, this, [this]() {
+            mDismissedTidyLayouts.insert(mFile + QLatin1Char('#') + mConfiguration);
+            mTidyNotice->hide();
+        });
+        mTidyNotice->hide();
+    }
     connect(mFitGraphAction, &QAction::triggered, this, &RenderGraphCanvas::FitGraph);
     connect(mFitSelectionAction, &QAction::triggered, this, &RenderGraphCanvas::FitSelection);
     connect(mAutoLayoutAction, &QAction::triggered, this, [this]() { static_cast<void>(AutoLayout()); });
@@ -938,6 +981,7 @@ void RenderGraphCanvas::resizeEvent(QResizeEvent* event)
     mFramingToolbar->setGeometry(frameWidth(), frameWidth() + historyHeight, toolbarWidth, framingHeight);
     placeMinimap();
     placeAvailabilityNotice();
+    placeTidyNotice();
 }
 
 void RenderGraphCanvas::placeMinimap()
@@ -958,6 +1002,13 @@ void RenderGraphCanvas::placeAvailabilityNotice()
     mAvailabilityNotice->adjustSize();
     mAvailabilityNotice->move(design::SPACING_MEDIUM, design::SPACING_MEDIUM);
     mAvailabilityNotice->raise();
+}
+
+void RenderGraphCanvas::placeTidyNotice()
+{
+    mTidyNotice->adjustSize();
+    mTidyNotice->move(design::SPACING_MEDIUM, viewport()->height() - mTidyNotice->height() - design::SPACING_MEDIUM);
+    mTidyNotice->raise();
 }
 
 void RenderGraphCanvas::SetDeviceProfile(const RenderGraphDeviceProfile& profile)
@@ -1544,50 +1595,6 @@ void RenderGraphCanvas::Rebuild()
             }
         }
     }
-    // Display-only placement can land on a card the author placed, or on an interface box; keep every card legible.
-    {
-        QVector<QRectF> fixedCards;
-        QVector<NodeView*> movable;
-        for (NodeView* view : std::as_const(mNodes))
-        {
-            // The author's cards and the interface boxes stay where they are; the rest make way for them.
-            if (view->IsMovable == false || authored.contains(view->Id) == true)
-            {
-                fixedCards.append(view->Frame->sceneBoundingRect());
-            }
-            else
-            {
-                movable.append(view);
-            }
-        }
-        foundation::Sort(movable.data(),
-                         static_cast<usize>(movable.size()),
-                         [](const NodeView* left, const NodeView* right) {
-                             const QPointF leftPosition = left->Frame->pos();
-                             const QPointF rightPosition = right->Frame->pos();
-                             if (leftPosition.x() != rightPosition.x())
-                             {
-                                 return leftPosition.x() < rightPosition.x();
-                             }
-                             return leftPosition.y() != rightPosition.y() ? leftPosition.y() < rightPosition.y()
-                                                                          : left->Id < right->Id;
-                         });
-        QVector<QRectF> cards;
-        for (const NodeView* view : std::as_const(movable))
-        {
-            cards.append(view->Frame->sceneBoundingRect());
-        }
-        ResolveRenderGraphOverlaps(fixedCards, NODE_ROW_GAP, cards);
-        for (qsizetype index = 0; index < movable.size(); ++index)
-        {
-            NodeView* view = movable.at(index);
-            // Thanks to The Qt Company, "QGraphicsRectItem Class", Detailed Description:
-            // https://doc.qt.io/qt-6.8/qgraphicsrectitem.html#details
-            // Bounds include the pen; apply the resolved offset rather than using bounds as the item's origin.
-            const QPointF offsetScene = cards.at(index).topLeft() - view->Frame->sceneBoundingRect().topLeft();
-            view->Frame->setPos(view->Frame->pos() + offsetScene);
-        }
-    }
     for (const QJsonValueConstRef value : edges)
     {
         links.append({value.toObject().value(QStringLiteral("from")).toString(),
@@ -1597,6 +1604,15 @@ void RenderGraphCanvas::Rebuild()
     for (const CanvasLink& link : std::as_const(links))
     {
         mEdges.append(new EdgeView(link, mScene->addPath(QPainterPath(), QPen(GetEdgeColour(), 2))));
+    }
+    {
+        QSet<QString> savedCards;
+        for (QHash<QString, QPointF>::const_iterator iterator = authored.cbegin(); iterator != authored.cend();
+             ++iterator)
+        {
+            savedCards.insert(iterator.key());
+        }
+        placeDisplayCards(savedCards);
     }
     mReroutesOrNull->Rebuild(record);
     for (EdgeView* edge : std::as_const(mEdges))
@@ -1640,6 +1656,7 @@ void RenderGraphCanvas::Rebuild()
         nodeBounds.adjusted(-SCENE_SCROLL_PADDING, -SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING));
     applyViewTransform(viewState);
     updateSemanticZoom(true);
+    refreshTidySuggestion();
 }
 
 void RenderGraphCanvas::SetReferenceSize(const QSize& size)
@@ -2514,6 +2531,10 @@ bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool s
             changed.append(position);
         }
     }
+    if (changed.isEmpty() == false)
+    {
+        appendUnsavedPositions(changed);
+    }
     // With groups, they are refitted around their cards in the same edit; otherwise only the cards move.
     const bool hasPublishedGroups = operation == RenderGraphLayoutOperation::Arrange && changed.isEmpty() == false &&
                                     mCommentsOrNull->PublishArrangement(changed) == true;
@@ -2537,6 +2558,236 @@ bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool s
     return true;
 }
 
+void RenderGraphCanvas::placeDisplayCards(const QSet<QString>& savedCards)
+{
+    QVector<RenderGraphLayoutWire> wires;
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        const NodeView* sourceOrNull = mNodes.value(GetEndpointNode(edge->From), nullptr);
+        const NodeView* destinationOrNull = mNodes.value(GetEndpointNode(edge->To), nullptr);
+        const QPointF from = GetPortPosition(edge->From, true);
+        const QPointF to = GetPortPosition(edge->To, false);
+        if (sourceOrNull != nullptr && destinationOrNull != nullptr && from.isNull() == false && to.isNull() == false)
+        {
+            wires.append(
+            {
+                .Source = sourceOrNull->Id,
+                .Destination = destinationOrNull->Id,
+                .SourceY = from.y() - sourceOrNull->Frame->pos().y(),
+                .DestinationY = to.y() - destinationOrNull->Frame->pos().y(),
+            });
+        }
+    }
+    // Display-only placement can land on a card the author placed, or on an interface box; keep every card legible.
+    // The author's cards and the interface boxes stay where they are; the rest make way for them.
+    const auto settle = [&](QHash<QString, QPointF>& inoutTopLefts) {
+        QVector<QRectF> fixedCards;
+        QVector<const NodeView*> movable;
+        for (const NodeView* view : std::as_const(mNodes))
+        {
+            if (inoutTopLefts.contains(view->Id) == true)
+            {
+                movable.append(view);
+            }
+            else
+            {
+                fixedCards.append(view->Frame->sceneBoundingRect());
+            }
+        }
+        foundation::Sort(movable.data(),
+                         static_cast<usize>(movable.size()),
+                         [&inoutTopLefts](const NodeView* left, const NodeView* right) {
+                             const QPointF leftPosition = inoutTopLefts.value(left->Id);
+                             const QPointF rightPosition = inoutTopLefts.value(right->Id);
+                             if (leftPosition.x() != rightPosition.x())
+                             {
+                                 return leftPosition.x() < rightPosition.x();
+                             }
+                             return leftPosition.y() != rightPosition.y() ? leftPosition.y() < rightPosition.y()
+                                                                          : left->Id < right->Id;
+                         });
+        // Thanks to The Qt Company, "QGraphicsRectItem Class", Detailed Description:
+        // https://doc.qt.io/qt-6.8/qgraphicsrectitem.html#details
+        // Bounds include the pen; apply the resolved offset rather than using bounds as the item's origin.
+        QVector<QRectF> movableCards;
+        for (const NodeView* view : std::as_const(movable))
+        {
+            movableCards.append(
+                view->Frame->sceneBoundingRect().translated(inoutTopLefts.value(view->Id) - view->Frame->pos()));
+        }
+        const QVector<QRectF> proposed = movableCards;
+        ResolveRenderGraphOverlaps(fixedCards, NODE_ROW_GAP, movableCards);
+        for (qsizetype index = 0; index < movable.size(); ++index)
+        {
+            inoutTopLefts[movable.at(index)->Id] += movableCards.at(index).topLeft() - proposed.at(index).topLeft();
+        }
+    };
+    QHash<QString, QPointF> columns;
+    QVector<RenderGraphLayoutNode> cards;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->IsMovable == true)
+        {
+            cards.append({view->Id, QRectF(view->Frame->pos(), view->Frame->rect().size())});
+            if (savedCards.contains(view->Id) == false)
+            {
+                columns.insert(view->Id, view->Frame->pos());
+            }
+        }
+    }
+    if (columns.isEmpty() == true)
+    {
+        return;
+    }
+    settle(columns);
+    // Unsaved cards start in dependency columns in file order; the layered or anchored placement replaces that
+    // only when it draws fewer crossings (or as many, with shorter wires), so a graph never reads worse than before.
+    PlaceUnsavedRenderGraphCards(wires, savedCards, COLUMN_SPACING, cards);
+    QHash<QString, QPointF> placed;
+    for (const RenderGraphLayoutNode& card : std::as_const(cards))
+    {
+        if (columns.contains(card.Identity) == true)
+        {
+            placed.insert(card.Identity, card.Bounds.topLeft());
+        }
+    }
+    settle(placed);
+    const RenderGraphWireMeasure columnMeasure = MeasureWires(columns);
+    const RenderGraphWireMeasure placedMeasure = MeasureWires(placed);
+    const bool isPlacedBetter =
+        placedMeasure.Crossings < columnMeasure.Crossings ||
+        (placedMeasure.Crossings == columnMeasure.Crossings && placedMeasure.TotalLength < columnMeasure.TotalLength);
+    const QHash<QString, QPointF>& chosen = isPlacedBetter == true ? placed : columns;
+    for (QHash<QString, QPointF>::const_iterator iterator = chosen.cbegin(); iterator != chosen.cend(); ++iterator)
+    {
+        mNodes.value(iterator.key())->Frame->setPos(iterator.value());
+    }
+}
+
+RenderGraphWireMeasure RenderGraphCanvas::MeasureWires(const QHash<QString, QPointF>& movedCards) const
+{
+    const auto locate = [&](const QString& endpoint, bool isOutput) {
+        const QPointF port = GetPortPosition(endpoint, isOutput);
+        const QString node = GetEndpointNode(endpoint);
+        const NodeView* viewOrNull = mNodes.value(node, nullptr);
+        if (port.isNull() == true || viewOrNull == nullptr || movedCards.contains(node) == false)
+        {
+            return port;
+        }
+        return port + movedCards.value(node) - viewOrNull->Frame->pos();
+    };
+    QVector<QLineF> wires;
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        const QPointF from = locate(edge->From, true);
+        const QPointF to = locate(edge->To, false);
+        if (from.isNull() == false && to.isNull() == false)
+        {
+            wires.append(QLineF(from, to));
+        }
+    }
+    return MeasureRenderGraphWires(wires);
+}
+
+bool RenderGraphCanvas::IsTidySuggested() const
+{
+    return mTidyNotice->isVisibleTo(this) == true;
+}
+
+void RenderGraphCanvas::refreshTidySuggestion()
+{
+    mTidyNotice->hide();
+    if (mFile.isEmpty() == true || mDismissedTidyLayouts.contains(mFile + QLatin1Char('#') + mConfiguration) == true ||
+        configuration()
+                .value(QStringLiteral("layout"))
+                .toObject()
+                .value(QStringLiteral("positions"))
+                .toArray()
+                .isEmpty() == true)
+    {
+        return;
+    }
+    QVector<RenderGraphLayoutNode> cards;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->Frame->isVisible() == false)
+        {
+            // A collapsed stage hides cards behind its proxy; the straight-wire picture would not match the eye.
+            return;
+        }
+        if (view->IsMovable == true)
+        {
+            cards.append({view->Id, QRectF(view->Frame->pos(), view->Frame->rect().size())});
+        }
+    }
+    const RenderGraphWireMeasure current = MeasureWires();
+    if (current.Crossings < TIDY_MINIMUM_CROSSINGS)
+    {
+        return;
+    }
+    QVector<RenderGraphLayoutEdge> edges;
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        edges.append({GetEndpointNode(edge->From), GetEndpointNode(edge->To)});
+    }
+    QVector<RenderGraphNodePosition> positions;
+    if (ComputeRenderGraphLayout(cards, edges, RenderGraphLayoutOperation::Arrange, positions) == false)
+    {
+        return;
+    }
+    QHash<QString, QPointF> moved;
+    for (const RenderGraphNodePosition& position : std::as_const(positions))
+    {
+        moved.insert(position.Node, QPointF(position.X, position.Y));
+    }
+    const RenderGraphWireMeasure tidied = MeasureWires(moved);
+    if (static_cast<float64>(tidied.Crossings) > static_cast<float64>(current.Crossings) * TIDY_REMAINING_SHARE)
+    {
+        return;
+    }
+    mTidyNoticeText->setText(QStringLiteral("Wires cross %1 times in this layout. Tidy layout brings that down to %2; "
+                                            "you can undo it.")
+                                 .arg(current.Crossings)
+                                 .arg(tidied.Crossings));
+    // Card colours follow the theme at each rebuild; the notice matches them.
+    QPalette palette = mTidyNotice->palette();
+    palette.setColor(QPalette::Window, GetNodeBackground());
+    palette.setColor(QPalette::WindowText, GetLabelColour());
+    mTidyNotice->setPalette(palette);
+    mTidyNotice->show();
+    placeTidyNotice();
+}
+
+void RenderGraphCanvas::appendUnsavedPositions(QVector<RenderGraphNodePosition>& inoutPositions) const
+{
+    QSet<QString> listed;
+    for (const QJsonValueConstRef value :
+         configuration().value(QStringLiteral("layout")).toObject().value(QStringLiteral("positions")).toArray())
+    {
+        listed.insert(value.toObject().value(QStringLiteral("node")).toString());
+    }
+    for (const RenderGraphNodePosition& position : std::as_const(inoutPositions))
+    {
+        listed.insert(position.Node);
+    }
+    QVector<RenderGraphNodePosition> unsaved;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->IsMovable == true && listed.contains(view->Id) == false)
+        {
+            const QPointF position = view->Frame->pos();
+            unsaved.append({view->Id, ClampCoordinate(position.x()), ClampCoordinate(position.y())});
+        }
+    }
+    // Hash order is arbitrary; the saved list is ordered by node ID so the same move always writes the same file.
+    std::sort(unsaved.begin(),
+              unsaved.end(),
+              [](const RenderGraphNodePosition& left, const RenderGraphNodePosition& right) {
+                  return left.Node < right.Node;
+              });
+    inoutPositions.append(unsaved);
+}
+
 void RenderGraphCanvas::EndDrag()
 {
     if (mIsDragging == false)
@@ -2557,6 +2808,7 @@ void RenderGraphCanvas::EndDrag()
     mDragOrigins.clear();
     if (positions.isEmpty() == false)
     {
+        appendUnsavedPositions(positions);
         Q_EMIT MoveRequested(positions);
     }
 }

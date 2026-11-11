@@ -287,10 +287,11 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
         },
         10000));
     CHECK(notice->isVisible());
-    CHECK(message->text() == QStringLiteral("Build tools are out of date."));
+    CHECK(message->text() == QStringLiteral("This project's build setup is out of date."));
     QLabel* detail = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeDetail"));
     REQUIRE(detail != nullptr);
-    CHECK(detail->text().contains(QStringLiteral("SDK or tool inputs changed")));
+    CHECK(detail->text().contains(QStringLiteral("changed since this project was set up")));
+    CHECK(message->toolTip().contains(QStringLiteral("SDK or tool inputs changed")));
     // A stale setup is fixed by repair, so the notice offers it rather than the settings file.
     CHECK(repair->text() == QStringLiteral("Repair project"));
     CHECK(repair->isEnabled());
