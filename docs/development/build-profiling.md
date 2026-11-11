@@ -537,7 +537,7 @@ It counts compilations instead of timing them, so its result does not depend on
 host load or runner speed. `config/build_graph.json` lists the exceptions:
 
 - A **variant** compiles differently for each target: fault-injection backends,
-  the renderer tests' reference backend and `-ffp-contract=off`, the editor's
+  the renderer test oracles' floating-point flags, the editor's
   configuration tests without the GPU preview. Each rule states its reason.
 - A **baseline** entry is identical duplication not yet migrated. The list may
   only shrink: once a tree containing every target a rule names compiles each of
@@ -565,6 +565,16 @@ rejects the former executable-only dependency, and checks the native branch
 without a Qt package.
 The generated LTC table, 213,000 lines of constant data, is likewise compiled
 once and linked into the renderer and both renderer test executables.
+
+Renderer tests link the production renderer and RHI archives. The renderer's
+CPU reference paths and test oracles use `-ffp-contract=off`. Deterministic tests
+supply reference backend objects directly at link time, satisfying the RHI
+backend symbols before native device objects are pulled from the archive.
+The reference raster and unsupported ray implementations each compile once.
+Storage-allocation failure injection is compiled into the shared RHI registry
+only when tests are enabled, with its declaration kept in a private header.
+`config/build_graph.json` grants no renderer or RHI production-source variants.
+
 The assertion runtime also shares its identical objects between FoundationBase
 and the isolated fake-platform death-test executable. Each final binary still
 selects its own platform implementation and owns its own assertion state; the
