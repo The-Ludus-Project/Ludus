@@ -1,6 +1,7 @@
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/render.h>
 
 namespace ludus::graphics::rhi::backend
@@ -104,7 +105,7 @@ void DestroyPipeline(usize) noexcept
 {
     ++Released;
 }
-void UpdateUniform(usize, std::span<const uint8>) noexcept {}
+void UpdateUniform(usize, ludus::foundation::BorrowedView<const uint8>) noexcept {}
 FrameInfo GetFrameInfo() noexcept
 {
     return { .Width = 96, .Height = 64 };

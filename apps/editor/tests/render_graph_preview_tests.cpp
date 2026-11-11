@@ -3566,7 +3566,7 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     REQUIRE(chartPackage.Decode({reinterpret_cast<const uint8*>(chartBytes.constData()),
                                  static_cast<usize>(chartBytes.size())}) == renderer::RenderGraphPackageStatus::Ready);
     const renderer::RenderGraphPrograms chartPrograms = chartPackage.GetPrograms({}, {});
-    CHECK(chartPrograms.ForwardVertex.Inputs.empty() == false);
+    CHECK(chartPrograms.ForwardVertex.Inputs.IsEmpty() == false);
     CHECK(graph.GetRequestedPackagePath() == GetDefaultRenderGraphRuntime());
     source.Stop();
     workspace.SetPreviewSource(nullptr);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 
 #include <ludus/foundation/base/types.h>
 
@@ -43,6 +44,10 @@ struct ReferenceBsdf final
     ludus::foundation::float32 Roughness = 0.5F;
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Closure program of a Scattering.Model Program material, borrowed for the duration of each
+    /// evaluation or sampling call; null otherwise. BaseColor, Metallic and Roughness are its surface
+    /// inputs. A Program material without a program accepted by IsMaterialProgramValid is invalid input.
+    const content::scene_format::MaterialProgram* ProgramOrNull = nullptr;
     /// Dielectric only: the view direction lies inside the medium, behind the surface's
     /// oriented front side, so refraction uses the inverse relative index. Thin slabs ignore it.
     bool IsViewerInside = false;
@@ -98,7 +103,8 @@ struct ReferenceBsdfSample final
 /// pure metals use visible-GGX reflection; legacy mixed surfaces mix cosine diffuse
 /// and GGX equally. DiffuseConductorMix uses Metallic as the conductor proposal
 /// probability and returns the weighted sum of both lobe densities. ProjectBrdf
-/// chooses one authored cosine-power lobe and returns the full mixture density.
+/// chooses one authored cosine-power lobe and returns the full mixture density. A closure program
+/// chooses one of its lobes in proportion to the mean of its weight and returns the full mixture density.
 /// Dielectrics reflect with probability equal to their
 /// Fresnel reflectance (a thin slab's includes its interreflections) and otherwise refract, or pass straight through a
 /// thin slab; transmitted radiance is scaled by the inverse squared relative index. Coatings sample an internal layered

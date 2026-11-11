@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real native worker, client, CLI package publication and source failures.
 
-Windows workers serve a named pipe and emit DXIL; there the protocol, DXIL, stop and
-recovery checks run, while render-graph package publication waits for graph DXIL (D6a).
+On Windows the named-pipe worker can also rebuild a DXIL graph while the renderer runs.
 """
 import argparse
 import importlib.util
@@ -280,6 +279,63 @@ def check_concurrent_connections(worker, endpoint, worker_lanes):
         process.wait(timeout=STOP_SECONDS)
 
 
+def stage_helpers(helper):
+    helper.mkdir()
+    for name in WORKER_HELPERS:
+        origin = ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name
+        (helper / name).write_bytes(origin.read_bytes())
+
+
+def check_windows_reload(args, endpoint):
+    """Run the source-to-DXIL publisher while the renderer holds its original frame."""
+    with tempfile.TemporaryDirectory(prefix='ludus-dxil-') as directory:
+        root = Path(directory)
+        source = root / 'src'
+        shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/surface', source)
+        manifest = source / 'main.lushader.json'
+        manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["dxil"]'))
+        helper = root / 'tools'
+        stage_helpers(helper)
+        options = dict(helper=helper, compiler=args.compiler, worker_socket=endpoint, dxc=args.dxc)
+        destination = root / 'live/main.lurgrt'
+        initial = render_graph_reload.rebuild(manifest, root / 'build', destination, **options)
+        original = destination.read_bytes()
+        color = source / 'main_shaders/color.slang'
+        valid = color.read_text()
+        command = [str(args.renderer.resolve()), '[.native-dxil-reload]']
+        with subprocess.Popen(command, cwd=destination.parent) as renderer:
+            try:
+                deadline = time.monotonic() + 30
+                while not (destination.parent / 'ready').is_file():
+                    if renderer.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError('Renderer did not present the original DXIL generation')
+                    time.sleep(0.05)
+
+                color.write_text('invalid shader source')
+                try:
+                    render_graph_reload.rebuild(manifest, root / 'build', destination, **options)
+                except ToolingError as error:
+                    if error.code != 'RenderGraphBuildShader':
+                        raise
+                else:
+                    raise RuntimeError('Broken shader replaced the published generation')
+                if destination.read_bytes() != original:
+                    raise RuntimeError('Failed rebuild changed the published generation')
+
+                color.write_text(valid.replace('return value.Color;', 'return float4(0, 1, 0, 1);'))
+                changed = render_graph_reload.rebuild(manifest, root / 'build', destination, **options)
+                if changed['build']['cache_misses'] != 1 or (
+                    changed['runtime']['interface_identity'] != initial['runtime']['interface_identity']
+                ):
+                    raise RuntimeError('Expected one changed DXIL stage with a compatible interface')
+                if renderer.wait(timeout=30) != 0:
+                    raise subprocess.CalledProcessError(renderer.returncode, command)
+            finally:
+                if renderer.poll() is None:
+                    renderer.kill()
+                    renderer.wait(timeout=STOP_SECONDS)
+
+
 def run_windows(args):
     """Named-pipe worker: client, protocol, DXIL, recovery, stop and worker-exit journeys."""
     worker = args.worker.resolve()
@@ -289,6 +345,9 @@ def run_windows(args):
     process = subprocess.Popen([str(worker), '--serve', endpoint])
     try:
         wait_for_endpoint(process, endpoint)
+        if args.renderer:
+            check_windows_reload(args, endpoint)
+            return
         environment = dict(os.environ, LUDUS_TEST_SHADER_SOCKET=endpoint)
         subprocess.run([str(args.client.resolve()), '[shader][client]'], env=environment, check=True)
         reply = NATIVE.exchange(endpoint, {'version': 1, 'identity': 9})
@@ -327,6 +386,7 @@ def main():
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--client', type=Path, required=True)
     parser.add_argument('--renderer', type=Path)
+    parser.add_argument('--dxc', type=Path)
     parser.add_argument('--cmake', type=Path, default=ROOT / 'out/host-tools/venv/bin/cmake')
     parser.add_argument('--ninja', type=Path, default=ROOT / 'out/host-tools/venv/bin/ninja')
     parser.add_argument('--compiler', type=Path, default=ROOT / 'out/shader-tools/slang/bin/slangc')
@@ -334,6 +394,8 @@ def main():
     parser.add_argument('--spirv-cross', type=Path, default=ROOT / 'out/shader-tools/spirv-cross/bin/spirv-cross')
     args = parser.parse_args()
     if IS_WINDOWS:
+        if args.renderer and not args.dxc:
+            parser.error('--renderer on Windows requires --dxc')
         run_windows(args)
         return
     with tempfile.TemporaryDirectory(prefix='ludus-shader-', dir='/tmp') as directory:
@@ -400,10 +462,7 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             # The shared helper's lock files are installed beside it; stage the
             # same verified helper bundle used by the normal build adapter.
             bound_helper = root / 'bound-helper'
-            bound_helper.mkdir()
-            for name in WORKER_HELPERS:
-                origin = ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name
-                (bound_helper / name).write_bytes(origin.read_bytes())
+            stage_helpers(bound_helper)
             bound_options['helper'] = bound_helper
             if sys.platform != 'darwin':
                 bound_options['validator'] = args.validator
@@ -463,10 +522,7 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             source.write_text(json.dumps(graph))
             manifest = render_graph_build.new_build_sources(source, profiles=('metal', 'wgsl') if sys.platform == 'darwin' else ('spirv', 'wgsl'), renderer_static=True)
             helper = root / 'helper'
-            helper.mkdir()
-            for name in WORKER_HELPERS:
-                origin = ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name
-                (helper / name).write_bytes(origin.read_bytes())
+            stage_helpers(helper)
             options = dict(helper=helper, compiler=args.compiler, worker_socket=str(endpoint))
             if sys.platform != "darwin":
                 options["validator"] = args.validator

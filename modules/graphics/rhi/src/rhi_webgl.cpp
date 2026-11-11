@@ -4,13 +4,13 @@
 #include "internal/raster.h"
 #include "internal/resources.h"
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <cstring>
-#include <span>
 #include <string_view>
 
 #include <GLES3/gl3.h>
@@ -487,10 +487,10 @@ void DestroyPipeline(usize slot) noexcept
     }
     pipeline = {};
 }
-void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
+void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
     // Snapshot into the CPU shadow; the next draw uploads it. No allocation.
-    std::memcpy(gUniforms[slot].Bytes, bytes.data(), bytes.size());
+    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 ResourceStatus Draw(usize slot) noexcept
 {

@@ -1,4 +1,5 @@
 #include "internal/visibility_buffer.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/static_array.hpp>
 
@@ -122,7 +123,7 @@ Status AppendVisibilityCommands(rhi::DeviceHandle device,
                             packet.InstanceCount * commands.InstanceStride};
         draws[index] = {commands.Pipeline,
                         commands.Bindings,
-                        slices[index].AsSpan(),
+                        {slices[index].GetData(), slices[index].GetSize()},
                         packet.Indices,
                         0,
                         packet.IndexCount,

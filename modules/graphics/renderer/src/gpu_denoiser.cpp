@@ -234,10 +234,10 @@ Status GpuDenoiser::Prepare(rhi::DeviceHandle device,
         {0, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, sizeof(math::Vector4)},
     }};
     const StaticArray<rhi::RasterBindingResource, DENOISER_BINDING_COUNT> bindings{{{0, colors, 0, bytes}}};
-    Status status = rhi::CreateBindingLayout(device, layout.AsSpan(), mLayout);
+    Status status = rhi::CreateBindingLayout(device, {layout.GetData(), layout.GetSize()}, mLayout);
     if (status == Status::Ready)
     {
-        status = rhi::CreateBindingSet(device, mLayout, bindings.AsSpan(), mBindings);
+        status = rhi::CreateBindingSet(device, mLayout, {bindings.GetData(), bindings.GetSize()}, mBindings);
     }
     if (status != Status::Ready)
     {

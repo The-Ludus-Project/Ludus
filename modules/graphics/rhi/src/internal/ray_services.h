@@ -163,7 +163,8 @@ CreateRayQueryProgram(DeviceHandle device, const ShaderDescription& description,
     {
         return RasterStatus::Unsupported;
     }
-    if (description.Stage != ShaderStage::Compute)
+    if (description.Stage != ShaderStage::Compute || description.Spirv.IsValid() == false ||
+        description.Dxil.IsValid() == false)
     {
         return RasterStatus::InvalidDescription;
     }

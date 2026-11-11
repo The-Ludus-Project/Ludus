@@ -158,7 +158,7 @@ TEST_CASE("Stochastic pairwise reuse preserves the finite-domain integral with s
     }};
     rhi::BindingSetHandle set;
     rhi::ComputePipelineHandle pipeline;
-    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, resources.AsSpan(), set)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, {resources.GetData(), resources.GetSize()}, set)) == true);
     REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
             true);
     WaitReady(device, set);

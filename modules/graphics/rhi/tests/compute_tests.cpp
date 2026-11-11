@@ -381,19 +381,23 @@ TEST_CASE("R18c layout entry and per-stage descriptor limits reject before publi
     {
         bindings[entry].Visibility = entry < 12 ? RasterVisibility::Fragment : RasterVisibility::Vertex;
     }
-    REQUIRE(CreateBindingLayout(session.Device, bindings, layout) == RasterStatus::Ready);
+    REQUIRE(CreateBindingLayout(session.Device, {bindings.GetData(), bindings.GetSize()}, layout) ==
+            RasterStatus::Ready);
     REQUIRE(Destroy(session.Device, layout) == RasterStatus::Ready);
     reference::BindingLimitOverride = backend::BindingLimits();
     reference::BindingLimitOverride.MaxUniformBuffersPerSet = 12;
     reference::HasBindingLimitOverride = true;
-    CHECK(CreateBindingLayout(session.Device, bindings, layout) == RasterStatus::Unsupported);
+    CHECK(CreateBindingLayout(session.Device, {bindings.GetData(), bindings.GetSize()}, layout) ==
+          RasterStatus::Unsupported);
     CHECK(GetStatus(session.Device, layout) == RasterStatus::InvalidHandle);
     reference::HasBindingLimitOverride = false;
     bindings[15].Visibility = RasterVisibility::Both;
-    CHECK(CreateBindingLayout(session.Device, bindings, layout) == RasterStatus::Unsupported);
+    CHECK(CreateBindingLayout(session.Device, {bindings.GetData(), bindings.GetSize()}, layout) ==
+          RasterStatus::Unsupported);
     CHECK(GetStatus(session.Device, layout) == RasterStatus::InvalidHandle);
     bindings[15].Binding = 16;
-    CHECK(CreateBindingLayout(session.Device, bindings, layout) == RasterStatus::InvalidDescription);
+    CHECK(CreateBindingLayout(session.Device, {bindings.GetData(), bindings.GetSize()}, layout) ==
+          RasterStatus::InvalidDescription);
     CHECK(GetStatus(session.Device, layout) == RasterStatus::InvalidHandle);
     StorageUsage after;
     REQUIRE(GetStorageUsage(session.Device, after) == RasterStatus::Ready);
@@ -422,16 +426,18 @@ TEST_CASE("Compute texture loads track raster color and depth initialization", "
     shaderDescription.Artifact.Stage = ShaderStage::Compute;
     shaderDescription.Artifact.Wgsl = "reference compute color/depth loads";
     shaderDescription.Artifact.WgslEntry = "computeMain";
-    shaderDescription.Bindings = bindings.AsSpan();
+    shaderDescription.Bindings = {bindings.GetData(), bindings.GetSize()};
     RasterShaderHandle shader;
     BindingLayoutHandle layout;
     BindingSetHandle set;
     ComputePipelineHandle pipeline;
     REQUIRE(CreateRasterShader(session.Device, shaderDescription, shader) == RasterStatus::Ready);
-    REQUIRE(CreateBindingLayout(session.Device, bindings.AsSpan(), layout) == RasterStatus::Ready);
+    REQUIRE(CreateBindingLayout(session.Device, {bindings.GetData(), bindings.GetSize()}, layout) ==
+            RasterStatus::Ready);
     StaticArray<RasterBindingResource, 2> resources{
         {{ .Binding = 0, .Texture = colorView }, { .Binding = 1, .Texture = depthView }}};
-    REQUIRE(CreateBindingSet(session.Device, layout, resources.AsSpan(), set) == RasterStatus::Ready);
+    REQUIRE(CreateBindingSet(session.Device, layout, {resources.GetData(), resources.GetSize()}, set) ==
+            RasterStatus::Ready);
     REQUIRE(CreateComputePipeline(session.Device, {shader, layout}, pipeline) == RasterStatus::Ready);
     OrderedGraph graph;
     GraphVersion previous;

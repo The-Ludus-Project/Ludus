@@ -4,12 +4,11 @@
 #include "internal/web_backends.h"
 #include "internal/webgpu_probe.h"
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/platform/browser/window.h>
-
-#include <span>
 
 #include <webgpu/webgpu.h>
 
@@ -300,7 +299,7 @@ void DestroyPipeline(usize slot) noexcept
         webgpu::DestroyPipeline(slot);
     }
 }
-void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
+void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
     if (gActive == Backend::WebGL2)
     {
@@ -377,8 +376,10 @@ RasterCapabilities RasterLimits() noexcept
 {
     return gActive == Backend::WebGL2 ? webgl::RasterLimits() : webgpu::RasterLimits();
 }
-RasterStatus
-RasterCreateBuffer(usize slot, const BufferDescription& info, std::span<const uint8> bytes, uint32 id) noexcept
+RasterStatus RasterCreateBuffer(usize slot,
+                                const BufferDescription& info,
+                                ludus::foundation::BorrowedView<const uint8> bytes,
+                                uint32 id) noexcept
 {
     return gActive == Backend::WebGL2 ? webgl::RasterCreateBuffer(slot, info, bytes, id)
                                       : webgpu::RasterCreateBuffer(slot, info, bytes, id);

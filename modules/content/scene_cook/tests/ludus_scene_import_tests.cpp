@@ -370,6 +370,40 @@ TEST_CASE("Ludus scene import cooks closure programs into LUSCN version 11", "[s
                                                     truncated) == ludus::resources::Status::Failed);
 }
 
+TEST_CASE("Ludus scene import cooks the engine's closure-program test scene", "[scene_cook][ludus-scene][program]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/closure-program-block.luscene.json").string(),
+                                  {},
+                                  result,
+                                  error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize programs = 0;
+    usize triangles = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        triangles += decoded.Meshes[object.Mesh].Indices.GetSize() / 3;
+        if (material.Scattering.Model != format::MaterialModel::Program)
+        {
+            continue;
+        }
+        ++programs;
+        // The block's six quads; its program's three lobes, and the authored surface inputs.
+        CHECK(decoded.Meshes[object.Mesh].Indices.GetSize() / 3 == 12);
+        CHECK(material.Program.LobeCount == 3);
+        CHECK(material.Program.Lobes[2].Operation == format::MaterialLobeOperation::CosinePower);
+        CHECK(material.Metallic == 0.7F);
+        CHECK(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
+    }
+    CHECK(programs == 1);
+    CHECK(triangles == 16);
+}
+
 TEST_CASE("Scene detection tells Ludus scene sources from glTF JSON", "[scene_cook][ludus-scene]")
 {
     CHECK(DetectSceneSourceFormat(AsBytes("{\n  \"format\": \"ludus.scene\",\n  \"version\": 1"), "a.json") ==

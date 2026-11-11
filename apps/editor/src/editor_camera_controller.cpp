@@ -202,7 +202,32 @@ bool EditorCameraController::TryPan(float32 deltaX, float32 deltaY, float32 heig
     const float32 span = lens.Projection == camera::CameraProjection::OrthographicFinite
                              ? math::Max(lens.VerticalSpan, lens.MinimumVisibleWidth / aspect)
                              : 2 * mDistance * math::Sin(halfFov) / math::Cos(halfFov);
-    return TryFly({-deltaX, deltaY, 0}, span / heightLogical);
+    const math::Vector3 movementLocal{-deltaX, deltaY, 0};
+    const float32 worldUnitsPerPixel = span / heightLogical;
+    EditorAxisView view = EditorAxisView::Top;
+    if (TryGetEditorAxisView(mSample, view) == false)
+    {
+        return TryFly(movementLocal, worldUnitsPerPixel);
+    }
+    if (math::IsFinite(worldUnitsPerPixel) == false)
+    {
+        return false;
+    }
+    // An axis view may look a fraction of a degree off its axis (Top and Bottom always do, see
+    // VERTICAL_VIEW_PITCH_DEGREES), so a pan along the camera's own right and up would creep along
+    // that axis. Slide the movement along the view direction into the plane across the axis: an
+    // orthographic image does not change with depth, so the scene still follows the pointer.
+    const math::Vector3 axisWorld = Describe(view).ForwardWorld;
+    const math::Vector3 forwardWorld = math::Rotate(mSample.Pose.Orientation, {0, 0, -1});
+    math::Vector3 movementWorld = math::Rotate(mSample.Pose.Orientation, movementLocal);
+    movementWorld =
+        movementWorld - forwardWorld * (math::Dot(movementWorld, axisWorld) / math::Dot(forwardWorld, axisWorld));
+    // The axis is a signed world basis vector, so this leaves exactly zero along it.
+    movementWorld = movementWorld - axisWorld * math::Dot(movementWorld, axisWorld);
+    camera::CameraSample candidate = mSample;
+    candidate.Pose.Position =
+        candidate.Pose.Position + ConvertToWorld(movementWorld) * static_cast<float64>(worldUnitsPerPixel);
+    return tryPublish(candidate, mDistance);
 }
 bool EditorCameraController::TryFly(math::Vector3 movementLocal, float32 distance) noexcept
 {

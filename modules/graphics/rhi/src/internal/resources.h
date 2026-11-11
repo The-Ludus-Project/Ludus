@@ -1,11 +1,16 @@
 #pragma once
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/graphics/rhi/render.h>
 
-#include <span>
 namespace ludus::graphics::rhi::internal
 {
+/// SPIR-V magic word and fixed module header width, in uint32 words.
+inline constexpr ludus::foundation::uint32 SPIRV_MAGIC = 0x07230203U;
+inline constexpr ludus::foundation::usize SPIRV_HEADER_WORDS = 5;
+/// OpEntryPoint's literal entry name follows the instruction word, execution model and entry ID.
+inline constexpr ludus::foundation::usize SPIRV_ENTRY_POINT_NAME_WORD_OFFSET = 3;
 inline constexpr ludus::foundation::usize RESOURCE_CAPACITY = 8;
 inline constexpr ludus::foundation::usize UNIFORM_CAPACITY = 16384;
 // Stable process storage and monotonically assigned IDs; no application pointers.
@@ -33,7 +38,8 @@ CreatePipeline(ludus::foundation::usize slot, const PipelineResources&, ludus::f
 void DestroyShader(ludus::foundation::usize slot) noexcept;
 void DestroyUniform(ludus::foundation::usize slot) noexcept;
 void DestroyPipeline(ludus::foundation::usize slot) noexcept;
-void UpdateUniform(ludus::foundation::usize slot, std::span<const ludus::foundation::uint8> bytes) noexcept;
+void UpdateUniform(ludus::foundation::usize slot,
+                   ludus::foundation::BorrowedView<const ludus::foundation::uint8> bytes) noexcept;
 FrameInfo GetFrameInfo() noexcept;
 ResourceStatus Draw(ludus::foundation::usize slot) noexcept;
 } // namespace ludus::graphics::rhi::backend

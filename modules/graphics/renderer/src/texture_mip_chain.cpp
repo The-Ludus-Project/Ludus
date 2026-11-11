@@ -43,31 +43,38 @@ uint32 ComputeLevelExtent(uint32 extent, uint32 level) noexcept
     const uint32 shifted = level < 32 ? extent >> level : 0;
     return shifted == 0 ? 1 : shifted;
 }
+/// Texels of one chain level, tightly packed in rows.
+struct LevelView final
+{
+    const uint8* Texels = nullptr;
+    uint32 Width = 0;
+    uint32 Height = 0;
+};
+/// Column and row of a texel within its level.
+struct TexelCoordinate final
+{
+    uint32 X = 0;
+    uint32 Y = 0;
+};
 /// Average the 2x2 parent block of one level texel into its four channels.
-void FilterTexel(const uint8* parent,
-                 uint32 parentWidth,
-                 uint32 parentHeight,
-                 uint32 x,
-                 uint32 y,
-                 bool isSrgb,
-                 uint8* outTexel) noexcept
+void FilterTexel(const LevelView& parent, TexelCoordinate texel, bool isSrgb, uint8* outTexel) noexcept
 {
     const SrgbDecodeTable& decodeTable = GetSrgbDecodeTable();
-    const uint32 x0 = x * 2 < parentWidth ? x * 2 : parentWidth - 1;
-    const uint32 y0 = y * 2 < parentHeight ? y * 2 : parentHeight - 1;
-    const uint32 x1 = x0 + 1 < parentWidth ? x0 + 1 : x0;
-    const uint32 y1 = y0 + 1 < parentHeight ? y0 + 1 : y0;
-    const StaticArray<usize, PARENT_TEXELS_PER_TEXEL> offsets{{(usize{y0} * parentWidth + x0) * CHANNEL_COUNT,
-                                                               (usize{y0} * parentWidth + x1) * CHANNEL_COUNT,
-                                                               (usize{y1} * parentWidth + x0) * CHANNEL_COUNT,
-                                                               (usize{y1} * parentWidth + x1) * CHANNEL_COUNT}};
+    const uint32 x0 = texel.X * 2 < parent.Width ? texel.X * 2 : parent.Width - 1;
+    const uint32 y0 = texel.Y * 2 < parent.Height ? texel.Y * 2 : parent.Height - 1;
+    const uint32 x1 = x0 + 1 < parent.Width ? x0 + 1 : x0;
+    const uint32 y1 = y0 + 1 < parent.Height ? y0 + 1 : y0;
+    const StaticArray<usize, PARENT_TEXELS_PER_TEXEL> offsets{{(usize{y0} * parent.Width + x0) * CHANNEL_COUNT,
+                                                               (usize{y0} * parent.Width + x1) * CHANNEL_COUNT,
+                                                               (usize{y1} * parent.Width + x0) * CHANNEL_COUNT,
+                                                               (usize{y1} * parent.Width + x1) * CHANNEL_COUNT}};
     for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
     {
         const bool isColor = isSrgb == true && channel < COLOR_CHANNEL_COUNT;
         float32 sum = 0;
         for (const usize offset : offsets)
         {
-            const uint8 code = parent[offset + channel];
+            const uint8 code = parent.Texels[offset + channel];
             sum += isColor == true ? decodeTable.Linear[code] : static_cast<float32>(code) / CODE_MAXIMUM;
         }
         const float32 mean = sum / static_cast<float32>(PARENT_TEXELS_PER_TEXEL);
@@ -127,23 +134,17 @@ BuildRgba8MipChain(const rhi::TextureCpuContent& source, uint32 levelCount, Rgba
     usize offset = rowBytes * source.Height;
     for (uint32 level = 1; level < levelCount; ++level)
     {
-        const uint32 parentWidth = ComputeLevelExtent(source.Width, level - 1);
-        const uint32 parentHeight = ComputeLevelExtent(source.Height, level - 1);
+        const LevelView parent{chain.Bytes.GetData() + parentOffset,
+                               ComputeLevelExtent(source.Width, level - 1),
+                               ComputeLevelExtent(source.Height, level - 1)};
         const uint32 width = ComputeLevelExtent(source.Width, level);
         const uint32 height = ComputeLevelExtent(source.Height, level);
-        const uint8* parent = chain.Bytes.GetData() + parentOffset;
         uint8* texels = chain.Bytes.GetData() + offset;
         for (uint32 y = 0; y < height; ++y)
         {
             for (uint32 x = 0; x < width; ++x)
             {
-                FilterTexel(parent,
-                            parentWidth,
-                            parentHeight,
-                            x,
-                            y,
-                            isSrgb,
-                            texels + (usize{y} * width + x) * CHANNEL_COUNT);
+                FilterTexel(parent, {x, y}, isSrgb, texels + (usize{y} * width + x) * CHANNEL_COUNT);
             }
         }
         chain.Mips[level] = {offset, usize{width} * CHANNEL_COUNT};

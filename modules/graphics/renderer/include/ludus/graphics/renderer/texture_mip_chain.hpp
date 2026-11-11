@@ -29,6 +29,7 @@ struct Rgba8MipChain final
 /// parent texel to the edge.
 /// @param source Complete rows of level zero in Rgba8Unorm or Rgba8Srgb with RowPitch >= Width * 4.
 /// @param levelCount Levels to build, 1..CountRgba8MipLevels(source.Width, source.Height).
+/// @param outChain Receives the packed levels and their upload descriptors on Ready.
 /// @return Ready with every level in outChain; InvalidDescription for a malformed source, format or count,
 ///         or OutOfMemory when the chain cannot be allocated. Failure preserves outChain.
 [[nodiscard]] rhi::RasterStatus BuildRgba8MipChain(const rhi::TextureCpuContent& source,

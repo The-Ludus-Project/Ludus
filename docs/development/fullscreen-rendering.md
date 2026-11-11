@@ -367,6 +367,16 @@ layout assertions, skipped frames, resize, dependency rejection and restart.
 
 ## Portable raster (R1)
 
+Raster and fullscreen contiguous inputs use FoundationContainers' `BorrowedView`.
+Construct a view from a built-in array or `{storage.GetData(), storage.GetSize()}`
+for Ludus containers. Existing span callers pass `{span.data(), span.size()}`.
+Counts are elements, so SPIR-V counts words and upload/uniform counts bytes.
+Views allocate nothing and leave storage ownership with the caller. Keep storage
+alive through the operation's documented consumption period. A null address with
+a nonzero extent returns `InvalidDescription` at the RHI entry point. Empty
+views retain each operation's existing meaning. Use `GetSize`, `GetDataOrNull`
+and `IsEmpty` to inspect a view, and range-for to iterate valid storage.
+
 Include `ludus/graphics/rhi/raster.h` and link the same `Ludus::GraphicsRhi`
 component. The first portable raster profile supplies immutable buffers,
 sampled textures, complete views, samplers, reflected stages, binding layouts,

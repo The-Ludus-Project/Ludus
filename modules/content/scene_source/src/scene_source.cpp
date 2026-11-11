@@ -538,8 +538,27 @@ struct ProgramNames final
     }
     internal::ProgramValue constant;
     const SceneSourceStatus status = ReadProgramConstant(value, path, inoutFailure, constant);
-    return status != SceneSourceStatus::Success ? status
-                                                : AddProgramValue(constant, path, inoutFailure, inoutDraft, outIndex);
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    // Equal inline constants share one value, so repeating a literal costs no register.
+    for (usize index = 0; index < inoutDraft.ValueCount; ++index)
+    {
+        const internal::ProgramValue& existing = inoutDraft.Values[index];
+        bool isEqual =
+            names.Names[index].empty() == true && existing.Opcode == scene_format::MaterialProgramOpcode::Constant;
+        for (usize component = 0; component < scene_format::MATERIAL_PROGRAM_COMPONENTS; ++component)
+        {
+            isEqual = isEqual == true && existing.Constant[component] == constant.Constant[component];
+        }
+        if (isEqual == true)
+        {
+            outIndex = static_cast<uint8>(index);
+            return SceneSourceStatus::Success;
+        }
+    }
+    return AddProgramValue(constant, path, inoutFailure, inoutDraft, outIndex);
 }
 
 /// Read one named parameter expression and append it to the draft.

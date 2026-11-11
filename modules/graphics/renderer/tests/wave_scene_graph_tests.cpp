@@ -1,4 +1,5 @@
 #include "../src/internal/scene_material_validation.h"
+#include "material_program_fixtures.h"
 #include "renderer_composite.h"
 #include <cstdio>
 #include <cstdlib>
@@ -116,7 +117,13 @@ void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::Met
     {
         material.BaseColor = {0.8F, 0.7F, 0.6F};
         material.Scattering.Model = model;
-        if (model == MaterialModel::ProjectBrdf)
+        if (model == MaterialModel::Program)
+        {
+            material.Roughness = 0.35F;
+            material.Metallic = 0.6F;
+            material.Program = ludus::renderer_tests::MakeParityProgram();
+        }
+        else if (model == MaterialModel::ProjectBrdf)
         {
             material.Roughness = 0.35F;
             material.Scattering.Eta = {{0.25F, 0.5F, 0.25F}};
@@ -216,6 +223,12 @@ TEST_CASE("Scene wave graph renders a project BRDF without a fixed-dimension dec
           "[renderer][gpu][wave-tracing][graph][project-brdf]")
 {
     CheckSceneWaveGraph(0, MaterialModel::ProjectBrdf);
+}
+
+TEST_CASE("Scene wave graph renders a closure program through the transport interface",
+          "[renderer][gpu][wave-tracing][graph][program]")
+{
+    CheckSceneWaveGraph(0, MaterialModel::Program);
 }
 
 TEST_CASE("Scene wave graph blocks an opaque screen from the current World", "[renderer][gpu][wave-tracing][graph]")

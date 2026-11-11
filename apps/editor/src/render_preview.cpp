@@ -1432,6 +1432,34 @@ void RenderPreview::SetLookSensitivity(float32 sensitivity)
     mLookSensitivity = sensitivity;
     Q_EMIT NavigationChanged();
 }
+void RenderPreview::SetFlySpeed(float32 multiplier)
+{
+    if (math::IsFinite(multiplier) == false || multiplier < MINIMUM_FLY_SPEED || multiplier > MAXIMUM_FLY_SPEED ||
+        multiplier == mFlySpeed)
+    {
+        return;
+    }
+    mFlySpeed = multiplier;
+    Q_EMIT NavigationChanged();
+}
+bool RenderPreview::ScaleFlySpeed(float32 notches)
+{
+    if (math::IsFinite(notches) == false || notches == 0)
+    {
+        return false;
+    }
+    // A geometric step keeps one notch forward and one back a round trip, whatever the speed.
+    const float64 scaled = static_cast<float64>(mFlySpeed) *
+                           math::Pow(static_cast<float64>(FLY_SPEED_NOTCH_FACTOR), static_cast<float64>(notches));
+    const float32 clamped = math::Clamp(static_cast<float32>(scaled), MINIMUM_FLY_SPEED, MAXIMUM_FLY_SPEED);
+    if (clamped == mFlySpeed)
+    {
+        return false;
+    }
+    mFlySpeed = clamped;
+    Q_EMIT NavigationChanged();
+    return true;
+}
 void RenderPreview::SetRasterExposureStops(float32 stops)
 {
     if (math::IsFinite(stops) == false ||
@@ -1686,6 +1714,7 @@ QJsonObject RenderPreview::Navigation() const
         {QStringLiteral("radius"), OrbitRadius_},
         {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
         {QStringLiteral("lookSensitivity"), mLookSensitivity},
+        {QStringLiteral("flySpeed"), mFlySpeed},
         {QStringLiteral("viewportSize"), GetViewportSizeKey(mViewportSizeIndex)},
         {QStringLiteral("distance"), mCameraController.GetDistance()},
         {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
@@ -1822,6 +1851,7 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
         TryParseViewportAntialiasing(state.value(QStringLiteral("antialiasing")).toString(), antialiasing));
     SetAntialiasing(antialiasing);
     SetLookSensitivity(static_cast<float32>(number(QStringLiteral("lookSensitivity"), 1)));
+    SetFlySpeed(static_cast<float32>(number(QStringLiteral("flySpeed"), 1)));
     usize viewportSize = 0;
     static_cast<void>(TryParseViewportSizeKey(state.value(QStringLiteral("viewportSize")).toString(), viewportSize));
     SetViewportSize(viewportSize);

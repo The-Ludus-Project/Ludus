@@ -8,6 +8,7 @@
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/queries.hpp>
@@ -467,10 +468,11 @@ struct ForwardSceneResources::State final
                 rhi::TextureDescription description{source.Width, source.Height, source.Format};
                 description.MipLevels = chain.LevelCount;
                 description.AsyncUpload = true;
-                status = rhi::CreateTexture(Device,
-                                            description,
-                                            {chain.Bytes.AsSpan(), 0, {chain.Mips.GetData(), chain.Mips.GetSize()}},
-                                            entry.Handle);
+                status = rhi::CreateTexture(
+                    Device,
+                    description,
+                    {{chain.Bytes.GetData(), chain.Bytes.GetSize()}, 0, {chain.Mips.GetData(), chain.Mips.GetSize()}},
+                    entry.Handle);
                 if (IsAccepted(status) == true)
                 {
                     IdentityBytes += size;
@@ -1054,6 +1056,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             description.Metallic = material.Metallic;
             description.Roughness = material.Roughness;
             description.Scattering = material.Scattering;
+            description.Program = material.Program;
             description.NormalScale = material.NormalScale;
             description.Emission = material.Emission;
             description.IsEmissionTwoSided = material.IsEmissionTwoSided;

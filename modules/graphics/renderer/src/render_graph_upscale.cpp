@@ -39,9 +39,9 @@ Status RenderGraphUpscaleProgram::Initialize(rhi::DeviceHandle device,
                                              const rhi::RasterShaderDescription& fragment,
                                              bool isSurface) noexcept
 {
-    if (mPhase != Phase::Empty || vertex.Inputs.size() != 1 || vertex.Inputs[0].Location != 0 ||
-        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.empty() == false ||
-        fragment.Bindings.size() != BINDING_COUNT || fragment.Bindings[0].Binding != 0 ||
+    if (mPhase != Phase::Empty || vertex.Inputs.GetSize() != 1 || vertex.Inputs[0].Location != 0 ||
+        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.IsEmpty() == false ||
+        fragment.Bindings.GetSize() != BINDING_COUNT || fragment.Bindings[0].Binding != 0 ||
         fragment.Bindings[0].Kind != rhi::RasterBindingKind::Texture2D || fragment.Bindings[1].Binding != 1 ||
         fragment.Bindings[1].Kind != rhi::RasterBindingKind::Sampler)
     {
@@ -128,7 +128,11 @@ Status RenderGraphUpscaleProgram::Poll() noexcept
             {{VERTEX_COMPONENT_COUNT * sizeof(float32), false}}};
         const StaticArray<rhi::RasterVertexAttribute, VERTEX_STREAM_COUNT> attributes{
             {{0, 0, 0, rhi::RasterVertexFormat::Float4}}};
-        rhi::RasterPipelineDescription description{mVertex, mFragment, mLayout, streams.AsSpan(), attributes.AsSpan()};
+        rhi::RasterPipelineDescription description{mVertex,
+                                                   mFragment,
+                                                   mLayout,
+                                                   {streams.GetData(), streams.GetSize()},
+                                                   {attributes.GetData(), attributes.GetSize()}};
         description.Target = mIsSurface == true ? rhi::RasterTarget::Surface : rhi::RasterTarget::Rgba8Unorm;
         status = rhi::CreateRasterPipeline(mDevice, description, mPipeline);
         if (IsAccepted(status) == true)
@@ -168,9 +172,15 @@ Status RenderGraphUpscaleProgram::Draw(rhi::BindingSetHandle bindings, rhi::Text
         return status;
     }
     const StaticArray<rhi::RasterVertexSlice, VERTEX_STREAM_COUNT> vertices{{{mVertices, 0, VERTEX_BYTES}}};
-    return rhi::DrawIndexed(
-        mDevice,
-        {mPipeline, bindings, vertices.AsSpan(), mIndices, 0, QUAD_INDEX_COUNT, QUAD_VERTEX_COUNT, 1});
+    return rhi::DrawIndexed(mDevice,
+                            {mPipeline,
+                             bindings,
+                             {vertices.GetData(), vertices.GetSize()},
+                             mIndices,
+                             0,
+                             QUAD_INDEX_COUNT,
+                             QUAD_VERTEX_COUNT,
+                             1});
 }
 RenderGraphUpscalePass::~RenderGraphUpscalePass() noexcept
 {
@@ -201,7 +211,10 @@ Status RenderGraphUpscalePass::Poll() noexcept
     {
         const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{
             {{ .Binding = 0, .Texture = mSource }, { .Binding = 1, .Sampler = mProgramOrNull->mSampler }}};
-        status = rhi::CreateBindingSet(mProgramOrNull->mDevice, mProgramOrNull->mLayout, resources.AsSpan(), mBindings);
+        status = rhi::CreateBindingSet(mProgramOrNull->mDevice,
+                                       mProgramOrNull->mLayout,
+                                       {resources.GetData(), resources.GetSize()},
+                                       mBindings);
         mHasBindings = IsAccepted(status);
     }
     if (status == Status::Ready)

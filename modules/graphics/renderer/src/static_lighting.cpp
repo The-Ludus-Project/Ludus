@@ -373,6 +373,7 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         }
         const uint32 textureIndex = hasOverride == true ? description.Surfaces[objectIndex].Texture : material.Texture;
         surface.Bsdf = {material.Reflectance, material.Metallic, material.Roughness, material.Scattering};
+        surface.Program = material.Program;
         surface.Emission = material.Emission;
         surface.IsEmissionTwoSided = material.IsEmissionTwoSided;
         surface.Sampler.Filter = rhi::RasterFilter::Linear;
@@ -402,6 +403,7 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
                             override.Metallic,
                             override.Roughness,
                             override.Scattering};
+            surface.Program = override.Program;
             surface.Tint = override.Tint;
             surface.UvTransform = override.UvTransform;
             surface.Emission = override.Emission;
