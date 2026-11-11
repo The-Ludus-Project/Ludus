@@ -1143,7 +1143,8 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     {
         // Full supplied Intel Main Sponza, through the production import/catalog/
         // assembly path. Neither the former vertex nor triangle ceiling may trim it.
-        CHECK(vertices == 2049137);
+        constexpr usize MAIN_VERTICES = 2046953;
+        CHECK(vertices == MAIN_VERTICES);
         CHECK(indices == 11241054);
         const std::string reports = GetResponseMember(assembled.Response, "import_reports");
         CHECK(reports.find("GEOMETRY_DROPPED") == std::string::npos);
@@ -1151,6 +1152,86 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     }
     std::error_code ignored;
     std::filesystem::remove_all(work, ignored);
+}
+
+TEST_CASE("Main Sponza and its curtains fit one assembled World", "[scene_assets][licensed][sponza]")
+{
+    const char* assetsOrNull = std::getenv("LUDUS_NEW_SPONZA_DIR");
+    if (assetsOrNull == nullptr || assetsOrNull[0] == '\0')
+    {
+        SKIP("set LUDUS_NEW_SPONZA_DIR to the directory containing main_sponza and pkg_a_curtains");
+    }
+    const std::filesystem::path assets(assetsOrNull);
+    const std::filesystem::path project = MakeWorkDirectory();
+    const std::string root = project.string();
+    SequentialUuids counter;
+    const UuidSource uuids{&SequentialUuids::Generate, &counter};
+    AssetOptions options;
+    options.UuidsOrNull = &uuids;
+    ludus::foundation::threading::JobSystem importJobs;
+    REQUIRE(importJobs.Initialize({ .WorkerCount = 4 }) == ludus::foundation::threading::JobStatus::Ok);
+    options.JobsOrNull = &importJobs;
+    AssetError error;
+    Array<uint8> level;
+    REQUIRE(CreateLevel("Sponza with curtains", options, level, error));
+    const std::filesystem::path entries[] = {
+        assets / "main_sponza" / "NewSponza_Main_glTF_003.gltf",
+        assets / "pkg_a_curtains" / "NewSponza_Curtains_glTF.gltf",
+    };
+    std::string startCamera;
+    for (const std::filesystem::path& entry : entries)
+    {
+        REQUIRE(std::filesystem::is_regular_file(entry));
+        const std::string source = entry.parent_path().string();
+        const std::string name = entry.filename().string();
+        options.SourceEntry = name;
+        Array<uint8> candidate;
+        const bool isImported = ImportScene(root, source, ToSpan(level), options, candidate, error);
+        INFO(name << ": " << Describe(error));
+        REQUIRE(isImported);
+        const std::string camera = GetResponseMember(candidate, "camera");
+        REQUIRE(camera.empty() == false);
+        if (startCamera.empty() == false)
+        {
+            CHECK(camera == startCamera);
+        }
+        startCamera = camera;
+        level = Move(candidate);
+    }
+    Array<uint8> bundle;
+    const bool isAssembled = AssembleLevel(root, ToSpan(level), {}, bundle, error);
+    INFO(Describe(error));
+    REQUIRE(isAssembled);
+    namespace format = ludus::content::scene_format;
+    CHECK(bundle.GetSize() > format::IMPORT_LIMITS.BundleBytes);
+    CHECK(bundle.GetSize() <= format::MAX_ASSEMBLED_BUNDLE_BYTES);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize vertices = 0;
+    usize indices = 0;
+    for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+    {
+        vertices += mesh.Positions.GetSize();
+        indices += mesh.Indices.GetSize();
+    }
+    usize textureBytes = 0;
+    for (const ludus::resources::SceneTexture& texture : decoded.Textures)
+    {
+        textureBytes += texture.Pixels.GetSize();
+    }
+    UNSCOPED_INFO("assembled " << bundle.GetSize() << " encoded bytes, " << decoded.Bytes() << " decoded bytes, "
+                               << textureBytes << " texture bytes");
+    constexpr usize MAIN_VERTICES = 2046953;
+    constexpr usize MAIN_INDICES = 11241054;
+    constexpr usize CURTAIN_VERTICES = 1059862;
+    constexpr usize CURTAIN_INDICES = 5992098;
+    CHECK(vertices == MAIN_VERTICES + CURTAIN_VERTICES);
+    CHECK(indices == MAIN_INDICES + CURTAIN_INDICES);
+    CHECK(textureBytes > format::IMPORT_LIMITS.TotalTextureBytes);
+    CHECK(textureBytes <= format::MAX_ASSEMBLED_TOTAL_TEXTURE_BYTES);
+    std::error_code ignored;
+    std::filesystem::remove_all(project, ignored);
 }
 
 TEST_CASE("Best-effort catalog records share one source digest and large catalogs still import",

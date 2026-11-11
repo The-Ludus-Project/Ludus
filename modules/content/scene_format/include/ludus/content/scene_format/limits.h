@@ -8,9 +8,8 @@ using foundation::uint32;
 using foundation::usize;
 
 // Inclusive admission ceilings shared by producers and runtime decoders.
-// The unprefixed constants are the resident reference profile of versions 1-4,
-// sized for the first reference scene; versions 5 and 6 admit the larger import
-// profile (MAX_IMPORT_*). Select them with GetBundleLimits(version) in luscn.h.
+// Versions 1-4 use the resident reference profile. Later versions use the
+// import profile for a single source cook and the assembly profile for Worlds.
 /// Largest admitted bundle.
 inline constexpr usize MAX_BUNDLE_BYTES = usize{64} * 1024 * 1024;
 /// Most meshes in a bundle.
@@ -45,10 +44,10 @@ inline constexpr uint32 MAX_IMPORT_MATERIALS = 256;
 inline constexpr uint32 MAX_IMPORT_TEXTURES = 256;
 /// Most placed objects in a version 5 or 6 bundle.
 inline constexpr uint32 MAX_IMPORT_OBJECTS = 1024;
-/// Largest combined texture bytes in a version 5 or 6 bundle: uncompressed RGBA8 without
+/// Largest combined texture bytes when cooking one source: uncompressed RGBA8 without
 /// mips, enough for Sponza-scale scenes' base-colour textures at full resolution.
 inline constexpr usize MAX_IMPORT_TOTAL_TEXTURE_BYTES = usize{256} * 1024 * 1024;
-/// Largest version 5 or 6 bundle. Geometry is admitted by its encoded bytes,
+/// Largest bundle cooked from one source. Geometry is admitted by its encoded bytes,
 /// with textures sharing the remaining allowance; there is no independent vertex or triangle cap.
 inline constexpr usize MAX_IMPORT_BUNDLE_BYTES = usize{384} * 1024 * 1024;
 /// Number of float32 components in a VertexRecord: position XYZ, normal XYZ and UV.
@@ -87,7 +86,7 @@ inline constexpr BundleLimits RESIDENT_REFERENCE_LIMITS
     .TotalIndices = MAX_TOTAL_INDICES,
     .BundleBytes = MAX_BUNDLE_BYTES,
 };
-/// Versions 5 and 6: the import profile for best-effort reference scenes.
+/// Limits for cooking one source in the best-effort import profile.
 inline constexpr BundleLimits IMPORT_LIMITS
 {
     .Meshes = MAX_IMPORT_MESHES,
@@ -98,5 +97,23 @@ inline constexpr BundleLimits IMPORT_LIMITS
     .Vertices = MAX_IMPORT_VERTICES,
     .TotalIndices = MAX_IMPORT_TOTAL_INDICES,
     .BundleBytes = MAX_IMPORT_BUNDLE_BYTES,
+};
+
+/// Largest assembled import-profile World bundle, including all placed imports.
+inline constexpr usize MAX_ASSEMBLED_BUNDLE_BYTES = usize{576} * 1024 * 1024;
+/// Largest combined RGBA8 texture payload in an assembled import-profile World.
+inline constexpr usize MAX_ASSEMBLED_TOTAL_TEXTURE_BYTES = usize{352} * 1024 * 1024;
+/// Versions 5-11: assembly and decoder ceilings for combined World content.
+/// Object and resource counts match the single-source import profile.
+inline constexpr BundleLimits ASSEMBLED_IMPORT_LIMITS
+{
+    .Meshes = IMPORT_LIMITS.Meshes,
+    .Materials = IMPORT_LIMITS.Materials,
+    .Textures = IMPORT_LIMITS.Textures,
+    .Objects = IMPORT_LIMITS.Objects,
+    .TotalTextureBytes = MAX_ASSEMBLED_TOTAL_TEXTURE_BYTES,
+    .Vertices = static_cast<uint32>(MAX_ASSEMBLED_BUNDLE_BYTES / (VERTEX_COMPONENTS * sizeof(foundation::float32))),
+    .TotalIndices = static_cast<uint32>(MAX_ASSEMBLED_BUNDLE_BYTES / sizeof(uint32)),
+    .BundleBytes = MAX_ASSEMBLED_BUNDLE_BYTES,
 };
 } // namespace ludus::content::scene_format

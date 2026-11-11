@@ -805,9 +805,12 @@ void LevelWorkspace::Completed()
 }
 void LevelWorkspace::decodeCandidate()
 {
-    if (SceneBytes_.size() > static_cast<qsizetype>(content::scene_format::IMPORT_LIMITS.BundleBytes))
+    if (SceneBytes_.size() > static_cast<qsizetype>(content::scene_format::MAX_ASSEMBLED_BUNDLE_BYTES))
     {
-        Error_ = QStringLiteral("Cooked scene exceeds 384 MiB.");
+        Error_ = QStringLiteral("World needs %1 encoded bytes, above the %2-byte limit. Import a smaller source or "
+                                "split the content across Worlds.")
+                     .arg(SceneBytes_.size())
+                     .arg(content::scene_format::MAX_ASSEMBLED_BUNDLE_BYTES);
     }
     else
     {
@@ -910,6 +913,8 @@ void LevelWorkspace::CommitImport()
 }
 void LevelWorkspace::CommitCandidate()
 {
+    const bool hasNewStartView = Operation_ == QStringLiteral("import") &&
+                                 Level_.value(QStringLiteral("camera")) != Candidate_.value(QStringLiteral("camera"));
     Level_ = Candidate_;
     if (Operation_ != QStringLiteral("save"))
     {
@@ -935,9 +940,9 @@ void LevelWorkspace::CommitCandidate()
     Status_->setText(Operation_ == QStringLiteral("save")
                          ? QStringLiteral("Scene saved with verified project-owned assets.")
                          : QStringLiteral("Scene ready."));
-    if (Operation_ == QStringLiteral("import"))
+    if (hasNewStartView == true)
     {
-        // The import set the level start view from the source scene's camera; show it.
+        // The first import can supply a start view. Add-on imports retain the active camera.
         static_cast<void>(Preview_.GoToStartView());
     }
     Render();

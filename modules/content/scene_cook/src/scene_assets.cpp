@@ -2,6 +2,7 @@
 #include <ludus/content/scene_cook/scene_assets.h>
 
 #include "file_digests.h"
+#include "importers/front_end_support.h"
 #include "native_files.h"
 #include "python_compat.h"
 #include "python_json.h"
@@ -64,8 +65,8 @@ constexpr usize MAX_ARTIFACT_DEPENDENCIES =
 // manifest and lighting part per level import and the level itself.
 constexpr usize MAX_CLOSURE_RESOURCES = usize{format::IMPORT_LIMITS.Meshes} + format::IMPORT_LIMITS.Materials +
                                         format::IMPORT_LIMITS.Textures + 2 * MAX_LEVEL_IMPORTS + 1;
-static_assert(MAX_ASSET_BYTES >= format::IMPORT_LIMITS.BundleBytes, "an artifact holds any admitted bundle");
-static_assert(MAX_RESIDENT_CLOSURE_BYTES > MAX_ASSET_BYTES, "closures also carry encoded asset metadata");
+static_assert(MAX_ASSET_BYTES >= format::IMPORT_LIMITS.BundleBytes, "an artifact holds any single-source cook");
+static_assert(MAX_RESIDENT_CLOSURE_BYTES > format::MAX_ASSEMBLED_BUNDLE_BYTES, "closures also carry encoded metadata");
 constexpr usize MAX_LOCK_IDENTITY_BYTES = 4096;
 constexpr usize HEX_DIGEST_BYTES = 64;
 constexpr usize MATERIAL_RECORD_BYTES = 24;
@@ -144,6 +145,18 @@ public:
     bool FailInvalid(std::string_view message) noexcept
     {
         return Fail(AssetErrorCode::InvalidScene, message);
+    }
+
+    bool FailWorldByteLimit(std::string_view subject, uint64 bytes, uint64 limit) noexcept
+    {
+        importers::MessageBuilder message;
+        message.Append(subject)
+            .Append(" needs ")
+            .AppendUnsigned(bytes)
+            .Append(" bytes (limit ")
+            .AppendUnsigned(limit)
+            .Append("). Import a smaller source or split the content across Worlds.");
+        return FailInvalid(message.GetView());
     }
 
     bool FailOutOfMemory() noexcept
@@ -1157,25 +1170,16 @@ public:
         {
             return mFailure.FailInvalid("Scene closure exceeds its resource limit");
         }
+        mEncodedBytes += data.GetSize();
         return true;
     }
 
     /// dict(sorted(selected.items())) after the encoded dependency closure byte check.
     [[nodiscard]] bool Finish(Document& outClosure) noexcept
     {
-        PythonSum total;
-        for (const JsonIndex record : mSelectedRecords)
+        if (mEncodedBytes > MAX_RESIDENT_CLOSURE_BYTES)
         {
-            PythonNumber bytes;
-            if (GetPythonNumber(mSelected, mSelected.GetMember(record, "bytes"), bytes) == false)
-            {
-                return mFailure.FailInvalid("Invalid artifact byte count");
-            }
-            total.Add(bytes);
-        }
-        if (IsLessPython(MakeNumber(static_cast<int64>(MAX_RESIDENT_CLOSURE_BYTES)), total.GetResult()) == true)
-        {
-            return mFailure.FailInvalid("Resident closure exceeds its encoded byte limit");
+            return mFailure.FailWorldByteLimit("World dependencies", mEncodedBytes, MAX_RESIDENT_CLOSURE_BYTES);
         }
         Array<usize> order;
         if (order.TryResize(mSelectedIds.GetSize()) == false)
@@ -1255,6 +1259,7 @@ private:
     Array<std::string_view> mSelectedIds;
     Array<JsonIndex> mSelectedRecords;
     JsonTree mSelected;
+    uint64 mEncodedBytes = 0;
 };
 
 /// closure(root, level, current); currentOrNull selects a candidate catalog.
@@ -1859,6 +1864,7 @@ struct BundleParts final
 [[nodiscard]] bool ReadTextures(BundleReader& inoutReader,
                                 std::span<const uint8> data,
                                 uint32 textureCount,
+                                const format::BundleLimits& limits,
                                 BundleParts& outParts,
                                 Failure& inoutFailure) noexcept
 {
@@ -1878,8 +1884,7 @@ struct BundleParts final
         if (width == 0 || width > format::MAX_TEXTURE_DIMENSION || height == 0 ||
             height > format::MAX_TEXTURE_DIMENSION ||
             uint64{count} != uint64{width} * uint64{height} * format::TEXEL_BYTES ||
-            count > format::MAX_TEXTURE_BYTES ||
-            textureBytes > format::GetBundleLimits(outParts.Version).TotalTextureBytes)
+            count > format::MAX_TEXTURE_BYTES || textureBytes > limits.TotalTextureBytes)
         {
             return inoutFailure.FailInvalid("Cooked texture budget");
         }
@@ -2071,11 +2076,11 @@ struct BundleParts final
 [[nodiscard]] bool ReadMeshes(BundleReader& inoutReader,
                               std::span<const uint8> data,
                               uint32 meshCount,
+                              const format::BundleLimits& limits,
                               BundleParts& outParts,
                               Failure& inoutFailure) noexcept
 {
     const uint32 version = outParts.Version;
-    const format::BundleLimits& limits = format::GetBundleLimits(version);
     const usize vertexBytes = format::GetVertexRecordBytes(version);
     usize vertices = 0;
     usize indices = 0;
@@ -2154,9 +2159,12 @@ struct BundleParts final
 }
 
 /// split_bundle(data): validate the complete binary profile before any publication.
-[[nodiscard]] bool SplitBundle(std::span<const uint8> data, BundleParts& outParts, Failure& inoutFailure) noexcept
+[[nodiscard]] bool SplitBundle(std::span<const uint8> data,
+                               const format::BundleLimits& importLimits,
+                               BundleParts& outParts,
+                               Failure& inoutFailure) noexcept
 {
-    if (data.size() > format::IMPORT_LIMITS.BundleBytes)
+    if (data.size() > importLimits.BundleBytes)
     {
         return inoutFailure.FailInvalid("Cooked scene byte limit");
     }
@@ -2185,7 +2193,8 @@ struct BundleParts final
     {
         return inoutFailure.FailInvalid("Unsupported cooked scene version");
     }
-    const format::BundleLimits& limits = format::GetBundleLimits(version);
+    const format::BundleLimits& limits =
+        version >= format::VERSION_5 ? importLimits : format::RESIDENT_REFERENCE_LIMITS;
     if (data.size() > limits.BundleBytes || meshCount < 1 || meshCount > limits.Meshes || materialCount < 1 ||
         materialCount > limits.Materials || textureCount > limits.Textures || objectCount < 1 ||
         objectCount > limits.Objects)
@@ -2199,9 +2208,9 @@ struct BundleParts final
     {
         return inoutFailure.FailInvalid("Invalid camera field of view");
     }
-    if (ReadTextures(reader, data, textureCount, outParts, inoutFailure) == false ||
+    if (ReadTextures(reader, data, textureCount, limits, outParts, inoutFailure) == false ||
         ReadMaterials(reader, data, version, materialCount, textureCount, outParts, inoutFailure) == false ||
-        ReadMeshes(reader, data, meshCount, outParts, inoutFailure) == false)
+        ReadMeshes(reader, data, meshCount, limits, outParts, inoutFailure) == false)
     {
         return false;
     }
@@ -3144,10 +3153,21 @@ struct MaterialVariant final
     {
         bundleBytes += sizeof(format::LightingRecord);
     }
+    uint64 textureBytes = 0;
     for (const std::string_view identity : textures)
     {
         const JsonIndex record = closure.Tree.GetMember(closure.Root, identity);
-        bundleBytes += static_cast<uint64>(GetNumberMember(closure.Tree, record, "bytes").ToFloat());
+        const uint64 bytes = static_cast<uint64>(GetNumberMember(closure.Tree, record, "bytes").ToFloat());
+        if (bytes < sizeof(format::TextureRecord))
+        {
+            return inoutFailure.Fail(AssetErrorCode::AssetCorrupt, {"Invalid texture artifact: ", identity});
+        }
+        bundleBytes += bytes;
+        textureBytes += bytes - sizeof(format::TextureRecord);
+    }
+    if (textureBytes > limits.TotalTextureBytes)
+    {
+        return inoutFailure.FailWorldByteLimit("World textures", textureBytes, limits.TotalTextureBytes);
     }
     uint64 indexTotal = 0;
     for (const std::string_view identity : meshes)
@@ -3200,7 +3220,7 @@ struct MaterialVariant final
     }
     if (bundleBytes > limits.BundleBytes)
     {
-        return inoutFailure.FailInvalid("Assembled scene byte capacity exceeded");
+        return inoutFailure.FailWorldByteLimit("Assembled World", bundleBytes, limits.BundleBytes);
     }
     // bundleBytes is the exact assembled size: reserve it so appending hundreds of megabytes of texels and
     // vertices never reallocates and copies the partial bundle.
@@ -3499,7 +3519,7 @@ struct MaterialVariant final
         return inoutFailure.FailOutOfMemory();
     }
     BundleParts parts;
-    return SplitBundle(GetSpan(outBundle), parts, inoutFailure);
+    return SplitBundle(GetSpan(outBundle), format::ASSEMBLED_IMPORT_LIMITS, parts, inoutFailure);
 }
 
 /// assemble(root, level, current).
@@ -4336,7 +4356,7 @@ GetSourceMaterialNames(const BundleParts& parts, Array<std::string_view>& outNam
     return true;
 }
 
-/// Append the imported objects, camera and provenance to the candidate level.
+/// Append the imported objects and provenance, using the source camera for the first import.
 [[nodiscard]] bool MergeCandidate(const BundleParts& parts,
                                   const StoredParts& stored,
                                   const AssetOptions& options,
@@ -4345,6 +4365,8 @@ GetSourceMaterialNames(const BundleParts& parts, Array<std::string_view>& outNam
 {
     JsonTree& tree = inoutLevel.Tree;
     const JsonIndex objects = tree.GetMember(inoutLevel.Root, "objects");
+    const JsonIndex imports = tree.GetMember(inoutLevel.Root, "imports");
+    const bool isFirstImport = tree.GetCount(imports) == 0 && tree.GetCount(objects) == 0;
     Array<std::string_view> materialNames;
     if (GetSourceMaterialNames(parts, materialNames, inoutFailure) == false)
     {
@@ -4386,8 +4408,10 @@ GetSourceMaterialNames(const BundleParts& parts, Array<std::string_view>& outNam
         tree.SetMember(item, "transform", AddTransform(tree, object.Transform));
         tree.Append(objects, item);
     }
-    tree.SetMember(inoutLevel.Root, "camera", AddCamera(tree, parts.Camera));
-    const JsonIndex imports = tree.GetMember(inoutLevel.Root, "imports");
+    if (isFirstImport == true)
+    {
+        tree.SetMember(inoutLevel.Root, "camera", AddCamera(tree, parts.Camera));
+    }
     bool isImported = false;
     for (usize i = 0; i < tree.GetCount(imports); ++i)
     {
@@ -4646,7 +4670,7 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
     const CookResult& cooked = routed.Cooked;
     BundleParts parts;
     Document manifest;
-    if (SplitBundle(GetSpan(cooked.Bundle), parts, inoutFailure) == false ||
+    if (SplitBundle(GetSpan(cooked.Bundle), format::IMPORT_LIMITS, parts, inoutFailure) == false ||
         ParseDocument(GetSpan(cooked.Manifest), AssetErrorCode::UnsupportedScene, manifest, inoutFailure) == false)
     {
         return false;

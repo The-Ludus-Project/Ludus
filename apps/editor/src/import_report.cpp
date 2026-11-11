@@ -68,13 +68,13 @@ constexpr foundation::int64 UNRECORDED_SCENE_FORMAT_VERSION = format::VERSION_4;
     }
     const foundation::int64 vertices = cooked.value(QStringLiteral("vertices")).toInteger();
     const foundation::int64 bytes = cooked.value(QStringLiteral("bundle_bytes")).toInteger();
-    // Runtime limits of the cooked LUSCN version, shown beside the cooked counts.
+    // The report describes one source cook. World assembly has its own byte limits.
     const foundation::int64 version =
         cooked.value(QStringLiteral("scene_format_version")).toInteger(UNRECORDED_SCENE_FORMAT_VERSION);
+    const bool isImportProfile =
+        version >= format::VERSION_5 && format::IsSupportedVersion(static_cast<foundation::uint32>(version)) == true;
     const format::BundleLimits& limits =
-        format::GetBundleLimits(format::IsSupportedVersion(static_cast<foundation::uint32>(version)) == true
-                                    ? static_cast<foundation::uint32>(version)
-                                    : format::VERSION_4);
+        isImportProfile == true ? format::IMPORT_LIMITS : format::RESIDENT_REFERENCE_LIMITS;
     lines.append(QStringLiteral("Cooked: %1/%2 meshes, %3/%4 materials, %5/%6 textures, %7 objects")
                      .arg(FormatCount(cooked, QStringLiteral("meshes")),
                           QString::number(limits.Meshes),
@@ -90,7 +90,7 @@ constexpr foundation::int64 UNRECORDED_SCENE_FORMAT_VERSION = format::VERSION_4;
     lines.append(QStringLiteral("Budget: %1; %2; %3 placements dropped")
                      .arg(geometryBudget,
                           isDryRun == true
-                              ? QStringLiteral("bundle size measured on import")
+                              ? QStringLiteral("source bundle and combined World sizes checked on import")
                               : QStringLiteral("%1 of %2")
                                     .arg(FormatMebibytes(bytes),
                                          FormatMebibytes(static_cast<foundation::int64>(limits.BundleBytes))),
