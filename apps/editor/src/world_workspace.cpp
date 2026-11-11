@@ -124,10 +124,10 @@ QString FieldKey(const QString& component, const QString& property)
 }
 constexpr foundation::int32 WORLD_PROPERTY_LAYOUT_WIDTH = 360;
 /// A vector row under its caption and unit ("Position (m)"), so the three fields share the panel's full width
-/// instead of what is left beside a label column.
-QWidget* MakeVectorBlock(const QString& title, const QString& unit, QWidget& inoutRow, QWidget& inoutParent)
+/// instead of what is left beside a label column. The block takes the row's place under its parent.
+QWidget* MakeVectorBlock(const QString& title, const QString& unit, QWidget& inoutRow)
 {
-    QWidget* block = new QWidget(&inoutParent);
+    QWidget* block = new QWidget(inoutRow.parentWidget());
     block->setObjectName(QStringLiteral("inspectorVectorBlock"));
     QVBoxLayout* blockLayout = new QVBoxLayout(block);
     blockLayout->setContentsMargins(0, 0, 0, 0);
@@ -2279,7 +2279,7 @@ void WorldWorkspace::RenderInspector()
                     });
                 }
                 QWidget* vectorRow = MakeVectorRow(components, QString(), group, [this]() { markInspectorPending(); });
-                rows->addRow(MakeVectorBlock(vector.Title, vector.Unit, *vectorRow, *group));
+                rows->addRow(MakeVectorBlock(vector.Title, vector.Unit, *vectorRow));
             }
         }
         rows->addRow(QStringLiteral("Mesh"), new IdentifierRow(scene.value(QStringLiteral("mesh")).toString(), group));
@@ -2559,7 +2559,7 @@ void WorldWorkspace::RenderInspector()
                 colourLayout->addWidget(vectorRow, 1);
                 vectorRow = colourRow;
             }
-            rows->addRow(MakeVectorBlock(groupOrNull->Title, groupOrNull->Unit, *vectorRow, *group));
+            rows->addRow(MakeVectorBlock(groupOrNull->Title, groupOrNull->Unit, *vectorRow));
         }
         if (IsBuiltInWorld(Document_) == true && cid == QStringLiteral("light"))
         {
