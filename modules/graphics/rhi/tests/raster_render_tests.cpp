@@ -17,6 +17,7 @@
 #include "merged_frame.h"
 #include "ordered_frame.h"
 #include "raster.h"
+#include "raster_test_readiness.h"
 
 #include <span>
 
@@ -133,10 +134,12 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
     rhi::TextureHandle texture;
     rhi::TextureViewHandle view;
     rhi::SamplerHandle sampler;
-    REQUIRE(rhi::CreateTexture(device,
-                               {2, 2, mode == 1 ? rhi::RasterFormat::Rgba8Srgb : rhi::RasterFormat::Rgba8Unorm},
-                               {image, 8},
-                               texture) == rhi::RasterStatus::Ready);
+    const rhi::RasterStatus textureStatus =
+        rhi::CreateTexture(device,
+                           {2, 2, mode == 1 ? rhi::RasterFormat::Rgba8Srgb : rhi::RasterFormat::Rgba8Unorm},
+                           {image, 8},
+                           texture);
+    rhi::testing::RequireReady(device, texture, textureStatus);
     REQUIRE(rhi::CreateTextureView(device, texture, view) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::CreateSampler(device, {}, sampler) == rhi::RasterStatus::Ready);
     rhi::RasterBindingResource resources[3];

@@ -6,6 +6,7 @@
 #include "ordered_draw.h"
 #include "ordered_prepare.h"
 #include "raster.h"
+#include "raster_test_readiness.h"
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -29,6 +30,7 @@
 // The same shader, packet authoring and complete-image oracle run on D3D12,
 // Vulkan and Metal. No backend-specific expected image or rendering substitute.
 using namespace ludus::foundation;
+using ludus::graphics::rhi::testing::RequireReady;
 namespace rhi = ludus::graphics::rhi;
 namespace
 {
@@ -116,17 +118,6 @@ template <typename T, usize COUNT>
 std::span<const uint8> GetBytes(const StaticArray<T, COUNT>& values)
 {
     return {reinterpret_cast<const uint8*>(values.GetData()), sizeof(T) * COUNT};
-}
-template <typename Handle>
-void RequireReady(rhi::DeviceHandle device, Handle handle, rhi::RasterStatus status = rhi::RasterStatus::Pending)
-{
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
-    {
-        std::this_thread::yield();
-        status = rhi::GetStatus(device, handle);
-    }
-    REQUIRE(status == rhi::RasterStatus::Ready);
 }
 } // namespace
 
