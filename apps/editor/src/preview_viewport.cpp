@@ -771,7 +771,7 @@ struct PreviewViewport::State final
     QString StatisticsText;
     /// Bars behind the pass rows that end StatisticsText; empty when it has none.
     ViewportPassBars StatisticsBars;
-    /// Browser fallback: the engine's DOM canvas covers Qt widgets, so text goes in the toolbar.
+    /// Browser statistics and status above the frame, where the DOM canvas leaves Qt text visible.
     QLabel* StatisticsLabelOrNull = nullptr;
     /// Live shader status shown below the statistics; empty while there is nothing to report.
     QString ShaderStatusText;
@@ -978,7 +978,6 @@ struct PreviewViewport::State final
         LUDUS_REQUIRE(state.SourcePins > 0);
         --state.SourcePins;
     }
-    friend class PreviewViewport;
 
 private:
     void applyStatistics()
@@ -1023,19 +1022,6 @@ private:
         if (CanvasOrNull != nullptr)
         {
             CanvasOrNull->SetOrientation(sample, isShown);
-        }
-    }
-    void applyShaderStatus()
-    {
-        if (ShaderStatusOrNull != nullptr)
-        {
-            ShaderStatusOrNull->SetText(FitOverlayText(ShaderStatusText, Window->width()),
-                                        HasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
-            ShaderStatusOrNull->setPosition(GetShaderStatusOrigin(StatisticsText));
-        }
-        if (CanvasOrNull != nullptr)
-        {
-            CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
         }
     }
     void createItem()
@@ -1544,6 +1530,40 @@ private:
         }
     }
 #endif
+    friend class PreviewViewport;
+
+private:
+    void applyShaderStatus()
+    {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        if (ShaderStatusOrNull != nullptr)
+        {
+            ShaderStatusOrNull->SetText(FitOverlayText(ShaderStatusText, Window->width()),
+                                        HasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
+            ShaderStatusOrNull->setPosition(GetShaderStatusOrigin(StatisticsText));
+        }
+        if (CanvasOrNull != nullptr)
+        {
+            CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
+        }
+#elif defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+        if (StatisticsLabelOrNull == nullptr)
+        {
+            return;
+        }
+        QString text = StatisticsText;
+        if (ShaderStatusText.isEmpty() == false)
+        {
+            if (text.isEmpty() == false)
+            {
+                text += QLatin1Char('\n');
+            }
+            text += ShaderStatusText;
+        }
+        StatisticsLabelOrNull->setText(text);
+        StatisticsLabelOrNull->setVisible(text.isEmpty() == false);
+#endif
+    }
 };
 PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, bool isAutomatic)
     : PreviewViewport(preview, preview, parentOrNull, isAutomatic)
@@ -2958,8 +2978,7 @@ void PreviewViewport::updateStatistics()
     mState->StatisticsBars =
         Preview_->IsStatisticsVisible() == true ? MakeViewportPassBars(Preview_->GetStatistics()) : ViewportPassBars{};
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-    mState->StatisticsLabelOrNull->setText(text);
-    mState->StatisticsLabelOrNull->setVisible(text.isEmpty() == false);
+    mState->applyShaderStatus();
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mState->applyStatistics();
