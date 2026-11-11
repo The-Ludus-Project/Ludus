@@ -190,7 +190,7 @@ Q_SIGNALS:
     void ProbeSpacingCommitted(const QString& id, foundation::float64 spacingMetres);
     /// A counts-layout volume's new probe count on one axis after a face drag.
     void ProbeFaceCommitted(const QString& id, foundation::int32 axis, foundation::uint32 count, bool isMinimumFace);
-    /// A volume-layout box's new edge length, in metres, on one axis after a face drag.
+    /// A requested edge length, in metres, for a volume-layout resize or a drag past the probe count limit.
     void
     ProbeSizeCommitted(const QString& id, foundation::int32 axis, foundation::float64 sizeMetres, bool isMinimumFace);
     void TerrainExtentCommitted(const QString& key, foundation::float64 extent);
@@ -259,8 +259,10 @@ private:
     WorldGiProbeVolume mProbeVolume{};
     graphics::renderer::GiProbeGrid mProbeGrid{};
     graphics::renderer::GiProbeGrid mProbeDragGrid{};
-    /// The box a volume-layout face drag previews.
+    /// The box a face drag previews when editing the edge length.
     foundation::math::Aabb3 mProbeDragBoxWorld{};
+    /// Zero when the face drag edits a probe count instead of a length.
+    foundation::float64 mProbeDragSizeMetres = 0;
     QRectF mProbeDragFramePixel;
     bool mIsStandaloneProbeVolume = false;
     /// Make mSilhouette the adjacency of scene mesh meshIndex, rebuilding once per scene identity or mesh change.

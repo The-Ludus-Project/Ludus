@@ -371,6 +371,11 @@ QJsonObject Defaults(const QJsonObject& component)
     return true;
 }
 
+QString GetMappedMaterialId(const QJsonObject& placement, const QJsonObject& level)
+{
+    const QString source = placement.value(QStringLiteral("material")).toString();
+    return level.value(QStringLiteral("material_mappings")).toObject().value(source).toString(source);
+}
 } // namespace
 bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
 {
@@ -1728,10 +1733,19 @@ bool WorldDocument::MapSceneMaterial(const QString& source, const QString& repla
 
 QString WorldDocument::GetInheritedMaterialId(const QJsonObject& placement) const
 {
-    const QString source = placement.value(QStringLiteral("material")).toString();
-    const QJsonObject mappings =
-        Draft_.value(QStringLiteral("scene")).toObject().value(QStringLiteral("material_mappings")).toObject();
-    return mappings.value(source).toString(source);
+    return GetMappedMaterialId(placement, Draft_.value(QStringLiteral("scene")).toObject());
+}
+
+QString WorldDocument::GetMaterialResourceId(const QJsonObject& placement, const QJsonObject& level)
+{
+    const QJsonObject binding = placement.value(QStringLiteral("project_brdf")).toObject();
+    return binding.isEmpty() == false ? binding.value(QStringLiteral("material")).toString()
+                                      : GetMappedMaterialId(placement, level);
+}
+
+QString WorldDocument::GetMaterialResourceId(const QJsonObject& placement) const
+{
+    return GetMaterialResourceId(placement, Draft_.value(QStringLiteral("scene")).toObject());
 }
 
 QJsonObject WorldDocument::GetSharedCoating(const QString& material) const

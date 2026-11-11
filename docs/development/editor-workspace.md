@@ -653,7 +653,12 @@ records the libraries that would provide them.
 The World hierarchy flanks the viewport inside the World document; the entity
 inspector is the Properties tool window. Component actions stay below the
 scrollable inspector fields: the component choice beside **Add Component**, and
-**Apply Changes** beside **Reset Fields**. Right-click the World viewport or
+**Apply Changes** beside **Reset Fields**. The inspector follows the tool window's
+width and never clips a field: X/Y/Z and colour fields share one line while their
+values fit and stack one per line when narrower, labels move above their fields
+when the label column would leave too little room, and texture, mesh and material
+references shorten in the middle (hover for the full text). Properties is never
+narrower than 224 pixels. Right-click the World viewport or
 entity list for **Add Entity**, **Duplicate**, and **Delete**. Right-click an
 entity to target it. Clicking a selected member of a group keeps the group
 selected, and clicking the background keeps the current selection. Right-drag
@@ -794,6 +799,14 @@ that viewport automatically. Its selectors expose authored graph configurations 
 attachments. The **Stats** toggle shows live update FPS, CPU/GPU time and readback
 latency; see the [graph viewport measurement definitions](render-graph-authoring.md#start-customizing-the-renderer). The current static graph profile does not provide the former Lit material
 preview; its input and presentation limits are documented with that workflow.
+
+The viewport toolbar reads left to right in priority order: the configuration
+and output choice, size and view, then editing (object tool, **Edit Terrain…**,
+**Frame all**), display diagnostics (**Exposure**, **Force raster**, **Stats**,
+**Reference…**) and finally navigation help. The configuration menu appears only
+when the graph defines more than one configuration. When the viewport is too
+narrow, commands from the right end move into the **»** overflow menu whole,
+rather than being squeezed until their text is cut off.
 
 ### Apertures
 
@@ -1476,8 +1489,10 @@ each artifact the level uses once before assembling the bundle:
   error. The World keeps the edit, as after any failed assembly; **Undo** removes it.
 - **Save World** during a validation waits for it, then verifies the scene assets
   and writes the World as it is at that point.
-- Any other edit, such as adding, renaming or deleting an entity, stops the running
-  validation and assembles the whole level. Selection, handles and World edits wait
+- Edits to a [standalone probe volume](#baking-probe-gi-for-moving-objects) can
+  publish while a mesh placement is being validated. Edits that require assembly,
+  such as adding, renaming or deleting an entity, stop the running validation
+  and assemble the whole level. Selection, handles and World edits wait
   for that assembly, as for a reassembly without a pending placement.
 - Opening, creating or importing into a World, a draft preview of inspector fields and
   restoring recovery wait until the validation has finished.
@@ -1812,6 +1827,20 @@ creates an unsaved sibling `<level-name>.world.json`; it preserves the original
 level and refuses an existing conversion destination. Failed conversion preserves
 the active World. Save publishes only the converted World document. Existing
 `.world.json` documents without scene data remain readable.
+
+### Browse a World's material resources
+
+Open **Materials** beside **Lights** in the World sidebar to see the imported
+material resources used by the current World. Expand a material to see its
+renderables. Double-click a renderable or press Enter on its row to select it in
+the entity hierarchy and viewport. Select a material or one of its renderables
+and choose **Copy Resource ID** to copy the full catalog ID.
+
+From an imported entity, choose **Show in Materials** in **Scene instance** to
+find its material and the other renderables using it. The list follows material
+mappings and explicit Project BRDF assignments. Renderables that override
+coating or roughness still appear under the same resource. Inspect an individual
+renderable to see its effective values.
 
 ### Edit a coated-diffuse material from World
 
@@ -2166,10 +2195,13 @@ Choose the `counts` layout to set **Probes along X**, **Y** and **Z**
 yourself: the box is then `(count - 1) × spacing` on each edge and the
 Transform scale is not used. In this layout the face handles add or remove
 whole probe intervals and the Scale tool's centre square changes the spacing
-while keeping the minimum corner and counts fixed. Switching layouts keeps
-the probes where they are: `counts` to `volume` writes the probe extent into
-the Transform scale, and `volume` to `counts` writes the derived counts.
-Worlds saved before the layout existed load as `counts`.
+while keeping the minimum corner and counts fixed. Dragging a face of a
+standalone probe volume past the 12-probe limit offers to switch to `volume`
+and apply the new size in one undoable edit. Probe spacing stays the same.
+You can also choose `volume` in Properties, enter the desired Transform
+scale, and click **Apply Changes**. Any scale axes you leave untouched keep
+their previous probe extent. Switching to `counts` writes the derived
+counts. Worlds saved before the layout existed load as `counts`.
 
 The box follows the World axes. The native Lit viewport supports one volume,
 with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.
@@ -2180,8 +2212,11 @@ each authored mesh that should use the volume. Receiver geometry is excluded
 from the bake. Receivers keep realtime direct lighting and sample bounced
 diffuse at their current position. Static surfaces use their own charts.
 
-The viewport keeps drawing with realtime lighting while the bake runs. Outside
-the volume, or where no nearby probe has recorded visibility, receivers use
+Moving or resizing a standalone probe volume updates its placement immediately.
+Edits in Properties update the volume when you apply them. When baked GI is
+enabled, the viewport uses realtime lighting while the bake for the latest edit
+runs. You can keep editing or undo the move during the bake.
+Outside the volume, or where no nearby probe has recorded visibility, receivers use
 realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. The native editor generates the atlas in memory
 when the baked lighting inputs change. The prototype uses coarse directional

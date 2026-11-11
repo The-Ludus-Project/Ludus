@@ -1,4 +1,5 @@
 #include "internal/builtin_world.h"
+#include "internal/inspector_fields.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_panel.h"
@@ -18,6 +19,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPoint>
 #include <QPushButton>
 #include <QSet>
@@ -377,9 +379,42 @@ void WorldWorkspace::commitProbeSize(const QString& id, int32 axis, float64 size
         return;
     }
     QJsonObject components = entity.value(QStringLiteral("components")).toObject();
-    if (ReadWorldGiProbeLayout(components) != GiProbeLayout::Volume)
+    if (ReadWorldGiProbeLayout(components) == GiProbeLayout::Counts)
     {
-        return;
+        if (IsStandaloneWorldGiProbeVolume(entity, components) == false)
+        {
+            return;
+        }
+        const QJsonObject previousComponents = components;
+        const QString probeComponent = GetGiProbeVolumeComponentId();
+        QJsonObject probe = components.value(probeComponent).toObject();
+        probe.insert(GetGiProbeLayoutKey(), GetGiProbeLayoutWord(GiProbeLayout::Volume));
+        components.insert(probeComponent, probe);
+        SynchronizeWorldGiProbeLayout(previousComponents, components);
+        const QString entityId = id;
+        const uint64 documentGeneration = DocumentGeneration_;
+        QMessageBox confirmation(
+            QMessageBox::Question,
+            QStringLiteral("Resize beyond the probe limit"),
+            QStringLiteral("Switch Probe layout from counts to volume and resize the %1 edge to %2 m? "
+                           "Probe spacing stays the same. The grid can use up to %3 probes on each axis. "
+                           "To cover the larger box, increase Probe spacing in Properties.")
+                .arg(QChar('X' + axis))
+                .arg(FormatInspectorNumber(sizeMetres))
+                .arg(graphics::renderer::MAX_GI_PROBE_AXIS_COUNT),
+            QMessageBox::Cancel,
+            this);
+        confirmation.setTextFormat(Qt::PlainText);
+        QPushButton* resize =
+            confirmation.addButton(QStringLiteral("Switch layout and resize"), QMessageBox::AcceptRole);
+        resize->setObjectName(QStringLiteral("worldConfirmProbeVolumeResize"));
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.exec();
+        if (confirmation.clickedButton() != resize || DocumentGeneration_ != documentGeneration ||
+            findEditableProbeVolume(entityId) != entity)
+        {
+            return;
+        }
     }
     ResizeWorldGiProbeVolumeAxis(components, static_cast<usize>(axis), sizeMetres, isMinimumFace);
     commitProbeVolumeEdit(entity, components);

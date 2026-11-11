@@ -112,8 +112,7 @@ void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isV
     }
     for (QAction* action : inoutControls.actions())
     {
-        const QWidgetAction* widgetAction = qobject_cast<QWidgetAction*>(action);
-        if (widgetAction != nullptr && widgetAction->defaultWidget() == controlOrNull)
+        if (inoutControls.widgetForAction(action) == controlOrNull)
         {
             action->setVisible(isVisible);
             return;
@@ -121,6 +120,21 @@ void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isV
     }
 }
 #endif
+/// Inserts @p inoutAction into the controls toolbar before @p beforeOrNull (appends when null) and names the
+/// button the toolbar makes for it. A plain action rather than a custom widget: when the row is too narrow, the
+/// toolbar's overflow menu lists the actions that did not fit but leaves custom widgets out, so a command added as
+/// its own button would become unreachable.
+QToolButton&
+InsertCommand(QToolBar& inoutControls, QAction* beforeOrNull, QAction& inoutAction, const QString& objectName)
+{
+    inoutControls.insertAction(beforeOrNull, &inoutAction);
+    QToolButton* button = qobject_cast<QToolButton*>(inoutControls.widgetForAction(&inoutAction));
+    LUDUS_REQUIRE(button != nullptr);
+    button->setObjectName(objectName);
+    // Toolbar buttons take no keyboard focus by default; the viewport's commands stay reachable with Tab.
+    button->setFocusPolicy(Qt::TabFocus);
+    return *button;
+}
 /// Places every presentation widget (message and grid, render surface, readback canvas, graph
 /// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
 /// Only one of them is visible at a time, so they share the frame instead of stacking.
@@ -760,6 +774,11 @@ struct PreviewViewport::State final
     ViewportFrameLayout* FrameLayoutOrNull = nullptr;
     QToolBar* ControlsOrNull = nullptr;
     QAction* ObjectToolActionOrNull = nullptr;
+    /// Anchors the editing group so mode commands such as Edit Terrain sit beside the object tool
+    /// rather than at the overflow end of the row.
+    QAction* FrameAllActionOrNull = nullptr;
+    /// First command of the display group; a graph's Exposure control joins the group before it.
+    QAction* DisplayGroupActionOrNull = nullptr;
     /// View menu action that stores the current view as the start view; created with the controls.
     QAction* StartViewSaveActionOrNull = nullptr;
     QAction* AddTerrainActionOrNull = nullptr;
@@ -1864,6 +1883,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         const QSignalBlocker blocker(flySpeed);
         flySpeed->setValue(static_cast<float64>(preview->GetFlySpeed()));
     });
+    // Groups read left to right in priority order, because the toolbar overflows from the right end:
+    // what the viewport shows, then editing, then display diagnostics, and finally help.
+    controls->addSeparator();
     QComboBox* objectTool = new QComboBox(this);
     objectTool->setObjectName(QStringLiteral("viewportObjectTool"));
     objectTool->setAccessibleName(QStringLiteral("Object interaction tool"));
@@ -1891,49 +1913,47 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         const QSignalBlocker blocker(objectTool);
         objectTool->setCurrentIndex(static_cast<int32>(mObjectInteraction->GetTool()));
     });
-    QToolButton* frameAll = new QToolButton(this);
-    frameAll->setObjectName(QStringLiteral("viewportFrameAll"));
-    frameAll->setText(QStringLiteral("Frame all"));
-    frameAll->setAccessibleName(QStringLiteral("Frame all visible objects"));
+    QAction* frameAll = new QAction(QStringLiteral("Frame all"), this);
     frameAll->setToolTip(QStringLiteral("Fit all visible geometry in the viewport (Home)."));
-    controls->addWidget(frameAll);
-    connect(frameAll, &QToolButton::clicked, preview, &RenderPreview::FrameAll);
-    QToolButton* forceRaster = new QToolButton(this);
-    forceRaster->setObjectName(QStringLiteral("viewportForceRaster"));
-    forceRaster->setText(QStringLiteral("Force raster"));
+    InsertCommand(*controls, nullptr, *frameAll, QStringLiteral("viewportFrameAll"))
+        .setAccessibleName(QStringLiteral("Frame all visible objects"));
+    mState->FrameAllActionOrNull = frameAll;
+    connect(frameAll, &QAction::triggered, preview, &RenderPreview::FrameAll);
+    controls->addSeparator();
+    QAction* forceRaster = new QAction(QStringLiteral("Force raster"), this);
     forceRaster->setCheckable(true);
-    forceRaster->setProperty("visualRole", QStringLiteral("toggle"));
     forceRaster->setChecked(preview->ShouldForceRaster());
-    forceRaster->setAccessibleName(QStringLiteral("Force raster renderer"));
     forceRaster->setToolTip(QStringLiteral("Use raster even when hardware raytracing is available. "
                                            "Unchecked selects automatically from the current GPU and API."));
-    controls->addWidget(forceRaster);
-    connect(forceRaster, &QToolButton::toggled, preview, &RenderPreview::SetForceRaster);
+    QToolButton& forceRasterButton =
+        InsertCommand(*controls, nullptr, *forceRaster, QStringLiteral("viewportForceRaster"));
+    forceRasterButton.setProperty("visualRole", QStringLiteral("toggle"));
+    forceRasterButton.setAccessibleName(QStringLiteral("Force raster renderer"));
+    mState->DisplayGroupActionOrNull = forceRaster;
+    connect(forceRaster, &QAction::toggled, preview, &RenderPreview::SetForceRaster);
     connect(preview, &RenderPreview::RendererPreferenceChanged, forceRaster, [forceRaster](bool shouldForceRaster) {
         const QSignalBlocker blocker(forceRaster);
         forceRaster->setChecked(shouldForceRaster);
     });
-    QToolButton* statistics = new QToolButton(this);
-    statistics->setObjectName(QStringLiteral("viewportStatistics"));
-    statistics->setText(QStringLiteral("Stats"));
+    QAction* statistics = new QAction(QStringLiteral("Stats"), this);
+    statistics->setObjectName(QStringLiteral("viewportStatisticsAction"));
     statistics->setCheckable(true);
-    statistics->setProperty("visualRole", QStringLiteral("toggle"));
     statistics->setChecked(preview->IsStatisticsVisible());
-    statistics->setAccessibleName(QStringLiteral("Show viewport statistics"));
     statistics->setToolTip(QStringLiteral("Overlay GPU frame time, CPU frame time, resolution and draw count, "
                                           "averaged over recent frames. GPU shows n/a when the device has no "
                                           "timestamp queries."));
-    controls->addWidget(statistics);
-    connect(statistics, &QToolButton::toggled, preview, &RenderPreview::SetStatisticsVisible);
+    QToolButton& statisticsButton =
+        InsertCommand(*controls, nullptr, *statistics, QStringLiteral("viewportStatistics"));
+    statisticsButton.setProperty("visualRole", QStringLiteral("toggle"));
+    statisticsButton.setAccessibleName(QStringLiteral("Show viewport statistics"));
+    connect(statistics, &QAction::toggled, preview, &RenderPreview::SetStatisticsVisible);
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
-    QToolButton* reference = new QToolButton(this);
-    reference->setObjectName(QStringLiteral("viewportReference"));
-    reference->setText(QStringLiteral("Reference…"));
-    reference->setAccessibleName(QStringLiteral("Open reference capture"));
+    QAction* reference = new QAction(QStringLiteral("Reference…"), this);
     reference->setToolTip(QStringLiteral("Render a path-traced reference image of this viewport's current camera "
                                          "with the renderer's RT1 progressive path tracer."));
-    controls->addWidget(reference);
-    connect(reference, &QToolButton::clicked, this, [this, preview]() {
+    InsertCommand(*controls, nullptr, *reference, QStringLiteral("viewportReference"))
+        .setAccessibleName(QStringLiteral("Open reference capture"));
+    connect(reference, &QAction::triggered, this, [this, preview]() {
         if (mState->ReferenceWindow.isNull() == true)
         {
             mState->ReferenceWindow = new ReferenceCaptureWindow(preview, this);
@@ -1951,36 +1971,38 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     if (PreviewShaderReload::IsSupported() == true)
     {
         mState->ShaderReloadOrNull = new PreviewShaderReload(*preview, this);
-        QToolButton* liveShaders = new QToolButton(this);
-        liveShaders->setObjectName(QStringLiteral("viewportLiveShaders"));
-        liveShaders->setText(QStringLiteral("Live shaders"));
+        QAction* liveShaders = new QAction(QStringLiteral("Live shaders"), this);
         liveShaders->setCheckable(true);
-        liveShaders->setProperty("visualRole", QStringLiteral("toggle"));
-        liveShaders->setAccessibleName(QStringLiteral("Reload renderer shaders when their sources change"));
         liveShaders->setToolTip(GetLiveShadersToolTip());
-        controls->addWidget(liveShaders);
+        QToolButton& liveShadersButton =
+            InsertCommand(*controls, nullptr, *liveShaders, QStringLiteral("viewportLiveShaders"));
+        liveShadersButton.setProperty("visualRole", QStringLiteral("toggle"));
+        liveShadersButton.setAccessibleName(QStringLiteral("Reload renderer shaders when their sources change"));
         PreviewShaderReload* reload = mState->ShaderReloadOrNull;
-        connect(liveShaders, &QToolButton::toggled, reload, &PreviewShaderReload::SetEnabled);
+        connect(liveShaders, &QAction::toggled, reload, &PreviewShaderReload::SetEnabled);
         connect(reload, &PreviewShaderReload::StatusChanged, this, [this]() { updateShaderStatus(); });
     }
 #endif
     // Navigation help lives in a tooltip on the controls row instead of a line of its own,
     // so the rendered image keeps the height; clicking shows it without waiting for hover.
-    QToolButton* navigationHint = new QToolButton(this);
-    navigationHint->setObjectName(QStringLiteral("viewportNavigationHint"));
-    navigationHint->setText(QStringLiteral("?"));
-    navigationHint->setAccessibleName(QStringLiteral("Viewport navigation help"));
+    // The overflow menu shows the full text when the button does not fit, where a bare "?" would not say what it is.
+    QAction* navigationHint = new QAction(QStringLiteral("Navigation help"), this);
+    navigationHint->setIconText(QStringLiteral("?"));
 #if defined(Q_OS_MACOS)
     navigationHint->setToolTip(QStringLiteral("Option-drag: orbit · Shift-Option-drag: pan · Scroll: zoom\n") +
                                toolTip());
 #else
     navigationHint->setToolTip(QStringLiteral("Alt-drag: orbit · Shift-Alt-drag: pan · Scroll: zoom\n") + toolTip());
 #endif
-    controls->addWidget(navigationHint);
-    connect(navigationHint, &QToolButton::clicked, navigationHint, [navigationHint]() {
-        QToolTip::showText(navigationHint->mapToGlobal(navigationHint->rect().bottomLeft()),
-                           navigationHint->toolTip(),
-                           navigationHint);
+    controls->addSeparator();
+    QToolButton& navigationHintButton =
+        InsertCommand(*controls, nullptr, *navigationHint, QStringLiteral("viewportNavigationHint"));
+    navigationHintButton.setAccessibleName(QStringLiteral("Viewport navigation help"));
+    connect(navigationHint, &QAction::triggered, this, [controls, navigationHint, button = &navigationHintButton]() {
+        // From the overflow menu the button is hidden, so the help opens below the toolbar's end instead.
+        const QPoint anchor = button->isVisible() == true ? button->mapToGlobal(button->rect().bottomLeft())
+                                                          : controls->mapToGlobal(controls->rect().bottomRight());
+        QToolTip::showText(anchor, navigationHint->toolTip(), controls);
     });
     mState->Layout->addWidget(controls);
     new ViewportFocusStrip(*this, *controls);
@@ -2225,11 +2247,19 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         mState->HasShaderError = true;
         mState->applyShaderStatus();
     });
-    QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this, *Preview_);
-    mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls);
-    // Tab follows the toolbar left to right: the graph controls lead it, though they are created after the rest.
+    const WorldGraphControls graphControls = mState->GraphViewOrNull->TakeControls(this, *Preview_);
+    mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls.OutputOrNull);
+    // Exposure adjusts the display, so it leads that group and overflows before the output choice.
+    QToolButton& exposureButton = InsertCommand(*mState->ControlsOrNull,
+                                                mState->DisplayGroupActionOrNull,
+                                                *graphControls.ExposureOrNull,
+                                                QStringLiteral("viewportExposure"));
+    exposureButton.setPopupMode(QToolButton::InstantPopup);
+    exposureButton.setAccessibleName(QStringLiteral("Exposure compensation"));
+    // Tab follows the toolbar left to right: the graph controls take their places in it, though they
+    // are created after the rest.
     QWidget* previousInTabOrder = this;
-    for (QWidget* control : graphControls->findChildren<QWidget*>())
+    for (QWidget* control : graphControls.OutputOrNull->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
     {
         if ((control->focusPolicy() & Qt::TabFocus) != 0)
         {
@@ -2237,9 +2267,10 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             previousInTabOrder = control;
         }
     }
+    QWidget::setTabOrder(mState->ControlsOrNull->widgetForAction(mState->FrameAllActionOrNull), &exposureButton);
     SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);
     SetControlVisible(*mState->ControlsOrNull, findChild<QToolButton*>(QStringLiteral("viewportLiveShaders")), false);
-    QToolButton* statistics = findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    QAction* statistics = findChild<QAction*>(QStringLiteral("viewportStatisticsAction"));
     LUDUS_REQUIRE(statistics != nullptr);
     statistics->setToolTip(QStringLiteral("Show delivered-image FPS, active CPU work, GPU device time and elapsed "
                                           "readback/conversion latency. Times average the last 30 samples; "
@@ -2607,8 +2638,15 @@ void PreviewViewport::SetTerrainActions()
     LUDUS_REQUIRE(mState->AddTerrainActionOrNull == nullptr);
     mState->AddTerrainActionOrNull = new QAction(QStringLiteral("Add Terrain…"), this);
     mState->AddTerrainActionOrNull->setObjectName(QStringLiteral("viewportAddTerrain"));
-    mState->EditTerrainActionOrNull = mState->ControlsOrNull->addAction(QStringLiteral("Edit Terrain…"));
+    mState->EditTerrainActionOrNull = new QAction(QStringLiteral("Edit Terrain…"), this);
     mState->EditTerrainActionOrNull->setObjectName(QStringLiteral("viewportEditTerrain"));
+    mState->EditTerrainActionOrNull->setToolTip(
+        QStringLiteral("Open the selected terrain as a draft to change and apply."));
+    // An editing command: it stays beside the object tool instead of being the first to overflow.
+    InsertCommand(*mState->ControlsOrNull,
+                  mState->FrameAllActionOrNull,
+                  *mState->EditTerrainActionOrNull,
+                  QStringLiteral("viewportEditTerrainButton"));
     mState->TerrainPreviewLabelOrNull = new QLabel(QStringLiteral("Terrain preview"), this);
     mState->TerrainPreviewLabelOrNull->setObjectName(QStringLiteral("viewportTerrainPreviewLabel"));
     mState->Layout->insertWidget(1, mState->TerrainPreviewLabelOrNull);
@@ -2941,9 +2979,10 @@ void PreviewViewport::updateShaderStatus()
     mState->applyShaderStatus();
     // The overlay shortens long lines to the viewport; the toggle's tooltip keeps the whole error.
     QToolButton* liveShaders = findChild<QToolButton*>(QStringLiteral("viewportLiveShaders"));
-    if (liveShaders != nullptr)
+    if (liveShaders != nullptr && liveShaders->defaultAction() != nullptr)
     {
-        liveShaders->setToolTip(mState->HasShaderError == true ? mState->ShaderStatusText : GetLiveShadersToolTip());
+        liveShaders->defaultAction()->setToolTip(mState->HasShaderError == true ? mState->ShaderStatusText
+                                                                                : GetLiveShadersToolTip());
     }
 #endif
 }

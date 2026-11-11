@@ -5,6 +5,7 @@
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/platform/entropy.h>
 
+#include "design_tokens.h"
 #include "internal/render_graph_luminaire_coverage.h"
 #include "internal/world_document.h"
 #include "internal/world_lighting_coverage.h"
@@ -29,6 +30,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QVBoxLayout;
 class QSplitter;
+class QTabWidget;
 class QToolButton;
 QT_END_NAMESPACE
 namespace ludus::resources
@@ -45,11 +47,16 @@ class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
 class WorldLightsPanel;
+class WorldMaterialsPanel;
 class WorldTerrainPanel;
 struct WorldLightChange;
 struct WorldLightRow;
 enum class PlacementValidationResult : foundation::uint8;
 struct ToolingPaths;
+/// Narrowest the Properties tool window becomes, in device-independent pixels: seven page gutters, room for a label
+/// column beside a number field. Below it the inspector would have to clip.
+inline constexpr foundation::int32 WORLD_PROPERTIES_MINIMUM_WIDTH = design::SPACING_PAGE * 7;
+
 /// Where Play opens the game: a local editor preference, not project data.
 enum class PlayMode : foundation::uint8
 {
@@ -326,6 +333,8 @@ private:
     QWidget* mHierarchy;
     /// Light switches under the entity list, in the hierarchy column.
     WorldLightsPanel* mLightsPanel;
+    QTabWidget* mWorldLists;
+    WorldMaterialsPanel* mMaterialsPanel;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
     QByteArray mSplitterStateBeforeChromeHidden;
     bool mIsChromeVisible = true;

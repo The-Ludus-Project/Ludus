@@ -1114,9 +1114,9 @@ void ViewportObjectInteraction::getShownProbeVolume(math::Aabb3& outBoxWorld, rr
     if (mDragTarget.Kind == HandleKind::ProbeFace || mDragTarget.Kind == HandleKind::ProbeSpacing)
     {
         outGrid = mProbeDragGrid;
-        outBoxWorld = mDragTarget.Kind == HandleKind::ProbeFace && isProbeVolumeLayout() == true
-                          ? mProbeDragBoxWorld
-                          : ComputeWorldGiProbeBounds(outGrid);
+        const bool isBoxResize =
+            mDragTarget.Kind == HandleKind::ProbeFace && (isProbeVolumeLayout() == true || mProbeDragSizeMetres > 0);
+        outBoxWorld = isBoxResize == true ? mProbeDragBoxWorld : ComputeWorldGiProbeBounds(outGrid);
         return;
     }
     if (mDragTarget.IsValid() == false || (mTool != Tool::Move && mTool != Tool::Scale))
@@ -1207,6 +1207,7 @@ bool ViewportObjectInteraction::beginProbeFaceDrag(QPointF positionPixel)
 {
     mProbeDragGrid = mProbeGrid;
     mProbeDragBoxWorld = ComputeWorldGiProbeVolumeBounds(mProbeVolume);
+    mProbeDragSizeMetres = 0;
     mProbeDragFramePixel = mFramePixel;
     mDragPlaneOriginWorld = ComputeProbeFaceWorld(mProbeDragBoxWorld, mDragTarget.Index);
     const math::Vector3 axisWorld = WORLD_AXES.Columns[mDragTarget.Index % AXIS_COUNT];
@@ -1235,57 +1236,56 @@ void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
     const bool isMinimumFace = mDragTarget.Index >= AXIS_COUNT;
     const math::Vector3 axisWorld = WORLD_AXES.Columns[axis];
     const float32 deltaMetres = math::Dot(hitWorld - mDragPlaneStartWorld, axisWorld);
-    if (isProbeVolumeLayout() == true)
+    const float32 growthMetres = isMinimumFace == true ? -deltaMetres : deltaMetres;
+    const float32 originalSize = math::Dot(mProbeVolume.SizeWorld, axisWorld);
+    const float64 desiredSize = static_cast<float64>(originalSize) + static_cast<float64>(growthMetres);
+    if (math::IsFinite(desiredSize) == false)
     {
-        // The face moves the box edge freely; the probes follow at the authored spacing.
-        const math::Aabb3 authoredBoxWorld = ComputeWorldGiProbeVolumeBounds(mProbeVolume);
-        const float32 originalSize = math::Dot(authoredBoxWorld.Max - authoredBoxWorld.Min, axisWorld);
-        const float32 desiredSize = originalSize + (isMinimumFace == true ? -deltaMetres : deltaMetres);
-        if (math::IsFinite(desiredSize) == false)
-        {
-            return;
-        }
-        const float32 sizeMetres =
-            static_cast<float32>(math::Clamp(ComputeSnap(static_cast<float64>(desiredSize), PROBE_SIZE_SNAP_METRES),
-                                             MIN_GI_PROBE_VOLUME_SIZE_METRES,
-                                             MAX_GI_PROBE_VOLUME_SIZE_METRES));
-        math::Aabb3 boxWorld = authoredBoxWorld;
-        if (isMinimumFace == true)
-        {
-            boxWorld.Min = boxWorld.Min + axisWorld * (originalSize - sizeMetres);
-        }
-        else
-        {
-            boxWorld.Max = boxWorld.Max + axisWorld * (sizeMetres - originalSize);
-        }
+        return;
+    }
+    const float32 originalCount = static_cast<float32>(mProbeGrid.Counts[axis]);
+    const float32 desiredCount = originalCount + growthMetres / mProbeGrid.Spacing;
+    const float32 maximumCount = static_cast<float32>(rr::MAX_GI_PROBE_AXIS_COUNT);
+    const bool isBeyondCountLimit = desiredCount >= maximumCount + 0.5F;
+    const float32 maximumSizeMetres = static_cast<float32>(MAX_GI_PROBE_VOLUME_SIZE_METRES);
+    const bool shouldOfferVolumeLayout =
+        isProbeVolumeLayout() == false && isBeyondCountLimit == true && mIsStandaloneProbeVolume == true &&
+        mProbeVolume.SizeWorld.X <= maximumSizeMetres && mProbeVolume.SizeWorld.Y <= maximumSizeMetres &&
+        mProbeVolume.SizeWorld.Z <= maximumSizeMetres && originalSize < maximumSizeMetres;
+    if (isProbeVolumeLayout() == true || shouldOfferVolumeLayout == true)
+    {
+        const float64 sizeMetres = math::Clamp(ComputeSnap(desiredSize, PROBE_SIZE_SNAP_METRES),
+                                               MIN_GI_PROBE_VOLUME_SIZE_METRES,
+                                               MAX_GI_PROBE_VOLUME_SIZE_METRES);
+        const math::Vector3 changeWorld = axisWorld * (static_cast<float32>(sizeMetres) - originalSize);
+        const math::Vector3 sizeWorld = mProbeVolume.SizeWorld + changeWorld;
+        const math::Vector3 originWorld =
+            isMinimumFace == true ? mProbeGrid.OriginWorld - changeWorld : mProbeGrid.OriginWorld;
         GiProbeCounts requiredCounts{};
         const rr::GiProbeGrid candidate =
-            ComputeGiProbeGridForVolume(boxWorld.Min, boxWorld.Max - boxWorld.Min, mProbeGrid.Spacing, requiredCounts);
+            ComputeGiProbeGridForVolume(originWorld, sizeWorld, mProbeGrid.Spacing, requiredCounts);
         if (rr::IsGiProbeGridValid(candidate) == false)
         {
             return;
         }
-        mProbeDragBoxWorld = boxWorld;
+        mProbeDragBoxWorld = {originWorld, originWorld + sizeWorld};
+        mProbeDragSizeMetres = sizeMetres;
         mProbeDragGrid = candidate;
         mReadoutAnchorPixel = positionPixel;
         mReadoutText =
             QStringLiteral("%1 · %2 m · %3 probes%4")
                 .arg(QChar('X' + axis))
-                .arg(static_cast<float64>(sizeMetres), 0, 'f', PROBE_EXTENT_DECIMALS)
+                .arg(sizeMetres, 0, 'f', PROBE_EXTENT_DECIMALS)
                 .arg(candidate.Counts[axis])
-                .arg(requiredCounts[axis] != candidate.Counts[axis] ? QStringLiteral(" (limit)") : QString());
+                .arg(requiredCounts[axis] > candidate.Counts[axis] ? QStringLiteral(" (probe limit)") : QString());
+        if (shouldOfferVolumeLayout == true)
+        {
+            mReadoutText += QStringLiteral(" · Release to switch layout");
+        }
         Q_EMIT Changed();
         return;
     }
-    const float32 originalCount = static_cast<float32>(mProbeGrid.Counts[axis]);
-    const float32 desiredCount =
-        originalCount + (isMinimumFace == true ? -deltaMetres : deltaMetres) / mProbeGrid.Spacing;
-    if (math::IsFinite(desiredCount) == false)
-    {
-        return;
-    }
-    const uint32 count =
-        static_cast<uint32>(math::Clamp(desiredCount, 2.F, static_cast<float32>(rr::MAX_GI_PROBE_AXIS_COUNT)) + 0.5F);
+    const uint32 count = static_cast<uint32>(math::Clamp(desiredCount, 2.F, maximumCount) + 0.5F);
     rr::GiProbeGrid candidate = mProbeGrid;
     candidate.Counts[axis] = count;
     if (isMinimumFace == true)
@@ -1297,6 +1297,7 @@ void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
     {
         return;
     }
+    mProbeDragSizeMetres = 0;
     mProbeDragGrid = candidate;
     mReadoutAnchorPixel = positionPixel;
     mReadoutText = QStringLiteral("%1 · %2 probes · %3 m")
@@ -1306,6 +1307,12 @@ void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
                             0,
                             'f',
                             PROBE_EXTENT_DECIMALS);
+    if (isBeyondCountLimit == true)
+    {
+        mReadoutText += candidate.Spacing < static_cast<float32>(rr::MAX_GI_PROBE_SPACING_METRES)
+                            ? QStringLiteral(" · Increase Probe spacing")
+                            : QStringLiteral(" · Probe limit at maximum spacing");
+    }
     Q_EMIT Changed();
 }
 
@@ -1338,7 +1345,8 @@ void ViewportObjectInteraction::appendProbeVolume(ViewportObjectOverlay& inoutOv
     rr::GiProbeGrid grid;
     getShownProbeVolume(boxWorld, grid);
     appendBoxOutline(boxWorld, mWorldToClip, inoutOverlay);
-    if (isProbeVolumeLayout() == true && IsProbeGridApartFromBox(grid, boxWorld) == true)
+    const bool isBoxResize = mDragTarget.Kind == HandleKind::ProbeFace && mProbeDragSizeMetres > 0;
+    if ((isProbeVolumeLayout() == true || isBoxResize == true) && IsProbeGridApartFromBox(grid, boxWorld) == true)
     {
         // Show where the probes stop when the box is not a whole number of spacings or the limit is reached.
         appendBoxOutline(ComputeWorldGiProbeBounds(grid), mWorldToClip, inoutOverlay);
@@ -1814,13 +1822,12 @@ bool ViewportObjectInteraction::Release()
     {
         const int32 axis = target.Index % AXIS_COUNT;
         const bool isMinimumFace = target.Index >= AXIS_COUNT;
-        if (isProbeVolumeLayout() == true)
+        if (mProbeDragSizeMetres > 0)
         {
-            const math::Vector3 axisWorld = WORLD_AXES.Columns[axis];
-            const float32 sizeMetres = math::Dot(mProbeDragBoxWorld.Max - mProbeDragBoxWorld.Min, axisWorld);
-            if (sizeMetres != math::Dot(mProbeVolume.SizeWorld, axisWorld))
+            const float32 originalSize = math::Dot(mProbeVolume.SizeWorld, WORLD_AXES.Columns[axis]);
+            if (static_cast<float32>(mProbeDragSizeMetres) != originalSize)
             {
-                Q_EMIT ProbeSizeCommitted(mSelected, axis, static_cast<float64>(sizeMetres), isMinimumFace);
+                Q_EMIT ProbeSizeCommitted(mSelected, axis, mProbeDragSizeMetres, isMinimumFace);
             }
         }
         else if (mProbeDragGrid.Counts[axis] != mProbeGrid.Counts[axis])

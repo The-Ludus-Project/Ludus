@@ -8,8 +8,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#if !defined(Q_OS_WASM)
+#    include <QThread>
+#    include <QtConcurrent/QtConcurrentRun>
+#endif
 
-#include <new>
+#include <ludus/foundation/base/core.h>
+#include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
 
 namespace ludus::editor
 {
@@ -25,6 +31,12 @@ constexpr qsizetype LIGHTING_KEY_BYTES = 32;
 // Bound the on-disk chart payload independently of the worker's peak scratch budget.
 constexpr qsizetype MAX_CHART_FILE_BYTES = qsizetype{128} * 1024 * 1024;
 constexpr float32 MAX_IRRADIANCE_SCALE = 10000;
+
+bool HasBakeInputs(const RenderScene& scene) noexcept
+{
+    return scene.Lit == true && scene.Definition != nullptr && scene.Objects.isEmpty() == false &&
+           scene.AlwaysOnLightIds.isEmpty() == false;
+}
 
 void ConfigureStream(QDataStream& inoutStream)
 {
@@ -95,7 +107,12 @@ QSharedPointer<const WorldSurfaceBake> ReadSurfaceBake(const QString& path)
 } // namespace
 
 WorldSurfaceBakeState::WorldSurfaceBakeState() noexcept = default;
-WorldSurfaceBakeState::~WorldSurfaceBakeState() noexcept = default;
+WorldSurfaceBakeState::~WorldSurfaceBakeState() noexcept
+{
+#if !defined(Q_OS_WASM)
+    mBakeJob.cancel();
+#endif
+}
 
 void WorldSurfaceBakeState::SetWorldPath(const QString& path)
 {
@@ -109,16 +126,18 @@ void WorldSurfaceBakeState::SetWorldPath(const QString& path)
 
 void WorldSurfaceBakeState::SetScene(const RenderScene& scene)
 {
-    const bool hasBakeInputs = scene.Lit == true && scene.Definition != nullptr && scene.Objects.isEmpty() == false &&
-                               scene.AlwaysOnLightIds.isEmpty() == false;
-    const QByteArray key = hasBakeInputs == true ? preview_lighting::MakeKey(scene) : QByteArray{};
-    if (key != mLightingKey)
+    const QByteArray key = HasBakeInputs(scene) == true ? preview_lighting::MakeKey(scene) : QByteArray{};
+    if (key.isEmpty() == true || key != mLightingKey)
     {
-        resetJob();
+        invalidateBake();
         mLightingKey = key;
-        mReady.clear();
-        mFailure.clear();
     }
+}
+
+void WorldSurfaceBakeState::InvalidateProbeGrid() noexcept
+{
+    invalidateBake();
+    mLightingKey.clear();
 }
 
 QSharedPointer<const WorldSurfaceBake> WorldSurfaceBakeState::GetReady() const
@@ -136,79 +155,135 @@ QString WorldSurfaceBakeState::GetFailure() const
     return mFailure;
 }
 
-void WorldSurfaceBakeState::resetJob() noexcept
+void WorldSurfaceBakeState::invalidateBake() noexcept
 {
-    mJob.Reset();
-    static_cast<void>(mJobs.Shutdown());
+#if !defined(Q_OS_WASM)
+    if (mBakeJobState == BakeJobState::Current)
+    {
+        mBakeJobState = BakeJobState::Superseded;
+        mBakeJob.cancel();
+    }
+#endif
+    mReady.clear();
+    mFailure.clear();
 }
 
 void WorldSurfaceBakeState::Poll(const RenderScene& scene)
 {
+#if !defined(Q_OS_WASM)
+    if (mBakeJobState != BakeJobState::Idle)
+    {
+        if (mBakeJob.isFinished() == false)
+        {
+            return;
+        }
+        if (mBakeJobState == BakeJobState::Current)
+        {
+            const BakeResult completed = mBakeJob.result();
+            mLightingKey = completed.LightingKey;
+            mReady = completed.Bake;
+            mFailure = completed.Failure;
+        }
+        mBakeJob = {};
+        mBakeJobState = BakeJobState::Idle;
+    }
     const bool hasProbeGrid = scene.ProbeGrid.Counts[0] != 0;
     const QSharedPointer<const WorldSurfaceBake> ready = GetReady();
-    if (mLightingKey.isEmpty() == true || mFailure.isEmpty() == false ||
+    if (HasBakeInputs(scene) == false || mFailure.isEmpty() == false ||
         (ready.isNull() == false && (hasProbeGrid == false || ready->ProbeAtlas.Pixels.isEmpty() == false)))
     {
         return;
     }
-    const auto recordFailure = [this](rhi::RasterStatus status) {
-        resetJob();
-        mFailure = QStringLiteral("Always-on bake failed (%1). Using realtime lighting. "
-                                  "Simplify the World geometry or clear the bake option in Properties.")
-                       .arg(static_cast<uint32>(status));
-    };
-    if (mJob.Get() == nullptr)
+    // The worker owns the frozen extraction through hashing, tracing and encoding. Edits only
+    // cancel this request. Poll starts the latest one once the old job has finished releasing its inputs.
+    mBakeJobState = BakeJobState::Current;
+    mBakeJob = QtConcurrent::run([scene, key = mLightingKey, saved = mSaved](QPromise<BakeResult>& inoutPromise) {
+        BakeResult result = bakeScene(scene, key, saved, inoutPromise);
+        if (inoutPromise.isCanceled() == false)
+        {
+            static_cast<void>(inoutPromise.addResult(foundation::Move(result)));
+        }
+    });
+#else
+    static_cast<void>(scene);
+#endif
+}
+
+#if !defined(Q_OS_WASM)
+WorldSurfaceBakeState::BakeResult WorldSurfaceBakeState::bakeScene(const RenderScene& scene,
+                                                                   QByteArray key,
+                                                                   const QSharedPointer<const WorldSurfaceBake>& saved,
+                                                                   const QPromise<BakeResult>& promise)
+{
+    if (key.isEmpty() == true)
     {
-        preview_lighting::Inputs inputs;
-        const rhi::RasterStatus prepared =
-            preview_lighting::BuildInputs(scene, mLightingKey, inputs, preview_lighting::InputsTarget::Surfaces);
-        if (prepared != rhi::RasterStatus::Ready)
-        {
-            recordFailure(prepared);
-            return;
-        }
-        if (mJobs.Initialize({ .WorkerCount = STATIC_LIGHTING_WORKER_COUNT }) != threading::JobStatus::Ok)
-        {
-            recordFailure(rhi::RasterStatus::Failed);
-            return;
-        }
-        renderer::StaticLightingBakeDescription description;
-        description.SceneRevision = inputs.SceneRevision;
-        description.DependencyRevision = inputs.DependencyRevision;
-        description.ProbeGrid = scene.ProbeGrid;
-        description.Surfaces = {inputs.Surfaces.GetData(), inputs.Surfaces.GetSize()};
-        description.AnalyticLightIds = {scene.AlwaysOnLightIds.constData(),
-                                        static_cast<usize>(scene.AlwaysOnLightIds.size())};
-        mJob.Reset(new (std::nothrow) StaticLightingJob(scene, description));
-        const rhi::RasterStatus started = mJob.Get() == nullptr ? rhi::RasterStatus::OutOfMemory : mJob->Start(mJobs);
-        if (started != rhi::RasterStatus::Pending && started != rhi::RasterStatus::Ready)
-        {
-            recordFailure(started);
-        }
-        return;
+        key = preview_lighting::MakeKey(scene);
     }
-    const rhi::RasterStatus status = mJob->Poll();
-    if (status == rhi::RasterStatus::Pending)
+    if (promise.isCanceled() == true)
     {
-        return;
+        return {};
+    }
+    const bool hasProbeGrid = scene.ProbeGrid.Counts[0] != 0;
+    if (hasProbeGrid == false && saved.isNull() == false && saved->LightingKey == key)
+    {
+        return {key, {}, {}};
+    }
+    const auto makeFailure = [&key](rhi::RasterStatus status) -> BakeResult {
+        return {key,
+                {},
+                QStringLiteral("Always-on bake failed (%1). Using realtime lighting. "
+                               "Simplify the World geometry or clear the bake option in Properties.")
+                    .arg(static_cast<uint32>(status))};
+    };
+    preview_lighting::Inputs inputs;
+    const rhi::RasterStatus prepared =
+        preview_lighting::BuildInputs(scene, key, inputs, preview_lighting::InputsTarget::Surfaces);
+    if (prepared != rhi::RasterStatus::Ready)
+    {
+        return makeFailure(prepared);
+    }
+    threading::JobSystem jobs;
+    if (jobs.Initialize({ .WorkerCount = STATIC_LIGHTING_WORKER_COUNT }) != threading::JobStatus::Ok)
+    {
+        return makeFailure(rhi::RasterStatus::Failed);
+    }
+    renderer::StaticLightingBakeDescription description;
+    description.SceneRevision = inputs.SceneRevision;
+    description.DependencyRevision = inputs.DependencyRevision;
+    description.ProbeGrid = scene.ProbeGrid;
+    description.Surfaces = {inputs.Surfaces.GetData(), inputs.Surfaces.GetSize()};
+    description.AnalyticLightIds = {scene.AlwaysOnLightIds.constData(),
+                                    static_cast<usize>(scene.AlwaysOnLightIds.size())};
+    StaticLightingJob job(scene, description);
+    rhi::RasterStatus status = job.Start(jobs);
+    while (status == rhi::RasterStatus::Pending)
+    {
+        if (promise.isCanceled() == true)
+        {
+            job.RequestInterruption();
+            return {};
+        }
+        QThread::msleep(1);
+        status = job.Poll();
     }
     if (status != rhi::RasterStatus::Ready)
     {
-        recordFailure(status);
-        return;
+        return makeFailure(status);
     }
-    const UniquePtr<renderer::StaticLightingBake> completed = mJob->TakeBake();
-    resetJob();
+    if (promise.isCanceled() == true)
+    {
+        return {};
+    }
+    const UniquePtr<renderer::StaticLightingBake> completed = job.TakeBake();
     const QSharedPointer<WorldSurfaceBake> bake = QSharedPointer<WorldSurfaceBake>::create();
-    bake->LightingKey = mLightingKey;
+    bake->LightingKey = key;
     if (hasProbeGrid == true)
     {
         renderer::StaticGiProbeAtlas source;
         const rhi::RasterStatus atlasStatus = completed->GetProbeAtlas(source);
         if (atlasStatus != rhi::RasterStatus::Ready)
         {
-            recordFailure(atlasStatus);
-            return;
+            return makeFailure(atlasStatus);
         }
         bake->ProbeAtlas.Pixels = QByteArray(reinterpret_cast<const char*>(source.Pixels.GetDataOrNull()),
                                              static_cast<qsizetype>(source.Pixels.GetSize()));
@@ -222,8 +297,7 @@ void WorldSurfaceBakeState::Poll(const RenderScene& scene)
         renderer::StaticLightingChart source;
         if (completed->GetChart(static_cast<usize>(index), source) != rhi::RasterStatus::Ready)
         {
-            recordFailure(rhi::RasterStatus::Failed);
-            return;
+            return makeFailure(rhi::RasterStatus::Failed);
         }
         WorldSurfaceChart chart;
         chart.Width = source.Width;
@@ -231,15 +305,15 @@ void WorldSurfaceBakeState::Poll(const RenderScene& scene)
         chart.Scale = source.Scale;
         if (IsChartValid(chart) == false)
         {
-            recordFailure(rhi::RasterStatus::InvalidDescription);
-            return;
+            return makeFailure(rhi::RasterStatus::InvalidDescription);
         }
         chart.Pixels = QByteArray(reinterpret_cast<const char*>(source.Pixels.GetDataOrNull()),
                                   static_cast<qsizetype>(source.Pixels.GetSize()));
         bake->Charts.append(chart);
     }
-    mReady = bake;
+    return {key, bake, {}};
 }
+#endif
 
 bool WorldSurfaceBakeState::Save()
 {

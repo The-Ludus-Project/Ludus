@@ -5,7 +5,10 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
+#include "internal/builtin_world.h"
 #include "internal/inspector_fields.h"
+#include "internal/render_scene.h"
+#include "internal/world_document.h"
 
 #include <QStringList>
 
@@ -88,6 +91,57 @@ bool IsStandaloneWorldGiProbeVolume(const QJsonObject& entity, const QJsonObject
     return components.size() == 2 && components.contains(GetGiProbeVolumeComponentId()) == true &&
            components.contains(QStringLiteral("transform")) == true &&
            entity.contains(QStringLiteral("scene")) == false;
+}
+
+bool TryReadStandaloneProbeEdit(const QJsonObject& before,
+                                const QJsonObject& after,
+                                const WorldDocument& world,
+                                const RenderScene& scene,
+                                rr::GiProbeGrid& outGrid)
+{
+    if (IsBuiltInWorld(world) == false || scene.Definition == nullptr)
+    {
+        return false;
+    }
+    const QString entitiesKey = QStringLiteral("entities");
+    const QString componentsKey = QStringLiteral("components");
+    QJsonArray previousEntities = before.value(entitiesKey).toArray();
+    const QJsonArray entities = after.value(entitiesKey).toArray();
+    if (entities.size() != previousEntities.size())
+    {
+        return false;
+    }
+    for (qsizetype index = 0; index < entities.size(); ++index)
+    {
+        if (entities[index] == previousEntities[index])
+        {
+            continue;
+        }
+        QJsonObject previous = previousEntities[index].toObject();
+        const QJsonObject edited = entities[index].toObject();
+        const QJsonObject components = edited.value(componentsKey).toObject();
+        if (IsStandaloneWorldGiProbeVolume(previous, previous.value(componentsKey).toObject()) == false ||
+            IsStandaloneWorldGiProbeVolume(edited, components) == false)
+        {
+            return false;
+        }
+        const QString entity = world.GetEntityKey(edited);
+        for (const PreviewCamera& camera : scene.Cameras)
+        {
+            if (camera.FollowId == entity)
+            {
+                // The same Transform also drives an evaluated camera, which needs a fresh extraction.
+                return false;
+            }
+        }
+        previous.insert(componentsKey, components);
+        previousEntities[index] = previous;
+        QJsonObject candidate = before;
+        candidate.insert(entitiesKey, previousEntities);
+        QString error;
+        return candidate == after && ReadWorldGiProbeGrid(components, outGrid, error);
+    }
+    return false;
 }
 
 void AppendGiProbeComponents(QJsonArray& inoutComponents)
@@ -389,12 +443,18 @@ void SynchronizeWorldGiProbeLayout(const QJsonObject& previousComponents, QJsonO
     QJsonObject volume = inoutComponents.value(component).toObject();
     if (next == GiProbeLayout::Volume)
     {
-        // The counts' extent at the new spacing becomes the size, so the grid keeps its probes.
+        // Keep any scale edits made alongside the layout change. Untouched edges inherit the counts' extent.
+        const QJsonObject previousTransform = previousComponents.value(QStringLiteral("transform")).toObject();
+        const QJsonObject editedTransform = inoutComponents.value(QStringLiteral("transform")).toObject();
         const float64 spacing = volume.value(QStringLiteral("spacing")).toDouble();
         for (usize axis = 0; axis < POSITION_AXES.GetSize(); ++axis)
         {
-            const float64 intervals = volume.value(GetProbeCountKey(POSITION_AXES[axis])).toDouble() - 1;
-            WriteWorldGiProbeSize(inoutComponents, axis, math::Max(intervals, 1.0) * spacing);
+            const QString scaleKey = GetScaleKey(POSITION_AXES[axis]);
+            if (editedTransform.value(scaleKey) == previousTransform.value(scaleKey))
+            {
+                const float64 intervals = volume.value(GetProbeCountKey(POSITION_AXES[axis])).toDouble() - 1;
+                WriteWorldGiProbeSize(inoutComponents, axis, math::Max(intervals, 1.0) * spacing);
+            }
         }
         return;
     }

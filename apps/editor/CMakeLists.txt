@@ -797,6 +797,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_workspace.h
     src/internal/world_lights_panel.h
     src/world_lights_panel.cpp
+    src/internal/world_materials_panel.h
+    src/world_materials_panel.cpp
     src/builtin_world.cpp
     src/internal/world_celestial_light.h src/world_celestial_light.cpp
     src/internal/world_earth_location.h src/world_earth_location.cpp
@@ -903,6 +905,9 @@ target_link_libraries(ludus_editor_application
         ludus_stb_image
         # World documents share the version-2 record constants with their owner (object handles stage 3).
         Ludus::ContentIdentity)
+if(NOT EMSCRIPTEN)
+    target_link_libraries(ludus_editor_application PRIVATE Qt6::Concurrent)
+endif()
 if(TARGET Qt6::Positioning AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_application PUBLIC Qt6::Positioning)
     target_compile_definitions(ludus_editor_application PRIVATE LUDUS_EDITOR_EARTH_POSITIONING=1)
@@ -1218,6 +1223,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
         tests/world_light_switch_tests.cpp
+        tests/world_properties_layout_tests.cpp
         tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
@@ -1229,6 +1235,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/editor_style_tests.cpp
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
+        tests/viewport_toolbar_layout_tests.cpp
         tests/editor_icons_tests.cpp
         tests/editor_visual_consistency_tests.cpp
         tests/path_text_tests.cpp
