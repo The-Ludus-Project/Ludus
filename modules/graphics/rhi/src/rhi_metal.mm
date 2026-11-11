@@ -16,6 +16,7 @@
 #endif
 
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/native_window.h>
@@ -689,9 +690,9 @@ void DestroyPipeline(usize slot) noexcept
 {
     gPipelines[slot] = {};
 }
-void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
+void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.data(), bytes.size());
+    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 FrameInfo GetFrameInfo() noexcept
 {

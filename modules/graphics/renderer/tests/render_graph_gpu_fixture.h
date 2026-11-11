@@ -138,8 +138,8 @@ struct DepthDisplay final
         description.Vertex = vertexHandle;
         description.Fragment = fragmentHandle;
         description.Layout = Layout;
-        description.Streams = streams.AsSpan();
-        description.Attributes = attributes.AsSpan();
+        description.Streams = {streams.GetData(), streams.GetSize()};
+        description.Attributes = {attributes.GetData(), attributes.GetSize()};
         REQUIRE(rhi::CreateRasterPipeline(Device, description, Pipeline) == rhi::RasterStatus::Ready);
         const StaticArray<math::Vector4, VERTEX_COUNT> positions{{{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}}};
         const StaticArray<uint32, INDEX_COUNT> indices{{0, 1, 2}};

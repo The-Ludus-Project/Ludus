@@ -233,8 +233,8 @@ bool RenderTargetReader::preparePacking(uint32 width, uint32 height) noexcept
         description.Vertex = mVertex;
         description.Fragment = mFragment;
         description.Layout = mLayout;
-        description.Streams = streams.AsSpan();
-        description.Attributes = attributes.AsSpan();
+        description.Streams = {streams.GetData(), streams.GetSize()};
+        description.Attributes = {attributes.GetData(), attributes.GetSize()};
         // Linear RGBA8 offscreen attachment, no depth test: every texel is written once.
         description.Target = rhi::RasterTarget::Rgba8Unorm;
         const StaticArray<math::Vector4, VERTEX_COUNT> positions{

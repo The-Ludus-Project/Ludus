@@ -1,6 +1,7 @@
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
@@ -11,7 +12,6 @@
 #include "r9.h"
 
 #include <cstring>
-#include <span>
 
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
@@ -108,7 +108,7 @@ bool Complete(T handle) noexcept
     return status == rhi::RasterStatus::Ready;
 }
 template <typename T, usize N>
-std::span<const uint8> Bytes(const T (&values)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> Bytes(const T (&values)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(values), sizeof(values)};
 }
@@ -192,7 +192,12 @@ bool CreateExtendedTextures() noexcept
                 .Format = gHasBc5 == true ? rhi::RasterFormat::Bc5RgUnorm : rhi::RasterFormat::Rgba8Unorm,
                 .MipLevels = 4,
             },
-            gHasBc5 == true ? rhi::TextureUpload{encoded, 0, blockMips} : rhi::TextureUpload{fallback, 0, rgbaMips},
+            gHasBc5 == true ? rhi::TextureUpload{{encoded.GetData(), encoded.GetSize()},
+                                                 0,
+                                                 {blockMips.GetData(), blockMips.GetSize()}}
+                            : rhi::TextureUpload{{fallback.GetData(), fallback.GetSize()},
+                                                 0,
+                                                 {rgbaMips.GetData(), rgbaMips.GetSize()}},
             gTextures[7])) == false)
     {
         return false;
@@ -232,7 +237,7 @@ bool CreateExtendedTextures() noexcept
     }
     if (Accepted(rhi::CreateTexture(gDevice,
                                     { .Width = gLargeWidth, .Height = largeHeight },
-                                    {large, rowPitch},
+                                    {{large.GetData(), large.GetSize()}, rowPitch},
                                     gTextures[8])) == false)
     {
         return false;
@@ -279,7 +284,8 @@ bool CreateExtendedTextures() noexcept
                                         .Dimension = rhi::TextureDimension::Cube,
                                         .DepthOrLayers = 6,
                                     },
-                                    gHasBc5 == true ? rhi::TextureUpload{cube, 16} : rhi::TextureUpload{rgba, 16},
+                                    gHasBc5 == true ? rhi::TextureUpload{{cube.GetData(), cube.GetSize()}, 16}
+                                                    : rhi::TextureUpload{{rgba.GetData(), rgba.GetSize()}, 16},
                                     gTextures[10])) == false)
     {
         return false;
@@ -299,7 +305,7 @@ bool CreateExtendedTextures() noexcept
         rhi::TextureHandle unsupported;
         if (rhi::CreateTexture(gDevice,
                                { .Width = 7, .Height = 3, .Format = rhi::RasterFormat::Bc5RgUnorm },
-                               {edge, 32},
+                               {{edge.GetData(), edge.GetSize()}, 32},
                                unsupported) != rhi::RasterStatus::Unsupported ||
             rhi::IsNull(unsupported) == false)
         {
@@ -313,7 +319,8 @@ bool CreateExtendedTextures() noexcept
                 .Height = 3,
                 .Format = hasNativeEdges == true ? rhi::RasterFormat::Bc5RgUnorm : rhi::RasterFormat::Rgba8Unorm,
             },
-            hasNativeEdges == true ? rhi::TextureUpload{edge, 32} : rhi::TextureUpload{edgeRgba, 28},
+            hasNativeEdges == true ? rhi::TextureUpload{{edge.GetData(), edge.GetSize()}, 32}
+                                   : rhi::TextureUpload{{edgeRgba.GetData(), edgeRgba.GetSize()}, 28},
             gTextures[11])) == false)
     {
         return false;
@@ -428,7 +435,7 @@ bool CreateResources() noexcept
                                         .Dimension = rhi::TextureDimension::D3,
                                         .DepthOrLayers = gVolumeDepth,
                                     },
-                                    {volumeBytes, 0, mips},
+                                    {{volumeBytes.GetData(), volumeBytes.GetSize()}, 0, mips},
                                     gTextures[3])) == false)
     {
         return false;
@@ -832,7 +839,9 @@ void Tick() noexcept
                                        : test == 13 ? 6
                                                     : 5],
                  }}};
-            if (Accepted(rhi::CreateBindingSet(gDevice, gLayout, resources, gSets[test])) == false)
+            if (Accepted(
+                    rhi::CreateBindingSet(gDevice, gLayout, {resources.GetData(), resources.GetSize()}, gSets[test])) ==
+                false)
             {
                 Stop(true);
                 return;

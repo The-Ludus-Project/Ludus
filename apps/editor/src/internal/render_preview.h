@@ -209,6 +209,26 @@ public:
     {
         return mLookSensitivity;
     }
+    /// Lowest admitted keyboard fly speed multiplier, relative to the viewport's focus-distance speed.
+    static constexpr foundation::float32 MINIMUM_FLY_SPEED = 0.01F;
+    /// Highest admitted keyboard fly speed multiplier.
+    static constexpr foundation::float32 MAXIMUM_FLY_SPEED = 100;
+    /// Factor one wheel notch applies to the fly speed while flying. Three notches about double
+    /// the speed, and a notch back undoes a notch forward.
+    static constexpr foundation::float32 FLY_SPEED_NOTCH_FACTOR = 1.25F;
+    /// Set the multiplier for WASD/QE flight while the right mouse button is held, relative to the
+    /// viewport's focus-distance speed. Nonfinite or out-of-range values preserve it. Persisted by
+    /// Navigation; GUI thread only; changing it preserves the camera pose and selected camera.
+    void SetFlySpeed(foundation::float32 multiplier);
+    /// Scale the fly speed by FLY_SPEED_NOTCH_FACTOR raised to notches (negative notches slow down),
+    /// clamped to the admitted range. False, with the speed preserved, for zero or nonfinite notches
+    /// and when the speed is already at the limit it was pushed towards.
+    bool ScaleFlySpeed(foundation::float32 notches);
+    /// Current fly speed multiplier; 1 by default. Independent of look sensitivity.
+    [[nodiscard]] LUDUS_INLINE foundation::float32 GetFlySpeed() const noexcept
+    {
+        return mFlySpeed;
+    }
     /// Adjust the native viewport's tone-mapped raster output, in stops. The value belongs to this view session.
     /// Invalid values preserve it. Zero resets the preview to the graph's authored exposure.
     void SetRasterExposureStops(foundation::float32 stops);
@@ -412,6 +432,7 @@ private:
     ViewportWalkCollision mFirstPersonCollision;
     bool mIsExploringFirstPerson = false;
     foundation::float32 mLookSensitivity = 1;
+    foundation::float32 mFlySpeed = 1;
     foundation::float32 mRasterExposureStops = 0;
     /// Viewport size preset index; see SetViewportSize.
     foundation::usize mViewportSizeIndex = 0;

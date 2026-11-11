@@ -57,23 +57,12 @@ closed argument set and an implementation-only parser.
 
 - `<string_view>` and `<span>` are existing compatibility interfaces. Maintain
   them where required by an existing API; new view APIs should be Ludus-owned.
-- The first bounded R1 raster profile has a narrow compatibility exception:
-  `std::span<const T>` describes caller-owned buffer bytes, binding entries,
-  shader inputs and vertex streams/slices; `std::string_view` describes shader
-  resource names. This is limited to `GraphicsRhi`'s `raster.h`, its private
-  implementation and backend forwarding signatures. It extends the existing
-  fullscreen `ShaderArtifact`/uniform input vocabulary and interoperates with
-  FoundationContainers' existing `AsSpan` interfaces without adding an owning
-  container, allocation or a second shader-artifact representation. Operations
-  are construction, pointer/count access, indexing and iteration; these views
-  do not own resources or extend caller lifetimes. Creation copies the metadata
-  and consumes/copies upload bytes before returning, as specified by the
-  [portable raster contract](../development/fullscreen-rendering.md#portable-raster-r1).
-  Pinned Clang 18 and Emscripten 4.0.23 builds, reference ownership/failure tests,
-  Metal pixels and installed-SDK Chromium WebGPU/WebGL tests cover this boundary.
-  This exception does not approve new views elsewhere, STL owning facilities or
-  collection algorithms; replacing the compatibility vocabulary remains a
-  focused FoundationContainers/API migration.
+- GraphicsRhi's raster, fullscreen shader and uniform inputs use
+  FoundationContainers' `BorrowedView`. The former R1 `std::span` compatibility
+  exception is retired. Private legacy adapters may still construct spans from
+  explicit pointer/count pairs. Shader resource names retain `std::string_view`.
+  See the [portable raster contract](../development/fullscreen-rendering.md#portable-raster-r1)
+  for storage lifetime and migration details.
 - `<charconv>` / `std::to_chars` — only in the assertion formatter `.cpp`.
   Fixed-buffer integer/float conversion avoids a custom numerical algorithm;
   no public-header cost, no locale or exceptions. Allocation probes and binary

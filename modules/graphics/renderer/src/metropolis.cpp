@@ -290,11 +290,12 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
             break;
         }
         // The chain's primary-space paths keep reflection-only, non-delta vertices.
-        if (content::scene_format::SupportsFixedDimensionReflection(surface.Bsdf.Scattering) == false)
+        if (content::scene_format::SupportsFixedDimensionReflection(surface.Bsdf.Scattering, surface.Program) == false)
         {
             return rhi::RasterStatus::Unsupported;
         }
         ReferenceBsdf bsdf = surface.Bsdf;
+        bsdf.ProgramOrNull = &surface.Program;
         math::Vector4 texel = SampleReferenceTexture(instance, uv);
         if (surface.AreAuthoredInputsEnabled == true)
         {

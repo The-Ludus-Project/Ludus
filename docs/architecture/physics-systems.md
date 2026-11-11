@@ -2,11 +2,14 @@
 
 **Status:** Proposed; no general rigid-body implementation or dependency is added
 by this document. Evidence baseline: `origin/main` at `1e2227c`, 2026-10-07.
+Selection revised 2026-11-10 against `origin/develop` at `d44e80d`.
 
-Ludus should own a small physics API, asset cooking, gameplay integration, and
-diagnostics, with one qualified CPU rigid-body implementation behind a private
-boundary. Jolt was the first candidate. The [P0 allocation investigation](#p0-allocation-investigation)
-rejects unmodified Jolt 5.6.0 for production. Backend selection remains open.
+Ludus owns its physics API, asset cooking, gameplay integration, diagnostics
+and the CPU collision and rigid-body implementation behind them. Jolt was the
+first third-party candidate. The [P0 allocation investigation](#p0-allocation-investigation)
+and its [follow-up screen](#p0-follow-up-candidate-screen) rejected every stock
+engine tested. The [selection revision](#selection-revision) records why Ludus
+implements the system itself and what that commits it to.
 
 ## Initial design before the Gems review
 
@@ -44,6 +47,12 @@ independent subsystem. The older [Drift design](physics-fluid-simulation.md)
 describes that game's analytic model; it does not define this general system.
 Future buoyancy samples fluid state through an explicit game or coupling pass.
 
+The editor's [Explore as Player](../development/editor-workspace.md#explore-from-a-first-person-player)
+preview owns a private triangle hierarchy and box sweep. It is the first
+collision consumer. Its **Static Collider** component is authored World data,
+so the P1 collision world consumes that component and adds no second collider
+vocabulary. The editor keeps its own step, slide and jump rules.
+
 ## Primary evidence
 
 Thanks to Jorrit Rouwé, [Architecture of Jolt Physics](https://jrouwe.github.io/JoltPhysics/),
@@ -64,25 +73,27 @@ and performance. Characters, ragdolls and vehicles are consumer features added
 when the core passes its gates. Deformables, cloth, fracture, articulations and
 fluid-solid coupling have separate requirements and delivery plans.
 
-Use one production implementation, private to Physics, and one public contract.
-Qualify existing candidates before budgeting a new general solver. Keep the
-brute-force query oracle test-only. The CPU baseline uses a single backend.
-GPU simulation is an optional future workload.
+Use one production implementation, owned by Ludus and private to Physics, and
+one public contract. The [selection revision](#selection-revision) replaces the
+earlier plan to qualify a third-party engine first. Keep the brute-force query
+oracle and third-party comparison engines test-only. The CPU baseline has one
+rigid solver and no runtime solver selector. GPU simulation is an optional
+future workload.
 
-Qualification must pin an exact revision and license, prove the supported
-native platforms and the separate pinned Emscripten build, audit CPU ISA and
-compiler flags, and record which capabilities pass. Browser support in other
-Ludus modules does not establish physics support. Verify SDK packaging, creator-
-owned destruction, jobs, allocator callbacks, diagnostics and hot reload. Keep
-backend headers, IDs, serialization and settings out of public file sets.
+Each gate must prove the supported native platforms and the separate pinned
+Emscripten build, audit CPU ISA and compiler flags, and record which
+capabilities pass. Browser support in other Ludus modules does not establish
+physics support. Verify SDK packaging, creator-owned destruction, jobs,
+diagnostics and hot reload. Keep solver-private headers, IDs, serialization and
+settings out of public file sets. A comparison engine used by tests is pinned
+to an exact revision and license.
 
-If the backend requires global type registration or allocator hooks, the host
-owns one process-lifetime initialization and teardown protocol across all worlds
-and reloads. A world must not replace those hooks or unregister types while
-another world or cooked shape still uses them. This does not make world state
-global.
+Physics has no process-global registration or allocator hooks. Every geometry
+store and world takes its memory resources explicitly at creation, following
+the [memory rules](memory-management.md). A test-only comparison engine that
+needs global hooks owns them inside its own test executable.
 
-**Failure behavior is a selection gate.** Jolt's consulted
+**Failure behavior was the selection gate.** Jolt's consulted
 [temporary allocator](https://raw.githubusercontent.com/jrouwe/JoltPhysics/master/Jolt/Core/TempAllocator.h)
 aborts when its fixed arena is exhausted; its
 [update errors](https://raw.githubusercontent.com/jrouwe/JoltPhysics/master/Jolt/Physics/EPhysicsUpdateError.h)
@@ -94,6 +105,8 @@ allocator whose callers assume success is invalid. Audit initialization and
 shape creation too. If qualification cannot satisfy Ludus's rules, record a
 failed candidate and revise this selection before implementation; do not ship
 abort-on-OOM, exceptions, or an unbounded fallback under a `noexcept` promise.
+The two investigations below record the failed candidates. The owned
+implementation is held to the same rule and the same allocation-injection tests.
 
 ### P0 allocation investigation
 
@@ -165,7 +178,7 @@ for one 60 Hz tick. Its control step allocated two scratch blocks.
   leave mesh admission and body insertion without a storage proof.
   [OPCODE tree build](https://bitbucket.org/odedevs/ode/src/0.16.6/OPCODE/OPC_Model.cpp#lines-167:180)
 
-**Selection remains open.** Reject stock ODE as a production replacement. The
+**Selection remained open after this probe.** Reject stock ODE as a production replacement. The
 local QuickStep patch addresses the measured step failure. Admission of worlds,
 bodies and mesh shapes still requires upstream changes or a conservative storage
 contract. Screen future candidates at world creation, mesh cooking and the first
@@ -219,17 +232,68 @@ the minimum scene fixture. A qualification attempt would need checked
 reservations or fallible construction for world, mesh and body setup, and
 preflight covering broad-phase, solver and contact growth before a tick
 mutates state. The macOS probe establishes the rejection. The platform matrix
-and backend selection remain open.
+was not run. The selection revision below closes backend selection.
+
+### Selection revision
+
+**Decision.** Ludus implements its own CPU collision and rigid-body system.
+No third-party physics engine enters an engine target or the installed SDK.
+This replaces the earlier instruction to qualify an existing engine before
+budgeting a solver.
+
+| Reason | Evidence |
+| --- | --- |
+| The allocation gate has no stock candidate | Jolt, ODE and Box3D failed the runtime probes above. PhysX, Bullet, ReactPhysics3D, Nudge, Rapier and MuJoCo failed the source screen. Every remaining route needs a maintained fork or a storage proof over code Ludus does not own. |
+| Preflight needs control of the step order | Jolt reported contact exhaustion after it had moved bodies. An owned step counts contact storage before it changes any pose. See the [failure contracts](#world-phases-commands-and-failure-contracts). |
+| Simulation research needs an open solver | Researchers read, change and replace solvers, inspect state every tick and compare against a baseline. A private third-party engine offers none of that through the Ludus API. |
+| A Ludus-owned collision consumer already exists | Explore as Player sweeps a box against up to eight million static triangles using Ludus containers and no third-party code. |
+
+**What this commits Ludus to.** A rigid-body engine has a long robustness
+tail: general convex narrowphase, contact reduction, internal mesh edges,
+continuous collision, joints, islands and sleeping. This revision claims no
+parity with any shipping engine in features, robustness or speed. The scope is
+what the [delivery gates](#delivery-gates) name. Vehicles, ragdolls, character
+controllers, SIMD kernels and parallel islands wait for a concrete consumer and
+measurements.
+
+**Solver baseline.** The rigid solver is a warm-started sequential-impulse
+solver with soft constraints, substeps and a relaxation pass. Thanks to Erin
+Catto, [Solver2D](https://box2d.org/posts/2024/02/solver2d/), 2024, which
+compares eight solver variants and names this combination Soft Step. Ludus
+adopts the structure, not the code or the tuning. The contracts in this page
+already use its vocabulary: accumulated impulses, impulse bounds and break
+thresholds inferred from impulse. The post reports 2D results; the 3D behavior
+is a P2 measurement.
+
+**Comparison engines.** The pinned Jolt and Box3D probes remain useful as
+test-only comparisons on shared scenes, where their allocation behavior does
+not matter. A comparison target is optional and never installed, and no engine
+or SDK target depends on it. Agreement with another engine is evidence about
+behavior, not proof of correctness: use analytic answers and conservation
+checks first. Convert frames, mass properties, material mixing and tick
+settings to the Ludus contract before comparing. P2 decides from measured build
+cost whether a comparison runs in batch CI.
+
+**Reopening the selection.** Reconsider a third-party engine only when an
+upstream release propagates allocation failure through its world, shape, body
+and step paths, or when a consumer needs a capability whose owned cost is
+measured and exceeds maintaining a qualified fork. Record that evidence here
+before changing the decision.
 
 ## Module and ownership model
 
-Start with one `modules/physics/rigid/` target, proposed `PhysicsRigid`. Keep
-geometry kernels, world storage, queries and dynamics as private sections of
-that module until an independently shippable collision-only consumer warrants
-splitting targets. A collision-only world mode skips dynamics, but uses the
-same geometry and filters. Offline cooking lives in a separate tool target;
-it may depend on content/filesystem services. The gameplay adapter belongs to
-the consumer and maps `EntityId` to physics identity.
+Use two targets. `modules/physics/collision/`, proposed `PhysicsCollision`,
+owns shapes, the geometry store, colliders, filters, acceleration hierarchies
+and the ray, cast and overlap queries. `modules/physics/rigid/`, proposed
+`PhysicsRigid`, owns bodies, contacts, constraints, the solver and tick events,
+and depends on `PhysicsCollision`. A collision world is usable alone. A rigid
+world owns exactly one collision world and adds motion to it. The earlier
+single-target plan waited for an independently shippable collision-only
+consumer; the editor preview and the simulation siblings below are such
+consumers. Reuse FoundationMath's `Aabb3`, `Plane`, `Sphere` and `Ray3`
+vocabulary. Offline cooking lives in a separate tool target; it may depend on
+content/filesystem services. The gameplay adapter belongs to the consumer and
+maps `EntityId` to physics identity.
 
 ```mermaid
 flowchart TD
@@ -245,6 +309,8 @@ flowchart TD
     World --> Queries[Protected query views]
     Events --> Game
     Queries --> Game
+    Geometry --> Siblings[Simulation sibling modules]
+    Queries --> Siblings
     World --> Debug[Optional debug extraction]
     Debug --> Editor[Editor or renderer consumer]
 ```
@@ -263,7 +329,7 @@ Use the existing [bounded jobs](../decisions/0020-bounded-task-graphs.md),
 | Body | One physics world | Body frame, attached colliders, motion type; dynamic motion/inertia only when needed |
 | Constraint | One physics world | Endpoint handles, body-local frames, validated settings, state and diagnostic impulses |
 | Read view | World-controlled scoped reader | Epoch and protected access; prevents mutation/destruction until released |
-| Event/pose batch | World output until next publication, or caller-owned copy | Tick and epoch, value handles/bindings, no backend pointers |
+| Event/pose batch | World output until next publication, or caller-owned copy | Tick and epoch, value handles/bindings, no implementation pointers |
 
 Keep `ShapeHandle`, `ColliderHandle`, `BodyHandle` and `ConstraintHandle` distinct.
 World handles contain owner token, slot and generation, following the
@@ -274,11 +340,10 @@ saves or network packets. The geometry store has its own owner identity.
 A collider is the general collidable. It may be attached to a body, or have a
 standalone pose for static/query/sensor use. It never owns a second independent
 motion integrator. Attached collider pose is `body pose * collider local pose`.
-For a backend that supports one shape per body, map the attachment set to one
-immutable compound and retain a leaf-to-collider table. Static/query-only
-backend proxies must not create public dynamic bodies. Verify that per-leaf
-filtering, material and sensor modes can be represented; otherwise reject the
-combination with `Unsupported`, rather than leaking backend restrictions.
+The implementation stores attached colliders directly and keeps filtering,
+material and sensor modes per collider. Static and query-only colliders create
+no dynamic body record. A combination the current gate does not implement is
+rejected with `Unsupported`.
 
 Destroying a body removes its constraints and attached colliders in one accepted
 owner-phase operation. Detached colliders are a separate explicit operation,
@@ -286,7 +351,37 @@ never an accidental side effect. Close public access before reclaiming memory;
 join readers/jobs and retire geometry leases afterwards. Events may reference
 already destroyed incarnations: include copied bindings and an end reason;
 never require a pointer lookup to interpret an event. Reload reconstructs a
-world from versioned values, not module-owned vtables or raw backend state.
+world from versioned values, not module-owned vtables or raw solver state.
+
+### Simulation siblings and research solvers
+
+Other simulations are sibling modules under `modules/physics/`, as
+[PhysicsFluid](fluid-field.md) already is. A sibling owns its state, its solver
+and its failure contract. It may use `PhysicsCollision` for geometry and
+queries, together with the tick, debug extraction and recording value types
+that module exports. It does not reach into `PhysicsRigid` internals.
+
+| Rule | Reason |
+| --- | --- |
+| No virtual solver interface or runtime selector inside `PhysicsRigid` | One production rigid path stays readable, testable and replayable |
+| An alternative rigid solver is its own world type in its own module | It runs the shared scenes without weakening the baseline's contracts |
+| Coupling is an explicit pass owned by the game or a coupling module | Each side keeps its clock and failure behavior; impulses cross at a named boundary |
+| A sibling outside this repository consumes the installed SDK | Public `PhysicsCollision` headers and CMake targets are the supported seam, with the same Doxygen and SDK consumer checks as any public API |
+| A sibling inside this repository follows every engine standard | No exceptions, bounded capacities, explicit failure results, tests and documentation |
+
+Research use adds four acceptance needs, each assigned to a
+[delivery gate](#delivery-gates): stepping a world headless from an SDK
+consumer; exporting body state, contacts and diagnostics as plain values every
+tick; same-build replay of a recorded command stream; and shared scenes in the
+[Ludus scene source format](scene-source-format.md), so that two solvers run
+identical content.
+
+The first comparison solver candidate is position-based rigid-body dynamics.
+Thanks to Matthias Müller, Miles Macklin, Nuttapong Chentanez, Stefan Jeschke
+and Tae-Yong Kim, [Detailed Rigid Body Simulation with Extended Position Based Dynamics](https://doi.org/10.1111/cgf.14105),
+*Computer Graphics Forum* **39(8)**, 2020, pages 101-112, presented at SCA 2020.
+It is a lead for a sibling module, not adopted design. This revision did not
+reproduce its results.
 
 ## Shapes, cooking and mass properties
 
@@ -307,7 +402,7 @@ and scale-aware tolerances in errors, rather than accepting unusable geometry.
 
 Cooking validates finite coordinates, winding, degenerate triangles, indices,
 units and limits; builds local-space BVHs and stable feature/material mappings;
-and records source digest, cooker/backend format revision, settings and target
+and records source digest, cooker and format revision, settings and target
 precision. Encode fields explicitly with checked sizes/byte order. Do not save
 pointers, native struct bytes or runtime handles. A digest accelerates cache
 lookup, but the revisioned format defines compatibility.
@@ -345,8 +440,8 @@ mass sources. Fixed axes are explicit degrees of freedom, not enormous masses.
 
 These contracts adopt mass-frame clarity from Eric Lengyel's chapter 14,
 *Game Engine Gems 1*, and the transformation concerns in Gems 7; see the
-[verified review](physics-systems-gems-review.md). Backend mass calculation is
-acceptable only when it produces this declared contract. Shape replacement
+[verified review](physics-systems-gems-review.md). A comparison engine's mass
+properties are evidence only after conversion to this contract. Shape replacement
 invalidates affected contacts, recomputes/validates mass, and wakes dependents.
 Default replacement preserves body-frame pose and COM velocity values;
 it does not claim momentum conservation. An explicit momentum-preserving mode
@@ -359,9 +454,9 @@ World positions and query origins use `float64`; local geometry, orientations,
 velocities, inertia and solver data use `float32` initially. Compute narrowphase
 relative to a nearby pair/query origin before narrowing. Reject values outside
 the declared coordinate/size envelope; doubles alone do not make enormous shapes
-or tiny tolerances valid. Pin the backend's double-position configuration and
-conversion rules, then establish the supported envelope with tests. Do not
-promise arbitrary planet-scale physics.
+or tiny tolerances valid. Define the conversion from `float64` positions to
+pair-local `float32` values in one place, then establish the supported envelope
+with tests. Do not promise arbitrary planet-scale physics.
 
 One world has a fixed tick duration, initially 1/60 s as a tuning starting point.
 `Step` advances one tick, not a frame delta. The game owns accumulation, input
@@ -371,11 +466,12 @@ not silently discard ticks. Worlds can tick independently with explicit ownershi
 
 Substeps subdivide that tick. Hold continuous force commands across substeps;
 apply an impulse once. Changing substep count changes integration and solver
-behavior, so it is versioned replay configuration. Qualify what the selected
-backend's step count actually recomputes; do not equate collision passes with a
-separate solver-substep API. Start with backend defaults, then compare fixed
-substep/iteration settings at equal cost. Soft constraints plus smaller steps
-are a useful candidate, not an automatic proof that a 2D result transfers to 3D.
+behavior, so it is versioned replay configuration. State what each substep
+recomputes. The baseline detects collisions once per tick, then updates contact
+separation, integrates and solves in every substep. Do not equate collision
+passes with solver substeps. Compare fixed substep/iteration settings at equal
+cost. Soft constraints plus smaller steps are the selected starting point, not
+proof that a 2D result transfers to 3D.
 
 Keep previous/current body poses for presentation interpolation. Teleports,
 origin shifts and newly created bodies reset interpolation. Render frequency,
@@ -397,8 +493,15 @@ API. A later immutable query snapshot requires its own storage/lifetime budget.
 Tick-wide admission/preflight precedes `Commit`; it must reserve the resources
 needed by the staged changes and admitted simulation bounds before applying
 tick commands. Commit itself cannot discover an ordinary capacity failure after
-partial publication. Unexpected backend failure closes the world as described
+partial publication. Unexpected numerical failure closes the world as described
 below rather than leaving it apparently ready for another tick.
+
+The owned step orders detection before mutation. Broadphase and narrowphase
+read committed state and write only step scratch. The step then counts the
+contacts, rows and islands it found and compares them with the reserved maxima.
+Exhaustion at that point changes no pose or velocity. This is the behavior the
+Jolt probe could not provide. The world stays in its committed pre-step state,
+and the game can remove load or recreate the world with larger maxima.
 
 Commands carry target tick, producer ID and producer-local sequence. The game
 assigns deterministic producer IDs and merges by that key; thread arrival order
@@ -411,7 +514,7 @@ promise/future handle graph.
 `[[nodiscard]]`, `noexcept`, and preserve outputs and installed state on failure.
 A recorded command is an admission result, not proof its target remains valid
 at application time; publish a command result keyed by sequence. Preflight a
-structural batch, including backend resources and retirement records, before
+structural batch, including solver storage and retirement records, before
 publishing any change. Commands submitted for a closed/past tick fail explicitly.
 
 | Result class | Required behavior |
@@ -419,9 +522,10 @@ publishing any change. Commands submitted for a closed/past tick fail explicitly
 | Invalid input/handle/phase, unsupported capability | No mutation, output unchanged; include offending field/operation |
 | Admission or initialization capacity/allocation failure | No partial publication; preserve prior usable world and outputs |
 | `Step` preflight failure | Tick does not advance, commands remain pending, last snapshot remains usable |
+| Contact, row or island capacity exhausted after detection | Tick does not advance; no pose or velocity changes; commands already committed for the tick stay applied and are not applied again; accepted forces stay pending; last snapshot remains usable; report the exhausted table and its required count |
 | Successful step, complete outputs | Tick advances exactly once; accepted forces consumed; output epoch advances |
 | Successful step, incomplete events/debug output | Tick advances; report missing output explicitly; mandatory gameplay events follow the stricter rule below |
-| Backend numeric/contact-capacity or mandatory-output failure after advancement starts | Enter `Faulted`; state may be partially advanced, no success tick/event publication, normal queries/steps rejected |
+| Nonfinite result, exhausted CCD budget without a conservative stop, or mandatory-output failure after advancement starts | Enter `Faulted`; state may be partially advanced, no success tick/event publication, normal queries/steps rejected |
 
 A faulted world permits diagnostic extraction and explicit destruction/rebuild
 from a last known complete checkpoint. Do not call it rolled back or retry the
@@ -479,30 +583,33 @@ rolling/spinning friction and anisotropy are later capabilities. Default mixing
 is geometric-mean friction and maximum restitution, with named pair overrides.
 An authored zero-friction surface therefore stays slippery. Restitution applies
 only above a documented approach-speed threshold, so resting contacts do not
-bounce on every correction. The adapter must implement or reject this mixing,
-never inherit different silent backend defaults. Contact modification, if later
-needed for one-way surfaces, is a pure bounded policy over immutable data;
+bounce on every correction. The solver implements this mixing; a comparison
+engine is configured to match it before results are compared. Contact
+modification, if later needed for one-way surfaces, is a pure bounded policy over immutable data;
 it cannot allocate, mutate game state or run arbitrary gameplay code.
 
 ## Collision pipeline and contact robustness
 
-The production backend owns algorithms and data layout; the following are
-observable acceptance requirements and the reference pipeline for investigation.
+Ludus owns the algorithms and data layout. The following is the baseline
+pipeline with its observable acceptance requirements. Its order is versioned
+replay configuration.
 
 1. Commit admitted commands, retain collision coverage, update dirty proxies.
-2. Integrate external velocity effects; generate candidate pairs from swept/fat
-   AABBs and conservative layer filters. Exact integration order is backend-
-   versioned, not an extra wrapper integrator.
+2. Generate candidate pairs from fat AABBs and conservative layer filters, using
+   committed poses and velocities.
 3. Traverse cooked static geometry, run specialized primitive tests or the
-   backend's general convex algorithm, generate and reduce contact patches.
+   general convex algorithm, generate and reduce contact patches into scratch.
 4. Match persistent contact features, invalidate incompatible caches, build
-   dynamic islands and prepare contact/joint rows.
-5. Warm start, solve bounded iterations/substeps with friction and limits,
-   perform the qualified CCD path, update poses and evaluate sleep.
+   dynamic islands and prepare contact/joint rows. Check contact, row and island
+   counts against the reserved maxima here, before any body state changes.
+5. In each substep: integrate velocities, warm start, solve with friction and
+   limits, integrate poses and relax. Then apply restitution, run the selected
+   CCD path and evaluate sleep.
 6. Join jobs; validate completion; publish body changes, events and diagnostics.
 
-Use the backend's proven broadphase first. A dynamic AABB hierarchy for moving
-proxies plus cooked mesh/terrain BVHs is the design model. Sleeping bodies remain
+Start with a dynamic AABB hierarchy for moving proxies plus cooked mesh/terrain
+BVHs. The editor preview's triangle hierarchy is the starting point for the
+static side. Sleeping bodies remain
 queryable. Broadphase layers coarse-cull conservatively; final pair filtering
 checks both masks, enabled flags, same-body exclusion and joint pair suppression.
 No rendered mesh scan, all-pairs production loop or camera-driven physics culling.
@@ -510,21 +617,21 @@ An all-pairs test oracle verifies that filters/tree updates introduce no misses.
 Measure tree quality, proxy updates, candidates and accepted contacts before
 adding grids, sweep-and-prune, compressed nodes or alternative trees.
 
-For general convex tests, prefer one qualified support-mapping path plus measured
+For general convex tests, implement one support-mapping path plus measured
 specialized kernels. GJK distance with EPA penetration is one conventional option;
 MPR from XenoCollide is another overlap/penetration option. They are not automatic
 replacements for each other, and an overlap boolean is not a distance/manifold
 contract. Require bounded iterations, feature ties, zero directions, deep overlap,
-degeneracy and explicit numerical failure handling. The wrapper does not add
-its own GJK/EPA/MPR alongside a backend that already owns narrowphase.
+degeneracy and explicit numerical failure handling. Choose the general path at
+P1, where convex casts and overlaps first need it, and do not ship two.
 
 The Gems review strengthens persistence: key contacts by full collider
-incarnations, geometry revision, leaf IDs and feature identity, not backend
-pointer addresses. A hash collision never establishes equality. Reduction
+incarnations, geometry revision, leaf IDs and feature identity, not memory
+addresses. A hash collision never establishes equality. Reduction
 retains depth and useful support area within each compatible normal/material
 patch; do not average opposite normals, merge different gameplay surfaces or
 keep only the deepest point of a box on a floor. Point/patch capacities are
-backend-specific documented limits. Four points per ordinary convex patch is
+documented limits of the implementation. Four points per ordinary convex patch is
 a reasonable evaluation case, not a global four-contact cap for concave geometry.
 Record generated/reduced counts and cache hit/invalidation reasons.
 
@@ -543,18 +650,19 @@ constraints first. Add swing/twist and a constrained six-DOF joint for ragdolls
 only after that workload is requested. Endpoint B may explicitly be the world;
 other endpoints must be distinct compatible live bodies in the same world.
 Store anchors/axes in named body-local frames. Normalize/reject axes once on
-creation, and convert to COM-local backend frames explicitly.
+creation, and convert to COM-local solver frames explicitly.
 
 The Gems review adds a row-oriented diagnostic model. An internal scalar row
 has endpoint Jacobians, effective mass, target velocity/bias, softness, impulse
 bounds and accumulated impulse. Contact normal rows use nonnegative impulses;
 friction bounds depend on the current normal impulse; motor bounds derive from
-maximum force/torque times the substep duration. These are diagnostic semantics,
-not a public unrestricted row callback or an instruction to reimplement the
-backend's solver. Inspect residuals, saturation and anchor error per joint.
+maximum force/torque times the substep duration. These rows are the solver's
+internal model and its diagnostic output, not a public unrestricted row
+callback. Inspect residuals, saturation and anchor error per joint.
 
 Use frequency in Hz and dimensionless damping ratio for spring-like tuning,
-with explicit backend conversion and limits relative to substep duration. Keep
+with explicit conversion to solver coefficients and limits relative to substep
+duration. Keep
 hard limits distinct from motor targets. Motors cannot silently have infinite
 strength; zero force disables them. A break threshold is force/torque inferred
 from impulse over the actual solver duration, with an explicit aggregation rule:
@@ -565,19 +673,22 @@ sensitivity tests. Publish one break event and remove at the next commit barrier
 For joint orientation, use a documented relative quaternion convention and
 swing/twist reference axis, not independent Euler clamps. `q` and `-q` represent
 identical limits. Near 180-degree swing the twist decomposition is ambiguous;
-choose a stable backend convention, record it, and test continuity around the
+choose a stable convention, record it, and test continuity around the
 singularity. Limit visualization uses the same convention. More anatomical
 quaternion-volume limits remain a later feature; independent swing/twist limits
 do not reproduce every shoulder pose.
 
-Retain a warm-started sequential-impulse baseline with qualified stabilization.
-Compare soft constraints/substeps or backend-specific temporal solvers against
-that baseline at equal time and quality. Bound correction speeds and restitution;
+The baseline is the warm-started sequential-impulse solver with soft
+constraints, substeps and relaxation named in the
+[selection revision](#selection-revision). Compare substep and iteration
+settings at equal time and quality. Bound correction speeds and restitution;
 avoid fixing jitter by increasing all iteration counts. Mass ratios, redundant
-constraints and long chains are explicit stress cases. XPBD is an extension
-candidate for compliant/deformable systems, not a mandate to replace this rigid-
-body solver. Direct sparse solves, shock propagation and GPU solvers need a
-specific workload and demonstrated benefit.
+constraints and long chains are explicit stress cases. A position-based rigid
+solver is the first comparison candidate and lives in a
+[sibling module](#simulation-siblings-and-research-solvers); it does not replace
+this baseline without the adoption evidence the review requires. Direct sparse
+solves, shock propagation and GPU solvers need a specific workload and
+demonstrated benefit.
 
 ## Sleeping and continuous collision
 
@@ -586,13 +697,14 @@ Sleeping skips integration/solving, not queries or wake dependencies. Keep
 kinematic contacts and support changes able to wake the affected island.
 A sensor alone must not indefinitely prevent unrelated dynamic bodies sleeping.
 
-The Gems review adds motion-envelope tests to qualification: sample COM and two
+The Gems review adds motion-envelope tests to the sleep suite: sample COM and two
 noncollinear body-fixed offsets across a dwell interval, retaining their world
 AABBs. Compare position-envelope thresholds in meters and orientation motion
 with a declared offset length. Use size-aware offsets with bounded limits;
 reset on wake, geometry change or envelope escape. This tolerates small jitter
-while detecting rotation about COM. Dwell is seconds, not frames. Compare with
-the backend's existing sleep algorithm before changing it; retain one algorithm.
+while detecting rotation about COM. Dwell is seconds, not frames. Start with a
+velocity-threshold island rule, compare it with this envelope policy, and
+retain one algorithm.
 Large full revolutions between samples can alias the envelope, so also veto
 sleep for high angular velocity, driven motors or unresolved motion. This is
 Ludus's additional guard, not a guarantee supplied by the historical chapter.
@@ -600,8 +712,8 @@ Ludus's additional guard, not a guarantee supplied by the historical chapter.
 Discrete collision is the default. Opt in fast/thin gameplay objects to a
 qualified sweep/TOI CCD mode; use swept query projectiles when gameplay only
 needs hit events. Bound passes and report exhaustion. At an exhausted TOI budget,
-stop remaining risky motion conservatively and record it only if the backend
-can implement that contract; otherwise fault the step. Never silently switch to
+stop remaining risky motion conservatively and record it. A mode that cannot
+stop conservatively faults the step. Never silently switch to
 discrete motion and call it continuous collision.
 
 Speculative contacts can address some rotational motion but may create ghost
@@ -627,9 +739,9 @@ through one gameplay collision matrix. Filters are immutable within a step;
 changed filters generate reasoned exits/enters at the next boundary.
 
 Sensor pairs include static and kinematic targets when enabled, even though those
-pairs produce no solid response. Some backends do not report that matrix through
-ordinary contacts: qualification must supply a bounded overlap-query pass or
-reject the capability. Exact narrowphase overlap determines occupancy; broadphase
+pairs produce no solid response. Solid contact generation skips those pairs, so
+sensors use a bounded overlap pass over the same narrowphase. Exact narrowphase
+overlap determines occupancy; broadphase
 AABB overlap is only a candidate. Aggregate leaf overlaps by collider pair with
 counts, so changing compound leaves does not emit false exit/enter sequences.
 
@@ -716,12 +828,12 @@ fallibly; active ticks/queries do not grow or fall back to heap allocation.
 Never confuse no allocation with bounded worst-case pair work: dense overlapping
 objects can still create quadratic candidates. Admission limits and stress tests
 must cover that case. Record capacity high-water marks and every incomplete/fault
-reason. Required bounds are a qualification task, not measurements in this design.
+reason. Required bounds are established at each gate, not measured in this design.
 
 Keep cold descriptors and hot motion/contact arrays separate. The public debug
-snapshot is readable AoS; backend-private SoA/SIMD is acceptable when it wins
-measured workloads. First use one owner and a serial job adapter for small scenes;
-add the backend job bridge through FoundationThreading after serial correctness.
+snapshot is readable AoS; private SoA/SIMD is acceptable when it wins
+measured workloads. First use one owner and serial execution for small scenes;
+add FoundationThreading jobs after serial correctness.
 No second worker pool or blocking wait from one of its exhausted workers.
 Parallel islands and collision tasks require deterministic insertion/merge rules;
 a giant connected pile needs separate scaling evidence. SIMD flags and reduction
@@ -738,13 +850,13 @@ pair/island, disable presentation, and record/replay a failing tick are required
 investigation tools. Logging is rate limited; per-contact logs are not the
 primary debugger.
 
-Record world settings, engine/backend build fingerprint, cooked content digests,
-ordered commands and tick hashes. Checkpoints for exact same-build continuation
-must include backend caches, sleep and constraint state with backend versioning;
+Record world settings, engine build fingerprint, solver revision, cooked content
+digests, ordered commands and tick hashes. Checkpoints for exact same-build continuation
+must include contact and solver caches, sleep and constraint state with a format revision;
 transforms/velocities alone are a portable rebuild, not exact rollback. Persistent
 save files use authored IDs and reconstructed bindings. Determinism is initially
 same-build/same-configuration replay proved by tests. Cross-platform bitwise
-lockstep, rollback across backend upgrades, and deterministic execution across
+lockstep, rollback across solver revisions, and deterministic execution across
 worker counts are separate qualified claims. Network snapshots/correction can
 be added without claiming lockstep. Remap process-local world handles to stable
 replay creation ordinals when hashing; compare named fields, not padding bytes.
@@ -757,8 +869,9 @@ replay creation ordinals when hashing; compare named fields, not padding bytes.
 | Sleep | Jittering rest, slow translation, pure rotation about each local axis, support removal, moving platform, motor/force wake, full-turn alias guard |
 | CCD/sensors | Thin wall and trigger, dynamic-dynamic motion, spinning thin body, start overlap, exhausted passes, leaf aggregation, destruction/filter exits, event overflow |
 | Ownership/failure | Stale/cross-world handles, nonwrapping retirement, command rejection, readers versus destruction, allocation injection, contact/row/scratch exhaustion, faulted recovery |
-| Replay/concurrency | Same input at differing presentation rates, checkpoint continuation, ordered producers, one/many-worker qualification, reload without backend pointers |
+| Replay/concurrency | Same input at differing presentation rates, checkpoint continuation, ordered producers, one/many-worker qualification, reload without retained pointers |
 | Terrain/SDK/platform | Physical coverage before teleport, retained revisions, tiled adjacency, native and Emscripten capability matrix, installed public SDK consumer |
+| Research use | Headless stepping from an SDK consumer, plain-value state and contact export every tick, shared scene source files, a sibling module built against the installed SDK |
 
 Benchmarks include sparse broadphase, mostly sleeping static scenery, a dense
 awake pile, long constrained chains, mixed streaming terrain, and incoherent ray/
@@ -774,16 +887,16 @@ quality, including the serial path and debug-capture overhead.
 
 | Gate | Reviewable output and acceptance |
 | --- | --- |
-| P0: backend feasibility | Exact pinned revision; native/web and API capability matrix; allocation/failure audit; license/SDK/job/replay evidence; reject the candidate if hard rules cannot be met |
-| P1: query world | Shapes, identities, immutable cooking, colliders, filters and protected queries; brute-force correctness oracle, failure contracts and query overlays |
-| P2: rigid motion | Static/kinematic/dynamic integration, mass frames, forces/materials, contacts and selective CCD; stack/friction/spin/replay scenes and zero-growth active path |
+| P0: backend feasibility | Closed without a qualified engine. Stock Jolt 5.6.0, ODE 0.16.6 and Box3D failed the allocation gate on macOS arm64, and six further engines failed the source screen. The outcome is the [selection revision](#selection-revision). The native/web matrix, SDK and replay evidence were not collected and move to the gates below |
+| P1: collision and query world | `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; Explore as Player moves onto these queries with **Static Collider** as authored input; installed SDK consumer on native and Emscripten |
+| P2: rigid motion | `PhysicsRigid`: static/kinematic/dynamic integration, mass frames, forces/materials, convex and mesh contacts, the soft-constraint substep solver and selective CCD; stack/friction/spin/replay scenes; zero-growth active path; contact capacity rejected before any pose changes; headless stepping and plain-value state export; comparison with a pinned test-only engine on shared scenes |
 | P3: sensors and joints | Complete occupancy/events, distance/ball/hinge/slider, motor/break/sleep diagnostics; lifecycle, capacity and singularity regressions |
-| P4: engine integration | GameWorld binding, terrain revision/coverage installation, content cooking, inspector/recording, SDK and hot-reload boundaries |
-| P5: workload qualification | Representative performance and quality budgets, job/SIMD changes with evidence, supported target matrix and production failure behavior |
+| P4: engine integration | GameWorld binding, terrain revision/coverage installation, content cooking, inspector/recording, SDK and hot-reload boundaries; one sibling simulation built against the installed SDK |
+| P5: workload qualification | Representative performance and quality budgets, job/SIMD changes with evidence, supported target matrix and production failure behavior; a comparison solver sibling only if a workload exposes a baseline limit |
 
-P0 must pass before treating the candidate as the implementation. P1-P3 are a
-feature rollout of that single qualified implementation, not instructions to
-write replacement backend kernels. Character controllers, ragdolls, vehicles,
+P1-P3 implement the Ludus-owned kernels in dependency order. Each gate ships a
+small, readable, serial implementation with its tests before any optimization.
+Character controllers, ragdolls, vehicles,
 fluids and advanced solvers follow only when a concrete consumer needs them.
 Every implementation gate includes public Doxygen, canonical usage docs,
 warning-clean pinned builds/tests, format/tidy, ASan/UBSan and SDK consumption;
@@ -803,8 +916,8 @@ Thanks to Miles Macklin, Kier Storey, Michelle Lu, Pierre Terdiman,
 Nuttapong Chentanez, Stefan Jeschke and Matthias Müller,
 [Small Steps in Physics Simulation](https://matthias-research.github.io/pages/publications/smallsteps.pdf),
 *SCA 2019*, for evidence supporting evaluation of smaller substeps in compliant
-constraint simulation. It motivates an experiment, not a proof of our backend's
-3D collision cost or a prescribed substep count. Thanks to Erin Catto,
+constraint simulation. It motivates an experiment, not a proof of our
+implementation's 3D collision cost or a prescribed substep count. Thanks to Erin Catto,
 [Iterative Dynamics with Temporal Coherence](https://box2d.org/files/ErinCatto_IterativeDynamics_GDC2005.pdf),
 *GDC 2005*, for contact caching and accumulated impulses. Thanks to the Box2D
 maintainers, [Simulation](https://box2d.org/documentation/md_simulation.html),
@@ -814,9 +927,10 @@ stronger owner/generation, capacity, and fault contracts remain our decisions.
 The PhysX team's [Advanced Collision Detection](https://nvidia-omniverse.github.io/PhysX/physx/5.5.1/docs/AdvancedCollisionDetection.html)
 distinguishes swept and speculative CCD. This informs our capability tests;
 it does not make one implementation's CCD modes available in another.
-Recheck current upstream source at the pinned candidate revision during P0.
+Recheck upstream source at the pinned revision before using an engine as a
+test-only comparison.
 
 The [conference, journal and reading plan](physics-systems-gems-review.md#conferences-journals-and-reading-plan)
 maps production and research sources to these gates, with initial Jolt,
 multiphysics and AVBD readings, experiments and adoption criteria. It extends the
-research queue without changing the single qualified CPU backend decision.
+research queue without changing the single owned CPU baseline decision.

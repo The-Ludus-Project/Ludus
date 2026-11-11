@@ -329,8 +329,8 @@ Status RenderGraphAtmosphereProgram::pollDependencies() noexcept
             rhi::RasterPipelineDescription description{mVertex,
                                                        pass.Shader,
                                                        pass.Layout,
-                                                       streams.AsSpan(),
-                                                       attributes.AsSpan()};
+                                                       {streams.GetData(), streams.GetSize()},
+                                                       {attributes.GetData(), attributes.GetSize()}};
             const Stage stage = static_cast<Stage>(index);
             description.Target = stage == Stage::Display || stage == Stage::Surface ? rhi::RasterTarget::Rgba8Unorm
                                                                                     : rhi::RasterTarget::Rgba16Float;
@@ -597,7 +597,7 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
     {
         status = rhi::CreateBindingSet(device,
                                        inoutProgram.mPasses[static_cast<usize>(Stage::Sky)].Layout,
-                                       resources.AsSpan(),
+                                       {resources.GetData(), resources.GetSize()},
                                        mSkyBindings);
         if (IsAccepted(status) == false)
         {
@@ -617,7 +617,7 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
              resources[2]}};
         status = rhi::CreateBindingSet(device,
                                        inoutProgram.mPasses[static_cast<usize>(Stage::Display)].Layout,
-                                       displayResources.AsSpan(),
+                                       {displayResources.GetData(), displayResources.GetSize()},
                                        mDisplayBindings);
         if (IsAccepted(status) == false)
         {

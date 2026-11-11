@@ -1,11 +1,11 @@
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <initializer_list>
-#include <span>
 #include <string_view>
 
 #include <catch2/catch_test_macros.hpp>
@@ -195,7 +195,7 @@ void DestroyPipeline(usize) noexcept
 {
     ++Released;
 }
-void UpdateUniform(usize, std::span<const uint8>) noexcept {}
+void UpdateUniform(usize, ludus::foundation::BorrowedView<const uint8>) noexcept {}
 FrameInfo GetFrameInfo() noexcept
 {
     return { .Width = 96, .Height = 64 };
@@ -457,7 +457,8 @@ TEST_CASE("Public uniforms admit the portable 16 KiB limit and reject larger pay
     CHECK(CreateUniform(16400, uniform) == ResourceStatus::InvalidDescription);
     REQUIRE(CreateUniform(16384, uniform) == ResourceStatus::Ready);
     const ludus::foundation::uint8 bytes[16384]{};
-    CHECK(UpdateUniform(uniform, std::span(bytes).first(16368)) == ResourceStatus::InvalidDescription);
+    CHECK(UpdateUniform(uniform, {nullptr, sizeof(bytes)}) == ResourceStatus::InvalidDescription);
+    CHECK(UpdateUniform(uniform, {bytes, 16368}) == ResourceStatus::InvalidDescription);
     CHECK(UpdateUniform(uniform, bytes) == ResourceStatus::Ready);
     CHECK(Destroy(uniform) == ResourceStatus::Ready);
     Shutdown();

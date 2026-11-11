@@ -48,6 +48,7 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
@@ -187,8 +188,8 @@ core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation&
 void CheckSameStage(const rhi::RasterShaderDescription& runtime, const rhi::RasterShaderDescription& compiled)
 {
     CHECK(runtime.Artifact.Stage == compiled.Artifact.Stage);
-    REQUIRE(runtime.Artifact.Spirv.size() == compiled.Artifact.Spirv.size());
-    for (usize word = 0; word < compiled.Artifact.Spirv.size(); ++word)
+    REQUIRE(runtime.Artifact.Spirv.GetSize() == compiled.Artifact.Spirv.GetSize());
+    for (usize word = 0; word < compiled.Artifact.Spirv.GetSize(); ++word)
     {
         REQUIRE(runtime.Artifact.Spirv[word] == compiled.Artifact.Spirv[word]);
     }
@@ -199,14 +200,14 @@ void CheckSameStage(const rhi::RasterShaderDescription& runtime, const rhi::Rast
     CHECK(runtime.Artifact.WgslEntry == compiled.Artifact.WgslEntry);
     CHECK(runtime.Artifact.GlslEs == compiled.Artifact.GlslEs);
     CHECK(runtime.Artifact.GlslEsEntry == compiled.Artifact.GlslEsEntry);
-    REQUIRE(runtime.Inputs.size() == compiled.Inputs.size());
-    for (usize input = 0; input < compiled.Inputs.size(); ++input)
+    REQUIRE(runtime.Inputs.GetSize() == compiled.Inputs.GetSize());
+    for (usize input = 0; input < compiled.Inputs.GetSize(); ++input)
     {
         CHECK(runtime.Inputs[input].Location == compiled.Inputs[input].Location);
         CHECK(runtime.Inputs[input].Format == compiled.Inputs[input].Format);
     }
-    REQUIRE(runtime.Bindings.size() == compiled.Bindings.size());
-    for (usize binding = 0; binding < compiled.Bindings.size(); ++binding)
+    REQUIRE(runtime.Bindings.GetSize() == compiled.Bindings.GetSize());
+    for (usize binding = 0; binding < compiled.Bindings.GetSize(); ++binding)
     {
         CHECK(runtime.Bindings[binding].Binding == compiled.Bindings[binding].Binding);
         CHECK(runtime.Bindings[binding].Kind == compiled.Bindings[binding].Kind);
@@ -8852,10 +8853,11 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
     // The package rebuilds the reflected binding list of the generated header: the table slot, then the failure
     // summary last.
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
-    const usize bindingCount = decoded.RayCompute.Bindings.size();
+    const usize bindingCount = decoded.RayCompute.Bindings.GetSize();
     REQUIRE(bindingCount >= 2);
     CHECK(decoded.RayCompute.Bindings[bindingCount - 2].Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
-    CHECK(decoded.RayCompute.Bindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING);
+    CHECK(decoded.RayCompute.Bindings[decoded.RayCompute.Bindings.GetSize() - 1].Binding ==
+          LUDUS_GRAPH_FAILURE_BINDING);
     renderer::RenderGraphPlan plan = package->GetPlan();
     constexpr usize PASS_COUNT = 1;
     REQUIRE(plan.Passes.GetSize() == PASS_COUNT);

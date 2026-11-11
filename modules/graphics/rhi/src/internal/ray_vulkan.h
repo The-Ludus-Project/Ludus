@@ -1,5 +1,6 @@
 #pragma once
 
+#include "resources.h"
 #include <ludus/foundation/containers/static_array.hpp>
 // Included only by rhi_vulkan.cpp, after the shared VMA allocator implementation.
 // Thanks to Khronos, "Ray Tracing" (Vulkan Guide) and "Synchronization Examples"
@@ -342,8 +343,9 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     {
         return internal::StorageFailure();
     }
-    if (description.Spirv.size() < 5 || description.Spirv[0] != 0x07230203 || description.SpirvEntry.empty() ||
-        description.SpirvEntry.size() >= 64)
+    constexpr usize ENTRY_CAPACITY = 64;
+    if (description.Spirv.GetSize() < internal::SPIRV_HEADER_WORDS || description.Spirv[0] != internal::SPIRV_MAGIC ||
+        description.SpirvEntry.empty() || description.SpirvEntry.size() >= ENTRY_CAPACITY)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -351,8 +353,8 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     VkShaderModuleCreateInfo shader
     {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = description.Spirv.size_bytes(),
-        .pCode = description.Spirv.data(),
+        .codeSize = (description.Spirv.GetSize() * sizeof(ludus::foundation::uint32)),
+        .pCode = description.Spirv.GetDataOrNull(),
     };
     auto result = vkCreateShaderModule(gDevice, &shader, nullptr, &program.Shader);
     VkDescriptorSetLayoutBinding bindings[5]{};
@@ -388,7 +390,7 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     {
         result = vkCreatePipelineLayout(gDevice, &layout, nullptr, &program.Layout);
     }
-    char entry[64]{};
+    char entry[ENTRY_CAPACITY]{};
     std::memcpy(entry, description.SpirvEntry.data(), description.SpirvEntry.size());
     VkComputePipelineCreateInfo pipeline
     {

@@ -205,6 +205,29 @@ TEST_CASE("Scene source compiles closure programs into bounded register code", "
     }
 }
 
+TEST_CASE("Scene source shares equal inline constants between lobes", "[scene-source][program]")
+{
+    namespace format = ludus::content::scene_format;
+    std::string lobes;
+    for (usize i = 0; i < format::MAX_MATERIAL_PROGRAM_LOBES; ++i)
+    {
+        lobes += i == 0 ? "" : ",";
+        lobes += R"({"operation":"conductor","weight":0.125,"roughness":0.5,"eta":[1,1,1],"k":[1,1,1]})";
+    }
+    const std::string text =
+        ReplaceInValid(R"("name": "Wall", "model": "diffuse")",
+                       R"("name":"Wall","model":"program","program":{"version":1,"lobes":[)" + lobes + "]}");
+    SceneSource scene;
+    SceneSourceError error;
+    const SceneSourceStatus status = ParseSceneSource(text, scene, error);
+    INFO(error.Message.View());
+    REQUIRE(status == SceneSourceStatus::Success);
+    // Sixteen inline operands become two values: one weight and one roughness register.
+    CHECK(scene.Materials[0].Program.InstructionCount == 2);
+    CHECK(scene.Materials[0].Program.ConstantCount == 2);
+    CHECK(scene.Materials[0].Program.LobeCount == format::MAX_MATERIAL_PROGRAM_LOBES);
+}
+
 TEST_CASE("Scene source rejects closure programs it cannot compile", "[scene-source][program]")
 {
     constexpr std::string_view MATERIAL = R"("name": "Wall", "model": "diffuse")";

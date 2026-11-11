@@ -1,10 +1,10 @@
 #include "internal/renderer.h"
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/render.h>
 
 #include "smoke.h"
 
-#include <span>
 #include <type_traits>
 
 // Backend-agnostic browser renderer. It drives only the public fullscreen
@@ -151,7 +151,8 @@ rhi::FrameStatus Render(const platform::browser::WindowState& window, const Simu
         .Padding = 0,
         .Tint = {1.0F, 0.65F, 0.15F, 1.0F}, // orange marker (QA detects this)
     };
-    const auto bytes = std::span<const uint8>(reinterpret_cast<const uint8*>(&uniforms), sizeof(uniforms));
+    const ludus::foundation::BorrowedView<const uint8> bytes =
+        ludus::foundation::BorrowedView<const uint8>(reinterpret_cast<const uint8*>(&uniforms), sizeof(uniforms));
     if (rhi::UpdateUniform(gUniform, bytes) != rhi::ResourceStatus::Ready)
     {
         return rhi::FrameStatus::Failed;

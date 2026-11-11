@@ -42,6 +42,10 @@ recognizes Clang 19 and later header trace events. Thanks to
 Each analyzer version has its own source/build directory, so an older cached
 binary cannot silently satisfy a newer pin. Existing profiling budgets remain
 unchanged.
+The repository-root `ClangBuildAnalyzer.ini` sets `[counts] header = 50`, so
+the per-header budget sees the top 50 expensive headers instead of the default
+ten, including test fixtures that rank below widely included engine headers.
+`profile-build` runs the analyzer from that directory so it reads the ini.
 Bootstrap also adds the explicit `<cstdlib>`, `<type_traits>` and `<exception>`
 includes required by its bundled enkiTS and LLVM demangler with libc++ 23.
 These marked include edits preserve upstream bodies and licenses, accept an
@@ -117,9 +121,10 @@ Limitations:
   reference headers' cost. Their paths then disappear from the report or the
   factor shifts, so re-baseline `runner_speed_reference` from a CI profile and
   recalibrate the aggregate in the same change.
-- ClangBuildAnalyzer lists only its ten most expensive headers, and the cheaper
-  reference headers can drop out as project headers grow (run 41110487152 lost
-  `<string_view>`). The factor uses the reference headers listed, comparing the
+- ClangBuildAnalyzer lists only its 50 most expensive headers with the repository
+  configuration, and cheaper reference headers can still drop out as project
+  headers grow (run 41110487152 lost `<string_view>` with the former top-ten
+  report). The factor uses the reference headers listed, comparing the
   same headers' baseline averages. With fewer than `minimum_headers` (two) listed,
   for example on a local libc++ host, or a factor outside the configured bounds,
   the gate falls back to raw timings and prints why.
@@ -584,7 +589,7 @@ It counts compilations instead of timing them, so its result does not depend on
 host load or runner speed. `config/build_graph.json` lists the exceptions:
 
 - A **variant** compiles differently for each target: fault-injection backends,
-  the renderer tests' reference backend and `-ffp-contract=off`, the editor's
+  the renderer test oracles' floating-point flags, the editor's
   configuration tests without the GPU preview. Each rule states its reason.
 - A **baseline** entry is identical duplication not yet migrated. The list may
   only shrink: once a tree containing every target a rule names compiles each of
@@ -612,6 +617,16 @@ rejects the former executable-only dependency, and checks the native branch
 without a Qt package.
 The generated LTC table, 213,000 lines of constant data, is likewise compiled
 once and linked into the renderer and both renderer test executables.
+
+Renderer tests link the production renderer and RHI archives. The renderer's
+CPU reference paths and test oracles use `-ffp-contract=off`. Deterministic tests
+supply reference backend objects directly at link time, satisfying the RHI
+backend symbols before native device objects are pulled from the archive.
+The reference raster and unsupported ray implementations each compile once.
+Storage-allocation failure injection is compiled into the shared RHI registry
+only when tests are enabled, with its declaration kept in a private header.
+`config/build_graph.json` grants no renderer or RHI production-source variants.
+
 The assertion runtime also shares its identical objects between FoundationBase
 and the isolated fake-platform death-test executable. Each final binary still
 selects its own platform implementation and owns its own assertion state; the

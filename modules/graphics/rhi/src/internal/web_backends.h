@@ -10,10 +10,9 @@
 #include "raster.h"
 #include "resources.h"
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/graphics/rhi/rhi.h>
-
-#include <span>
 
 #define LUDUS_RHI_DECLARE_WEB_BACKEND(ns)                                                                              \
     namespace ludus::graphics::rhi::ns                                                                                 \
@@ -36,7 +35,8 @@
     void DestroyShader(ludus::foundation::usize) noexcept;                                                             \
     void DestroyUniform(ludus::foundation::usize) noexcept;                                                            \
     void DestroyPipeline(ludus::foundation::usize) noexcept;                                                           \
-    void UpdateUniform(ludus::foundation::usize, std::span<const ludus::foundation::uint8>) noexcept;                  \
+    void UpdateUniform(ludus::foundation::usize,                                                                       \
+                       ludus::foundation::BorrowedView<const ludus::foundation::uint8>) noexcept;                      \
     ResourceStatus Draw(ludus::foundation::usize) noexcept;                                                            \
     }
 
@@ -79,7 +79,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket&) noexcept;
 void ComputeBufferBarrier(foundation::usize, GraphAccessMode) noexcept;
 RasterStatus RasterCreateBuffer(foundation::usize,
                                 const BufferDescription&,
-                                std::span<const foundation::uint8>,
+                                ludus::foundation::BorrowedView<const foundation::uint8>,
                                 foundation::uint32) noexcept;
 RasterStatus
 RasterCreateTexture(foundation::usize, const TextureDescription&, const TextureUpload&, foundation::uint32) noexcept;
@@ -150,7 +150,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket&) noexcept;
 void ComputeBufferBarrier(foundation::usize, GraphAccessMode) noexcept;
 RasterStatus RasterCreateBuffer(foundation::usize,
                                 const BufferDescription&,
-                                std::span<const foundation::uint8>,
+                                ludus::foundation::BorrowedView<const foundation::uint8>,
                                 foundation::uint32) noexcept;
 RasterStatus
 RasterCreateTexture(foundation::usize, const TextureDescription&, const TextureUpload&, foundation::uint32) noexcept;

@@ -1,4 +1,5 @@
 #include "l6_scene.h"
+#include "material_program_fixtures.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_lit.h"
@@ -111,7 +112,11 @@ enum class SphereSurfaces : uint8
     Coated,
     /// A smooth glass sphere (index 1.5) and a thin masked pane (index 1.33) in front of the wall.
     Glass,
+    /// A closure program of diffuse, conductor and cosine-power lobes whose weights read the textured
+    /// base colour and metallic inputs, on every reflector including the checker-textured quad.
+    Program,
 };
+
 /// Every SPHERE_INWARD_ROW_PERIOD-th sphere ring of a Mixed layout points its normals inwards.
 constexpr uint32 SPHERE_INWARD_ROW_PERIOD = 8;
 // A tessellated glossy metal sphere in front of a diffuse wall and two emitters of
@@ -245,6 +250,15 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
             material.Scattering.K = {{0, 4, 12}};
             material.Scattering.CoatingThickness = 1;
             material.Metallic = 0;
+            material.Roughness = i == 0 ? 0.35F : 0.7F;
+        }
+        if (surfaces == SphereSurfaces::Program && i != 2)
+        {
+            namespace format = ludus::content::scene_format;
+            material.Scattering = {};
+            material.Scattering.Model = format::MaterialModel::Program;
+            material.Program = ludus::renderer_tests::MakeParityProgram();
+            material.Metallic = i == 0 ? 0.8F : 0.2F;
             material.Roughness = i == 0 ? 0.35F : 0.7F;
         }
         if (surfaces == SphereSurfaces::Glass && (i == 0 || i == 3))
@@ -1851,7 +1865,8 @@ TEST_CASE("Typed reflection and transmission match between CPU and GPU reference
                                              SphereSurfaces::Mix,
                                              SphereSurfaces::ProjectBrdf,
                                              SphereSurfaces::Coated,
-                                             SphereSurfaces::Glass);
+                                             SphereSurfaces::Glass,
+                                             SphereSurfaces::Program);
     CAPTURE(surfaces);
     rhi::Shutdown();
     struct Guard final

@@ -13,6 +13,7 @@
 #include "mesh_silhouette.h"
 #include "selection_outline_request.h"
 #include "viewport_object_overlay.h"
+#include "world_probe_volume.h"
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -185,8 +186,13 @@ Q_SIGNALS:
     void FrameRequested(const QString& id);
     /// Original stable ID and absolute placement arrays (metres, Euler degrees, positive scale).
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
+    /// A counts-layout volume's spacing, in metres, after a centre-handle drag.
     void ProbeSpacingCommitted(const QString& id, foundation::float64 spacingMetres);
+    /// A counts-layout volume's new probe count on one axis after a face drag.
     void ProbeFaceCommitted(const QString& id, foundation::int32 axis, foundation::uint32 count, bool isMinimumFace);
+    /// A volume-layout box's new edge length, in metres, on one axis after a face drag.
+    void
+    ProbeSizeCommitted(const QString& id, foundation::int32 axis, foundation::float64 sizeMetres, bool isMinimumFace);
     void TerrainExtentCommitted(const QString& key, foundation::float64 extent);
     void TerrainHeightPicked(foundation::float32 height);
     /// The stroke being dragged gained a point: the local XZ pairs since the press, in order.
@@ -234,18 +240,27 @@ private:
                           ViewportObjectOverlay& inoutOverlay) const;
     void appendPlayerOutline(ViewportObjectOverlay& inoutOverlay) const;
     void appendProbeVolume(ViewportObjectOverlay& inoutOverlay) const;
-    [[nodiscard]] bool projectProbeFace(const graphics::renderer::GiProbeGrid& grid,
+    /// Whether the selected volume lays its probes out from the Transform scale.
+    [[nodiscard]] bool isProbeVolumeLayout() const noexcept;
+    /// The volume box and grid to draw: the authored ones, or the candidate of the drag in progress.
+    void getShownProbeVolume(foundation::math::Aabb3& outBoxWorld, graphics::renderer::GiProbeGrid& outGrid) const;
+    [[nodiscard]] bool projectProbeFace(const foundation::math::Aabb3& boxWorld,
+                                        foundation::float32 spacing,
                                         foundation::int32 face,
                                         QPointF& outPositionPixel) const;
     [[nodiscard]] bool canEditProbeVolume() const noexcept;
-    [[nodiscard]] bool projectProbeScaleHandle(const graphics::renderer::GiProbeGrid& grid,
+    [[nodiscard]] bool projectProbeScaleHandle(const foundation::math::Aabb3& boxWorld,
                                                QPointF& outPositionPixel) const;
     [[nodiscard]] HandleTarget pickProbeHandle(QPointF positionPixel) const;
     [[nodiscard]] bool beginProbeFaceDrag(QPointF positionPixel);
     void dragProbeFace(QPointF positionPixel);
     void dragProbeSpacing(QPointF positionPixel, QPointF deltaPixel, bool shouldSnap);
+    /// The selected volume, including a disabled one; zero counts when the selection has none.
+    WorldGiProbeVolume mProbeVolume{};
     graphics::renderer::GiProbeGrid mProbeGrid{};
     graphics::renderer::GiProbeGrid mProbeDragGrid{};
+    /// The box a volume-layout face drag previews.
+    foundation::math::Aabb3 mProbeDragBoxWorld{};
     QRectF mProbeDragFramePixel;
     bool mIsStandaloneProbeVolume = false;
     /// Make mSilhouette the adjacency of scene mesh meshIndex, rebuilding once per scene identity or mesh change.

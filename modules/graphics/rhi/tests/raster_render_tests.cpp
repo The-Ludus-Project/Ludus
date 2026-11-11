@@ -3,6 +3,7 @@
 #include <cstring>
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/foundation/time/timers.hpp>
@@ -19,8 +20,6 @@
 #include "ordered_frame.h"
 #include "raster.h"
 
-#include <span>
-
 #include <catch2/catch_test_macros.hpp>
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
@@ -29,7 +28,7 @@ namespace timing = ludus::foundation::time;
 namespace
 {
 template <typename T, usize N>
-std::span<const uint8> RasterBytes(const T (&data)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> RasterBytes(const T (&data)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(data), sizeof(data)};
 }

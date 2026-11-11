@@ -51,8 +51,8 @@ core::UniquePtr<renderer::RenderGraphPackage> LoadSurfacePackage()
 void CheckSameStage(const rhi::RasterShaderDescription& runtime, const rhi::RasterShaderDescription& compiled)
 {
     CHECK(runtime.Artifact.Stage == compiled.Artifact.Stage);
-    REQUIRE(runtime.Artifact.Spirv.size() == compiled.Artifact.Spirv.size());
-    for (usize word = 0; word < compiled.Artifact.Spirv.size(); ++word)
+    REQUIRE(runtime.Artifact.Spirv.GetSize() == compiled.Artifact.Spirv.GetSize());
+    for (usize word = 0; word < compiled.Artifact.Spirv.GetSize(); ++word)
     {
         REQUIRE(runtime.Artifact.Spirv[word] == compiled.Artifact.Spirv[word]);
     }
@@ -63,20 +63,20 @@ void CheckSameStage(const rhi::RasterShaderDescription& runtime, const rhi::Rast
     CHECK(runtime.Artifact.WgslEntry == compiled.Artifact.WgslEntry);
     CHECK(runtime.Artifact.GlslEs == compiled.Artifact.GlslEs);
     CHECK(runtime.Artifact.GlslEsEntry == compiled.Artifact.GlslEsEntry);
-    REQUIRE(runtime.Artifact.Dxil.size() == compiled.Artifact.Dxil.size());
-    for (usize byte = 0; byte < compiled.Artifact.Dxil.size(); ++byte)
+    REQUIRE(runtime.Artifact.Dxil.GetSize() == compiled.Artifact.Dxil.GetSize());
+    for (usize byte = 0; byte < compiled.Artifact.Dxil.GetSize(); ++byte)
     {
         REQUIRE(runtime.Artifact.Dxil[byte] == compiled.Artifact.Dxil[byte]);
     }
     CHECK(runtime.Artifact.DxilEntry == compiled.Artifact.DxilEntry);
-    REQUIRE(runtime.Inputs.size() == compiled.Inputs.size());
-    for (usize input = 0; input < compiled.Inputs.size(); ++input)
+    REQUIRE(runtime.Inputs.GetSize() == compiled.Inputs.GetSize());
+    for (usize input = 0; input < compiled.Inputs.GetSize(); ++input)
     {
         CHECK(runtime.Inputs[input].Location == compiled.Inputs[input].Location);
         CHECK(runtime.Inputs[input].Format == compiled.Inputs[input].Format);
     }
-    REQUIRE(runtime.Bindings.size() == compiled.Bindings.size());
-    for (usize binding = 0; binding < compiled.Bindings.size(); ++binding)
+    REQUIRE(runtime.Bindings.GetSize() == compiled.Bindings.GetSize());
+    for (usize binding = 0; binding < compiled.Bindings.GetSize(); ++binding)
     {
         CHECK(runtime.Bindings[binding].Binding == compiled.Bindings[binding].Binding);
         CHECK(runtime.Bindings[binding].Kind == compiled.Bindings[binding].Kind);
@@ -230,8 +230,8 @@ TEST_CASE("RG2 depth-only export samples actual opaque geometry depth", "[render
     description.Vertex = vertexHandle;
     description.Fragment = fragmentHandle;
     description.Layout = layout;
-    description.Streams = streams.AsSpan();
-    description.Attributes = attributes.AsSpan();
+    description.Streams = {streams.GetData(), streams.GetSize()};
+    description.Attributes = {attributes.GetData(), attributes.GetSize()};
     rhi::RasterPipelineHandle pipeline;
     REQUIRE(rhi::CreateRasterPipeline(fixture.Device, description, pipeline) == rhi::RasterStatus::Ready);
     const StaticArray<math::Vector4, VERTEX_COUNT> positions{{{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}}};
@@ -336,11 +336,11 @@ TEST_CASE("RG3 cooked runtime generation decodes the compiled header's plan and 
     CHECK(runtime.ColorVertex.Artifact.Msl.empty() == false);
     CHECK(runtime.ColorFragment.Artifact.Msl.empty() == false);
 #elif defined(LUDUS_TEST_DXIL)
-    CHECK(runtime.ColorVertex.Artifact.Dxil.empty() == false);
-    CHECK(runtime.ColorFragment.Artifact.Dxil.empty() == false);
+    CHECK(runtime.ColorVertex.Artifact.Dxil.IsEmpty() == false);
+    CHECK(runtime.ColorFragment.Artifact.Dxil.IsEmpty() == false);
 #else
-    CHECK(runtime.ColorVertex.Artifact.Spirv.empty() == false);
-    CHECK(runtime.ColorFragment.Artifact.Spirv.empty() == false);
+    CHECK(runtime.ColorVertex.Artifact.Spirv.IsEmpty() == false);
+    CHECK(runtime.ColorFragment.Artifact.Spirv.IsEmpty() == false);
 #endif
 #if !defined(LUDUS_TEST_DXIL)
     CHECK(runtime.ColorVertex.Artifact.Wgsl.empty() == false);
@@ -534,7 +534,7 @@ TEST_CASE("A LUSL composite shader with compiler-assigned bindings renders the s
     static_assert(shaders::lusl_composite::slots::IMAGE_SAMPLER == 1);
     static_assert(shaders::lusl_composite::locations::INPUT_POSITION_UV == 0);
     const rhi::RasterShaderDescription fragment = shaders::lusl_composite::Fragment();
-    REQUIRE(fragment.Bindings.size() == 2);
+    REQUIRE(fragment.Bindings.GetSize() == 2);
     CHECK(fragment.Bindings[0].Binding == shaders::lusl_composite::slots::IMAGE);
     CHECK(fragment.Bindings[0].Kind == rhi::RasterBindingKind::Texture2D);
     CHECK(fragment.Bindings[1].Binding == shaders::lusl_composite::slots::IMAGE_SAMPLER);
@@ -570,7 +570,7 @@ TEST_CASE("RG3 bound runtime generation carries the compiled uniform tables and 
     const renderer::RenderGraphPrograms compiled = packages::rg2_bound::MakePrograms({}, {});
     CheckSameStage(runtime.ColorVertex, compiled.ColorVertex);
     CheckSameStage(runtime.ColorFragment, compiled.ColorFragment);
-    CHECK(runtime.ColorFragment.Bindings.empty() == false);
+    CHECK(runtime.ColorFragment.Bindings.IsEmpty() == false);
     REQUIRE(fixture.Graph.Initialize(fixture.Device, packages::rg2_bound::MakePlan(), MakeBoundPrograms()) ==
             rhi::RasterStatus::Ready);
     BoundScene scene{fixture.Items[0]};

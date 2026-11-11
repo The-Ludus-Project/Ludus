@@ -50,6 +50,8 @@ struct ReferenceMeshData final
 struct ReferenceSurfaceData final
 {
     ReferenceBsdf Bsdf;
+    /// Program of a Program-model Bsdf; tracers point Bsdf.ProgramOrNull at it for each evaluation.
+    content::scene_format::MaterialProgram Program{};
     math::Vector4 Tint{1, 1, 1, 1}, UvTransform{1, 1, 0, 0};
     math::Vector3 Emission{};
     bool IsEmissionTwoSided = true;

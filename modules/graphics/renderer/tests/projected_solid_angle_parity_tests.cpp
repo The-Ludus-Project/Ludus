@@ -6,6 +6,7 @@
 #include "ltc_table_parity_layout.h"
 #include "projected_solid_angle_parity.h"
 #include "projected_solid_angle_parity_layout.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/sort.hpp>
@@ -25,7 +26,6 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <span>
 
 // GPU evidence for FoundationMath's shader ports of projected solid angle sampling
 // (modules/foundation/math/shaders/projected_solid_angle.slang) and of linearly transformed cosines over
@@ -121,12 +121,12 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
                      uint32 groupCount,
                      usize resultBytes,
                      Array<uint8>& outResults,
-                     std::span<const uint8> table = {})
+                     ludus::foundation::BorrowedView<const uint8> table = {})
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     constexpr usize MAX_RESOURCES = 3;
     const usize caseBytes = cases.GetSize() * sizeof(float32);
-    const usize largestBytes = math::Max(math::Max(caseBytes, resultBytes), table.size());
+    const usize largestBytes = math::Max(math::Max(caseBytes, resultBytes), table.GetSize());
 
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
@@ -144,17 +144,18 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
     rhi::BufferHandle caseBuffer;
     rhi::BufferHandle resultBuffer;
     rhi::BufferHandle tableBuffer;
-    const bool hasTable = table.empty() == false;
+    const bool hasTable = table.IsEmpty() == false;
     if (hasTable == true)
     {
         REQUIRE(IsAccepted(rhi::CreateBuffer(device,
-                                             { .Role = rhi::BufferRole::Storage, .Size = table.size() },
+                                             { .Role = rhi::BufferRole::Storage, .Size = table.GetSize() },
                                              table,
                                              tableBuffer)) == true);
         WaitReady(device, tableBuffer);
     }
     REQUIRE(outResults.TryResize(resultBytes, uint8{0}) == true);
-    const std::span<const uint8> caseSource{reinterpret_cast<const uint8*>(cases.GetData()), caseBytes};
+    const ludus::foundation::BorrowedView<const uint8> caseSource{reinterpret_cast<const uint8*>(cases.GetData()),
+                                                                  caseBytes};
     REQUIRE(IsAccepted(rhi::CreateBuffer(device,
                                          {
                                              .Role = rhi::BufferRole::Storage,
@@ -162,10 +163,11 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
                                          },
                                          caseSource,
                                          caseBuffer)) == true);
-    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
-                                         { .Role = rhi::BufferRole::Storage, .Size = resultBytes },
-                                         std::span<const uint8>{outResults.GetData(), resultBytes},
-                                         resultBuffer)) == true);
+    REQUIRE(
+        IsAccepted(rhi::CreateBuffer(device,
+                                     { .Role = rhi::BufferRole::Storage, .Size = resultBytes },
+                                     ludus::foundation::BorrowedView<const uint8>{outResults.GetData(), resultBytes},
+                                     resultBuffer)) == true);
     rhi::RasterShaderHandle shaderHandle;
     rhi::BindingLayoutHandle layout;
     REQUIRE(IsAccepted(rhi::CreateRasterShader(device, shader, shaderHandle)) == true);
@@ -177,16 +179,16 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
     const StaticArray<rhi::RasterBindingResource, MAX_RESOURCES> resources{{
         { .Binding = 0, .Buffer = caseBuffer, .Size = caseBytes },
         { .Binding = 1, .Buffer = resultBuffer, .Size = resultBytes },
-        { .Binding = 2, .Buffer = tableBuffer, .Size = table.size() },
+        { .Binding = 2, .Buffer = tableBuffer, .Size = table.GetSize() },
     }};
     const usize resourceCount = hasTable == true ? MAX_RESOURCES : MAX_RESOURCES - 1;
     rhi::BindingSetHandle set;
     rhi::ComputePipelineHandle pipeline;
-    REQUIRE(IsAccepted(
-                rhi::CreateBindingSet(device,
-                                      layout,
-                                      std::span<const rhi::RasterBindingResource>{resources.GetData(), resourceCount},
-                                      set)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBindingSet(
+                device,
+                layout,
+                ludus::foundation::BorrowedView<const rhi::RasterBindingResource>{resources.GetData(), resourceCount},
+                set)) == true);
     REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
             true);
     WaitReady(device, set);
@@ -208,7 +210,7 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
     const StaticArray<rhi::GraphUse, MAX_RESOURCES> uses{{
         {caseVersion, rhi::GraphAccessMode::StorageRead, 0, caseBytes, rhi::RasterVisibility::Compute},
         {results, rhi::GraphAccessMode::StorageReadWrite, 0, resultBytes, rhi::RasterVisibility::Compute},
-        {tableVersion, rhi::GraphAccessMode::StorageRead, 0, table.size(), rhi::RasterVisibility::Compute},
+        {tableVersion, rhi::GraphAccessMode::StorageRead, 0, table.GetSize(), rhi::RasterVisibility::Compute},
     }};
     const rhi::ComputeDispatch dispatch
     {
@@ -768,13 +770,14 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
     const usize resultBytes =
         usize{LOOKUP_CASE_COUNT} * LUDUS_LTC_TABLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD * sizeof(float32);
     Array<uint8> resultBytesStorage;
-    if (RunParityKernel(ludus::shaders::ltc_table_parity::Compute(),
-                        cases,
-                        LOOKUP_CASE_COUNT / LUDUS_LTC_TABLE_PARITY_GROUP_SIZE,
-                        resultBytes,
-                        resultBytesStorage,
-                        std::span<const uint8>{reinterpret_cast<const uint8*>(internal::LTC_TABLE.GetData()),
-                                               sizeof(internal::LTC_TABLE)}) == false)
+    if (RunParityKernel(
+            ludus::shaders::ltc_table_parity::Compute(),
+            cases,
+            LOOKUP_CASE_COUNT / LUDUS_LTC_TABLE_PARITY_GROUP_SIZE,
+            resultBytes,
+            resultBytesStorage,
+            ludus::foundation::BorrowedView<const uint8>{reinterpret_cast<const uint8*>(internal::LTC_TABLE.GetData()),
+                                                         sizeof(internal::LTC_TABLE)}) == false)
     {
         SKIP("No native GPU adapter");
     }

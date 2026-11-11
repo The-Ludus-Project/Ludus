@@ -248,7 +248,7 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
                                          sceneBuffer)) == true);
     REQUIRE(IsAccepted(rhi::CreateBuffer(device,
                                          { .Role = rhi::BufferRole::Storage, .Size = CHAIN_BYTES },
-                                         scratch.AsSpan(),
+                                         {scratch.GetData(), scratch.GetSize()},
                                          chainBuffer)) == true);
     REQUIRE(IsAccepted(rhi::CreateBuffer(device,
                                          { .Role = rhi::BufferRole::Storage, .Size = sizeof(math::Vector4) },
@@ -287,7 +287,7 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
     }};
     rhi::BindingSetHandle set;
     rhi::ComputePipelineHandle pipeline;
-    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, resources.AsSpan(), set)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, {resources.GetData(), resources.GetSize()}, set)) == true);
     REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
             true);
     WaitReady(device, set, "binding set");

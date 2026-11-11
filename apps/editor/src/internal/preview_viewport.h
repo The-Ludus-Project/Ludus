@@ -184,7 +184,10 @@ public:
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
     [[nodiscard]] QString GetStatisticsText() const;
     /// Live shader status shown below the statistics (reload notices and errors); empty when none.
+    /// While flying, a wheel change shows the fly speed there for FLY_SPEED_STATUS_MILLISECONDS.
     [[nodiscard]] QString GetShaderStatusText() const;
+    /// Time the fly speed readout stays in the status overlay after the last wheel change, in milliseconds.
+    static constexpr foundation::int32 FLY_SPEED_STATUS_MILLISECONDS = 1500;
     /// Live shader controller behind the toolbar's "Live shaders" toggle; null in the browser
     /// editor, which has no compiler worker or shader source tree.
     [[nodiscard]] PreviewShaderReload* GetShaderReloadOrNull() const noexcept;
@@ -275,7 +278,14 @@ private:
     bool mCanWarpPointer = false;
     QTimer mNavigationTimer;
     QElapsedTimer mNavigationClock;
-    foundation::float32 mSpeedMultiplier = 1;
+    /// Hides the fly speed readout once the wheel has been still for FLY_SPEED_STATUS_MILLISECONDS.
+    QTimer mFlySpeedStatusTimer;
+    /// Whether the status overlay shows the fly speed, which is cleared when flying stops or the timer fires.
+    bool mIsShowingFlySpeedStatus = false;
+    /// Show the preview's fly speed multiplier in the status overlay and restart its timer.
+    void showFlySpeedStatus();
+    /// Give the status overlay back to its own text (ray path inspection or live shaders).
+    void clearFlySpeedStatus();
     foundation::float32 mFirstPersonSpeed = 0;
     bool mShouldJump = false;
     bool mIsFlying = false;

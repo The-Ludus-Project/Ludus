@@ -203,7 +203,7 @@ try {
   // An imported camera carries orientation, not a geometry-centered orbit pivot.
   // Reframe after testing navigation before sampling a fixed triangle-interior patch.
   const beforeFrameAll = await frames(page);
-  await click(page, box.x + box.width - 155, box.y - 28);
+  await page.keyboard.press('Home', {delay: 50}); // Frame All in the focused viewport.
   await rendered(page, beforeFrameAll);
   assert.ok(isNeutral((await shot(page, 'framed-solid')).geometry));
   for (const mode of ['albedo', 'lit']) {

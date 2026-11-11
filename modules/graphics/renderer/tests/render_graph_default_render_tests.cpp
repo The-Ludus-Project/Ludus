@@ -458,9 +458,9 @@ TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene 
         LoadPackage({LUDUS_RG3_FORWARD_DIRECTORY, "rg2_forward_lit.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
-    CHECK(decoded.ForwardVertex.Inputs.size() == format::FORWARD_INPUT_COUNT);
-    CHECK(decoded.ForwardFragment.Bindings.size() == programs.ForwardFragment.Bindings.size());
-    CHECK(decoded.ForwardSurfaceChartFragment.Bindings.size() == decoded.ForwardFragment.Bindings.size() + 1);
+    CHECK(decoded.ForwardVertex.Inputs.GetSize() == format::FORWARD_INPUT_COUNT);
+    CHECK(decoded.ForwardFragment.Bindings.GetSize() == programs.ForwardFragment.Bindings.GetSize());
+    CHECK(decoded.ForwardSurfaceChartFragment.Bindings.GetSize() == decoded.ForwardFragment.Bindings.GetSize() + 1);
     for (const rhi::RasterBinding& binding : decoded.ForwardFragment.Bindings)
     {
         CHECK(binding.Binding != renderer::BAKE_TEXTURE_BINDING);
@@ -514,8 +514,10 @@ TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges",
     sourceDescription.Width = 2;
     sourceDescription.Height = 2;
     rhi::TextureHandle source;
-    const rhi::RasterStatus sourceStatus =
-        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), 2 * CHANNEL_COUNT}, source);
+    const rhi::RasterStatus sourceStatus = rhi::CreateTexture(fixture.Device,
+                                                              sourceDescription,
+                                                              {{pixels.GetData(), pixels.GetSize()}, 2 * CHANNEL_COUNT},
+                                                              source);
     RequireTextureReady(fixture.Device, source, sourceStatus);
     renderer::internal::RenderGraphUpscaleProgram program;
     REQUIRE(program.Initialize(fixture.Device,
@@ -666,7 +668,10 @@ TEST_CASE("MetalFX preserves constant RGB through its private output and surface
     sourceDescription.Height = SOURCE_HEIGHT;
     rhi::TextureHandle source;
     const rhi::RasterStatus sourceStatus =
-        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), SOURCE_WIDTH * TEXEL_BYTES}, source);
+        rhi::CreateTexture(fixture.Device,
+                           sourceDescription,
+                           {{pixels.GetData(), pixels.GetSize()}, SOURCE_WIDTH * TEXEL_BYTES},
+                           source);
     RequireTextureReady(fixture.Device, source, sourceStatus);
     renderer::internal::RenderGraphUpscaleProgram program;
     REQUIRE(program.Initialize(fixture.Device,
