@@ -15,6 +15,9 @@ Colour names are ``role.name`` (for example ``surface.workspace``); each has a
 ``dark`` and a ``light`` value as ``#rrggbb``. ``highContrast`` lists replacement
 values per appearance for the tokens that change when the system asks for more
 contrast; every contrast pair also holds its ``highContrastMinimum`` there.
+Every colour must sit in at least one contrast pair, or carry a
+``contrastExempt`` reason when it is decorative or only drawn on inactive
+controls, so a new token cannot skip the WCAG check.
 ``type`` holds font-size multipliers of the system font.
 """
 from __future__ import annotations
@@ -87,6 +90,16 @@ def validate(document: dict) -> None:
                 raise TokenError(f"contrast pair '{pair.get('label')}' names unknown colour '{pair.get(role)}'")
         if not isinstance(pair.get("minimum"), (int, float)) or pair["minimum"] < 1:
             raise TokenError(f"contrast pair '{pair.get('label')}' needs a minimum of at least 1")
+    checked = {pair.get(role) for pair in document.get("contrast", []) for role in ("foreground", "background")}
+    for name, entry in colours.items():
+        exemption = entry.get("contrastExempt")
+        if exemption is not None and (not isinstance(exemption, str) or not exemption.strip()):
+            raise TokenError(f"colour '{name}' contrastExempt must give the reason as text")
+        if name not in checked and exemption is None:
+            raise TokenError(f"colour '{name}' is in no contrast pair; add the pairs it is drawn in, "
+                             "or a contrastExempt reason when it is decorative or inactive")
+        if name in checked and exemption is not None:
+            raise TokenError(f"colour '{name}' is both checked and contrastExempt; remove the exemption")
     for group in ("spacing", "radius"):
         if not all(isinstance(value, int) and value > 0 for value in document.get(group, {}).values()):
             raise TokenError(f"{group} values must be positive integers")
