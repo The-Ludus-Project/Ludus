@@ -81,6 +81,5 @@ private:
     /// Backing pixel size of the overlay canvas; resizing it clears the canvas.
     QSize mOverlaySizePhysical;
     bool mIsOverlayDirty = true;
-    bool mWasOverlayShown = false;
 };
 } // namespace ludus::editor
