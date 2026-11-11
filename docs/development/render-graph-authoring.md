@@ -4509,6 +4509,16 @@ with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
 sample contains a complete throughput weight and a separate external MIS density.
 The original direction-only helpers retain their coating approximation.
 
+A [closure program](../architecture/scene-source-format.md#closure-program)
+material reports `MaterialModel::Program`. `MaterialSample.ProgramOffset`
+locates its packed program. `BaseColor`, `Metallic` and `Roughness` are its
+surface inputs. `EvaluateStandardBsdf`, `SampleStandardBsdf` and
+`SampleStandardBsdfTransport` run the shared interpreter, so a graph that uses
+the standard calls renders a new composition unchanged. A shader with its own
+formulas cannot interpret the program; it must pass program materials to the
+standard calls. Its fixed-dimension guarantee comes from the program's lobes,
+so `RequireSceneBsdf` admits a version-1 program under both requirements.
+
 Glass materials report `MaterialModel::Dielectric` (a solid) or
 `MaterialModel::ThinDielectric` (a thin slab) with their index of
 refraction in `Eta.x`; `IsDielectricMaterial` tests for either. Both are smooth
@@ -4603,7 +4613,7 @@ a plain integer cannot be compared or stored where a result belongs:
 | `SceneQuery` | `TraceClosest`, `TestVisibility`, `FindVisibleLineIntervals`, `TraceAndShade`, `LoadVisibilitySurface` | `Miss`, `Surface`, `Failure` |
 | `SceneLightKind` | `LightInfo.Kind` | `Directional`, `Point`, `Spot`, `Mesh`, `Environment` |
 | `SceneMaterialKind` | `SurfaceHit.MaterialKind` | `Assigned`, `Default`, `Error` |
-| `MaterialModel` | `MaterialSample.Model` | `MetallicRoughness`, `Diffuse`, `Conductor`, `CoatedDiffuse`, `Dielectric`, `ThinDielectric`, `DiffuseConductorMix`, `ProjectBrdf` |
+| `MaterialModel` | `MaterialSample.Model` | `MetallicRoughness`, `Diffuse`, `Conductor`, `CoatedDiffuse`, `Dielectric`, `ThinDielectric`, `DiffuseConductorMix`, `ProjectBrdf`, `Program` |
 | `SceneBsdfRequirement` | `RequireSceneBsdf` | `Transport`, `FixedDimensionReflection` |
 
 ```slang

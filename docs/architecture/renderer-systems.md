@@ -1320,8 +1320,9 @@ and [Appendix A.5.2](https://pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multi
 Wave Tracing uses the standard BSDF calls for the program. Metropolis uses
 those calls when the program declares fixed-dimension reflection. An omitted
 or false declaration produces the existing incompatible material requirement
-diagnostic. Rebuild existing ray graph shader packages for scene kernel ABI 14
-to pick up the evaluator. The graph sources use the same interface.
+diagnostic. Scene kernel ABI 15 adds closure programs. Rebuild existing ray
+graph shader packages; a stale package fails with the interface-version reason
+instead of running its old evaluator. The graph sources use the same interface.
 
 ### Material closure programs
 
@@ -1352,12 +1353,55 @@ each program material. The cook, the Resources decoder and the validator share
 the limits and field layout. The decoder rejects programs with unknown opcodes,
 forward register reads, nonzero padding or out-of-range parameters.
 
-Status: the content path is complete. No renderer evaluates programs yet.
-Renderer admission rejects a program material as an invalid description, as it
-does the unresolved marker. Editor World import names the repair, which is to
-assign a built-in model for now. A C++ oracle interpreter and one shared Slang
-interpreter, used by every GPU path, come next with CPU/GPU parity and measured
-costs. World import and inspection follow them.
+Two interpreters evaluate programs, with their arithmetic in the same order.
+The CPU oracle lives in `reference_bsdf.cpp`. One Slang interpreter,
+`material_program.slang`, serves the GPU preview, the GPU reference and the
+render-graph scene interface. The scene packer appends each program's words
+after the environment, and the surface record's scattering word points at them.
+Each instruction clamps its result to the constant limit, so every value stays
+finite. Lobes clamp negative weights to zero and roughness to the minimum.
+
+Raster profiles draw a program material with its authored base colour,
+metallic and roughness as a metallic-roughness approximation. Editor World
+import still names the repair, which is to assign a built-in model; World
+import and inspection come next.
+
+The tests check four properties:
+- With a white base, the built-in Mix written as a program matches the Mix in
+  value and density. With a tinted base, the values still match.
+- The project BRDF written as a program matches it in value and density.
+- Sampled densities integrate to the accepted fraction, and the estimated
+  energy agrees with the integrated energy.
+- Programs are reciprocal.
+
+The CPU/Metal parity case renders a three-lobe program whose weights read the
+textured base colour, under the existing RMS bound. Wave Tracing renders a
+program through the transport interface with unchanged graph source.
+Rao-Blackwellized Metropolis admits it under the fixed-dimension requirement.
+
+#### Measured costs
+
+These costs are measured with `ludus_reference_benchmark` on the glossy
+Cornell box. The metal surfaces use each fixture's material. The build is a
+macOS debug build on Apple silicon. Each figure is the minimum over nine runs,
+because this GPU's clock varies up to 3.5x between runs.
+
+| Material | GPU transport, 256×256, 64 spp, depth 8 | CPU oracle total, 64×64, 16 spp |
+| --- | --- | --- |
+| Built-in Mix | 344 ms | 739 ms |
+| Mix as a program | 304 ms | 1626 ms |
+| 2 constant lobes | 383 ms | 1495 ms |
+| 4 constant lobes | 641 ms | 2139 ms |
+| 8 constant lobes | 598 ms | 2367 ms |
+| 8 lobes from surface inputs | 418 ms | 2371 ms |
+
+On the GPU, a program costs no more than the built-in Mix within this
+variance at two lobes. It costs up to about 1.9 times as much at four to
+eight lobes. On the CPU, the oracle costs two to three times as much as the
+Mix, partly because it validates the program on every call. The Mix and its
+program converge to the same mean luminance. The limits keep their starting
+values: 8 registers, 8 constants, 32 instructions and 8 lobes. Release-build
+measurements remain open.
 
 ### Preparation and publication
 
