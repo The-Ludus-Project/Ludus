@@ -50,9 +50,11 @@ public:
     void SetRows(const QVector<WorldMaterialRow>& rows);
     void RevealResource(const QString& id);
     void ShowMissingRenderable();
+    void ShowStatus(const QString& message);
 
 Q_SIGNALS:
     void RenderableActivated(const QString& entityId);
+    void MaterialEditRequested(const QString& entityId);
 
 private:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -61,6 +63,7 @@ private:
 
     QTreeWidget* mTree;
     QPushButton* mCopy;
+    QPushButton* mEdit;
     QLabel* mStatus;
     QVector<WorldMaterialRow> mRows;
 };

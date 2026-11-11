@@ -1802,12 +1802,13 @@ World; they do not expose another object hierarchy or authoring document.
    and **Add Component** are in that same inspector. **Apply Changes** validates
    placement, name and component values together. Valid draft fields update the
    embedded viewport before Apply; invalid buffers retain its last valid image.
-   Camera and material data retain the imported scene profile. A read-only
+   Camera and material data retain the imported scene profile. The
    **Material** group lists the decoded material the viewport renders: its
    source name, scattering model, linear reflectance, metallic and perceptual
    roughness, the conductor IOR/extinction or coating IOR/thickness and GGX
    alpha of those models, texture maps, alpha mask and emission. Values appear
-   once the viewport has loaded the scene; materials are not editable there.
+   once the viewport has loaded the scene. The available edits depend on the
+   material model, as described below.
 5. Duplicate/Delete and World Undo/Redo act on the complete entity, including its
    scene binding and gameplay components. Parent removal is refused while its
    children remain. Invalid fields preserve the previous applied document.
@@ -1844,9 +1845,20 @@ renderable to see its effective values.
 
 ### Edit a coated-diffuse material from World
 
-Select an imported object whose Material model is **Coated diffuse**. In its
-**Material** group, enter the isotropic GGX alpha, coating index of refraction
-(IOR), and optical thickness.
+Select an imported object whose Material model is **Coated diffuse** and choose
+**Edit Material…** in its inspector. You can also select a renderable in the
+**Materials** list and choose **Edit Material…** with Properties hidden.
+
+The Material document shows the resource ID, all slots using it, and which slots
+have their own coating. Edit the isotropic GGX alpha, coating index of refraction
+(IOR), and optical thickness, then choose **Apply to Slot**. The document stays
+on its original slot as you select other objects in World. Use **Undo World Edit**,
+**Redo World Edit**, or **Save World** to work with the same history and file as
+World. **Use Inherited Coating** removes an existing slot override after confirmation.
+If viewport preparation fails, the document reports the error and World keeps
+the last drawable view.
+
+You can also edit the coating fields directly in the inspector:
 
 - **Apply Changes** gives the selected slot its own coating when the values
   change. **Use Inherited Coating** rejoins the shared instance or imported

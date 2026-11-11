@@ -1446,10 +1446,12 @@ Show the affected slots before a shared replacement and apply it as one
 undoable edit. Keep source identity for reimport. Clear the diagnostic after
 a compatible revision publishes.
 
-The Material document opens from the World slot and shows instance parameters,
-shared uses, layer composition and active-profile compatibility. Parameters
-and canvas actions share validation and history. A later Scattering Lab can
-inspect lobes, sampled directions, energy, and raw CPU/GPU reference results.
+The [Material document](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world)
+opens from a World slot or its renderable in the Materials sidebar. The first
+slice shows coated-diffuse parameters and shared uses, and uses World history,
+save, and scene preparation for slot overrides. The proposed composition canvas
+will share that validation and history. A later Scattering Lab can inspect
+lobes, sampled directions, energy, and raw CPU/GPU reference results.
 
 ### Implementation gates
 
