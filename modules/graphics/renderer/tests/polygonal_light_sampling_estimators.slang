@@ -4,8 +4,8 @@
 // (polygonal_light_sampling_oracle.cpp). The triangle is unoccluded and its emission constant, which is what the
 // template's EvaluateEmission and TestVisibility return for such a scene. polygonal_light_sampling_estimators_layout.h
 // owns the ABI. The kernel includes the renderer's scene shader as graph wrappers do, for EvaluateStandardBsdf, and
-// binds only the results and the LTC table (see the layout for their slots). renderer_gpu_preview.slang has its own
-// ComputeMain, so this entry point has another name.
+// binds the results, LTC table and a scene word holding the test material model. renderer_gpu_preview.slang has
+// its own ComputeMain, so this entry point has another name.
 #include "polygonal_light_sampling_estimators_layout.h"
 #include "renderer_gpu_preview.slang"
 #include "scene_shader.slang"
@@ -89,6 +89,7 @@ PolygonalLightEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     float3 normalWorld = DrawDirection(random, float3(0, 0, 1), -1);
     float3 viewWorld = DrawDirection(random, normalWorld, MINIMUM_VIEW_COSINE);
     MaterialSample material = (MaterialSample)0;
+    material.Model = MaterialModel(asuint(SceneValue(0).x));
     material.BaseColor = float3(DrawUniform(random), DrawUniform(random), DrawUniform(random));
     float metallicSelector = DrawUniform(random);
     float metallic = DrawUniform(random);
