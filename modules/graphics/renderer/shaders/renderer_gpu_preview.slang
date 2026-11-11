@@ -778,13 +778,11 @@ void EvaluateScattering(float3 color,
         outPdf = nl / PI;
         return;
     }
-    float3 h = NormalizeOrZero(v + l);
-    float nh = saturate(dot(normalWorld, h));
-    float vh = saturate(dot(v, h));
+    float3 halfWorld = NormalizeOrZero(v + l);
+    float vh = saturate(dot(v, halfWorld));
     float alpha = ComputeMaterialAlpha(model, roughness, conductorAlpha);
     float a2 = alpha * alpha;
-    float denominator = (1 - nh * nh) + nh * nh * a2;
-    float distribution = a2 / (PI * denominator * denominator);
+    float distribution = ComputeGgxNormalDistribution(normalWorld, halfWorld, a2);
     float gv = sqrt(nv * nv * (1 - a2) + a2);
     float gl = sqrt(nl * nl * (1 - a2) + a2);
     float visibility = .5 / max(nl * gv + nv * gl, 1e-6);
