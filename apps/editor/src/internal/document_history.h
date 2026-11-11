@@ -167,11 +167,12 @@ public:
     /// Command name of retained entry `index` (oldest first), or UNNAMED_EDIT_NAME outside [0, GetCount()).
     [[nodiscard]] const char* GetName(foundation::usize index) const noexcept
     {
-        if (index >= Count_ || Entries_[index].has_value() == false)
+        if (index >= Count_)
         {
             return UNNAMED_EDIT_NAME;
         }
-        return Entries_[index]->Name;
+        const std::optional<Entry>& entry = Entries_[index];
+        return entry.has_value() == true ? entry->Name : UNNAMED_EDIT_NAME;
     }
     /// Name of the edit Undo would revert, or nullptr when nothing can be undone.
     [[nodiscard]] const char* GetUndoNameOrNull() const noexcept

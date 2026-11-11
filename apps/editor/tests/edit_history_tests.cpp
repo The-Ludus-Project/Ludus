@@ -56,8 +56,14 @@ WorldDocument OpenStarterWorld()
     return document;
 }
 
-const QString GRAPH_ROOT = QStringLiteral("main.lurender.json");
-const QString GRAPH_CONFIGURATION = QStringLiteral("Default");
+QString GraphRoot()
+{
+    return QStringLiteral("main.lurender.json");
+}
+QString GraphConfiguration()
+{
+    return QStringLiteral("Default");
+}
 
 QString MakeGraphPackage(const QTemporaryDir& project)
 {
@@ -73,7 +79,7 @@ QString MakeGraphPackage(const QTemporaryDir& project)
          "edges":[{"from":"size.size","to":"color.size"},{"from":"color.texture","to":"output.texture"}],
          "layout":{"positions":[{"node":"color","x":80,"y":120},{"node":"output","x":300,"y":0}]}}]})";
     const QByteArray canonical = EncodeCanonicalJson(QJsonDocument::fromJson(bytes).object());
-    QFile file(QDir(package).filePath(GRAPH_ROOT));
+    QFile file(QDir(package).filePath(GraphRoot()));
     REQUIRE(file.open(QIODevice::WriteOnly) == true);
     REQUIRE(file.write(canonical) == canonical.size());
     return package;
@@ -328,28 +334,28 @@ TEST_CASE("Render graph edits carry names that describe what changed", "[editor]
 {
     QTemporaryDir project;
     RenderGraphDocument document;
-    REQUIRE(document.Load(MakeGraphPackage(project), GRAPH_ROOT) == RenderGraphDocumentStatus::Ok);
-    const QByteArray opened = document.GetDraft(GRAPH_ROOT);
+    REQUIRE(document.Load(MakeGraphPackage(project), GraphRoot()) == RenderGraphDocumentStatus::Ok);
+    const QByteArray opened = document.GetDraft(GraphRoot());
     constexpr int32 MOVED_X = 120;
     constexpr int32 MOVED_Y = 160;
-    REQUIRE(document.MoveNode(GRAPH_ROOT, GRAPH_CONFIGURATION, QStringLiteral("color"), MOVED_X, MOVED_Y) ==
+    REQUIRE(document.MoveNode(GraphRoot(), GraphConfiguration(), QStringLiteral("color"), MOVED_X, MOVED_Y) ==
             RenderGraphDocumentStatus::Ok);
     CHECK(IsNamed(document.GetHistory().GetUndoNameOrNull(), "Move Node") == true);
-    REQUIRE(document.Disconnect(GRAPH_ROOT,
-                                GRAPH_CONFIGURATION,
+    REQUIRE(document.Disconnect(GraphRoot(),
+                                GraphConfiguration(),
                                 QStringLiteral("color.texture"),
                                 QStringLiteral("output.texture")) == RenderGraphDocumentStatus::Ok);
     CHECK(IsNamed(document.GetHistory().GetUndoNameOrNull(), "Disconnect") == true);
     QString error;
-    REQUIRE(document.RenameNode(GRAPH_ROOT,
-                                GRAPH_CONFIGURATION,
+    REQUIRE(document.RenameNode(GraphRoot(),
+                                GraphConfiguration(),
                                 QStringLiteral("output"),
                                 QStringLiteral("final"),
                                 error) == RenderGraphDocumentStatus::Ok);
     CHECK(IsNamed(document.GetHistory().GetUndoNameOrNull(), "Rename Node") == true);
     CHECK(document.GetHistory().GetCount() == 3);
     REQUIRE(document.JumpToHistory(0) == true);
-    CHECK(document.GetDraft(GRAPH_ROOT) == opened);
+    CHECK(document.GetDraft(GraphRoot()) == opened);
     CHECK(IsNamed(document.GetHistory().GetRedoNameOrNull(), "Move Node") == true);
 }
 

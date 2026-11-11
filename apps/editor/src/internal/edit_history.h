@@ -78,7 +78,7 @@ class EditHistoryModel final : public QAbstractListModel
     Q_OBJECT
 public:
     /// Item data roles beyond Qt's own.
-    enum Role : foundation::int32
+    enum Role : foundation::uint16
     {
         /// bool: this row is the document's current state.
         IsCurrentRole = Qt::UserRole + 1,
