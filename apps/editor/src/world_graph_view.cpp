@@ -29,6 +29,8 @@ namespace ludus::editor
 namespace
 {
 constexpr foundation::int32 MINIMUM_TARGET_TEXT_CHARACTERS = 4;
+/// Marks a combo box whose minimum width already follows its current choice.
+constexpr const char* IS_FITTED_TO_CURRENT_TEXT_PROPERTY = "isFittedToCurrentText";
 constexpr foundation::int32 EXPOSURE_DECIMALS = 2;
 constexpr foundation::float64 EXPOSURE_STEP_STOPS = 0.25;
 constexpr foundation::int32 STATISTICS_REFRESH_MILLISECONDS = 250;
@@ -103,13 +105,12 @@ foundation::int32 ComputeComboBoxWidth(const QComboBox& comboBox, const QString&
 }
 void FitComboBoxToCurrentText(QComboBox& inoutComboBox)
 {
-    const char* const IS_FITTED_PROPERTY = "isFittedToCurrentText";
     inoutComboBox.setMinimumWidth(ComputeComboBoxWidth(inoutComboBox, inoutComboBox.currentText()));
-    if (inoutComboBox.property(IS_FITTED_PROPERTY).toBool() == true)
+    if (inoutComboBox.property(IS_FITTED_TO_CURRENT_TEXT_PROPERTY).toBool() == true)
     {
         return;
     }
-    inoutComboBox.setProperty(IS_FITTED_PROPERTY, true);
+    inoutComboBox.setProperty(IS_FITTED_TO_CURRENT_TEXT_PROPERTY, true);
     QObject::connect(&inoutComboBox, &QComboBox::currentTextChanged, &inoutComboBox, [comboBox = &inoutComboBox]() {
         comboBox->setMinimumWidth(ComputeComboBoxWidth(*comboBox, comboBox->currentText()));
     });
@@ -149,10 +150,10 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
     layout->addWidget(mTargets);
 
     // An action with a menu: on the row it is a drop-down button, and in the overflow menu a submenu.
-    QAction* exposureButton = new QAction(QStringLiteral("Exposure"), parent);
-    exposureButton->setObjectName(QStringLiteral("viewportExposureAction"));
+    QAction* exposureAction = new QAction(QStringLiteral("Exposure"), parent);
+    exposureAction->setObjectName(QStringLiteral("viewportExposureAction"));
     QMenu* exposureMenu = new QMenu(parent);
-    exposureButton->setMenu(exposureMenu);
+    exposureAction->setMenu(exposureMenu);
     QDoubleSpinBox* exposure = new QDoubleSpinBox(exposureMenu);
     exposure->setObjectName(QStringLiteral("viewportExposureStops"));
     exposure->setAccessibleName(QStringLiteral("Exposure compensation in stops"));
@@ -172,14 +173,14 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
         inoutSource.SetRasterExposureStops(static_cast<foundation::float32>(stops));
     });
     connect(reset, &QAction::triggered, &inoutSource, [&inoutSource]() { inoutSource.SetRasterExposureStops(0); });
-    const auto refreshExposure = [this, exposureButton, exposure, reset, &inoutSource]() {
+    const auto refreshExposure = [this, exposureAction, exposure, reset, &inoutSource]() {
         const bool canAdjust =
             mTargets->currentIndex() == 0 && mPreview.CanAdjustRasterExposure() == true &&
             (inoutSource.Scene().Objects.isEmpty() == false || inoutSource.Scene().Atmosphere.IsEnabled == true);
         const foundation::float32 stops = inoutSource.GetRasterExposureStops();
-        exposureButton->setEnabled(canAdjust);
+        exposureAction->setEnabled(canAdjust);
         exposure->setEnabled(canAdjust);
-        exposureButton->setToolTip(
+        exposureAction->setToolTip(
             canAdjust == true ? QStringLiteral("Adjust this viewport in stops relative to the graph's exposure.")
                               : QStringLiteral("Exposure needs Final output from a clustered deferred raster "
                                                "graph with ToneMap enabled and a World with geometry or atmosphere."));
@@ -187,14 +188,14 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
         exposure->setValue(static_cast<foundation::float64>(stops));
         reset->setEnabled(canAdjust == true && stops != 0);
     };
-    connect(&mPreview, &RenderGraphPreview::Changed, exposureButton, refreshExposure);
-    connect(&mPreview, &RenderGraphPreview::TargetsChanged, exposureButton, refreshExposure);
-    connect(&mPreview, &RenderGraphPreview::RayPathCaptureChanged, exposureButton, refreshExposure);
-    connect(&inoutSource, &RenderPreview::Changed, exposureButton, refreshExposure);
-    connect(&inoutSource, &RenderPreview::RasterExposureChanged, exposureButton, refreshExposure);
-    connect(mTargets, &QComboBox::currentIndexChanged, exposureButton, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::Changed, exposureAction, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::TargetsChanged, exposureAction, refreshExposure);
+    connect(&mPreview, &RenderGraphPreview::RayPathCaptureChanged, exposureAction, refreshExposure);
+    connect(&inoutSource, &RenderPreview::Changed, exposureAction, refreshExposure);
+    connect(&inoutSource, &RenderPreview::RasterExposureChanged, exposureAction, refreshExposure);
+    connect(mTargets, &QComboBox::currentIndexChanged, exposureAction, refreshExposure);
     refreshExposure();
-    return { .Output = controls, .Exposure = exposureButton };
+    return { .OutputOrNull = controls, .ExposureOrNull = exposureAction };
 }
 void WorldGraphView::SetCanPresent(bool canPresent)
 {
