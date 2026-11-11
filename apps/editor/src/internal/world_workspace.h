@@ -12,6 +12,7 @@
 
 #include <QJsonArray>
 #include <QMap>
+#include <QPointer>
 #include <QStringList>
 #include <QTimer>
 #include <QWidget>
@@ -47,6 +48,7 @@ class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
 class WorldLightsPanel;
+class WorldMaterialDocument;
 class WorldMaterialsPanel;
 class WorldTerrainPanel;
 struct WorldLightChange;
@@ -315,6 +317,8 @@ private:
                                  QWidget*& outInvalidOrNull,
                                  bool shouldReadMaterial = true);
     [[nodiscard]] bool readCoatingFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
+    [[nodiscard]] bool openMaterialDocument(const QString& entityId, QString& outError);
+    [[nodiscard]] bool setSlotCoating(const QString& entityId, const QJsonObject& coating, QString& outError);
     void restoreInheritedCoating();
     void applySharedCoating();
     void PickTint(const QString& id, const QJsonObject& binding);
@@ -335,6 +339,7 @@ private:
     WorldLightsPanel* mLightsPanel;
     QTabWidget* mWorldLists;
     WorldMaterialsPanel* mMaterialsPanel;
+    QPointer<WorldMaterialDocument> mMaterialDocumentOrNull;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
     QByteArray mSplitterStateBeforeChromeHidden;
     bool mIsChromeVisible = true;

@@ -797,6 +797,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_workspace.h
     src/internal/world_lights_panel.h
     src/world_lights_panel.cpp
+    src/internal/world_material_document.h
+    src/world_material_document.cpp
     src/internal/world_materials_panel.h
     src/world_materials_panel.cpp
     src/builtin_world.cpp
