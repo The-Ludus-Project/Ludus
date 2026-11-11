@@ -2136,10 +2136,13 @@ Choose the `counts` layout to set **Probes along X**, **Y** and **Z**
 yourself: the box is then `(count - 1) × spacing` on each edge and the
 Transform scale is not used. In this layout the face handles add or remove
 whole probe intervals and the Scale tool's centre square changes the spacing
-while keeping the minimum corner and counts fixed. Switching layouts keeps
-the probes where they are: `counts` to `volume` writes the probe extent into
-the Transform scale, and `volume` to `counts` writes the derived counts.
-Worlds saved before the layout existed load as `counts`.
+while keeping the minimum corner and counts fixed. Dragging a face of a
+standalone probe volume past the 12-probe limit offers to switch to `volume`
+and apply the new size in one undoable edit. Probe spacing stays the same.
+You can also choose `volume` in Properties, enter the desired Transform
+scale, and click **Apply Changes**. Any scale axes you leave untouched keep
+their previous probe extent. Switching to `counts` writes the derived
+counts. Worlds saved before the layout existed load as `counts`.
 
 The box follows the World axes. The native Lit viewport supports one volume,
 with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.

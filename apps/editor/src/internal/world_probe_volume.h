@@ -128,7 +128,7 @@ void ResizeWorldGiProbeVolumeAxis(QJsonObject& inoutComponents,
                                   foundation::float64 sizeMetres,
                                   bool isMinimumFace);
 
-/// Keep a layout change lossless. Counts to Volume writes the Transform scale from the probe extent;
-/// Volume to Counts writes the counts the Transform scale produced. Unchanged layouts leave the components alone.
+/// Preserve the probe layout when switching representations. Counts to Volume uses the probe extent for
+/// unchanged scale axes. Volume to Counts writes the counts derived from the scale.
 void SynchronizeWorldGiProbeLayout(const QJsonObject& previousComponents, QJsonObject& inoutComponents);
 } // namespace ludus::editor
