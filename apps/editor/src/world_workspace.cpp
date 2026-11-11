@@ -123,6 +123,22 @@ QString FieldKey(const QString& component, const QString& property)
     return component + QLatin1Char('/') + property;
 }
 constexpr foundation::int32 WORLD_PROPERTY_LAYOUT_WIDTH = 360;
+/// A vector row under its caption and unit ("Position (m)"), so the three fields share the panel's full width
+/// instead of what is left beside a label column.
+QWidget* MakeVectorBlock(const QString& title, const QString& unit, QWidget& inoutRow, QWidget& inoutParent)
+{
+    QWidget* block = new QWidget(&inoutParent);
+    block->setObjectName(QStringLiteral("inspectorVectorBlock"));
+    QVBoxLayout* blockLayout = new QVBoxLayout(block);
+    blockLayout->setContentsMargins(0, 0, 0, 0);
+    blockLayout->setSpacing(design::SPACING_EXTRA_SMALL);
+    QLabel* caption = new QLabel(unit.isEmpty() == true ? title : QStringLiteral("%1 (%2)").arg(title, unit), block);
+    caption->setForegroundRole(QPalette::PlaceholderText);
+    blockLayout->addWidget(caption);
+    inoutRow.setParent(block);
+    blockLayout->addWidget(&inoutRow);
+    return block;
+}
 /// The widget that holds field's row in rows: field itself, or the row a slider wraps it in.
 QWidget* GetFormRowWidget(const QFormLayout& rows, QWidget* field)
 {
@@ -2262,8 +2278,8 @@ void WorldWorkspace::RenderInspector()
                         },
                     });
                 }
-                rows->addRow(vector.Title,
-                             MakeVectorRow(components, vector.Unit, group, [this]() { markInspectorPending(); }));
+                QWidget* vectorRow = MakeVectorRow(components, QString(), group, [this]() { markInspectorPending(); });
+                rows->addRow(MakeVectorBlock(vector.Title, vector.Unit, *vectorRow, *group));
             }
         }
         rows->addRow(QStringLiteral("Mesh"), new IdentifierRow(scene.value(QStringLiteral("mesh")).toString(), group));
@@ -2543,21 +2559,7 @@ void WorldWorkspace::RenderInspector()
                 colourLayout->addWidget(vectorRow, 1);
                 vectorRow = colourRow;
             }
-            // The caption sits above the fields, with its unit, so the three fields share the panel's full
-            // width instead of what is left beside a label column.
-            QWidget* block = new QWidget(group);
-            block->setObjectName(QStringLiteral("inspectorVectorBlock"));
-            QVBoxLayout* blockLayout = new QVBoxLayout(block);
-            blockLayout->setContentsMargins(0, 0, 0, 0);
-            blockLayout->setSpacing(design::SPACING_EXTRA_SMALL);
-            QLabel* caption = new QLabel(groupOrNull->Unit.isEmpty() == true
-                                             ? groupOrNull->Title
-                                             : QStringLiteral("%1 (%2)").arg(groupOrNull->Title, groupOrNull->Unit),
-                                         block);
-            caption->setForegroundRole(QPalette::PlaceholderText);
-            blockLayout->addWidget(caption);
-            blockLayout->addWidget(vectorRow);
-            rows->addRow(block);
+            rows->addRow(MakeVectorBlock(groupOrNull->Title, groupOrNull->Unit, *vectorRow, *group));
         }
         if (IsBuiltInWorld(Document_) == true && cid == QStringLiteral("light"))
         {
