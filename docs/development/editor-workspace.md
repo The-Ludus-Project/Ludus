@@ -1205,7 +1205,8 @@ the same opt-in. Remove the component to let the player pass through the mesh.
 Apply or cancel any open Terrain draft. Select a player in the hierarchy and
 click **Explore as Player**. Hold the right
 mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
-**Space** to jump. Use **Escape** or leave the viewport to return to the previous
+**Space** to jump. The wheel does not change the walking speed, which the player's
+**Move speed** authors. Use **Escape** or leave the viewport to return to the previous
 editor camera. Movement is temporary and applies gravity even while you stand
 still. If you fall below the World, you return to the spawn.
 
@@ -1501,6 +1502,15 @@ The **Look** multiplier, below **FOV** in the **View** menu, controls mouse sens
 look and Alt/Option orbit, from **0.1×** to **4×** (default **1×**). Lower it for
 finer aiming. It is saved with viewport navigation; changing it preserves the
 current camera pose and does not change pan, dolly or keyboard movement speed.
+
+The **Fly** multiplier, below **Look**, is the keyboard flight speed relative to
+half the focus distance per second, from **0.01×** to **100×** (default **1×**).
+While the right mouse button is held, each wheel notch forward multiplies it by
+1.25 and each notch back divides it by 1.25, so a notch back undoes a notch
+forward exactly; a high-resolution trackpad scrolls through the same scale in
+finer steps. The viewport shows the new value, such as **Fly speed 2.44×**, over
+the frame for a moment, and **Shift** still quadruples the speed while held. The
+multiplier is saved with viewport navigation and can be typed exactly in the menu.
 On macOS, right-drag uses relative mouse/trackpad motion without repeatedly
 recentering the cursor. Releasing the button, pressing Escape, losing focus or
 hiding the viewport releases capture. If native capture is unavailable, dragging
@@ -1519,7 +1529,7 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 | Hold right mouse + WASD | Fly forward/backward and sideways |
 | Q / E while flying | Move down/up along world Y |
 | Shift while flying | Four-times movement speed |
-| Wheel while holding right mouse | Adjust fly speed without dollying |
+| Wheel while holding right mouse | Speed flight up by 1.25× per notch forward, or slow it down by the same factor per notch back, without dollying; the new multiplier shows over the frame |
 | Alt/Option + left-drag | Orbit around the current focus pivot |
 | Middle-drag or Shift + Alt/Option + left-drag | Pan in the camera plane |
 | Wheel / high-resolution trackpad scroll | Proportional dolly; orthographic views change visible span |
@@ -1995,25 +2005,39 @@ Browser and packaged game hosts continue to use their existing inputs.
 ### Baking probe GI for moving objects
 
 Create a **GI Probe Volume** from **Add World Preset** in a default World.
-Select it to see the grid's wire box before baking. Double-click its name in
-the entity list or press **F** in the viewport to frame the box. With **Move**
-selected, drag the arrows or plane handles to position it, or drag a coloured
-square on a face to resize along that axis. Resizing keeps the opposite face
-fixed and adds or removes whole probe intervals at the current spacing. The
-drag readout shows the new count and length.
+Its Transform position is the box's minimum corner and its Transform scale is
+the box's size in metres; a new volume is a 3 m cube. Select it to see the
+wire box before baking. Double-click its name in the entity list or press **F**
+in the viewport to frame the box.
 
-Switch to **Scale (R)** and drag the white center square to scale the entire
-volume. Drag up and right to enlarge it or down and left to shrink it. This
-changes spacing on all three axes while keeping the minimum corner and probe
-counts fixed. Hold **Shift** to snap the scale factor. The colored face handles
-still resize one axis at the current spacing. Releasing the pointer applies one
-undoable edit. Press **Escape** during a drag to discard it.
+By default the **Probe layout** is `volume`: probes start at the minimum
+corner and fill the box at **Probe spacing**, with the last probe plane
+nearest the far face, so a 10 m edge at 1 m spacing holds 11 probes, a
+10.4 m edge still holds 11 and a 10.6 m edge holds 12. Resize the box and the
+counts follow. With **Move** selected, drag the arrows or plane handles to
+position it, or drag a coloured square on a face to move that face; the
+opposite face stays fixed and the readout shows the new length and count.
+Switch to **Scale (R)** to use the ordinary scale handles at the minimum
+corner: the axis handles stretch one edge and the white centre square scales
+all three. Hold **Shift** to snap. Releasing the pointer applies one undoable
+edit; press **Escape** during a drag to discard it. The Properties panel
+reports the probes the box holds. When the box is not a whole number of
+spacings, or the per-axis limit of 12 probes is reached, a second outline
+shows where the probes stop, and the panel offers **Use N m
+spacing**, which asks before raising the spacing so 12 probes reach every
+edge.
 
-For precise values, set the Transform position to the volume's minimum corner
-and set **Probe spacing** in metres and the number of points along each axis,
-including both endpoints. The box follows the World axes. The native Lit
-viewport supports one volume, with 2 to 12 points on each axis and spacing from
-0.1 to 100 metres.
+Choose the `counts` layout to set **Probes along X**, **Y** and **Z**
+yourself: the box is then `(count - 1) × spacing` on each edge and the
+Transform scale is not used. In this layout the face handles add or remove
+whole probe intervals and the Scale tool's centre square changes the spacing
+while keeping the minimum corner and counts fixed. Switching layouts keeps
+the probes where they are: `counts` to `volume` writes the probe extent into
+the Transform scale, and `volume` to `counts` writes the derived counts.
+Worlds saved before the layout existed load as `counts`.
+
+The box follows the World axes. The native Lit viewport supports one volume,
+with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.
 
 Opt one or more static lights into [always-on baking](#baking-always-on-lights),
 then select the volume and click **Bake GI**. Attach **GI Probe Receiver** to
