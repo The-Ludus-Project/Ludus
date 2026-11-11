@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Single source of Ludus colour and spacing tokens. Read by the Qt editor (generated header at configure time), the init window (scripts/python/init_theme.py) and the browser editor (generated block in apps/editor/browser/editor.css; refresh it with scripts/python/design_tokens.py --write). Every pair in `contrast` is checked in both appearances by the editor tests and scripts/python/test_design_tokens.py. The `highContrast` colours replace the listed tokens when the system asks for more contrast (or LUDUS_HIGH_CONTRAST=1); each pair also holds its `highContrastMinimum` there. `type` holds font-size multipliers of the system font.",
+  "description": "Single source of Ludus colour and spacing tokens. Read by the Qt editor (generated header at configure time), the init window (scripts/python/init_theme.py) and the browser editor (generated block in apps/editor/browser/editor.css; refresh it with scripts/python/design_tokens.py --write). Every pair in `contrast` is checked in both appearances by the editor tests and scripts/python/test_design_tokens.py. The `highContrast` colours replace the listed tokens when the system asks for more contrast (or LUDUS_HIGH_CONTRAST=1); each pair also holds its `highContrastMinimum` there. Every colour is in at least one pair or names why it is exempt in `contrastExempt` (decorative or inactive only); scripts/python/design_tokens.py rejects the file otherwise. `type` holds font-size multipliers of the system font.",
   "colours": {
     "surface.workspace": {
       "dark": "#18232c",
@@ -43,14 +43,15 @@
       "use": "Labels and descriptions"
     },
     "text.tertiary": {
-      "dark": "#9bafb4",
+      "dark": "#a5b7bc",
       "light": "#4f6468",
       "use": "Hints, units and captions"
     },
     "text.disabled": {
       "dark": "#71858c",
       "light": "#7f9195",
-      "use": "Disabled text"
+      "use": "Disabled text",
+      "contrastExempt": "WCAG 1.4.3 and 1.4.11 exempt inactive controls; the editor palette draws disabled text in text.secondary, which is checked"
     },
     "text.log": {
       "dark": "#d7e3e2",
@@ -70,16 +71,17 @@
     "border.subtle": {
       "dark": "#3a4d59",
       "light": "#d3d0c8",
-      "use": "Decorative dividers and card edges"
+      "use": "Decorative dividers and card edges",
+      "contrastExempt": "Decorative only: WCAG 1.4.11 does not apply; anything a user must find or operate has a border.control edge"
     },
     "border.control": {
       "dark": "#80969e",
-      "light": "#71878b",
+      "light": "#6d8387",
       "use": "Field and button edges"
     },
     "accent.primary": {
       "dark": "#57d2c1",
-      "light": "#14786f",
+      "light": "#127066",
       "use": "Primary action, focus ring and links"
     },
     "accent.primaryActive": {
@@ -200,9 +202,9 @@
       "accent.primaryActive": "#003b36",
       "accent.onPrimary": "#ffffff",
       "accent.surface": "#bfeae2",
-      "status.success": "#0b5a22",
+      "status.success": "#0a5520",
       "status.warning": "#6b4000",
-      "status.danger": "#8f1a10",
+      "status.danger": "#85170e",
       "status.successSurface": "#d8f0df",
       "status.warningSurface": "#f8e8bd",
       "status.dangerSurface": "#f8d9d5"
@@ -451,6 +453,76 @@
       "background": "surface.viewport",
       "minimum": 3,
       "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Accent text, links and focus ring on raised",
+      "foreground": "accent.primary",
+      "background": "surface.raised",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Control edge on raised",
+      "foreground": "border.control",
+      "background": "surface.raised",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Focus ring on a selected row",
+      "foreground": "accent.primary",
+      "background": "accent.surface",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Secondary text on a selected row",
+      "foreground": "text.secondary",
+      "background": "accent.surface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Hint text on a selected row",
+      "foreground": "text.tertiary",
+      "background": "accent.surface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Success text on the success banner",
+      "foreground": "status.success",
+      "background": "status.successSurface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Warning text on the warning banner",
+      "foreground": "status.warning",
+      "background": "status.warningSurface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Danger text on the error banner",
+      "foreground": "status.danger",
+      "background": "status.dangerSurface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "HUD text on the top of the viewport backdrop",
+      "foreground": "text.hud",
+      "background": "surface.viewportTop",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Quiet HUD text on the top of the viewport backdrop",
+      "foreground": "text.hudQuiet",
+      "background": "surface.viewportTop",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
     },
     {
       "label": "Minor grid on viewport (a guide, not text)",

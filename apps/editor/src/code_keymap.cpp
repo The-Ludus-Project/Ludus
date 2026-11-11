@@ -1,4 +1,5 @@
 #include "internal/code_keymap.h"
+#include "internal/editor_commands.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -39,6 +40,12 @@ constexpr char VSCODE_PROFILE_VALUE[] = "vscode";
         // action is wired in M8); elsewhere F9 is unassigned.
         CodeKeymapBinding{ .CommandId = QStringLiteral("editor.toggleBreakpoint"), .Shortcut = QStringLiteral("F9") },
         CodeKeymapBinding{ .CommandId = QStringLiteral("tools.runInContext"), .Shortcut = QStringLiteral("F3") },
+        // The way out of a code editor's Tab (no keyboard trap); listed so no binding can take it.
+        CodeKeymapBinding
+        {
+            .CommandId = QString::fromLatin1(EDITOR_TAB_MOVES_FOCUS_COMMAND.Id),
+            .Shortcut = QString::fromLatin1(TAB_MOVES_FOCUS_SHORTCUT),
+        },
     };
 }
 } // namespace

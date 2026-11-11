@@ -749,14 +749,34 @@ source change. If shrinking the footprint would clip a stroke, the
 confirmation names how many strokes the edit removes. Replacing an embedded
 heightmap also requires confirmation.
 
+**Paint surface materials** colours the terrain from its own shape. Gentle,
+dry ground is grass, steeper ground turns to dirt and then rock, ground where
+water collects turns to mud, and gentle ground above **Snow line** is snow. The
+snow line is a local height in metres. The colours come from slope, wetness
+and elevation computed on the final surface, after sculpt strokes, so a stroke
+that steepens a bank or fills a hollow repaints it. Clear the box to keep one
+plain surface. The baked colour reaches the raster viewport and the path
+tracers through the same World surface.
+
+**Carve rivers** routes water downhill across the whole terrain and cuts a
+channel wherever enough ground drains to one point. **River sources** is that
+share of the terrain's area; smaller values carve more and shorter streams.
+Channels deepen and widen downstream, and water fills each channel below its
+banks. Rivers are carved into the generated or imported base before sculpt
+strokes, so a stroke can still fill or deepen a channel. Water is presentation
+of the terrain: clicks pass through it to the terrain, and it adds no walking
+collision. Carving depends on the sample grid, so changing **Samples per side**
+moves the channels. The fields, routing and carving are described in
+[terrain fields, drainage, rivers and material rules](../modules/content/terrain.md).
+
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
 shows the terrain's surface colour without adding mesh lights.
 [Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
 mesh for walking collision when the Terrain entity has **Static Collider**.
-Material paint, erosion and streaming are future
-work. See the
+Hand-painted materials, tiling material textures, erosion and streaming are
+future work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
 
@@ -969,6 +989,7 @@ keeps the window and its draft open.
 | Ctrl+K / F3 | Command Palette (Ludus keymap; VS Code uses Ctrl+Shift+P) / Run Command in Context |
 | Ctrl+Alt+F9 | Record Profiling (every keymap profile) |
 | F9 | Toggle Breakpoint (when a code editor has focus) |
+| Ctrl+M (Control+Shift+M on macOS) | Tab Moves Focus on or off: Tab leaves code editors instead of indenting |
 | F1 | Keyboard Shortcuts help |
 
 Two keymap profiles ship: **Ludus** (the house layout, Ctrl+K opens the command
@@ -982,13 +1003,39 @@ current project session.
 
 The **Command Palette** (Ctrl/Cmd+K) searches every menu command by name with fuzzy
 matching: letters must appear in order, and consecutive letters, word starts and
-short names rank higher. A command that is not available now is shown dimmed
-after the available ones and cannot run. **Run Command in Context** (F3) lists
-only the commands that can run right now. Enter runs the chosen command after
-the palette closes; Up and Down move through the list; Esc closes it. Both read
-the menu bar when they open and keep nothing while closed, so a command added
-to a menu appears in the palette and the F1 list with its label, shortcut and
-availability.
+short names rank higher. The matched letters are shown in bold, and each row
+shows the command's menu and shortcut. A command that is not available now is
+shown dimmed after the available ones and cannot run. **Run Command in Context**
+(F3) lists only the commands that can run right now. Focus stays in the search
+box: Enter runs the chosen command after the palette closes, Up and Down move
+through the list (wrapping), Page Up and Page Down move a page and stop at the
+ends, and Esc closes it. The search box's accessible description names the
+chosen command and its shortcut for screen readers. Both read the window's own
+QActions when they open and keep nothing while closed: the menu bar first, then
+commands that live only on a toolbar or the window itself. A command added to a
+menu or toolbar therefore appears in the palette and the F1 list with its label,
+shortcut and availability.
+
+### Keyboard focus and contrast
+
+Every control shows keyboard focus with the same accent ring (2 logical px, 3 in
+high contrast): buttons, fields, combo and spin boxes and tabs turn their edge
+into the ring; check boxes, radio buttons, sliders and the current row of a
+focused list, tree or table get the ring drawn around them. A selected row keeps
+its tinted fill and still shows the ring when it is the current row, so
+selection and focus never look the same. Tab walks the window's panels as one
+loop and comes back round; no control keeps focus on Tab. Multi-line prose
+fields pass Tab on. Code editors indent with Tab, so **Edit → Tab Moves Focus**
+(Ctrl+M, Control+Shift+M on macOS, as in VS Code) makes Tab and Shift+Tab move
+focus out of every code editor until it is turned off. The
+`[editor][keyboard]` tests walk the main window with Tab and fail on a trap.
+
+Colours come from [`config/design-tokens.json`](../../config/design-tokens.json).
+Every colour there is in at least one contrast pair or names why it is exempt
+(`contrastExempt`, decorative or inactive only), text pairs need WCAG AA 4.5:1
+(7:1 in high contrast) and control edges and the focus ring 3:1 (4.5:1).
+`scripts/python/test_design_tokens.py` and the `[design-tokens]` Editor tests
+fail when a token or the palette's mapping of tokens to Qt roles breaks one.
 
 The help dialog reads the same QAction bindings used by menus/toolbars, groups
 them by menu and has a search box. Qt's
@@ -1451,8 +1498,18 @@ viewport-sized overlay texture. Camera and gesture changes are projected once
 per Qt frame, and the readback presentation draws the same strokes in one batch.
 CPU profiling includes `EditorObjectOverlayBuild`, `EditorObjectOverlayUpload`
 and `EditorObjectOverlayPaint` to distinguish these costs, and `EditorSilhouetteBuild`,
-`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the CPU outline. The browser's separate
-GPU canvas does not yet composite the overlay.
+`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the CPU outline.
+
+The browser editor shows the same overlay, with the same picking, transform handles
+and drag readout. Its engine canvas, WebGPU or WebGL 2, covers Qt's own canvas, so a
+second transparent 2D canvas sits above it on the same rectangle and lets pointer
+input through to Qt. The browser paints the overlay with the readback
+presentation's painter at the screen's pixel ratio, but only over the rectangle
+the outline, handles and readout cover. It copies that rectangle into the canvas
+after clearing the one painted before. The browser repaints only when the overlay
+changes, a new frame arrives or the viewport is resized. It uses the CPU outline;
+the GPU outline needs the project render graph's display frames, which the
+browser editor does not use.
 
 To compare the old painted texture with the batched geometry, build the optional
 `ludus_viewport_overlay_benchmark` target in a native editor build with tests enabled.

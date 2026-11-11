@@ -59,6 +59,32 @@ bool Fail(QString& error, const QString& text)
     error = text;
     return false;
 }
+/// Distinct texture, tint and roughness combinations an authored World supports; identical surfaces are shared.
+constexpr qsizetype MAX_AUTHORED_PREVIEW_SURFACES = 8;
+
+/// Share an identical authored surface or add one within MAX_AUTHORED_PREVIEW_SURFACES.
+bool AddPreviewSurface(RenderScene& inoutScene, const PreviewSurface& surface, int32& outIndex, QString& outError)
+{
+    for (int32 i = 0; i < inoutScene.Surfaces.size(); ++i)
+    {
+        const PreviewSurface& existing = inoutScene.Surfaces[i];
+        if (existing.Texture == surface.Texture && existing.Tint == surface.Tint &&
+            existing.FlatTint == surface.FlatTint && existing.Roughness == surface.Roughness)
+        {
+            outIndex = i;
+            return true;
+        }
+    }
+    if (inoutScene.Surfaces.size() == MAX_AUTHORED_PREVIEW_SURFACES)
+    {
+        outError = QStringLiteral("Preview supports eight distinct surfaces; identical surfaces are shared. Set a "
+                                  "terrain's Surface to Plain or remove a textured object.");
+        return false;
+    }
+    outIndex = static_cast<int32>(inoutScene.Surfaces.size());
+    inoutScene.Surfaces.append(surface);
+    return true;
+}
 /// Distinct codes of one 8-bit texture channel.
 constexpr usize CHANNEL_CODES = 256;
 /// Largest 8-bit channel code, which encodes 1.
@@ -1179,10 +1205,16 @@ bool RenderScene::Load(const QString& root,
                 PreviewObject object;
                 object.Id = id;
                 object.Name = name;
+                // A generated terrain surface and its water, resolved after the renderable's own texture.
+                int32 terrainTexture = -1;
+                int32 terrainSurface = -1;
+                int32 waterMesh = -1;
+                int32 waterSurface = -1;
                 if (hasTerrain == true)
                 {
-                    PreviewMesh mesh;
-                    mesh.Id = QStringLiteral("terrain:") + id;
+                    TerrainBuild build;
+                    build.Mesh.Id = QStringLiteral("terrain:") + id;
+                    build.Water.Id = QStringLiteral("water:") + id;
                     if (static_cast<usize>(candidate.Meshes.size()) >= MAX_PREVIEW_MESHES)
                     {
                         return Fail(outError,
@@ -1190,11 +1222,12 @@ bool RenderScene::Load(const QString& root,
                                                    "a terrain before adding another.")
                                         .arg(MAX_PREVIEW_MESHES));
                     }
-                    if (BuildTerrainMesh(terrain, mesh, outError) == false)
+                    if (BuildTerrain(terrain, build, outError) == false)
                     {
                         return Fail(outError, name + QStringLiteral(": ") + outError);
                     }
-                    terrainVertices += static_cast<usize>(mesh.Positions.size());
+                    terrainVertices += static_cast<usize>(build.Mesh.Positions.size()) +
+                                       static_cast<usize>(build.Water.Positions.size());
                     if (terrainVertices > format::RESIDENT_REFERENCE_LIMITS.Vertices)
                     {
                         return Fail(outError,
@@ -1204,9 +1237,42 @@ bool RenderScene::Load(const QString& root,
                     }
                     object.Mesh = static_cast<int32>(candidate.Meshes.size());
                     assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("terrain"), terrain},
-                                                                {QStringLiteral("mesh"), mesh.Id}})
+                                                                {QStringLiteral("mesh"), build.Mesh.Id}})
                                           .toJson(QJsonDocument::Compact);
-                    candidate.Meshes.append(foundation::Move(mesh));
+                    candidate.Meshes.append(foundation::Move(build.Mesh));
+                    if (build.BaseColor.isNull() == false)
+                    {
+                        terrainTexture = static_cast<int32>(candidate.Textures.size());
+                        candidate.Textures.append({id + QStringLiteral("#surface"), foundation::Move(build.BaseColor)});
+                        PreviewSurface surface;
+                        surface.Texture = terrainTexture;
+                        surface.FlatTint = {build.BaseColorMean.X, build.BaseColorMean.Y, build.BaseColorMean.Z, 1};
+                        surface.Roughness = TERRAIN_SURFACE_ROUGHNESS;
+                        if (AddPreviewSurface(candidate, surface, terrainSurface, outError) == false)
+                        {
+                            return Fail(outError, name + QStringLiteral(": ") + outError);
+                        }
+                    }
+                    if (build.Water.Positions.isEmpty() == false)
+                    {
+                        if (static_cast<usize>(candidate.Meshes.size()) >= MAX_PREVIEW_MESHES)
+                        {
+                            return Fail(outError,
+                                        QStringLiteral("World exceeds the %1-mesh viewport limit with river water. "
+                                                       "Turn off Carve rivers or remove a terrain.")
+                                            .arg(MAX_PREVIEW_MESHES));
+                        }
+                        PreviewSurface surface;
+                        surface.Tint = TERRAIN_WATER_TINT;
+                        surface.FlatTint = TERRAIN_WATER_TINT;
+                        surface.Roughness = TERRAIN_WATER_ROUGHNESS;
+                        if (AddPreviewSurface(candidate, surface, waterSurface, outError) == false)
+                        {
+                            return Fail(outError, name + QStringLiteral(": ") + outError);
+                        }
+                        waterMesh = static_cast<int32>(candidate.Meshes.size());
+                        candidate.Meshes.append(foundation::Move(build.Water));
+                    }
                 }
                 else if (hasAperture == true)
                 {
@@ -1248,7 +1314,13 @@ bool RenderScene::Load(const QString& root,
                 {
                     return Fail(outError, name + QStringLiteral(": choose mapped mesh/texture, RGB in [0,1]."));
                 }
-                if (object.Texture >= 0)
+                if (terrainSurface >= 0)
+                {
+                    object.Texture = terrainTexture;
+                    object.Surface = terrainSurface;
+                    object.Tint = {1, 1, 1, 1};
+                }
+                if (object.Texture >= 0 && object.Surface < 0)
                 {
                     for (int32 i = 0; i < candidate.Surfaces.size(); ++i)
                     {
@@ -1261,7 +1333,7 @@ bool RenderScene::Load(const QString& root,
                     }
                     if (object.Surface < 0)
                     {
-                        if (candidate.Surfaces.size() == 8)
+                        if (candidate.Surfaces.size() == MAX_AUTHORED_PREVIEW_SURFACES)
                         {
                             return Fail(outError,
                                         QStringLiteral("Preview supports eight distinct texture/tint combinations; "
@@ -1293,6 +1365,19 @@ bool RenderScene::Load(const QString& root,
                     high = {math::Max(high.X, p.X), math::Max(high.Y, p.Y), math::Max(high.Z, p.Z)};
                 }
                 candidate.Objects.append(object);
+                if (waterMesh >= 0)
+                {
+                    // Water is presentation of the terrain entity: it has its own identifier so brushes,
+                    // colliders and picking, which address the entity, skip it.
+                    PreviewObject water;
+                    water.Id = GetTerrainWaterObjectId(id);
+                    water.Name = name;
+                    water.Mesh = waterMesh;
+                    water.Surface = waterSurface;
+                    water.Transform = object.Transform;
+                    water.Tint = TERRAIN_WATER_TINT;
+                    candidate.Objects.append(water);
+                }
             }
         }
         if (Attached(entity, cameraBinding))
@@ -1861,8 +1946,13 @@ bool ComposeWorldScene(const RenderScene& authored,
     }
     for (int32 i = 0; i < authored.Objects.size(); ++i)
     {
+        // Authored surfaces keep their roughness, such as generated terrain and water; others use the default.
+        const PreviewObject& object = authored.Objects[i];
+        const float32 roughness = object.Surface >= 0 && object.Surface < authored.Surfaces.size()
+                                      ? authored.Surfaces[object.Surface].Roughness
+                                      : float32{.5F};
         stream << static_cast<uint32>(imported.Textures.GetSize() + static_cast<usize>(i)) << uint32{0} << float32{0}
-               << float32{.5F} << float32{0} << float32{0} << float32{0} << uint32{0};
+               << roughness << float32{0} << float32{0} << float32{0} << uint32{0};
         WriteLittleEndianUint64(stream, 0);
         stream << float32{0} << format::ALPHA_OPAQUE << float32{0} << format::NO_TEXTURE << format::NO_TEXTURE
                << float32{0};

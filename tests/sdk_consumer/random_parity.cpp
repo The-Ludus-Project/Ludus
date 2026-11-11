@@ -144,7 +144,8 @@ bool CreateDispatch() noexcept
         { .Binding = 0, .Buffer = gCaseBuffer, .Size = gCorpus.GetCaseBytes() },
         { .Binding = 1, .Buffer = gResultBuffer, .Size = gCorpus.GetResultBytes() },
     }};
-    return IsAccepted(rhi::CreateBindingSet(gDevice, gLayout, resources, gSet)) == true &&
+    const BorrowedView<const rhi::RasterBindingResource> bindings{resources.GetData(), resources.GetSize()};
+    return IsAccepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gSet)) == true &&
            IsAccepted(rhi::CreateComputePipeline(gDevice, { .Shader = gShader, .Layout = gLayout }, gPipeline)) == true;
 }
 bool CompileGraph() noexcept

@@ -4,6 +4,7 @@
 #include "polygonal_light_sampling_estimators_layout.h"
 #include "polygonal_light_sampling_oracle.h"
 
+#include <ludus/content/scene_format/material.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -95,6 +96,16 @@ bool RunEstimatorKernel(Array<uint8>& outBytes)
                                          { .Role = rhi::BufferRole::Storage, .Size = TABLE_BYTES },
                                          {reinterpret_cast<const uint8*>(internal::LTC_TABLE.GetData()), TABLE_BYTES},
                                          table)) == true);
+    constexpr usize SCENE_WORD_BYTES = LUDUS_GPU_PREVIEW_VECTOR_BYTES;
+    constexpr usize SCENE_WORD_ELEMENTS = SCENE_WORD_BYTES / sizeof(uint32);
+    const StaticArray<uint32, SCENE_WORD_ELEMENTS> materialModelWord{
+        ludus::content::scene_format::LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS};
+    rhi::BufferHandle scene;
+    REQUIRE(
+        IsAccepted(rhi::CreateBuffer(device,
+                                     { .Role = rhi::BufferRole::Storage, .Size = SCENE_WORD_BYTES },
+                                     {reinterpret_cast<const uint8*>(materialModelWord.GetData()), SCENE_WORD_BYTES},
+                                     scene)) == true);
     const rhi::RasterShaderDescription shader = ludus::shaders::polygonal_light_sampling_estimators::Compute();
     rhi::RasterShaderHandle shaderHandle;
     rhi::BindingLayoutHandle layout;
@@ -102,10 +113,12 @@ bool RunEstimatorKernel(Array<uint8>& outBytes)
     REQUIRE(IsAccepted(rhi::CreateBindingLayout(device, shader.Bindings, layout)) == true);
     WaitReady(device, results);
     WaitReady(device, table);
+    WaitReady(device, scene);
     WaitReady(device, shaderHandle);
     WaitReady(device, layout);
-    constexpr usize BINDING_COUNT = 2;
+    constexpr usize BINDING_COUNT = 3;
     const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{{
+        { .Binding = LUDUS_GPU_PREVIEW_SCENE_BINDING, .Buffer = scene, .Size = SCENE_WORD_BYTES },
         { .Binding = LUDUS_GRAPH_BUFFER0_BINDING, .Buffer = results, .Size = RESULT_BYTES },
         { .Binding = LUDUS_POLYGONAL_LIGHT_ESTIMATORS_LTC_TABLE_BINDING, .Buffer = table, .Size = TABLE_BYTES },
     }};
@@ -121,12 +134,15 @@ bool RunEstimatorKernel(Array<uint8>& outBytes)
     rhi::GraphVersion original;
     rhi::GraphVersion version;
     rhi::GraphVersion tableVersion;
+    rhi::GraphVersion sceneVersion;
     REQUIRE(rhi::ImportGraphBuffer(device, graph, results, original) == RasterStatus::Ready);
     REQUIRE(rhi::NextGraphVersion(device, graph, original, version) == RasterStatus::Ready);
     REQUIRE(rhi::ImportGraphBuffer(device, graph, table, tableVersion) == RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, scene, sceneVersion) == RasterStatus::Ready);
     const StaticArray<rhi::GraphUse, BINDING_COUNT> uses{{
         {version, rhi::GraphAccessMode::StorageReadWrite, 0, RESULT_BYTES, rhi::RasterVisibility::Compute},
         {tableVersion, rhi::GraphAccessMode::StorageRead, 0, TABLE_BYTES, rhi::RasterVisibility::Compute},
+        {sceneVersion, rhi::GraphAccessMode::StorageRead, 0, SCENE_WORD_BYTES, rhi::RasterVisibility::Compute},
     }};
     const rhi::ComputeDispatch dispatch
     {

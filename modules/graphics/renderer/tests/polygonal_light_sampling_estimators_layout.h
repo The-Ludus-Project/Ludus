@@ -17,7 +17,7 @@
 //   13: (c_1 rgb, unused)
 // The results occupy LUDUS_GRAPH_BUFFER0_BINDING (renderer_gpu_preview_layout.h), as in graph wrappers, and the
 // renderer's LTC table is bound read-only at the next slot; ltc_table.slang gives it an explicit native register, so
-// Metal and Vulkan number it alike.
+// Metal and Vulkan number it alike. The first scene word's X holds the scattering model tag.
 #define LUDUS_POLYGONAL_LIGHT_ESTIMATORS_LTC_TABLE_BINDING 7
 #define LUDUS_POLYGONAL_LIGHT_ESTIMATORS_RECORDS_PER_INVOCATION 14
 #define LUDUS_POLYGONAL_LIGHT_ESTIMATORS_GROUP_SIZE 64

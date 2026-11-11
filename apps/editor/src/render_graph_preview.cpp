@@ -246,8 +246,8 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         material.NormalScale = source.NormalScale;
         material.IsAlphaMasked = source.IsAlphaMasked;
         material.AlphaCutoff = source.AlphaCutoff;
-        // The editor samples the retained import mip with bilinear reconstruction.
-        // Minification mip chains and per-map source samplers are not retained by LUSCN.
+        // LUSCN retains one import mip and no per-map source samplers. The render graph's scene
+        // resources build the minification chain at upload and select levels by derivative LOD.
         material.Sampler.Filter = rhi::RasterFilter::Linear;
         material.Sampler.U = source.Repeat ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
         material.Sampler.V = material.Sampler.U;

@@ -16,10 +16,12 @@
 #include <QDockWidget>
 #include <QFontMetrics>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QStyleFactory>
 #include <QStyleOption>
 #include <QTabBar>
@@ -96,6 +98,26 @@ bool IsDarkPalette(const QPalette& palette)
 bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* value)
 {
     return widgetOrNull != nullptr && widgetOrNull->property(name).toString() == QLatin1String(value);
+}
+
+/// True when a control inside container takes focus with Tab.
+bool HasTabFocusableDescendant(const QWidget& container)
+{
+    const QList<QWidget*> children = container.findChildren<QWidget*>();
+    return std::any_of(children.begin(), children.end(), [](const QWidget* child) {
+        return (child->focusPolicy() & Qt::TabFocus) != 0;
+    });
+}
+
+/// True for the controls whose edge becomes the focus ring (see drawPrimitive and drawComplexControl).
+bool HasOwnFocusRing(const QWidget* widgetOrNull)
+{
+    return qobject_cast<const QPushButton*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QToolButton*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QComboBox*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QAbstractSpinBox*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QLineEdit*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QTabBar*>(widgetOrNull) != nullptr;
 }
 
 struct ControlBodyColours final
@@ -253,6 +275,14 @@ void EditorStyle::polish(QWidget* widget)
         // PlaceholderText carries the secondary text colour in MakeEditorPalette, so palette changes follow.
         label->setForegroundRole(QPalette::PlaceholderText);
         label->setProperty(SECONDARY_LABEL_MARKER, true);
+    }
+    // A scroll area that wraps a panel of controls is not a Tab stop of its own: it would take focus without showing
+    // it, and the controls inside already scroll into view as Tab reaches them. One with nothing focusable inside
+    // keeps focus so the keyboard can still scroll it.
+    if (QScrollArea* scroll = qobject_cast<QScrollArea*>(widget);
+        scroll != nullptr && scroll->widget() != nullptr && HasTabFocusableDescendant(*scroll->widget()) == true)
+    {
+        scroll->setFocusPolicy(Qt::NoFocus);
     }
     // Hover repaints for the controls drawn here that the platform style does not already track.
     if (qobject_cast<QTabBar*>(widget) != nullptr || qobject_cast<QToolButton*>(widget) != nullptr)
@@ -415,13 +445,22 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             painter->restore();
             return;
         }
-        case PE_FrameFocusRect:
-            // Item views mark the current row by its selection, and the controls draw their own focus ring.
-            if (qobject_cast<const QAbstractItemView*>(widgetOrNull) != nullptr)
+        case PE_FrameFocusRect: {
+            // Buttons, fields, combo and spin boxes and tabs draw the ring on their own edge, so the platform's
+            // inner rectangle would be a second, differently coloured marker.
+            if (HasOwnFocusRing(widgetOrNull) == true)
             {
                 return;
             }
-            break;
+            // Everything else (check boxes, radio buttons, the current row of a focused list or tree, group box
+            // titles) gets the same accent ring, whether or not the row is also selected: selection is a tinted
+            // fill, keyboard focus an outline (docs/architecture/editor-art-direction.md).
+            if (isEnabled == true)
+            {
+                DrawControlBody(painter, option->rect, { .Fill = Qt::transparent, .Edge = mColours.Accent }, ringWidth);
+            }
+            return;
+        }
         case PE_PanelButtonTool: {
             // A switch that is on (visual role "toggle", such as Force raster) fills with the accent like a selected
             // segment, so its state reads at a glance. Disclosure buttons (Advanced, Details) keep the edge only:
@@ -745,6 +784,18 @@ void EditorStyle::drawComplexControl(ComplexControl control,
             }
             return;
         }
+    }
+    if (control == CC_Slider)
+    {
+        // The platform marks a focused slider with a faint highlight; draw the same accent ring as every other
+        // control around the handle, which is what the arrow keys move.
+        QProxyStyle::drawComplexControl(control, option, painter, widgetOrNull);
+        if (isRingShown == true)
+        {
+            const QRect handle = proxy()->subControlRect(CC_Slider, option, SC_SliderHandle, widgetOrNull);
+            DrawControlBody(painter, handle, { .Fill = Qt::transparent, .Edge = mColours.Accent }, GetFocusRingWidth());
+        }
+        return;
     }
     QProxyStyle::drawComplexControl(control, option, painter, widgetOrNull);
 }

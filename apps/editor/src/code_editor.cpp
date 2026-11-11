@@ -11,6 +11,7 @@
 #include "internal/editor_commands.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
@@ -160,12 +161,37 @@ private:
     CodeEditor* mEditor;
 };
 
+namespace
+{
+/// Edit > Tab Moves Focus, shared by every code editor in the process (GUI thread only).
+bool isCodeTabMovingFocus = false;
+} // namespace
+
+void SetCodeEditorTabMovesFocus(bool isTabMovingFocus)
+{
+    isCodeTabMovingFocus = isTabMovingFocus;
+    for (QWidget* widget : QApplication::allWidgets())
+    {
+        if (CodeEditor* editor = qobject_cast<CodeEditor*>(widget); editor != nullptr)
+        {
+            // QPlainTextEdit moves focus on Tab before its key handler sees it when this is set.
+            editor->setTabChangesFocus(isTabMovingFocus);
+        }
+    }
+}
+
+bool IsCodeEditorTabMovingFocus() noexcept
+{
+    return isCodeTabMovingFocus;
+}
+
 CodeEditor::CodeEditor(QWidget* parentOrNull)
     : QPlainTextEdit(parentOrNull), mGutter(new CodeEditorGutter(this)),
       mHighlighter(new CodeSyntaxHighlighter(document())),
       mFormatAction(new QAction(QStringLiteral("Format Document"), this)),
       mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this)), mMultiCursor(*this)
 {
+    setTabChangesFocus(isCodeTabMovingFocus);
     mCompletionList = new QListWidget(this);
     mCompletionList->setWindowFlags(Qt::ToolTip);
     mCompletionList->setAttribute(Qt::WA_ShowWithoutActivating);

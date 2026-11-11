@@ -355,7 +355,9 @@ void MainWindow::BuildUi()
     Audio_ = new AudioWorkspace(audioScroll);
     audioScroll->setWidget(Audio_);
     World_ = new WorldWorkspace(Controller_->Tooling(), mDocuments);
-    World_->setFocusPolicy(Qt::StrongFocus);
+    // A click takes focus so the World's shortcuts apply, but Tab passes over the container to its controls: it has
+    // nothing of its own to show focus on.
+    World_->setFocusPolicy(Qt::ClickFocus);
     Scripts_ = new ScriptWorkspace(Controller_, mDocuments);
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
     mCodeArea = new CodeEditorArea(mDocuments);
