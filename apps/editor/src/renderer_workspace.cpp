@@ -2015,11 +2015,18 @@ bool RendererWorkspace::writeDocument()
         return false;
     }
     QStringList saved;
-    const RenderGraphDocumentStatus status = mDocument.Save(saved);
+    QString writeError;
+    const RenderGraphDocumentStatus status = mDocument.Save(saved, &writeError);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         // A partial Save can update saved bytes without changing the draft revision.
         static_cast<void>(mRecovery->CheckpointNow(true));
+        if (writeError.isEmpty() == false)
+        {
+            mStatus->setText(writeError);
+            Q_EMIT DocumentChanged();
+            return false;
+        }
         mStatus->setText(wasBuiltIn == true && status == RenderGraphDocumentStatus::Conflict
                              ? QStringLiteral("%1/ already holds render-graph files; nothing was written. Open "
                                               "its graph with Open Graph... instead.")

@@ -450,6 +450,26 @@ endforeach()
 configure_file(src/internal/render_graph_plan_policy.h.in
     "${graph_layout_directory}/render_graph_plan_policy.h" @ONLY)
 
+# The installed tooling owns the version-2 native profile vocabulary.
+set(native_profile_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/native.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${native_profile_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0, sys.argv[1]); from ludus_tools.native import PRESET_FLAVOR; print(' '.join(PRESET_FLAVOR))"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE native_profile_status OUTPUT_VARIABLE native_project_profiles
+    ERROR_VARIABLE native_profile_error OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT native_profile_status EQUAL 0 OR native_project_profiles STREQUAL "")
+    message(FATAL_ERROR "Cannot read native project profiles: ${native_profile_error}")
+endif()
+
+# One atomic publication boundary shared by editor source and graph saves.
+add_library(ludus_editor_file_write STATIC src/editor_file_write.cpp)
+target_include_directories(ludus_editor_file_write PRIVATE src)
+target_compile_definitions(ludus_editor_file_write PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+target_link_libraries(ludus_editor_file_write PRIVATE Qt6::Core
+    "$<$<PLATFORM_ID:Windows>:Ludus::FoundationFilesystem>")
+ludus_apply_project_defaults(ludus_editor_file_write)
+
 # --- Shared editor logic library ---------------------------------------------
 # The transition function, project store, tool-process protocol framing and log
 # buffer live in a library so offscreen tests can exercise them without creating
@@ -476,7 +496,8 @@ add_library(ludus_editor_core STATIC
 )
 set_target_properties(ludus_editor_core PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_compile_definitions(ludus_editor_core PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+target_compile_definitions(ludus_editor_core PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
+    "LUDUS_EDITOR_NATIVE_PROJECT_PROFILES=\"${native_project_profiles}\"")
 target_link_libraries(ludus_editor_core
     PUBLIC
         Qt6::Core
@@ -484,6 +505,7 @@ target_link_libraries(ludus_editor_core
         Ludus::FoundationBase
         Ludus::FoundationLogging
         Ludus::AudioContent
+        ludus_editor_file_write
 )
 ludus_apply_project_defaults(ludus_editor_core)
 
@@ -568,7 +590,7 @@ set_target_properties(ludus_editor_code PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_code PRIVATE src)
 target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
 target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationContainers
-    PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling Ludus::FoundationStrings)
+    PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling Ludus::FoundationStrings ludus_editor_file_write)
 # LUSL coloring and formatting use the LUSL compiler library in process, natively and in the browser.
 target_link_libraries(ludus_editor_code PRIVATE Ludus::ShaderLanguage)
 # The syntax service's parsers; tree-sitter types stay inside the editor's syntax worker.
@@ -631,7 +653,8 @@ ludus_editor_add_objects(ludus_editor_render_graph_model
     src/internal/render_graph_options.h src/render_graph_options.cpp
     src/internal/render_graph_shader_interface.h src/render_graph_shader_interface.cpp)
 target_link_libraries(ludus_editor_render_graph_model PUBLIC Qt6::Core Qt6::Widgets
-    Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationStrings)
+    Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationStrings
+    PRIVATE ludus_editor_file_write)
 
 # Editor-private curve/surface authoring adapters (curves and surfaces G5):
 # a Qt-free document/undo, async prepare job, transactional preview and cursor
@@ -1332,6 +1355,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Catch2::Catch2)
     ludus_apply_project_defaults(ludus_editor_tests)
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::Platform)
+    if(WIN32)
+        target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationFilesystem)
+    endif()
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
     # The tests also replay committed migration manifests to produce version-2 World fixtures.
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity)

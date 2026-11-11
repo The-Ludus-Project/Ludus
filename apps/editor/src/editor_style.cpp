@@ -679,6 +679,18 @@ void EditorStyle::drawComplexControl(ComplexControl control,
                                      QPainter* painter,
                                      const QWidget* widgetOrNull) const
 {
+#if defined(Q_OS_WIN)
+    if (control == CC_ToolButton)
+    {
+        // Thanks to the Qt Company, Qt 6.8.3 QCommonStyle::drawComplexControl
+        // and QWindowsVistaStyle::drawComplexControl (CC_ToolButton). The
+        // native style bypasses our panel primitive on regular tool buttons.
+        // Reuse Qt's common layout and our existing themed paint primitives.
+        // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/styles/qcommonstyle.cpp
+        QCommonStyle::drawComplexControl(control, option, painter, widgetOrNull);
+        return;
+    }
+#endif
     const bool isEnabled = option->state.testFlag(State_Enabled);
     const bool isRingShown = option->state.testFlag(State_HasFocus) == true && isEnabled == true;
     const auto drawBody = [&]() {

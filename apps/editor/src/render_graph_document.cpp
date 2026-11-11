@@ -1,4 +1,5 @@
 #include "internal/render_graph_document.h"
+#include "internal/editor_file_write.h"
 #include "internal/render_graph_comment_frame.h"
 #include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_options.h"
@@ -1889,8 +1890,12 @@ RenderGraphDocumentStatus RenderGraphDocument::RestoreRecoverySnapshot(const Ren
     return commit(snapshot, false, {}, {}, {}, {}, CommitKind::Source);
 }
 
-RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
+RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles, QString* outErrorOrNull)
 {
+    if (outErrorOrNull != nullptr)
+    {
+        outErrorOrNull->clear();
+    }
     BreakTextGroup();
     outSavedFiles.clear();
     if (IsLoaded() == false)
@@ -1995,11 +2000,19 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
             outSavedFiles.append(file);
             continue;
         }
-        QSaveFile output(path);
-        output.setDirectWriteFallback(false);
-        if (QFileInfo(path).isSymLink() == true || output.open(QIODevice::WriteOnly) == false ||
-            output.write(bytes) != bytes.size() || output.commit() == false)
+        if (QFileInfo(path).isSymLink() == true)
         {
+            return RenderGraphDocumentStatus::Conflict;
+        }
+        QString error;
+        if (WriteEditorFileAtomically(path, bytes, error) == false)
+        {
+            if (outErrorOrNull != nullptr)
+            {
+                *outErrorOrNull = QStringLiteral("Could not replace %1: %2. Close other programs using the file or "
+                                                 "check its permissions, then save again. Unsaved changes were kept.")
+                                      .arg(file, error);
+            }
             return RenderGraphDocumentStatus::WriteFailed;
         }
         mSaved.Files.insert(file, bytes);

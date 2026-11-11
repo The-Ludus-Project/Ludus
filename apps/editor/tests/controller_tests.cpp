@@ -100,11 +100,13 @@ QByteArray ValidDescriptor()
 }
 QByteArray MakePlayDescriptor()
 {
-    QByteArray descriptor = ValidDescriptor();
 #if defined(Q_OS_WIN)
-    descriptor.replace("linux-clang-debug", "windows-msvc-debug");
+    return QByteArrayLiteral(R"json({"version":2,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"windows-msvc-debug","target":"app","run":{"cwd":".","args":[]},
+"engine":{"version":"0.1.0"}})json");
+#else
+    return ValidDescriptor();
 #endif
-    return descriptor;
 }
 } // namespace
 
@@ -589,8 +591,8 @@ TEST_CASE("Play menu follows saved project and tooling eligibility", "[editor][c
 
 TEST_CASE("Live Play ownership prevents a competing RAD debug job", "[editor][debug][play]")
 {
-#if defined(Q_OS_MACOS)
-    SKIP("RAD sessions are Linux-only; macOS capability gates are tested separately");
+#if !defined(Q_OS_LINUX)
+    SKIP("Competing RAD ownership is exercised on the Linux profile that supports it.");
 #endif
     QTemporaryDir dir;
     const auto tooling = DebugTooling(dir);

@@ -112,5 +112,25 @@
     "run_args": [
       "--level=1"
     ]
+  },
+  {
+    "file": "valid_v2_windows_profile.json",
+    "valid": true,
+    "version": 2,
+    "name": "Windows Game",
+    "provider": "cmake",
+    "preset": "windows-msvc-profile",
+    "engine_version": "0.1.0",
+    "run_args": []
+  },
+  {
+    "file": "valid_v2_windows_visual_studio.json",
+    "valid": true,
+    "version": 2,
+    "name": "Windows Game",
+    "provider": "cmake",
+    "preset": "windows-msvc-visual-studio-development",
+    "engine_version": "0.1.0",
+    "run_args": []
   }
 ]

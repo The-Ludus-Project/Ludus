@@ -56,10 +56,11 @@ struct LoadOutcome
 // save/reopen round-trip is stable and digests are comparable (design 4).
 [[nodiscard]] QByteArray SerializeDescriptor(const ProjectDescriptor& descriptor);
 
-// Parse+validate descriptor bytes against the version-1 contract and size
-// limits. Rejects >64 KiB input, malformed JSON, NUL/invalid UTF-8/unpaired
-// surrogates, unknown fields at any object level, wrong types and out-of-range
-// values. Pure function; no I/O.
+/// Supported version-2 native presets in tooling registry order. Static lifetime.
+[[nodiscard]] const QStringList& GetNativeProjectPresets();
+
+// Parse and validate bounded version-1 and version-2 descriptor bytes. Rejects
+// malformed JSON, invalid UTF-8, unknown fields and invalid values. Does no I/O.
 [[nodiscard]] ParseOutcome ParseDescriptor(const QByteArray& bytes);
 
 class ProjectStore

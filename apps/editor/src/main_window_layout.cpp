@@ -13,11 +13,13 @@
 #include "internal/editor_commands.h"
 #include "internal/editor_icons.h"
 #include "internal/editor_style.h"
+#include "internal/engine_pin.h"
 #include "internal/error_list.h"
 #include "internal/item_selection.h"
 #include "internal/main_window.h"
 #include "internal/project_explorer.h"
 #include "internal/project_rendering_settings.h"
+#include "internal/project_store.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/search_tool_window.h"
@@ -289,6 +291,16 @@ void MainWindow::BuildUi()
     PresetBox_->addItem(QStringLiteral("macOS: Development — everyday work"),
                         QStringLiteral("macos-clang-development"));
     PresetBox_->addItem(QStringLiteral("macOS: Release — distribute the game"), QStringLiteral("macos-clang-release"));
+    for (const QString& preset : GetNativeProjectPresets())
+    {
+        if (preset.startsWith(QStringLiteral("windows-msvc-")) == true)
+        {
+            const QString generator = preset.startsWith(QStringLiteral("windows-msvc-visual-studio-")) == true
+                                          ? QStringLiteral("Visual Studio")
+                                          : QStringLiteral("Ninja");
+            PresetBox_->addItem(QStringLiteral("Windows (%1): %2").arg(generator, GetFlavorForProfile(preset)), preset);
+        }
+    }
     TargetBox_ = new QComboBox(form);
     TargetBox_->setObjectName(QStringLiteral("projectTarget"));
     TargetBox_->setEditable(true); // target can be entered before configuration

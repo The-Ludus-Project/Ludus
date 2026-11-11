@@ -86,22 +86,28 @@ void RequirePickerProfile(const QString& identity)
 #endif
 }
 
-void CustomizeTemplateBase(RendererWorkspace& inoutWorkspace)
+void SetTemplateAuthoringProfiles(RenderGraphDocument& inoutDocument)
 {
-    REQUIRE(inoutWorkspace.CustomizeBuiltIn() == true);
 #if defined(Q_OS_WIN)
-    // These tests edit and validate source packages, without using the local
-    // GPU. Give them the same Vulkan/WGSL targets as the Linux authoring cases.
-    RenderGraphDocument& document = inoutWorkspace.GetDocument();
+    // These tests edit source packages. Use a declared Vulkan/WGSL target
+    // where the imported ray template is admitted, without executing it.
     const QString manifestFile = QStringLiteral("main.lushader.json");
-    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    QJsonObject manifest = QJsonDocument::fromJson(inoutDocument.GetDraft(manifestFile)).object();
     REQUIRE(manifest.isEmpty() == false);
     manifest.insert(QStringLiteral("profiles"), QJsonArray{QStringLiteral("spirv"), QStringLiteral("wgsl")});
-    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
-    const bool isSaved = inoutWorkspace.Save();
-    INFO(inoutWorkspace.GetStatusText().toStdString());
-    REQUIRE(isSaved == true);
-    REQUIRE(inoutWorkspace.OpenGraph(QDir(document.GetPackageRoot()).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(inoutDocument.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+#else
+    static_cast<void>(inoutDocument);
+#endif
+}
+
+void CustomizeTemplateBase(RendererWorkspace& inoutWorkspace)
+{
+    SetTemplateAuthoringProfiles(inoutWorkspace.GetDocument());
+    REQUIRE(inoutWorkspace.CustomizeBuiltIn() == true);
+#if defined(Q_OS_WIN)
+    const QString package = inoutWorkspace.GetDocument().GetPackageRoot();
+    REQUIRE(inoutWorkspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
 #endif
 }
 } // namespace
@@ -493,6 +499,7 @@ TEST_CASE("Root canvas inserts a ReSTIR subgraph transactionally and rejects con
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
@@ -531,6 +538,7 @@ TEST_CASE("ReSTIR import upgrades default budgets beside an existing ray pipelin
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString configuration = QStringLiteral("Default");
@@ -579,6 +587,7 @@ TEST_CASE("ReSTIR import preserves custom admission budgets and drops derived le
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString manifestFile = QStringLiteral("main.lushader.json");
@@ -603,6 +612,7 @@ TEST_CASE("ReSTIR import keeps conflicting authored inputs and uses numbered nam
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString manifestFile = QStringLiteral("main.lushader.json");
@@ -729,6 +739,7 @@ TEST_CASE("Template dialog proposes a configuration name that does not collide",
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     CHECK(workspace.MakeTemplateConfigurationName(QStringLiteral("RestirDi")) == QStringLiteral("RestirDi"));
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("RestirDi"), QStringLiteral("restir-di")) == true);
@@ -896,6 +907,7 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     QWidget properties;
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     QWidget* inspector = workspace.TakeInspectorPanel(&properties);
     inspector->hide();
@@ -1053,6 +1065,7 @@ TEST_CASE("Root visibility insertion is atomic on library collisions and unsuppo
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
@@ -1111,6 +1124,7 @@ TEST_CASE("Visibility imports reuse compatible shader records and number around 
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     QString error;
@@ -1282,6 +1296,8 @@ TEST_CASE("Visibility custom program limits identify the required budget and pre
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString manifestFile = QStringLiteral("main.lushader.json");
@@ -1314,6 +1330,7 @@ TEST_CASE("ReSTIR import rejects a missing declared shader or transitive include
     QTemporaryDir templates;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     const QString canonical =
         QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/modules/graphics/renderer/render_graphs/restir_di/");
@@ -1398,7 +1415,16 @@ TEST_CASE("Nested template shader directories are prepared before saved graph re
     CHECK(document.IsDirty() == true);
     CHECK(QFileInfo::exists(QDir(package).filePath(QStringLiteral("RestirDi.lurender.json"))) == false);
     CHECK(QDir(outside.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty() == true);
-    REQUIRE(QFile::remove(parent) == true);
+#if defined(Q_OS_WIN)
+    if (isLinkedDirectory == true)
+    {
+        REQUIRE(QDir().rmdir(parent) == true);
+    }
+    else
+#endif
+    {
+        REQUIRE(QFile::remove(parent) == true);
+    }
     REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
     CHECK(QFileInfo::exists(QDir(parent).filePath(QStringLiteral("main_shaders/miss.slang"))) == true);
     RenderGraphDocument reloaded;
@@ -1418,6 +1444,7 @@ TEST_CASE("Template program budget approval is bounded and transactional", "[edi
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString manifestFile = QStringLiteral("main.lushader.json");
@@ -1512,6 +1539,7 @@ TEST_CASE("Template imports derive target artifacts instead of reading a legacy 
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString manifestFile = QStringLiteral("main.lushader.json");
@@ -1565,6 +1593,7 @@ TEST_CASE("Canvas template picker confirms a shader program budget increase", "[
     QWidget properties;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
+    SetTemplateAuthoringProfiles(workspace.GetDocument());
     workspace.SetLivePreview(false);
     QWidget* inspector = workspace.TakeInspectorPanel(&properties);
     inspector->hide();

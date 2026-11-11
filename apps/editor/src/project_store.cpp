@@ -200,6 +200,12 @@ QString Sha256Hex(const QByteArray& bytes)
     return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
 }
 
+const QStringList& GetNativeProjectPresets()
+{
+    static const QStringList presets = QStringLiteral(LUDUS_EDITOR_NATIVE_PROJECT_PROFILES).split(QLatin1Char(' '));
+    return presets;
+}
+
 ParseOutcome ParseDescriptor(const QByteArray& bytes)
 {
     if (static_cast<usize>(bytes.size()) > limits::MaxFileBytes)
@@ -334,20 +340,17 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
     }
     descriptor.Preset = presetValue.toString();
     {
-        const bool v1Preset = descriptor.Preset == QStringLiteral("linux-clang-debug") ||
-                              descriptor.Preset == QStringLiteral("linux-clang-development");
-        // Version 2 permits all native game profiles, including macOS.
-        // Version 1 keeps the original Linux two-preset contract.
-        const bool v2Native = schemaVersion == 2 && (descriptor.Preset == QStringLiteral("linux-clang-release") ||
-                                                     descriptor.Preset == QStringLiteral("macos-clang-debug") ||
-                                                     descriptor.Preset == QStringLiteral("macos-clang-development") ||
-                                                     descriptor.Preset == QStringLiteral("macos-clang-release"));
-        if (v1Preset == false && v2Native == false)
+        const bool hasLegacyPreset = descriptor.Preset == QStringLiteral("linux-clang-debug") ||
+                                     descriptor.Preset == QStringLiteral("linux-clang-development");
+        const bool hasNativePreset = schemaVersion == 2 && GetNativeProjectPresets().contains(descriptor.Preset);
+        if (hasLegacyPreset == false && hasNativePreset == false)
         {
-            return Fail(ResultCode::InvalidProject,
-                        schemaVersion == 2
-                            ? QStringLiteral("'preset' must be {linux,macos}-clang-{debug,development,release}")
-                            : QStringLiteral("'preset' must be linux-clang-debug or linux-clang-development"));
+            return Fail(
+                ResultCode::InvalidProject,
+                schemaVersion == 2
+                    ? QStringLiteral("Choose a supported native 'preset' for this project; '%1' is unavailable.")
+                          .arg(descriptor.Preset)
+                    : QStringLiteral("'preset' must be linux-clang-debug or linux-clang-development"));
         }
     }
 

@@ -272,6 +272,11 @@ $project = 'C:/Projects/MyGame'
 & $python -m ludus_tools project check $project --tools $tools --profile windows-msvc-profile
 ```
 
+The native editor accepts the same version-2 Windows profiles as the project
+tooling. The Project profile control lists both Ninja and Visual Studio
+configurations. A new Windows editor project starts with the Ninja Development
+preset; hosted Play uses the Ninja Debug and Development presets.
+
 The minimal template provides `windows-msvc-debug`,
 `windows-msvc-development`, `windows-msvc-profile`, and
 `windows-msvc-release` as configure, build, and test presets. Select a matching

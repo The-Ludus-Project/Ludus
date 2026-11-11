@@ -260,6 +260,7 @@ TEST_CASE("World shows the import preview, imports on confirmation and shows the
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
     const QString source = QDir(root).filePath(QStringLiteral("external"));
     WriteGeneralScene(source, QStringLiteral("room.pbrt"));
+    QWidget layoutHost;
     WorldWorkspace workspace(MakeSceneTools(), nullptr);
     workspace.SetProject(root, 1);
     REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("main.world.json"))) == true);
@@ -295,6 +296,8 @@ TEST_CASE("World shows the import preview, imports on confirmation and shows the
     // its cancel row. Measure report expansion after that operation completes.
     REQUIRE(WaitUntil([cancel]() { return cancel->isHidden() == true; }) == true);
     ApplyWorkspaceStyle(&workspace);
+    workspace.setParent(&layoutHost, Qt::Widget);
+    layoutHost.show();
     workspace.show();
     QScrollArea* hierarchy = workspace.findChild<QScrollArea*>(QStringLiteral("worldHierarchyScroll"));
     REQUIRE(hierarchy != nullptr);
