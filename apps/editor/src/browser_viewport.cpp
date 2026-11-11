@@ -1,8 +1,10 @@
 #include "internal/browser_viewport.h"
+#include "internal/viewport_object_interaction.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 
 #include <QApplication>
 #include <QPoint>
@@ -38,22 +40,42 @@ EM_JS(int32, CreateViewportCanvas, (const char* selector), {
     canvas.style.cssText = 'position:fixed;pointer-events:none;display:none';
     canvas.style.zIndex = String(VIEWPORT_LAYER);
     screen.appendChild(canvas);
+    // The selection overlay: a transparent 2D canvas on the same layer, later in the page so it draws on top.
+    const overlay = document.createElement('canvas');
+    overlay.id = canvas.id + '-overlay';
+    overlay.className = 'ludus-gpu-viewport-overlay';
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.style.cssText = 'position:fixed;pointer-events:none;display:none';
+    overlay.style.zIndex = String(VIEWPORT_LAYER);
+    screen.appendChild(overlay);
     return 1;
 });
 EM_JS(void, SyncViewportCanvas, (const char* selector, int32 x, int32 y, int32 width, int32 height,
                                 int32 screenWidth, int32 screenHeight, int32 isVisible, float64 presentedFrames,
-                                int32 drawableWidth, int32 drawableHeight), {
+                                int32 drawableWidth, int32 drawableHeight, int32 isOverlayShown,
+                                int32 overlayWidth, int32 overlayHeight), {
     const canvas = document.querySelector(UTF8ToString(selector));
     const screen = document.getElementById('screen');
     if (canvas == null || screen == null) return;
     const bounds = screen.getBoundingClientRect();
     const scaleX = bounds.width / Math.max(1, screenWidth);
     const scaleY = bounds.height / Math.max(1, screenHeight);
-    canvas.style.left = (bounds.left + x * scaleX) + 'px';
-    canvas.style.top = (bounds.top + y * scaleY) + 'px';
-    canvas.style.width = (width * scaleX) + 'px';
-    canvas.style.height = (height * scaleY) + 'px';
+    const overlay = document.querySelector(UTF8ToString(selector) + '-overlay');
+    for (const layer of overlay == null ? [canvas] : [canvas, overlay]) {
+        layer.style.left = (bounds.left + x * scaleX) + 'px';
+        layer.style.top = (bounds.top + y * scaleY) + 'px';
+        layer.style.width = (width * scaleX) + 'px';
+        layer.style.height = (height * scaleY) + 'px';
+    }
     canvas.style.display = isVisible ? 'block' : 'none';
+    if (overlay != null) {
+        // Resizing clears the overlay; its owner repaints it after a size change.
+        if (overlay.width !== overlayWidth || overlay.height !== overlayHeight) {
+            overlay.width = overlayWidth;
+            overlay.height = overlayHeight;
+        }
+        overlay.style.display = isVisible && isOverlayShown ? 'block' : 'none';
+    }
     // WebGL draws into the canvas's own width/height (WebGPU's surface configuration sets them).
     // Platform does not own this canvas, so its owner matches them to the requested drawable.
     if (canvas.dataset.api === 'webgl2' && (canvas.width !== drawableWidth || canvas.height !== drawableHeight)) {
@@ -76,6 +98,21 @@ EM_JS(void, ReportViewportFailure, (const char* selector, const char* message), 
 });
 EM_JS(void, RemoveViewportCanvas, (const char* selector), {
     document.querySelector(UTF8ToString(selector))?.remove();
+    document.querySelector(UTF8ToString(selector) + '-overlay')?.remove();
+});
+// Clear the region painted last time, then copy straight-alpha RGBA8 pixels into the overlay canvas.
+EM_JS(void, DrawViewportOverlay, (const char* selector, int32 clearX, int32 clearY, int32 clearWidth,
+                                  int32 clearHeight, const uint8* pixels, int32 x, int32 y, int32 width,
+                                  int32 height), {
+    const overlay = document.querySelector(UTF8ToString(selector) + '-overlay');
+    const context = overlay?.getContext('2d');
+    if (context == null) return;
+    if (clearWidth > 0 && clearHeight > 0) context.clearRect(clearX, clearY, clearWidth, clearHeight);
+    if (width > 0 && height > 0) {
+        const RGBA_BYTES = 4;
+        const bytes = new Uint8ClampedArray(HEAPU8.buffer.slice(pixels, pixels + width * height * RGBA_BYTES));
+        context.putImageData(new ImageData(bytes, width, height), x, y);
+    }
 });
 EM_JS(void, MarkViewportApi, (const char* selector, int32 isWebGl2), {
     const canvas = document.querySelector(UTF8ToString(selector));
@@ -159,6 +196,8 @@ bool BrowserViewport::Start()
     {
         // Every attempt gets a canvas no graphics API has claimed: WebGPU's commits it.
         RemoveViewportCanvas(mSelector.constData());
+        // The new overlay canvas is blank and unsized; the next service sizes and repaints it.
+        mOverlaySizePhysical = QSize();
         const BrowserViewportApi api = mNextApi;
         if (CreateViewportCanvas(mSelector.constData()) == 0)
         {
@@ -230,6 +269,52 @@ uint64 BrowserViewport::GetPresentedFrames() const noexcept
 {
     return mPresentedFrames;
 }
+void BrowserViewport::SetObjectInteraction(ViewportObjectInteraction& inoutInteraction)
+{
+    if (mInteraction.isNull() == false)
+    {
+        disconnect(mInteraction, nullptr, this, nullptr);
+    }
+    mInteraction = &inoutInteraction;
+    mIsOverlayDirty = true;
+    connect(&inoutInteraction, &ViewportObjectInteraction::Changed, this, [this]() { mIsOverlayDirty = true; });
+}
+void BrowserViewport::updateOverlay(bool isShown)
+{
+    if (isShown == false)
+    {
+        // The hidden canvas keeps its pixels; repaint them when it shows again.
+        mIsOverlayDirty = true;
+        return;
+    }
+    if (mIsOverlayDirty == false)
+    {
+        return;
+    }
+    mIsOverlayDirty = false;
+    // The same logical frame the proxy's pointer input uses, so handles sit where they are picked.
+    mInteraction->BuildOverlay(QRectF(QPointF(), QSizeF(size())), mOverlay);
+    {
+        LUDUS_PROFILE_SCOPE(EditorObjectOverlayPaint);
+        if (mOverlayLayer.Update(mOverlay, mOverlaySizePhysical, devicePixelRatioF()) == false)
+        {
+            return;
+        }
+    }
+    LUDUS_PROFILE_SCOPE(EditorObjectOverlayUpload);
+    const QRect cleared = mOverlayLayer.GetClearedRegion();
+    const QRect painted = mOverlayLayer.GetPaintedRegion();
+    DrawViewportOverlay(mSelector.constData(),
+                        cleared.x(),
+                        cleared.y(),
+                        cleared.width(),
+                        cleared.height(),
+                        mOverlayLayer.GetPixels(),
+                        painted.x(),
+                        painted.y(),
+                        painted.width(),
+                        painted.height());
+}
 void BrowserViewport::releaseFrame() noexcept
 {
     if (mHasFrame == true && mPreview.isNull() == false)
@@ -277,8 +362,21 @@ void BrowserViewport::service()
             mHasFrame = true;
             mHasPresentedImage = true;
             ++mPresentedFrames;
+            // The camera may have moved with the frame; the overlay follows it.
+            mIsOverlayDirty = true;
         }
     }
+    const QSize overlaySizePhysical(math::Max(1, static_cast<int32>(static_cast<float64>(width()) * pixelRatio)),
+                                    math::Max(1, static_cast<int32>(static_cast<float64>(height()) * pixelRatio)));
+    if (overlaySizePhysical != mOverlaySizePhysical)
+    {
+        mOverlaySizePhysical = overlaySizePhysical;
+        mOverlayLayer.Invalidate();
+        mIsOverlayDirty = true;
+    }
+    const bool isFrameShown = isVisible == true && mCanPresent == true && mHasPresentedImage == true;
+    const bool isOverlayShown =
+        isFrameShown == true && mInteraction.isNull() == false && mInteraction->IsActive() == true;
     SyncViewportCanvas(mSelector.constData(),
                        positionScreenLogical.x(),
                        positionScreenLogical.y(),
@@ -286,9 +384,13 @@ void BrowserViewport::service()
                        height(),
                        rectangleScreenLogical.width(),
                        rectangleScreenLogical.height(),
-                       isVisible == true && mCanPresent == true && mHasPresentedImage == true ? 1 : 0,
+                       isFrameShown == true ? 1 : 0,
                        static_cast<float64>(mPresentedFrames),
                        mRequestedWidth,
-                       mRequestedHeight);
+                       mRequestedHeight,
+                       isOverlayShown == true ? 1 : 0,
+                       mOverlaySizePhysical.width(),
+                       mOverlaySizePhysical.height());
+    updateOverlay(isOverlayShown);
 }
 } // namespace ludus::editor

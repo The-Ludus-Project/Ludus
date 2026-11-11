@@ -219,6 +219,8 @@ set(editor_viewport_sources
     src/viewport_object_interaction.cpp
     src/internal/viewport_gizmo_readout.h
     src/viewport_gizmo_readout.cpp
+    src/internal/viewport_overlay_layer.h
+    src/viewport_overlay_layer.cpp
     src/viewport_navigation.cpp
     src/viewport_walk_collision.cpp
     src/internal/orientation_widget.h
