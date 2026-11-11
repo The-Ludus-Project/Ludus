@@ -175,16 +175,16 @@ void MainWindow::RenderDocumentActions()
     const HistoryTarget target = getHistoryTarget();
     const QString undoName = UndoAction_->isEnabled() == true ? getHistoryCommandName(target, false) : QString();
     const QString redoName = RedoAction_->isEnabled() == true ? getHistoryCommandName(target, true) : QString();
-    const auto describe = [](QAction& action, const QString& text, const QString& unavailable) {
-        action.setText(text);
-        QString tip = action.isEnabled() == true ? QString(text).remove(QLatin1Char('&')) : unavailable;
-        const QString shortcut = action.shortcut().toString(QKeySequence::NativeText);
+    const auto describe = [](QAction& inoutAction, const QString& text, const QString& unavailable) {
+        inoutAction.setText(text);
+        QString tip = inoutAction.isEnabled() == true ? QString(text).remove(QLatin1Char('&')) : unavailable;
+        const QString shortcut = inoutAction.shortcut().toString(QKeySequence::NativeText);
         if (shortcut.isEmpty() == false)
         {
             tip += QStringLiteral(" (") + shortcut + QLatin1Char(')');
         }
-        action.setToolTip(tip);
-        action.setStatusTip(tip);
+        inoutAction.setToolTip(tip);
+        inoutAction.setStatusTip(tip);
     };
     describe(*UndoAction_, MakeUndoMenuText(undoName), QStringLiteral("Nothing to undo"));
     describe(*RedoAction_, MakeRedoMenuText(redoName), QStringLiteral("Nothing to redo"));

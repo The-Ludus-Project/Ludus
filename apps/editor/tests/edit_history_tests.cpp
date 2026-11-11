@@ -83,7 +83,7 @@ ToolingPaths MissingTools()
     return {QStringLiteral("/missing/python"), QStringLiteral("/missing/editor_tool.py"), QStringLiteral("/missing")};
 }
 
-QString WriteProject(QTemporaryDir& directory)
+QString WriteProject(const QTemporaryDir& directory)
 {
     ProjectDescriptor descriptor;
     descriptor.Name = QStringLiteral("demo");
@@ -100,7 +100,7 @@ QString WriteProject(QTemporaryDir& directory)
     return path;
 }
 
-QAction* FindAction(MainWindow& window, const QString& name)
+QAction* FindAction(const MainWindow& window, const QString& name)
 {
     QAction* actionOrNull = window.findChild<QAction*>(name);
     REQUIRE(actionOrNull != nullptr);

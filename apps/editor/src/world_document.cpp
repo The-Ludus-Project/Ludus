@@ -1234,9 +1234,9 @@ void WorldDocument::Clear()
     Loaded_ = false;
     History_.Reset();
 }
-bool WorldDocument::Commit(const QJsonObject& candidate, QString& error, const char* name)
+bool WorldDocument::Commit(const QJsonObject& candidate, QString& outError, const char* name)
 {
-    if (Loaded_ == false || Validate(candidate, error) == false)
+    if (Loaded_ == false || Validate(candidate, outError) == false)
     {
         return false;
     }
@@ -1244,31 +1244,31 @@ bool WorldDocument::Commit(const QJsonObject& candidate, QString& error, const c
     if (candidate.value(QStringLiteral("version")) != Draft_.value(QStringLiteral("version")) ||
         candidate.value(QStringLiteral("document")) != Draft_.value(QStringLiteral("document")))
     {
-        return Fail(error, QStringLiteral("The candidate changes the World's version or document identity."));
+        return Fail(outError, QStringLiteral("The candidate changes the World's version or document identity."));
     }
     if (HasBuiltInSchema() == true)
     {
         const QJsonArray atmospheres = FindWorldAtmosphereEntities(candidate);
         if (atmospheres.size() > 1 && atmospheres.size() > FindWorldAtmosphereEntities(Draft_).size())
         {
-            return Fail(error,
+            return Fail(outError,
                         QStringLiteral("A World supports one Atmosphere. Edit or delete %1 first.")
                             .arg(atmospheres.first().toObject().value(QStringLiteral("name")).toString()));
         }
     }
     if (candidate == Draft_)
     {
-        error.clear();
+        outError.clear();
         return true;
     }
     if (History_.Commit(Draft_, candidate, false, name) == false)
     {
-        return Fail(error, QStringLiteral("History revision exhausted; save and reopen."));
+        return Fail(outError, QStringLiteral("History revision exhausted; save and reopen."));
     }
     Draft_ = candidate;
     return true;
 }
-bool WorldDocument::ReplaceEntity(const QJsonObject& entity, QString& error, const char* name)
+bool WorldDocument::ReplaceEntity(const QJsonObject& entity, QString& outError, const char* name)
 {
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();
     for (foundation::int32 i = 0; i < entities.size(); ++i)
@@ -1278,10 +1278,10 @@ bool WorldDocument::ReplaceEntity(const QJsonObject& entity, QString& error, con
             entities[i] = entity;
             auto candidate = Draft_;
             candidate.insert(QStringLiteral("entities"), entities);
-            return Commit(candidate, error, name);
+            return Commit(candidate, outError, name);
         }
     }
-    return Fail(error, QStringLiteral("Entity no longer exists."));
+    return Fail(outError, QStringLiteral("Entity no longer exists."));
 }
 bool WorldDocument::CreateEntity(const foundation::identity::EntropySource& entropy,
                                  QString& outError,
@@ -1568,7 +1568,7 @@ bool WorldDocument::Edit(const QString& entity,
                          const QJsonObject& components,
                          const QString& name,
                          QString& error,
-                         const QJsonObject* scene,
+                         const QJsonObject* sceneOrNull,
                          const char* commandNameOrNull)
 {
     auto e = Entity(entity);
@@ -1580,16 +1580,17 @@ bool WorldDocument::Edit(const QString& entity,
     const char* commandName = commandNameOrNull;
     if (commandName == nullptr)
     {
-        const bool isRenameOnly = e.value(QStringLiteral("name")).toString() != name &&
-                                  e.value(QStringLiteral("components")).toObject() == components &&
-                                  (scene == nullptr || e.value(QStringLiteral("scene")).toObject() == *scene);
+        const bool isRenameOnly =
+            e.value(QStringLiteral("name")).toString() != name &&
+            e.value(QStringLiteral("components")).toObject() == components &&
+            (sceneOrNull == nullptr || e.value(QStringLiteral("sceneOrNull")).toObject() == *sceneOrNull);
         commandName = isRenameOnly == true ? "Rename Entity" : "Edit Properties";
     }
     e.insert(QStringLiteral("name"), name);
     e.insert(QStringLiteral("components"), components);
-    if (scene != nullptr)
+    if (sceneOrNull != nullptr)
     {
-        e.insert(QStringLiteral("scene"), *scene);
+        e.insert(QStringLiteral("sceneOrNull"), *sceneOrNull);
     }
     return ReplaceEntity(e, error, commandName);
 }

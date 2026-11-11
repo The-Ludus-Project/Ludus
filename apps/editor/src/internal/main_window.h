@@ -412,7 +412,7 @@ private:
     QAction* UndoAction_ = nullptr;
     QAction* RedoAction_ = nullptr;
     /// Edit/View › History: shows the History tool window.
-    QAction* mHistoryAction = nullptr;
+    QAction* mHistoryActionOrNull = nullptr;
     /// History tool window and its panel; created in BuildUi.
     QDockWidget* mHistoryDockOrNull = nullptr;
     EditHistoryPanel* mHistoryPanelOrNull = nullptr;

@@ -172,7 +172,7 @@ public:
                             const QJsonObject& components,
                             const QString& name,
                             QString& error,
-                            const QJsonObject* scene = nullptr,
+                            const QJsonObject* sceneOrNull = nullptr,
                             const char* commandNameOrNull = nullptr);
     // Import is one history transaction. Cooked object IDs become entity IDs.
     // Version-2 records do not support the scene extension yet and are refused.
@@ -234,9 +234,9 @@ public:
     [[nodiscard]] QByteArray Encode() const;
     // Restored candidates must keep the open World's version and document identity.
     /// @param name Undo history name with static storage duration, such as "Paint Terrain".
-    [[nodiscard]] bool Restore(const QJsonObject& candidate, QString& error, const char* name)
+    [[nodiscard]] bool Restore(const QJsonObject& candidate, QString& outError, const char* name)
     {
-        return Commit(candidate, error, name);
+        return Commit(candidate, outError, name);
     }
     void AcknowledgeSave();
     void Discard();
@@ -244,8 +244,8 @@ public:
     ParseValue(const QJsonObject& property, const QString& text, QJsonValue& value, QString& error);
 
 private:
-    [[nodiscard]] bool Commit(const QJsonObject& candidate, QString& error, const char* name);
-    [[nodiscard]] bool ReplaceEntity(const QJsonObject& entity, QString& error, const char* name);
+    [[nodiscard]] bool Commit(const QJsonObject& candidate, QString& outError, const char* name);
+    [[nodiscard]] bool ReplaceEntity(const QJsonObject& entity, QString& outError, const char* name);
     QJsonObject Schema_;
     QJsonObject Draft_;
     QJsonObject Saved_;

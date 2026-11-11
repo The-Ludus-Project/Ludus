@@ -28,14 +28,14 @@ public:
     // itself allocates nothing; payload ownership belongs to T's adapter.
     /// @param name Readable command name with static storage duration; a merged edit keeps its group's name.
     [[nodiscard]] bool
-    Commit(const T& before, const T& after, bool merge = false, const char* name = UNNAMED_EDIT_NAME) noexcept
+    Commit(const T& before, const T& after, bool shouldMerge = false, const char* name = UNNAMED_EDIT_NAME) noexcept
     {
         if (before == after || Revision_ == ~foundation::uint64{0})
         {
             return false;
         }
         auto* previous = Cursor_ != 0 ? &Entries_[Cursor_ - 1] : nullptr;
-        if (merge && MergeAllowed_ && Cursor_ == Count_ && previous != nullptr && previous->has_value() &&
+        if (shouldMerge && MergeAllowed_ && Cursor_ == Count_ && previous != nullptr && previous->has_value() &&
             (*previous)->After == before)
         {
             auto& entry = *previous;
