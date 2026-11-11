@@ -30,9 +30,9 @@ void FitComboBoxToCurrentText(QComboBox& inoutComboBox);
 struct WorldGraphControls
 {
     /// Configuration and output choice; they decide what the viewport shows, so they lead the row.
-    QWidget* Output = nullptr;
+    QWidget* OutputOrNull = nullptr;
     /// Exposure adjustment; it joins the display group and overflows before the output choice.
-    QAction* Exposure = nullptr;
+    QAction* ExposureOrNull = nullptr;
 };
 /// Interactive World output of the project's active graph. Owns only display/target selection;
 /// RendererWorkspace owns builds and RenderGraphPreview owns GPU production and readback.

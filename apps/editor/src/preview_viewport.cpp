@@ -2228,18 +2228,18 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         mState->applyShaderStatus();
     });
     const WorldGraphControls graphControls = mState->GraphViewOrNull->TakeControls(this, *Preview_);
-    mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls.Output);
+    mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls.OutputOrNull);
     // Exposure adjusts the display, so it leads that group and overflows before the output choice.
     QToolButton& exposureButton = InsertCommand(*mState->ControlsOrNull,
                                                 mState->DisplayGroupActionOrNull,
-                                                *graphControls.Exposure,
+                                                *graphControls.ExposureOrNull,
                                                 QStringLiteral("viewportExposure"));
     exposureButton.setPopupMode(QToolButton::InstantPopup);
     exposureButton.setAccessibleName(QStringLiteral("Exposure compensation"));
     // Tab follows the toolbar left to right: the graph controls take their places in it, though they
     // are created after the rest.
     QWidget* previousInTabOrder = this;
-    for (QWidget* control : graphControls.Output->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+    for (QWidget* control : graphControls.OutputOrNull->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
     {
         if ((control->focusPolicy() & Qt::TabFocus) != 0)
         {
