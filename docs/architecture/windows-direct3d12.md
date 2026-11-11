@@ -1049,6 +1049,15 @@ remaining failures were in the core editor and graph configuration shards,
 including an invalid free reported while a failed test assertion unwound
 through a Qt modal callback.
 
+Candidate `004c40468212d5565a93e0fde5752e1fdf467344` passed all eight
+runtime and SDK jobs, including runtime AddressSanitizer, and 18 of 19 entries
+in each editor lane in
+[Windows run 42949222351](https://github.com/The-Ludus-Project/Ludus/actions/runs/42949222351).
+The remaining core shard failed three fixture cases: launching an external
+editor, moving a watched graph package, and running the native hosted-frame
+journey with the GPU viewport disabled. The dedicated native Play journey
+passed in both lanes, and the instrumented run reported no sanitizer finding.
+
 #### Candidate hardware requirements
 
 The baseline raster profile requires an x64 Direct3D 12 device at feature level
