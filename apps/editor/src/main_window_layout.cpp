@@ -392,6 +392,8 @@ void MainWindow::BuildUi()
     mProperties->addWidget(World_->TakePropertiesPanel(mProperties));
     mProperties->addWidget(Renderer_->TakeInspectorPanel(mProperties));
     mProperties->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    // The inspector wraps and stacks its rows down to this width; narrower, it would have to clip them.
+    mProperties->setMinimumWidth(WORLD_PROPERTIES_MINIMUM_WIDTH);
     mPropertiesDock->setWidget(mProperties);
     // The render-graph preview shows the World viewport through the open graph.
     mRenderPreviewDock->setObjectName(QStringLiteral("renderPreviewDock"));

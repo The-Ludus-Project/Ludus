@@ -694,7 +694,17 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK(isSameRow("worldNew", "worldImportScene") == true);
     CHECK(isSameRow("worldNew", "worldPath") == true);
     CHECK(isSameRow("worldApply", "worldReset") == true);
-    CHECK(isSameRow("worldAttach", "worldComponentChoice") == true);
+    // The component choice sits beside Add Component when both fit; this compact column is narrower than the pair,
+    // so the choice stacks directly above the button at the column's full width instead of clipping it.
+    const QWidget* choiceOrNull = view.findChild<QWidget*>(QStringLiteral("worldComponentChoice"));
+    const QWidget* attachOrNull = view.findChild<QWidget*>(QStringLiteral("worldAttach"));
+    REQUIRE(choiceOrNull != nullptr);
+    REQUIRE(attachOrNull != nullptr);
+    const QRect choiceRect(choiceOrNull->mapTo(&view, QPoint(0, 0)), choiceOrNull->size());
+    const QRect attachRect(attachOrNull->mapTo(&view, QPoint(0, 0)), attachOrNull->size());
+    CHECK((isSameRow("worldAttach", "worldComponentChoice") == true ||
+           (choiceRect.bottom() < attachRect.top() && choiceRect.left() == attachRect.left())) == true);
+    CHECK(attachOrNull->width() >= attachOrNull->sizeHint().width());
     CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
     QLabel* pathLabel = view.findChild<QLabel*>(QStringLiteral("worldPath"));
     REQUIRE(pathLabel != nullptr);

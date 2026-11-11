@@ -1218,6 +1218,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
         tests/world_light_switch_tests.cpp
+        tests/world_properties_layout_tests.cpp
         tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp

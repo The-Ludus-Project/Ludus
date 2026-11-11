@@ -653,7 +653,12 @@ records the libraries that would provide them.
 The World hierarchy flanks the viewport inside the World document; the entity
 inspector is the Properties tool window. Component actions stay below the
 scrollable inspector fields: the component choice beside **Add Component**, and
-**Apply Changes** beside **Reset Fields**. Right-click the World viewport or
+**Apply Changes** beside **Reset Fields**. The inspector follows the tool window's
+width and never clips a field: X/Y/Z and colour fields share one line while their
+values fit and stack one per line when narrower, labels move above their fields
+when the label column would leave too little room, and texture, mesh and material
+references shorten in the middle (hover for the full text). Properties is never
+narrower than 224 pixels. Right-click the World viewport or
 entity list for **Add Entity**, **Duplicate**, and **Delete**. Right-click an
 entity to target it. Clicking a selected member of a group keeps the group
 selected, and clicking the background keeps the current selection. Right-drag
