@@ -772,10 +772,6 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
         mTidyNotice->setAccessibleName(QStringLiteral("Tangled layout"));
         mTidyNotice->setFrameShape(QFrame::StyledPanel);
         mTidyNotice->setAutoFillBackground(true);
-        QPalette palette = mTidyNotice->palette();
-        palette.setColor(QPalette::Window, GetNodeBackground());
-        palette.setColor(QPalette::WindowText, GetLabelColour());
-        mTidyNotice->setPalette(palette);
         QHBoxLayout* row = new QHBoxLayout(mTidyNotice);
         row->setContentsMargins(design::SPACING_SMALL,
                                 design::SPACING_SMALL,
@@ -2752,6 +2748,11 @@ void RenderGraphCanvas::refreshTidySuggestion()
                                             "you can undo it.")
                                  .arg(current.Crossings)
                                  .arg(tidied.Crossings));
+    // Card colours follow the theme at each rebuild; the notice matches them.
+    QPalette palette = mTidyNotice->palette();
+    palette.setColor(QPalette::Window, GetNodeBackground());
+    palette.setColor(QPalette::WindowText, GetLabelColour());
+    mTidyNotice->setPalette(palette);
     mTidyNotice->show();
     placeTidyNotice();
 }
