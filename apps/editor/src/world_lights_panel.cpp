@@ -9,7 +9,6 @@
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QLabel>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
@@ -392,9 +391,6 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
     setObjectName(QStringLiteral("worldLightsPanel"));
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    QLabel* title = new QLabel(QStringLiteral("Lights"), this);
-    title->setObjectName(QStringLiteral("worldLightsTitle"));
-    layout->addWidget(title);
     mTreeOrNull = new QTreeWidget(this);
     mTreeOrNull->setObjectName(QStringLiteral("worldLights"));
     mTreeOrNull->setAccessibleName(QStringLiteral("World lights"));

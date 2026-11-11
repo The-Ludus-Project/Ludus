@@ -29,6 +29,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QVBoxLayout;
 class QSplitter;
+class QTabWidget;
 class QToolButton;
 QT_END_NAMESPACE
 namespace ludus::resources
@@ -45,6 +46,7 @@ class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
 class WorldLightsPanel;
+class WorldMaterialsPanel;
 class WorldTerrainPanel;
 struct WorldLightChange;
 struct WorldLightRow;
@@ -322,6 +324,8 @@ private:
     QWidget* mHierarchy;
     /// Light switches under the entity list, in the hierarchy column.
     WorldLightsPanel* mLightsPanel;
+    QTabWidget* mWorldLists;
+    WorldMaterialsPanel* mMaterialsPanel;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
     QByteArray mSplitterStateBeforeChromeHidden;
     bool mIsChromeVisible = true;

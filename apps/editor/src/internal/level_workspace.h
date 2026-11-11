@@ -202,6 +202,15 @@ public:
     {
         return Preview_.Scene();
     }
+    /// The accepted scene and its bindings, excluding a candidate still waiting for its first frame.
+    [[nodiscard]] LUDUS_INLINE const RenderScene& GetPresentedScene() const noexcept
+    {
+        return mPresentedScene;
+    }
+    [[nodiscard]] LUDUS_INLINE const QJsonObject& GetPresentedLevel() const noexcept
+    {
+        return mPresentedLevel;
+    }
     /// Viewport renderer of this level; it owns the device and extraction that render-graph
     /// previews borrow while the level is the World's shown view.
     [[nodiscard]] LUDUS_INLINE RenderPreview& GetRenderPreview() noexcept

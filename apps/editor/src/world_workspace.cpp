@@ -22,6 +22,7 @@
 #include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_materials_panel.h"
 #include "internal/world_terrain.h"
 
 #include <ludus/foundation/base/compiler.h>
@@ -67,6 +68,7 @@
 #include <QSplitter>
 #include <QStringList>
 #include <QStringView>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -87,7 +89,7 @@ constexpr foundation::float64 SCENE_ROTATION_LIMIT = 360;
 constexpr foundation::float64 SCENE_SCALE_MINIMUM = 0.000001;
 constexpr foundation::int32 ENTITY_LIST_MINIMUM_HEIGHT = 96;
 constexpr foundation::int32 ENTITY_SECTION_STRETCH = 3;
-constexpr foundation::int32 LIGHT_SECTION_STRETCH = 2;
+constexpr foundation::int32 WORLD_LISTS_SECTION_STRETCH = 2;
 bool Read(const QString& path, QByteArray& output, foundation::int64 limit)
 {
     const QFileInfo info(path);
@@ -467,8 +469,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     // the contents instead of compressing styled button text below its hint.
     hierarchy->setSizeConstraint(QLayout::SetMinimumSize);
     hierarchyScroll->setWidget(left);
-    // Entities and lights share the column's height in a splitter, so a short entity list does not leave a tall
-    // empty box above a cramped one, and the divider lets either grow.
+    // The divider lets the entity hierarchy and the World lists share the column's height.
     QSplitter* sections = new QSplitter(Qt::Vertical, left);
     sections->setObjectName(QStringLiteral("worldHierarchySections"));
     sections->setChildrenCollapsible(false);
@@ -586,9 +587,20 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     });
     connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainAuthoring(); });
 
-    mLightsPanel = new WorldLightsPanel(sections);
+    mWorldLists = new QTabWidget(sections);
+    mWorldLists->setObjectName(QStringLiteral("worldSidebarLists"));
+    mLightsPanel = new WorldLightsPanel(mWorldLists);
+    mMaterialsPanel = new WorldMaterialsPanel(mWorldLists);
+    mWorldLists->addTab(mLightsPanel, QStringLiteral("Lights"));
+    mWorldLists->addTab(mMaterialsPanel, QStringLiteral("Materials"));
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
-    sections->setStretchFactor(1, LIGHT_SECTION_STRETCH);
+    sections->setStretchFactor(1, WORLD_LISTS_SECTION_STRETCH);
+    connect(mMaterialsPanel, &WorldMaterialsPanel::RenderableActivated, this, [this](const QString& id) {
+        if (Pending_ == false && SceneBusy() == false && SelectEntity(id) == false)
+        {
+            mMaterialsPanel->ShowMissingRenderable();
+        }
+    });
     connect(mLightsPanel, &WorldLightsPanel::LightsChangeRequested, this, &WorldWorkspace::applyLightChange);
     connect(mLightsPanel, &WorldLightsPanel::LightSelected, this, &WorldWorkspace::selectLight);
 
@@ -1504,6 +1516,8 @@ void WorldWorkspace::Render()
     Rendering_ = false;
     // The light list first: the inspector mirrors the entity selection into it and may show its selected light.
     renderLights();
+    mMaterialsPanel->SetRows(
+        CollectWorldMaterialRows(Document_, Scene_->GetPresentedLevel(), Scene_->GetPresentedScene()));
     RenderInspector();
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
@@ -1760,17 +1774,13 @@ void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
         const QJsonObject slot = entity.value(QStringLiteral("scene")).toObject();
         if (slot.isEmpty() == false)
         {
-            const QJsonObject assigned = slot.value(QStringLiteral("project_brdf")).toObject();
-            bindings.insert(
-                entity.value(QStringLiteral("id")).toString(),
-                assigned.value(QStringLiteral("material")).toString(Document_.GetInheritedMaterialId(slot)));
+            bindings.insert(entity.value(QStringLiteral("id")).toString(), Document_.GetMaterialResourceId(slot));
         }
     }
     QComboBox* choices = new QComboBox(group);
     choices->setObjectName(QStringLiteral("worldProjectBrdfChoice"));
     choices->setAccessibleName(QStringLiteral("Project BRDF"));
-    const QString current =
-        binding.value(QStringLiteral("material")).toString(Document_.GetInheritedMaterialId(placement));
+    const QString current = Document_.GetMaterialResourceId(placement);
     QSet<QString> listed;
     for (const PreviewObject& object : scene.Objects)
     {
@@ -2248,8 +2258,20 @@ void WorldWorkspace::RenderInspector()
             }
         }
         rows->addRow(QStringLiteral("Mesh"), new IdentifierRow(scene.value(QStringLiteral("mesh")).toString(), group));
-        rows->addRow(QStringLiteral("Material"),
-                     new IdentifierRow(scene.value(QStringLiteral("material")).toString(), group));
+        const QString material = Document_.GetMaterialResourceId(scene);
+        rows->addRow(QStringLiteral("Material resource"), new IdentifierRow(material, group));
+        const QString sourceMaterial = scene.value(QStringLiteral("material")).toString();
+        if (material != sourceMaterial)
+        {
+            rows->addRow(QStringLiteral("Source material"), new IdentifierRow(sourceMaterial, group));
+        }
+        QPushButton* showMaterial = new QPushButton(QStringLiteral("Show in Materials"), group);
+        showMaterial->setObjectName(QStringLiteral("worldRevealMaterial"));
+        connect(showMaterial, &QPushButton::clicked, this, [this, material]() {
+            mWorldLists->setCurrentWidget(mMaterialsPanel);
+            mMaterialsPanel->RevealResource(material);
+        });
+        rows->addRow(showMaterial);
         Inspector_->addWidget(group);
         addMaterialGroup();
     }
@@ -2754,6 +2776,7 @@ void WorldWorkspace::Changed(const QString& message)
     mEntities->setEnabled(Pending_ == false && isBusy == false);
     mEntitySearch->setEnabled(mEntities->isEnabled());
     mLightsPanel->setEnabled(Pending_ == false && isBusy == false);
+    mMaterialsPanel->setEnabled(Pending_ == false && isBusy == false);
     const bool isWorkerActive = isSceneWorkerActive();
     Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false &&
                         isWorkerActive == false);
@@ -2788,7 +2811,9 @@ void WorldWorkspace::Changed(const QString& message)
     {
         restoreCoatingOrNull->setEnabled(Pending_ == false && isBusy == false);
     }
-    for (const QString& name : {QStringLiteral("worldAssignProjectBrdf"), QStringLiteral("worldRestoreProjectBrdf")})
+    for (const QString& name : {QStringLiteral("worldAssignProjectBrdf"),
+                                QStringLiteral("worldRestoreProjectBrdf"),
+                                QStringLiteral("worldRevealMaterial")})
     {
         QPushButton* buttonOrNull = findChild<QPushButton*>(name);
         if (buttonOrNull != nullptr)

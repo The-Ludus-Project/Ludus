@@ -1783,6 +1783,20 @@ level and refuses an existing conversion destination. Failed conversion preserve
 the active World. Save publishes only the converted World document. Existing
 `.world.json` documents without scene data remain readable.
 
+### Browse a World's material resources
+
+Open **Materials** beside **Lights** in the World sidebar to see the imported
+material resources used by the current World. Expand a material to see its
+renderables. Double-click a renderable or press Enter on its row to select it in
+the entity hierarchy and viewport. Select a material or one of its renderables
+and choose **Copy Resource ID** to copy the full catalog ID.
+
+From an imported entity, choose **Show in Materials** in **Scene instance** to
+find its material and the other renderables using it. The list follows material
+mappings and explicit Project BRDF assignments. Renderables that override
+coating or roughness still appear under the same resource. Inspect an individual
+renderable to see its effective values.
+
 ### Edit a coated-diffuse material from World
 
 Select an imported object whose Material model is **Coated diffuse**. In its
