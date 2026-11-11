@@ -55,6 +55,7 @@ MIT license), which the import records like any other source license.
 | `many_lights/emitter-field-diffuse.luscene.json` | The Cornell room with a 40 × 40 field of small emitters (3200 emissive triangles) in four radiance levels and three tints; one object per level and tint; rough dielectric walls. | The diffuse variant of the hidden `[.ris-projected-solid-angle-benchmark]` |
 | `many_lights/emitter-field-specular.luscene.json` | The same field over glossy metal (roughness 0.2), which mirrors the emitters. | The specular variant of `[.ris-projected-solid-angle-benchmark]` |
 | `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen, an [aperture](#aperture) whose vertical slit is 80 cm long with a 5 cm opening, and a white Lambertian wall 1 m behind the screen. The slit's long edges are knife edges; in a default World its opening is an editable entity field. The camera stands between the screen and the wall. At a design wavelength of 5 mm and the 5 cm opening, the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import and aperture-deferral checks of `ludus_scene_import_tests` and the `[aperture]` import test of `ludus_editor_tests`; no renderer test yet |
+| `materials/closure-program-block.luscene.json` | A weathered gold block on a grey floor under a square one-sided ceiling light. The block's [closure program](#closure-program) mixes a rust diffuse lobe, a gold conductor and a cosine-power sheen whose weights read the metallic and base colour inputs. | The closure-program cook check of `ludus_scene_import_tests` and the `[program]` World import test of `ludus_editor_tests` |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
 All but the single slit and the large line grid use the Cornell room camera of the GPU tests: eye at
@@ -153,11 +154,12 @@ value.
 | Member | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique name that objects refer to. |
-| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). |
+| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). `"program"` selects a [closure program](#closure-program). |
 | `base_color` | yes | Linear Rec. 709 reflectance, each channel in [0, 1]. |
-| `metallic` | no | `metallic_roughness` only; [0, 1], default 0. |
-| `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness`, default 1. |
+| `metallic` | no | `metallic_roughness` and `program` only; [0, 1], default 0. |
+| `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness` and `program`, default 1. |
 | `brdf` | for project BRDF | Versioned reflection program described below. |
+| `program` | for program | Versioned closure program described below. |
 | `weight` | for Mix | Conductor fraction in [0, 1]. The Lambertian lobe uses the complementary weight and `base_color`. |
 | `conductor` | for Mix | Contains `alpha` (isotropic GGX width in [0.0001, 1]), `eta` (three positive real IOR channels), and `k` (three nonnegative extinction channels). Optical constants are at most 10000. |
 | `emission` | no | Makes every polygon of the material an area light. |
@@ -194,6 +196,74 @@ Its default is `false`.
 
 See [assign and edit a project BRDF in World](../development/editor-workspace.md#assign-and-edit-a-project-brdf)
 and the [transport contract](renderer-systems.md#project-brdf-programs).
+
+### Closure program
+
+A closure program describes a material as a weighted mixture of leaf lobes.
+Named parameters compute the lobe weights and roughness from constants and from
+the material's surface inputs. This example is a rusted metal. Its conductor
+weight is the metallic input, and the rust's diffuse weight is the remainder
+tinted orange:
+
+```json
+{
+  "name": "Rust",
+  "model": "program",
+  "base_color": [0.6, 0.3, 0.1],
+  "metallic": 0.7,
+  "roughness": 0.4,
+  "program": {
+    "version": 1,
+    "parameters": [
+      {"name": "metal", "input": "metallic"},
+      {"name": "rust", "one_minus": "metal"},
+      {"name": "tint", "multiply": ["rust", [0.6, 0.3, 0.1]]},
+      {"name": "rough", "input": "roughness"}
+    ],
+    "lobes": [
+      {"operation": "diffuse", "weight": "tint"},
+      {"operation": "conductor", "weight": "metal", "roughness": "rough",
+       "eta": [0.2, 0.9, 1.1], "k": [3.9, 2.4, 2.2]}
+    ]
+  }
+}
+```
+
+`parameters` is an optional list evaluated in order. Each entry has a unique
+`name` and exactly one expression:
+
+| Expression | Value |
+| --- | --- |
+| `"constant": c` | A number for all three channels, or three numbers. Magnitudes are at most 10000. |
+| `"input": "base_color"` | The base colour, after its texture. `"roughness"` and `"metallic"` give that input in every channel. |
+| `"add": [a, b]`, `"multiply": [a, b]` | Per-channel sum or product. |
+| `"lerp": [a, b, t]` | Per-channel `a + (b - a) * t`. |
+| `"one_minus": a`, `"clamp": a` | `1 - a`, or `a` clamped to [0, 1]. |
+
+An operand names an earlier parameter or gives an inline constant. Name
+references must point backwards, so a program cannot form a cycle. `lobes` lists
+one to eight leaf lobes. Each lobe takes a `weight` operand whose three channels
+scale the lobe:
+
+| `operation` | Other members | Lobe |
+| --- | --- | --- |
+| `"diffuse"` | none | Lambertian reflection. |
+| `"conductor"` | `roughness`, `eta`, `k` | Isotropic GGX conductor. Alpha is the square of the roughness operand. `eta` holds three positive and `k` three nonnegative channels, each at most 10000. |
+| `"cosine_power"` | `roughness`, `power` | The [project BRDF](#project-brdf-program) cosine-power term with exponent `(1 - roughness) * power`, power in [0, 32]. |
+
+A nested mix is written as a product of weights, so the mixture is always flat.
+The material's `base_color`, `metallic` and `roughness` are the surface inputs.
+They are also the metallic-roughness approximation that raster profiles draw.
+
+The reader compiles the program into bounded register code:
+- At most 32 values, counting inline constants.
+- At most 8 distinct constants.
+- At most 8 values live at once.
+
+It drops parameters that no lobe uses, and it reuses a register after the last
+read of its value. A program that exceeds a limit fails with `LIMIT_EXCEEDED`
+and a message that names the fix. The cook stores programs in LUSCN version 11; see
+[closure programs in the renderer](renderer-systems.md#material-closure-programs).
 
 ### Object
 

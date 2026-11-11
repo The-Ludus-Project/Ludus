@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 
 #include <ludus/foundation/base/types.h>
 
@@ -330,6 +331,8 @@ struct LitMaterialDescription final
     MaterialDebugView DebugView = MaterialDebugView::None;
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Closure program read when Scattering.Model is Program; it must satisfy IsMaterialProgramValid.
+    content::scene_format::MaterialProgram Program{};
     /// Additional direct-light IDs whose diffuse terms are in Bake. Borrowed only during material creation.
     /// Valid charts replace these terms while preserving live specular and shadows.
     ludus::foundation::BorrowedView<const ludus::foundation::uint64> BakedDirectLightIds;

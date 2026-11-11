@@ -182,6 +182,19 @@ struct MaterialUse final
 };
 } // namespace
 
+usize CountMaterialProgramBytes(const CookPlan& plan) noexcept
+{
+    usize bytes = 0;
+    for (const PlannedMaterial& material : plan.Materials)
+    {
+        if (material.Scattering.Model == format::MaterialModel::Program)
+        {
+            bytes += format::MATERIAL_PROGRAM_BYTES;
+        }
+    }
+    return bytes;
+}
+
 Status
 PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, const Cancellation* cancelOrNull) noexcept
 {
@@ -564,7 +577,8 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         sizeof(format::Header) + sizeof(format::LightingRecord) +
         scene.AnalyticLights.GetSize() * sizeof(format::LightRecord) +
         plan.Materials.GetSize() * (sizeof(format::MeshRecord) + sizeof(format::MaterialRecordV6) +
-                                    format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3));
+                                    format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3)) +
+        CountMaterialProgramBytes(plan);
     uint32 totalVertices = 0;
     uint32 totalIndices = 0;
     for (const uint32 index : order)

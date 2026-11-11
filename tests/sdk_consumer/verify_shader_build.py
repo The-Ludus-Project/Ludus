@@ -13,7 +13,8 @@ import tempfile
 def run(command, success=True):
     result = subprocess.run(list(map(str, command)), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if (result.returncode == 0) != success:
-        raise RuntimeError(result.stdout)
+        # Name the command and exit code: a consumer that stops early can print nothing.
+        raise RuntimeError(f'{" ".join(map(str, command))} exited with {result.returncode}\n{result.stdout}')
     return result.stdout
 
 

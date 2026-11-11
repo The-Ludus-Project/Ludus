@@ -86,6 +86,13 @@ private:
     const uint8* mBytes;
     usize mRemaining;
 };
+/// Read a LUSCN v11 program record and validate it completely.
+bool ReadMaterialProgram(Reader& inoutReader, format::MaterialProgram& outProgram) noexcept
+{
+    const uint8* bytesOrNull = inoutReader.Take(format::MATERIAL_PROGRAM_BYTES);
+    return bytesOrNull != nullptr &&
+           format::DecodeMaterialProgram({bytesOrNull, format::MATERIAL_PROGRAM_BYTES}, outProgram) == true;
+}
 bool IsNonnegative(const math::Vector3& value, float32 maximum) noexcept
 {
     return value.X >= 0 && value.Y >= 0 && value.Z >= 0 && value.X <= maximum && value.Y <= maximum &&
@@ -366,7 +373,9 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             if (reader.Read(material.Scattering.AlphaU) == false || reader.Read(material.Scattering.AlphaV) == false ||
                 reader.Read(material.Scattering.CoatingEta) == false ||
                 reader.Read(material.Scattering.CoatingThickness) == false ||
-                format::IsStoredMaterialScatteringValid(material.Scattering) == false)
+                format::IsStoredMaterialScatteringValid(material.Scattering) == false ||
+                (material.Scattering.Model == format::MaterialModel::Program &&
+                 ReadMaterialProgram(reader, material.Program) == false))
             {
                 return Status::Failed;
             }

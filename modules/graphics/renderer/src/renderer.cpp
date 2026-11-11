@@ -4659,6 +4659,8 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                value.Y <= 10000 && value.Z <= 10000;
     };
     if (content::scene_format::IsMaterialScatteringValid(description.Scattering) == false ||
+        (description.Scattering.Model == content::scene_format::MaterialModel::Program &&
+         content::scene_format::IsMaterialProgramValid(description.Program) == false) ||
         internal::IsReferenceCoatingSupported(description.Scattering) == false ||
         internal::IsReferenceDielectricSupported(description.Scattering) == false ||
         (description.Scattering.Model == content::scene_format::MaterialModel::Conductor &&

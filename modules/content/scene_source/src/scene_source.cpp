@@ -1,5 +1,7 @@
 #include <ludus/content/scene_source/scene_source.h>
 
+#include "internal/material_program_compiler.h"
+
 #include <ludus/content/scene_format/luscn.h>
 
 #include <ludus/foundation/containers/static_array.hpp>
@@ -459,14 +461,445 @@ ReadProjectBrdf(JsonValue value, const JsonPath& path, Failure& inoutFailure, So
     return status;
 }
 
+/// Named values of one program being read; names view the parsed document.
+struct ProgramNames final
+{
+    StaticArray<std::string_view, internal::MAX_PROGRAM_VALUES> Names{};
+};
+
+[[nodiscard]] SceneSourceStatus AddProgramValue(const internal::ProgramValue& value,
+                                                const JsonPath& path,
+                                                Failure& inoutFailure,
+                                                internal::ProgramDraft& inoutDraft,
+                                                uint8& outIndex) noexcept
+{
+    if (inoutDraft.ValueCount == internal::MAX_PROGRAM_VALUES)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Limit,
+                                 "the program defines more than 32 values; reuse parameters or inline fewer constants",
+                                 path);
+    }
+    inoutDraft.Values[inoutDraft.ValueCount] = value;
+    outIndex = static_cast<uint8>(inoutDraft.ValueCount);
+    ++inoutDraft.ValueCount;
+    return SceneSourceStatus::Success;
+}
+
+/// Read a number broadcast to RGB, or an array of three numbers, within the constant magnitude.
+[[nodiscard]] SceneSourceStatus ReadProgramConstant(JsonValue value,
+                                                    const JsonPath& path,
+                                                    Failure& inoutFailure,
+                                                    internal::ProgramValue& outValue) noexcept
+{
+    constexpr float64 MAXIMUM = static_cast<float64>(scene_format::MAX_MATERIAL_PROGRAM_CONSTANT);
+    math::Vector3d rgb{};
+    SceneSourceStatus status = SceneSourceStatus::Success;
+    if (value.Array() == true)
+    {
+        status = ReadVector(value, -MAXIMUM, MAXIMUM, path, inoutFailure, rgb);
+    }
+    else
+    {
+        float64 number = 0.0;
+        status = ReadBoundedNumber(value, -MAXIMUM, MAXIMUM, path, inoutFailure, number);
+        rgb = {number, number, number};
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        outValue.Opcode = scene_format::MaterialProgramOpcode::Constant;
+        outValue.Constant = {
+            {static_cast<float32>(rgb.X), static_cast<float32>(rgb.Y), static_cast<float32>(rgb.Z), 0}};
+    }
+    return status;
+}
+
+/// Resolve a parameter name, or add an inline constant, and return its value index.
+[[nodiscard]] SceneSourceStatus ReadProgramReference(JsonValue value,
+                                                     const JsonPath& path,
+                                                     const ProgramNames& names,
+                                                     Failure& inoutFailure,
+                                                     internal::ProgramDraft& inoutDraft,
+                                                     uint8& outIndex) noexcept
+{
+    std::string_view name;
+    if (value.String(name) == true)
+    {
+        for (usize index = 0; index < inoutDraft.ValueCount; ++index)
+        {
+            if (names.Names[index].empty() == false && names.Names[index] == name)
+            {
+                outIndex = static_cast<uint8>(index);
+                return SceneSourceStatus::Success;
+            }
+        }
+        return inoutFailure.Fail(SceneSourceStatus::UnresolvedReference,
+                                 "names no earlier parameter; define it above its first use",
+                                 path);
+    }
+    internal::ProgramValue constant;
+    const SceneSourceStatus status = ReadProgramConstant(value, path, inoutFailure, constant);
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    // Equal inline constants share one value, so repeating a literal costs no register.
+    for (usize index = 0; index < inoutDraft.ValueCount; ++index)
+    {
+        const internal::ProgramValue& existing = inoutDraft.Values[index];
+        bool isEqual =
+            names.Names[index].empty() == true && existing.Opcode == scene_format::MaterialProgramOpcode::Constant;
+        for (usize component = 0; component < scene_format::MATERIAL_PROGRAM_COMPONENTS; ++component)
+        {
+            isEqual = isEqual == true && existing.Constant[component] == constant.Constant[component];
+        }
+        if (isEqual == true)
+        {
+            outIndex = static_cast<uint8>(index);
+            return SceneSourceStatus::Success;
+        }
+    }
+    return AddProgramValue(constant, path, inoutFailure, inoutDraft, outIndex);
+}
+
+/// Read one named parameter expression and append it to the draft.
+[[nodiscard]] SceneSourceStatus ReadProgramParameter(JsonValue value,
+                                                     const JsonPath& path,
+                                                     Failure& inoutFailure,
+                                                     ProgramNames& inoutNames,
+                                                     internal::ProgramDraft& inoutDraft) noexcept
+{
+    using scene_format::MaterialProgramOpcode;
+    struct Expression final
+    {
+        std::string_view Member;
+        MaterialProgramOpcode Opcode = MaterialProgramOpcode::None;
+        usize OperandCount = 0;
+    };
+    constexpr usize EXPRESSION_KINDS = 7;
+    constexpr StaticArray<Expression, EXPRESSION_KINDS> EXPRESSIONS{{
+        {"constant", MaterialProgramOpcode::Constant, 0},
+        {"input", MaterialProgramOpcode::SurfaceInput, 0},
+        {"add", MaterialProgramOpcode::Add, 2},
+        {"multiply", MaterialProgramOpcode::Multiply, 2},
+        {"lerp", MaterialProgramOpcode::Lerp, internal::MAX_PROGRAM_OPERANDS},
+        {"one_minus", MaterialProgramOpcode::OneMinus, 1},
+        {"clamp", MaterialProgramOpcode::Clamp, 1},
+    }};
+    SceneSourceStatus status = CheckMembers(value,
+                                            {"name"},
+                                            {"constant", "input", "add", "multiply", "lerp", "one_minus", "clamp"},
+                                            path,
+                                            inoutFailure);
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    std::string_view name;
+    if (value.Get("name").String(name) == false || name.empty() == true)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed, "must be a nonempty string", JsonPath(path, "name"));
+    }
+    for (usize index = 0; index < inoutDraft.ValueCount; ++index)
+    {
+        if (inoutNames.Names[index] == name)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "repeats an earlier parameter name; rename one of them",
+                                     JsonPath(path, "name"));
+        }
+    }
+    const Expression* expressionOrNull = nullptr;
+    for (const Expression& expression : EXPRESSIONS)
+    {
+        if (value.Get(expression.Member).Valid() == true)
+        {
+            if (expressionOrNull != nullptr)
+            {
+                expressionOrNull = nullptr;
+                break;
+            }
+            expressionOrNull = &expression;
+        }
+    }
+    if (expressionOrNull == nullptr)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "define exactly one of constant, input, add, multiply, lerp, one_minus or clamp",
+                                 path);
+    }
+    const JsonPath expressionPath(path, expressionOrNull->Member);
+    const JsonValue expression = value.Get(expressionOrNull->Member);
+    internal::ProgramValue item;
+    item.Opcode = expressionOrNull->Opcode;
+    if (item.Opcode == MaterialProgramOpcode::Constant)
+    {
+        status = ReadProgramConstant(expression, expressionPath, inoutFailure, item);
+    }
+    else if (item.Opcode == MaterialProgramOpcode::SurfaceInput)
+    {
+        std::string_view input;
+        if (expression.String(input) == false)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::Malformed, "must be a string", expressionPath);
+        }
+        if (input == "base_color")
+        {
+            item.Input = scene_format::MaterialProgramInput::BaseColor;
+        }
+        else if (input == "roughness")
+        {
+            item.Input = scene_format::MaterialProgramInput::Roughness;
+        }
+        else if (input == "metallic")
+        {
+            item.Input = scene_format::MaterialProgramInput::Metallic;
+        }
+        else
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "must be base_color, roughness or metallic",
+                                     expressionPath);
+        }
+    }
+    else if (expressionOrNull->OperandCount == 1)
+    {
+        status =
+            ReadProgramReference(expression, expressionPath, inoutNames, inoutFailure, inoutDraft, item.Operands[0]);
+    }
+    else if (expression.Array() == false || expression.Count() != expressionOrNull->OperandCount)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed,
+                                 expressionOrNull->OperandCount == 2 ? "must be an array of two operands"
+                                                                     : "must be an array of three operands",
+                                 expressionPath);
+    }
+    else
+    {
+        for (usize operand = 0; operand < expressionOrNull->OperandCount && status == SceneSourceStatus::Success;
+             ++operand)
+        {
+            status = ReadProgramReference(expression.At(operand),
+                                          JsonPath(expressionPath, operand),
+                                          inoutNames,
+                                          inoutFailure,
+                                          inoutDraft,
+                                          item.Operands[operand]);
+        }
+    }
+    uint8 index = 0;
+    if (status == SceneSourceStatus::Success)
+    {
+        status = AddProgramValue(item, path, inoutFailure, inoutDraft, index);
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        inoutNames.Names[index] = name;
+    }
+    return status;
+}
+
+/// Read one leaf lobe and the parameters its operation requires.
+[[nodiscard]] SceneSourceStatus ReadProgramLobe(JsonValue value,
+                                                const JsonPath& path,
+                                                const ProgramNames& names,
+                                                Failure& inoutFailure,
+                                                internal::ProgramDraft& inoutDraft,
+                                                internal::ProgramDraftLobe& outLobe) noexcept
+{
+    using scene_format::MaterialLobeOperation;
+    SceneSourceStatus status =
+        CheckMembers(value, {"operation", "weight"}, {"roughness", "eta", "k", "power"}, path, inoutFailure);
+    std::string_view operation;
+    if (status == SceneSourceStatus::Success && value.Get("operation").String(operation) == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed, "must be a string", JsonPath(path, "operation"));
+    }
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    if (operation == "diffuse")
+    {
+        outLobe.Operation = MaterialLobeOperation::Diffuse;
+    }
+    else if (operation == "conductor")
+    {
+        outLobe.Operation = MaterialLobeOperation::Conductor;
+    }
+    else if (operation == "cosine_power")
+    {
+        outLobe.Operation = MaterialLobeOperation::CosinePower;
+    }
+    else
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "must be diffuse, conductor or cosine_power",
+                                 JsonPath(path, "operation"));
+    }
+    const bool isConductor = outLobe.Operation == MaterialLobeOperation::Conductor;
+    const bool isCosinePower = outLobe.Operation == MaterialLobeOperation::CosinePower;
+    struct Member final
+    {
+        std::string_view Name;
+        bool IsRequired = false;
+    };
+    for (const Member member : {Member{"roughness", isConductor == true || isCosinePower == true},
+                                Member{"eta", isConductor},
+                                Member{"k", isConductor},
+                                Member{"power", isCosinePower}})
+    {
+        const bool isPresent = value.Get(member.Name).Valid();
+        if (isPresent != member.IsRequired)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     isPresent == true ? "does not apply to this operation; remove it"
+                                                       : "is required by this operation",
+                                     JsonPath(path, member.Name));
+        }
+    }
+    status = ReadProgramReference(value.Get("weight"),
+                                  JsonPath(path, "weight"),
+                                  names,
+                                  inoutFailure,
+                                  inoutDraft,
+                                  outLobe.WeightValue);
+    if (status == SceneSourceStatus::Success && (isConductor == true || isCosinePower == true))
+    {
+        status = ReadProgramReference(value.Get("roughness"),
+                                      JsonPath(path, "roughness"),
+                                      names,
+                                      inoutFailure,
+                                      inoutDraft,
+                                      outLobe.RoughnessValue);
+    }
+    constexpr float64 MAXIMUM_OPTICAL = static_cast<float64>(scene_format::MAX_MATERIAL_OPTICAL_CONSTANT);
+    if (status == SceneSourceStatus::Success && isConductor == true)
+    {
+        math::Vector3d eta{};
+        math::Vector3d extinction{};
+        status = ReadVector(value.Get("eta"), 0.0, MAXIMUM_OPTICAL, JsonPath(path, "eta"), inoutFailure, eta);
+        if (status == SceneSourceStatus::Success)
+        {
+            status = ReadVector(value.Get("k"), 0.0, MAXIMUM_OPTICAL, JsonPath(path, "k"), inoutFailure, extinction);
+        }
+        if (status == SceneSourceStatus::Success)
+        {
+            outLobe.Eta = {{static_cast<float32>(eta.X), static_cast<float32>(eta.Y), static_cast<float32>(eta.Z)}};
+            outLobe.K = {{static_cast<float32>(extinction.X),
+                          static_cast<float32>(extinction.Y),
+                          static_cast<float32>(extinction.Z)}};
+            if (outLobe.Eta[0] <= 0 || outLobe.Eta[1] <= 0 || outLobe.Eta[2] <= 0)
+            {
+                return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                         "requires positive RGB indices",
+                                         JsonPath(path, "eta"));
+            }
+        }
+    }
+    if (status == SceneSourceStatus::Success && isCosinePower == true)
+    {
+        float64 power = 0.0;
+        status = ReadBoundedNumber(value.Get("power"),
+                                   0.0,
+                                   static_cast<float64>(scene_format::LUDUS_PROJECT_BRDF_MAX_POWER),
+                                   JsonPath(path, "power"),
+                                   inoutFailure,
+                                   power);
+        outLobe.Power = static_cast<float32>(power);
+    }
+    return status;
+}
+
+/// Read a closure program: named parameter expressions in definition order, then the weighted
+/// lobes, compiled to a bounded register program.
+[[nodiscard]] SceneSourceStatus ReadMaterialProgram(JsonValue value,
+                                                    const JsonPath& path,
+                                                    Failure& inoutFailure,
+                                                    scene_format::MaterialProgram& outProgram) noexcept
+{
+    SceneSourceStatus status = CheckMembers(value, {"version", "lobes"}, {"parameters"}, path, inoutFailure);
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    uint64 version = 0;
+    if (value.Get("version").Integer(version) == false || version != scene_format::MATERIAL_PROGRAM_VERSION_1)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "expected closure program version 1",
+                                 JsonPath(path, "version"));
+    }
+    internal::ProgramDraft draft;
+    ProgramNames names;
+    const JsonValue parameters = value.Get("parameters");
+    const JsonPath parametersPath(path, "parameters");
+    if (parameters.Valid() == true && parameters.Array() == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed, "must be an array", parametersPath);
+    }
+    for (usize index = 0; parameters.Valid() == true && index < parameters.Count(); ++index)
+    {
+        status =
+            ReadProgramParameter(parameters.At(index), JsonPath(parametersPath, index), inoutFailure, names, draft);
+        if (status != SceneSourceStatus::Success)
+        {
+            return status;
+        }
+    }
+    const JsonValue lobes = value.Get("lobes");
+    const JsonPath lobesPath(path, "lobes");
+    if (lobes.Array() == false || lobes.Count() == 0)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed, "must be a nonempty array of lobes", lobesPath);
+    }
+    if (lobes.Count() > scene_format::MAX_MATERIAL_PROGRAM_LOBES)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Limit,
+                                 "a program has at most 8 lobes; merge lobes of the same operation",
+                                 lobesPath);
+    }
+    for (usize index = 0; index < lobes.Count(); ++index)
+    {
+        status = ReadProgramLobe(lobes.At(index),
+                                 JsonPath(lobesPath, index),
+                                 names,
+                                 inoutFailure,
+                                 draft,
+                                 draft.Lobes[index]);
+        if (status != SceneSourceStatus::Success)
+        {
+            return status;
+        }
+        ++draft.LobeCount;
+    }
+    switch (internal::CompileMaterialProgram(draft, outProgram))
+    {
+        case internal::ProgramCompileStatus::Success:
+            return SceneSourceStatus::Success;
+        case internal::ProgramCompileStatus::TooManyConstants:
+            return inoutFailure.Fail(SceneSourceStatus::Limit,
+                                     "the program uses more than 8 distinct constants; reuse equal constants",
+                                     path);
+        case internal::ProgramCompileStatus::TooManyRegisters:
+            return inoutFailure.Fail(SceneSourceStatus::Limit,
+                                     "the program keeps more than 8 values live at once; share lobe weights or "
+                                     "combine parameters",
+                                     path);
+        case internal::ProgramCompileStatus::Invalid:
+            break;
+    }
+    return inoutFailure.Fail(SceneSourceStatus::InvalidValue, "does not compile to a valid closure program", path);
+}
+
 [[nodiscard]] SceneSourceStatus
 ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMaterial& outMaterial) noexcept
 {
-    SceneSourceStatus status = CheckMembers(value,
-                                            {"name", "model", "base_color"},
-                                            {"metallic", "roughness", "emission", "weight", "conductor", "brdf"},
-                                            path,
-                                            inoutFailure);
+    SceneSourceStatus status =
+        CheckMembers(value,
+                     {"name", "model", "base_color"},
+                     {"metallic", "roughness", "emission", "weight", "conductor", "brdf", "program"},
+                     path,
+                     inoutFailure);
     if (status == SceneSourceStatus::Success)
     {
         status = ReadText(value.Get("name"), false, JsonPath(path, "name"), inoutFailure, outMaterial.Name);
@@ -491,6 +924,17 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
                                  "brdf requires the project_brdf model",
                                  JsonPath(path, "brdf"));
+    }
+    const bool isProgram = model == "program";
+    if (isProgram == false && value.Get("program").Valid() == true)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "program requires the program model",
+                                 JsonPath(path, "program"));
+    }
+    if (isProgram == true && value.Get("program").Valid() == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed, "missing member", JsonPath(path, "program"));
     }
     if (model == DIFFUSE_MODEL || isMix == true)
     {
@@ -527,10 +971,14 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
         }
         outMaterial.Model = SourceMaterialModel::ProjectBrdf;
     }
+    else if (isProgram == true)
+    {
+        outMaterial.Model = SourceMaterialModel::Program;
+    }
     else
     {
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
-                                 "must be diffuse, metallic_roughness, mix or project_brdf",
+                                 "must be diffuse, metallic_roughness, mix, project_brdf or program",
                                  JsonPath(path, "model"));
     }
     status = ReadVector(value.Get("base_color"),
@@ -562,6 +1010,11 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     if (status == SceneSourceStatus::Success && isMix == true)
     {
         status = ReadMix(value, path, inoutFailure, outMaterial);
+    }
+    if (status == SceneSourceStatus::Success && isProgram == true)
+    {
+        status =
+            ReadMaterialProgram(value.Get("program"), JsonPath(path, "program"), inoutFailure, outMaterial.Program);
     }
     const JsonValue emission = value.Get("emission");
     if (status == SceneSourceStatus::Success && emission.Valid() == true)

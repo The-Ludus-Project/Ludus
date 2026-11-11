@@ -72,6 +72,8 @@ struct PreviewSurface final
     foundation::float32 Metallic = 0;
     foundation::float32 Roughness = .5F;
     content::scene_format::MaterialScattering Scattering{};
+    /// Closure program of a Program-model surface; zero otherwise.
+    content::scene_format::MaterialProgram Program{};
     foundation::math::Vector3 Emission{};
     bool IsEmissionTwoSided = false;
     bool HasEmissionPower = false;
@@ -140,6 +142,8 @@ struct PreviewViewOptions final
     /// Produce DepthConvention::Conventional (near 0, far 1, Less) instead of the viewport's
     /// reverse-Z. An infinite perspective lens is replaced by a finite one whose far plane
     /// encloses the World's geometry from the camera, so clip z can be rewritten as w - z exactly.
+    /// A loaded sky-only World (no objects, an Atmosphere request) uses the minimum far distance;
+    /// any other scene without geometry bounds, including an unloaded one, fails.
     bool ShouldUseConventionalDepth = false;
     /// Optional precomputed TryGetBounds({}) result for this scene, borrowed for the call.
     /// Conventional depth then bounds the far plane without transforming every vertex again.

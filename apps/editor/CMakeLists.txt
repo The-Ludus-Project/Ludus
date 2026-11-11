@@ -475,8 +475,25 @@ target_link_libraries(ludus_editor_core
 ludus_apply_project_defaults(ludus_editor_core)
 
 
+# Bounded wall-clock viewport span recording. The application's profiling
+# objects and every editor test executable's Catch2 entry point link it, so a
+# test's `--trace-output` capture appends viewport spans in every editor
+# configuration rather than only when the preview definitions reach the entry
+# point.
+add_library(ludus_editor_viewport_trace STATIC src/internal/viewport_trace.h src/viewport_trace.cpp)
+target_include_directories(ludus_editor_viewport_trace PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(ludus_editor_viewport_trace PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+target_link_libraries(ludus_editor_viewport_trace
+    PUBLIC
+        Qt6::Core
+        Ludus::FoundationBase
+        Ludus::FoundationContainers
+    PRIVATE
+        Ludus::FoundationProfiling
+)
+ludus_apply_project_defaults(ludus_editor_viewport_trace)
+
 set(editor_profiling_sources
-    src/internal/viewport_trace.h src/viewport_trace.cpp
     src/internal/profiling_controller.h src/profiling_controller.cpp
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
@@ -826,6 +843,7 @@ ludus_editor_add_objects(ludus_editor_application
 )
 target_link_libraries(ludus_editor_application
     PUBLIC
+        ludus_editor_viewport_trace
         ludus_editor_render_graph_authoring
         ludus_editor_content
         ludus_editor_project_explorer
@@ -1073,9 +1091,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
-    # One Catch2 session entry point for every editor test executable.
+    # One Catch2 session entry point for every editor test executable. Its
+    # `--trace-output` option captures CPU scopes and viewport spans for the
+    # runtime profile scenarios, so the trace libraries come with it.
     ludus_editor_add_objects(ludus_editor_test_main tests/main.cpp)
-    target_link_libraries(ludus_editor_test_main PUBLIC Qt6::Widgets Catch2::Catch2 Ludus::FoundationBase)
+    target_link_libraries(ludus_editor_test_main PUBLIC Qt6::Widgets Catch2::Catch2 Ludus::FoundationBase
+        Ludus::FoundationContainers Ludus::FoundationProfiling ludus_editor_viewport_trace)
     ludus_enable_test_exceptions(ludus_editor_test_main)
     add_executable(ludus_document_well_tests tests/document_pair_tests.cpp)
     set_target_properties(ludus_document_well_tests PROPERTIES AUTOMOC ON)
@@ -1291,6 +1312,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
+        get_target_property(editor_reference_cold_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_COLD_TIMEOUT_SECONDS)
+        set_source_files_properties(tests/viewport_reference_capture_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+            "LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS=${editor_reference_cold_timeout}")
         target_sources(ludus_editor_tests PRIVATE tests/viewport_performance_tests.cpp tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
             tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp
             tests/render_graph_library_capture_tests.cpp)
@@ -1461,12 +1485,23 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         foreach(shard_index RANGE 0 ${last_shard})
             set(test_name "${target_name}_${shard_index}")
             add_test(NAME "${test_name}" COMMAND "${target_name}" --order decl
-                --shard-count "${shard_count}" --shard-index "${shard_index}" --durations yes)
+                --shard-count "${shard_count}" --shard-index "${shard_index}" --durations yes ${ARGN})
             set_tests_properties("${test_name}" PROPERTIES LABELS "${labels}" TIMEOUT "${timeout}"
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RESOURCE_LOCK ludus_editor)
         endforeach()
     endfunction()
-    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor")
+    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor" "~[reference-compute]")
+    if(LUDUS_EDITOR_RENDER_PREVIEW)
+        # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.
+        get_target_property(editor_reference_case_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS)
+        add_test(NAME ludus_editor_reference_emissive_patches COMMAND ludus_editor_tests
+            "[reference-compute][emissive-patches]" --durations yes)
+        add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests
+            "[reference-compute][oracle-parity]" --durations yes)
+        set_tests_properties(ludus_editor_reference_emissive_patches ludus_editor_reference_oracle_parity
+            PROPERTIES LABELS "unit;editor;gpu" TIMEOUT "${editor_reference_case_timeout}" SKIP_RETURN_CODE 4
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RESOURCE_LOCK ludus_editor)
+    endif()
     # Transitional, empty: batch CI runs the workflow definitions on main against
     # the develop candidate, and main's ci.yml still builds this target, which
     # 547148cf removed with SceneDocument. Delete it once a promotion carries the
@@ -1614,6 +1649,7 @@ list(REMOVE_ITEM editor_precompiled_header_objects ludus_editor_geometry_model)
 ludus_editor_apply_precompiled_headers(
     ludus_editor_core
     ludus_editor_code
+    ludus_editor_viewport_trace
     ${editor_precompiled_header_objects}
     ludus_editor_texture_display
     ludus_editor_crash_reporting

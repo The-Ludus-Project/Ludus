@@ -1474,6 +1474,14 @@ void ResolveCamera(const SceneIr& scene,
     return version;
 }
 
+/// Write a LUSCN v11 program record (scene_format::EncodeMaterialProgram).
+void AppendMaterialProgram(const format::MaterialProgram& program, detail::ByteWriter& inoutBlob) noexcept
+{
+    format::MaterialProgramBytes bytes{};
+    format::EncodeMaterialProgram(program, bytes);
+    inoutBlob.AppendBytes({bytes.GetData(), bytes.GetSize()});
+}
+
 void PackBundle(const SceneIr& scene,
                 const IrCamera& camera,
                 const CookPlan& plan,
@@ -1552,6 +1560,12 @@ void PackBundle(const SceneIr& scene,
         inoutBlob.AppendFloat32(static_cast<float64>(scattering.AlphaV));
         inoutBlob.AppendFloat32(static_cast<float64>(scattering.CoatingEta));
         inoutBlob.AppendFloat32(static_cast<float64>(scattering.CoatingThickness));
+        if (scattering.Model == format::MaterialModel::Program)
+        {
+            // The planner copies Scattering from the representative, so it exists.
+            LUDUS_ASSERT(planned.Representative != IR_NONE);
+            AppendMaterialProgram(scene.Materials[planned.Representative].Program, inoutBlob);
+        }
     }
     for (const CookedMesh& mesh : meshes)
     {
@@ -2181,7 +2195,8 @@ void ReportDisabledLights(const SceneIr& scene, const CookedLighting& lighting, 
         sizeof(format::Header) +
         plan.Materials.GetSize() *
             (MAX_TEXTURES_PER_SLOT * sizeof(format::TextureRecord) + sizeof(format::MaterialRecordV6) +
-             format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3));
+             format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3)) +
+        CountMaterialProgramBytes(plan);
     const usize bundleLimit = format::IMPORT_LIMITS.BundleBytes;
     const usize fixedBytes = geometryBytes + recordBytes + lightingRecords;
     const usize lightingBudget = bundleLimit > fixedBytes ? bundleLimit - fixedBytes : 0;

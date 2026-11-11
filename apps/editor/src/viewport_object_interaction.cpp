@@ -42,6 +42,10 @@ constexpr usize BOX_CORNERS = Z_CORNER_BIT << 1U;
 constexpr float64 MINIMUM_PROBE_FACE_MOTION_PIXELS = 2;
 constexpr float64 PROBE_FACE_HALF_PIXELS = 5;
 constexpr int32 PROBE_EXTENT_DECIMALS = 2;
+/// Smallest distance between the probe grid's far face and its box's that draws the grid's own outline.
+constexpr float32 PROBE_OUTLINE_GAP_METRES = 0.01F;
+/// Face drags author whole centimetres, as their readout shows.
+constexpr float64 PROBE_SIZE_SNAP_METRES = 0.01;
 constexpr math::Affine3 WORLD_AXES{};
 constexpr usize MAX_OUTLINE_LINES = ViewportObjectOverlay::MAX_OUTLINE_LINES;
 /// A luminaire's outline: the panel square, its two diagonals and the emission direction.
@@ -135,13 +139,21 @@ constexpr QRgb MixColour(QRgb from, QRgb to, int32 percent) noexcept
                 MixChannel(qGreen(from), qGreen(to), percent),
                 MixChannel(qBlue(from), qBlue(to), percent));
 }
-math::Vector3 ComputeProbeFaceWorld(const rr::GiProbeGrid& grid, int32 face) noexcept
+/// The centre of one face of an axis-aligned box: the three maximum faces in axis order, then the minimum faces.
+math::Vector3 ComputeProbeFaceWorld(const math::Aabb3& boxWorld, int32 face) noexcept
 {
-    const math::Aabb3 boundsWorld = ComputeWorldGiProbeBounds(grid);
-    const math::Vector3 centerWorld = (boundsWorld.Min + boundsWorld.Max) * 0.5F;
+    const math::Vector3 centerWorld = (boxWorld.Min + boxWorld.Max) * 0.5F;
     const int32 axis = face % AXIS_COUNT;
-    const float32 halfExtent = static_cast<float32>(grid.Counts[axis] - 1) * grid.Spacing * 0.5F;
+    const float32 halfExtent = math::Dot(boxWorld.Max - boxWorld.Min, WORLD_AXES.Columns[axis]) * 0.5F;
     return centerWorld + WORLD_AXES.Columns[axis] * (face >= AXIS_COUNT ? -halfExtent : halfExtent);
+}
+
+/// Whether the probe grid's far faces differ from its box's by more than the drawing tolerance.
+bool IsProbeGridApartFromBox(const rr::GiProbeGrid& grid, const math::Aabb3& boxWorld) noexcept
+{
+    const math::Vector3 gapWorld = boxWorld.Max - ComputeWorldGiProbeBounds(grid).Max;
+    return math::Abs(gapWorld.X) > PROBE_OUTLINE_GAP_METRES || math::Abs(gapWorld.Y) > PROBE_OUTLINE_GAP_METRES ||
+           math::Abs(gapWorld.Z) > PROBE_OUTLINE_GAP_METRES;
 }
 
 float64 ComputeSnap(float64 value, float64 interval) noexcept
@@ -280,20 +292,32 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     mHasPlayerSpawn = ReadWorldFirstPersonPlayer(world, selected, spawn, speed, spawnError);
     mPlayerEyeWorld = mHasPlayerSpawn == true ? spawn.Pose.Position : math::Vector3d{};
     mShouldPreviewPlayerMove = false;
+    mProbeVolume = {};
     mProbeGrid = {};
     mLuminaireHalfExtentWorld = 0;
     mParentToWorld = {};
     QString probeError;
     const bool hasProbeVolume = IsBuiltInWorld(world) == true &&
-                                ReadWorldGiProbeGrid(components, mProbeGrid, probeError, true) == true &&
-                                mProbeGrid.Counts[0] != 0;
+                                ReadWorldGiProbeVolume(components, mProbeVolume, probeError) == true &&
+                                mProbeVolume.Grid.Counts[0] != 0;
+    if (hasProbeVolume == false)
+    {
+        mProbeVolume = {};
+    }
+    mProbeGrid = mProbeVolume.Grid;
     mIsStandaloneProbeVolume = hasProbeVolume == true && IsStandaloneWorldGiProbeVolume(entity, components) == true;
     if (mIsStandaloneProbeVolume == true)
     {
-        // The bake uses the authored position in world space, independent of rotation, scale and mesh parents.
+        // The bake uses the authored position in world space, independent of rotation and mesh parents. The
+        // volume layout reads the Transform scale as the box size, so the scale tool resizes the box.
+        const QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+        const QJsonArray scale = isProbeVolumeLayout() == true ? QJsonArray{transform.value(QStringLiteral("sx")),
+                                                                            transform.value(QStringLiteral("sy")),
+                                                                            transform.value(QStringLiteral("sz"))}
+                                                               : QJsonArray{1, 1, 1};
         mPlacement = QJsonObject{{QStringLiteral("position"), ReadWorldGiProbeOrigin(components)},
                                  {QStringLiteral("rotation"), QJsonArray{0, 0, 0}},
-                                 {QStringLiteral("scale"), QJsonArray{1, 1, 1}},
+                                 {QStringLiteral("scale"), scale},
                                  {QStringLiteral("basis"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1}}};
         mCanEdit = canEdit;
         Q_EMIT Changed();
@@ -808,8 +832,10 @@ void ViewportObjectInteraction::buildHandles()
     mHandles.Clear();
     mPlaneHandles.Clear();
     mHasUniformHandle = false;
-    if (mCanEdit == false || mTool == Tool::Select || mTerrainBrushKey.isEmpty() == false ||
-        (mIsStandaloneProbeVolume == true && mTool != Tool::Move))
+    // A probe volume never rotates; its counts layout scales spacing through its own centre handle instead.
+    const bool isProbeToolHidden = mIsStandaloneProbeVolume == true &&
+                                   (mTool == Tool::Rotate || (mTool == Tool::Scale && isProbeVolumeLayout() == false));
+    if (mCanEdit == false || mTool == Tool::Select || mTerrainBrushKey.isEmpty() == false || isProbeToolHidden == true)
     {
         return;
     }
@@ -1077,13 +1103,51 @@ void ViewportObjectInteraction::appendTerrainFootprint(ViewportObjectOverlay& in
     }
 }
 
-bool ViewportObjectInteraction::projectProbeFace(const rr::GiProbeGrid& grid,
+bool ViewportObjectInteraction::isProbeVolumeLayout() const noexcept
+{
+    return mProbeVolume.Layout == GiProbeLayout::Volume;
+}
+
+void ViewportObjectInteraction::getShownProbeVolume(math::Aabb3& outBoxWorld, rr::GiProbeGrid& outGrid) const
+{
+    outBoxWorld = ComputeWorldGiProbeVolumeBounds(mProbeVolume);
+    outGrid = mProbeGrid;
+    if (mDragTarget.Kind == HandleKind::ProbeFace || mDragTarget.Kind == HandleKind::ProbeSpacing)
+    {
+        outGrid = mProbeDragGrid;
+        outBoxWorld = mDragTarget.Kind == HandleKind::ProbeFace && isProbeVolumeLayout() == true
+                          ? mProbeDragBoxWorld
+                          : ComputeWorldGiProbeBounds(outGrid);
+        return;
+    }
+    if (mDragTarget.IsValid() == false || (mTool != Tool::Move && mTool != Tool::Scale))
+    {
+        return;
+    }
+    const math::Vector3 originWorld = WorldDocument::MakeSceneMeshToParent(mCandidate).Translation;
+    if (isProbeVolumeLayout() == false)
+    {
+        outGrid.OriginWorld = originWorld;
+        outBoxWorld = ComputeWorldGiProbeBounds(outGrid);
+        return;
+    }
+    const QJsonArray scale = mCandidate.value(QStringLiteral("scale")).toArray();
+    const math::Vector3 sizeWorld{static_cast<float32>(scale[0].toDouble()),
+                                  static_cast<float32>(scale[1].toDouble()),
+                                  static_cast<float32>(scale[2].toDouble())};
+    GiProbeCounts requiredCounts{};
+    outGrid = ComputeGiProbeGridForVolume(originWorld, sizeWorld, mProbeGrid.Spacing, requiredCounts);
+    outBoxWorld = {originWorld, originWorld + sizeWorld};
+}
+
+bool ViewportObjectInteraction::projectProbeFace(const math::Aabb3& boxWorld,
+                                                 float32 spacing,
                                                  int32 face,
                                                  QPointF& outPositionPixel) const
 {
-    const math::Vector3 centerWorld = ComputeProbeFaceWorld(grid, face);
+    const math::Vector3 centerWorld = ComputeProbeFaceWorld(boxWorld, face);
     const int32 axis = face % AXIS_COUNT;
-    const float32 towardCenter = face >= AXIS_COUNT ? grid.Spacing : -grid.Spacing;
+    const float32 towardCenter = face >= AXIS_COUNT ? spacing : -spacing;
     QPointF centerPixel;
     QPointF inwardPixel;
     if (project(centerWorld, centerPixel) == false || mFramePixel.contains(centerPixel) == false ||
@@ -1101,10 +1165,9 @@ bool ViewportObjectInteraction::canEditProbeVolume() const noexcept
     return mCanEdit == true && mProbeGrid.Counts[0] != 0 && (mTool == Tool::Move || mTool == Tool::Scale);
 }
 
-bool ViewportObjectInteraction::projectProbeScaleHandle(const rr::GiProbeGrid& grid, QPointF& outPositionPixel) const
+bool ViewportObjectInteraction::projectProbeScaleHandle(const math::Aabb3& boxWorld, QPointF& outPositionPixel) const
 {
-    const math::Aabb3 boundsWorld = ComputeWorldGiProbeBounds(grid);
-    return project((boundsWorld.Min + boundsWorld.Max) * 0.5F, outPositionPixel) == true &&
+    return project((boxWorld.Min + boxWorld.Max) * 0.5F, outPositionPixel) == true &&
            mFramePixel.contains(outPositionPixel) == true;
 }
 
@@ -1115,8 +1178,10 @@ ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickProbeHand
     {
         return target;
     }
+    const math::Aabb3 boxWorld = ComputeWorldGiProbeVolumeBounds(mProbeVolume);
     QPointF scaleHandlePixel;
-    if (mTool == Tool::Scale && projectProbeScaleHandle(mProbeGrid, scaleHandlePixel) == true &&
+    if (mTool == Tool::Scale && isProbeVolumeLayout() == false &&
+        projectProbeScaleHandle(boxWorld, scaleHandlePixel) == true &&
         IsWithinUniformHandle(positionPixel, scaleHandlePixel) == true)
     {
         return {HandleKind::ProbeSpacing, 0};
@@ -1125,7 +1190,7 @@ ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickProbeHand
     for (int32 face = 0; face < ViewportObjectOverlay::PROBE_FACE_HANDLES; ++face)
     {
         QPointF handlePixel;
-        if (projectProbeFace(mProbeGrid, face, handlePixel) == true)
+        if (projectProbeFace(boxWorld, mProbeGrid.Spacing, face, handlePixel) == true)
         {
             const QPointF deltaPixel = positionPixel - handlePixel;
             const float64 distance = QPointF::dotProduct(deltaPixel, deltaPixel);
@@ -1142,8 +1207,9 @@ ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickProbeHand
 bool ViewportObjectInteraction::beginProbeFaceDrag(QPointF positionPixel)
 {
     mProbeDragGrid = mProbeGrid;
+    mProbeDragBoxWorld = ComputeWorldGiProbeVolumeBounds(mProbeVolume);
     mProbeDragFramePixel = mFramePixel;
-    mDragPlaneOriginWorld = ComputeProbeFaceWorld(mProbeGrid, mDragTarget.Index);
+    mDragPlaneOriginWorld = ComputeProbeFaceWorld(mProbeDragBoxWorld, mDragTarget.Index);
     const math::Vector3 axisWorld = WORLD_AXES.Columns[mDragTarget.Index % AXIS_COUNT];
     math::Ray3 pressRay;
     if (math::TryInverse(mWorldToClip, mDragClipToWorld) != math::MathStatus::Success ||
@@ -1170,6 +1236,48 @@ void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
     const bool isMinimumFace = mDragTarget.Index >= AXIS_COUNT;
     const math::Vector3 axisWorld = WORLD_AXES.Columns[axis];
     const float32 deltaMetres = math::Dot(hitWorld - mDragPlaneStartWorld, axisWorld);
+    if (isProbeVolumeLayout() == true)
+    {
+        // The face moves the box edge freely; the probes follow at the authored spacing.
+        const math::Aabb3 authoredBoxWorld = ComputeWorldGiProbeVolumeBounds(mProbeVolume);
+        const float32 originalSize = math::Dot(authoredBoxWorld.Max - authoredBoxWorld.Min, axisWorld);
+        const float32 desiredSize = originalSize + (isMinimumFace == true ? -deltaMetres : deltaMetres);
+        if (math::IsFinite(desiredSize) == false)
+        {
+            return;
+        }
+        const float32 sizeMetres =
+            static_cast<float32>(math::Clamp(ComputeSnap(static_cast<float64>(desiredSize), PROBE_SIZE_SNAP_METRES),
+                                             MIN_GI_PROBE_VOLUME_SIZE_METRES,
+                                             MAX_GI_PROBE_VOLUME_SIZE_METRES));
+        math::Aabb3 boxWorld = authoredBoxWorld;
+        if (isMinimumFace == true)
+        {
+            boxWorld.Min = boxWorld.Min + axisWorld * (originalSize - sizeMetres);
+        }
+        else
+        {
+            boxWorld.Max = boxWorld.Max + axisWorld * (sizeMetres - originalSize);
+        }
+        GiProbeCounts requiredCounts{};
+        const rr::GiProbeGrid candidate =
+            ComputeGiProbeGridForVolume(boxWorld.Min, boxWorld.Max - boxWorld.Min, mProbeGrid.Spacing, requiredCounts);
+        if (rr::IsGiProbeGridValid(candidate) == false)
+        {
+            return;
+        }
+        mProbeDragBoxWorld = boxWorld;
+        mProbeDragGrid = candidate;
+        mReadoutAnchorPixel = positionPixel;
+        mReadoutText =
+            QStringLiteral("%1 · %2 m · %3 probes%4")
+                .arg(QChar('X' + axis))
+                .arg(static_cast<float64>(sizeMetres), 0, 'f', PROBE_EXTENT_DECIMALS)
+                .arg(candidate.Counts[axis])
+                .arg(requiredCounts[axis] != candidate.Counts[axis] ? QStringLiteral(" (limit)") : QString());
+        Q_EMIT Changed();
+        return;
+    }
     const float32 originalCount = static_cast<float32>(mProbeGrid.Counts[axis]);
     const float32 desiredCount =
         originalCount + (isMinimumFace == true ? -deltaMetres : deltaMetres) / mProbeGrid.Spacing;
@@ -1227,13 +1335,15 @@ void ViewportObjectInteraction::appendProbeVolume(ViewportObjectOverlay& inoutOv
     {
         return;
     }
-    const bool isProbeDrag = mDragTarget.Kind == HandleKind::ProbeFace || mDragTarget.Kind == HandleKind::ProbeSpacing;
-    rr::GiProbeGrid grid = isProbeDrag == true ? mProbeDragGrid : mProbeGrid;
-    if (mDragTarget.IsValid() == true && isProbeDrag == false && mTool == Tool::Move)
+    math::Aabb3 boxWorld;
+    rr::GiProbeGrid grid;
+    getShownProbeVolume(boxWorld, grid);
+    appendBoxOutline(boxWorld, mWorldToClip, inoutOverlay);
+    if (isProbeVolumeLayout() == true && IsProbeGridApartFromBox(grid, boxWorld) == true)
     {
-        grid.OriginWorld = WorldDocument::MakeSceneMeshToParent(mCandidate).Translation;
+        // Show where the probes stop when the box is not a whole number of spacings or the limit is reached.
+        appendBoxOutline(ComputeWorldGiProbeBounds(grid), mWorldToClip, inoutOverlay);
     }
-    appendBoxOutline(ComputeWorldGiProbeBounds(grid), mWorldToClip, inoutOverlay);
     if (canEditProbeVolume() == false)
     {
         return;
@@ -1241,7 +1351,7 @@ void ViewportObjectInteraction::appendProbeVolume(ViewportObjectOverlay& inoutOv
     for (int32 face = 0; face < ViewportObjectOverlay::PROBE_FACE_HANDLES; ++face)
     {
         QPointF handlePixel;
-        if (projectProbeFace(grid, face, handlePixel) == false)
+        if (projectProbeFace(boxWorld, grid.Spacing, face, handlePixel) == false)
         {
             continue;
         }
@@ -1258,7 +1368,8 @@ void ViewportObjectInteraction::appendProbeVolume(ViewportObjectOverlay& inoutOv
             {corners, ViewportHandleFill::MAX_CORNERS, getHandleColour(target, face % AXIS_COUNT, false)});
     }
     QPointF scaleHandlePixel;
-    if (mTool == Tool::Scale && projectProbeScaleHandle(grid, scaleHandlePixel) == true)
+    if (mTool == Tool::Scale && isProbeVolumeLayout() == false &&
+        projectProbeScaleHandle(boxWorld, scaleHandlePixel) == true)
     {
         appendUniformGeometry({HandleKind::ProbeSpacing, 0}, scaleHandlePixel, inoutOverlay);
     }
@@ -1499,7 +1610,7 @@ bool ViewportObjectInteraction::TryRequestFramePlayer()
 bool ViewportObjectInteraction::FrameProbeVolume() noexcept
 {
     return mPreviewOrNull.isNull() == false && mProbeGrid.Counts[0] != 0 &&
-           mPreviewOrNull->FrameBounds(ComputeWorldGiProbeBounds(mProbeGrid)) == true;
+           mPreviewOrNull->FrameBounds(ComputeWorldGiProbeVolumeBounds(mProbeVolume)) == true;
 }
 
 bool ViewportObjectInteraction::dragAxis(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues)
@@ -1703,9 +1814,19 @@ bool ViewportObjectInteraction::Release()
     else if (target.Kind == HandleKind::ProbeFace)
     {
         const int32 axis = target.Index % AXIS_COUNT;
-        if (mProbeDragGrid.Counts[axis] != mProbeGrid.Counts[axis])
+        const bool isMinimumFace = target.Index >= AXIS_COUNT;
+        if (isProbeVolumeLayout() == true)
         {
-            Q_EMIT ProbeFaceCommitted(mSelected, axis, mProbeDragGrid.Counts[axis], target.Index >= AXIS_COUNT);
+            const math::Vector3 axisWorld = WORLD_AXES.Columns[axis];
+            const float32 sizeMetres = math::Dot(mProbeDragBoxWorld.Max - mProbeDragBoxWorld.Min, axisWorld);
+            if (sizeMetres != math::Dot(mProbeVolume.SizeWorld, axisWorld))
+            {
+                Q_EMIT ProbeSizeCommitted(mSelected, axis, static_cast<float64>(sizeMetres), isMinimumFace);
+            }
+        }
+        else if (mProbeDragGrid.Counts[axis] != mProbeGrid.Counts[axis])
+        {
+            Q_EMIT ProbeFaceCommitted(mSelected, axis, mProbeDragGrid.Counts[axis], isMinimumFace);
         }
     }
     else if (target.Kind == HandleKind::TerrainExtent)

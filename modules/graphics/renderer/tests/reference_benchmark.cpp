@@ -156,6 +156,7 @@ template <typename Handle>
         description.Metallic = source.Metallic;
         description.Roughness = source.Roughness;
         description.Scattering = source.Scattering;
+        description.Program = source.Program;
         if (source.HasSourceMaterial == true)
         {
             description.Surface.Tint = {source.Reflectance.X, source.Reflectance.Y, source.Reflectance.Z, 1};

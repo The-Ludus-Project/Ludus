@@ -158,13 +158,90 @@ def check_killed_host_ends_stream(host, module):
         session.close()
 
 
+def check_script_debug_session(host, module, replacement, evidence_path):
+    """Drive the installed SDK sample through the Windows host and the real Luau VM."""
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    program = next(item for item in evidence["programs"] if item["path"] == "encounter.luau")
+    # Line 4 in the source changes state. The cooker replaces the strict line with its contract prelude.
+    authored_line = 4
+    compiled_line = program["first_line"] + authored_line - 2
+    asset = program["asset"]
+    session = Session(host, module, 1)
+    generation = hex_id(1)
+
+    def require_status(request, expected="Ok"):
+        result = session.status(request)
+        if result["status"] != expected:
+            raise RuntimeError(f"Expected {expected} for request {request}: {result}")
+        return result
+
+    def debug(request, action, expected="Ok", **fields):
+        payload = json.dumps({"version": 1, "action": action, **fields}, separators=(",", ":"))
+        session.send(request, "ScriptDebug", expected_generation=generation, extension=1, payload=payload)
+        result = require_status(request, expected)
+        return json.loads(result["message"]) if expected == "Ok" else None
+
+    def identity(snapshot):
+        return {field: snapshot[field] for field in ("session", "execution", "stop")}
+
+    try:
+        session.send(1, "Hello")
+        require_status(1)
+        session.send(2, "Load", generation=hex_id(1))
+        require_status(2)
+        initial = debug(3, "inspect")
+        if (initial["provider"] != "luau" or initial["package"] != evidence["key"] or initial["partial"]
+                or initial["interactions"] != 0):
+            raise RuntimeError(f"Unexpected initial Luau state: {initial}")
+        debug(4, "breakpoint", asset=asset, line=compiled_line, enabled=True, **identity(initial))
+        stopped = debug(5, "interact", asset=asset, amount=1, **identity(initial))
+        if not stopped["partial"] or stopped["interactions"] != 0 or not stopped["frames"]:
+            raise RuntimeError(f"The Luau breakpoint did not preserve the unpublished tick: {stopped}")
+        stepped = debug(6, "into", **identity(stopped))
+        if not stepped["partial"] or stepped["stop"] == stopped["stop"] or not stepped["frames"]:
+            raise RuntimeError(f"The Luau step did not reach a new stop: {stepped}")
+        debug(7, "continue", expected="InvalidRequest", **identity(stopped))
+        finished = debug(8, "continue", **identity(stepped))
+        if finished["partial"] or finished["interactions"] != 1:
+            raise RuntimeError(f"The resumed Luau tick did not commit exactly once: {finished}")
+        session.send(9, "Reload", expected_generation=generation, generation=hex_id(2),
+                     module_path=str(replacement))
+        generation = require_status(9)["generation"]
+        if generation != hex_id(2):
+            raise RuntimeError(f"Expected the second scripted module, got {generation}")
+        reloaded = debug(10, "inspect")
+        if reloaded["package"] == finished["package"] or reloaded["interactions"] != 1:
+            raise RuntimeError(f"Reload did not activate new script code and retain state: {reloaded}")
+        edited = debug(11, "interact", asset=asset, amount=1, **identity(reloaded))
+        if edited["partial"] or edited["interactions"] != 3:
+            raise RuntimeError(f"Reloaded script did not apply the edited increment: {edited}")
+        session.send(12, "Stop")
+        session.await_event(lambda event: event.get("event") == "SessionEnded")
+        if session.process.wait(timeout=DEADLINE_SECONDS) != 0:
+            raise RuntimeError(f"Scripted GameHost failed to stop: {session.output()}")
+    finally:
+        session.close()
+    print("Installed Luau breakpoint, step, stale stop, resume and scripted DLL reload passed.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True)
-    parser.add_argument("--a", type=Path, required=True)
-    parser.add_argument("--b", type=Path, required=True)
-    parser.add_argument("--incompatible", type=Path, required=True)
+    parser.add_argument("--a", type=Path)
+    parser.add_argument("--b", type=Path)
+    parser.add_argument("--incompatible", type=Path)
+    parser.add_argument("--scripted-module", type=Path)
+    parser.add_argument("--scripted-replacement", type=Path)
+    parser.add_argument("--script-evidence", type=Path)
     args = parser.parse_args()
+    scripted = (args.scripted_module, args.scripted_replacement, args.script_evidence)
+    if any(scripted):
+        if not all(scripted):
+            parser.error("provide --scripted-module, --scripted-replacement and --script-evidence together")
+        check_script_debug_session(args.host, *scripted)
+        return
+    if not all((args.a, args.b, args.incompatible)):
+        parser.error("provide --a, --b and --incompatible, or --scripted-module")
     with tempfile.TemporaryDirectory(prefix="ludus-supervisor-") as directory:
         root = Path(directory)
         generations = []

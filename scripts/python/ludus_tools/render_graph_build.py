@@ -897,9 +897,25 @@ def run_stage(command, cancel):
                     process.wait()
 
 
+# Windows file APIs refuse paths of MAX_PATH (260) characters or more unless the process opts
+# in to long paths, which the pinned Slang and DXC do not. slangc then reports a staged include
+# as missing. Name the path and the repair instead of leaving that message to the compiler.
+WINDOWS_MAX_PATH = 260
+
+
+def require_paths_within_windows_limit(where, paths, limit=WINDOWS_MAX_PATH):
+    """Fail when any staged path reaches the Windows path limit; callers pass every staged file."""
+    longest = max((str(path) for path in paths), key=len, default='')
+    require(len(longest) < limit, 'Source', where,
+            f'staged shader path has {len(longest)} characters and Windows file APIs accept fewer than {limit}: '
+            f'{longest}. Build into a shorter directory or shorten the graph target and NAME.')
+
+
 def compile_program(program, schemas, closure, snapshot, work, helper, tools, target, cancel, worker_socket=None, worker_identity=None):
     """Compile only captured sources; reject any untracked compiler dependency."""
     source = work / 'source'
+    if os.name == 'nt':
+        require_paths_within_windows_limit(program['id'], [source / relative for relative in closure])
     source.mkdir()
     compiled = {}
     for relative in closure:
@@ -995,7 +1011,8 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
             # Native Metal ray pipelines always use their own compiler process.
             with worker if worker and not program.get('native_ray_pipeline') else nullcontext():
                 checkpoint(stopped)
-                work = stage / ('compile-' + program['id'] + '-' + target)
+                # Short stage names keep deep Windows build trees under the path limit.
+                work = stage / (program['id'] + '-' + target)
                 work.mkdir()
                 artifacts, result = compile_program(program, schemas, closure, snapshot, work, helper, tools, target,
                                                     stopped, worker_socket, worker_identity)
@@ -1192,7 +1209,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     preserve the prior package pointer. No download, device pipeline creation or
     GPU execution. Return an immutable package path and separate hit/miss counts.
     helper names the installed SDK shaders directory (or checkout cmake/shaders).
-    Runs on macOS/Linux, with one nonblocking writer per output tree.
+    Runs on macOS, Linux and Windows, with one nonblocking writer per output tree.
     ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
     variant from the same snapshot. Its stages have their own cache identities, and the
     result is never cooked into a runtime package.
@@ -1236,6 +1253,13 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         require(descriptor.get('library_sha256') in tool_hashes.values(), 'Tools', 'native worker', 'loaded API library differs from the selected toolchain')
         inventory = ''.join(key.removeprefix('slang/') + ':' + value + '\n'
                             for key, value in sorted(tool_hashes.items()) if key.startswith('slang/'))
+        if os.name == 'nt':
+            # The Windows worker inventories DXC after its Slang libraries, even for non-DXIL requests.
+            dxc_root = Path(dxc) if dxc else Path(compiler).resolve().parent.parent.parent / 'dxc'
+            for library_name in ('dxcompiler.dll', 'dxil.dll'):
+                path = dxc_root / library_name
+                require(path.is_file(), 'Tools', 'native worker', f'cannot verify worker DXC library {path}; set --dxc-path')
+                inventory += f'dxc/{library_name}:{hash_file(path)}\n'
         require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
                 'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
         worker_identity = descriptor.get('implementation')

@@ -1729,13 +1729,17 @@ bool RenderScene::View(const PreviewViewOptions& options, rr::ViewDescription& o
         }
         else if (TryGetBounds({}, boundsWorld) == false)
         {
-            if (Objects.isEmpty() == false)
+            // A sky-only World (loaded, no objects, an Atmosphere request) has no geometry to
+            // bound. The existing minimum far distance admits its camera rays and the editor's
+            // depth-tested grid. Any other scene without bounds, including one never loaded,
+            // keeps the documented failure.
+            const bool isSkyOnlyWorld = Identity.isEmpty() == false && Objects.isEmpty() == true &&
+                                        (Atmosphere.IsEnabled == true || AtmosphereStatus.isEmpty() == false);
+            if (isSkyOnlyWorld == false)
             {
                 return Fail(outError,
                             QStringLiteral("The World has no finite geometry bounds for a finite projection."));
             }
-            // A sky-only World has no geometry to bound. The existing minimum
-            // far distance admits its camera rays and the editor's depth-tested grid.
             boundsWorld = {position, position};
         }
         float32 farthest = 0;
@@ -2187,6 +2191,7 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         surface.Metallic = source.Metallic;
         surface.Roughness = source.Roughness;
         surface.Scattering = source.Scattering;
+        surface.Program = source.Program;
         surface.Emission = source.Emission;
         surface.IsEmissionTwoSided = source.IsEmissionTwoSided;
         surface.HasEmissionPower = source.HasEmissionPower;

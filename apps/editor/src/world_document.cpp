@@ -909,7 +909,11 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                         (property == QStringLiteral("moon") || property == QStringLiteral("stars"));
                     const bool isNewTerrainField = HasBuiltInTerrain() == true && c.key() == terrainComponent &&
                                                    IsTerrainSurfaceProperty(property) == true;
-                    if (isNewAtmosphereField == true || isNewTerrainField == true ||
+                    // A volume saved before the layout choice existed keeps its counts.
+                    const bool isNewProbeVolumeField = HasBuiltInSchema() == true &&
+                                                       c.key() == GetGiProbeVolumeComponentId() &&
+                                                       property == GetGiProbeLayoutKey();
+                    if (isNewAtmosphereField == true || isNewTerrainField == true || isNewProbeVolumeField == true ||
                         (isBuiltInLight == true &&
                          (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
                           property == QStringLiteral("bakeAlwaysOn") || property == WORLD_RASTER_SHADOWS)))

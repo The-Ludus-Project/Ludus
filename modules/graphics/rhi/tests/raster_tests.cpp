@@ -496,6 +496,70 @@ TEST_CASE("Indexed draws check every index of ranges spanning precomputed valida
     REQUIRE(EndFrame(session.Device) == DeviceStatus::Ready);
 }
 
+TEST_CASE("Indexed draws validate index buffers created by an asynchronous upload", "[rhi][raster][lifetime]")
+{
+    // RequestBufferUpload publishes index records without CreateBuffer, so it must build the same validation
+    // maxima: without them every indexed draw from an uploaded buffer was rejected.
+    constexpr usize INDEX_COUNT = 600;
+    constexpr uint32 VERTEX_COUNT = 300;
+    constexpr usize OUT_OF_RANGE_POSITION = 450;
+    constexpr uint32 OUT_OF_RANGE_INDEX = 400;
+    Session session;
+    Scene scene(session.Device);
+    // A per-instance stream leaves VertexCount bounded only by the indices, as in the block-maxima test above.
+    const RasterVertexStream instanceStream{12, true};
+    const RasterVertexAttribute attribute{0, 0, 0, RasterVertexFormat::Float3};
+    RasterPipelineHandle instancePipeline;
+    REQUIRE(
+        CreateRasterPipeline(session.Device,
+                             {scene.Vertex, scene.Fragment, scene.Layout, {&instanceStream, 1}, {&attribute, 1}, true},
+                             instancePipeline) == RasterStatus::Ready);
+    StaticArray<uint16, INDEX_COUNT> indices16{};
+    StaticArray<uint32, INDEX_COUNT> indices32{};
+    for (usize i = 0; i < INDEX_COUNT; ++i)
+    {
+        indices16[i] = static_cast<uint16>(i % VERTEX_COUNT);
+        indices32[i] = static_cast<uint32>(i % VERTEX_COUNT);
+    }
+    indices32[OUT_OF_RANGE_POSITION] = OUT_OF_RANGE_INDEX;
+    const auto upload = [&session](BufferRole role, const void* data, usize bytes) {
+        UploadTicket ticket;
+        REQUIRE(RequestBufferUpload(session.Device, {role, bytes}, static_cast<const uint8*>(data), bytes, ticket) ==
+                RasterStatus::Pending);
+        for (RasterStatus& transfer : reference::Transfers[0])
+        {
+            if (transfer == RasterStatus::Pending)
+            {
+                transfer = RasterStatus::Ready;
+            }
+        }
+        REQUIRE(GetStatus(session.Device, ticket) == RasterStatus::Ready);
+        BufferHandle buffer{};
+        REQUIRE(TakeUploadedBuffer(session.Device, ticket, buffer) == RasterStatus::Ready);
+        return buffer;
+    };
+    const BufferHandle buffer16 =
+        upload(BufferRole::Index16, indices16.GetData(), indices16.GetSize() * sizeof(uint16));
+    const BufferHandle buffer32 =
+        upload(BufferRole::Index32, indices32.GetData(), indices32.GetSize() * sizeof(uint32));
+    const auto draw = [&](BufferHandle indices, uint32 vertexCount) {
+        RasterDraw description = scene.Draw();
+        description.Pipeline = instancePipeline;
+        description.Indices = indices;
+        description.IndexOffset = 0;
+        description.IndexCount = static_cast<uint32>(INDEX_COUNT);
+        description.VertexCount = vertexCount;
+        return DrawIndexed(session.Device, description);
+    };
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    CHECK(draw(buffer16, VERTEX_COUNT) == RasterStatus::Ready);
+    CHECK(draw(buffer16, VERTEX_COUNT - 1) == RasterStatus::InvalidDescription);
+    CHECK(draw(buffer32, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+    CHECK(draw(buffer32, OUT_OF_RANGE_INDEX + 1) == RasterStatus::Ready);
+    CHECK(reference::Draws == 2);
+    REQUIRE(EndFrame(session.Device) == DeviceStatus::Ready);
+}
+
 TEST_CASE("Indexed indirect packets reject wrong roles, misalignment, truncation and stale owners", "[rhi][compute]")
 {
     Session session;

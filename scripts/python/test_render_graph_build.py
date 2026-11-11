@@ -327,6 +327,21 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn('std::', header)
         self.assertIn('preserves all bytes on failure', header)
 
+    def test_windows_path_limit_names_the_longest_staged_path_and_the_repair(self):
+        # The Windows lane hit MAX_PATH with a 260-character include path (PR 1116); the cook
+        # must say so instead of letting slangc report a missing include.
+        short = Path('/build/graph/stage/Program-dxil/source/_ludus_forward/renderer_lit.slang')
+        long = Path('/build/' + 'x' * 200 + '/stage/Program-dxil/source/_ludus_forward/renderer_deferred_material.slang')
+        build.require_paths_within_windows_limit('Program', [short, long], limit=len(str(long)) + 1)
+        with self.assertRaises(ToolingError) as failure:
+            build.require_paths_within_windows_limit('Program', [short, long], limit=len(str(long)))
+        message = str(failure.exception)
+        self.assertIn(str(long), message)
+        self.assertIn(str(len(str(long))), message)
+        self.assertIn('shorter directory', message)
+        self.assertNotIn(str(short), message)
+        build.require_paths_within_windows_limit('Program', [])
+
     def test_transitive_include_invalidation_only_rebuilds_affected_stage(self):
         color = self.graph.parent / 'main_shaders/color.slang'
         include = color.with_name('surface.slang')

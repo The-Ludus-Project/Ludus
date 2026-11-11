@@ -997,6 +997,69 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
     }
 }
 
+TEST_CASE("Editor import keeps closure programs through the catalog and assembly", "[scene_assets][program]")
+{
+    const std::filesystem::path work = MakeWorkDirectory();
+    const std::filesystem::path project = work / "project";
+    const std::filesystem::path source = work / "source";
+    std::filesystem::create_directories(project);
+    std::filesystem::create_directories(source);
+    {
+        std::ofstream file(source / "room.luscene.json", std::ios::binary);
+        file << R"({"format": "ludus.scene", "version": 1, "name": "Program room",
+            "materials": [{"name": "Rust", "model": "program", "base_color": [0.6, 0.3, 0.1],
+              "program": {"version": 1, "lobes": [{"operation": "diffuse", "weight": 1}]}}],
+            "objects": [{"name": "Block", "material": "Rust", "positions": [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                         "polygons": [[0, 1, 2]]}]})";
+    }
+    SequentialUuids counter;
+    UuidSource uuids{&SequentialUuids::Generate, &counter};
+    AssetOptions options;
+    options.UuidsOrNull = &uuids;
+    options.SourceOrigin = VIRTUAL_ORIGIN;
+    options.SourceEntry = "room.luscene.json";
+    AssetError error;
+    Array<uint8> level;
+    REQUIRE(CreateLevel("Imported", options, level, error));
+    const std::string root = project.string();
+    const std::string sourceText = source.string();
+    EditorSceneRequest request;
+    request.Root = root;
+    request.Source = sourceText;
+    request.Level = ToSpan(level);
+    request.Operation = EditorSceneOperation::Import;
+    EditorSceneResult imported;
+    const bool isImported = OperateEditorScene(request, options, imported, error);
+    INFO(Describe(error));
+    REQUIRE(isImported == true);
+    const std::string candidate = GetResponseMember(imported.Response, "level");
+    request.Operation = EditorSceneOperation::CommitImport;
+    request.Level = ToSpan(candidate);
+    request.Catalog = ToSpan(imported.Catalog);
+    EditorSceneResult committed;
+    REQUIRE(OperateEditorScene(request, options, committed, error) == true);
+    // Assembly reads the program back from the committed material description.
+    request.Operation = EditorSceneOperation::Assemble;
+    request.Catalog = {};
+    EditorSceneResult assembled;
+    REQUIRE(OperateEditorScene(request, options, assembled, error) == true);
+    uint32 version = 0;
+    REQUIRE(core::TryReadLittleEndian<uint32>(
+                {assembled.Scene.GetData() + ludus::content::scene_format::MAGIC.size(), sizeof(uint32)},
+                version) == true);
+    CHECK(version == ludus::content::scene_format::VERSION_11);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(), assembled.Scene.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    CHECK(decoded.Materials[0].Scattering.Model == ludus::content::scene_format::MaterialModel::Program);
+    CHECK(decoded.Materials[0].Program.LobeCount == 1);
+    CHECK(decoded.Materials[0].Program.Lobes[0].Operation ==
+          ludus::content::scene_format::MaterialLobeOperation::Diffuse);
+    std::error_code ignored;
+    std::filesystem::remove_all(work, ignored);
+}
+
 TEST_CASE("local smoke test: a licensed scene imports through the editor catalog and assembles",
           "[scene_assets][licensed]")
 {

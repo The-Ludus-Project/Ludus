@@ -358,8 +358,9 @@ void PreviewViewport::wheelEvent(QWheelEvent* event)
         }
         if (mIsFlying == true)
         {
-            mSpeedMultiplier =
-                math::Clamp(mSpeedMultiplier * math::Clamp(1 + steps * 0.2F, 0.1F, 10.0F), 0.001F, 1000.0F);
+            // Forward notches speed the flight up and backward notches slow it down; the frame shows the result.
+            static_cast<void>(Preview_->ScaleFlySpeed(steps));
+            showFlySpeedStatus();
         }
         else
         {
@@ -527,6 +528,7 @@ void PreviewViewport::stopNavigation()
 {
     mHasContextPress = false;
     mObjectInteraction->Cancel();
+    clearFlySpeedStatus();
 #if defined(Q_OS_MACOS)
     mRelativeMouse.Stop();
 #endif
@@ -579,7 +581,7 @@ void PreviewViewport::advanceNavigation()
         constexpr float32 MAXIMUM_EDITOR_SPEED = 10000.0F;
         const float32 speed =
             math::Clamp(Preview_->GetFocusDistance() * 0.5F, MINIMUM_EDITOR_SPEED, MAXIMUM_EDITOR_SPEED) *
-            mSpeedMultiplier * boost;
+            Preview_->GetFlySpeed() * boost;
         Preview_->Fly(movementControls, deltaSeconds, speed);
     }
 }

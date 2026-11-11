@@ -23,8 +23,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <windows.h>
-
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -61,7 +59,7 @@ bool IsSignedDxil(std::span<const uint8> bytes)
     }
     return size == bytes.size() && isConstant == false;
 }
-Array<uint8> ReadPackage(const char* path)
+Array<uint8> ReadPackage(const std::filesystem::path& path)
 {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     REQUIRE(file.good());
@@ -100,18 +98,13 @@ TEST_CASE("Render graphs built for the dxil profile cook signed DXIL stages", "[
     CHECK(packages::rg2_bound::MakePlan().Passes.GetSize() != 0);
 }
 
-TEST_CASE("Windows shader file delivery reloads a DXIL render graph without losing its drawable generation",
-          "[render-graph][dxil][gpu][reload]")
+TEST_CASE("The Windows shader worker reloads a running Direct3D 12 graph", "[.native-dxil-reload]")
 {
     using ReloadState = ludus::runtime::shader_development::ReloadState;
     GraphGpuFixture fixture;
-    const Array<uint8> initial = ReadPackage(LUDUS_RG2_SURFACE_PACKAGE);
-    const Array<uint8> changed = ReadPackage(LUDUS_RG2_SURFACE_GREEN_PACKAGE);
-    // A private publication directory, as a producer's output directory would be.
-    const std::filesystem::path root =
-        std::filesystem::temp_directory_path() / ("ludus-dxil-reload-" + std::to_string(::GetCurrentProcessId()));
-    std::filesystem::remove_all(root);
-    REQUIRE(std::filesystem::create_directories(root));
+    // The producer runs this case in its publication directory after the first build.
+    const std::filesystem::path root = std::filesystem::current_path();
+    const Array<uint8> initial = ReadPackage(root / "main.lurgrt");
     const std::u8string rootUtf8 = root.u8string();
     const std::string rootPath(reinterpret_cast<const char*>(rootUtf8.data()), rootUtf8.size());
     filesystem::WriteDirectory publication;
@@ -123,23 +116,27 @@ TEST_CASE("Windows shader file delivery reloads a DXIL render graph without losi
                                   identity.GetInterfaceIdentity(),
                                   shaders::renderer_composite::Vertex(),
                                   shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
-    REQUIRE(publication.Publish("main.lurgrt", initial.AsSpan()).Published == true);
     ludus::runtime::shader_development::ReloadSession reload;
     REQUIRE(reload.Initialize({rootPath.data(), rootPath.size()},
                               {"main.lurgrt", sizeof("main.lurgrt") - 1},
                               activation) == rhi::RasterStatus::Ready);
-    constexpr usize MAX_ATTEMPTS = 5000;
+    constexpr std::chrono::seconds DELIVERY_TIMEOUT{60};
+    uint64 observedRequest = 0;
     const auto awaitDelivery = [&](ReloadState expected) {
-        for (usize attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
+        const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + DELIVERY_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline)
         {
-            if (reload.Service(time::NowTicks()).State == expected)
+            const ludus::runtime::shader_development::ReloadReport report = reload.Service(time::NowTicks());
+            if (report.State == expected && report.Request > observedRequest)
             {
+                observedRequest = report.Request;
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         FAIL("Timed out waiting for runtime publication delivery");
     };
+    constexpr usize MAX_ATTEMPTS = 5000;
     const auto activate = [&]() {
         const uint64 generation = activation.GetReport().CandidateGeneration;
         renderer::RenderGraphReport sceneReport;
@@ -184,21 +181,21 @@ TEST_CASE("Windows shader file delivery reloads a DXIL render graph without losi
     REQUIRE(fixture.Pixels[centerPixel] == 255);
     REQUIRE(fixture.Pixels[centerPixel + 1] == 0);
     const uint64 firstGeneration = activation.GetReport().ActiveGeneration;
-    const StaticArray<uint8, PIXEL_BYTES> firstPixels = fixture.Pixels;
-    // A malformed publication fails before Renderer sees a candidate; the red frame survives.
-    REQUIRE(publication.Publish("main.lurgrt", {initial.GetData(), sizeof(uint32)}).Published == true);
-    awaitDelivery(ReloadState::Failed);
-    CHECK(activation.GetReport().ActiveGeneration == firstGeneration);
-    render();
-    CHECK(std::memcmp(firstPixels.GetData(), fixture.Pixels.GetData(), PIXEL_BYTES) == 0);
-    // The edited color callback replaces the generation through the watcher.
-    REQUIRE(publication.Publish("main.lurgrt", changed.AsSpan()).Published == true);
+    // Release the producer after the original red generation is drawable.
+    REQUIRE(publication.Publish("ready", {initial.GetData(), 1}).Published == true);
     awaitDelivery(ReloadState::Staged);
     activate();
     CHECK(activation.GetReport().ActiveGeneration != firstGeneration);
     render();
-    CHECK(fixture.Pixels[centerPixel] == 0);
-    CHECK(fixture.Pixels[centerPixel + 1] == 255);
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
+    REQUIRE(fixture.Pixels[centerPixel] == 0);
+    REQUIRE(fixture.Pixels[centerPixel + 1] == 255);
+    const uint64 greenGeneration = activation.GetReport().ActiveGeneration;
+    const StaticArray<uint8, PIXEL_BYTES> greenPixels = fixture.Pixels;
+
+    // A truncated replacement must fail delivery without erasing the green frame.
+    REQUIRE(publication.Publish("main.lurgrt", {initial.GetData(), sizeof(uint32)}).Published == true);
+    awaitDelivery(ReloadState::Failed);
+    CHECK(activation.GetReport().ActiveGeneration == greenGeneration);
+    render();
+    CHECK(std::memcmp(greenPixels.GetData(), fixture.Pixels.GetData(), PIXEL_BYTES) == 0);
 }

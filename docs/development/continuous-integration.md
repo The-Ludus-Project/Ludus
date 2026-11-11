@@ -475,15 +475,17 @@ the total batch duration. This ordering reduces demand; a platform-wide shortage
 can still require retrying a job whose annotations confirm runner acquisition
 failed before execution.
 
-Native viewport scheduling acceptance compares continuous-input presentation
-against an idle window in the same process, retaining a minimum 75% cadence and
-explicit frame/input progress checks. A separate regression verifies that repeated
-start requests preserve the active service timer's identity and deadline. The
-screen's reported refresh rate is approximate, and shared-runner load can delay
-timers; it is not an absolute throughput oracle. See Qt's
+Native viewport scheduling acceptance requires presentation and camera input to
+advance in each of three consecutive one-second windows while input stays active.
+An initial idle window confirms that the native viewport is presenting. A separate
+regression verifies that repeated start requests preserve the active service
+timer's identity and deadline. The screen's reported refresh rate is approximate,
+and shared-runner load and sanitizer overhead affect input and idle work
+differently. See Qt's
 [screen refresh contract](https://doc.qt.io/qt-6/qscreen.html#refreshRate-prop) and
 [timer accuracy contract](https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution).
-These checks establish scheduling progress, not a display-performance claim.
+Display throughput follows the separate
+[runtime timing policy](runtime-profiling.md#toward-a-timing-gate).
 
 ### Threading platform lanes
 

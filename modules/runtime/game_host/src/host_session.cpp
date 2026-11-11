@@ -384,7 +384,7 @@ bool HostSession::LoadInitial(std::string_view modulePath, uint64 generation, ga
     return true;
 }
 
-void HostSession::StepFrame(uint64 maximumUpdates) noexcept
+void HostSession::stepFrame(uint64 maximumUpdates) noexcept
 {
     if (ScriptPaused_ == true || Instance_ == nullptr || Active_.IsLoaded() == false ||
         (State_ != PlayState::Running && State_ != PlayState::Paused))
@@ -918,7 +918,7 @@ void HostSession::Dispatch(const Message& command) noexcept
         if (State_ == PlayState::Paused)
         {
             StepRequested_ = true;
-            StepFrame();
+            stepFrame();
             EmitCommandResult(requestId,
                               State_ == PlayState::Failed ? CommandStatus::InvalidRequest : CommandStatus::Ok,
                               State_ == PlayState::Failed ? "step failed" : "stepped");
@@ -1306,7 +1306,7 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
         }
         const uint64 maximumUpdates = maxFrames == 0 ? HOST_FAST_FORWARD_TICKS_PER_FRAME
                                                      : (FrameIndex_ < maxFrames ? maxFrames - FrameIndex_ : 0);
-        StepFrame(maximumUpdates);
+        stepFrame(maximumUpdates);
         if (StopLatched_)
         {
             break;
