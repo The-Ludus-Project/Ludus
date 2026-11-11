@@ -62,16 +62,43 @@ void Run(JobState& state)
         }
         if (result.Status == content::Status::Ok)
         {
+            result.HasAudioCatalog = true;
             result.CatalogDigest = content::Hash(bytes.Data());
             result.Rows.reserve(static_cast<qsizetype>(catalog.Entries().size()));
             for (const auto& entry : catalog.Entries())
             {
-                result.Rows.append({QString::fromUtf8(entry.Id.Data, static_cast<qsizetype>(entry.Id.Length)),
-                                    QString::fromUtf8(entry.Path.Data, static_cast<qsizetype>(entry.Path.Length)),
-                                    entry.Type});
+                ContentRow row;
+                row.Id = QString::fromUtf8(entry.Id.Data, static_cast<qsizetype>(entry.Id.Length));
+                row.Path = QString::fromUtf8(entry.Path.Data, static_cast<qsizetype>(entry.Path.Length));
+                row.Type = ToContentType(entry.Type);
+                result.Rows.append(row);
             }
+        }
+        // The cooked scene assets (textures, materials, meshes) list beside the audio catalog. A project with only
+        // scene assets has no audio catalog yet, which is not a failure.
+        QVector<ContentRow> assetRows;
+        if (request.AssetRoot.isEmpty() == false && state.Gate.Cancelled() == false &&
+            (result.Status == content::Status::Ok || result.Status == content::Status::NotFound))
+        {
+            (void)ReadSceneAssetRows(request.AssetRoot, assetRows, result.AssetProblem);
+            if (state.Gate.Cancelled())
+            {
+                result.Status = content::Status::Cancelled;
+            }
+        }
+        if (result.Status == content::Status::NotFound && assetRows.isEmpty() == false)
+        {
+            result.Status = content::Status::Ok;
+        }
+        result.Rows.append(assetRows);
+        if (result.Status == content::Status::Ok)
+        {
             result.Message =
                 QStringLiteral("%1 resources · select an ID to inspect or reimport.").arg(result.Rows.size());
+            if (result.AssetProblem.isEmpty() == false)
+            {
+                result.Message += QStringLiteral(" Scene assets are not listed: ") + result.AssetProblem;
+            }
         }
         else
         {
@@ -212,9 +239,23 @@ bool ContentJobs::Finished() const noexcept
 {
     return Busy() == false;
 }
+ContentImportProgress ContentJobs::GetProgress() const noexcept
+{
+    return Busy() == true ? Impl_->State->Gate.GetProgress() : ContentImportProgress{};
+}
 void ContentJobs::Poll()
 {
-    if (Busy() == false || Impl_->State->Done.load(std::memory_order_acquire) == false)
+    if (Busy() == false)
+    {
+        return;
+    }
+    const ContentImportProgress progress = Impl_->State->Gate.GetProgress();
+    if (progress != mLastProgress)
+    {
+        mLastProgress = progress;
+        Q_EMIT ProgressChanged(progress);
+    }
+    if (Impl_->State->Done.load(std::memory_order_acquire) == false)
     {
         return;
     }
@@ -232,6 +273,7 @@ void ContentJobs::Poll()
     delete Impl_->State;
 #endif
     Impl_->State = nullptr;
+    mLastProgress = {};
     PollTimer_.stop();
     Q_EMIT Completed(result);
     Q_EMIT BusyChanged();
