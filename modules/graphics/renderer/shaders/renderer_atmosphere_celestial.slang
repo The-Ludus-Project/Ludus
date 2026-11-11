@@ -72,8 +72,8 @@ float3 EvaluateSolarDisk(float chord, float chordRadius, float angularFootprint)
     float radiusRatio = sampleChord / chordRadius;
     // mu^2 = 1 - (sin(view angle) / sin(angular radius))^2. Work in
     // chord distances to keep precision for the small apparent Earth Sun.
-    float muSquared = saturate(1 - radiusRatio * radiusRatio * (1 - halfChord * halfChord) /
-                                  (1 - halfRadius * halfRadius));
+    float muSquared =
+        saturate(1 - radiusRatio * radiusRatio * (1 - halfChord * halfChord) / (1 - halfRadius * halfRadius));
     // Projected disk area has measure 2*mu dmu. The mean of mu^a is 2/(2+a).
     float3 exponent = 0.5 * LIMB_EXPONENT;
     float3 profile = (1 + exponent) * pow(muSquared, exponent);
