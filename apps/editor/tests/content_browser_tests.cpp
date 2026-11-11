@@ -597,7 +597,9 @@ void WriteTexture(const QString& path, uint32 width, uint32 height, const QVecto
     }
     Write(path, bytes);
 }
-QJsonObject MakeRecord(const QString& kind, const QString& key, const QStringList& dependencies = {})
+QJsonObject MakeRecord(const QString& kind, // NOLINT(bugprone-easily-swappable-parameters)
+                       const QString& key,
+                       const QStringList& dependencies = {})
 {
     QJsonObject record;
     record.insert(QStringLiteral("kind"), kind);
@@ -608,7 +610,8 @@ QJsonObject MakeRecord(const QString& kind, const QString& key, const QStringLis
 }
 /// A cooked scene project with two textures, two materials and one asset of each other kind. textureKey names the
 /// checker texture's artifact, so a test can "recook" it.
-void WriteSceneProject(const QString& root, const QString& textureKey = QStringLiteral("checker1"))
+void WriteSceneProject(const QString& root, // NOLINT(bugprone-easily-swappable-parameters)
+                       const QString& textureKey = QStringLiteral("checker1"))
 {
     REQUIRE(QDir(root).mkpath(QStringLiteral("assets/objects")));
     const auto object = [&root](const QString& key) {

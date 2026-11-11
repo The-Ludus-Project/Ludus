@@ -26,6 +26,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <utility>
+
 #if !defined(Q_OS_WASM)
 #    include <QFileSystemWatcher>
 #endif
@@ -425,13 +427,18 @@ bool ContentWorkspace::QueueImport(const QString& file, const QString& id)
 }
 bool ContentWorkspace::RetryImport(const QString& id)
 {
-    const QHash<QString, QueuedImport>::const_iterator failed = mFailedImports.constFind(id);
-    if (failed == mFailedImports.constEnd())
+    if (mFailedImports.contains(id) == false)
     {
         return false;
     }
-    const QueuedImport retry = failed.value();
-    return QueueImport(retry.File, retry.Id);
+    // Take the failure out first: QueueImport clears it anyway, and the file and ID must outlive that.
+    const QueuedImport retry = mFailedImports.take(id);
+    if (QueueImport(retry.File, retry.Id) == false)
+    {
+        mFailedImports.insert(id, retry);
+        return false;
+    }
+    return true;
 }
 void ContentWorkspace::DismissFailure(const QString& id)
 {
@@ -470,7 +477,7 @@ void ContentWorkspace::startNextImport()
     if (Jobs_->Start(request) == false)
     {
         ContentResult failed;
-        failed.Request = request;
+        failed.Request = std::move(request);
         failed.Status = content::Status::IoError;
         failed.Message = QStringLiteral("Content worker unavailable; retry the import.");
         Accept(failed);

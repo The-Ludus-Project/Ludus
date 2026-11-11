@@ -23,6 +23,7 @@
 #endif
 
 #include <new>
+#include <utility>
 
 namespace ludus::editor
 {
@@ -208,7 +209,7 @@ struct SrgbTable final
             }
         }
     }
-    outImage = image;
+    outImage = std::move(image);
     return true;
 }
 
@@ -265,7 +266,7 @@ bool TryMakeTextureThumbnail(const QString& path, int side, QImage& outImage, QS
     }
     painter.drawImage(0, 0, texels);
     painter.end();
-    outImage = result;
+    outImage = std::move(result);
     return true;
 }
 
@@ -368,7 +369,8 @@ bool TryMakeMaterialThumbnail(const QString& path,
                     qBound(0, static_cast<int>((normalX + 1.0) * 0.5 * texture.width()), texture.width() - 1);
                 const int textureY =
                     qBound(0, static_cast<int>((1.0 - normalY) * 0.5 * texture.height()), texture.height() - 1);
-                const uchar* texel = texture.constScanLine(textureY) + textureX * format::TEXEL_BYTES;
+                const uchar* texel =
+                    texture.constScanLine(textureY) + static_cast<usize>(textureX) * format::TEXEL_BYTES;
                 albedo[RED] = SRGB.Values[texel[RED]];
                 albedo[GREEN] = SRGB.Values[texel[GREEN]];
                 albedo[BLUE] = SRGB.Values[texel[BLUE]];
@@ -393,7 +395,7 @@ bool TryMakeMaterialThumbnail(const QString& path,
                             opacity);
         }
     }
-    outImage = image;
+    outImage = std::move(image);
     return true;
 }
 
@@ -459,13 +461,16 @@ ContentThumbnailCache::~ContentThumbnailCache()
     delete mResultsOrNull;
 }
 
-QPixmap ContentThumbnailCache::Find(const QString& id, const QString& key)
+// A resource ID and its artifact key are both strings, but every caller names them from one ContentRow.
+QPixmap ContentThumbnailCache::Find(const QString& id, // NOLINT(bugprone-easily-swappable-parameters)
+                                    const QString& key)
 {
     const Entry* entry = mEntries.object(id);
     return entry != nullptr && entry->Key == key && entry->HasFailed == false ? entry->Pixmap : QPixmap();
 }
 
-bool ContentThumbnailCache::HasFailed(const QString& id, const QString& key) const
+bool ContentThumbnailCache::HasFailed(const QString& id, // NOLINT(bugprone-easily-swappable-parameters)
+                                      const QString& key) const
 {
     const Entry* entry = mEntries.object(id);
     return entry != nullptr && entry->Key == key && entry->HasFailed == true;

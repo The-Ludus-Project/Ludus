@@ -52,13 +52,13 @@ public:
         auto expected = Phase::Preparing;
         return Phase_.compare_exchange_strong(expected, Phase::Publishing);
     }
-    /// Record that stage has completedSteps of totalSteps done. Steps above STEP_MASK are clamped.
-    void
-    ReportProgress(ContentImportStage stage, foundation::uint32 completedSteps, foundation::uint32 totalSteps) noexcept
+    /// Record the current stage and how many of its steps are done. Steps above STEP_MASK are clamped. One named
+    /// struct rather than two adjacent counts, so completed and total cannot be swapped by mistake.
+    void ReportProgress(const ContentImportProgress& progress) noexcept
     {
-        const foundation::uint64 completed = completedSteps < STEP_MASK ? completedSteps : STEP_MASK;
-        const foundation::uint64 total = totalSteps < STEP_MASK ? totalSteps : STEP_MASK;
-        mProgress.store(static_cast<foundation::uint64>(stage) | (completed << STEP_SHIFT) |
+        const foundation::uint64 completed = progress.CompletedSteps < STEP_MASK ? progress.CompletedSteps : STEP_MASK;
+        const foundation::uint64 total = progress.TotalSteps < STEP_MASK ? progress.TotalSteps : STEP_MASK;
+        mProgress.store(static_cast<foundation::uint64>(progress.Stage) | (completed << STEP_SHIFT) |
                             (total << (STEP_SHIFT + STEP_BITS)),
                         std::memory_order_relaxed);
     }

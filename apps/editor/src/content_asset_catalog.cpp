@@ -79,9 +79,11 @@ content::Status ReadSceneAssetRows(const QString& root, QVector<ContentRow>& out
         row.Id = record.key();
         row.Path = fields.value(QStringLiteral("path")).toString();
         row.Key = fields.value(QStringLiteral("key")).toString();
-        for (const QJsonValue& dependency : fields.value(QStringLiteral("dependencies")).toArray())
+        const QJsonArray dependencies = fields.value(QStringLiteral("dependencies")).toArray();
+        row.Dependencies.reserve(dependencies.size());
+        for (qsizetype index = 0; index < dependencies.size(); ++index)
         {
-            row.Dependencies.append(dependency.toString());
+            row.Dependencies.append(dependencies.at(index).toString());
         }
         if (row.Type == ContentType::Material && row.Path.isEmpty() == false)
         {

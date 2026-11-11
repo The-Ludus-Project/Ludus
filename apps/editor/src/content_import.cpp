@@ -76,7 +76,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(CS::Invalid, QStringLiteral("Use a stable lowercase resource ID, with digits, slash or hyphen."));
     }
-    gate.ReportProgress(ContentImportStage::Reading, 0, 1);
+    gate.ReportProgress({ .Stage = ContentImportStage::Reading, .CompletedSteps = 0, .TotalSteps = 1 });
     const auto suffix = QFileInfo(file).suffix().toLower();
     if (suffix != QStringLiteral("wav") && suffix != QStringLiteral("flac"))
     {
@@ -106,7 +106,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(CS::Invalid, QStringLiteral("Source decoding failed; the last valid artifact is retained."));
     }
-    gate.ReportProgress(ContentImportStage::Reading, 1, 1);
+    gate.ReportProgress({ .Stage = ContentImportStage::Reading, .CompletedSteps = 1, .TotalSteps = 1 });
     content::Bytes oldCatalog;
     auto status = content::ReadFile(rootView, "catalog.json", content::MAX_DOCUMENT_BYTES, oldCatalog);
     const bool fresh = status == CS::NotFound;
@@ -134,7 +134,8 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         dependentCount += dependent.Type == content::Kind::Sound || dependent.Type == content::Kind::Music ? 1 : 0;
     }
     uint32 validatedCount = 0;
-    gate.ReportProgress(ContentImportStage::Validating, validatedCount, dependentCount);
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Validating, .CompletedSteps = validatedCount, .TotalSteps = dependentCount });
     for (const auto& dependent : catalog.Entries())
     {
         if (cancelled())
@@ -145,7 +146,12 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         {
             continue;
         }
-        gate.ReportProgress(ContentImportStage::Validating, ++validatedCount, dependentCount);
+        gate.ReportProgress(
+        {
+            .Stage = ContentImportStage::Validating,
+            .CompletedSteps = ++validatedCount,
+            .TotalSteps = dependentCount,
+        });
         content::Bytes document;
         status = content::ReadFile(rootView, dependent.Path.View(), content::MAX_DOCUMENT_BYTES, document);
         if (status != CS::Ok)
@@ -267,21 +273,24 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     // publication boundary. SaveFile still supplies the final catalog CAS.
     uint32 checkedCount = 0;
     const uint32 checkCount = static_cast<uint32>(dependencies.size()) + 1;
-    gate.ReportProgress(ContentImportStage::Checking, checkedCount, checkCount);
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Checking, .CompletedSteps = checkedCount, .TotalSteps = checkCount });
     QFile currentInput(file);
     if (currentInput.open(QIODevice::ReadOnly) == false || currentInput.size() != data.size() ||
         currentInput.read(readCap) != data)
     {
         return failed(CS::Conflict, QStringLiteral("Source changed during validation; retry."));
     }
-    gate.ReportProgress(ContentImportStage::Checking, ++checkedCount, checkCount);
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Checking, .CompletedSteps = ++checkedCount, .TotalSteps = checkCount });
     for (auto dependency = dependencies.constBegin(); dependency != dependencies.constEnd(); ++dependency)
     {
         if (cancelled())
         {
             return failed(CS::Cancelled, QStringLiteral("Import cancelled during revision checks."));
         }
-        gate.ReportProgress(ContentImportStage::Checking, ++checkedCount, checkCount);
+        gate.ReportProgress(
+            { .Stage = ContentImportStage::Checking, .CompletedSteps = ++checkedCount, .TotalSteps = checkCount });
         content::Bytes current;
         const auto path = dependency.key().toUtf8();
         if (content::ReadFile(rootView, View(path), audio::BROWSER_ENCODED_CAP_BYTES, current) != CS::Ok ||
@@ -295,7 +304,8 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         return failed(CS::Cancelled, QStringLiteral("Import cancelled before publication."));
     }
     constexpr uint32 PUBLICATION_STEPS = 2;
-    gate.ReportProgress(ContentImportStage::Publishing, 0, PUBLICATION_STEPS);
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Publishing, .CompletedSteps = 0, .TotalSteps = PUBLICATION_STEPS });
     if (QDir().mkpath(root + QStringLiteral("/sources")) == false)
     {
         return failed(CS::IoError, QStringLiteral("Cannot create the content source directory."));
@@ -314,7 +324,8 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(status, QStringLiteral("Candidate publication failed; the old catalog is retained."));
     }
-    gate.ReportProgress(ContentImportStage::Publishing, 1, PUBLICATION_STEPS);
+    gate.ReportProgress(
+        { .Stage = ContentImportStage::Publishing, .CompletedSteps = 1, .TotalSteps = PUBLICATION_STEPS });
     status = content::SaveFile(rootView, "catalog.json", next.Data(), fresh ? nullptr : &catalogDigest);
     if (status != CS::Ok)
     {
@@ -323,7 +334,12 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
                     relative,
                 relative};
     }
-    gate.ReportProgress(ContentImportStage::Publishing, PUBLICATION_STEPS, PUBLICATION_STEPS);
+    gate.ReportProgress(
+    {
+        .Stage = ContentImportStage::Publishing,
+        .CompletedSteps = PUBLICATION_STEPS,
+        .TotalSteps = PUBLICATION_STEPS,
+    });
     return {CS::Ok, QStringLiteral("Imported source; stable ID retained: ") + id, relative};
 }
 } // namespace ludus::editor
