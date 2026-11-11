@@ -154,6 +154,13 @@ scene or restart the preview to request a fresh device. The separate canvas
 follows the Qt viewport rectangle and hides with its tab, popups and modal dialogs;
 mouse and keyboard navigation continue through Qt.
 
+Clicking an object selects it, and the selection outline, transform handles and drag
+readout appear over the frame as in the desktop editor, with WebGPU and WebGL 2 alike.
+A second transparent canvas above the viewport canvas
+(`#ludus-gpu-viewport-N-overlay`) shows them; it follows the same rectangle and lets
+pointer input through. The outline is found on the CPU, as in the desktop editor's
+readback view; see [Select and transform objects in the World viewport](editor-workspace.md#select-and-transform-objects-in-the-world-viewport).
+
 Render graphs can be edited and saved here but do not run: the viewport always
 uses its built-in renderer. The graph canvas says so in a notice, and greys out
 ray tracing, compute and Denoise nodes as **Desktop editor only**. See

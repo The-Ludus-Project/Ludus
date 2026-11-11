@@ -38,6 +38,11 @@ using foundation::uint32;
 {
 #if defined(Q_OS_MACOS)
     return platform::MapCocoaKeyCode(event.nativeVirtualKey());
+#elif defined(Q_OS_WIN)
+    // Thanks to The Qt Company, qwindowskeymapper.cpp (Qt 6.8), for the
+    // native key event's extended scan-code and virtual-key representation.
+    // https://github.com/qt/qtbase/blob/v6.8.3/src/plugins/platforms/windows/qwindowskeymapper.cpp
+    return platform::MapWin32KeyCode(event.nativeScanCode(), event.nativeVirtualKey());
 #elif defined(Q_OS_LINUX)
     const uint32 code = event.nativeScanCode();
     return code < XKB_KEYCODE_OFFSET ? input::Key::Unknown : platform::MapEvdevKeyCode(code - XKB_KEYCODE_OFFSET);

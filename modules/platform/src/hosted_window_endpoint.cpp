@@ -11,13 +11,17 @@
 #    include "internal/hosted_protocol.hpp"
 #    include "internal/hosted_socket.hpp"
 
-#    include <cerrno>
-#    include <cstdlib>
-#    include <cstring>
-#    include <sys/socket.h>
-#    include <sys/stat.h>
-#    include <sys/un.h>
-#    include <unistd.h>
+#    if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#        include "internal/hosted_pipe.hpp"
+#    else
+#        include <cerrno>
+#        include <cstdlib>
+#        include <cstring>
+#        include <sys/socket.h>
+#        include <sys/stat.h>
+#        include <sys/un.h>
+#        include <unistd.h>
+#    endif
 #endif
 
 namespace ludus::platform
@@ -32,6 +36,7 @@ namespace
 using hosted::SocketDescriptor;
 using hosted::SocketPath;
 
+#    if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
 /// mkdtemp(3) template appended to the parent directory.
 constexpr std::string_view DIRECTORY_TEMPLATE = "/ludus-hosted-XXXXXX";
 /// Socket file name inside the session directory.
@@ -42,6 +47,7 @@ constexpr int32 LISTEN_BACKLOG = 4;
 constexpr usize MAX_ACCEPTS_PER_PUMP = 8;
 /// Owner-only socket file permissions inside the owner-only directory.
 constexpr mode_t SOCKET_MODE = 0600;
+#    endif
 
 bool IsValidVisibility(WindowVisibility visibility) noexcept
 {
@@ -62,20 +68,24 @@ struct HostedWindowEndpoint::State final
     void Unlink() noexcept
     {
         Listener.Reset();
+#    if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
         if (IsSocketLinked == true)
         {
             static_cast<void>(::unlink(SocketFile.GetData()));
             IsSocketLinked = false;
         }
+#    endif
     }
     ~State() noexcept
     {
         Session.Close();
         Unlink();
+#    if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
         if (Directory.IsEmpty() == false)
         {
             static_cast<void>(::rmdir(Directory.GetData()));
         }
+#    endif
     }
 };
 #else
@@ -103,15 +113,19 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
     {
         return HostedEndpointStatus::InvalidState;
     }
+    if (info.Width > hosted::MAX_EXTENT_PIXELS || info.Height > hosted::MAX_EXTENT_PIXELS ||
+        hosted::IsValidScale(info.Scale) == false || IsValidVisibility(info.Visibility) == false)
+    {
+        return HostedEndpointStatus::InvalidArgument;
+    }
+#    if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
     std::string_view parent = info.ParentDirectory;
     while (parent.size() > 1 && parent.back() == '/')
     {
         parent.remove_suffix(1);
     }
     if (parent.empty() == true || parent.front() != '/' || parent.find('\0') != std::string_view::npos ||
-        parent.size() + DIRECTORY_TEMPLATE.size() + SOCKET_NAME.size() > hosted::MAX_SOCKET_PATH_BYTES ||
-        info.Width > hosted::MAX_EXTENT_PIXELS || info.Height > hosted::MAX_EXTENT_PIXELS ||
-        hosted::IsValidScale(info.Scale) == false || IsValidVisibility(info.Visibility) == false)
+        parent.size() + DIRECTORY_TEMPLATE.size() + SOCKET_NAME.size() > hosted::MAX_SOCKET_PATH_BYTES)
     {
         return HostedEndpointStatus::InvalidArgument;
     }
@@ -120,6 +134,7 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
         parent = {};
     }
 
+#    endif
     State* allocationOrNull = new (std::nothrow) State;
     foundation::core::UniquePtr<State> state(allocationOrNull);
     if (state.Get() == nullptr)
@@ -132,6 +147,17 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
         return HostedEndpointStatus::OutOfMemory;
     }
 
+#    if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    if (hosted::MakePipePath(state->SocketFile) == false)
+    {
+        return HostedEndpointStatus::Unavailable;
+    }
+    state->Listener = hosted::ListenOnPipe(state->SocketFile);
+    if (state->Listener.IsOpen() == false)
+    {
+        return HostedEndpointStatus::Unavailable;
+    }
+#    else
     // mkdtemp(3) creates the directory with mode 0700 and fails rather than reuse a path.
     foundation::StaticArray<char, hosted::MAX_SOCKET_PATH_BYTES + 1> directory{};
     std::memcpy(directory.GetData(), parent.data(), parent.size());
@@ -163,6 +189,7 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
     {
         return HostedEndpointStatus::Unavailable;
     }
+#    endif
     if (hosted::TryFormatChannelAddress(token, state->SocketFile.GetView(), state->Address) == false)
     {
         return HostedEndpointStatus::Unavailable;
@@ -172,7 +199,11 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
     initial.Height = info.Height;
     initial.Scale = info.Scale;
     initial.Visibility = info.Visibility;
+#    if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    state->Session.Configure(token, 0, initial);
+#    else
     state->Session.Configure(token, hosted::GetCurrentUserId(), initial);
+#    endif
     if (info.ConsumerAdapterOrNull != nullptr)
     {
         state->Session.SetConsumerAdapter(*info.ConsumerAdapterOrNull);
@@ -241,6 +272,19 @@ HostedEndpointStatus HostedWindowEndpoint::Pump() noexcept
         return HostedEndpointStatus::InvalidState;
     }
     State& state = *mState;
+#    if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    if (state.Session.GetPhase() == hosted::SessionPhase::Idle)
+    {
+        if (state.Listener.IsOpen() == false)
+        {
+            state.Listener = hosted::ListenOnPipe(state.SocketFile);
+        }
+        if (state.Listener.IsOpen() == true && hosted::TryAcceptPipe(state.Listener) == true)
+        {
+            state.Session.Admit(foundation::Move(state.Listener), foundation::time::Now());
+        }
+    }
+#    else
     for (usize i = 0; i < MAX_ACCEPTS_PER_PUMP; ++i)
     {
         if (state.Listener.IsOpen() == false || state.Session.GetPhase() != hosted::SessionPhase::Idle)
@@ -259,6 +303,7 @@ HostedEndpointStatus HostedWindowEndpoint::Pump() noexcept
         state.Session.Admit(SocketDescriptor(connection), foundation::time::Now());
         state.Session.Pump(foundation::time::Now());
     }
+#    endif
     state.Session.Pump(foundation::time::Now());
     if (state.Session.GetPhase() == hosted::SessionPhase::Connected ||
         state.Session.GetPhase() == hosted::SessionPhase::Disconnected)

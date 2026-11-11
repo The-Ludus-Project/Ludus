@@ -158,6 +158,8 @@ template <typename InterfaceType>
 [[nodiscard]] uint64 GetCompletedFence() noexcept;
 [[nodiscard]] uint64 GetLastFence() noexcept;
 [[nodiscard]] bool WaitForQueue() noexcept;
+[[nodiscard]] bool SignalQueueFence(uint64& outValue) noexcept;
+[[nodiscard]] bool WaitForQueueFence(uint64 value) noexcept;
 // Executes a closed creation list on the device's direct queue. Failure may have
 // submitted work: the resource owner must retain its backing until reset/drain.
 [[nodiscard]] bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept;

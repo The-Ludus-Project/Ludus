@@ -113,7 +113,7 @@ void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
                                 graphics::rhi::RasterStatus::Ready &&
                             rayCapabilities.MaxRays >= 2;
 #endif
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_REFERENCE_COMPUTE)
         graphics::rhi::ComputeCapabilities computeCapabilities;
         isComputeAvailable = graphics::rhi::GetComputeCapabilities(previewOrNull->GetDevice(), computeCapabilities) ==
                              graphics::rhi::RasterStatus::Ready;

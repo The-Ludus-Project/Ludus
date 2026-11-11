@@ -1106,10 +1106,7 @@ void WorldWorkspace::finishTerrainPreview(bool isAccepted, const QString& error)
     panel.Status->setText(PreviewViewport::CanPresent() == false
                               ? QStringLiteral("Recipe validated. This session cannot display the GPU viewport.")
                           : panel.IsComparing == true ? QStringLiteral("Showing committed terrain.")
-                          : PreviewViewport::GetPresentation() == ViewportPresentation::BrowserCanvas &&
-                                  panel.Target.isEmpty() == true
-                              ? QStringLiteral("Terrain preview ready. Use the fields to resize in the browser.")
-                              : QStringLiteral("Terrain preview ready."));
+                                                      : QStringLiteral("Terrain preview ready."));
     updateViewportInteraction();
     if (panel.ShouldFrame == true)
     {
