@@ -154,6 +154,8 @@ public:
     /// @return Published, Unchanged, or RequiresAssembly when the caller must Assemble (nothing changed),
     /// including while a placement cook validates the presented scene.
     [[nodiscard]] PlacementPublication PublishLightSwitches(const QJsonObject& level, const WorldDocument& world);
+    /// Publish a standalone probe edit independently of imported asset assembly and placement validation.
+    [[nodiscard]] bool PublishProbeVolume(const QJsonObject& level, const WorldDocument& world);
     /// Validation state of the presented scene; Ready unless PublishPlacement presented a derived one.
     [[nodiscard]] PlacementValidation GetPlacementValidation() const noexcept
     {
@@ -201,6 +203,15 @@ public:
     [[nodiscard]] const RenderScene& PreviewScene() const noexcept
     {
         return Preview_.Scene();
+    }
+    /// The accepted scene and its bindings, excluding a candidate still waiting for its first frame.
+    [[nodiscard]] LUDUS_INLINE const RenderScene& GetPresentedScene() const noexcept
+    {
+        return mPresentedScene;
+    }
+    [[nodiscard]] LUDUS_INLINE const QJsonObject& GetPresentedLevel() const noexcept
+    {
+        return mPresentedLevel;
     }
     /// Viewport renderer of this level; it owns the device and extraction that render-graph
     /// previews borrow while the level is the World's shown view.

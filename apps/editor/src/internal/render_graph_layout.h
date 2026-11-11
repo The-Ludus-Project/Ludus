@@ -4,8 +4,10 @@
 
 #include "internal/render_graph_document.h"
 
+#include <QLineF>
 #include <QPointF>
 #include <QRectF>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -13,6 +15,9 @@ namespace ludus::editor
 {
 /// Minimum authored-card selection for distribution; shared by menu admission and calculation.
 inline constexpr foundation::int32 MINIMUM_RENDER_GRAPH_DISTRIBUTION_COUNT = 3;
+/// Most cards one layout call accepts: well above a configuration's node limit plus its two interface boxes.
+/// Layout stays near linear in cards and wires, so this only bounds pathological input.
+inline constexpr foundation::int32 MAXIMUM_RENDER_GRAPH_LAYOUT_CARDS = 1024;
 
 /// Authored-position operation; alignment uses the selection's outer bounds, distribution its centres.
 enum class RenderGraphLayoutOperation : foundation::uint8
@@ -43,7 +48,7 @@ struct RenderGraphLayoutEdge final
 };
 
 /// Compute integer saved positions without touching the document or scene. GUI thread only.
-/// At most MAX_NODES unique, finite positive cards are accepted. Arrangement anchors at the
+/// At most MAXIMUM_RENDER_GRAPH_LAYOUT_CARDS unique, finite positive cards are accepted. Arrangement anchors at the
 /// input bounds' top left, groups cycles in one column and lays out layers (Sugiyama style): columns by
 /// dependency order, a card nothing feeds just before its first consumer, rows reordered by neighbour
 /// barycentres to reduce wire crossings, then pulled toward their neighbours. Identity order breaks every tie.
@@ -55,6 +60,35 @@ struct RenderGraphLayoutEdge final
                                             const QVector<RenderGraphLayoutEdge>& edges,
                                             RenderGraphLayoutOperation operation,
                                             QVector<RenderGraphNodePosition>& outPositions);
+
+/// How tangled a drawing is: wires are measured as straight port-to-port chords, which is what the eye follows.
+struct RenderGraphWireMeasure final
+{
+    foundation::int32 Crossings = 0;     ///< Pairs of chords that cross; wires sharing a port never count.
+    foundation::float64 TotalLength = 0; ///< Sum of chord lengths, in scene units.
+};
+
+/// Count crossings and total length of straight wires. Sweeps by left edge, so wires far apart are never compared.
+[[nodiscard]] RenderGraphWireMeasure MeasureRenderGraphWires(const QVector<QLineF>& wires);
+
+/// A wire between two cards with its ports' heights below each card's top, for placement that lines ports up.
+struct RenderGraphLayoutWire final
+{
+    QString Source;                       ///< Producer ID.
+    QString Destination;                  ///< Consumer ID.
+    foundation::float64 SourceY = 0;      ///< Output port height below the producer's top.
+    foundation::float64 DestinationY = 0; ///< Input port height below the consumer's top.
+};
+
+/// Display-only placement for cards without a saved position; saved cards never move. With nothing saved, the
+/// whole graph gets the layered Auto Layout. Otherwise each unsaved card sits beside the saved cards it is wired
+/// to: a producer one column left of its leftmost consumer, a consumer one column right of its rightmost producer,
+/// at the height that puts its port level with the median of the ports it is wired to. Cards with no placed
+/// neighbour keep their given position. Callers resolve overlaps.
+void PlaceUnsavedRenderGraphCards(const QVector<RenderGraphLayoutWire>& wires,
+                                  const QSet<QString>& savedCards,
+                                  foundation::float64 columnSpacing,
+                                  QVector<RenderGraphLayoutNode>& inoutCards);
 
 /// Display-only placement: move each movable card down, in order, just far enough that no card overlaps a fixed
 /// card or an earlier movable card, keeping gap between them. Use whole scene-unit offsets so the caller's integer

@@ -6,6 +6,7 @@
 #include "internal/preview_viewport.h"
 #include "internal/scene_placement.h"
 #include "internal/world_aperture.h"
+#include "internal/world_probe_volume.h"
 #include <QGuiApplication>
 #include <ludus/foundation/base/core.h>
 
@@ -31,6 +32,7 @@
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_source/scene_source.h>
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/platform/entropy.h>
 
 #include <span>
@@ -1294,6 +1296,27 @@ PlacementPublication LevelWorkspace::PublishLightSwitches(const QJsonObject& lev
     Status_->setText(QStringLiteral("Light switches applied."));
     return PlacementPublication::Published;
 }
+bool LevelWorkspace::PublishProbeVolume(const QJsonObject& level, const WorldDocument& world)
+{
+    if (Busy_ == true || WorldOwned_ == false || level != mPresentedLevel || mValidatedWorld != mPresentedWorld)
+    {
+        return false;
+    }
+    const QJsonObject unplacedWorld = world.MakeDraftWithoutScenePlacements();
+    graphics::renderer::GiProbeGrid grid;
+    if (TryReadStandaloneProbeEdit(mPresentedWorld, unplacedWorld, world, mPresentedScene, grid) == false)
+    {
+        return false;
+    }
+    // Both placement snapshots share the authored probe data. A placement rollback only rolls back the meshes.
+    mPresentedWorld = unplacedWorld;
+    mValidatedWorld = unplacedWorld;
+    mPlacementWorld = world;
+    mPresentedScene.ProbeGrid = grid;
+    mValidatedScene.ProbeGrid = grid;
+    Preview_.SetProbeGrid(grid);
+    return true;
+}
 void LevelWorkspace::CancelPlacementValidation() noexcept
 {
     if (mIsValidationRunning == true)
@@ -1376,6 +1399,8 @@ void LevelWorkspace::finishPlacementValidation()
     if (isCurrent == true)
     {
         bool isAccepted = Success_ == true;
+        // A probe edit can arrive while this worker validates mesh placements from an older World snapshot.
+        cooked.ProbeGrid = mPresentedScene.ProbeGrid;
         if (isAccepted == true && IsSamePlacedScene(mPresentedScene, cooked) == false)
         {
             // The cook is authoritative: present its scene when it differs from the derived one.

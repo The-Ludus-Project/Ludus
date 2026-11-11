@@ -3,6 +3,9 @@
 #include "internal/preview_viewport.h"
 #include "internal/render_load_job.h"
 #include "internal/render_scene.h"
+#include "internal/world_probe_volume.h"
+
+#include <ludus/graphics/renderer/lighting.hpp>
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/play_viewport_source.h"
@@ -445,6 +448,10 @@ bool RenderPanel::Refresh(bool launch)
         if (isCurrent == true && isAccepted == true)
         {
             isAccepted = publish(finished->Scene(), finished->Launch());
+            if (isAccepted == true && finished->Generation() == Generation_)
+            {
+                mPublishedWorldGeneration = Generation_;
+            }
         }
         else if (isCurrent == true)
         {
@@ -571,6 +578,16 @@ QWidget* RenderPanel::TakeViewport(QWidget* parent)
 }
 void RenderPanel::PreviewDraft(const WorldDocument& draft, bool shouldStart)
 {
+    graphics::renderer::GiProbeGrid grid;
+    if (mIsTerrainDraft == false && mPublishedWorldGeneration == Generation_ && Job_ == nullptr &&
+        Stale_.isEmpty() == true && (shouldStart == false || Preview_.Running() == true) &&
+        draft.SceneLevel().isEmpty() == true &&
+        TryReadStandaloneProbeEdit(PreviewWorld_.Draft(), draft.Draft(), draft, Preview_.Scene(), grid) == true)
+    {
+        PreviewWorld_ = draft;
+        Preview_.SetProbeGrid(grid);
+        return;
+    }
     mIsTerrainDraft = false;
     mHasPendingTerrainLoad = false;
     PreviewWorld_ = draft;

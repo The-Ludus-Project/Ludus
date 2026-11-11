@@ -358,6 +358,9 @@ TEST_CASE("Shell puts documents in the centre and tool windows around them", "[e
         CHECK(well.height() * 100 >= window.height() * 55);
         CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->width() >= 200);
         CHECK(Dock(window, QStringLiteral("propertiesDock"))->width() >= 240);
+        // Properties never becomes narrower than the inspector can lay out without clipping.
+        CHECK(window.findChild<QStackedWidget*>(QStringLiteral("propertiesStack"))->minimumWidth() ==
+              WORLD_PROPERTIES_MINIMUM_WIDTH);
         // The bottom tool windows keep room for several diagnostic rows. Measured on the
         // table, since the dock's own tab bar height differs between platform styles.
         QTableWidget* diagnostics = window.findChild<QTableWidget*>(QStringLiteral("errorListTable"));

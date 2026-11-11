@@ -195,7 +195,8 @@ PreviewGpuGeneration::PreviewGpuGeneration(rhi::DeviceHandle device,
                                            const PreviewShaderSet& shaders,
                                            const PreviewReferenceSetup* referenceOrNull)
     : Device(device), Source(source), Shading(shading), Shaders(shaders),
-      LightingKey(preview_lighting::MakeKey(source)), IsReference(referenceOrNull != nullptr)
+      LightingKey(preview_lighting::MakeKey(source)), IsReference(referenceOrNull != nullptr),
+      mProbeGrid(source.ProbeGrid)
 {
     if (referenceOrNull != nullptr)
     {
@@ -785,16 +786,29 @@ QString PreviewGpuGeneration::DescribeBake() const
     {
         return QStringLiteral("baking always-on lighting…");
     }
-    if (Source.ProbeGrid.Counts[0] != 0 && Source.AlwaysOnLightIds.isEmpty() == true)
+    if (mProbeGrid.Counts[0] != 0 && Source.AlwaysOnLightIds.isEmpty() == true)
     {
         return QStringLiteral("Probe GI needs an always-on baked light. Opt in to baking in its Properties.");
     }
     return QStringLiteral("direct lighting");
 }
 
+bool PreviewGpuGeneration::SetProbeGrid(const renderer::GiProbeGrid& grid) noexcept
+{
+    if (preview_lighting::AreProbeGridsEqual(mProbeGrid, grid) == true)
+    {
+        return false;
+    }
+    discardBakedSnapshot();
+    mProbeGrid = grid;
+    mSurfaceBake.clear();
+    mBakeFailure.clear();
+    return true;
+}
+
 void PreviewGpuGeneration::SetSurfaceBake(const QSharedPointer<const WorldSurfaceBake>& bake, const QString& failure)
 {
-    if (bake.isNull() == false && bake->LightingKey == LightingKey)
+    if (bake.isNull() == false)
     {
         mSurfaceBake = bake;
     }
@@ -815,13 +829,30 @@ void PreviewGpuGeneration::discardBakeCharts() noexcept
     mProbeVolume = {};
 }
 
+void PreviewGpuGeneration::discardBakedSnapshot() noexcept
+{
+    if (mHasPublishedBake == true)
+    {
+        static_cast<void>(Renderer.Release(mBakedSnapshot));
+        mBakedSnapshot = {};
+        mHasPublishedBake = false;
+    }
+    for (renderer::MaterialVersion& material : mBakedMaterials)
+    {
+        static_cast<void>(Renderer.Release(material));
+    }
+    mBakedMaterials.Clear();
+    mBakedMaterialCursor = 0;
+    discardBakeCharts();
+}
+
 rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW) && !defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     if (mBakeCharts.IsEmpty() == true)
     {
         if (mSurfaceBake.isNull() == true ||
-            (Source.ProbeGrid.Counts[0] != 0 && mSurfaceBake->ProbeAtlas.Pixels.isEmpty() == true))
+            (mProbeGrid.Counts[0] != 0 && mSurfaceBake->ProbeAtlas.Pixels.isEmpty() == true))
         {
             return rhi::RasterStatus::Pending;
         }
@@ -833,10 +864,10 @@ rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
         {
             return rhi::RasterStatus::OutOfMemory;
         }
-        if (Source.ProbeGrid.Counts[0] != 0)
+        if (mProbeGrid.Counts[0] != 0)
         {
             const WorldProbeAtlas& atlas = mSurfaceBake->ProbeAtlas;
-            mProbeVolume.Grid = Source.ProbeGrid;
+            mProbeVolume.Grid = mProbeGrid;
             mProbeVolume.IrradianceScale = atlas.IrradianceScale;
             const rhi::RasterStatus uploaded = rhi::CreateTexture(
                 Device,
@@ -918,12 +949,7 @@ void PreviewGpuGeneration::advanceBake() noexcept
     }
     if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::Pending)
     {
-        for (renderer::MaterialVersion& material : mBakedMaterials)
-        {
-            static_cast<void>(Renderer.Release(material));
-        }
-        mBakedMaterials.Clear();
-        discardBakeCharts();
+        discardBakedSnapshot();
         mBakeFailure = QStringLiteral("Always-on bake failed (%1). Using realtime lighting. "
                                       "Simplify the World geometry or clear the bake option in Properties.")
                            .arg(static_cast<uint32>(status));
@@ -953,8 +979,7 @@ rhi::RasterStatus PreviewGpuGeneration::prepareBakedSnapshot() noexcept
     const rhi::RasterStatus status = createLitSnapshot({mBakedMaterials.GetData(), count}, true, replacement);
     if (status == rhi::RasterStatus::Ready)
     {
-        static_cast<void>(Renderer.Release(mSnapshot));
-        mSnapshot = replacement;
+        mBakedSnapshot = replacement;
         mHasPublishedBake = true;
     }
     return status;

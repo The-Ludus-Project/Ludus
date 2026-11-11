@@ -15,6 +15,9 @@ namespace
 /// The last result code, so every code is visited once.
 constexpr int32 LAST_RESULT_CODE = static_cast<int32>(ResultCode::CleanupUnknown);
 
+/// The settings-file version of projects whose build the editor's tools prepare (version 1 predates CMake projects).
+constexpr uint32 CMAKE_PROJECT_VERSION = 2;
+
 /// How many capitals a name needs before it reads as an internal identifier rather than a word.
 constexpr int32 IDENTIFIER_CAPITALS = 2;
 
@@ -73,6 +76,17 @@ constexpr int32 IDENTIFIER_CAPITALS = 2;
     return QStringLiteral("Repair the project to prepare its tools and check that it builds.");
 }
 
+/// The cause in plain words for codes whose tool message speaks in implementation terms, such as "presets and caches";
+/// empty when the tool's own message already reads well.
+[[nodiscard]] QString GetPlainCause(ResultCode code)
+{
+    if (code == ResultCode::BootstrapStale)
+    {
+        return QStringLiteral("Ludus or its build tools changed since this project was set up.");
+    }
+    return QString();
+}
+
 [[nodiscard]] bool IsRepairable(ResultCode code)
 {
     return code != ResultCode::InvalidProject && code != ResultCode::UnsupportedVersion &&
@@ -115,7 +129,7 @@ QString DescribeResultCode(ResultCode code)
         case ResultCode::DebuggerFailed:
             return QStringLiteral("The debugger stopped unexpectedly");
         case ResultCode::BootstrapStale:
-            return QStringLiteral("Build tools are out of date");
+            return QStringLiteral("This project's build setup is out of date");
         case ResultCode::Busy:
             return QStringLiteral("Another task is still running");
         case ResultCode::ConfigureFailed:
@@ -167,6 +181,7 @@ SetupGuidance DescribeSetupProblem(const QString& problem)
     {
         guidance.Headline = DescribeResultCode(code) + QStringLiteral(".");
         guidance.Detail = remainder;
+        guidance.PlainCause = GetPlainCause(code);
         guidance.Fix = GetFix(code);
         guidance.IsRepairable = IsRepairable(code);
     }
@@ -183,6 +198,86 @@ SetupGuidance DescribeSetupProblem(const QString& problem)
                               : guidance.Detail + QStringLiteral("\n") + ReplaceResultCodeNames(laterLines);
     }
     return guidance;
+}
+
+QString GetRepairBlocker(const WorkspaceState& state, const RepairGate& gate)
+{
+    if (gate.IsRepairAllowed == true)
+    {
+        return QString();
+    }
+    if (gate.IsBrowser == true)
+    {
+        return QStringLiteral("Repair needs the desktop editor: the browser can't run local build tools.");
+    }
+    if (state.OperationPhase == Phase::CleanupUnknown)
+    {
+        return QStringLiteral("Repair can start once the last task's cleanup is confirmed; see Copy Job Details.");
+    }
+    if (state.OperationPhase == Phase::Stopping)
+    {
+        return QStringLiteral("Repair can start once the current task has stopped.");
+    }
+    if (state.Busy() == true)
+    {
+        return QStringLiteral("Repair can start when the current task finishes. Wait for it, or stop it.");
+    }
+    if (gate.IsPlaySessionActive == true)
+    {
+        return QStringLiteral("Stop the play session to repair the project.");
+    }
+    if (state.Document != DocumentState::ProjectLoaded)
+    {
+        return QStringLiteral("Open the project to repair it.");
+    }
+    if (state.Dirty() == true)
+    {
+        return QStringLiteral("Save project settings first; repair works from the saved settings.");
+    }
+    if (state.Saved.ProviderKind != Provider::Cmake || state.Saved.Version != CMAKE_PROJECT_VERSION)
+    {
+        return QStringLiteral("Repair prepares CMake projects; this project's build is set up another way.");
+    }
+    return QStringLiteral("Repair can start in a moment, once the last task has finished closing.");
+}
+
+SetupNoticeContent DescribeSetupNotice(const QString& problem, const QString& repairBlocker)
+{
+    const SetupGuidance guidance = DescribeSetupProblem(problem);
+    SetupNoticeContent content;
+    content.Headline = guidance.Headline;
+    const QString cause =
+        guidance.PlainCause.isEmpty() == true ? guidance.Detail.section(QLatin1Char('\n'), 0, 0) : guidance.PlainCause;
+    const auto withCause = [&cause](const QString& sentence) {
+        return cause.isEmpty() == true ? sentence : cause + QStringLiteral(" ") + sentence;
+    };
+    if (guidance.IsRepairable == false)
+    {
+        content.ActionLabel = QStringLiteral("Open Project Settings");
+        content.ActionTooltip = guidance.Fix;
+        content.IsActionEnabled = true;
+        content.IsOpeningSettings = true;
+        content.Detail = withCause(guidance.Fix);
+    }
+    else
+    {
+        content.ActionLabel = QStringLiteral("Repair project");
+        content.IsActionEnabled = repairBlocker.isEmpty() == true;
+        content.ActionTooltip =
+            content.IsActionEnabled == true
+                ? QStringLiteral("Refreshes this project's build settings and caches for the current Ludus and "
+                                 "tools, then builds and tests the project to confirm it works. It can take a few "
+                                 "minutes the first time; you can keep working while it runs.")
+                : repairBlocker;
+        content.Detail = withCause(content.IsActionEnabled == true
+                                       ? QStringLiteral("Repair project refreshes its build settings, then checks "
+                                                        "that it builds.")
+                                       : repairBlocker);
+    }
+    const QString toolDetail = guidance.Detail.isEmpty() == true ? ReplaceResultCodeNames(problem) : guidance.Detail;
+    content.Tooltip =
+        QStringLiteral("%1\n\nFrom the setup check: %2\n\n%3").arg(content.Headline, toolDetail, content.ActionTooltip);
+    return content;
 }
 
 QString ReplaceResultCodeNames(const QString& text)

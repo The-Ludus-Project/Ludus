@@ -29,6 +29,7 @@
 #include "mouse_fixture.h"
 #include "scene_fixture.h"
 #include <QCheckBox>
+#include <QClipboard>
 #include <QColor>
 #include <QImage>
 #include <QMenu>
@@ -60,6 +61,7 @@
 #include <QLayout>
 #include <QLineEdit>
 #include <QLineF>
+#include <QList>
 #include <QListWidget>
 #include <QLockFile>
 #include <QMessageBox>
@@ -694,7 +696,17 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK(isSameRow("worldNew", "worldImportScene") == true);
     CHECK(isSameRow("worldNew", "worldPath") == true);
     CHECK(isSameRow("worldApply", "worldReset") == true);
-    CHECK(isSameRow("worldAttach", "worldComponentChoice") == true);
+    // The component choice sits beside Add Component when both fit; this compact column is narrower than the pair,
+    // so the choice stacks directly above the button at the column's full width instead of clipping it.
+    const QWidget* choiceOrNull = view.findChild<QWidget*>(QStringLiteral("worldComponentChoice"));
+    const QWidget* attachOrNull = view.findChild<QWidget*>(QStringLiteral("worldAttach"));
+    REQUIRE(choiceOrNull != nullptr);
+    REQUIRE(attachOrNull != nullptr);
+    const QRect choiceRect(choiceOrNull->mapTo(&view, QPoint(0, 0)), choiceOrNull->size());
+    const QRect attachRect(attachOrNull->mapTo(&view, QPoint(0, 0)), attachOrNull->size());
+    CHECK((isSameRow("worldAttach", "worldComponentChoice") == true ||
+           (choiceRect.bottom() < attachRect.top() && choiceRect.left() == attachRect.left())) == true);
+    CHECK(attachOrNull->width() >= attachOrNull->sizeHint().width());
     CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
     QLabel* pathLabel = view.findChild<QLabel*>(QStringLiteral("worldPath"));
     REQUIRE(pathLabel != nullptr);
@@ -3815,6 +3827,26 @@ TEST_CASE("The World inspector offers an explicit always-on bake for a static li
     reader.SetScene(moved);
     CHECK(reader.GetReady().isNull() == true);
 
+    // Start one bake and move its grid twice before polling for a result.
+    RenderScene probes = baked;
+    probes.ProbeGrid.Counts = {2, 2, 2};
+    reader.SetScene(probes);
+    reader.Poll(probes);
+    probes.ProbeGrid.OriginWorld.X = 1;
+    reader.InvalidateProbeGrid();
+    reader.Poll(probes);
+    probes.ProbeGrid.OriginWorld.X = 2;
+    reader.InvalidateProbeGrid();
+    CHECK(reader.GetReady().isNull() == true);
+    REQUIRE(QTest::qWaitFor([&reader, &probes]() {
+                reader.Poll(probes);
+                return reader.GetReady().isNull() == false || reader.GetFailure().isEmpty() == false;
+            }) == true);
+    INFO(reader.GetFailure().toStdString());
+    REQUIRE(reader.GetReady().isNull() == false);
+    CHECK(reader.GetReady()->LightingKey == preview_lighting::MakeKey(probes));
+    CHECK(reader.GetReady()->ProbeAtlas.Pixels.isEmpty() == false);
+
     REQUIRE(findStatic() != nullptr);
     findStatic()->setChecked(false);
     REQUIRE(workspace.Apply() == true);
@@ -3878,18 +3910,6 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
 
 namespace
 {
-/// Switch an authored volume to the given layout through the document, as the inspector's Apply would.
-void SetGiProbeLayout(WorldDocument& inoutDocument, const QString& volume, GiProbeLayout layout)
-{
-    const QJsonObject entity = inoutDocument.Entity(volume);
-    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
-    QJsonObject values = components.value(GetGiProbeVolumeComponentId()).toObject();
-    values.insert(GetGiProbeLayoutKey(), GetGiProbeLayoutWord(layout));
-    components.insert(GetGiProbeVolumeComponentId(), values);
-    QString error;
-    REQUIRE(inoutDocument.Edit(volume, components, entity.value(QStringLiteral("name")).toString(), error) == true);
-}
-
 /// The volume's Transform scale on one axis, as the World stores it.
 ludus::foundation::float64 ReadGiProbeScale(const WorldDocument& document, const QString& volume, const QString& key)
 {
@@ -4162,7 +4182,7 @@ TEST_CASE("World viewport resizes a volume-layout GI probe box and its probes fo
         CHECK(readVolume().Grid.Counts[0] == 6);
     }
 
-    SECTION("The minimum face keeps the far corner fixed, stops at the probe limit and outlines the gap")
+    SECTION("The minimum face grows past the probe limit, keeping the far corner fixed")
     {
         const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
         REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
@@ -4170,7 +4190,7 @@ TEST_CASE("World viewport resizes a volume-layout GI probe box and its probes fo
         const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT);
         REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
         interaction.BuildOverlay(framePixel, overlay);
-        CHECK(overlay.ReadoutText.contains(QStringLiteral("(limit)")) == true);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("(probe limit)")) == true);
         REQUIRE(interaction.Release() == true);
         const WorldGiProbeVolume resized = readVolume();
         CHECK(resized.Grid.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
@@ -4227,7 +4247,13 @@ TEST_CASE("World viewport moves, resizes and scales an unbaked counts-layout GI 
     QString volume;
     REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), mesh, error) == true);
     REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
-    SetGiProbeLayout(document, volume, GiProbeLayout::Counts);
+    const QJsonObject entity = document.Entity(volume);
+    QJsonObject legacyComponents = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject legacyProbe = legacyComponents.value(GetGiProbeVolumeComponentId()).toObject();
+    legacyProbe.remove(GetGiProbeLayoutKey());
+    legacyComponents.insert(GetGiProbeVolumeComponentId(), legacyProbe);
+    WriteWorldGiProbeSize(legacyComponents, 1, 1);
+    REQUIRE(document.Edit(volume, legacyComponents, entity.value(QStringLiteral("name")).toString(), error) == true);
     const QString path = QDir(root).filePath(QStringLiteral("probe-gizmo.world.json"));
     Write(path, document.Encode());
     WorldWorkspace workspace;
@@ -4303,18 +4329,81 @@ TEST_CASE("World viewport moves, resizes and scales an unbaked counts-layout GI 
         CHECK(readGrid().Counts[0] == resized.Counts[0]);
     }
 
-    SECTION("The minimum face keeps the far corner fixed and clamps to the probe limit")
+    SECTION("Dragging the minimum face past the probe limit offers a layout change and resize")
     {
         const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
-        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
-        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
         const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT) * original.Spacing;
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        REQUIRE(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
         REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
-        REQUIRE(interaction.Release() == true);
-        const renderer::GiProbeGrid resized = readGrid();
-        CHECK(resized.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
-        CHECK(resized.OriginWorld.X < original.OriginWorld.X);
-        CHECK(ComputeWorldGiProbeBounds(resized).Max == boundsWorld.Max);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("Release to switch layout")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        const auto closeConfirmation = [](bool shouldResize) {
+            QTimer::singleShot(0, [shouldResize]() {
+                QMessageBox* boxOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                REQUIRE(boxOrNull != nullptr);
+                CHECK(boxOrNull->defaultButton() == boxOrNull->button(QMessageBox::Cancel));
+                if (shouldResize == true)
+                {
+                    QPushButton* resizeOrNull =
+                        boxOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmProbeVolumeResize"));
+                    REQUIRE(resizeOrNull != nullptr);
+                    resizeOrNull->click();
+                }
+                else
+                {
+                    boxOrNull->defaultButton()->click();
+                }
+            });
+        };
+        SECTION("Cancel keeps the legacy layout and bounds")
+        {
+            closeConfirmation(false);
+            REQUIRE(interaction.Release() == true);
+            CHECK(workspace.Document().Draft() == before);
+        }
+        SECTION("Confirm switches layouts and resizes in one undoable edit")
+        {
+            closeConfirmation(true);
+            REQUIRE(interaction.Release() == true);
+            const QJsonObject components =
+                workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject();
+            WorldGiProbeVolume resized;
+            REQUIRE(ReadWorldGiProbeVolume(components, resized, error) == true);
+            CHECK(resized.Layout == GiProbeLayout::Volume);
+            CHECK(resized.Grid.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+            CHECK(resized.Grid.Spacing == original.Spacing);
+            CHECK(resized.IsCoverageLimited() == true);
+            CHECK(resized.SizeWorld.X == boundsWorld.Max.X - boundsWorld.Min.X + dragMetres);
+            CHECK(ComputeWorldGiProbeVolumeBounds(resized).Max == boundsWorld.Max);
+            workspace.Undo();
+            CHECK(workspace.Document().Draft() == before);
+            workspace.Redo();
+            CHECK(readGrid().OriginWorld == resized.Grid.OriginWorld);
+        }
+    }
+
+    SECTION("The inspector applies a legacy volume's new layout and explicit edge length together")
+    {
+        QComboBox* layoutOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:giProbeVolume/layout"));
+        REQUIRE(layoutOrNull != nullptr);
+        CHECK(layoutOrNull->currentData().toString() == GetGiProbeLayoutWord(GiProbeLayout::Counts));
+        layoutOrNull->setCurrentIndex(layoutOrNull->findData(GetGiProbeLayoutWord(GiProbeLayout::Volume)));
+        QLineEdit* scaleOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sx"));
+        REQUIRE(scaleOrNull != nullptr);
+        Type(scaleOrNull, QStringLiteral("43"));
+        REQUIRE(workspace.Apply() == true);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sx")) == 43);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sy")) ==
+              static_cast<float64>(boundsWorld.Max.Y - boundsWorld.Min.Y));
+        CHECK(readGrid().Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        QLabel* summaryOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldProbeSummary"));
+        REQUIRE(summaryOrNull != nullptr);
+        CHECK(summaryOrNull->text().contains(QStringLiteral("Volume size 43 × 3 × 3 m")) == true);
+        QLineEdit* derivedScaleOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sy"));
+        REQUIRE(derivedScaleOrNull != nullptr);
+        CHECK(derivedScaleOrNull->text() == QStringLiteral("3"));
         workspace.Undo();
         CHECK(workspace.Document().Draft() == before);
     }
@@ -4687,6 +4776,12 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
         CHECK(materialOrNull->Roughness == roughness);
     };
     checkMaterial(workspace, donor, 0.35F);
+    QTreeWidget* materialsOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldMaterials"));
+    REQUIRE(materialsOrNull != nullptr);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 2);
+    const WorldDocument& document = workspace.Document();
+    const QString donorMaterial = document.GetMaterialResourceId(document.ScenePlacement(document.Entity(donor)));
+    REQUIRE(donorMaterial.startsWith(QStringLiteral("material/")) == true);
     REQUIRE(workspace.SelectEntity(recipient) == true);
     QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignProjectBrdf"));
     REQUIRE(assignOrNull != nullptr);
@@ -4695,6 +4790,41 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
     WaitForValidatedScene(workspace);
     checkMaterial(workspace, recipient, 0.35F);
     CHECK(GetLevel(workspace).PreviewScene().Definition->Materials.GetSize() == 1);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 1);
+    QTreeWidgetItem* resource = materialsOrNull->topLevelItem(0);
+    REQUIRE(resource->childCount() == 2);
+    CHECK(resource->text(0) == QStringLiteral("demo/glaze"));
+    CHECK(resource->data(0, Qt::UserRole).toString() == donorMaterial);
+    QPushButton* revealOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldRevealMaterial"));
+    REQUIRE(revealOrNull != nullptr);
+    revealOrNull->click();
+    QTabWidget* listsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("worldSidebarLists"));
+    REQUIRE(listsOrNull != nullptr);
+    CHECK(listsOrNull->currentWidget()->isAncestorOf(materialsOrNull) == true);
+    CHECK(materialsOrNull->currentItem() == resource);
+    CHECK(resource->isExpanded() == true);
+    QPushButton* copyOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldCopyMaterialId"));
+    REQUIRE(copyOrNull != nullptr);
+    copyOrNull->click();
+    CHECK(QApplication::clipboard()->text() == donorMaterial);
+
+    workspace.show();
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    REQUIRE(workspace.SelectEntity(donor) == true);
+    QTreeWidgetItem* recipientRow =
+        resource->child(0)->data(0, Qt::UserRole).toString() == recipient ? resource->child(0) : resource->child(1);
+    REQUIRE(recipientRow->data(0, Qt::UserRole).toString() == recipient);
+    REQUIRE(materialsOrNull->isEnabled() == true);
+    materialsOrNull->setCurrentItem(recipientRow);
+    materialsOrNull->setFocus();
+    QTest::keyClick(materialsOrNull, Qt::Key_Return);
+    const QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(entitiesOrNull->currentItem() != nullptr);
+    REQUIRE(entitiesOrNull->currentItem()->data(0, Qt::UserRole).toString() == recipient);
+    propertiesOrNull->show();
 
     const QString roughnessField = QStringLiteral("scene/project_brdf/roughness");
     Type(Field(workspace, roughnessField), QStringLiteral("0"));
@@ -4706,6 +4836,8 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
     checkMaterial(workspace, recipient, 0.75F);
     checkMaterial(workspace, donor, 0.35F);
     CHECK(GetLevel(workspace).PreviewScene().Definition->Materials.GetSize() == 2);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 1);
+    CHECK(materialsOrNull->topLevelItem(0)->childCount() == 2);
 
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
@@ -4832,6 +4964,13 @@ Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer in
     WaitForValidatedScene(workspace);
     checkProgram(workspace, unsupported[0]);
     CHECK(findObjects(workspace, format::MaterialModel::Unresolved).isEmpty() == true);
+    const QTreeWidget* materialsOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldMaterials"));
+    REQUIRE(materialsOrNull != nullptr);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 3);
+    const QList<QTreeWidgetItem*> goldRows =
+        materialsOrNull->findItems(QStringLiteral("Weathered gold"), Qt::MatchExactly);
+    REQUIRE(goldRows.size() == 1);
+    CHECK(goldRows.front()->childCount() == 2);
     REQUIRE(workspace.Save() == true);
     WaitForValidatedScene(workspace);
     workspace.StopPreview();
@@ -5511,6 +5650,88 @@ TEST_CASE("Viewport placement commits present the cooked transform at once and v
     QLabel* statusOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldStatus"));
     REQUIRE(statusOrNull != nullptr);
     CHECK(statusOrNull->text().contains(QStringLiteral("validated")) == true);
+}
+
+TEST_CASE("An imported World publishes probe moves without assembling its scene",
+          "[editor][world][object-interaction][probe-gi]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString source = QDir(root).filePath(QStringLiteral("external"));
+    const QString levelPath = QStringLiteral("scenes/room.lulevel");
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    REQUIRE(tests::PrepareImportedLevel(root, levelPath, source, error) == true);
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const QJsonObject level = QJsonDocument::fromJson(Read(QDir(root).filePath(levelPath))).object();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString mesh =
+        level.value(QStringLiteral("objects")).toArray().first().toObject().value(QStringLiteral("id")).toString();
+    QString volume;
+    REQUIRE(CreateWorldObject(document,
+                              ludus::platform::GetSystemEntropySource(),
+                              QStringLiteral("GI Probe Volume"),
+                              volume,
+                              error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("probe.world.json"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    ViewportObjectInteraction& interaction = scene.GetViewport().GetObjectInteraction();
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    const QByteArray sceneIdentity = scene.PreviewScene().Identity;
+    const auto moveProbe = [&interaction, &volume](ludus::foundation::float64 xMetres) {
+        interaction.PlacementCommitted(volume,
+                                       QJsonObject{{QStringLiteral("position"), QJsonArray{xMetres, 0, 0}},
+                                                   {QStringLiteral("scale"),
+                                                    QJsonArray{DEFAULT_GI_PROBE_VOLUME_SIZE_METRES,
+                                                               DEFAULT_GI_PROBE_VOLUME_SIZE_METRES,
+                                                               DEFAULT_GI_PROBE_VOLUME_SIZE_METRES}}});
+    };
+    moveProbe(1);
+    CHECK(scene.CanStartOperation() == true);
+    CHECK(scene.PreviewScene().ProbeGrid.Counts[0] == 0);
+    CHECK(scene.PreviewScene().Identity == sceneIdentity);
+    CHECK(ReadWorldGiProbeOrigin(workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject())[0]
+              .toDouble() == 1);
+
+    QPushButton* bakeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldBakeGi"));
+    REQUIRE(bakeOrNull != nullptr);
+    bakeOrNull->click();
+    REQUIRE(scene.CanStartOperation() == true);
+    REQUIRE(scene.PreviewScene().ProbeGrid.Counts[0] != 0);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 1);
+
+    moveProbe(2);
+    REQUIRE(workspace.CanUndo() == true);
+    CHECK(scene.CanStartOperation() == true);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 2);
+    workspace.Undo();
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 1);
+    CHECK(scene.PreviewScene().Identity == sceneIdentity);
+
+    REQUIRE(workspace.SelectEntity(mesh) == true);
+    interaction.PlacementCommitted(mesh, MovePlacement(workspace, mesh, 1));
+    REQUIRE(scene.GetPlacementValidation() == PlacementValidation::Running);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    moveProbe(2);
+    CHECK(scene.Busy() == false);
+    CHECK(scene.GetPlacementValidation() == PlacementValidation::Running);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 2);
+    WaitForValidatedScene(workspace);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 2);
+    workspace.Undo();
+    CHECK(scene.CanStartOperation() == true);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 1);
 }
 
 TEST_CASE("Placement edits, Undo and Redo continue while the background validation runs",

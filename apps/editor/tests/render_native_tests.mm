@@ -1074,6 +1074,28 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
                     return reopened.GetReady()->ProbeAtlas.Pixels.isEmpty() == false;
                 },
                 BAKE_DEADLINE_MILLISECONDS) == true);
+    // Keep the receiver and geometry in place; move only the volume away from them.
+    ludus::graphics::renderer::GiProbeGrid movedGrid = litRoom.ProbeGrid;
+    constexpr float32 MOVED_GRID_ORIGIN_X_METRES = 10;
+    movedGrid.OriginWorld.X = MOVED_GRID_ORIGIN_X_METRES;
+    preview.SetProbeGrid(movedGrid);
+    CHECK(preview.GetSurfaceBake().isNull() == true);
+    CHECK(preview.Scene().Identity == litRoom.Identity);
+    REQUIRE(QTest::qWaitFor(
+                [&preview, &movedGrid]() {
+                    const QSharedPointer<const WorldSurfaceBake> bake = preview.GetSurfaceBake();
+                    return bake.isNull() == false && bake->ProbeAtlas.Pixels.isEmpty() == false &&
+                           preview.Scene().ProbeGrid.OriginWorld.X == movedGrid.OriginWorld.X;
+                },
+                BAKE_DEADLINE_MILLISECONDS) == true);
+    CHECK(preview.GetSurfaceBake()->LightingKey == preview_lighting::MakeKey(preview.Scene()));
+    const QColor outside = sampleReceiver();
+    CHECK(outside.red() <= outside.green() + 3);
+
+    preview.SetProbeGrid(litRoom.ProbeGrid);
+    const QColor restored = sampleReceiver();
+    CHECK(restored.red() > restored.green() + 15);
+
     const RenderScene darkRoom = MakeGiProbeScene(.75F);
     REQUIRE(preview.SetScene(darkRoom) == true);
     const QColor dark = sampleReceiver();
