@@ -100,7 +100,7 @@ def consume_behavior(sdk, workspace):
     run("cmake", "-S", source, "-B", build, "-G", "Ninja", "-DCMAKE_CXX_COMPILER=cl.exe",
         f"-DCMAKE_BUILD_TYPE={configuration}", f"-DCMAKE_PREFIX_PATH={sdk}")
     run("cmake", "--build", build, "--config", configuration)
-    run("ctest", "--test-dir", build, "-C", CONFIGURATION, "--output-on-failure", "--no-tests=error",
+    run("ctest", "--test-dir", build, "-C", configuration, "--output-on-failure", "--no-tests=error",
         contains="100% tests passed")
     for executable_directory in (build, build / "shipping"):
         require((executable_directory / "D3D12/D3D12Core.dll").is_file(), "The Agility runtime was not staged")
