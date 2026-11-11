@@ -24,6 +24,24 @@ constexpr foundation::int32 TOAST_BORDER_WIDTH = 1;
 constexpr foundation::int32 PANEL_ROW_SPACING = design::SPACING_EXTRA_SMALL;
 const QString VERB_SEPARATOR = QStringLiteral(": ");
 
+/// Elides only text that does not fit; integer advances round down, so eliding at an exact fit would cut a short name.
+QString ElideToFit(const QFontMetrics& metrics, const QString& text, foundation::int32 width)
+{
+    return metrics.horizontalAdvance(text) <= width ? text : metrics.elidedText(text, Qt::ElideRight, width);
+}
+
+/// Width of a notice drawn as its verb and its name, measured as paintEvent draws them so the two never disagree.
+foundation::int32 MeasureNotice(const QFontMetrics& metrics, const QString& text)
+{
+    const qsizetype split = text.indexOf(VERB_SEPARATOR);
+    if (split < 0)
+    {
+        return metrics.horizontalAdvance(text);
+    }
+    const qsizetype nameStart = split + VERB_SEPARATOR.size();
+    return metrics.horizontalAdvance(text.left(nameStart)) + metrics.horizontalAdvance(text.mid(nameStart));
+}
+
 QString MakeMenuText(const QString& verb, const QString& name)
 {
     return name.isEmpty() == true ? verb : verb + QLatin1Char(' ') + name;
@@ -264,7 +282,7 @@ void UndoFeedbackToast::ShowNotice(const QString& text, const QWidget& anchor)
     // Measure with the polished font that paintEvent uses; a tool-tip window takes its font on polish.
     ensurePolished();
     const QFontMetrics metrics(font());
-    const QSize size(metrics.horizontalAdvance(text) + 2 * TOAST_HORIZONTAL_PADDING,
+    const QSize size(MeasureNotice(metrics, text) + 2 * TOAST_HORIZONTAL_PADDING,
                      metrics.height() + 2 * TOAST_VERTICAL_PADDING);
     const QRect area(anchor.mapToGlobal(QPoint(0, 0)), anchor.size());
     const foundation::int32 width = qMin(size.width(), qMax(area.width() - 2 * TOAST_BOTTOM_MARGIN, size.height()));
@@ -347,7 +365,7 @@ void UndoFeedbackToast::paintEvent(QPaintEvent* event)
     if (split < 0)
     {
         painter.setPen(colours.color(QPalette::ToolTipText));
-        painter.drawText(text, Qt::AlignCenter, metrics.elidedText(mText, Qt::ElideRight, text.width()));
+        painter.drawText(text, Qt::AlignCenter, ElideToFit(metrics, mText, text.width()));
         return;
     }
     // The verb ("Undid:") is quieter than the command it names, so the eye lands on what changed.
@@ -361,6 +379,6 @@ void UndoFeedbackToast::paintEvent(QPaintEvent* event)
     painter.setPen(colours.color(QPalette::ToolTipText));
     painter.drawText(QRect(left + verbWidth, text.top(), nameWidth, text.height()),
                      Qt::AlignLeft | Qt::AlignVCenter,
-                     metrics.elidedText(name, Qt::ElideRight, nameWidth));
+                     ElideToFit(metrics, name, nameWidth));
 }
 } // namespace ludus::editor

@@ -420,7 +420,9 @@ TEST_CASE("Undo and Redo name their command, confirm it and jump from History", 
     CHECK(toast->isVisible() == true);
     CHECK(toast->GetText() == QStringLiteral("Undid: Change Build Preset"));
     // The note fits its whole text rather than eliding a short command name.
-    CHECK(toast->width() >= QFontMetrics(toast->font()).horizontalAdvance(toast->GetText()));
+    const QFontMetrics metrics(toast->font());
+    CHECK(toast->width() >= metrics.horizontalAdvance(QStringLiteral("Undid: ")) +
+                                metrics.horizontalAdvance(QStringLiteral("Change Build Preset")));
     redo->trigger();
     CHECK(toast->GetText() == QStringLiteral("Redid: Change Build Preset"));
 
