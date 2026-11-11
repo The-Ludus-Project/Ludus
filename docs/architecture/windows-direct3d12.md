@@ -1020,6 +1020,21 @@ editor lanes passed native channel ownership, World authoring at normal and
 fractional DPI, startup sound and hosted Play. The full editor suites still
 had failures and timeouts; this run does not qualify the broader editor.
 
+Candidate `536669c4f6015de0074866317d16ff9699cbaed5` repeated the runtime,
+installed worker, generator and four SDK flavor passes, including runtime
+AddressSanitizer, in
+[Windows run 42942190460](https://github.com/The-Ludus-Project/Ludus/actions/runs/42942190460).
+Native editor presentation and hosted Play passed again. The ordinary editor
+passed 13 of 19 required CTest entries and the instrumented editor passed
+14 of 19. Those failures leave the hosted editor gate open.
+
+Both editor lanes at `9d78c1745` passed 16 of 19 entries in
+[Windows run 42946350689](https://github.com/The-Ludus-Project/Ludus/actions/runs/42946350689).
+The Windows project profile and shared-reader atomic save cases passed. The
+remaining failures were in the core editor and graph configuration shards,
+including an invalid free reported while a failed test assertion unwound
+through a Qt modal callback.
+
 #### Candidate hardware requirements
 
 The baseline raster profile requires an x64 Direct3D 12 device at feature level
@@ -1095,6 +1110,33 @@ must expose API allocation accounting. Missing metrics, unavailable accounting
 and exceeded limits fail the run. `runtime.json` distinguishes collected
 performance reports from passed limits.
 
+#### Interactive desktop and IDE evidence
+
+Use the same checkout and adapter as the physical runtime run. Follow the
+[Windows editor setup](../development/editor-workspace.md#windows-authoring-viewport)
+and open the authored World project on the Windows desktop with normal GPU
+selection. Record the display layout and scale factors, IDE versions, project
+profile and whether the session is local or remote.
+
+- Open the World, move its camera, edit a visible object and resize the
+  viewport. Exercise a pending and a rejected graph replacement, checking
+  that the last drawable view remains until an accepted replacement presents.
+- Move the editor between displays at different scales, and resize it on
+  each. Open and cancel a native file dialog, then select a project in the
+  dialog. Verify that input focus returns to the editor after each dialog.
+- Start hosted Play, send input after focusing the game, resize the hosted
+  view and switch focus back to authoring. Exercise Stop and a game-process
+  crash. Check that authoring resumes and the owned process tree exits.
+- Follow the [Windows IDE journeys](../development/project-sdk-workflow.md#vs-code-and-visual-studio-on-windows)
+  in Visual Studio and VS Code. Launch the Debug game from each IDE and
+  attach to a running GameHost. Verify a source breakpoint, stepping, locals
+  and the call stack with the matching executable and module PDBs. Record the
+  loaded symbol paths and the source locations.
+
+Record the outcome and any failure for each step alongside the runtime
+artifacts. Automated WARP and debugger-engine tests cover related regression
+paths; the desktop record establishes which interactive checks passed.
+
 #### Qualification record
 
 D7 remains open. WARP is the software regression lane. The acceptance record
@@ -1107,6 +1149,7 @@ PR from the subsystem table.
 
 | Evidence still required | Owning boundary | What to record |
 | --- | --- | --- |
+| Complete hosted matrix | Windows CI, runtime SDK and editor | All required jobs on the same commit, including the ordinary editor and editor AddressSanitizer |
 | Physical runtime and minimum OS | Win32, Direct3D 12, World and SDK | Successful run per declared adapter/driver and minimum OS, with exact runtime and dependency versions |
 | Desktop authoring and hosted Play | D6d editor and GameHost | Selected World and camera, edit/resize and pending/failure recovery, DPI/display transitions, focus, dialogs, cross-process frame delivery and cleanup |
 | Resource and performance budgets | Renderer and runtime | Repeatable workload, declared frame time and memory limits, measured CPU/GPU time and allocation peaks per device |
@@ -1145,7 +1188,7 @@ these rows remain pending.
 | --- | --- | --- | --- | --- | --- |
 | FoundationBase / target ABI | threading T3; D0 pending | verified (Clang only) | Revalidate with MSVC in D0 | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
 | Toolchain / build configuration (Clang) | D1, D2 | verified (WARP) | Retain historical scope; MSVC migration tracked separately | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
-| MSVC / Ninja / MSBuild / configuration mapping | unassigned | needs port | D0; pins, compiler gates, presets and policy reconciliation | pending | none |
+| MSVC / Ninja / MSBuild / configuration mapping | D0, D6b, D7 | hosted source and four relocated SDK flavors passed | Repeat on the qualification candidate; interactive IDE checks | [PR #1136](https://github.com/The-Ludus-Project/Ludus/pull/1136) | `536669c4f`, [Windows matrix](https://github.com/The-Ludus-Project/Ludus/actions/runs/42942190460) |
 | Memory / containers / diagnostics | D5a | MSVC suites enabled | Verify allocation, alignment and terminal diagnostic behavior across configurations | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
 | Time / threading | threading T3; D5a | Clang verified, MSVC suites enabled | Revalidate startup, allocation and profiling paths under MSVC | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Clang threading evidence](../development/threading-evidence.md#platform-completion-t3), [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
 | Logging / profiling | D5a | MSVC suites enabled | Validate log allocation failure, recorder and export tests | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
@@ -1169,9 +1212,9 @@ these rows remain pending.
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
 | SDK / project setup / VS Code / Visual Studio | D0, D6b, D7 | Four runtime SDK flavor checks configured; IDE journeys in CI | Same-candidate SDK matrix results and interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
 | Embedded/external shader/script authoring | D6c | Named-pipe shader worker with DXIL | Luau, shader file delivery, graph DXIL; editors with D6d | [PR #1018](https://github.com/The-Ludus-Project/Ludus/pull/1018) | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
-| Editor / hosted viewport | D6d | Direct3D 12 authoring and hosted Play | Windows WARP and physical desktop evidence | PR #1135 | Windows viewport, hosted Play, RHI leases and job cleanup regressions |
+| Editor / hosted viewport | D6d, D7 | native Direct3D 12 authoring and hosted Play passed on WARP | Complete both broad editor lanes and record physical desktop evidence | [PR #1135](https://github.com/The-Ludus-Project/Ludus/pull/1135), [PR #1136](https://github.com/The-Ludus-Project/Ludus/pull/1136) | `9d78c1745`, [Windows editor run](https://github.com/The-Ludus-Project/Ludus/actions/runs/42946350689) |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
-| Qualification / CI / documentation | D7 | in progress | Collect the [same-candidate qualification record](#qualification-record) | pending | MSVC and Clang WARP batch lanes; physical results pending |
+| Qualification / CI / documentation | D7 | in progress | Collect the [same-candidate qualification record](#qualification-record) | [PR #1136](https://github.com/The-Ludus-Project/Ludus/pull/1136) | [Hosted evidence](#hosted-evidence); physical results pending |
 | Packaging / distribution | unassigned | unreviewed | D8 after D7 | pending | none |
 
 ## References
