@@ -127,7 +127,7 @@ if(LUDUS_BUILD_TESTS)
     )
     target_link_libraries(
         ludus_foundation_profiling_tests
-        PRIVATE
+        PRIVATE Ludus::FoundationThreading
             Ludus::FoundationProfiling
             Ludus::FoundationMemory
             Ludus::FoundationTime

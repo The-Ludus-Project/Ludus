@@ -3,19 +3,19 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/filesystem/async.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <new>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::filesystem;
+namespace threading = ludus::foundation::threading;
 namespace
 {
 std::atomic<uint64> gAllocations{0};
@@ -259,7 +259,7 @@ int main(int argc, char** argv)
                 }
                 else
                 {
-                    std::this_thread::yield();
+                    threading::YieldThread();
                 }
             }
         }
@@ -321,7 +321,7 @@ int main(int argc, char** argv)
             ReadCompletion completion;
             while (reader.Poll(completion) == false)
             {
-                std::this_thread::yield();
+                threading::YieldThread();
             }
             if (completion.Disposition == ReadDisposition::Cancelled)
             {

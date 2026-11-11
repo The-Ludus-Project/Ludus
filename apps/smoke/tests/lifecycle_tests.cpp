@@ -1,11 +1,12 @@
+#include <ludus/foundation/threading/thread.hpp>
+
 #include "../internal/lifecycle.h"
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <thread>
-
 using namespace ludus::foundation;
 using namespace ludus::smoke::lifecycle;
+namespace threading = ludus::foundation::threading;
 namespace
 {
 struct Fixture;
@@ -418,8 +419,9 @@ TEST_CASE("Runtime failure and cross-thread stop requests retire on the owner th
     }
     SECTION("worker requests stop")
     {
-        std::thread worker([&fixture] { fixture.Lifecycle.RequestStop(); });
-        worker.join();
+        threading::Thread worker;
+        REQUIRE(worker.Start([&fixture] { fixture.Lifecycle.RequestStop(); }) == threading::ThreadStatus::Ok);
+        REQUIRE(worker.Join() == threading::ThreadStatus::Ok);
         CHECK(fixture.EventCount == 3);
     }
     CHECK(fixture.Lifecycle.Advance(3) == State::Stopped);

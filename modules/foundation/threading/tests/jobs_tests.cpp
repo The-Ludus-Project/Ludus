@@ -1,10 +1,10 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::threading;
@@ -313,7 +313,7 @@ TEST_CASE("Cancelling after the last job resolved keeps a successful outcome", "
         while (outcome != JobOutcome::Succeeded)
         {
             REQUIRE(graph.GetOutcome(second, outcome) == JobStatus::Ok);
-            std::this_thread::yield();
+            YieldThread();
         }
         REQUIRE(system.Cancel() == JobStatus::Ok);
         JobOutcome result{};
@@ -411,7 +411,8 @@ TEST_CASE("Cancel and Snapshot run concurrently with a non-helping owner Wait", 
     std::atomic<JobStatus> snapshotStatus{JobStatus::InvalidArgument};
     std::atomic<JobStatus> cancelStatus{JobStatus::InvalidArgument};
     std::atomic<uint32> observedRunning{0};
-    std::thread controller([&] {
+    Thread controller;
+    REQUIRE(controller.Start([&] {
         held.HasEntered.wait(false);
         JobSnapshot snapshot{};
         snapshotStatus.store(system.Snapshot(snapshot));
@@ -419,10 +420,10 @@ TEST_CASE("Cancel and Snapshot run concurrently with a non-helping owner Wait", 
         cancelStatus.store(system.Cancel());
         held.IsReleased.store(true);
         held.IsReleased.notify_all();
-    });
+    }) == ThreadStatus::Ok);
     JobOutcome result{};
     const JobStatus waitStatus = system.Wait(result, false);
-    controller.join();
+    REQUIRE(controller.Join() == ThreadStatus::Ok);
     REQUIRE(waitStatus == JobStatus::Ok);
     REQUIRE(snapshotStatus.load() == JobStatus::Ok);
     REQUIRE(observedRunning.load() == 1);

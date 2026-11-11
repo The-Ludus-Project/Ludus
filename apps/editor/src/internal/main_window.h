@@ -55,6 +55,9 @@ class CodeEditorArea;
 class CodeStatusBar;
 class SearchToolWindow;
 class ConfigurationWorkspace;
+class EditHistoryPanel;
+struct EditHistoryState;
+class UndoFeedbackToast;
 class ContentWorkspace;
 class DocumentWell;
 class ErrorList;
@@ -201,6 +204,30 @@ private:
     void RenderDocumentActions();
     /// Active document of the well, or null when no document is open.
     [[nodiscard]] QWidget* getActiveWorkspaceOrNull() const;
+    /// Which history Undo and Redo act on now, following focus the way RenderDocumentActions does.
+    enum class HistoryTarget : foundation::uint8
+    {
+        None,
+        TextField,
+        CodeEditor,
+        Script,
+        World,
+        Renderer,
+        Project,
+    };
+    [[nodiscard]] HistoryTarget getHistoryTarget() const;
+    /// Command name Undo (or Redo, with isRedo) would act on in target; empty when target has none.
+    [[nodiscard]] QString getHistoryCommandName(HistoryTarget target, bool isRedo) const;
+    /// Revision of target's history, or 0 for histories without one (text fields and scripts).
+    [[nodiscard]] foundation::uint64 getHistoryRevision(HistoryTarget target) const;
+    /// What the History panel shows for target.
+    [[nodiscard]] EditHistoryState getHistoryState(HistoryTarget target) const;
+    /// Refresh the History panel when it is visible; no work while it is closed.
+    void renderHistory();
+    /// Jump the active document to history position cursor, chosen in the History panel.
+    void onHistoryJumpRequested(foundation::int32 cursor);
+    /// Show the brief Undo/Redo notice over the document area.
+    void showUndoFeedback(const QString& text);
     void CommitProjectFields();
     [[nodiscard]] bool SaveProjectSettings();
 #if defined(Q_OS_WASM)
@@ -385,6 +412,13 @@ private:
     QAction* SaveAction_ = nullptr;
     QAction* UndoAction_ = nullptr;
     QAction* RedoAction_ = nullptr;
+    /// Edit/View › History: shows the History tool window.
+    QAction* mHistoryActionOrNull = nullptr;
+    /// History tool window and its panel; created in BuildUi.
+    QDockWidget* mHistoryDockOrNull = nullptr;
+    EditHistoryPanel* mHistoryPanelOrNull = nullptr;
+    /// Brief "Undid: ..." notice; created on first use.
+    UndoFeedbackToast* mUndoToastOrNull = nullptr;
 #if defined(Q_OS_WASM)
     QAction* ExportProjectAction_ = nullptr;
 #endif

@@ -1,15 +1,16 @@
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/foundation/time/timers.hpp>
 
 #include <array>
 #include <atomic>
-#include <thread>
 #include <type_traits>
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::time;
+namespace threading = ludus::foundation::threading;
 
 static_assert(sizeof(Duration) == sizeof(uint64));
 static_assert(sizeof(Timestamp) == sizeof(uint64));
@@ -18,6 +19,20 @@ static_assert(std::is_convertible_v<Timestamp, Duration> == false);
 static_assert(noexcept(Now()));
 static_assert(std::is_trivially_copyable_v<Stopwatch>);
 static_assert(std::is_trivially_copyable_v<FrameClock>);
+
+TEST_CASE("unit helpers scale exactly and saturate past the nanosecond range", "[time]")
+{
+    constexpr uint64 MAX_VALUE = ~uint64{0};
+    STATIC_CHECK(Seconds(2).Nanoseconds == 2 * NANOSECONDS_PER_SECOND);
+    STATIC_CHECK(Milliseconds(7).Nanoseconds == 7 * NANOSECONDS_PER_MILLISECOND);
+    STATIC_CHECK(Microseconds(11).Nanoseconds == 11 * NANOSECONDS_PER_MICROSECOND);
+    STATIC_CHECK(Seconds(0) == Duration{});
+    STATIC_CHECK(Seconds(MAX_VALUE / NANOSECONDS_PER_SECOND).Nanoseconds ==
+                 (MAX_VALUE / NANOSECONDS_PER_SECOND) * NANOSECONDS_PER_SECOND);
+    STATIC_CHECK(Seconds(MAX_VALUE / NANOSECONDS_PER_SECOND + 1).Nanoseconds == MAX_VALUE);
+    STATIC_CHECK(Milliseconds(MAX_VALUE).Nanoseconds == MAX_VALUE);
+    STATIC_CHECK(Microseconds(MAX_VALUE).Nanoseconds == MAX_VALUE);
+}
 
 TEST_CASE("time arithmetic checks boundaries and preserves failed outputs", "[time]")
 {
@@ -169,25 +184,25 @@ TEST_CASE("production clock is monotonic under concurrent readers", "[time][cloc
 {
     // Workers report through an atomic; Catch assertions stay on the test thread.
     std::atomic<bool> valid{true};
-    std::array<std::thread, 4> threads;
-    for (auto& thread : threads)
+    std::array<threading::Thread, 4> threads;
+    for (threading::Thread& thread : threads)
     {
-        thread = std::thread([&valid] {
-            auto previous = Now();
+        REQUIRE(thread.Start([&valid] {
+            Timestamp previous = Now();
             for (usize i = 0; i < 10'000; ++i)
             {
-                const auto now = Now();
+                const Timestamp now = Now();
                 if (now.Nanoseconds < previous.Nanoseconds)
                 {
                     valid.store(false, std::memory_order_relaxed);
                 }
                 previous = now;
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (auto& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     CHECK(valid.load(std::memory_order_relaxed));
 }

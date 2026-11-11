@@ -15,15 +15,13 @@
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <chrono>
-#include <thread>
 
 // CPU oracle / GPU-compute parity for the RT1 reference integral. Both paths read
 // the same addressed Philox dimensions, so matching samples follow matching paths;
@@ -34,6 +32,7 @@ using namespace ludus::foundation;
 namespace rr = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace shaders = ludus::shaders;
+namespace threading = ludus::foundation::threading;
 using S = rhi::RasterStatus;
 constexpr usize CPU_BUDGET = usize{64} * 1024 * 1024;
 constexpr usize GPU_BUDGET = usize{64} * 1024 * 1024;
@@ -41,7 +40,7 @@ constexpr uint32 CPU_TILE_PIXELS = 256;
 constexpr uint64 TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
 constexpr uint64 COLD_CAPTURE_TIMEOUT_NANOSECONDS =
     LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
-constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
+constexpr time::Duration COMPLETION_POLL_INTERVAL = time::Milliseconds(1);
 constexpr uint64 NANOSECONDS_PER_MILLISECOND = time::NANOSECONDS_PER_SECOND / 1000;
 
 struct Session final
@@ -355,7 +354,7 @@ S Run(rr::Renderer& inoutRenderer, rr::ReferenceCapture capture, rhi::SurfaceHan
     rr::ReferenceCaptureInfo progress;
     while (status == S::Pending && time::NowTicks() - windowStartedTicks < timeoutNanoseconds)
     {
-        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
         status = inoutRenderer.AdvanceReferenceCapture(capture, surface);
         REQUIRE(inoutRenderer.GetReferenceCaptureInfo(capture, progress) == S::Ready);
         if (hasCompletedColdWork == false && progress.CommittedSamples > 0)

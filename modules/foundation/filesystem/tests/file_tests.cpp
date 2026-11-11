@@ -1,6 +1,7 @@
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/namespace.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "pack_fixture.hpp"
 
@@ -11,7 +12,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <thread>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -19,6 +19,7 @@
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::filesystem;
+namespace threading = ludus::foundation::threading;
 namespace
 {
 struct Fixture final
@@ -196,10 +197,12 @@ TEST_CASE("Concurrent offset reads share one revision without a shared cursor")
             }
         }
     };
-    std::thread first(worker, 0, 'a');
-    std::thread second(worker, 3, 'd');
-    first.join();
-    second.join();
+    threading::Thread first;
+    threading::Thread second;
+    REQUIRE(first.Start([&worker]() { worker(0, 'a'); }) == threading::ThreadStatus::Ok);
+    REQUIRE(second.Start([&worker]() { worker(3, 'd'); }) == threading::ThreadStatus::Ok);
+    REQUIRE(first.Join() == threading::ThreadStatus::Ok);
+    REQUIRE(second.Join() == threading::ThreadStatus::Ok);
     REQUIRE(valid.load());
 }
 
@@ -337,10 +340,15 @@ TEST_CASE("Separate snapshot handles support concurrent memory opens and shared 
             }
         }
     };
-    std::thread a(worker, snapshot), b(worker, snapshot), c(worker, snapshot);
-    a.join();
-    b.join();
-    c.join();
+    threading::Thread a;
+    threading::Thread b;
+    threading::Thread c;
+    REQUIRE(a.Start([&worker, &snapshot]() { worker(snapshot); }) == threading::ThreadStatus::Ok);
+    REQUIRE(b.Start([&worker, &snapshot]() { worker(snapshot); }) == threading::ThreadStatus::Ok);
+    REQUIRE(c.Start([&worker, &snapshot]() { worker(snapshot); }) == threading::ThreadStatus::Ok);
+    REQUIRE(a.Join() == threading::ThreadStatus::Ok);
+    REQUIRE(b.Join() == threading::ThreadStatus::Ok);
+    REQUIRE(c.Join() == threading::ThreadStatus::Ok);
     REQUIRE(valid.load());
 }
 
@@ -416,8 +424,11 @@ TEST_CASE("Concurrent pack clones serialize scratch while preserving independent
             }
         }
     };
-    std::thread first(worker, 65532, 'A'), second(worker, 70000, 't');
-    first.join();
-    second.join();
+    threading::Thread first;
+    threading::Thread second;
+    REQUIRE(first.Start([&worker]() { worker(65532, 'A'); }) == threading::ThreadStatus::Ok);
+    REQUIRE(second.Start([&worker]() { worker(70000, 't'); }) == threading::ThreadStatus::Ok);
+    REQUIRE(first.Join() == threading::ThreadStatus::Ok);
+    REQUIRE(second.Join() == threading::ThreadStatus::Ok);
     REQUIRE(valid.load());
 }

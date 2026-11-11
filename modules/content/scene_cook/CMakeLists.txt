@@ -51,7 +51,7 @@ if(LUDUS_BUILD_TESTS)
     target_include_directories(ludus_scene_cook_tests PRIVATE src)
     target_compile_definitions(ludus_scene_cook_tests PRIVATE
         LUDUS_SCENE_GOLDENS_DIR="${PROJECT_SOURCE_DIR}/tests/goldens/scene_pipeline")
-    target_link_libraries(ludus_scene_cook_tests PRIVATE
+    target_link_libraries(ludus_scene_cook_tests PRIVATE Ludus::FoundationTime
         Ludus::SceneCook Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationStrings Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_scene_cook_tests)
     ludus_enable_test_exceptions(ludus_scene_cook_tests)

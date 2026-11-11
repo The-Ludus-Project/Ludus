@@ -5,6 +5,8 @@
 // a compositor-independent unit test cannot reach.
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/input/keyboard.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/keyboard_sink.h>
@@ -13,8 +15,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <chrono>
 #include <cstdlib>
+
+namespace timing = ludus::foundation::time;
 
 namespace
 {
@@ -71,8 +74,9 @@ TEST_CASE("Live compositor: window binds seat, routes focus enter to sink", "[pl
     // focus delivers a focus-enter; if it never focuses (e.g. a shell that keeps
     // focus elsewhere), we still prove the seat/keyboard bound and the pump is
     // stable, which is the routing path under test.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (std::chrono::steady_clock::now() < deadline)
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(3)) == timing::TimeStatus::Ok);
+    while (deadline.IsExpired(timing::Now()) == false)
     {
         if (window->HandleEvent({}) == false)
         {

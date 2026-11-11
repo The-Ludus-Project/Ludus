@@ -259,6 +259,14 @@ def declaration_commas(code: str) -> list[int]:
     return sorted(set(commas))
 
 
+# Directories whose implementations may include <thread> or <chrono> (ADR 0003).
+STANDARD_THREAD_CLOCK_OWNERS = (
+    "modules/foundation/time/src/",
+    "modules/foundation/logging/src/",
+    "apps/editor/",
+)
+
+
 def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str]]:
     """Check lexical conventions, not semantic coordinate correctness or C++ types."""
     is_cmake = Path(path).suffix == ".cmake" or Path(path).name == "CMakeLists.txt"
@@ -300,6 +308,24 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
         )
 
     if Path(path).suffix in CPP:
+        # <thread> and <chrono> pull <format> into every including translation unit on
+        # libstdc++ (ADR 0003, docs/development/build-profiling.md). Their approved owners
+        # are the time and logging implementations and the assertion death-test child,
+        # which cannot link FoundationBase; the editor follows its own Qt rules.
+        if (
+            path.startswith(STANDARD_THREAD_CLOCK_OWNERS) is False
+            and path != "modules/foundation/base/tests/assert_child.cpp"
+        ):
+            # code_only blanks directives, so read them from the token stream; an include
+            # spelled inside a comment or literal belongs to that token and is not matched.
+            for token in TOKENS.finditer(source):
+                include = re.match(r"[ \t]*#[ \t]*include[ \t]*<(thread|chrono)>", token.group())
+                if include is not None:
+                    report(
+                        token.start(),
+                        "use <ludus/foundation/threading/thread.hpp> and FoundationTime "
+                        f"instead of <{include.group(1)}>",
+                    )
         # A narrow changed-line guard for the consolidated admission paths.
         # Other spellings, derived expressions and unrelated policies still need review.
         if (

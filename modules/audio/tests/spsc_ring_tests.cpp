@@ -2,11 +2,13 @@
 // "Full command ring / oversized batch", "Producer update flood / consumer
 // paused mid-read"). These exercise the production ring type directly.
 
+#include <ludus/foundation/threading/thread.hpp>
+
 #include "internal/spsc_ring.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <thread>
+namespace threading = ludus::foundation::threading;
 
 using ludus::audio::internal::SpscRing;
 using ludus::foundation::uint32;
@@ -75,7 +77,8 @@ TEST_CASE("SPSC ring survives a producer flood with a slow consumer", "[audio][s
     constexpr uint32 kTotal = 100000;
     SpscRing<Rec, 1024> ring;
 
-    std::thread producer([&] {
+    threading::Thread producer;
+    REQUIRE(producer.Start([&] {
         uint32 next = 0;
         while (next < kTotal)
         {
@@ -86,7 +89,7 @@ TEST_CASE("SPSC ring survives a producer flood with a slow consumer", "[audio][s
             }
             // else: full; retry (producer-side only; never spins in rendering).
         }
-    });
+    }) == threading::ThreadStatus::Ok);
 
     uint32 received = 0;
     uint32 expected = 0;
@@ -105,7 +108,7 @@ TEST_CASE("SPSC ring survives a producer flood with a slow consumer", "[audio][s
         }
         received += n;
     }
-    producer.join();
+    REQUIRE(producer.Join() == threading::ThreadStatus::Ok);
 
     REQUIRE(ordered);
     REQUIRE(received == kTotal);

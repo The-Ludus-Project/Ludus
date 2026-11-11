@@ -15,14 +15,15 @@
 #include "internal/trace_event.hpp"
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <thread> // std::thread element type for the multithread worker pool
 
 #if LUDUS_PROFILING_ENABLED
 
 using namespace ludus::foundation::profiling;
+namespace threading = ludus::foundation::threading;
 using ludus::foundation::uint32;
 using ludus::foundation::uint64;
 
@@ -237,31 +238,30 @@ TEST_CASE("multi-threaded scope generation is lossless within capacity", "[profi
     RegisterThreadForTrace("Main");
     REQUIRE(BeginCapture(256));
 
-    constexpr int kThreads = 8;
+    constexpr ludus::foundation::usize THREAD_COUNT = 8;
     constexpr int kScopesPerThread = 20000;
-    ludus::foundation::Array<std::thread> threads;
-    threads.EnsureCapacity(kThreads);
-    for (int t = 0; t < kThreads; ++t)
+    ludus::foundation::StaticArray<threading::Thread, THREAD_COUNT> threads;
+    for (threading::Thread& thread : threads)
     {
-        threads.AddInPlace([] {
+        REQUIRE(thread.Start([] {
             RegisterThreadForTrace("Worker");
             for (int i = 0; i < kScopesPerThread; ++i)
             {
                 LUDUS_PROFILE_SCOPE(Work);
             }
             UnregisterThreadForTrace(); // flush partial chunk before join
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (auto& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     EndCapture();
 
     const TraceHealth health = GetTraceHealth();
     CHECK(health.EventsDropped == 0);
     // 8 threads * 20000 scopes * 2 events, plus none dropped.
-    CHECK(health.EventsRecorded == static_cast<uint64>(kThreads) * kScopesPerThread * 2);
+    CHECK(health.EventsRecorded == static_cast<uint64>(THREAD_COUNT) * kScopesPerThread * 2);
 }
 
 TEST_CASE("buffer saturation drops with a count and never crashes", "[profiling][scope][overflow]")

@@ -10,7 +10,6 @@
 
 #include <atomic>
 #include <filesystem>
-#include <thread>
 #include <time.h>
 #include <unistd.h>
 

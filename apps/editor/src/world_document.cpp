@@ -371,6 +371,11 @@ QJsonObject Defaults(const QJsonObject& component)
     return true;
 }
 
+QString GetMappedMaterialId(const QJsonObject& placement, const QJsonObject& level)
+{
+    const QString source = placement.value(QStringLiteral("material")).toString();
+    return level.value(QStringLiteral("material_mappings")).toObject().value(source).toString(source);
+}
 } // namespace
 bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
 {
@@ -1213,7 +1218,7 @@ bool WorldDocument::Load(const QByteArray& bytes, QString& error)
         return false;
     }
     Draft_ = Saved_ = candidate;
-    History_.Reset();
+    mHistory.Reset();
     Loaded_ = true;
     return true;
 }
@@ -1227,7 +1232,7 @@ bool WorldDocument::New(QString& error)
         return false;
     }
     Draft_ = Saved_ = candidate;
-    History_.Reset();
+    mHistory.Reset();
     Loaded_ = true;
     return true;
 }
@@ -1238,11 +1243,11 @@ void WorldDocument::Clear()
     Schema_ = {};
     mIsBuiltInSchema = false;
     Loaded_ = false;
-    History_.Reset();
+    mHistory.Reset();
 }
-bool WorldDocument::Commit(const QJsonObject& candidate, QString& error)
+bool WorldDocument::commit(const QJsonObject& candidate, QString& outError, const char* name)
 {
-    if (Loaded_ == false || Validate(candidate, error) == false)
+    if (Loaded_ == false || Validate(candidate, outError) == false)
     {
         return false;
     }
@@ -1250,31 +1255,31 @@ bool WorldDocument::Commit(const QJsonObject& candidate, QString& error)
     if (candidate.value(QStringLiteral("version")) != Draft_.value(QStringLiteral("version")) ||
         candidate.value(QStringLiteral("document")) != Draft_.value(QStringLiteral("document")))
     {
-        return Fail(error, QStringLiteral("The candidate changes the World's version or document identity."));
+        return Fail(outError, QStringLiteral("The candidate changes the World's version or document identity."));
     }
     if (HasBuiltInSchema() == true)
     {
         const QJsonArray atmospheres = FindWorldAtmosphereEntities(candidate);
         if (atmospheres.size() > 1 && atmospheres.size() > FindWorldAtmosphereEntities(Draft_).size())
         {
-            return Fail(error,
+            return Fail(outError,
                         QStringLiteral("A World supports one Atmosphere. Edit or delete %1 first.")
                             .arg(atmospheres.first().toObject().value(QStringLiteral("name")).toString()));
         }
     }
     if (candidate == Draft_)
     {
-        error.clear();
+        outError.clear();
         return true;
     }
-    if (History_.Commit(Draft_, candidate) == false)
+    if (mHistory.Commit(Draft_, candidate, false, name) == false)
     {
-        return Fail(error, QStringLiteral("History revision exhausted; save and reopen."));
+        return Fail(outError, QStringLiteral("History revision exhausted; save and reopen."));
     }
     Draft_ = candidate;
     return true;
 }
-bool WorldDocument::ReplaceEntity(const QJsonObject& entity, QString& error)
+bool WorldDocument::replaceEntity(const QJsonObject& entity, QString& outError, const char* name)
 {
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();
     for (foundation::int32 i = 0; i < entities.size(); ++i)
@@ -1284,16 +1289,17 @@ bool WorldDocument::ReplaceEntity(const QJsonObject& entity, QString& error)
             entities[i] = entity;
             auto candidate = Draft_;
             candidate.insert(QStringLiteral("entities"), entities);
-            return Commit(candidate, error);
+            return commit(candidate, outError, name);
         }
     }
-    return Fail(error, QStringLiteral("Entity no longer exists."));
+    return Fail(outError, QStringLiteral("Entity no longer exists."));
 }
 bool WorldDocument::CreateEntity(const foundation::identity::EntropySource& entropy,
                                  QString& outError,
                                  const QString& name,
                                  QString& outId,
-                                 const QJsonObject& initialComponents)
+                                 const QJsonObject& initialComponents,
+                                 const char* commandName)
 {
     const bool hasUuidRecords = HasUuidRecords();
     const bool isWorldDemo = Schema_.value(QStringLiteral("id")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
@@ -1333,7 +1339,7 @@ bool WorldDocument::CreateEntity(const foundation::identity::EntropySource& entr
     }
     entities.append(entity);
     candidate.insert(QStringLiteral("entities"), entities);
-    if (Commit(candidate, outError) == false)
+    if (commit(candidate, outError, commandName) == false)
     {
         return false;
     }
@@ -1396,7 +1402,7 @@ bool WorldDocument::DuplicateEntity(const foundation::identity::EntropySource& e
     auto entities = candidate.value(QStringLiteral("entities")).toArray();
     entities.append(entity);
     candidate.insert(QStringLiteral("entities"), entities);
-    if (Commit(candidate, outError) == false)
+    if (commit(candidate, outError, "Duplicate Entity") == false)
     {
         return false;
     }
@@ -1461,7 +1467,7 @@ bool WorldDocument::DuplicateEntities(const foundation::identity::EntropySource&
         entities[index] = entity;
     }
     draft.insert(QStringLiteral("entities"), entities);
-    if (Commit(draft, outError) == false)
+    if (commit(draft, outError, sources.size() == 1 ? "Duplicate Entity" : "Duplicate Entities") == false)
     {
         return false;
     }
@@ -1491,7 +1497,7 @@ bool WorldDocument::RemoveEntities(const QStringList& ids, QString& outError)
         }
     }
     candidate.insert(QStringLiteral("entities"), entities);
-    return Commit(candidate, outError);
+    return commit(candidate, outError, ids.size() == 1 ? "Delete Entity" : "Delete Entities");
 }
 bool WorldDocument::RemoveEntity(const QString& id, QString& error)
 {
@@ -1503,7 +1509,7 @@ bool WorldDocument::RemoveEntity(const QString& id, QString& error)
             entities.removeAt(i);
             auto candidate = Draft_;
             candidate.insert(QStringLiteral("entities"), entities);
-            return Commit(candidate, error);
+            return commit(candidate, error, "Delete Entity");
         }
     }
     return Fail(error, QStringLiteral("Select an entity to delete."));
@@ -1516,7 +1522,7 @@ bool WorldDocument::RenameEntity(const QString& id, QString& error, const QStrin
         return Fail(error, QStringLiteral("Entity no longer exists."));
     }
     e.insert(QStringLiteral("name"), name);
-    return ReplaceEntity(e, error);
+    return replaceEntity(e, error, "Rename Entity");
 }
 bool WorldDocument::Attach(const QString& entity, QString& outError, const QString& component)
 {
@@ -1555,7 +1561,7 @@ bool WorldDocument::AttachToEntities(const QStringList& ids, QString& outError, 
     }
     QJsonObject candidate = Draft_;
     candidate.insert(QStringLiteral("entities"), entities);
-    return Commit(candidate, outError);
+    return commit(candidate, outError, ids.size() == 1 ? "Add Component" : "Add Component to Entities");
 }
 bool WorldDocument::Detach(const QString& entity, QString& error, const QString& component)
 {
@@ -1567,26 +1573,37 @@ bool WorldDocument::Detach(const QString& entity, QString& error, const QString&
     }
     components.remove(component);
     e.insert(QStringLiteral("components"), components);
-    return ReplaceEntity(e, error);
+    return replaceEntity(e, error, "Remove Component");
 }
 bool WorldDocument::Edit(const QString& entity,
                          const QJsonObject& components,
                          const QString& name,
                          QString& error,
-                         const QJsonObject* scene)
+                         const QJsonObject* sceneOrNull,
+                         const char* commandNameOrNull)
 {
     auto e = Entity(entity);
     if (e.isEmpty())
     {
         return Fail(error, QStringLiteral("Entity no longer exists."));
     }
+    // An inspector transaction that only changes the display name reads as a rename in Undo and History.
+    const char* commandName = commandNameOrNull;
+    if (commandName == nullptr)
+    {
+        const bool isRenameOnly =
+            e.value(QStringLiteral("name")).toString() != name &&
+            e.value(QStringLiteral("components")).toObject() == components &&
+            (sceneOrNull == nullptr || e.value(QStringLiteral("scene")).toObject() == *sceneOrNull);
+        commandName = isRenameOnly == true ? "Rename Entity" : "Edit Properties";
+    }
     e.insert(QStringLiteral("name"), name);
     e.insert(QStringLiteral("components"), components);
-    if (scene != nullptr)
+    if (sceneOrNull != nullptr)
     {
-        e.insert(QStringLiteral("scene"), *scene);
+        e.insert(QStringLiteral("scene"), *sceneOrNull);
     }
-    return ReplaceEntity(e, error);
+    return replaceEntity(e, error, commandName);
 }
 bool WorldDocument::ImportScene(const QJsonObject& level, QString& outError, const QJsonArray& generatedEntities)
 {
@@ -1697,7 +1714,7 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& outError, con
     }
     candidate.insert(QStringLiteral("scene"), metadata);
     candidate.insert(QStringLiteral("entities"), entities);
-    return Commit(candidate, outError);
+    return commit(candidate, outError, "Import Scene");
 }
 bool WorldDocument::MapSceneMaterial(const QString& source, const QString& replacement, QString& outError)
 {
@@ -1711,15 +1728,24 @@ bool WorldDocument::MapSceneMaterial(const QString& source, const QString& repla
     scene.insert(QStringLiteral("material_mappings"), mappings);
     QJsonObject candidate = Draft_;
     candidate.insert(QStringLiteral("scene"), scene);
-    return Commit(candidate, outError);
+    return commit(candidate, outError, "Replace Material");
 }
 
 QString WorldDocument::GetInheritedMaterialId(const QJsonObject& placement) const
 {
-    const QString source = placement.value(QStringLiteral("material")).toString();
-    const QJsonObject mappings =
-        Draft_.value(QStringLiteral("scene")).toObject().value(QStringLiteral("material_mappings")).toObject();
-    return mappings.value(source).toString(source);
+    return GetMappedMaterialId(placement, Draft_.value(QStringLiteral("scene")).toObject());
+}
+
+QString WorldDocument::GetMaterialResourceId(const QJsonObject& placement, const QJsonObject& level)
+{
+    const QJsonObject binding = placement.value(QStringLiteral("project_brdf")).toObject();
+    return binding.isEmpty() == false ? binding.value(QStringLiteral("material")).toString()
+                                      : GetMappedMaterialId(placement, level);
+}
+
+QString WorldDocument::GetMaterialResourceId(const QJsonObject& placement) const
+{
+    return GetMaterialResourceId(placement, Draft_.value(QStringLiteral("scene")).toObject());
 }
 
 QJsonObject WorldDocument::GetSharedCoating(const QString& material) const
@@ -1733,7 +1759,7 @@ bool WorldDocument::SetSharedCoating(const QString& material, const QJsonObject&
     QJsonObject instances = candidate.value(QStringLiteral("shared_coatings")).toObject();
     instances.insert(material, coating);
     candidate.insert(QStringLiteral("shared_coatings"), instances);
-    return Commit(candidate, outError);
+    return commit(candidate, outError, "Edit Shared Coating");
 }
 
 bool WorldDocument::SetSceneStartView(const QJsonObject& camera, QString& outError)
@@ -1746,7 +1772,7 @@ bool WorldDocument::SetSceneStartView(const QJsonObject& camera, QString& outErr
     scene.insert(QStringLiteral("camera"), camera);
     QJsonObject candidate = Draft_;
     candidate.insert(QStringLiteral("scene"), scene);
-    return Commit(candidate, outError);
+    return commit(candidate, outError, "Set Start View");
 }
 LightSwitchSet WorldDocument::GetLightSwitches() const
 {
@@ -1824,7 +1850,7 @@ bool WorldDocument::SetLightSwitches(const LightSwitchSet& switches,
         }
         candidate.insert(QStringLiteral("disabled_lights"), entries);
     }
-    return Commit(candidate, outError);
+    return commit(candidate, outError, "Switch Lights");
 }
 QJsonObject WorldDocument::ScenePlacement(const QJsonObject& entity) const
 {
@@ -1973,12 +1999,12 @@ QByteArray WorldDocument::Encode() const
 void WorldDocument::AcknowledgeSave()
 {
     Saved_ = Draft_;
-    History_.BreakGroup();
+    mHistory.BreakGroup();
 }
 void WorldDocument::Discard()
 {
     Draft_ = Saved_;
-    History_.Reset();
+    mHistory.Reset();
 }
 bool WorldDocument::ParseValue(const QJsonObject& p, const QString& text, QJsonValue& value, QString& error)
 {

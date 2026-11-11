@@ -8,9 +8,8 @@
 #include "raster.h"
 #include "raster_test_readiness.h"
 
-#include <ludus/foundation/containers/borrowed_view.hpp>
-
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/graph.h>
@@ -22,9 +21,6 @@
 #    include <ludus/graphics/rhi/gpu_scope.h>
 #    include <string_view>
 #endif
-
-#include <chrono>
-#include <thread>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

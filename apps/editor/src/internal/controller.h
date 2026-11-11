@@ -101,6 +101,10 @@ struct PlaySnapshot
     bool TuningCanRedo = false;
 };
 
+/// Undo history name of a project-settings edit from before to after: the field that changed ("Rename Project",
+/// "Change Build Preset", ...), or "Edit Project Settings" when several fields changed.
+[[nodiscard]] const char* GetProjectEditName(const ProjectDescriptor& before, const ProjectDescriptor& after);
+
 class EditorController : public QObject
 {
     Q_OBJECT
@@ -147,8 +151,15 @@ public:
     void EditDraft(const ProjectDescriptor& draft, bool shouldMerge = false);
     void UndoProjectEdit();
     void RedoProjectEdit();
+    /// Undo or redo to project-settings history position `cursor` in one step; false leaves the draft as is.
+    [[nodiscard]] bool JumpToProjectHistory(foundation::usize cursor);
     [[nodiscard]] bool CanUndoProject() const;
     [[nodiscard]] bool CanRedoProject() const;
+    /// The project-settings undo history with its command names, for presentation.
+    [[nodiscard]] const DocumentHistory<ProjectDescriptor>& GetProjectHistory() const noexcept
+    {
+        return ProjectHistory_;
+    }
     [[nodiscard]] uint64 ProjectRevision() const noexcept
     {
         return ProjectHistory_.Revision();

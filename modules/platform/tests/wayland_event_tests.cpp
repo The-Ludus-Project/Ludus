@@ -1,15 +1,18 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/native_window.h>
 #include <ludus/platform/wayland/window.h>
 
-#include <chrono>
 #include <cstdlib>
 
 #include <catch2/catch_test_macros.hpp>
 #include <wayland-client.h>
 #include <xdg-shell-client-protocol.h>
+
+namespace timing = ludus::foundation::time;
 
 namespace
 {
@@ -47,8 +50,9 @@ TEST_CASE("Wayland event pumping progresses without incoming events", "[platform
     REQUIRE(callback != nullptr);
     const wl_callback_listener listener{ .done = onSyncDone };
     REQUIRE(wl_callback_add_listener(callback, &listener, &syncDone) == 0);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (syncDone == false && std::chrono::steady_clock::now() < deadline)
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(2)) == timing::TimeStatus::Ok);
+    while (syncDone == false && deadline.IsExpired(timing::Now()) == false)
     {
         REQUIRE(window->HandleEvent({}));
     }

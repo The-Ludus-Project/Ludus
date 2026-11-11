@@ -1,9 +1,9 @@
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/threading/worker_queue.hpp>
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
-#include <thread>
 
 using namespace ludus::foundation;
 namespace threading = ludus::foundation::threading;
@@ -16,7 +16,7 @@ struct Context final
     std::atomic<uint32> Executed{0};
     uint32 Completed = 0;
     bool IsCompletionOnOwner = true;
-    std::thread::id Owner = std::this_thread::get_id();
+    threading::ThreadId Owner = threading::GetCallingThreadId();
 };
 struct ReleaseGuard final
 {
@@ -30,7 +30,7 @@ struct ReleaseGuard final
 void Execute(void* contextOrNull) noexcept
 {
     Context& context = *static_cast<Context*>(contextOrNull);
-    context.IsWorkerDistinct.store(std::this_thread::get_id() != context.Owner);
+    context.IsWorkerDistinct.store((threading::GetCallingThreadId() == context.Owner) == false);
     while (context.CanExecute.load() == false)
     {
         context.CanExecute.wait(false);
@@ -40,7 +40,8 @@ void Execute(void* contextOrNull) noexcept
 void Complete(void* contextOrNull) noexcept
 {
     Context& context = *static_cast<Context*>(contextOrNull);
-    context.IsCompletionOnOwner = context.IsCompletionOnOwner == true && std::this_thread::get_id() == context.Owner;
+    context.IsCompletionOnOwner =
+        context.IsCompletionOnOwner == true && threading::GetCallingThreadId() == context.Owner;
     ++context.Completed;
 }
 } // namespace

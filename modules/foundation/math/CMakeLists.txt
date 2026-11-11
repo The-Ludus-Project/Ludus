@@ -144,7 +144,7 @@ if(LUDUS_BUILD_TESTS)
     target_include_directories(ludus_foundation_math_tests PRIVATE tests src)
     target_link_libraries(
         ludus_foundation_math_tests
-        PRIVATE
+        PRIVATE Ludus::FoundationThreading
             Ludus::FoundationMath
             Ludus::FoundationContainers
             Catch2::Catch2WithMain

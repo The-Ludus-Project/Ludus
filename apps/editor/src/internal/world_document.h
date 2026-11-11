@@ -47,6 +47,10 @@ public:
     static constexpr foundation::int64 MAX_ENTITY_BYTES = 4096;
     /// Largest encoded World document, compact JSON with its terminator.
     static constexpr foundation::int64 MAX_BYTES = MAX_ENTITIES * MAX_ENTITY_BYTES;
+    /// Edits Undo can revert; the oldest is dropped when another is committed.
+    static constexpr foundation::usize HISTORY_CAPACITY = 32;
+    /// Undo history of the World draft.
+    using History = DocumentHistory<QJsonObject, HISTORY_CAPACITY>;
     /// Largest world schema accepted from a project or the built-in adapter.
     static constexpr foundation::int64 MAX_SCHEMA_BYTES = 65536;
     [[nodiscard]] bool LoadSchema(const QByteArray& bytes, QString& error);
@@ -67,19 +71,30 @@ public:
     }
     [[nodiscard]] bool CanUndo() const noexcept
     {
-        return History_.CanUndo();
+        return mHistory.CanUndo();
     }
     [[nodiscard]] bool CanRedo() const noexcept
     {
-        return History_.CanRedo();
+        return mHistory.CanRedo();
     }
     [[nodiscard]] bool Undo() noexcept
     {
-        return History_.Undo(Draft_);
+        return mHistory.Undo(Draft_);
     }
     [[nodiscard]] bool Redo() noexcept
     {
-        return History_.Redo(Draft_);
+        return mHistory.Redo(Draft_);
+    }
+    /// Undo or redo every edit between the current state and history position `cursor` as one step.
+    /// All-or-nothing; see DocumentHistory::JumpTo.
+    [[nodiscard]] bool JumpToHistory(foundation::usize cursor) noexcept
+    {
+        return mHistory.JumpTo(Draft_, cursor);
+    }
+    /// The undo history with its command names, for presentation.
+    [[nodiscard]] LUDUS_INLINE const History& GetHistory() const noexcept
+    {
+        return mHistory;
     }
     [[nodiscard]] const QJsonObject& Draft() const noexcept
     {
@@ -123,11 +138,13 @@ public:
     /// fallback source. Initial components replace required defaults and validate
     /// atomically with creation; unknown components/fields reject the entire edit.
     /// Duplication points the copy's self-references at the copy.
+    /// @param commandName Undo history name with static storage duration, such as "Add Sun".
     [[nodiscard]] bool CreateEntity(const foundation::identity::EntropySource& entropy,
                                     QString& outError,
                                     const QString& name,
                                     QString& outId,
-                                    const QJsonObject& initialComponents = {});
+                                    const QJsonObject& initialComponents = {},
+                                    const char* commandName = "Create Entity");
     [[nodiscard]] bool DuplicateEntity(const foundation::identity::EntropySource& entropy,
                                        QString& outError,
                                        const QString& source,
@@ -149,11 +166,14 @@ public:
     [[nodiscard]] bool Detach(const QString& entity, QString& error, const QString& component);
     // Apply one inspector transaction, including the display name. Outputs and
     // history remain unchanged on failure. Unknown fields are rejected.
+    /// @param commandNameOrNull Undo history name with static storage duration, such as "Move Entity". Null
+    /// names the edit "Rename Entity" when only the display name changes, otherwise "Edit Properties".
     [[nodiscard]] bool Edit(const QString& entity,
                             const QJsonObject& components,
                             const QString& name,
                             QString& error,
-                            const QJsonObject* scene = nullptr);
+                            const QJsonObject* sceneOrNull = nullptr,
+                            const char* commandNameOrNull = nullptr);
     // Import is one history transaction. Cooked object IDs become entity IDs.
     // Version-2 records do not support the scene extension yet and are refused.
     /// @param generatedEntities Complete authored entity records the import adds beside the cooked
@@ -166,6 +186,10 @@ public:
     [[nodiscard]] bool MapSceneMaterial(const QString& source, const QString& replacement, QString& outError);
     /// Resolve an imported slot's inherited material through the World repair mapping.
     [[nodiscard]] QString GetInheritedMaterialId(const QJsonObject& placement) const;
+    /// Get the material resource bound by a World or cooked level placement.
+    /// Explicit project BRDF bindings take precedence over the level's imported-material mappings.
+    [[nodiscard]] static QString GetMaterialResourceId(const QJsonObject& placement, const QJsonObject& level);
+    [[nodiscard]] QString GetMaterialResourceId(const QJsonObject& placement) const;
     /// Shared parameters of this resolved material, or an empty object for imported defaults.
     [[nodiscard]] QJsonObject GetSharedCoating(const QString& material) const;
     /// Set the World-owned instance shared by inherited slots of this material as one undo step.
@@ -213,9 +237,10 @@ public:
     [[nodiscard]] bool Validate(const QJsonObject& candidate, QString& error) const;
     [[nodiscard]] QByteArray Encode() const;
     // Restored candidates must keep the open World's version and document identity.
-    [[nodiscard]] bool Restore(const QJsonObject& candidate, QString& error)
+    /// @param name Undo history name with static storage duration, such as "Paint Terrain".
+    [[nodiscard]] bool Restore(const QJsonObject& candidate, QString& outError, const char* name)
     {
-        return Commit(candidate, error);
+        return commit(candidate, outError, name);
     }
     void AcknowledgeSave();
     void Discard();
@@ -223,12 +248,12 @@ public:
     ParseValue(const QJsonObject& property, const QString& text, QJsonValue& value, QString& error);
 
 private:
-    [[nodiscard]] bool Commit(const QJsonObject& candidate, QString& error);
-    [[nodiscard]] bool ReplaceEntity(const QJsonObject& entity, QString& error);
+    [[nodiscard]] bool commit(const QJsonObject& candidate, QString& outError, const char* name);
+    [[nodiscard]] bool replaceEntity(const QJsonObject& entity, QString& outError, const char* name);
     QJsonObject Schema_;
     QJsonObject Draft_;
     QJsonObject Saved_;
-    DocumentHistory<QJsonObject, 32> History_;
+    History mHistory;
     bool Loaded_ = false;
     bool mIsBuiltInSchema = false;
 };

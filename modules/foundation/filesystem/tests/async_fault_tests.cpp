@@ -1,4 +1,5 @@
 #include <ludus/foundation/filesystem/async.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "internal/async_test_hooks.hpp"
 
@@ -7,7 +8,6 @@
 #include <atomic>
 #include <cstdlib>
 #include <new>
-#include <thread>
 
 #if defined(LUDUS_PLATFORM_LINUX)
 #    include <cerrno>
@@ -16,6 +16,7 @@
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::filesystem;
+namespace threading = ludus::foundation::threading;
 namespace
 {
 detail::AsyncFault gPoint = detail::AsyncFault::State;
@@ -171,7 +172,7 @@ TEST_CASE("Warm async submission cancellation delivery tracing and metrics alloc
     ReadCompletion completion;
     while (reader.Poll(completion) == false)
     {
-        std::this_thread::yield();
+        threading::YieldThread();
     }
     ReadTrace trace;
     REQUIRE(reader.PollTrace(trace));
@@ -187,7 +188,7 @@ TEST_CASE("Warm async submission cancellation delivery tracing and metrics alloc
         bool polled = false;
         while ((polled = reader.Poll(completion)) == false && AsyncNow() < until)
         {
-            std::this_thread::yield();
+            threading::YieldThread();
         }
         valid &= polled;
         valid &= reader.PollTrace(trace);

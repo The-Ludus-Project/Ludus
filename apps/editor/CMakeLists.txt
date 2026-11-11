@@ -736,10 +736,14 @@ target_link_libraries(ludus_editor_render_graph_authoring
 # differs between the native editor and the browser scheduler test.
 ludus_editor_add_objects(ludus_editor_content
     src/internal/content_browser.h src/content_catalog_model.cpp src/content_import.cpp src/content_workspace.cpp
+    src/internal/content_types.h src/content_types.cpp src/content_filter.cpp src/content_asset_catalog.cpp
+    src/internal/content_thumbnails.h src/content_thumbnails.cpp
     src/internal/state_view.h src/state_view.cpp
     src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp)
+# Thumbnails decode cooked SceneFormat texture records; the scene catalog limits come from SceneCook's header only.
 target_link_libraries(ludus_editor_content PUBLIC ludus_editor_presentation Qt6::Core Qt6::Widgets
-    Ludus::AudioContent Ludus::FoundationMath ludus_stb_image)
+    Ludus::AudioContent Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
+    PRIVATE "$<COMPILE_ONLY:Ludus::SceneCook>")
 
 ludus_editor_add_objects(ludus_editor_project_explorer
     src/internal/project_explorer.h src/project_explorer.cpp
@@ -817,6 +821,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_workspace.h
     src/internal/world_lights_panel.h
     src/world_lights_panel.cpp
+    src/internal/world_materials_panel.h
+    src/world_materials_panel.cpp
     src/builtin_world.cpp
     src/internal/world_celestial_light.h src/world_celestial_light.cpp
     src/internal/world_earth_location.h src/world_earth_location.cpp
@@ -861,6 +867,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/main_window_project_files.cpp
     src/internal/command_palette.h
     src/command_palette.cpp
+    src/internal/edit_history.h
+    src/edit_history.cpp
     src/internal/options_dialog.h
     src/options_dialog.cpp
     src/internal/render_graph_build_settings.h
@@ -1253,6 +1261,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
         tests/world_light_switch_tests.cpp
+        tests/world_properties_layout_tests.cpp
         tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
@@ -1288,6 +1297,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/timing_view_tests.cpp
         tests/controller_tests.cpp
         tests/document_history_tests.cpp
+        tests/edit_history_tests.cpp
         tests/document_interaction_tests.cpp
         tests/content_import_gate_tests.cpp
         tests/content_browser_tests.cpp

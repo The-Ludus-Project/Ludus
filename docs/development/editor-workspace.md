@@ -653,7 +653,12 @@ records the libraries that would provide them.
 The World hierarchy flanks the viewport inside the World document; the entity
 inspector is the Properties tool window. Component actions stay below the
 scrollable inspector fields: the component choice beside **Add Component**, and
-**Apply Changes** beside **Reset Fields**. Right-click the World viewport or
+**Apply Changes** beside **Reset Fields**. The inspector follows the tool window's
+width and never clips a field: X/Y/Z and colour fields share one line while their
+values fit and stack one per line when narrower, labels move above their fields
+when the label column would leave too little room, and texture, mesh and material
+references shorten in the middle (hover for the full text). Properties is never
+narrower than 224 pixels. Right-click the World viewport or
 entity list for **Add Entity**, **Duplicate**, and **Delete**. Right-click an
 entity to target it. Clicking a selected member of a group keeps the group
 selected, and clicking the background keeps the current selection. Right-drag
@@ -1043,6 +1048,36 @@ standard New/Open/Save bindings follow the platform; actions remain window-scope
 and use controller capability gates. Configurable mappings remain future work.
 See [art direction](../architecture/editor-art-direction.md) and
 [browser strategy](../architecture/editor-browser-strategy.md).
+
+## Undo history
+
+**Undo** and **Redo** name the edit they act on: the Edit menu reads
+**Undo Rename Entity**, and the toolbar tooltip reads *Undo Rename Entity (Ctrl+Z)*.
+With nothing to undo the item is disabled and its tooltip says so. Focused text
+fields read **Undo Typing**, and the script graph reads **Undo Script Edit**.
+
+When Undo or Redo changes the World, the Render Graph or Project Settings, a short
+note such as *Undid: Move Entity* appears at the bottom of the document area for
+about a second and a half. It never takes focus or blocks clicks. It fades in and
+out unless reduced motion is on, in which case it appears and disappears at once.
+Undo in a text field or code editor shows no note, because the change is already
+visible at the caret.
+
+**Edit → History** (also under View) opens the History tool window. It
+lists the active document's edits, oldest first, under an **Initial state** row.
+The current state is bold, undone edits are dimmed, and the caption counts the edits
+and how many are undone. Click a row, or select it and press Enter, to undo or redo
+straight to that state as one step; the note then reads, for example,
+*Undid 3 edits, back to: Create Entity*. A new edit after a jump clears the
+undone rows, as after Undo. Text fields and the script graph keep their own history,
+so the History window explains that instead of listing rows. The list refreshes
+only while the window is shown; recording an edit stores a name pointer and does
+no other work.
+
+Every edit records a name. Edits on the same field that merge into one undo step keep
+the first edit's name. A new command that commits to a document history passes a short
+verb-first name in title case (**Add Node**, **Change Build Preset**); edits without a
+name read **Edit**.
 
 ## Initial S2 document interactions
 
@@ -1782,6 +1817,20 @@ creates an unsaved sibling `<level-name>.world.json`; it preserves the original
 level and refuses an existing conversion destination. Failed conversion preserves
 the active World. Save publishes only the converted World document. Existing
 `.world.json` documents without scene data remain readable.
+
+### Browse a World's material resources
+
+Open **Materials** beside **Lights** in the World sidebar to see the imported
+material resources used by the current World. Expand a material to see its
+renderables. Double-click a renderable or press Enter on its row to select it in
+the entity hierarchy and viewport. Select a material or one of its renderables
+and choose **Copy Resource ID** to copy the full catalog ID.
+
+From an imported entity, choose **Show in Materials** in **Scene instance** to
+find its material and the other renderables using it. The list follows material
+mappings and explicit Project BRDF assignments. Renderables that override
+coating or roughness still appear under the same resource. Inspect an individual
+renderable to see its effective values.
 
 ### Edit a coated-diffuse material from World
 
@@ -2971,9 +3020,22 @@ See [rendering/platform obligations](../architecture/editor-gui-systems.md#rende
 
 ## S3 content browser
 
-The **Content** work area projects the saved `content/catalog.json` into a
-searchable table of resource IDs, kinds and paths. Search is case-insensitive
-and checks all three columns. Selected rows retain their resource IDs, so filtering,
+The **Content** work area projects the saved audio `content/catalog.json` and
+the cooked scene asset catalog `assets/catalog.json` into one table of names,
+types, operation status and paths. Textures, materials, meshes, scenes,
+lighting and licences appear beside audio sources, sounds, music and cooked
+geometry; a material shows its source material name. A file watcher refreshes
+the list a quarter of a second after either catalog changes, so a recook from
+the command line appears without pressing **Refresh**.
+
+Search is live and case-insensitive. Every space-separated word must appear in
+the name, resource ID, type name or path, so `brick wall` finds the material
+named "Red brick wall" and `.wav` finds audio sources. The type chips under the
+search box (**Textures**, **Materials**, **Meshes**, **Scenes**, **Audio**,
+**Other**) narrow the list: none checked shows every type, and each checked chip
+adds its category. Each chip shows how many rows match the current search, and
+a chip with nothing to add is disabled. When nothing matches, the list says so
+instead of going blank. Selected rows retain their resource IDs, so filtering,
 sorting and refreshing cannot reinterpret a row number as another resource. Hidden selections
 are restored when their ID becomes visible again. Unchanged refreshes preserve
 the model and focused search buffer; changed paths update their roles. Structural
@@ -3028,13 +3090,44 @@ view: population, 20 searches (p50/p95), and stable-ID lookup. The optional-edit
 CI records host/OS/architecture, Qt version and the Development profile in its
 `editor-content-scale` artifact. This is a reproducible model baseline, not a
 claim that larger catalogs are admitted or that native scrolling/accessibility
-has been qualified. Native input/scroll measurements, thumbnail budgets and
-non-audio importers remain follow-up work.
+has been qualified. Native input/scroll measurements and non-audio importers in
+the browser remain follow-up work. The `[content][thumbnail][scale]` fixture
+checks that a 5,000-row list generates thumbnails only for the rows it paints.
+
+Rows draw a thumbnail where one is cheap to make from the cooked bytes alone:
+textures show a box-filtered copy of their RGBA8 texels over a checkerboard where
+they are translucent, and materials show a sphere lit by one key light with their
+base colour texture, roughness, metalness and emission. Every other type shows
+its typed icon. Thumbnails are requested only by rows the view actually paints,
+generated on a private pool of two worker threads (one request per event loop
+turn on the browser), and kept in a 16 MiB cache keyed by resource ID and
+artifact key. A recook changes the key, so the old thumbnail is never shown and
+an unchanged asset is never redrawn. The waiting queue holds at most 256
+requests and drops the oldest first, because those rows have scrolled away.
+Failures are cached per key and the row keeps its icon. Texture decoding reads
+only the texel rows it samples and admits SceneFormat's 4096 texel limit.
+
+Imports queue: **Import** while another import runs adds the file to the queue,
+and its row appears at once as *Queued*. The running import reports its stage
+(waiting, reading source, validating dependencies, checking for changes,
+publishing) and a fraction from the worker's import gate. The row's status
+column shows the stage and percentage over a thin progress bar, and the strip
+under the list shows
+"Importing 2 of 3", the resource ID, the stage and the overall fraction across
+the batch. A failed import keeps its row with *Failed:* and the worker's reason,
+the problem panel names the resource and offers **Retry import**, and the
+**Retry import** button and the row's context menu retry the same file and ID
+(the context menu can also dismiss the failure). Cancel stops the running
+import and drops the queue. Cooking scene assets stays in the C++ engine; the
+browser only reads its published catalog and artifacts.
 
 Regressions exercise immutable reimport, malformed source rejection, saved-loop
 constraints, dependency/catalog conflicts, cancellation before publication,
 late-cancel semantics, ID selection across filtering, unchanged-role updates,
-stale operation/project results, GUI-owned completion and shutdown. CI runs
+stale operation/project results, GUI-owned completion and shutdown, search
+terms and type chips, texture and material thumbnails, thumbnail cache keys,
+failures and queue limits, scene catalog listing, queued import progress, and
+failure and retry. CI runs
 those fixtures under Clang 18 analysis and ASan/UBSan.
 
 ## The project descriptor (version 1)
@@ -3268,8 +3361,8 @@ implement the path rules.
 
 ## Editor icons
 
-The outline icons for the toolbars, Project Explorer, Error List and tool window tabs are taken
-unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
+The outline icons for the toolbars, Project Explorer, Error List, content types and tool
+window tabs are taken unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
 `2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
 [lucide-icons/lucide](https://github.com/lucide-icons/lucide).
 Thanks to the Lucide authors for these drawings. Lucide is ISC licensed; some

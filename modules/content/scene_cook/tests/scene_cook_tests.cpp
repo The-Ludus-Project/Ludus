@@ -9,10 +9,10 @@
 #include "scratch_directory.h"
 
 #include <ludus/foundation/parsing/json.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +27,7 @@ namespace content = ludus::content;
 namespace foundation = ludus::foundation;
 namespace detail = ludus::content::scene_cook::detail;
 using namespace ludus::content::scene_cook;
+namespace timing = ludus::foundation::time;
 
 constexpr std::string_view GOLDENS = LUDUS_SCENE_GOLDENS_DIR;
 
@@ -229,14 +230,15 @@ TEST_CASE("ByteWriter appends of a large bundle stay linear", "[scene_cook]")
     foundation::Array<uint8> bytes;
     detail::ByteWriter writer(bytes);
     constexpr usize FLOAT_COUNT = usize{16} << 20U; // 64 MiB of float32
-    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    const timing::Timestamp start = timing::Now();
     for (usize index = 0; index < FLOAT_COUNT; ++index)
     {
         writer.AppendFloat32(static_cast<float64>(index));
     }
-    const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - start;
+    timing::Duration elapsed;
+    REQUIRE(timing::TryElapsed(start, timing::Now(), elapsed) == timing::TimeStatus::Ok);
     REQUIRE(writer.IsOk() == true);
     CHECK(bytes.GetSize() == FLOAT_COUNT * sizeof(float32));
     // Linear appends take well under a second even in sanitizer builds; quadratic growth takes hours.
-    CHECK(elapsed < std::chrono::seconds(30));
+    CHECK(elapsed.Nanoseconds < timing::Seconds(30).Nanoseconds);
 }

@@ -2076,6 +2076,16 @@ void RendererWorkspace::Redo()
     }
 }
 
+bool RendererWorkspace::JumpToHistory(foundation::int32 cursor)
+{
+    if (cursor < 0 || mDocument.JumpToHistory(static_cast<foundation::usize>(cursor)) == false)
+    {
+        return false;
+    }
+    restoreSourceHistory();
+    return true;
+}
+
 void RendererWorkspace::restoreSourceHistory()
 {
     mSourceEditDebounce.stop();

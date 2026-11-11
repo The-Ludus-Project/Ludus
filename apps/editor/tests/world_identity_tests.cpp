@@ -243,11 +243,11 @@ TEST_CASE("Version-2 Worlds reject invalid identities, legacy references and imp
 
     // An open document keeps its version and AssetId; a version-1 recovery cannot replace it.
     WorldDocument version1 = OpenStarter(StarterVersion1());
-    CHECK_FALSE(document.Restore(version1.Draft(), error));
+    CHECK_FALSE(document.Restore(version1.Draft(), error, "Restore World"));
     QJsonObject otherDocument = valid;
     otherDocument.insert(QStringLiteral("document"), QStringLiteral("6b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e"));
-    CHECK_FALSE(document.Restore(otherDocument, error));
-    CHECK_FALSE(version1.Restore(valid, error));
+    CHECK_FALSE(document.Restore(otherDocument, error, "Restore World"));
+    CHECK_FALSE(version1.Restore(valid, error, "Restore World"));
     CHECK_FALSE(document.ImportScene(QJsonObject{{QStringLiteral("objects"), QJsonArray{}}}, error));
     CHECK(document.Draft() == before);
     CHECK_FALSE(document.CanUndo());

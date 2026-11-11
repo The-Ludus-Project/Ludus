@@ -1,6 +1,9 @@
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
@@ -10,16 +13,16 @@
 
 #include "internal/d3d12_device.h"
 
-#include <chrono>
 #include <climits>
 #include <string_view>
-#include <thread>
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
 namespace d3d12 = rhi::backend::d3d12;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 constexpr uint32 WIDTH = 32;
@@ -141,7 +144,8 @@ TEST_CASE("Direct3D 12 frame and pass timestamps follow submission fences", "[rh
         REQUIRE(rhi::BeginFrame(device, session.Surface) == rhi::DeviceStatus::Ready);
         REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
     }
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
     do
     {
         REQUIRE(rhi::GetGpuTiming(device, frame) == rhi::RasterStatus::Ready);
@@ -150,8 +154,8 @@ TEST_CASE("Direct3D 12 frame and pass timestamps follow submission fences", "[rh
         {
             break;
         }
-        std::this_thread::yield();
-    } while (std::chrono::steady_clock::now() < deadline);
+        threading::YieldThread();
+    } while (deadline.IsExpired(timing::Now()) == false);
     CheckDuration(frame);
     REQUIRE(passes.State == rhi::GpuTimingState::Available);
     REQUIRE(passes.Count == 1);

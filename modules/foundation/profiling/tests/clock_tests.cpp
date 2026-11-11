@@ -1,13 +1,14 @@
 #include <ludus/foundation/profiling/clock.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <thread>
-
 using namespace ludus::foundation::profiling;
+namespace threading = ludus::foundation::threading;
 using ludus::foundation::uint64;
 
 // Gate G3: the shared clock must be monotonic, non-decreasing, and produce
@@ -48,12 +49,11 @@ TEST_CASE("clock is non-decreasing across threads reading concurrently", "[profi
 {
     // Not a cross-core-ordering proof (that is gate C7); this only asserts each
     // thread sees a monotonic sequence and no read faults under contention.
-    constexpr int kThreads = 4;
-    ludus::foundation::Array<std::thread> threads;
-    threads.EnsureCapacity(kThreads);
-    for (int t = 0; t < kThreads; ++t)
+    constexpr ludus::foundation::usize THREAD_COUNT = 4;
+    ludus::foundation::StaticArray<threading::Thread, THREAD_COUNT> threads;
+    for (threading::Thread& thread : threads)
     {
-        threads.AddInPlace([] {
+        REQUIRE(thread.Start([] {
             uint64 previous = NowTicks();
             for (int i = 0; i < 20000; ++i)
             {
@@ -61,11 +61,11 @@ TEST_CASE("clock is non-decreasing across threads reading concurrently", "[profi
                 REQUIRE(now >= previous);
                 previous = now;
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (auto& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
 }
 

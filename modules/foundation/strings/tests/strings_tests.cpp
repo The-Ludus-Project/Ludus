@@ -8,6 +8,7 @@
 #include <ludus/foundation/strings/string.hpp>
 #include <ludus/foundation/strings/string_table.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "internal/reference_count.hpp"
 #include "internal/string_table_state.hpp"
@@ -19,7 +20,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -27,6 +27,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation;
+namespace threading = ludus::foundation::threading;
 
 namespace ludus::foundation
 {
@@ -265,20 +266,20 @@ TEST_CASE("shared strings copy without allocation and release through the origin
         REQUIRE(CreateShared(value.GetView(), heap.Domain, independent) == StringStatus::Ok);
         REQUIRE(independent == value);
         REQUIRE(independent.GetData() != value.GetData());
-        std::thread threads[4];
-        for (auto& thread : threads)
+        threading::Thread threads[4];
+        for (threading::Thread& thread : threads)
         {
-            thread = std::thread([copy]() {
+            REQUIRE(thread.Start([copy]() {
                 for (usize i = 0; i < 10000; ++i)
                 {
                     SharedString local = copy;
                     local = {};
                 }
-            });
+            }) == threading::ThreadStatus::Ok);
         }
-        for (auto& thread : threads)
+        for (threading::Thread& thread : threads)
         {
-            thread.join();
+            REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
         }
         REQUIRE(heap.Allocations == 2);
         String mutableCopy(heap.Domain);
@@ -648,10 +649,10 @@ TEST_CASE("tables serialize mutations and frozen reads need no allocations", "[s
     StringTable table;
     REQUIRE(CreateTable({}, heap.Domain, table) == StringStatus::Ok);
     std::atomic<bool> good{true};
-    std::thread threads[4];
-    for (auto& thread : threads)
+    threading::Thread threads[4];
+    for (threading::Thread& thread : threads)
     {
-        thread = std::thread([&]() {
+        REQUIRE(thread.Start([&]() {
             for (usize i = 0; i < 200; ++i)
             {
                 NameId id;
@@ -662,20 +663,20 @@ TEST_CASE("tables serialize mutations and frozen reads need no allocations", "[s
                     good = false;
                 }
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (auto& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     REQUIRE(good.load());
     REQUIRE(StringTableTestAccess::Count(table) == 201);
     FrozenStringTable frozen;
     REQUIRE(table.TryFreeze(frozen) == StringStatus::Ok);
     const usize attempts = heap.Attempts;
-    for (auto& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread = std::thread([&]() {
+        REQUIRE(thread.Start([&]() {
             for (usize i = 0; i < 200; ++i)
             {
                 NameId id;
@@ -684,11 +685,11 @@ TEST_CASE("tables serialize mutations and frozen reads need no allocations", "[s
                     good = false;
                 }
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (auto& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     REQUIRE(good.load());
     REQUIRE(heap.Attempts == attempts);

@@ -1,16 +1,17 @@
 #include <ludus/foundation/identity/lifetime.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "internal/lifetime_source.hpp"
 
 #include <array>
 #include <atomic>
-#include <thread>
 #include <utility>
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::identity;
+namespace threading = ludus::foundation::threading;
 
 static_assert(noexcept(TryIssueLifetimeId(std::declval<uint64&>())));
 
@@ -64,11 +65,11 @@ TEST_CASE("concurrent issuance never repeats a token", "[identity][lifetime]")
     std::atomic<uint64> next{1};
     static std::array<std::array<uint64, TOKENS_PER_THREAD>, THREAD_COUNT> issued{};
     std::atomic<bool> hasFailed{false};
-    std::array<std::thread, THREAD_COUNT> threads;
+    std::array<threading::Thread, THREAD_COUNT> threads;
     for (usize t = 0; t < THREAD_COUNT; ++t)
     {
         // Workers report through an atomic; Catch assertions stay on the test thread.
-        threads[t] = std::thread([&next, &hasFailed, &tokens = issued[t]] {
+        REQUIRE(threads[t].Start([&next, &hasFailed, &tokens = issued[t]] {
             for (uint64& token : tokens)
             {
                 if (internal::TryIssueLifetimeIdFrom(next, token) != LifetimeIdStatus::Success)
@@ -77,11 +78,11 @@ TEST_CASE("concurrent issuance never repeats a token", "[identity][lifetime]")
                     return;
                 }
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (std::thread& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     REQUIRE(hasFailed.load() == false);
     // Tokens are 1..TOKEN_COUNT; each must be issued exactly once.

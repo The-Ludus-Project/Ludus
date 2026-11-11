@@ -1,15 +1,17 @@
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
-
-#include <chrono>
-#include <thread>
 
 #include <catch2/catch_test_macros.hpp>
 
 // Identical public transfer contracts and exact bytes on D3D12, Vulkan and Metal.
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 constexpr uint32 WIDTH = 8;
@@ -67,12 +69,12 @@ struct TransferDevice final
 template <typename Ticket>
 void RequireComplete(rhi::DeviceHandle device, Ticket ticket)
 {
-    const std::chrono::steady_clock::time_point deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(POLL_SECONDS);
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(POLL_SECONDS)) == timing::TimeStatus::Ok);
     rhi::RasterStatus status = rhi::GetStatus(device, ticket);
-    while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
     {
-        std::this_thread::yield();
+        threading::YieldThread();
         status = rhi::GetStatus(device, ticket);
     }
     REQUIRE(status == rhi::RasterStatus::Ready);

@@ -16,13 +16,13 @@
 #include "renderer_shadow.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -31,6 +31,7 @@
 namespace rhi = ludus::graphics::rhi;
 namespace rr = ludus::graphics::renderer;
 using namespace ludus::foundation;
+namespace timing = ludus::foundation::time;
 TEST_CASE("L0 optimized packets match unsorted direct pixels with depth, errors and painter overlays",
           "[renderer][gpu]")
 {
@@ -1174,10 +1175,7 @@ TEST_CASE("L5 clustered lighting matches full-list pixels with many objects and 
         REQUIRE(rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready);
         std::printf("L5BACKEND,%u\n", static_cast<uint32>(info.Startup.SelectedBackend));
     }
-    using Clock = std::chrono::steady_clock;
-    const auto ns = [](Clock::time_point start) {
-        return static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
-    };
+    const auto ns = [](timing::Timestamp start) { return timing::Now().Nanoseconds - start.Nanoseconds; };
     for (uint32 scenario = 0; scenario < 3; ++scenario)
     {
         Array<uint8> images[3];
@@ -1209,7 +1207,7 @@ TEST_CASE("L5 clustered lighting matches full-list pixels with many objects and 
                 warming = renderer.GetStatus(scene.Program);
             }
             REQUIRE(warming == rhi::RasterStatus::Ready);
-            const auto setupStart = Clock::now();
+            const timing::Timestamp setupStart = timing::Now();
             auto advanced = scene.Advance(renderer, device, surface);
             for (usize i = 0; i < 1000000 && advanced == rhi::RasterStatus::Pending; ++i)
             {
@@ -1225,7 +1223,7 @@ TEST_CASE("L5 clustered lighting matches full-list pixels with many objects and 
             const uint32 frames = benchmark ? 72U : 2U;
             for (uint32 frame = 0; frame < frames; ++frame)
             {
-                const auto prepareStart = Clock::now();
+                const timing::Timestamp prepareStart = timing::Now();
                 rr::PreparedView replacement;
                 rr::ViewDescription view;
                 view.Reference = reference == 1;
@@ -1235,13 +1233,13 @@ TEST_CASE("L5 clustered lighting matches full-list pixels with many objects and 
                 REQUIRE(renderer.Release(scene.View) == rhi::RasterStatus::Ready);
                 scene.View = replacement;
                 const auto prepareNs = ns(prepareStart);
-                const auto recordStart = Clock::now();
+                const timing::Timestamp recordStart = timing::Now();
                 REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
                 REQUIRE(scene.Draw(renderer) == rhi::RasterStatus::Ready);
                 rhi::SubmissionToken completion;
                 REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
                 const auto recordNs = ns(recordStart);
-                const auto waitStart = Clock::now();
+                const timing::Timestamp waitStart = timing::Now();
                 REQUIRE(rhi::backend::ReadHeadlessPixels({images[reference].GetData(), images[reference].GetSize()}));
                 const auto waitNs = ns(waitStart);
                 if (benchmark && frame >= 8)
@@ -1398,11 +1396,7 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
     }
     if (isBenchmark)
     {
-        using Clock = std::chrono::steady_clock;
-        const auto ns = [](Clock::time_point start) {
-            return static_cast<uint64>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
-        };
+        const auto ns = [](timing::Timestamp start) { return timing::Now().Nanoseconds - start.Nanoseconds; };
         // The pass cost is the difference from the same frame without a grid; both include clear and readback.
         rr::PreparedView hidden;
         rr::ViewReport hiddenReport;
@@ -1422,7 +1416,7 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
             uint64 total = 0;
             for (uint32 frame = 0; frame < GRID_BENCHMARK_FRAMES; ++frame)
             {
-                const Clock::time_point start = Clock::now();
+                const timing::Timestamp start = timing::Now();
                 rhi::SubmissionToken completion;
                 REQUIRE(variant.Renderer->Submit(variant.View, surface, completion) == rhi::RasterStatus::Ready);
                 REQUIRE(rhi::backend::ReadHeadlessPixels({images[0].GetData(), images[0].GetSize()}));

@@ -193,7 +193,7 @@ if(LUDUS_BUILD_TESTS AND TARGET ludus-shader-worker)
     find_package(Catch2 3 REQUIRED CONFIG)
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     add_executable(ludus_shader_compiler_tests tests/compiler_tests.cpp)
-    target_link_libraries(ludus_shader_compiler_tests PRIVATE Ludus::ShaderCompiler Catch2::Catch2WithMain)
+    target_link_libraries(ludus_shader_compiler_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::ShaderCompiler Catch2::Catch2WithMain)
     if(WIN32)
         # Both executables build into this directory, where the worker deploys Slang and DXC.
         add_dependencies(ludus_shader_compiler_tests ludus-shader-worker)

@@ -3,7 +3,7 @@ if(LUDUS_BUILD_MEMORY_BENCHMARKS)
     add_executable(ludus_memory_bench main.cpp)
     target_link_libraries(
         ludus_memory_bench
-        PRIVATE
+        PRIVATE Ludus::FoundationThreading
             Ludus::FoundationBase
             Ludus::FoundationContainers
             Ludus::FoundationMemory

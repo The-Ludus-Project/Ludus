@@ -550,6 +550,13 @@ It applies to production code in `modules/`, `apps/`, and `examples/`.
   regression from the budget, exclude compilations, or increase a limit to
   avoid implementing a cheaper Ludus operation. Compare uncached profiles with
   the same compiler, test graph and concurrency; preserve assertion diagnostics.
+- Do not include `<thread>` or `<chrono>` in tests, benchmarks, tools or new
+  engine code: on libstdc++ both pull `<format>` into every including
+  translation unit. Use `Thread`, `SleepFor`, `YieldThread` and
+  `GetCallingThreadId` from `<ludus/foundation/threading/thread.hpp>` with
+  FoundationTime's `Now`, `Deadline`, `Seconds`, `Milliseconds` and
+  `Microseconds`. The changed-source gate rejects new includes outside the
+  ADR 0003 owners; whether a wait should poll at all remains a review question.
 - Build time is budgeted, not vibes. `config/build_budget.json` sets a per-header
   average parse-time budget; the `Build-time budget` CI job (and
   `./scripts/check-build-budget`) fails if a project header exceeds it. If a build
