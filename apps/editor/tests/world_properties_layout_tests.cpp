@@ -98,15 +98,18 @@ void CreateImportedWorld(const QString& root, const QString& path, const QString
 
 void AttachComponent(QWidget& inoutProperties, const QString& component)
 {
+    INFO(component.toStdString());
+    QPushButton* attachOrNull = inoutProperties.findChild<QPushButton*>(QStringLiteral("worldAttach"));
+    REQUIRE(attachOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([attachOrNull]() { return attachOrNull->isEnabled() == true; },
+                            SETTLE_TIMEOUT_MILLISECONDS) == true);
     QComboBox* choicesOrNull = inoutProperties.findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
     REQUIRE(choicesOrNull != nullptr);
     const int32 index = choicesOrNull->findData(component);
     REQUIRE(index >= 0);
     choicesOrNull->setCurrentIndex(index);
-    QPushButton* attachOrNull = inoutProperties.findChild<QPushButton*>(QStringLiteral("worldAttach"));
-    REQUIRE(attachOrNull != nullptr);
     attachOrNull->click();
-    QTest::qWait(SETTLE_MILLISECONDS);
+    REQUIRE(choicesOrNull->findData(component) < 0);
 }
 
 QString Describe(const QWidget& widget)
