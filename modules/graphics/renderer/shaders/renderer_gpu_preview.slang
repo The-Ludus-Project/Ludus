@@ -38,7 +38,7 @@ LUDUS_SHADER_BINDING(0) cbuffer Parameters
                          // reserved
     uint4 Tile;          // dispatched pixel region: origin x, y, then exclusive end x, y within Dimensions.xy
 };
-LUDUS_SHADER_BINDING(1) StructuredBuffer<uint4> sceneWords;
+LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_SCENE_BINDING) StructuredBuffer<uint4> sceneWords;
 float4 SceneValue(uint index)
 {
     return asfloat(sceneWords[index]);
