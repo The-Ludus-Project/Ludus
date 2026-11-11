@@ -353,9 +353,12 @@ TEST_CASE("Project graph resolution selects named packages and keeps libraries u
           "[editor][render-graph]")
 {
     QTemporaryDir project;
-    RendererWorkspace workspace({});
-    workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    {
+        RendererWorkspace workspace({});
+        workspace.SetProject(project.path(), 1);
+        REQUIRE(workspace.CustomizeBuiltIn() == true);
+    }
+    // Close the first workspace and release its directory watches before moving the package.
     const QDir graphs(QDir(project.path()).filePath(QStringLiteral("graphs")));
     REQUIRE(QDir().rename(graphs.filePath(QStringLiteral("Main")), graphs.filePath(QStringLiteral("Other"))) == true);
     RendererWorkspace reopened({});

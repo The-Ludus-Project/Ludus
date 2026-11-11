@@ -1552,7 +1552,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
                 ENVIRONMENT "${editor_test_environment}" RESOURCE_LOCK ludus_editor)
         endforeach()
     endfunction()
-    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor" "~[reference-compute]")
+    set(editor_shard_filter "~[reference-compute]")
+    if(WIN32)
+        # This journey runs in ludus_editor_hosted_play with a native viewport.
+        string(APPEND editor_shard_filter "~[native-hosted-frames]")
+    endif()
+    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor" "${editor_shard_filter}")
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)
         # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.
         get_target_property(editor_reference_case_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS)
