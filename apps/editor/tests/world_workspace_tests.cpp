@@ -43,7 +43,6 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
-#include <QDate>
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QDialog>
@@ -76,14 +75,13 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
-#include <QTime>
-#include <QTimeZone>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
@@ -3287,7 +3285,7 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     REQUIRE(reopened.Apply() == true);
     roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
     driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
-    dateTimeOrNull->setDateTime(QDateTime(QDate(2000, 1, 2), QTime(0, 0), QTimeZone::utc()));
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-02T00:00:00Z"), Qt::ISODate));
     REQUIRE(reopened.Apply() == true);
     REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
     CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
@@ -3315,7 +3313,7 @@ TEST_CASE("Earth preview time preserves the saved offset and copies the UTC cloc
     QPushButton* nowOrNull = time.findChild<QPushButton*>(QStringLiteral("worldEarthUseNow"));
     REQUIRE(dateTimeOrNull != nullptr);
     REQUIRE(nowOrNull != nullptr);
-    CHECK(dateTimeOrNull->dateTime() == QDateTime(QDate(2000, 1, 1), QTime(0, 0), QTimeZone::utc()));
+    CHECK(dateTimeOrNull->dateTime() == QDateTime::fromString(QStringLiteral("2000-01-01T00:00:00Z"), Qt::ISODate));
     CHECK(time.GetDaysSinceEpoch() == LEGACY_DAYS);
     CHECK(dateTimeOrNull->calendarPopup() == true);
 
@@ -4734,6 +4732,125 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
     checkMaterial(reopened, recipient, 0.75F);
     checkMaterial(reopened, donor, 0.35F);
     CHECK(Field(reopened, roughnessField)->text() == QStringLiteral("0.75"));
+    reopened.StopPreview();
+}
+
+TEST_CASE("World imports, inspects and maps closure programs across save, reopen and reimport",
+          "[editor][world][program]")
+{
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString block = directory.filePath(QStringLiteral("closure-program-block.luscene.json"));
+    REQUIRE(QFile::copy(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                            .filePath(QStringLiteral("tests/scenes/materials/closure-program-block.luscene.json")),
+                        block) == true);
+    const QString fibers = directory.filePath(QStringLiteral("fibers.pbrt"));
+    Write(fibers, QByteArrayLiteral(R"(LookAt 0 0 4 0 0 0 0 1 0
+Camera "perspective" "float fov" 55
+WorldBegin
+MakeNamedMaterial "Fiber" "string type" "hair" "float eta" 1.55
+NamedMaterial "Fiber"
+Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer indices" [0 1 2]
+)"));
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.ImportScene(block) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.ImportScene(fibers) == true);
+    WaitForValidatedScene(workspace);
+
+    const auto findObjects = [](const WorldWorkspace& view, format::MaterialModel model) {
+        QStringList ids;
+        const RenderScene& scene = GetLevel(view).PreviewScene();
+        for (const PreviewObject& object : scene.Objects)
+        {
+            const ludus::resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, object.Id);
+            if (materialOrNull != nullptr && materialOrNull->Scattering.Model == model)
+            {
+                ids.append(object.Id);
+            }
+        }
+        return ids;
+    };
+    const auto checkProgram = [](const WorldWorkspace& view, const QString& id) {
+        const RenderScene& scene = GetLevel(view).PreviewScene();
+        const ludus::resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, id);
+        REQUIRE(materialOrNull != nullptr);
+        CHECK(materialOrNull->Scattering.Model == format::MaterialModel::Program);
+        CHECK(format::IsMaterialProgramValid(materialOrNull->Program) == true);
+        CHECK(materialOrNull->Program.LobeCount == 3);
+        CHECK(materialOrNull->Program.Lobes[1].Operation == format::MaterialLobeOperation::Conductor);
+        CHECK(format::SupportsFixedDimensionReflection(materialOrNull->Scattering, materialOrNull->Program) == true);
+        // The World's renderer surfaces carry the program to every preview profile.
+        const PreviewSurface& surface = scene.Surfaces[GetPresentedObject(view, id).Surface];
+        CHECK(surface.Scattering.Model == format::MaterialModel::Program);
+        CHECK(surface.Program.LobeCount == 3);
+        CHECK(surface.HasUnresolvedMaterial == false);
+    };
+    const QStringList programs = findObjects(workspace, format::MaterialModel::Program);
+    REQUIRE(programs.size() == 1);
+    const QString& program = programs[0];
+    checkProgram(workspace, program);
+
+    PreviewViewport& viewport = GetLevel(workspace).GetViewport();
+    viewport.GetObjectInteraction().SelectionRequested(program);
+    const auto label = [&workspace](const QString& name) {
+        const QLabel* labelOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:") + name);
+        REQUIRE(labelOrNull != nullptr);
+        return labelOrNull->text();
+    };
+    CHECK(label(QStringLiteral("Model")) == QStringLiteral("Closure program"));
+    CHECK(label(QStringLiteral("Lobe 1")) == QStringLiteral("Diffuse"));
+    CHECK(label(QStringLiteral("Lobe 2")).startsWith(QStringLiteral("Conductor")) == true);
+    CHECK(label(QStringLiteral("Lobe 3")) == QStringLiteral("Cosine power 12"));
+    CHECK(label(QStringLiteral("Capabilities")) == QStringLiteral("Continuous reflection, fixed three-value sampler"));
+    CHECK(label(QStringLiteral("Metallic (program input)")) == QStringLiteral("0.7"));
+
+    // Map the unsupported PBRT material to the imported program.
+    const QStringList unsupported = findObjects(workspace, format::MaterialModel::Unresolved);
+    REQUIRE(unsupported.size() == 1);
+    viewport.GetObjectInteraction().SelectionRequested(unsupported[0]);
+    QComboBox* replacementsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldMaterialReplacement"));
+    REQUIRE(replacementsOrNull != nullptr);
+    const ludus::foundation::int32 choice =
+        replacementsOrNull->findText(QStringLiteral("Weathered gold"), Qt::MatchStartsWith);
+    REQUIRE(choice >= 0);
+    replacementsOrNull->setCurrentIndex(choice);
+    QPushButton* mapOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldMapMaterial"));
+    REQUIRE(mapOrNull != nullptr);
+    REQUIRE(mapOrNull->isEnabled() == true);
+    QTimer::singleShot(0, []() {
+        QMessageBox* dialogOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QPushButton* applyOrNull = dialogOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialMapping"));
+        REQUIRE(applyOrNull != nullptr);
+        applyOrNull->click();
+    });
+    mapOrNull->click();
+    WaitForValidatedScene(workspace);
+    checkProgram(workspace, unsupported[0]);
+    CHECK(findObjects(workspace, format::MaterialModel::Unresolved).isEmpty() == true);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    workspace.StopPreview();
+
+    WorldWorkspace reopened;
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkProgram(reopened, program);
+    checkProgram(reopened, unsupported[0]);
+    // Reimporting the scene keeps the program and the mapping.
+    REQUIRE(reopened.ImportScene(block) == true);
+    WaitForValidatedScene(reopened);
+    const QStringList reimported = findObjects(reopened, format::MaterialModel::Program);
+    CHECK(reimported.size() >= 2);
+    for (const QString& id : reimported)
+    {
+        checkProgram(reopened, id);
+    }
     reopened.StopPreview();
 }
 

@@ -166,8 +166,8 @@ rhi::RasterStatus GraphDisplayFrames::prepareCopy() noexcept
     description.Vertex = mVertex;
     description.Fragment = mFragment;
     description.Layout = mLayout;
-    description.Streams = streams.AsSpan();
-    description.Attributes = attributes.AsSpan();
+    description.Streams = {streams.GetData(), streams.GetSize()};
+    description.Attributes = {attributes.GetData(), attributes.GetSize()};
     description.Target = rhi::RasterTarget::Rgba8Unorm;
     status = rhi::CreateRasterPipeline(mDevice, description, mPipeline);
     mIsPrepared = IsAccepted(status);
@@ -262,7 +262,7 @@ rhi::RasterStatus GraphDisplayFrames::Copy(rhi::SurfaceHandle surface,
         }
         const StaticArray<rhi::RasterBindingResource, COPY_BINDING_COUNT> resources{
             {{ .Texture = mSourceView }, { .Binding = 1, .Sampler = mSampler }}};
-        status = rhi::CreateBindingSet(mDevice, mLayout, resources.AsSpan(), mBinding);
+        status = rhi::CreateBindingSet(mDevice, mLayout, {resources.GetData(), resources.GetSize()}, mBinding);
         if (status != rhi::RasterStatus::Ready)
         {
             releaseCopyBinding();
@@ -691,7 +691,7 @@ rhi::RasterStatus GraphDisplayFrames::beginCompose(int32 cleanIndex, int32 targe
     }
     const StaticArray<rhi::RasterBindingResource, COPY_BINDING_COUNT> resources{
         {{ .Texture = sourceView }, { .Binding = 1, .Sampler = mSampler }}};
-    status = rhi::CreateBindingSet(mDevice, mLayout, resources.AsSpan(), binding);
+    status = rhi::CreateBindingSet(mDevice, mLayout, {resources.GetData(), resources.GetSize()}, binding);
     if (status != rhi::RasterStatus::Ready)
     {
         release();

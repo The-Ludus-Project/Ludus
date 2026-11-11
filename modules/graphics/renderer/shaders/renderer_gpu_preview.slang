@@ -43,6 +43,7 @@ float4 SceneValue(uint index)
 {
     return asfloat(sceneWords[index]);
 }
+#include "material_program.slang"
 LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, compensation/error
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
 // An authored weighted estimator owns its numerator/denominator in persistent storage.
@@ -227,6 +228,7 @@ void Evaluate(float3 color,
                        float3(1),
                        float3(0),
                        1,
+                       0,
                        normalWorld,
                        viewWorld,
                        lightWorld,
@@ -738,6 +740,7 @@ void EvaluateScattering(float3 color,
                         float3 eta,
                         float3 extinction,
                         float conductorAlpha,
+                        uint programOffset,
                         float3 normalWorld,
                         float3 v,
                         float3 l,
@@ -750,6 +753,17 @@ void EvaluateScattering(float3 color,
     float nl = dot(normalWorld, l);
     if (nv <= 0 || nl <= 0)
         return;
+    if (model == MaterialModel::Program)
+    {
+        MaterialProgramInputs inputs;
+        inputs.BaseColor = color;
+        inputs.Roughness = roughness;
+        inputs.Metallic = metallic;
+        float4 evaluated = EvaluateMaterialProgram(programOffset, inputs, normalWorld, v, l);
+        outValue = evaluated.xyz;
+        outPdf = evaluated.w;
+        return;
+    }
     if (model == MaterialModel::ProjectBrdf)
     {
         float4 evaluated = EvaluateProjectBrdf(color, roughness, eta, extinction, nv, nl);
@@ -975,6 +989,7 @@ float3 Integrate(uint pixel, uint sample)
         float4 etaAndModel = ReadHitSurface(material, LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
         float4 extinctionAndAlpha = ReadHitSurface(material, LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
         MaterialModel model = MaterialModel(asuint(etaAndModel.w));
+        uint programOffset = asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD).w);
         if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD).w) != 0)
         {
             SurfaceParameters parameters =
@@ -1116,6 +1131,7 @@ float3 Integrate(uint pixel, uint sample)
                                etaAndModel.xyz,
                                extinctionAndAlpha.xyz,
                                extinctionAndAlpha.w,
+                               programOffset,
                                normalWorld,
                                viewDirectionWorld,
                                lightDirectionWorld,
@@ -1154,8 +1170,14 @@ float3 Integrate(uint pixel, uint sample)
         float3 samples = float3(Random01(pixel, sample, dimension + 3),
                                 Random01(pixel, sample, dimension + 4),
                                 Random01(pixel, sample, dimension + 5));
+        MaterialProgramInputs programInputs;
+        programInputs.BaseColor = color;
+        programInputs.Roughness = roughness;
+        programInputs.Metallic = metallic;
         float3 outgoingDirectionWorld =
-            model == MaterialModel::ProjectBrdf
+            model == MaterialModel::Program
+                ? SampleMaterialProgramDirection(programOffset, programInputs, normalWorld, viewDirectionWorld, samples)
+            : model == MaterialModel::ProjectBrdf
                 ? SampleProjectBrdfDirection(roughness,
                                              etaAndModel.xyz,
                                              extinctionAndAlpha.xyz,
@@ -1178,6 +1200,7 @@ float3 Integrate(uint pixel, uint sample)
                            etaAndModel.xyz,
                            extinctionAndAlpha.xyz,
                            extinctionAndAlpha.w,
+                           programOffset,
                            normalWorld,
                            viewDirectionWorld,
                            outgoingDirectionWorld,

@@ -141,7 +141,8 @@ Status RenderGraphDeferredProgram::Initialize(rhi::DeviceHandle device,
                                               const rhi::RasterShaderDescription& lighting,
                                               const rhi::RasterShaderDescription& depth) noexcept
 {
-    if (mIsInitialized == true || lighting.Bindings.size() != DEFERRED_BINDING_COUNT || depth.Bindings.size() != 1)
+    if (mIsInitialized == true || lighting.Bindings.GetSize() != DEFERRED_BINDING_COUNT ||
+        depth.Bindings.GetSize() != 1)
     {
         return Status::InvalidDescription;
     }
@@ -233,7 +234,11 @@ Status RenderGraphDeferredProgram::Poll() noexcept
         const StaticArray<rhi::RasterVertexStream, QUAD_STREAM_COUNT> streams{{{sizeof(math::Vector4), false}}};
         const StaticArray<rhi::RasterVertexAttribute, QUAD_STREAM_COUNT> attributes{
             {{0, 0, 0, rhi::RasterVertexFormat::Float4}}};
-        rhi::RasterPipelineDescription description{mVertex, mLighting, mLayout, streams.AsSpan(), attributes.AsSpan()};
+        rhi::RasterPipelineDescription description{mVertex,
+                                                   mLighting,
+                                                   mLayout,
+                                                   {streams.GetData(), streams.GetSize()},
+                                                   {attributes.GetData(), attributes.GetSize()}};
         description.Target = rhi::RasterTarget::Rgba8Unorm;
         description.Depth = true;
         description.DepthCompare = rhi::RasterDepthCompare::Always;
@@ -258,9 +263,15 @@ Status RenderGraphDeferredProgram::Poll() noexcept
 Status RenderGraphDeferredProgram::draw(rhi::RasterPipelineHandle pipeline, rhi::BindingSetHandle bindings) noexcept
 {
     const StaticArray<rhi::RasterVertexSlice, QUAD_STREAM_COUNT> vertices{{{mVertices, 0, QUAD_VERTEX_BYTES}}};
-    return rhi::DrawIndexed(
-        mDevice,
-        {pipeline, bindings, vertices.AsSpan(), mIndices, 0, QUAD_INDEX_COUNT, QUAD_VERTEX_COUNT, 1});
+    return rhi::DrawIndexed(mDevice,
+                            {pipeline,
+                             bindings,
+                             {vertices.GetData(), vertices.GetSize()},
+                             mIndices,
+                             0,
+                             QUAD_INDEX_COUNT,
+                             QUAD_VERTEX_COUNT,
+                             1});
 }
 
 RenderGraphDeferredTargets::~RenderGraphDeferredTargets() noexcept

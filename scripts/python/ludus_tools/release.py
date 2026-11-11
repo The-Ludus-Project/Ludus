@@ -45,6 +45,16 @@ def _source_state(root: Path) -> dict:
 
 def _publish_directory(staging: Path, destination: Path) -> None:
     """Native atomic no-replace rename; never expose an incomplete directory."""
+    if sys.platform == "win32":
+        # Python os.rename on Windows fails when the destination exists.
+        # https://docs.python.org/3/library/os.html#os.rename
+        try:
+            os.rename(staging, destination)
+        except FileExistsError:
+            fail("package destination already exists", "DestinationExists")
+        except OSError as exc:
+            fail(f"cannot atomically publish package: {exc}", "GenerationFailed")
+        return
     libc = ctypes.CDLL(None, use_errno=True)
     if sys.platform == "darwin":
         # Apple XNU sys/stdio.h, renamex_np(RENAME_EXCL=4): same-filesystem,

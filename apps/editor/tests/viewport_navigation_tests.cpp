@@ -650,6 +650,81 @@ TEST_CASE("Axis views look along world axes orthographically and keep the pivot 
     CHECK(TryGetEditorAxisView(controller.GetSample(), unchanged) == false);
 }
 
+TEST_CASE("Axis view pans stay in the plane across the viewed world axis", "[editor][navigation][axis-view]")
+{
+    const math::Aabb3 boundsWorld{{-10, -1, -10}, {10, 5, 10}};
+    const float32 deltaX = 37;
+    const float32 deltaY = -53;
+    const float32 heightLogical = 400;
+    const float32 aspect = 1.5F;
+    struct Expectation final
+    {
+        EditorAxisView View;
+        math::Vector3d AxisWorld;
+    };
+    for (const Expectation& expectation : {Expectation{EditorAxisView::Top, {0, 1, 0}},
+                                           Expectation{EditorAxisView::Bottom, {0, 1, 0}},
+                                           Expectation{EditorAxisView::Front, {0, 0, 1}},
+                                           Expectation{EditorAxisView::Back, {0, 0, 1}},
+                                           Expectation{EditorAxisView::Right, {1, 0, 0}},
+                                           Expectation{EditorAxisView::Left, {1, 0, 0}}})
+    {
+        INFO(GetEditorAxisViewLabel(expectation.View));
+        EditorCameraController controller;
+        REQUIRE(controller.TrySetOrbit({1, 2, 3}, {25, 20}, 4) == true);
+        REQUIRE(controller.TrySetAxisView(expectation.View, &boundsWorld) == true);
+        // Both passes pan the same view; the second first turns it about the viewed axis where the
+        // view allows it (Top and Bottom), so the screen axes no longer follow world axes.
+        for (const float32 turnPixels : {0.0F, 130.0F})
+        {
+            INFO(turnPixels);
+            if (turnPixels != 0)
+            {
+                REQUIRE(controller.TryRotate(turnPixels, 0, true) == true);
+            }
+            EditorAxisView found = EditorAxisView::Top;
+            if (TryGetEditorAxisView(controller.GetSample(), found) == false || found != expectation.View)
+            {
+                continue;
+            }
+            const camera::CameraSample before = controller.GetSample();
+            const math::Vector3d pivotBeforeWorld = controller.GetPivotWorld();
+            REQUIRE(controller.TryPan(deltaX, deltaY, heightLogical, aspect) == true);
+            const math::Vector3d travelWorld = controller.GetSample().Pose.Position - before.Pose.Position;
+            // Exactly no movement along the viewed axis, for the eye and for the orbit pivot.
+            CHECK(math::Dot(travelWorld, expectation.AxisWorld) == 0);
+            CHECK(math::Dot(controller.GetPivotWorld() - pivotBeforeWorld, expectation.AxisWorld) == 0);
+            // The scene still follows the pointer: the eye moves by the drag across the screen.
+            const float64 worldUnitsPerPixel = static_cast<float64>(
+                math::Max(before.Lens.VerticalSpan, before.Lens.MinimumVisibleWidth / aspect) / heightLogical);
+            const math::Vector3 rightWorld = math::Rotate(before.Pose.Orientation, {1, 0, 0});
+            const math::Vector3 upWorld = math::Rotate(before.Pose.Orientation, {0, 1, 0});
+            const float64 tolerance = 0.000001;
+            CHECK(math::Dot(travelWorld,
+                            math::Vector3d{static_cast<float64>(rightWorld.X),
+                                           static_cast<float64>(rightWorld.Y),
+                                           static_cast<float64>(rightWorld.Z)}) ==
+                  Catch::Approx(static_cast<float64>(-deltaX) * worldUnitsPerPixel).margin(tolerance));
+            CHECK(math::Dot(travelWorld,
+                            math::Vector3d{static_cast<float64>(upWorld.X),
+                                           static_cast<float64>(upWorld.Y),
+                                           static_cast<float64>(upWorld.Z)}) ==
+                  Catch::Approx(static_cast<float64>(deltaY) * worldUnitsPerPixel).margin(tolerance));
+            CHECK(controller.GetSample().Pose.Orientation == before.Pose.Orientation);
+        }
+    }
+    // The 0.1 degree tilt of Top is what a camera-local pan would leak along Y: an orthographic view
+    // just off the axis tolerance still pans along its own screen axes.
+    EditorCameraController tilted;
+    REQUIRE(tilted.TrySetAxisView(EditorAxisView::Top, &boundsWorld) == true);
+    REQUIRE(tilted.TryRotate(0, -20, true) == true);
+    EditorAxisView unchanged = EditorAxisView::Back;
+    REQUIRE(TryGetEditorAxisView(tilted.GetSample(), unchanged) == false);
+    const math::Vector3d tiltedBeforeWorld = tilted.GetSample().Pose.Position;
+    REQUIRE(tilted.TryPan(0, deltaY, heightLogical, aspect) == true);
+    CHECK(tilted.GetSample().Pose.Position.Y != tiltedBeforeWorld.Y);
+}
+
 TEST_CASE("Editor field of view stays in its admitted range and keeps the pose", "[editor][navigation][axis-view]")
 {
     EditorCameraController controller;

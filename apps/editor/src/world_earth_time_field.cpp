@@ -8,9 +8,12 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QTime>
-#include <QTimeZone>
 #include <QVBoxLayout>
 #include <QtGlobal>
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+#    include <QTimeZone>
+#endif
 
 namespace ludus::editor
 {
@@ -26,7 +29,14 @@ constexpr int64 MILLISECONDS_PER_DAY = 86'400'000;
 
 QDateTime GetEarthEpoch()
 {
-    return QDateTime(QDate(EPOCH_YEAR, 1, 1), QTime(EPOCH_HOUR_UTC, 0), QTimeZone::utc());
+    // Thanks to The Qt Company, "QTimeZone Class", lightweight time representations:
+    // https://doc.qt.io/qt-6/qtimezone.html#QTimeZone-1
+    // Qt 6.5 added the UTC constructor, which also works without timezone data on Wasm.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    return QDateTime(QDate(EPOCH_YEAR, 1, 1), QTime(EPOCH_HOUR_UTC, 0), QTimeZone(QTimeZone::UTC));
+#else
+    return QDateTime(QDate(EPOCH_YEAR, 1, 1), QTime(EPOCH_HOUR_UTC, 0), Qt::UTC);
+#endif
 }
 
 QDateTime ConvertDaysToUtc(float64 daysSinceEpoch)
@@ -44,7 +54,7 @@ WorldEarthTimeField::WorldEarthTimeField(float64 daysSinceEpoch, QWidget& inoutP
     mDateTime->setAccessibleName(QStringLiteral("Date and time (UTC)"));
     mDateTime->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-    mDateTime->setTimeZone(QTimeZone::utc());
+    mDateTime->setTimeZone(QTimeZone(QTimeZone::UTC));
 #else
     mDateTime->setTimeSpec(Qt::UTC);
 #endif

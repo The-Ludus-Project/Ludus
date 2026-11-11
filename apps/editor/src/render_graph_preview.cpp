@@ -240,6 +240,7 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         material.Metallic = source.Metallic;
         material.Roughness = source.Roughness;
         material.Scattering = source.Scattering;
+        material.Program = source.Program;
         material.Emission = source.Emission;
         material.IsEmissionTwoSided = source.IsEmissionTwoSided;
         material.NormalScale = source.NormalScale;

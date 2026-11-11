@@ -1,6 +1,7 @@
 #include "internal/preview_shader_build.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 
@@ -359,7 +360,7 @@ bool AreUniformMembersCompatible(const QJsonObject& type,
     {
         builtInCount += member.Binding == index ? 1 : 0;
     }
-    if (builtIn.UniformMembers.empty() == false && builtInCount != fields.size())
+    if (builtIn.UniformMembers.IsEmpty() == false && builtInCount != fields.size())
     {
         outReason = QStringLiteral("uniform buffer '%1' now has %2 members instead of %3")
                         .arg(name)
@@ -374,7 +375,7 @@ bool AreUniformMembersCompatible(const QJsonObject& type,
         const usize offset = static_cast<usize>(
             field.value(QStringLiteral("binding")).toObject().value(QStringLiteral("offset")).toInt());
         const rhi::RasterUniformShape shape = ReadUniformShape(field.value(QStringLiteral("type")).toObject());
-        bool isFound = builtIn.UniformMembers.empty() == true;
+        bool isFound = builtIn.UniformMembers.IsEmpty() == true;
         for (const rhi::RasterUniformMember& member : builtIn.UniformMembers)
         {
             if (member.Binding != index ||
@@ -783,7 +784,7 @@ bool IsPreviewShaderInterfaceCompatible(const QByteArray& reflection,
                 }
             }
         }
-        bool isSame = inputs.size() == static_cast<qsizetype>(builtIn.Inputs.size());
+        bool isSame = inputs.size() == static_cast<qsizetype>(builtIn.Inputs.GetSize());
         for (qsizetype i = 0; i < inputs.size() && isSame == true; ++i)
         {
             isSame = inputs[i].Location == builtIn.Inputs[static_cast<usize>(i)].Location &&
@@ -1085,10 +1086,10 @@ PreviewShaderBuildResult PreviewShaderBuilder::Build(PreviewShaderCompiler& inou
             isMetal == true
                 ? QByteArrayView(builtIn.Artifact.Msl.data(), static_cast<qsizetype>(builtIn.Artifact.Msl.size())) ==
                       QByteArrayView(stage.Artifact.Msl)
-                : builtIn.Artifact.Spirv.size() == static_cast<usize>(stage.Artifact.Spirv.size()) &&
-                      std::memcmp(builtIn.Artifact.Spirv.data(),
+                : builtIn.Artifact.Spirv.GetSize() == static_cast<usize>(stage.Artifact.Spirv.size()) &&
+                      std::memcmp(builtIn.Artifact.Spirv.GetDataOrNull(),
                                   stage.Artifact.Spirv.constData(),
-                                  builtIn.Artifact.Spirv.size_bytes()) == 0;
+                                  (builtIn.Artifact.Spirv.GetSize() * sizeof(uint32))) == 0;
         if (isBuiltIn == true)
         {
             continue;

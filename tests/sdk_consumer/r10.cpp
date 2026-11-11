@@ -5,10 +5,10 @@
 #include "r10write.h"
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/graph.h>
-#include <span>
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
 #    include <ludus/foundation/base/pointer.hpp>
@@ -80,7 +80,7 @@ bool Ready(T handle) noexcept
     return status == rhi::RasterStatus::Ready;
 }
 template <class T, usize N>
-std::span<const uint8> Bytes(const T (&array)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> Bytes(const T (&array)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(array), sizeof(array)};
 }

@@ -1,6 +1,7 @@
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -1013,11 +1014,11 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
                                            false,
                                            false,
                                            candidate->HasNativeRayQueries);
-                for (usize i = 0; i < description.Bindings.size(); ++i)
+                for (usize i = 0; i < description.Bindings.GetSize(); ++i)
                 {
                     candidate->Bindings[index][i] = description.Bindings[i];
                 }
-                const usize base = description.Bindings.size();
+                const usize base = description.Bindings.GetSize();
                 for (usize i = 0; i < candidate->StorageBufferCount; ++i)
                 {
                     const format::StorageBuffer& storage = candidate->StorageBuffers[i];
@@ -1042,7 +1043,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
                                                false,
                                                true,
                                                candidate->HasNativeRayQueries);
-                    for (usize i = base; i < description.Bindings.size(); ++i)
+                    for (usize i = base; i < description.Bindings.GetSize(); ++i)
                     {
                         candidate->Bindings[index][bindingCount++] = description.Bindings[i];
                     }
@@ -1394,7 +1395,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         }
         if (spirv.IsPresent == true)
         {
-            description.Artifact.Spirv = spirv.Words.AsSpan();
+            description.Artifact.Spirv = {spirv.Words.GetData(), spirv.Words.GetSize()};
             description.Artifact.SpirvEntry = spirv.Entry;
         }
         if (wgsl.IsPresent == true)
@@ -1404,7 +1405,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         }
         if (dxil.IsPresent == true)
         {
-            description.Artifact.Dxil = dxil.Binary;
+            description.Artifact.Dxil = {dxil.Binary.data(), dxil.Binary.size()};
             description.Artifact.DxilEntry = dxil.Entry;
         }
         if (glsl.IsPresent == true)
