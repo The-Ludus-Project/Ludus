@@ -444,6 +444,11 @@ class RenderGraphTests(unittest.TestCase):
         self.assertEqual(contexts['Main/first']['retained'], ['a'])
         self.assertEqual(contexts['Main/second']['retained'], ['b'])
         self.assertEqual(contexts['Main/first']['source'], contexts['Main/second']['source'])
+        resource_report = graph.dump_plan(plan).split("Logical resource uses", 1)[1]
+        self.assertIn("Main/first/a [ColorTexture] no pass use | Export Main/out_a reads @0", resource_report)
+        self.assertIn("Main/second/b [ColorTexture] no pass use | Export Main/out_b reads @0", resource_report)
+        self.assertNotIn("Main/first/b", resource_report)
+        self.assertNotIn("Main/second/a", resource_report)
 
     def test_plan_is_deterministic_after_relocation_and_repeat(self):
         before = graph.compile_graph(self.path)
@@ -545,7 +550,9 @@ class RenderGraphTests(unittest.TestCase):
         self.write(value)
         plan = graph.compile_graph(self.path)
         self.assertEqual("Main/output/image", plan["roots"][0]["id"])
-        self.assertIn("Root Main/output/image: Export Main/color@1", graph.dump_plan(plan))
+        text = graph.dump_plan(plan)
+        self.assertIn("Root Main/output/image: Export Main/color@1", text)
+        self.assertIn("Main/color [ColorTexture] 000..000 | Export Main/output/image reads @1", text)
 
     def test_untrusted_path_text_and_deep_json_fail_without_tracebacks(self):
         value = self.read()
@@ -644,6 +651,9 @@ class RenderGraphTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-m", "ludus_tools", "--json", "render-graph", "dump", str(self.path)],
                                 check=True, text=True, capture_output=True)
         self.assertEqual("ContractOnly", json.loads(result.stdout)["plan"]["execution"])
+        result = subprocess.run([sys.executable, "-m", "ludus_tools", "render-graph", "dump", str(self.path)],
+                                check=True, text=True, capture_output=True)
+        self.assertIn("Main/color [ColorTexture] 000..000 | Present Main/output reads @1", result.stdout)
 
 
 if __name__ == "__main__":

@@ -682,11 +682,9 @@ and imports remain source errors even outside the execution selection.
 
 Lower the selected dependency graph to a deterministic author-visible serial order first:
 dependencies constrain order, explicit order edges express semantic order, stable
-authored ordinals break remaining ties. Supply that ordered plan to existing
-RHI/GDI graph validation. It owns hazard lowering and accepted-submission state;
-the authoring compiler never commits speculative GPU state. Reflection and
-declared uses must agree; widen conservative ranges instead of guessing safety.
-Keep streaming outside the frame graph with explicit imported readiness.
+authored ordinals break remaining ties. Reflection and declared uses must agree.
+Widen conservative ranges when exact uses are unavailable. Keep streaming
+outside the frame graph with explicit imported readiness.
 
 Cache plans by topology/configuration/profile/resource compatibility. Bind fresh
 scene/view data and imported resources each frame, retaining exact versions.
@@ -729,6 +727,48 @@ camera coverage, so no cooked graph has a transient backing today. Pooling is
 therefore qualified on generations rewritten with unexported scratch backings, and
 is idle for every cooked fixture. See
 [RG4 usage, evidence and limits](../development/render-graph-authoring.md#pool-transient-attachments-rg4).
+
+### Logical resource uses and submitted work
+
+The authoring compiler and the [RHI ordered graph](rhi-gdi.md#pass-declarations-and-deterministic-compilation)
+answer different questions at different points in a frame's preparation.
+
+| Boundary | Records and authority |
+| --- | --- |
+| Validated authoring plan | Expanded instance IDs, selected operations, logical resource versions, declared uses and output roots. The compiler owns source validation, initialization and camera-route checks. |
+| Cooked plan | Bounded numeric records, pipelines and source labels. Profile lowering owns compatibility, including the mapping of logical color and depth to a shared attachment backing. |
+| Prepared frame and RHI | Renderer supplies ready pipelines, scene/view data, physical bindings and leases. RHI validates supported commands and uses, owns backend synchronization and tracks accepted submissions through completion. |
+
+The text plan dump derives the first and last serial operation that touches
+each logical resource from the same records that keep resources in the plan.
+It lists Export and Present roots separately, with the versions they observe.
+An initialized import may go directly to a root without a pass. A texture used
+only to compute an extent supplies metadata and has no GPU use in the plan.
+The intervals are inclusive operation numbers for the selected configuration.
+Logical color and depth can share backing, and histories, exported views and
+presentation can remain in use beyond the last listed operation. Use actual
+physical bindings, consumer leases and completion to establish retirement.
+See [the plan dump](../development/render-graph-authoring.md#initialization-versions-and-order).
+
+Execution is currently profile-specific. The authored ray sequence already
+builds an `OrderedGraph` through `BuildGpuGraphSequence`, including a visibility
+raster producer when required. `RenderGraph::State::EncodePasses` also issues
+standalone raster and upscale commands through their own renderer paths. The
+offline plan therefore covers more than any single runtime `GraphReport`.
+
+**Next execution slice (proposed).** Try one cooked static opaque offscreen
+ColorAndDepth pass with an Export using the existing RHI ordered graph.
+Build retained draw packets from the prepared Renderer view and declare the
+uses of the actual bound resources. Keep the mapping from expanded pass ID and
+cooked index to the RHI pass ordinal in Renderer. Account for RHI packet and use
+limits before encoding, and retain the direct path for comparison. Qualify the
+same extraction and pipelines with color/depth readback parity, deterministic
+source-mapped reporting, and rejection before any command is recorded. Exercise
+same-frame and delayed export consumers, frames in flight, resize, and a failed
+candidate with the last drawable view still available. Measure CPU preparation
+and recording cost before widening to more profiles. Use the existing RHI
+state and completion ledger across both paths. Native aliasing still requires
+physical lifetime and memory evidence under the RHI contract.
 
 ## Editor interaction, diagnostics and hot reload
 
@@ -865,6 +905,26 @@ ApplyToDevice path; see the [review](renderer-systems-gems-review.md#render-grap
 These are focused documentation checks, not proof that another engine's complete
 architecture fits Ludus or that current features exist on our pinned tools.
 
+- Thanks to Yuriy O'Donnell, **FrameGraph: Extensible Rendering Architecture in
+  Frostbite**, GDC 2017, PDF pp. 17–18 and 26–27. The pass/resource visualization
+  and first/last-use scan motivate the logical use report. Frostbite computes
+  its intervals from a per-frame setup. Ludus derives the offline spans from
+  a saved configuration and checks physical uses at execution.
+  [GDC session](https://www.gdcvault.com/play/1024045/FrameGraph-Extensible-Rendering-Architecture-in)
+- Thanks to Zhenglong Zhou and Huabin Ling, **Render Graph, a Data Oriented
+  Approach**, GDC 2023, slides 15–19, 22 and 27–29. The command/dependency
+  layers and debug-copy example show how an inspectable description can support
+  tooling independent of command encoding. Ludus derives a read-only report
+  from its existing plan and uses profile lowering to bind execution. A capture
+  that needs a new consumer must declare it in a checked candidate so its lifetime
+  reaches RHI. Consider broader graph abstractions or layout changes after
+  measuring pressure on the current bounded records.
+  [Cocos presentation](https://forum.cocos.org/uploads/short-url/sw7bwJFORQLAJ2p5ezFZQJwOgs3.pdf)
+- Thanks to Arseny Kapoulkine, **Writing an Efficient Vulkan Renderer**,
+  *GPU Zen 2*, §4.6. Declared dependencies in a predictable order and readiness
+  imports from streaming fit the existing serial baseline. Backend-specific
+  barrier placement remains with RHI.
+  [Author's edition](https://zeux.io/2020/02/27/writing-an-efficient-vulkan-renderer/#frame-graphs)
 - Thanks to Epic Games, [Render Dependency Graph](https://dev.epicgames.com/documentation/unreal-engine/render-dependency-graph-in-unreal-engine),
   especially Debugging and Validation: declared resource dependencies, lifetime
   visualization and individual optimization controls inform our compiled-plan
