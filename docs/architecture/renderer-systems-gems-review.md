@@ -262,6 +262,18 @@ the [architecture's cross-checks](render-graph-authoring.md#contemporary-cross-c
 These readings are not benchmarks, full engine-source audits, or evidence of new
 Ludus/backend features. No new toolchain version is selected.
 
+### Shader authoring and build follow-up (November 2026)
+
+The updated local reference index led to the original decks from Taylor
+(SIGGRAPH Advances 2024) and Woods, Garg and Feller (GPC 2025). The shader
+architecture records the reviewed slides, attribution and the specific Ludus
+decisions: [typed extension points](render-graph-authoring.md#typed-shader-extension-points-proposed),
+[variant cost attribution](render-graph-authoring.md#attribute-variant-cost-before-optimizing-proposed)
+and [a pinned-compiler experiment](render-graph-authoring.md#module-reuse-across-edits-experiment-only).
+These are design updates. The talks supply production examples and failure
+modes, and the current Ludus source supplies the baseline; neither supplies
+a measured Ludus speedup.
+
 ## Conference and journal research plan
 
 This is a contextualized reading plan for the [proposed renderer](renderer-systems.md),
@@ -310,10 +322,11 @@ columns are proposed Ludus review outputs, not findings asserted from unread tal
 | Mircea Catana and Peter Bay Bastian, “Bringing Hitman to your pocket,” GPC 2025 | Metal backend, attachment policy and content profiles; L1/L3/L5 | Which tile-GPU constraints require private pass/format choices or authored lower-cost material variants? | Physical Apple-device pass timings and attachment traffic where observable; inspect load/store/resolve intent and image parity. Keep platform adaptation out of scene extraction. |
 | Lukas Feller, “Lessons learned from shipping a GPU Particle System,” GPC 2025 | Shader cooking and future particle adapter; L3/L6 | How should compute variants be admitted and prewarmed without unbounded compilation/cache growth? | Variant inventory, cook times, cache size, first-use/reload behavior and explicit failure budgets. GPU particle queues need their own overflow/lifetime plan before adoption. |
 
-For this task the session descriptions support the choice of readings; their
-implementation details remain pending. In particular, Cycles' experience is a
-reason to scrutinize RT4 scheduling, not proof that a wavefront implementation
-wins for Ludus's initial RT1 workload. The DOOM session is a comparison candidate,
+The session descriptions support the choice of readings. The Feller shader
+build follow-up is recorded [above](#shader-authoring-and-build-follow-up-november-2026);
+the other implementation reviews in this table remain pending. Cycles'
+experience is a reason to scrutinize RT4 scheduling, not proof that a wavefront
+implementation wins for Ludus's initial RT1 workload. The DOOM session is a comparison candidate,
 not proof that our portable forward baseline is obsolete. X-Plane and Hitman
 provide target-specific review cases, not permission to change all API profiles.
 
