@@ -2962,9 +2962,10 @@ only the texel rows it samples and admits SceneFormat's 4096 texel limit.
 
 Imports queue: **Import** while another import runs adds the file to the queue,
 and its row appears at once as *Queued*. The running import reports its stage
-(waiting, reading, validating, checking dependencies, publishing) and a
-fraction from the worker's import gate. The row's status column shows the stage
-and percentage over a thin progress bar, and the strip above the list shows
+(waiting, reading source, validating dependencies, checking for changes,
+publishing) and a fraction from the worker's import gate. The row's status
+column shows the stage and percentage over a thin progress bar, and the strip
+under the list shows
 "Importing 2 of 3", the resource ID, the stage and the overall fraction across
 the batch. A failed import keeps its row with *Failed:* and the worker's reason,
 the problem panel names the resource and offers **Retry import**, and the
