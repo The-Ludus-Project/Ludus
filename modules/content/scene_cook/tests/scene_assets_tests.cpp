@@ -997,7 +997,7 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
     }
 }
 
-TEST_CASE("Editor import names the repair for closure-program materials", "[scene_assets][program]")
+TEST_CASE("Editor import keeps closure programs through the catalog and assembly", "[scene_assets][program]")
 {
     const std::filesystem::path work = MakeWorkDirectory();
     const std::filesystem::path project = work / "project";
@@ -1029,10 +1029,33 @@ TEST_CASE("Editor import names the repair for closure-program materials", "[scen
     request.Level = ToSpan(level);
     request.Operation = EditorSceneOperation::Import;
     EditorSceneResult imported;
-    CHECK(OperateEditorScene(request, options, imported, error) == false);
+    const bool isImported = OperateEditorScene(request, options, imported, error);
     INFO(Describe(error));
-    CHECK(std::string(error.Message.View()).find("closure-program materials") != std::string::npos);
-    CHECK(std::string(error.Message.View()).find("Assign a built-in model") != std::string::npos);
+    REQUIRE(isImported == true);
+    const std::string candidate = GetResponseMember(imported.Response, "level");
+    request.Operation = EditorSceneOperation::CommitImport;
+    request.Level = ToSpan(candidate);
+    request.Catalog = ToSpan(imported.Catalog);
+    EditorSceneResult committed;
+    REQUIRE(OperateEditorScene(request, options, committed, error) == true);
+    // Assembly reads the program back from the committed material description.
+    request.Operation = EditorSceneOperation::Assemble;
+    request.Catalog = {};
+    EditorSceneResult assembled;
+    REQUIRE(OperateEditorScene(request, options, assembled, error) == true);
+    uint32 version = 0;
+    REQUIRE(core::TryReadLittleEndian<uint32>(
+                {assembled.Scene.GetData() + ludus::content::scene_format::MAGIC.size(), sizeof(uint32)},
+                version) == true);
+    CHECK(version == ludus::content::scene_format::VERSION_11);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(), assembled.Scene.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    CHECK(decoded.Materials[0].Scattering.Model == ludus::content::scene_format::MaterialModel::Program);
+    CHECK(decoded.Materials[0].Program.LobeCount == 1);
+    CHECK(decoded.Materials[0].Program.Lobes[0].Operation ==
+          ludus::content::scene_format::MaterialLobeOperation::Diffuse);
     std::error_code ignored;
     std::filesystem::remove_all(work, ignored);
 }

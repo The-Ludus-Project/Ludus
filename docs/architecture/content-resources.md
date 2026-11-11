@@ -569,8 +569,10 @@ has one. The record holds the version, the constant, instruction and lobe
 counts, eight float4 constants, 32 eight-byte instructions and eight 32-byte
 lobes, in little-endian field order. Unused slots and padding are zero, so
 equal programs cook to equal bytes. The decoder validates the record
-completely. Editor World import of program materials is not available yet;
-the import names the repair instead.
+completely. A project material description's `source_material` stores the
+record as a lowercase hex `program` string, only for a program material.
+Assembly decodes it through the same validator and writes it back after the
+extension.
 
 LUSCN v10 admits the version-1 [project BRDF program](scene-source-format.md#project-brdf-program)
 using the v7 record width. For its tag, the two three-float vectors hold the

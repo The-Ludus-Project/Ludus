@@ -2101,6 +2101,7 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         surface.Metallic = source.Metallic;
         surface.Roughness = source.Roughness;
         surface.Scattering = source.Scattering;
+        surface.Program = source.Program;
         surface.Emission = source.Emission;
         surface.IsEmissionTwoSided = source.IsEmissionTwoSided;
         surface.HasEmissionPower = source.HasEmissionPower;

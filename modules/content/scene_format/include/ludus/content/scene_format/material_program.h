@@ -4,9 +4,12 @@
 #    include <ludus/foundation/base/types.h>
 
 #    include <ludus/content/scene_format/material.h>
+#    include <ludus/foundation/base/byte_order.hpp>
 #    include <ludus/foundation/containers/static_array.hpp>
 
 #    include <cstddef>
+#    include <cstring>
+#    include <span>
 #    include <type_traits>
 #else
 #    include "material.h"
@@ -417,6 +420,161 @@ static_assert(sizeof(MaterialProgram) == MATERIAL_PROGRAM_BYTES &&
 {
     return SatisfiesMaterialRequirement(GetMaterialCapabilities(scattering, program),
                                         FIXED_DIMENSION_REFLECTION_REQUIREMENT);
+}
+/// Exact LUSCN version-11 record bytes of one program.
+using MaterialProgramBytes = foundation::StaticArray<foundation::uint8, MATERIAL_PROGRAM_BYTES>;
+
+/// Serialize a program field by field in little-endian order, independently of host padding.
+/// @param program Any program; producers serialize only programs that IsMaterialProgramValid accepts.
+/// @param outBytes Replaced with the record bytes.
+inline void EncodeMaterialProgram(const MaterialProgram& program, MaterialProgramBytes& outBytes) noexcept
+{
+    foundation::usize offset = 0;
+    const auto word = [&outBytes, &offset](foundation::uint32 value) noexcept {
+        static_cast<void>(foundation::core::TryWriteLittleEndian<foundation::uint32>(
+            value,
+            std::span<foundation::uint8>(outBytes.GetData() + offset, sizeof(foundation::uint32))));
+        offset += sizeof(foundation::uint32);
+    };
+    const auto scalar = [&word](foundation::float32 value) noexcept {
+        foundation::uint32 bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        word(bits);
+    };
+    const auto byte = [&outBytes, &offset](foundation::uint8 value) noexcept {
+        outBytes[offset] = value;
+        ++offset;
+    };
+    for (const foundation::uint32 value :
+         {program.Version, program.ConstantCount, program.InstructionCount, program.LobeCount})
+    {
+        word(value);
+    }
+    for (const foundation::StaticArray<foundation::float32, MATERIAL_PROGRAM_COMPONENTS>& constant : program.Constants)
+    {
+        for (const foundation::float32 value : constant)
+        {
+            scalar(value);
+        }
+    }
+    for (const MaterialProgramInstruction& instruction : program.Instructions)
+    {
+        for (const foundation::uint8 value : {static_cast<foundation::uint8>(instruction.Opcode),
+                                              instruction.Destination,
+                                              instruction.OperandA,
+                                              instruction.OperandB,
+                                              instruction.OperandC})
+        {
+            byte(value);
+        }
+        for (const foundation::uint8 value : instruction.Reserved)
+        {
+            byte(value);
+        }
+    }
+    for (const MaterialProgramLobe& lobe : program.Lobes)
+    {
+        for (const foundation::uint8 value :
+             {static_cast<foundation::uint8>(lobe.Operation), lobe.WeightRegister, lobe.RoughnessRegister})
+        {
+            byte(value);
+        }
+        for (const foundation::uint8 value : lobe.Reserved)
+        {
+            byte(value);
+        }
+        for (const foundation::float32 value : lobe.Eta)
+        {
+            scalar(value);
+        }
+        for (const foundation::float32 value : lobe.K)
+        {
+            scalar(value);
+        }
+        scalar(lobe.Power);
+    }
+}
+
+/// Decode a record written by EncodeMaterialProgram and validate it completely.
+/// @param bytes Exactly MATERIAL_PROGRAM_BYTES record bytes.
+/// @param outProgram Replaced on success; unchanged on failure.
+/// @return False for a wrong size, a non-finite or out-of-range field, or any program IsMaterialProgramValid rejects.
+[[nodiscard]] inline bool DecodeMaterialProgram(std::span<const foundation::uint8> bytes,
+                                                MaterialProgram& outProgram) noexcept
+{
+    if (bytes.size() != MATERIAL_PROGRAM_BYTES)
+    {
+        return false;
+    }
+    foundation::usize offset = 0;
+    const auto word = [&bytes, &offset]() noexcept {
+        foundation::uint32 value = 0;
+        static_cast<void>(
+            foundation::core::TryReadLittleEndian<foundation::uint32>(bytes.subspan(offset, sizeof(value)), value));
+        offset += sizeof(value);
+        return value;
+    };
+    const auto scalar = [&word]() noexcept {
+        const foundation::uint32 bits = word();
+        foundation::float32 value = 0;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const auto byte = [&bytes, &offset]() noexcept {
+        const foundation::uint8 value = bytes[offset];
+        ++offset;
+        return value;
+    };
+    MaterialProgram program;
+    program.Version = word();
+    program.ConstantCount = word();
+    program.InstructionCount = word();
+    program.LobeCount = word();
+    for (foundation::StaticArray<foundation::float32, MATERIAL_PROGRAM_COMPONENTS>& constant : program.Constants)
+    {
+        for (foundation::float32& value : constant)
+        {
+            value = scalar();
+        }
+    }
+    for (MaterialProgramInstruction& instruction : program.Instructions)
+    {
+        instruction.Opcode = static_cast<MaterialProgramOpcode>(byte());
+        instruction.Destination = byte();
+        instruction.OperandA = byte();
+        instruction.OperandB = byte();
+        instruction.OperandC = byte();
+        for (foundation::uint8& value : instruction.Reserved)
+        {
+            value = byte();
+        }
+    }
+    for (MaterialProgramLobe& lobe : program.Lobes)
+    {
+        lobe.Operation = static_cast<MaterialLobeOperation>(byte());
+        lobe.WeightRegister = byte();
+        lobe.RoughnessRegister = byte();
+        for (foundation::uint8& value : lobe.Reserved)
+        {
+            value = byte();
+        }
+        for (foundation::float32& value : lobe.Eta)
+        {
+            value = scalar();
+        }
+        for (foundation::float32& value : lobe.K)
+        {
+            value = scalar();
+        }
+        lobe.Power = scalar();
+    }
+    // Comparisons in IsMaterialProgramValid reject NaN, infinite and out-of-range values.
+    if (IsMaterialProgramValid(program) == false)
+    {
+        return false;
+    }
+    outProgram = program;
+    return true;
 }
 } // namespace ludus::content::scene_format
 #else

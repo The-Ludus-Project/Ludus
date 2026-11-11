@@ -1363,8 +1363,12 @@ finite. Lobes clamp negative weights to zero and roughness to the minimum.
 
 Raster profiles draw a program material with its authored base colour,
 metallic and roughness as a metallic-roughness approximation. Editor World
-import still names the repair, which is to assign a built-in model; World
-import and inspection come next.
+import keeps programs through the project catalog and the assembled World.
+The World Material group lists their lobes and capabilities; see
+[inspect a closure program](../development/editor-workspace.md#inspect-a-closure-program).
+An unsupported imported material can be mapped to a program like any other
+supported material. Editing a program's parameters per instance belongs to the
+Material document of gate 1.
 
 The tests check four properties:
 - With a white base, the built-in Mix written as a program matches the Mix in
