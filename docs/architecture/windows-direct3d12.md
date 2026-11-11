@@ -1058,11 +1058,13 @@ editor, moving a watched graph package, and running the native hosted-frame
 journey with the GPU viewport disabled. The dedicated native Play journey
 passed in both lanes, and the instrumented run reported no sanitizer finding.
 
-After those fixture fixes and the merge with develop, the ordinary editor
-suite at `a731df54a` passed all 19 entries in
+After those fixture fixes and the merge with develop, both editor suites
+at `a731df54a` passed all 19 entries in
 [Windows run 42953291760](https://github.com/The-Ludus-Project/Ludus/actions/runs/42953291760).
-The job's separate RHI preflight failed to compile two fixtures after the
-borrowed-view API change. The repair at `bec7c3a72` passed Clang/WARP in the
+The instrumented suite reported no sanitizer finding. The jobs' separate
+RHI preflight failed to compile two fixtures after the borrowed-view API
+change. The repair at `bec7c3a72` passed Clang/WARP, the full ordinary
+editor job, and the instrumented MSVC ownership preflight in the
 [replacement matrix](https://github.com/The-Ludus-Project/Ludus/actions/runs/42954832638).
 
 #### Candidate hardware requirements
