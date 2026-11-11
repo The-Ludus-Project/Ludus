@@ -3,6 +3,7 @@
 #include "internal/builtin_world.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_gizmo_readout.h"
+#include "internal/viewport_overlay_layer.h"
 #include "internal/viewport_walk_collision.h"
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
@@ -21,8 +22,6 @@
 
 #include <QColor>
 #include <QJsonArray>
-#include <QPainter>
-#include <QPen>
 #include <QString>
 
 namespace ludus::editor
@@ -723,7 +722,8 @@ QString ViewportObjectInteraction::pick(QPointF positionPixel,
     for (const PreviewObject& object : scene.Objects)
     {
         math::Affine3 worldToMesh;
-        if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size() ||
+        // Generated terrain water is not an entity, so a click passes through it to the terrain.
+        if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size() || IsTerrainWaterObjectId(object.Id) == true ||
             math::TryInverse(object.Transform, worldToMesh) != math::MathStatus::Success)
         {
             continue;
@@ -2195,41 +2195,6 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
 {
     LUDUS_PROFILE_SCOPE(EditorObjectOverlayPaint);
     BuildOverlay(outerFramePixel, mPaintOverlay);
-    inoutPainter.save();
-    inoutPainter.setClipRect(mPaintOverlay.FramePixel);
-    inoutPainter.setRenderHint(QPainter::Antialiasing);
-    // The same casing and amber strokes as the native overlay, with round joins and caps.
-    QPen casingPen(QColor::fromRgba(ViewportObjectOverlay::CASING_COLOR),
-                   static_cast<float64>(ViewportObjectOverlay::CASING_WIDTH_PIXELS));
-    casingPen.setCapStyle(Qt::RoundCap);
-    inoutPainter.setPen(casingPen);
-    inoutPainter.drawLines(mPaintOverlay.OutlineLinesPixel.GetData(),
-                           static_cast<int32>(mPaintOverlay.OutlineLinesPixel.GetSize()));
-    QPen outlinePen(QColor::fromRgb(ViewportObjectOverlay::SELECTION_COLOR),
-                    static_cast<float64>(ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS));
-    outlinePen.setCapStyle(Qt::RoundCap);
-    inoutPainter.setPen(outlinePen);
-    inoutPainter.drawLines(mPaintOverlay.OutlineLinesPixel.GetData(),
-                           static_cast<int32>(mPaintOverlay.OutlineLinesPixel.GetSize()));
-    for (const ViewportHandleStroke& stroke : mPaintOverlay.HandleStrokes)
-    {
-        inoutPainter.setPen(QPen(QColor::fromRgb(stroke.Color), static_cast<float64>(stroke.WidthPixels)));
-        inoutPainter.drawLine(stroke.LinePixel);
-    }
-    inoutPainter.setPen(Qt::NoPen);
-    for (const ViewportHandleFill& fill : mPaintOverlay.HandleFills)
-    {
-        inoutPainter.setBrush(QColor::fromRgb(fill.Color));
-        inoutPainter.drawPolygon(fill.CornersPixel.GetData(), static_cast<int32>(fill.CornerCount));
-    }
-    if (mPaintOverlay.ReadoutText.isEmpty() == false)
-    {
-        PaintGizmoReadout(inoutPainter,
-                          mPaintOverlay.ReadoutText,
-                          PlaceGizmoReadout(mPaintOverlay.ReadoutAnchorPixel,
-                                            MeasureGizmoReadout(mPaintOverlay.ReadoutText),
-                                            mPaintOverlay.FramePixel));
-    }
-    inoutPainter.restore();
+    PaintViewportObjectOverlay(inoutPainter, mPaintOverlay);
 }
 } // namespace ludus::editor

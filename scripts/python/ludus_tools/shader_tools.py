@@ -20,6 +20,8 @@ def required_shader_tools(manifest: dict) -> set[str]:
     """Dependencies of a validated graph build manifest, including native Metal ray queries."""
     profiles = manifest["profiles"]
     required = {"compiler"}
+    if "dxil" in profiles:
+        required.add("dxc")
     if any(profile in profiles for profile in ("spirv", "glsl")):
         required.add("validator")
     has_native_rays = any(technique.get("id") == RAY_TECHNIQUE for technique in manifest["techniques"])

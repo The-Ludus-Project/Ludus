@@ -577,7 +577,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D6a | Renderer, content and playable runtime | Shared authored project renders, accepts input, loads/saves and shuts down on a physical Windows GPU |
 | D6b (Development MSVC WARP verified) | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys. Runtime SDK consumers and IDE journeys passed at `29ea91b6` ([run 42164873456](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456)); other runtime SDK flavors and interactive IDE sessions pending |
 | D6c (standalone workflows verified) | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests. The named-pipe shader worker emits signed DXIL, GameHost loads, reloads and retires DLLs whose PDBs match under socket supervision, and Behavior builds with MSVC; their suites run in the MSVC Ninja lane, as do the RG2/RG3, RG4 pool and default-graph pixel suites on Direct3D 12. The producer-to-renderer DXIL reload and relocated Behavior SDK player/debugger passed with MSVC at `72e97c7e` ([Windows run 42882047481](https://github.com/The-Ludus-Project/Ludus/actions/runs/42882047481)). The editor live-play tooling and embedded editors belong to D6d |
-| D6d | Interactive Windows editor and hosted viewport | Current project World/camera, navigation/edit/resize; GPU producer/consumer ownership and pending/failure publication tests |
+| D6d (Development MSVC WARP verified) | Interactive Windows editor and hosted viewport | Current project World/camera, navigation/edit/resize; GPU producer/consumer ownership and pending/failure publication tests. Passed at `93a6053da` in [run 42921153750](https://github.com/The-Ludus-Project/Ludus/actions/runs/42921153750) |
 | D7 | Profile qualification and continuous validation | All required coverage rows verified at one candidate commit; hardware, lifecycle, performance and both build workflows recorded |
 | D8 | Release packaging and distribution | Clean-machine install/launch, upgrades/data preservation, dependency/license inventory and matching symbols |
 
@@ -948,6 +948,43 @@ with optional tooling absent.
   CPU readback is diagnostic evidence, not interactive GPU presentation
   acceptance; optional path tracing cannot be required for raster navigation.
 
+  The authoring viewport uses Qt Quick's Direct3D 12 device and direct queue on
+  the GUI thread. RHI checks queue provenance, retains the native context, and
+  transitions each leased RGBA8 output for fragment sampling on that queue.
+  After Qt submits, a queue fence retires the read lease and its transition
+  commands. The editor can keep a drawable generation during a pending or
+  failed graph replacement. The Windows viewport regression exercises World
+  extraction, navigation, edits, resize and graph publication through Qt.
+  See [Windows editor setup](../development/editor-workspace.md#windows-authoring-viewport)
+  for the build and test commands.
+
+  Windows GPU-reference capture remains a coverage gap. The reference compute
+  kernels fail DXIL validation, so the editor excludes them and disables that
+  traversal explicitly. CPU/GPU reference parity on Direct3D 12 is unqualified.
+  Raster authoring and hosted Play have independent build and runtime paths.
+
+  Hosted Play uses an owner-only local named pipe with a session token and
+  authenticated peer process. The game exports committed RGBA8 resources, and
+  the editor duplicates their NT handles before acknowledging the generation.
+  The producer selects the editor's adapter LUID. A three-image ring transfers
+  ownership only after the writing or sampling queue's local fence completes.
+  Shared textures start and decay to COMMON, and no frame crosses through CPU
+  memory. The Windows adapter owns game and build processes in kill-on-close
+  jobs, assigns each suspended process before it runs, and confirms cleanup
+  from the job's active process count. Inherited lease guards keep generations
+  available until their last owner exits.
+
+  The Windows workflow's on-demand editor lane passed at `93a6053da` with
+  MSVC 14.44, Qt 6.8.3 and WARP on Windows Server 2022
+  ([run 42921153750](https://github.com/The-Ludus-Project/Ludus/actions/runs/42921153750)).
+  Its seven CTests cover the Win32 channel, Direct3D 12 RHI, staged GameHost
+  supervision, World authoring and graph publication, 1.5-scale authoring,
+  startup-sound lifecycle and hosted World Play. The Play journey exercises
+  physical-key forwarding, resize, Stop and crash recovery. Eight Python
+  regressions cover both adapters, job/descendant cleanup, supervisor death,
+  inherited guards, Agility publication and tuning saves. Physical GPU,
+  mixed-monitor DPI and native file dialogs still need desktop evidence for D7.
+
 ### D7 and D8: qualify and distribute
 
 D7 extends MSVC/Ninja batch validation to all required modules, SDK consumers,
@@ -975,7 +1012,7 @@ documentation, an MSVC Release install helper and candidate-only CI. The
 [Windows distribution guide](../development/game-packaging-publishing.md#windows-portable-release-distributions-d8)
 owns commands and limitations. D7 hardware qualification, a complete D6d Editor
 payload, clean-machine launch/upgrade/uninstall and public signing acceptance
-remain separate gates; implementing the packager does not close those records.
+remain separate gates.
 
 ### Optional feature parity
 
@@ -1010,14 +1047,14 @@ these rows remain pending.
 | Renderer / graph | D6a, D6c | World raster preset; DXIL graph packages; RG2/RG3, RG4 pool and default-graph pixel suites on WARP | Physical GPU qualification in D7 | pending | Packed World and renderer pixel tests; `ludus_render_graph_dxil_tests` in the MSVC Ninja lane |
 | Text / localization / UI | D6a | Source targets in runtime preset | Validate MSVC shaping, atlas, localization and UI tests | pending | Windows runtime CI targets |
 | Content / resources | D6a | Packed room loader, Content saves, scene cooker and `ludus-cook` | Run the cooker suites on a physical Windows host | pending | Packed/loose replay and bounded publication tests; cooker goldens and saved-level suites in the MSVC Ninja lane |
-| Runtime / game host | D6a, D6c | Static host; DLL load, reload, PDB checks and socket supervision | Editor live-play tooling on Windows (D6d) | [PR #1021](https://github.com/The-Ludus-Project/Ludus/pull/1021) | Static lifecycle, loader, reload, session, supervisor and PDB tests in the MSVC Ninja lane |
+| Runtime / game host | D6a, D6c, D6d | Static host, DLL load and reload, PDB checks, socket supervision and editor hosted Play | Lifecycle qualification in D7 | [PR #1021](https://github.com/The-Ludus-Project/Ludus/pull/1021), PR #1135 | MSVC Ninja lifecycle suites and [Windows editor acceptance](https://github.com/The-Ludus-Project/Ludus/actions/runs/42926682167) |
 | Behavior / scripting | D6c | MSVC 19.44 x86_64 provider, relocated SDK, player and debugger verified | Embedded authoring with D6d | [PR #1031](https://github.com/The-Ludus-Project/Ludus/pull/1031) | `ludus_behavior_*` suites in the MSVC Ninja lane |
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
 | SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
 | Embedded/external shader/script authoring | D6c | Named-pipe DXIL worker and producer-to-renderer reload verified | Embedded editors with D6d | [PR #1018](https://github.com/The-Ludus-Project/Ludus/pull/1018) | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
-| Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
+| Editor / hosted viewport | D6d | Development MSVC/WARP authoring and hosted Play verified | Physical GPU, mixed-monitor DPI and native dialogs for D7 | PR #1135 | [Run 42921153750](https://github.com/The-Ludus-Project/Ludus/actions/runs/42921153750), candidate `93a6053da` |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
 | Qualification / CI / documentation | D1, D2; D7 pending | in progress | Clang lane gates promotion today; D7 qualifies MSVC profiles | PR #573; PR #586 | Historical D1/D2 evidence above |
 | Packaging / distribution | D8 | Portable Release tooling and candidate CI implemented | D7, clean-machine/Editor journeys and public signing acceptance pending | pending | Archive/PDB regressions; Windows Release distribution workflow |

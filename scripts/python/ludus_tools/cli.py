@@ -549,7 +549,7 @@ def cmd_render_graph(args) -> int:
                 from .render_graph_project import resolve_build_tools
                 detected, toolchain = resolve_build_tools(args.project, args.tooling_root, manifest,
                     helper=args.helper, compiler=args.compiler, validator=args.validator,
-                    spirv_cross=args.spirv_cross, store=_store(args))
+                    spirv_cross=args.spirv_cross, dxc=options.get("dxc"), store=_store(args))
                 options.update(detected)
             elif not args.helper or not args.compiler:
                 raise ToolingError("RenderGraphTools", "Build requires a project SDK selection (--project), "
@@ -649,7 +649,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help="built-in editable render graph template")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")
     new_graph.add_argument("--renderer-static", action="store_true", help="also create Renderer-compatible shader sources")
-    new_graph.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl"),
+    new_graph.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl", "dxil"),
                            help="explicit shader targets for --renderer-static")
     new_graph.set_defaults(func=cmd_render_graph)
     update_template = graphs.add_parser("update-template", help="preview/apply a conservative copied ReSTIR shader upgrade; custom edits are retained")
@@ -670,7 +670,7 @@ def build_parser() -> argparse.ArgumentParser:
         graph.set_defaults(func=cmd_render_graph)
     new_build = graphs.add_parser("new-build", help="save explicit RG1 build sources next to a root graph")
     new_build.add_argument("graph")
-    new_build.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl"), required=True)
+    new_build.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl", "dxil"), required=True)
     new_build.add_argument("--root", help="containing graph/source package root")
     new_build.add_argument("--renderer-static", action="store_true", help="author the six-location Renderer static/instance profile")
     new_build.set_defaults(func=cmd_render_graph)
@@ -705,6 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
     capture_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
     capture_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+    capture_graph.add_argument("--dxc-path", help="directory of the pinned DXC libraries")
     capture_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
     capture_graph.set_defaults(func=cmd_render_graph, root=None)
     profile_graph = graphs.add_parser("capture-profile",
@@ -721,6 +722,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
     profile_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
     profile_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+    profile_graph.add_argument("--dxc-path", help="directory of the pinned DXC libraries")
     profile_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
     profile_graph.set_defaults(func=cmd_render_graph, root=None)
     library_graph = graphs.add_parser("capture-library",
@@ -743,6 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
     library_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
     library_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
     library_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+    library_graph.add_argument("--dxc-path", help="directory of the pinned DXC libraries")
     library_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
     library_graph.set_defaults(func=cmd_render_graph, root=None)
     verify_graph = graphs.add_parser("verify-package", help="verify complete generation inventory without shader tools")

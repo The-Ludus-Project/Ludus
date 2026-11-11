@@ -30,6 +30,7 @@ void DestroyComputePipeline(usize slot) noexcept;
 [[nodiscard]] Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept;
 [[nodiscard]] ID3D12GraphicsCommandList* GetCommandsOrNull() noexcept;
 [[nodiscard]] Attachment GetSurfaceAttachment() noexcept;
+[[nodiscard]] DXGI_FORMAT GetSurfaceColorFormat() noexcept;
 [[nodiscard]] RasterStatus GrowPipelines(usize count) noexcept;
 void DestroyPipeline(usize slot) noexcept;
 void ResetRasterPasses() noexcept;

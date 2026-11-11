@@ -65,9 +65,10 @@ bool PlayViewportSource::Start(const QString& parentDirectory,
         return false;
     }
     mUnavailableReason.clear();
-    if (device.Api != rhi::Backend::Metal && device.Api != rhi::Backend::Vulkan)
+    if (device.Api != rhi::Backend::Metal && device.Api != rhi::Backend::Vulkan &&
+        device.Api != rhi::Backend::Direct3D12)
     {
-        makeUnavailable(QStringLiteral("Play in the viewport needs a Metal or Vulkan viewport device."));
+        makeUnavailable(QStringLiteral("Play in the viewport needs a Metal, Vulkan or Direct3D 12 viewport device."));
         return false;
     }
     const QByteArray parent = parentDirectory.toUtf8();
@@ -243,6 +244,8 @@ rhi::RasterStatus PlayViewportSource::TakeFrameRead(rhi::NativeDeviceLease devic
     read.Image.MetalTexture = frame.MetalTexture;
     read.Image.VulkanImage = frame.VulkanImage;
     read.Image.VulkanLayout = frame.VulkanLayout;
+    read.Image.Direct3D12Resource = frame.Direct3D12Resource;
+    read.Image.IsDirect3D12ResourceInCommonState = frame.Direct3D12Resource.IsNull() == false;
     read.Image.SampledReadOnly = true;
     read.Token = mNextToken++;
     read.Slot = slot;

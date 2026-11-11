@@ -1,7 +1,6 @@
 #pragma once
 
-// POSIX Unix-stream socket operations shared by the hosted window and its
-// endpoint (macOS and Linux only). The approved operations are listed in
+// Local byte stream operations shared by the hosted window and endpoint. The approved operations are listed in
 // docs/decisions/0003-standard-library-usage-policy.md, "Platform hosted-window
 // channel boundary".
 
@@ -17,12 +16,19 @@ using foundation::uint32;
 using foundation::uint8;
 using foundation::usize;
 
-/// Owns one file descriptor and closes it on destruction.
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+using NativeStream = foundation::isize;
+#else
+using NativeStream = int32;
+#endif
+inline constexpr NativeStream CLOSED_STREAM = -1;
+
+/// Owns one socket or pipe and closes it on destruction.
 class SocketDescriptor final
 {
 public:
     SocketDescriptor() noexcept = default;
-    explicit SocketDescriptor(int32 descriptor) noexcept : mDescriptor(descriptor) {}
+    explicit SocketDescriptor(NativeStream descriptor) noexcept : mDescriptor(descriptor) {}
     ~SocketDescriptor() noexcept
     {
         Reset();
@@ -39,26 +45,26 @@ public:
         return *this;
     }
 
-    [[nodiscard]] LUDUS_INLINE int32 Get() const noexcept
+    [[nodiscard]] LUDUS_INLINE NativeStream Get() const noexcept
     {
         return mDescriptor;
     }
     [[nodiscard]] LUDUS_INLINE bool IsOpen() const noexcept
     {
-        return mDescriptor >= 0;
+        return mDescriptor != CLOSED_STREAM;
     }
     /// Give up ownership without closing.
-    [[nodiscard]] LUDUS_INLINE int32 Release() noexcept
+    [[nodiscard]] LUDUS_INLINE NativeStream Release() noexcept
     {
-        const int32 descriptor = mDescriptor;
-        mDescriptor = -1;
+        const NativeStream descriptor = mDescriptor;
+        mDescriptor = CLOSED_STREAM;
         return descriptor;
     }
     /// Close the owned descriptor, if any, and take `descriptor`.
-    void Reset(int32 descriptor = -1) noexcept;
+    void Reset(NativeStream descriptor = CLOSED_STREAM) noexcept;
 
 private:
-    int32 mDescriptor = -1;
+    NativeStream mDescriptor = CLOSED_STREAM;
 };
 
 /// Outcome of one nonblocking transfer.
@@ -75,15 +81,15 @@ enum class TransferStatus : uint8
 };
 
 /// @brief Make a socket nonblocking and close-on-exec, and keep writes from raising SIGPIPE.
-[[nodiscard]] bool TryConfigureSocket(int32 descriptor) noexcept;
+[[nodiscard]] bool TryConfigureSocket(NativeStream descriptor) noexcept;
 
 /// @brief Send as many bytes as the socket accepts without blocking, retrying EINTR.
 [[nodiscard]] TransferStatus
-SendSome(int32 descriptor, foundation::BorrowedView<const uint8> bytes, usize& outSent) noexcept;
+SendSome(NativeStream descriptor, foundation::BorrowedView<const uint8> bytes, usize& outSent) noexcept;
 
 /// @brief Receive as many bytes as are available without blocking, retrying EINTR.
 [[nodiscard]] TransferStatus
-ReceiveSome(int32 descriptor, foundation::BorrowedView<uint8> outBytes, usize& outReceived) noexcept;
+ReceiveSome(NativeStream descriptor, foundation::BorrowedView<uint8> outBytes, usize& outReceived) noexcept;
 
 /// Most file descriptors one transfer carries: one hosted surface generation.
 inline constexpr usize MAX_TRANSFER_DESCRIPTORS = 3;
@@ -96,7 +102,7 @@ inline constexpr usize MAX_RECEIVE_DESCRIPTORS = 4 * MAX_TRANSFER_DESCRIPTORS;
 /// fewer bytes than requested moved; the caller still owns and must close its copies.
 /// On WouldBlock nothing moved.
 /// @pre `descriptorCount` is 1 to MAX_TRANSFER_DESCRIPTORS and `bytes` is nonempty.
-[[nodiscard]] TransferStatus SendWithDescriptors(int32 descriptor,
+[[nodiscard]] TransferStatus SendWithDescriptors(NativeStream descriptor,
                                                  foundation::BorrowedView<const uint8> bytes,
                                                  const int32* descriptors,
                                                  usize descriptorCount,
@@ -110,7 +116,7 @@ inline constexpr usize MAX_RECEIVE_DESCRIPTORS = 4 * MAX_TRANSFER_DESCRIPTORS;
 /// @pre `descriptorCapacity` is at most MAX_RECEIVE_DESCRIPTORS.
 /// @param outDescriptors Room for `descriptorCapacity` descriptors.
 /// @param outDescriptorCount Descriptors written to `outDescriptors`; zero unless Progress.
-[[nodiscard]] TransferStatus ReceiveWithDescriptors(int32 descriptor,
+[[nodiscard]] TransferStatus ReceiveWithDescriptors(NativeStream descriptor,
                                                     foundation::BorrowedView<uint8> outBytes,
                                                     usize& outReceived,
                                                     int32* outDescriptors,
@@ -120,19 +126,19 @@ inline constexpr usize MAX_RECEIVE_DESCRIPTORS = 4 * MAX_TRANSFER_DESCRIPTORS;
 /// @brief Wait until a socket is readable, closed or failed.
 /// @param timeout Longest wait, rounded up to whole milliseconds; zero polls once.
 /// @return false on timeout or a poll failure.
-[[nodiscard]] bool WaitUntilReadable(int32 descriptor, foundation::time::Duration timeout) noexcept;
+[[nodiscard]] bool WaitUntilReadable(NativeStream descriptor, foundation::time::Duration timeout) noexcept;
 
 /// @brief Read the effective user id of a connected Unix-socket peer.
 ///
 /// macOS uses getpeereid(3); Linux uses SO_PEERCRED. The kernel records the
 /// credentials at connect() time, so the peer cannot forge them.
-[[nodiscard]] bool TryReadPeerUserId(int32 descriptor, uint32& outUserId) noexcept;
+[[nodiscard]] bool TryReadPeerUserId(NativeStream descriptor, uint32& outUserId) noexcept;
 
 /// @brief Read the process id of a connected Unix-socket peer.
 ///
 /// macOS uses LOCAL_PEERPID; Linux uses SO_PEERCRED. Like the user id, the kernel
 /// records it at connect() time.
-[[nodiscard]] bool TryReadPeerProcessId(int32 descriptor, int32& outProcessId) noexcept;
+[[nodiscard]] bool TryReadPeerProcessId(NativeStream descriptor, int32& outProcessId) noexcept;
 
 /// The effective user id of this process.
 [[nodiscard]] uint32 GetCurrentUserId() noexcept;

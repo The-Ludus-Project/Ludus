@@ -536,6 +536,10 @@ task branch:
 gh workflow run windows-direct3d12.yml --ref <task-branch>
 ```
 
+A manual dispatch also runs the Windows editor lane. For targeted validation,
+pass `-f editor_only=true` to run the editor, hosted Play and supervisor suites
+on WARP by themselves.
+
 A dispatched run checks out the branch head and never cancels an in-progress run
 of the same branch. Its result is advisory evidence for review, not promotion.
 `scripts/python/test_batch_ci.py` rejects a pull-request, push or merge-group

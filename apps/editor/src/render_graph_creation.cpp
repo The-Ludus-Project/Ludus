@@ -88,6 +88,8 @@ bool RenderGraphCreation::Start(const ToolingPaths& tooling,
                          QStringLiteral("--profiles")};
 #if defined(Q_OS_MACOS)
     request.Arguments += {QStringLiteral("metal"), QStringLiteral("wgsl")};
+#elif defined(Q_OS_WIN)
+    request.Arguments += {QStringLiteral("dxil")};
 #else
     request.Arguments += {QStringLiteral("spirv"), QStringLiteral("wgsl")};
 #endif

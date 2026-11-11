@@ -285,7 +285,7 @@ cmake --preset linux-clang-development -DLUDUS_USE_INIT_OPTIONS=OFF -DLUDUS_BUIL
 cmake --build --preset linux-clang-development --target ludus_editor
 ```
 
-Native `LUDUS_BUILD_EDITOR=ON` supports Linux x64 and macOS arm64/x64.
+Native `LUDUS_BUILD_EDITOR=ON` has Linux x64, macOS arm64/x64 and Windows x64 build paths.
 Apple silicon is the validated macOS host; native Intel acceptance remains pending.
 Browser editor builds use
 the separate pinned Qt WebAssembly toolchain; ordinary browser engine setup does
@@ -332,6 +332,43 @@ an installed/signable Editor application bundle to the runtime SDK. The local
 macOS build produces `ludus_editor.app`, with the required Qt frameworks supplied
 by the opted-in development installation; the File API launcher resolves its
 executable inside the bundle.
+
+### Windows authoring viewport
+
+Use the [Windows runtime toolchain and dependencies](../architecture/windows-direct3d12.md),
+the x64 MSVC Qt build with Qt Quick 6.6 or later, and the pinned Slang and DXC
+tools. From a Visual Studio developer shell, include the Qt prefix in
+`LUDUS_WINDOWS_DEPENDENCIES` alongside the prepared runtime dependencies.
+
+```powershell
+python scripts/shader-probe bootstrap
+cmake --preset windows-msvc-runtime -DLUDUS_BUILD_EDITOR=ON
+cmake --build --preset windows-msvc-runtime --target ludus_editor ludus_editor_tests ludus_rhi_d3d12_tests
+ctest --preset windows-msvc-runtime -R '^(ludus_editor_d3d12_viewport|ludus_editor_d3d12_high_dpi|ludus_editor_hosted_play|ludus_rhi_d3d12_tests)$' --output-on-failure
+```
+
+With Qt's `bin` on `PATH`, run the editor from the repository root so it can
+find the tooling checkout and bundled graph sources.
+
+```powershell
+$python = (Get-Command python).Source
+& .\out\build\windows-msvc-runtime\apps\editor\ludus_editor.exe --tooling-root "$PWD" --python "$python" --adapter "$PWD/scripts/python/editor_tool.py"
+```
+
+The viewport renders the open World's camera and authored
+scene through the shared Direct3D 12 queue. Use a raster graph with a DXIL profile
+for ordinary navigation and editing. The native viewport test requires an
+interactive Windows desktop and uses Qt's software renderer preference for WARP
+coverage. The high-DPI test repeats the authoring journey at a 1.5 scale factor.
+The hosted Play test also opens a second process, exercises game input
+and resize, and checks that Stop or a game crash restores the authoring viewport.
+For mixed-DPI or physical GPU checks, launch the editor on a Windows desktop
+with the normal Qt GPU selection.
+
+Windows GPU-reference capture remains unavailable. Its DXIL kernels fail shader
+validation and are excluded from the Windows editor build. The traversal chooser
+disables that option, and an explicit GPU-reference request reports the missing
+kernel. Windows CPU/GPU reference parity remains unqualified.
 
 ## Launch
 
@@ -712,14 +749,34 @@ source change. If shrinking the footprint would clip a stroke, the
 confirmation names how many strokes the edit removes. Replacing an embedded
 heightmap also requires confirmation.
 
+**Paint surface materials** colours the terrain from its own shape. Gentle,
+dry ground is grass, steeper ground turns to dirt and then rock, ground where
+water collects turns to mud, and gentle ground above **Snow line** is snow. The
+snow line is a local height in metres. The colours come from slope, wetness
+and elevation computed on the final surface, after sculpt strokes, so a stroke
+that steepens a bank or fills a hollow repaints it. Clear the box to keep one
+plain surface. The baked colour reaches the raster viewport and the path
+tracers through the same World surface.
+
+**Carve rivers** routes water downhill across the whole terrain and cuts a
+channel wherever enough ground drains to one point. **River sources** is that
+share of the terrain's area; smaller values carve more and shorter streams.
+Channels deepen and widen downstream, and water fills each channel below its
+banks. Rivers are carved into the generated or imported base before sculpt
+strokes, so a stroke can still fill or deepen a channel. Water is presentation
+of the terrain: clicks pass through it to the terrain, and it adds no walking
+collision. Carving depends on the sample grid, so changing **Samples per side**
+moves the channels. The fields, routing and carving are described in
+[terrain fields, drainage, rivers and material rules](../modules/content/terrain.md).
+
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
 shows the terrain's surface colour without adding mesh lights.
 [Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
 mesh for walking collision when the Terrain entity has **Static Collider**.
-Material paint, erosion and streaming are future
-work. See the
+Hand-painted materials, tiling material textures, erosion and streaming are
+future work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
 
@@ -1414,8 +1471,18 @@ viewport-sized overlay texture. Camera and gesture changes are projected once
 per Qt frame, and the readback presentation draws the same strokes in one batch.
 CPU profiling includes `EditorObjectOverlayBuild`, `EditorObjectOverlayUpload`
 and `EditorObjectOverlayPaint` to distinguish these costs, and `EditorSilhouetteBuild`,
-`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the CPU outline. The browser's separate
-GPU canvas does not yet composite the overlay.
+`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the CPU outline.
+
+The browser editor shows the same overlay, with the same picking, transform handles
+and drag readout. Its engine canvas, WebGPU or WebGL 2, covers Qt's own canvas, so a
+second transparent 2D canvas sits above it on the same rectangle and lets pointer
+input through to Qt. The browser paints the overlay with the readback
+presentation's painter at the screen's pixel ratio, but only over the rectangle
+the outline, handles and readout cover. It copies that rectangle into the canvas
+after clearing the one painted before. The browser repaints only when the overlay
+changes, a new frame arrives or the viewport is resized. It uses the CPU outline;
+the GPU outline needs the project render graph's display frames, which the
+browser editor does not use.
 
 To compare the old painted texture with the batched geometry, build the optional
 `ludus_viewport_overlay_benchmark` target in a native editor build with tests enabled.
@@ -2812,7 +2879,7 @@ For this adapter's **Play saved World**, configure Project settings to build
 directory, or absolute). Save Project settings. The action saves the World, then
 uses the existing supervised Build/Run workflow.
 
-**Play in the viewport (macOS and Linux).** The game opens in the World viewport, which
+**Play in the viewport (macOS, Linux and Windows).** The game opens in the World viewport, which
 becomes its window; the World stays as edited until the game's first frame
 arrives. Click the viewport to give the game the keyboard. Keys go to the game by
 physical key, and editor shortcuts do not take them. **Shift+F1** gives the
@@ -2823,7 +2890,8 @@ viewport resizes or hides the game's window. When the game exits, crashes or is
 stopped, the viewport edits the World again. The game receives no mouse input
 yet, because Platform has none. On Linux the viewport needs an X11 or Wayland
 display and a Vulkan adapter with `VK_KHR_external_memory_fd`, and the game must
-render on the same adapter and driver as the editor.
+render on the same adapter and driver as the editor. On Windows it needs the
+Qt Windows display plugin, Direct3D 12 and the same adapter as the editor.
 
 **Play mode.** The **Play mode** box next to **Play saved World** chooses **In
 viewport** (the default) or **In separate window**. The choice is an editor
@@ -2842,9 +2910,9 @@ unchanged. Play never switches modes silently. See
 
 The child independently reads and validates that saved file before activation;
 simulation never writes authored transforms back to the Editor. The action does
-not rewrite project settings or execute a different target implicitly. On macOS
-this sample Build/Run is distinct from the still-unavailable native Live Play /
-hot-reload protocol. `--headless --level <file>` and `--frames 3 --level <file>`
+not rewrite project settings or execute a different target implicitly. This
+sample Build/Run and [native gameplay live editing](project-live-reload.md) use
+separate editor actions. `--headless --level <file>` and `--frames 3 --level <file>`
 provide bounded player acceptance paths.
 
 World widget/persistence tests cover invalid buffers, save/reopen, runtime
