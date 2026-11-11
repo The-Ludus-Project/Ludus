@@ -10797,7 +10797,8 @@ namespace
 void RenderGuidedFgMean(PreparedGraph& inoutGraph,
                         const GraphGpuFixture& fixture,
                         usize frameCount,
-                        Array<math::Vector3>& outMean)
+                        Array<math::Vector3>& outMean,
+                        ExportExtent extent = {})
 {
     constexpr uint32 PASS_COUNT = 10;
     REQUIRE(inoutGraph.Plan.Passes.GetSize() == PASS_COUNT);
@@ -10812,8 +10813,8 @@ void RenderGuidedFgMean(PreparedGraph& inoutGraph,
         REQUIRE(failures.TotalPixels == 0);
     }
     Array<math::Vector4> records;
-    ReadAccumulation(inoutGraph.Graph, fixture, PASS_COUNT - 1, records);
-    REQUIRE(outMean.TryResize(usize{WIDTH} * HEIGHT) == true);
+    ReadAccumulation(inoutGraph.Graph, fixture, PASS_COUNT - 1, records, extent);
+    REQUIRE(outMean.TryResize(usize{extent.Width} * extent.Height) == true);
     for (usize pixel = 0; pixel < outMean.GetSize(); ++pixel)
     {
         const math::Vector4& sum = records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS];
@@ -10988,18 +10989,22 @@ TEST_CASE("Guided FG preserves radiance when one point source is split into many
     }
     constexpr PackageLocation LOCATION{LUDUS_RG3_GUIDED_RESTIR_FG_PLUS_TEMPLATE_DIRECTORY,
                                        "rg2_guided_restir_fg_plus_template.lurgrt"};
+    // The template renders at half the view extent. Keep every light and temporal sample while
+    // reducing per-frame software rendering cost for the image-mean comparison.
+    constexpr ExportExtent VIEW_EXTENT{WIDTH, HEIGHT};
+    constexpr ExportExtent SAMPLE_EXTENT{VIEW_EXTENT.Width / 2, VIEW_EXTENT.Height / 2};
     Array<math::Vector3> many;
     room.Inputs.Lights = {lights.GetData(), lights.GetSize()};
     {
-        PreparedGraph graph(fixture, LOCATION, room, 1, {WIDTH * 2, HEIGHT * 2});
-        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, many);
+        PreparedGraph graph(fixture, LOCATION, room, 1, VIEW_EXTENT);
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, many, SAMPLE_EXTENT);
     }
     lights[0].Intensity = TOTAL_INTENSITY;
     room.Inputs.Lights = {lights.GetData(), 1};
     Array<math::Vector3> single;
     {
-        PreparedGraph graph(fixture, LOCATION, room, 1, {WIDTH * 2, HEIGHT * 2});
-        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, single);
+        PreparedGraph graph(fixture, LOCATION, room, 1, VIEW_EXTENT);
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, single, SAMPLE_EXTENT);
     }
     const math::Vector3 expected = ComputeImageMean(single);
     const math::Vector3 measured = ComputeImageMean(many);

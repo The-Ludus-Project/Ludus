@@ -120,7 +120,7 @@ QVector<WorldMaterialRow> CollectWorldMaterialRows(const WorldDocument& world,
 
 WorldMaterialsPanel::WorldMaterialsPanel(QWidget* parent)
     : QWidget(parent), mTree(new QTreeWidget(this)), mCopy(new QPushButton(QStringLiteral("Copy Resource ID"), this)),
-      mStatus(new QLabel(this))
+      mEdit(new QPushButton(QStringLiteral("Edit Material…"), this)), mStatus(new QLabel(this))
 {
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -140,6 +140,18 @@ WorldMaterialsPanel::WorldMaterialsPanel(QWidget* parent)
     mCopy->setProperty("density", QStringLiteral("compact"));
     mCopy->setMinimumHeight(mCopy->sizeHint().height());
     layout->addWidget(mCopy);
+    mEdit->setObjectName(QStringLiteral("worldEditListedMaterial"));
+    mEdit->setProperty("density", QStringLiteral("compact"));
+    mEdit->setMinimumHeight(mEdit->sizeHint().height());
+    layout->addWidget(mEdit);
+    connect(mEdit, &QPushButton::clicked, this, [this]() {
+        const QTreeWidgetItem* itemOrNull = mTree->currentItem();
+        if (itemOrNull != nullptr && itemOrNull->parent() != nullptr)
+        {
+            mStatus->hide();
+            Q_EMIT MaterialEditRequested(GetItemId(*itemOrNull));
+        }
+    });
 
     mStatus->setObjectName(QStringLiteral("worldMaterialsStatus"));
     mStatus->setWordWrap(true);
@@ -235,7 +247,12 @@ void WorldMaterialsPanel::RevealResource(const QString& id)
 
 void WorldMaterialsPanel::ShowMissingRenderable()
 {
-    mStatus->setText(QStringLiteral("This renderable is no longer in the World. Choose another renderable."));
+    ShowStatus(QStringLiteral("This renderable is no longer in the World. Choose another renderable."));
+}
+
+void WorldMaterialsPanel::ShowStatus(const QString& message)
+{
+    mStatus->setText(message);
     mStatus->show();
 }
 
@@ -267,6 +284,8 @@ bool WorldMaterialsPanel::tryActivateRenderable(const QTreeWidgetItem* itemOrNul
 
 void WorldMaterialsPanel::updateActions()
 {
-    mCopy->setEnabled(mTree->currentItem() != nullptr);
+    const QTreeWidgetItem* itemOrNull = mTree->currentItem();
+    mCopy->setEnabled(itemOrNull != nullptr);
+    mEdit->setEnabled(itemOrNull != nullptr && itemOrNull->parent() != nullptr);
 }
 } // namespace ludus::editor

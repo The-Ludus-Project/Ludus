@@ -346,6 +346,7 @@ TEST_CASE("semantic zoom keeps diagnostics visible on inactive nodes at every sc
                                {QStringLiteral("port"), QStringLiteral("texture")},
                                {QStringLiteral("direction"), QStringLiteral("output")}};
     const QString description = QStringLiteral("Texture contract needs attention");
+    canvas.ResetZoom();
     REQUIRE(canvas.ShowDiagnostic(location, description) == true);
     QGraphicsSimpleTextItem* label = FindNodeText(canvas, QStringLiteral("depth"), QStringLiteral("Error:"));
     REQUIRE(label != nullptr);

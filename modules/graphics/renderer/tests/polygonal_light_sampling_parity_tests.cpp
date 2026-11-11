@@ -37,7 +37,8 @@ using rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
 // Per-request readback limit; well below the default 256 KiB transfer profile.
 constexpr usize READBACK_CHUNK_BYTES = usize{64} * 1024;
-constexpr usize GROUP_COUNT = 64;
+// Include more minimum-roughness highlights in the deterministic parity corpus.
+constexpr usize GROUP_COUNT = 256;
 constexpr usize INVOCATION_COUNT = GROUP_COUNT * LUDUS_POLYGONAL_LIGHT_ESTIMATORS_GROUP_SIZE;
 static_assert(LUDUS_POLYGONAL_LIGHT_ESTIMATORS_LTC_TABLE_BINDING == LUDUS_GRAPH_BUFFER0_BINDING + 1,
               "The LTC table directly follows the results");

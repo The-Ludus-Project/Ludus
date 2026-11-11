@@ -5421,7 +5421,7 @@ Shape "trianglemesh" "point3 P" [2 -1 0 3 -1 0 2 1 0] "integer indices" [0 1 2]
     reopened.StopPreview();
 }
 
-TEST_CASE("Coated-diffuse World slot edits apply, undo, redo and reopen", "[editor][world][coating]")
+TEST_CASE("Material document edits a coated-diffuse slot with World history and preview", "[editor][world][coating]")
 {
     namespace format = ludus::content::scene_format;
     QTemporaryDir directory;
@@ -5472,20 +5472,75 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
     };
     const format::MaterialScattering original = getMaterial(workspace, selected).Scattering;
     REQUIRE(original.Model == format::MaterialModel::CoatedDiffuse);
-    const QString alpha = QStringLiteral("scene/coating/alpha");
-    const QString eta = QStringLiteral("scene/coating/eta");
-    const QString thickness = QStringLiteral("scene/coating/thickness");
-    Type(Field(workspace, alpha), QStringLiteral("0"));
-    CHECK(workspace.Apply() == false);
+    const auto openDocument = [](WorldWorkspace& inoutWorkspace, const QString& entry) {
+        QPushButton* openOrNull = inoutWorkspace.findChild<QPushButton*>(entry);
+        REQUIRE(openOrNull != nullptr);
+        REQUIRE(openOrNull->isEnabled() == true);
+        openOrNull->click();
+        QDialog* documentOrNull = inoutWorkspace.findChild<QDialog*>(QStringLiteral("worldMaterialDocument"));
+        REQUIRE(documentOrNull != nullptr);
+        REQUIRE(documentOrNull->isVisible() == true);
+        return documentOrNull;
+    };
+    const auto getInput = [](const QDialog& view, const QString& key) {
+        QLineEdit* inputOrNull = view.findChild<QLineEdit*>(QStringLiteral("materialCoating:") + key);
+        REQUIRE(inputOrNull != nullptr);
+        return inputOrNull;
+    };
+    const auto click = [](const QDialog& view, const QString& name) {
+        QPushButton* buttonOrNull = view.findChild<QPushButton*>(name);
+        REQUIRE(buttonOrNull != nullptr);
+        REQUIRE(buttonOrNull->isEnabled() == true);
+        buttonOrNull->click();
+    };
+    const auto getLabel = [](const QDialog& view, const QString& name) {
+        const QLabel* labelOrNull = view.findChild<QLabel*>(name);
+        REQUIRE(labelOrNull != nullptr);
+        return labelOrNull->text();
+    };
+    QPushButton* revealOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldRevealMaterial"));
+    REQUIRE(revealOrNull != nullptr);
+    revealOrNull->click();
+    QTreeWidget* listOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldMaterials"));
+    REQUIRE(listOrNull != nullptr);
+    REQUIRE(listOrNull->currentItem() != nullptr);
+    QTreeWidgetItem* resource = listOrNull->currentItem();
+    REQUIRE(resource->childCount() == 2);
+    const ludus::foundation::int32 slotIndex = resource->child(0)->data(0, Qt::UserRole).toString() == selected ? 0 : 1;
+    listOrNull->setCurrentItem(resource->child(slotIndex));
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    QDialog* view = openDocument(workspace, QStringLiteral("worldEditListedMaterial"));
+    const QListWidget* usesOrNull = view->findChild<QListWidget*>(QStringLiteral("materialUses"));
+    REQUIRE(usesOrNull != nullptr);
+    CHECK(usesOrNull->count() == 2);
+    // The opened slot remains the edit target when World selection changes.
+    REQUIRE(workspace.SelectEntity(sibling) == true);
+    const QString alpha = QStringLiteral("alpha");
+    const QString eta = QStringLiteral("eta");
+    const QString thickness = QStringLiteral("thickness");
+    const QString apply = QStringLiteral("materialApply");
+    const QString undo = QStringLiteral("materialUndo");
+    const QString preview = QStringLiteral("materialPreviewStatus");
+    Type(getInput(*view, alpha), QStringLiteral("0"));
+    click(*view, apply);
+    CHECK(getLabel(*view, QStringLiteral("materialStatus")).contains(QStringLiteral("enter a finite value")) == true);
     CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
 
-    Type(Field(workspace, alpha), QStringLiteral("0.25"));
-    Type(Field(workspace, eta), QStringLiteral("1.75"));
-    Type(Field(workspace, thickness), QStringLiteral("0.125"));
+    Type(getInput(*view, alpha), QStringLiteral("0.25"));
+    Type(getInput(*view, eta), QStringLiteral("1.75"));
+    Type(getInput(*view, thickness), QStringLiteral("0.125"));
     CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
-    REQUIRE(workspace.Apply() == true);
+    click(*view, apply);
+    INFO(qPrintable(getLabel(*view, QStringLiteral("materialStatus"))));
+    REQUIRE(workspace.Document()
+                .ScenePlacement(workspace.Document().Entity(selected))
+                .contains(QStringLiteral("coating")) == true);
+    CHECK(getLabel(*view, preview).contains(QStringLiteral("Preparing")) == true);
     CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
     WaitForValidatedScene(workspace);
+    CHECK(getLabel(*view, preview).contains(QStringLiteral("approximates")) == true);
     const auto checkEdited = [&](const WorldWorkspace& source) {
         const ludus::resources::SceneMaterial material = getMaterial(source, selected);
         CHECK(material.Scattering.Model == format::MaterialModel::CoatedDiffuse);
@@ -5500,22 +5555,21 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
     };
     checkEdited(workspace);
 
-    REQUIRE(workspace.CanUndo() == true);
-    workspace.Undo();
+    click(*view, undo);
     WaitForValidatedScene(workspace);
     CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
-    CHECK(Field(workspace, eta)->text().toFloat() == original.CoatingEta);
-    REQUIRE(workspace.CanRedo() == true);
-    workspace.Redo();
+    CHECK(getInput(*view, eta)->text().toFloat() == original.CoatingEta);
+    click(*view, QStringLiteral("materialRedo"));
     WaitForValidatedScene(workspace);
     checkEdited(workspace);
-    CHECK(Field(workspace, eta)->text() == QStringLiteral("1.75"));
+    CHECK(getInput(*view, eta)->text() == QStringLiteral("1.75"));
 
-    REQUIRE(workspace.Save() == true);
+    click(*view, QStringLiteral("materialSave"));
     WaitForValidatedScene(workspace);
     REQUIRE(workspace.Dirty() == false);
     CHECK(Read(directory.filePath(relativeLevel)) == importedLevel);
     CHECK(Read(catalog) == originalCatalog);
+    REQUIRE(view->close() == true);
     workspace.StopPreview();
     workspace.hide();
 
@@ -5529,31 +5583,38 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
     WaitForValidatedScene(reopened);
     REQUIRE(reopened.SelectEntity(selected) == true);
     checkEdited(reopened);
-    CHECK(Field(reopened, thickness)->text() == QStringLiteral("0.125"));
+    QDialog* reopenedView = openDocument(reopened, QStringLiteral("worldEditMaterial"));
+    CHECK(getInput(*reopenedView, thickness)->text() == QStringLiteral("0.125"));
 
     // Force the cook to fail after Apply. The draft and its history survive with the last accepted scene.
     const QString hiddenCatalog = catalog + QStringLiteral(".hidden");
     REQUIRE(QFile::rename(catalog, hiddenCatalog) == true);
-    Type(Field(reopened, alpha), QStringLiteral("0.5"));
-    REQUIRE(reopened.Apply() == true);
+    Type(getInput(*reopenedView, alpha), QStringLiteral("0.5"));
+    click(*reopenedView, apply);
     WaitForValidatedScene(reopened);
     CHECK(getMaterial(reopened, selected).Scattering.AlphaU == 0.25F);
-    CHECK(Field(reopened, alpha)->text() == QStringLiteral("0.5"));
+    CHECK(getInput(*reopenedView, alpha)->text() == QStringLiteral("0.5"));
+    CHECK(getLabel(*reopenedView, preview).contains(QStringLiteral("Viewport preparation failed")) == true);
     REQUIRE(QFile::rename(hiddenCatalog, catalog) == true);
-    REQUIRE(reopened.CanUndo() == true);
-    reopened.Undo();
+    click(*reopenedView, undo);
     WaitForValidatedScene(reopened);
     checkEdited(reopened);
 
-    QPushButton* restoreOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreCoating"));
-    REQUIRE(restoreOrNull != nullptr);
-    restoreOrNull->click();
+    CHECK(getLabel(*reopenedView, preview).contains(QStringLiteral("Viewport preparation failed")) == false);
+    click(*reopenedView, QStringLiteral("materialInherit"));
+    QMessageBox* confirmationOrNull =
+        reopenedView->findChild<QMessageBox*>(QStringLiteral("materialConfirmInheritance"));
+    REQUIRE(confirmationOrNull != nullptr);
+    CHECK(confirmationOrNull->defaultButton() == confirmationOrNull->button(QMessageBox::Cancel));
+    QPushButton* removeOrNull = confirmationOrNull->findChild<QPushButton*>(QStringLiteral("materialRemoveOverride"));
+    REQUIRE(removeOrNull != nullptr);
+    removeOrNull->click();
     WaitForValidatedScene(reopened);
     CHECK(getMaterial(reopened, selected).Scattering.AlphaU == original.AlphaU);
-    REQUIRE(reopened.CanUndo() == true);
-    reopened.Undo();
+    click(*reopenedView, undo);
     WaitForValidatedScene(reopened);
     checkEdited(reopened);
+    REQUIRE(reopenedView->close() == true);
     reopened.StopPreview();
 }
 

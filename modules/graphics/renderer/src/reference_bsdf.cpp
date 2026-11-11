@@ -8,6 +8,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 // Thanks to Google/Filament, "Physically Based Rendering in Filament", sections
 // 4.4 and 5.2.2, https://google.github.io/filament/main/filament.html: preserve L4's
@@ -125,20 +126,29 @@ struct GgxReflection final
     float32 Visibility = 0;
     float32 Pdf = 0;
 };
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): GGX alpha and the view, light and half-vector cosines.
-[[nodiscard]] GgxReflection EvaluateGgxReflection(float32 alpha, float32 nv, float32 nl, float32 nh) noexcept
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): GGX alpha, view/light cosines, and normal/half directions.
+[[nodiscard]] GgxReflection EvaluateGgxReflection(float32 alpha,
+                                                  float32 viewCosine,
+                                                  float32 lightCosine,
+                                                  math::Vector3 normalWorld,
+                                                  math::Vector3 halfWorld) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const float32 alphaSquared = alpha * alpha;
-    // This stable equivalent avoids cancellation at low roughness and nh~=1.
-    const float32 denominator = (1 - nh * nh) + nh * nh * alphaSquared;
+    // Thanks to Romain Guy and Mathias Agopian, "Physically Based Rendering in Filament", section 4.4.2,
+    // https://google.github.io/filament/Filament.html#toc4.4.2. The cross product preserves sine squared near
+    // the highlight. This matches material_scattering.slang and uses binary32 without Filament's fp16 clamp.
+    const float32 halfCosine = math::Clamp(math::Dot(normalWorld, halfWorld), 0.0F, 1.0F);
+    const float32 halfSineSquared = halfCosine > 0 ? math::LengthSquared(math::Cross(normalWorld, halfWorld)) : 1.0F;
+    const float32 denominator = halfSineSquared + halfCosine * halfCosine * alphaSquared;
     const float32 distribution = alphaSquared / (math::kPiF * denominator * denominator);
-    const float32 lambdaView = math::Sqrt(nv * nv * (1 - alphaSquared) + alphaSquared);
-    const float32 lambdaLight = math::Sqrt(nl * nl * (1 - alphaSquared) + alphaSquared);
+    const float32 lambdaView = math::Sqrt(viewCosine * viewCosine * (1 - alphaSquared) + alphaSquared);
+    const float32 lambdaLight = math::Sqrt(lightCosine * lightCosine * (1 - alphaSquared) + alphaSquared);
     return
     {
         .Distribution = distribution,
-        .Visibility = 0.5F / math::Max(nl * lambdaView + nv * lambdaLight, SMITH_DENOMINATOR_FLOOR),
-        .Pdf = distribution / (2 * (nv + lambdaView)),
+        .Visibility = 0.5F / math::Max(lightCosine * lambdaView + viewCosine * lambdaLight, SMITH_DENOMINATOR_FLOOR),
+        .Pdf = distribution / (2 * (viewCosine + lambdaView)),
     };
 }
 /// Reflect the view about a visible GGX normal sampled from a unit-disk point; unnormalized.
@@ -313,10 +323,9 @@ struct ProgramMixture final
     }
     if (lobe.Operation == format::MaterialLobeOperation::Conductor)
     {
-        const math::Vector3 h = Normalized(v + l);
-        const float32 nh = math::Clamp(math::Dot(n, h), 0.0F, 1.0F);
-        const float32 vh = math::Clamp(math::Dot(v, h), 0.0F, 1.0F);
-        const GgxReflection ggx = EvaluateGgxReflection(roughness * roughness, nv, nl, nh);
+        const math::Vector3 halfWorld = Normalized(v + l);
+        const float32 vh = math::Clamp(math::Dot(v, halfWorld), 0.0F, 1.0F);
+        const GgxReflection ggx = EvaluateGgxReflection(roughness * roughness, nv, nl, n, halfWorld);
         const math::Vector3 fresnel = {ComputeConductorFresnel(vh, lobe.Eta[0], lobe.K[0]),
                                        ComputeConductorFresnel(vh, lobe.Eta[1], lobe.K[1]),
                                        ComputeConductorFresnel(vh, lobe.Eta[2], lobe.K[2])};
@@ -428,10 +437,9 @@ ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::
     {
         return {b.BaseColor / math::kPiF, nl / math::kPiF};
     }
-    const math::Vector3 h = Normalized(v + l);
-    const float32 nh = math::Clamp(math::Dot(n, h), 0.0F, 1.0F);
-    const float32 vh = math::Clamp(math::Dot(v, h), 0.0F, 1.0F);
-    const GgxReflection ggx = EvaluateGgxReflection(GetMicrofacetAlpha(b), nv, nl, nh);
+    const math::Vector3 halfWorld = Normalized(v + l);
+    const float32 vh = math::Clamp(math::Dot(v, halfWorld), 0.0F, 1.0F);
+    const GgxReflection ggx = EvaluateGgxReflection(GetMicrofacetAlpha(b), nv, nl, n, halfWorld);
     const float32 distribution = ggx.Distribution;
     const float32 visibility = ggx.Visibility;
     const math::Vector3 f0 = math::Vector3{0.04F, 0.04F, 0.04F} * (1 - b.Metallic) + b.BaseColor * b.Metallic;

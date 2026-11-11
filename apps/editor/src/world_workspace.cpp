@@ -23,6 +23,7 @@
 #include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_material_document.h"
 #include "internal/world_materials_panel.h"
 #include "internal/world_terrain.h"
 
@@ -616,6 +617,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         if (Pending_ == false && SceneBusy() == false && SelectEntity(id) == false)
         {
             mMaterialsPanel->ShowMissingRenderable();
+        }
+    });
+    connect(mMaterialsPanel, &WorldMaterialsPanel::MaterialEditRequested, this, [this](const QString& id) {
+        QString error;
+        if (openMaterialDocument(id, error) == false)
+        {
+            mMaterialsPanel->ShowStatus(error);
         }
     });
     connect(mLightsPanel, &WorldLightsPanel::LightsChangeRequested, this, &WorldWorkspace::applyLightChange);
@@ -1736,7 +1744,16 @@ void WorldWorkspace::addMaterialGroup()
             group);
         help->setWordWrap(true);
         rows->addRow(help);
-        constexpr foundation::int32 FLOAT32_ROUND_TRIP_DIGITS = 9;
+        QPushButton* open = new QPushButton(QStringLiteral("Edit Material…"), group);
+        open->setObjectName(QStringLiteral("worldEditMaterial"));
+        connect(open, &QPushButton::clicked, this, [this]() {
+            QString error;
+            if (openMaterialDocument(Selected_, error) == false)
+            {
+                Changed(error);
+            }
+        });
+        rows->addRow(open);
         for (const CoatingField& property : COATING_FIELDS)
         {
             const QString key = QString::fromLatin1(property.Key);
@@ -1744,12 +1761,10 @@ void WorldWorkspace::addMaterialGroup()
                 coating.contains(key) == true
                     ? coating.value(key)
                     : QJsonValue(static_cast<foundation::float64>(materialOrNull->Scattering.*property.Member));
-            QLineEdit* field =
-                new QLineEdit(QString::number(initial.toDouble(), 'g', FLOAT32_ROUND_TRIP_DIGITS), group);
+            QLineEdit* field = new QLineEdit(group);
+            SetCoatingInput(*field, initial);
             const QString fieldKey = QStringLiteral("scene/coating/") + key;
             field->setObjectName(QStringLiteral("worldField:") + fieldKey);
-            field->setProperty("initialCoatingValue", initial.toDouble());
-            field->setProperty("initialCoatingText", field->text());
             Fields_.insert(fieldKey, field);
             connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
             rows->addRow(QString::fromLatin1(property.Label), field);
@@ -2034,26 +2049,170 @@ void WorldWorkspace::mapImportedMaterial(const QString& source, const QString& r
     Changed(QStringLiteral("Material mapped for %1 slots. Undo is available.").arg(affected.size()));
 }
 
-void WorldWorkspace::restoreInheritedCoating()
+bool WorldWorkspace::openMaterialDocument(const QString& entityId, QString& outError)
 {
     if (Pending_ == true || SceneBusy() == true)
     {
-        return;
+        outError = QStringLiteral("Apply or reset the World fields and wait for scene preparation before editing.");
+        return false;
     }
-    const QJsonObject entity = Document_.Entity(Selected_);
+    const RenderScene& presentedScene = Scene_->GetPresentedScene();
+    const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(presentedScene, entityId);
+    const QString resourceId =
+        Document_.GetMaterialResourceId(Document_.Entity(entityId).value(QStringLiteral("scene")).toObject());
+    if (materialOrNull == nullptr ||
+        materialOrNull->Scattering.Model != content::scene_format::MaterialModel::CoatedDiffuse ||
+        resourceId.isEmpty() == true ||
+        GetPresentedMaterialSlot(Scene_->GetPresentedLevel(), entityId, resourceId).isEmpty() == true)
+    {
+        outError = QStringLiteral("Choose a renderable with a loaded coated-diffuse material.");
+        return false;
+    }
+    const std::string_view sourceName = materialOrNull->Name.View();
+    const QString materialName = sourceName.empty() == true
+                                     ? ShortenIdentifier(resourceId)
+                                     : QString::fromUtf8(sourceName.data(), static_cast<qsizetype>(sourceName.size()));
+    MaterialDocumentState initial;
+    DescribeMaterialDocument(Document_, Scene_->GetPresentedLevel(), presentedScene, entityId, resourceId, initial);
+    if (initial.Coating.isEmpty() == true)
+    {
+        outError =
+            QStringLiteral("The coating is still unavailable. Restore the last working World edit and try again.");
+        return false;
+    }
+    const foundation::uint64 generation = DocumentGeneration_;
+    WorldMaterialDocument* existingOrNull = mMaterialDocumentOrNull.data();
+    if (existingOrNull != nullptr && existingOrNull->isVisible() == true)
+    {
+        if (existingOrNull->IsEditing(entityId, resourceId, generation) == true)
+        {
+            existingOrNull->raise();
+            existingOrNull->activateWindow();
+            return true;
+        }
+        if (existingOrNull->close() == false)
+        {
+            outError = QStringLiteral("Close the Material document before editing another slot.");
+            return false;
+        }
+    }
+
+    WorldMaterialDocument* view = new WorldMaterialDocument(this, entityId, generation);
+    mMaterialDocumentOrNull = view;
+    const auto isTargetCurrent = [this, generation, entityId, resourceId]() {
+        return DocumentGeneration_ == generation &&
+               Document_.GetMaterialResourceId(Document_.Entity(entityId).value(QStringLiteral("scene")).toObject()) ==
+                   resourceId;
+    };
+    const auto refresh = [this, view, isTargetCurrent, entityId, resourceId, materialName]() {
+        MaterialDocumentState state;
+        state.ResourceId = resourceId;
+        state.MaterialName = materialName;
+        if (isTargetCurrent() == false)
+        {
+            state.PreviewStatus = QStringLiteral(
+                "This slot or its material changed. Reopen the Material document from the current World slot.");
+            view->SetState(state);
+            return;
+        }
+        DescribeMaterialDocument(Document_,
+                                 Scene_->GetPresentedLevel(),
+                                 Scene_->GetPresentedScene(),
+                                 entityId,
+                                 resourceId,
+                                 state);
+        const bool isBusy = SceneBusy();
+        state.CanEdit = isBusy == false && Pending_ == false && state.Coating.isEmpty() == false;
+        state.CanUndo = CanUndo();
+        state.CanRedo = CanRedo();
+        state.CanSave = CanSave() == true && Pending_ == false && Dirty() == true;
+        state.WorldStatus = Status_->text();
+        if (isBusy == true && SavePending_ == false)
+        {
+            state.PreviewStatus = QStringLiteral("Preparing the World viewport. The last drawable view stays visible.");
+        }
+        else if (SceneError_.isEmpty() == false &&
+                 (Document_.Encode() != ValidatedWorld_ || Scene_->GetPresentedScene().Definition == nullptr))
+        {
+            state.PreviewStatus = QStringLiteral("Viewport preparation failed. %1 Undo World Edit to return to the "
+                                                 "working coating.")
+                                      .arg(SceneError_);
+            state.WorldStatus.clear();
+        }
+        else if (Pending_ == true)
+        {
+            state.PreviewStatus = QStringLiteral("Apply or reset the World inspector fields to continue here.");
+        }
+        else
+        {
+            state.PreviewStatus = QStringLiteral(
+                "The raster viewport approximates coat roughness. Compatible reference captures use all three values.");
+        }
+        view->SetState(state);
+    };
+    connect(this, &WorldWorkspace::DocumentChanged, view, refresh);
+    const auto apply = [this, view, isTargetCurrent, entityId](const QJsonObject& coating) {
+        if (isTargetCurrent() == false)
+        {
+            view->ShowError(QStringLiteral("The slot changed. Open its current material to edit it."));
+            return;
+        }
+        QString error;
+        if (setSlotCoating(entityId, coating, error) == false)
+        {
+            view->ShowError(error);
+            return;
+        }
+        view->AcceptEdits();
+        RenderInspector();
+        Snapshot();
+        Changed(coating.isEmpty() == true ? QStringLiteral("Inherited coating restored. Undo is available.")
+                                          : QStringLiteral("Coating applied to this slot. Undo is available."));
+    };
+    connect(view, &WorldMaterialDocument::CoatingRequested, this, apply);
+    connect(view, &WorldMaterialDocument::InheritanceRequested, this, [apply]() { apply({}); });
+    connect(view, &WorldMaterialDocument::UndoRequested, this, &WorldWorkspace::Undo);
+    connect(view, &WorldMaterialDocument::RedoRequested, this, &WorldWorkspace::Redo);
+    connect(view, &WorldMaterialDocument::SaveRequested, this, [this]() { static_cast<void>(Save()); });
+    refresh();
+    view->show();
+    return true;
+}
+
+bool WorldWorkspace::setSlotCoating(const QString& entityId, const QJsonObject& coating, QString& outError)
+{
+    const QJsonObject entity = Document_.Entity(entityId);
     QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+    if (Pending_ == true || SceneBusy() == true || scene.isEmpty() == true)
+    {
+        outError = QStringLiteral("The slot cannot be edited now. Finish pending World edits or wait for the scene.");
+        return false;
+    }
+    if (coating.isEmpty() == true)
+    {
+        scene.remove(QStringLiteral("coating"));
+    }
+    else
+    {
+        scene.insert(QStringLiteral("coating"), coating);
+    }
+    return Document_.Edit(entityId,
+                          entity.value(QStringLiteral("components")).toObject(),
+                          entity.value(QStringLiteral("name")).toString(),
+                          outError,
+                          &scene,
+                          coating.isEmpty() == true ? "Remove Coating" : "Edit Coating");
+}
+
+void WorldWorkspace::restoreInheritedCoating()
+{
+    const QJsonObject scene = Document_.Entity(Selected_).value(QStringLiteral("scene")).toObject();
     if (scene.contains(QStringLiteral("coating")) == false)
     {
         return;
     }
-    scene.remove(QStringLiteral("coating"));
     QString error;
-    if (Document_.Edit(Selected_,
-                       entity.value(QStringLiteral("components")).toObject(),
-                       entity.value(QStringLiteral("name")).toString(),
-                       error,
-                       &scene,
-                       "Remove Coating") == false)
+    if (setSlotCoating(Selected_, {}, error) == false)
     {
         Changed(error);
         return;
@@ -2850,7 +3009,8 @@ void WorldWorkspace::Changed(const QString& message)
     }
     for (const QString& name : {QStringLiteral("worldAssignProjectBrdf"),
                                 QStringLiteral("worldRestoreProjectBrdf"),
-                                QStringLiteral("worldRevealMaterial")})
+                                QStringLiteral("worldRevealMaterial"),
+                                QStringLiteral("worldEditMaterial")})
     {
         QPushButton* buttonOrNull = findChild<QPushButton*>(name);
         if (buttonOrNull != nullptr)
@@ -2908,20 +3068,14 @@ bool WorldWorkspace::readCoatingFields(QJsonObject& inoutScene, QString& outErro
         {
             return true;
         }
-        const QJsonValue initial = fieldOrNull->property("initialCoatingValue").toDouble();
-        QJsonValue value = initial;
-        if (fieldOrNull->text() != fieldOrNull->property("initialCoatingText").toString() &&
-            WorldDocument::ParseValue(property.MakeNumberProperty(), fieldOrNull->text(), value, outError) == false)
+        QJsonValue value;
+        bool hasFieldChanged = false;
+        if (ReadCoatingInput(property, *fieldOrNull, value, hasFieldChanged, outError) == false)
         {
-            outError = QStringLiteral("%1: enter a finite value from %2 to %3.")
-                           .arg(QString::fromLatin1(property.Label),
-                                QString::number(static_cast<foundation::float64>(property.Minimum)),
-                                QString::number(static_cast<foundation::float64>(property.Maximum)));
             outInvalidOrNull = fieldOrNull;
             return false;
         }
-        hasChanged = hasChanged == true || static_cast<foundation::float32>(value.toDouble()) !=
-                                               static_cast<foundation::float32>(initial.toDouble());
+        hasChanged = hasChanged == true || hasFieldChanged == true;
         coating.insert(key, value);
     }
     if (hasChanged == true)
@@ -3552,6 +3706,14 @@ bool WorldWorkspace::Recover()
 }
 bool WorldWorkspace::ConfirmDiscard()
 {
+    WorldMaterialDocument* materialOrNull = mMaterialDocumentOrNull.data();
+    if (materialOrNull != nullptr && materialOrNull->isVisible() == true && materialOrNull->HasUnappliedEdits() == true)
+    {
+        materialOrNull->ShowError(QStringLiteral("Apply or reset these fields before closing or changing the World."));
+        materialOrNull->raise();
+        materialOrNull->activateWindow();
+        return false;
+    }
     if (SceneBusy())
     {
         Changed(QStringLiteral("Wait for the scene operation to finish before closing or changing documents."));

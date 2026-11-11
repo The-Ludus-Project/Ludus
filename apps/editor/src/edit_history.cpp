@@ -5,6 +5,7 @@
 
 #include <QFont>
 #include <QFontMetrics>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QListView>
 #include <QPainter>
@@ -23,6 +24,27 @@ constexpr foundation::int32 TOAST_BOTTOM_MARGIN = design::SPACING_PAGE;
 constexpr foundation::int32 TOAST_BORDER_WIDTH = 1;
 constexpr foundation::int32 PANEL_ROW_SPACING = design::SPACING_EXTRA_SMALL;
 const QString VERB_SEPARATOR = QStringLiteral(": ");
+
+// Thanks to The Qt Company and the Qt contributors, Qt 6 QAbstractItemView::keyPressEvent.
+// https://codebrowser.dev/qt6/qtbase/src/widgets/itemviews/qabstractitemview.cpp.html#2525
+// macOS treats Return as an edit key. This read-only history view activates the selected state on every platform.
+class EditHistoryList final : public QListView
+{
+public:
+    using QListView::QListView;
+
+protected:
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        {
+            Q_EMIT activated(currentIndex());
+            event->accept();
+            return;
+        }
+        QListView::keyPressEvent(event);
+    }
+};
 
 /// Elides only text that does not fit; integer advances round down, so eliding at an exact fit would cut a short name.
 QString ElideToFit(const QFontMetrics& metrics, const QString& text, foundation::int32 width)
@@ -172,8 +194,8 @@ Qt::ItemFlags EditHistoryModel::flags(const QModelIndex& index) const
 }
 
 EditHistoryPanel::EditHistoryPanel(QWidget* parentOrNull)
-    : QWidget(parentOrNull), mModel(new EditHistoryModel(this)), mList(new QListView(this)), mCaption(new QLabel(this)),
-      mEmpty(new QLabel(this))
+    : QWidget(parentOrNull), mModel(new EditHistoryModel(this)), mList(new EditHistoryList(this)),
+      mCaption(new QLabel(this)), mEmpty(new QLabel(this))
 {
     setObjectName(QStringLiteral("editHistoryPanel"));
     QVBoxLayout* layout = new QVBoxLayout(this);
