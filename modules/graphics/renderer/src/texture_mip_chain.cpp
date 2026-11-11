@@ -1,6 +1,7 @@
 #include <ludus/graphics/renderer/texture_mip_chain.hpp>
 
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -46,7 +47,7 @@ uint32 ComputeLevelExtent(uint32 extent, uint32 level) noexcept
 /// Texels of one chain level, tightly packed in rows.
 struct LevelView final
 {
-    const uint8* Texels = nullptr;
+    BorrowedView<const uint8> Texels;
     uint32 Width = 0;
     uint32 Height = 0;
 };
@@ -134,9 +135,12 @@ BuildRgba8MipChain(const rhi::TextureCpuContent& source, uint32 levelCount, Rgba
     usize offset = rowBytes * source.Height;
     for (uint32 level = 1; level < levelCount; ++level)
     {
-        const LevelView parent{chain.Bytes.GetData() + parentOffset,
-                               ComputeLevelExtent(source.Width, level - 1),
-                               ComputeLevelExtent(source.Height, level - 1)};
+        const uint32 parentWidth = ComputeLevelExtent(source.Width, level - 1);
+        const uint32 parentHeight = ComputeLevelExtent(source.Height, level - 1);
+        const LevelView parent{
+            {chain.Bytes.GetData() + parentOffset, usize{parentWidth} * CHANNEL_COUNT * parentHeight},
+            parentWidth,
+            parentHeight};
         const uint32 width = ComputeLevelExtent(source.Width, level);
         const uint32 height = ComputeLevelExtent(source.Height, level);
         uint8* texels = chain.Bytes.GetData() + offset;
