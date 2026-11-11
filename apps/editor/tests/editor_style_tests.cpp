@@ -428,7 +428,7 @@ TEST_CASE("Keyboard focus draws the same accent ring on check boxes, radio butto
     layout->addWidget(radio);
     layout->addWidget(slider);
     root.show();
-    QApplication::setActiveWindow(&root);
+    root.activateWindow();
     REQUIRE(QTest::qWaitForWindowActive(&root) == true);
     const QColor accent = root.palette().color(QPalette::Link);
     for (QWidget* control : std::initializer_list<QWidget*>{check, radio, slider})
@@ -459,7 +459,7 @@ TEST_CASE("A focused list rings its current row, selected or not; an unfocused l
     layout->addWidget(list);
     layout->addWidget(elsewhere);
     root.show();
-    QApplication::setActiveWindow(&root);
+    root.activateWindow();
     REQUIRE(QTest::qWaitForWindowActive(&root) == true);
     const QColor accent = root.palette().color(QPalette::Link);
     const auto ringPixels = [list, &accent](int row) {

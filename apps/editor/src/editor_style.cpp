@@ -21,6 +21,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QStyleFactory>
 #include <QStyleOption>
 #include <QTabBar>
@@ -97,6 +98,15 @@ bool IsDarkPalette(const QPalette& palette)
 bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* value)
 {
     return widgetOrNull != nullptr && widgetOrNull->property(name).toString() == QLatin1String(value);
+}
+
+/// True when a control inside container takes focus with Tab.
+bool HasTabFocusableDescendant(const QWidget& container)
+{
+    const QList<QWidget*> children = container.findChildren<QWidget*>();
+    return std::any_of(children.begin(), children.end(), [](const QWidget* child) {
+        return (child->focusPolicy() & Qt::TabFocus) != 0;
+    });
 }
 
 /// True for the controls whose edge becomes the focus ring (see drawPrimitive and drawComplexControl).
@@ -265,6 +275,14 @@ void EditorStyle::polish(QWidget* widget)
         // PlaceholderText carries the secondary text colour in MakeEditorPalette, so palette changes follow.
         label->setForegroundRole(QPalette::PlaceholderText);
         label->setProperty(SECONDARY_LABEL_MARKER, true);
+    }
+    // A scroll area that wraps a panel of controls is not a Tab stop of its own: it would take focus without showing
+    // it, and the controls inside already scroll into view as Tab reaches them. One with nothing focusable inside
+    // keeps focus so the keyboard can still scroll it.
+    if (QScrollArea* scroll = qobject_cast<QScrollArea*>(widget);
+        scroll != nullptr && scroll->widget() != nullptr && HasTabFocusableDescendant(*scroll->widget()) == true)
+    {
+        scroll->setFocusPolicy(Qt::NoFocus);
     }
     // Hover repaints for the controls drawn here that the platform style does not already track.
     if (qobject_cast<QTabBar*>(widget) != nullptr || qobject_cast<QToolButton*>(widget) != nullptr)

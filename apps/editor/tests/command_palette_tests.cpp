@@ -233,7 +233,7 @@ TEST_CASE("Fuzzy match positions mark the matched letters in order", "[editor][p
     CHECK(FindFuzzyMatchPositions(QString(), QStringLiteral("Build Graph")).isEmpty() == true);
     CHECK(FindFuzzyMatchPositions(QStringLiteral("gb"), QStringLiteral("Build Graph")).isEmpty() == true);
     // A long label still matches: a match never scores below zero, which means no match.
-    const QString longLabel = QStringLiteral("a") + QString(QChar('z')).repeated(400);
+    const QString longLabel = QStringLiteral("a") + QString(400, QLatin1Char('z'));
     CHECK(ScoreFuzzyMatch(QStringLiteral("a"), longLabel) >= 0);
     CHECK(FindFuzzyMatchPositions(QStringLiteral("a"), longLabel) == QList<int>{0});
 }

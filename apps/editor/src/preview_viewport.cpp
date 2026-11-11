@@ -1,4 +1,5 @@
 #include "internal/preview_viewport.h"
+#include "internal/editor_style.h"
 #include "internal/empty_world_view.h"
 #include "internal/orientation_widget.h"
 #include "internal/preview_shading.h"
@@ -42,6 +43,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QToolBar>
 #include <QToolButton>
 #include <QToolTip>
@@ -110,6 +112,59 @@ void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isV
 /// Places every presentation widget (message and grid, render surface, readback canvas, graph
 /// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
 /// Only one of them is visible at a time, so they share the frame instead of stacking.
+/// Accent strip between the controls and the frame that shows when the viewport has keyboard focus. The native
+/// render surface covers the frame, so the ring cannot be painted around it; the strip keeps its height whether or
+/// not it is lit, so focus never resizes the surface.
+class ViewportFocusStrip final : public QWidget
+{
+public:
+    explicit ViewportFocusStrip(QWidget& viewport) : QWidget(&viewport), mViewport(viewport)
+    {
+        setObjectName(QStringLiteral("viewportFocusStrip"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        updateHeight();
+        viewport.installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched == &mViewport && (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut))
+        {
+            update();
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+    void changeEvent(QEvent* event) override
+    {
+        if (event->type() == QEvent::StyleChange)
+        {
+            updateHeight();
+        }
+        QWidget::changeEvent(event);
+    }
+    void paintEvent(QPaintEvent*) override
+    {
+        if (mViewport.hasFocus() == true)
+        {
+            // Link carries the accent the editor style draws focus rings with.
+            QPainter(this).fillRect(rect(), palette().color(QPalette::Link));
+        }
+    }
+
+private:
+    void updateHeight()
+    {
+        const EditorStyle* editorStyleOrNull = GetEditorStyleOrNull();
+        setFixedHeight(editorStyleOrNull != nullptr ? editorStyleOrNull->GetFocusRingWidth()
+                                                    : style()->pixelMetric(QStyle::PM_DefaultFrameWidth));
+    }
+
+    QWidget& mViewport;
+};
+
 class ViewportFrameLayout final : public QLayout
 {
 public:
@@ -1900,6 +1955,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mState->MessageOrNull->setWordWrap(true);
     // The orientation widget follows the message: it shows only while a frame is on screen.
     mState->MessageOrNull->installEventFilter(this);
+    mState->Layout->addWidget(new ViewportFocusStrip(*this));
     mState->FrameLayoutOrNull = new ViewportFrameLayout;
     mState->Layout->addLayout(mState->FrameLayoutOrNull, 1);
     mState->FrameLayoutOrNull->addWidget(mState->MessageOrNull);
@@ -2111,6 +2167,16 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     });
     QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this, *Preview_);
     mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls);
+    // Tab follows the toolbar left to right: the graph controls lead it, though they are created after the rest.
+    QWidget* previousInTabOrder = this;
+    for (QWidget* control : graphControls->findChildren<QWidget*>())
+    {
+        if ((control->focusPolicy() & Qt::TabFocus) != 0)
+        {
+            QWidget::setTabOrder(previousInTabOrder, control);
+            previousInTabOrder = control;
+        }
+    }
     SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);
     SetControlVisible(*mState->ControlsOrNull, findChild<QToolButton*>(QStringLiteral("viewportLiveShaders")), false);
     QToolButton* statistics = findChild<QToolButton*>(QStringLiteral("viewportStatistics"));

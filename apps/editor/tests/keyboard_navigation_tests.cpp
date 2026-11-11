@@ -7,12 +7,21 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAbstractButton>
+#include <QAbstractItemView>
+#include <QAbstractSlider>
+#include <QAbstractSpinBox>
 #include <QApplication>
+#include <QComboBox>
+#include <QDebug>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
+#include <QImage>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QSet>
+#include <QTabBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextEdit>
@@ -26,16 +35,31 @@ namespace
 {
 /// More Tab presses than the window has focusable controls; a walk that has not come round by then is stuck.
 constexpr int MAXIMUM_TAB_PRESSES = 600;
+/// Time for an opened project's documents and tool windows to settle.
+constexpr int SETTLE_MILLISECONDS = 200;
 
 bool IsInside(const QWidget* widgetOrNull, const QWidget& container)
 {
     return widgetOrNull != nullptr && (widgetOrNull == &container || container.isAncestorOf(widgetOrNull) == true);
 }
 
+/// True for the kinds of control the editor style draws a focus ring on (editor_style.cpp).
+bool HasFocusIndicator(const QWidget& widget)
+{
+    return qobject_cast<const QAbstractButton*>(&widget) != nullptr ||
+           qobject_cast<const QLineEdit*>(&widget) != nullptr || qobject_cast<const QComboBox*>(&widget) != nullptr ||
+           qobject_cast<const QAbstractSpinBox*>(&widget) != nullptr ||
+           qobject_cast<const QAbstractItemView*>(&widget) != nullptr ||
+           qobject_cast<const QPlainTextEdit*>(&widget) != nullptr ||
+           qobject_cast<const QTextEdit*>(&widget) != nullptr || qobject_cast<const QTabBar*>(&widget) != nullptr ||
+           qobject_cast<const QAbstractSlider*>(&widget) != nullptr ||
+           // The viewport lights the strip above its native surface instead of a ring.
+           widget.findChild<QWidget*>(QStringLiteral("viewportFocusStrip"), Qt::FindDirectChildrenOnly) != nullptr;
+}
+
 bool ActivateWindow(QWidget& window)
 {
     window.show();
-    QApplication::setActiveWindow(&window);
     window.activateWindow();
     return QTest::qWaitForWindowActive(&window);
 }
@@ -79,20 +103,36 @@ TEST_CASE("Tab indents in a code editor until Tab Moves Focus lets the keyboard 
     CHECK(later.tabChangesFocus() == false);
 }
 
-TEST_CASE("Tab walks the main window's panels and comes back round without a trap", "[editor][keyboard][shell]")
+namespace
 {
-    SetCodeEditorTabMovesFocus(false);
-    QTemporaryDir settings;
-    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
-    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
-    REQUIRE(ActivateWindow(window) == true);
+/// Walk window with Tab until focus comes back round, checking each stop, then check the loop covers the visible
+/// tool windows and that Shift+Tab walks it backwards.
+void CheckTabLoop(MainWindow& window)
+{
     QApplication::processEvents();
     if (window.focusWidget() == nullptr)
     {
-        static_cast<void>(window.focusNextChild());
+        // Start where Tab would: the first control in the window's focus chain that takes Tab focus.
+        for (QWidget* widget = window.nextInFocusChain(); widget != &window; widget = widget->nextInFocusChain())
+        {
+            if (widget->isVisible() == true && widget->isEnabled() == true &&
+                (widget->focusPolicy() & Qt::TabFocus) != 0)
+            {
+                widget->setFocus(Qt::TabFocusReason);
+                break;
+            }
+        }
+    }
+    REQUIRE(window.focusWidget() != nullptr);
+    // The window may start on a page container (Welcome) that is not itself a Tab stop; the first Tab leaves it for
+    // the first control, which starts the loop.
+    if ((window.focusWidget()->focusPolicy() & Qt::TabFocus) == 0)
+    {
+        QTest::keyClick(window.focusWidget(), Qt::Key_Tab);
     }
     QWidget* first = window.focusWidget();
     REQUIRE(first != nullptr);
+    INFO("Started on " << first->metaObject()->className() << " '" << first->objectName().toStdString() << "'");
 
     QList<QWidget*> visited{first};
     bool hasComeRound = false;
@@ -104,9 +144,21 @@ TEST_CASE("Tab walks the main window's panels and comes back round without a tra
         INFO("Tab from " << current->metaObject()->className() << " '" << current->objectName().toStdString() << "'");
         // A control that keeps focus on Tab traps the keyboard (WCAG 2.1.2).
         REQUIRE(next != current);
-        // Every stop is something a person can see.
+        INFO("Tab to " << next->metaObject()->className() << " '" << next->objectName().toStdString() << "'");
+        // Every stop is something a person can see, and shows that it has focus.
         CHECK(next->isVisible() == true);
         CHECK(next->isEnabled() == true);
+        CHECK(HasFocusIndicator(*next) == true);
+        if (qEnvironmentVariableIsSet("LUDUS_PRINT_TAB_ORDER") == true)
+        {
+            QString path;
+            for (const QWidget* widget = next; widget != nullptr && widget != &window; widget = widget->parentWidget())
+            {
+                path.prepend(QStringLiteral("/%1(%2)").arg(QString::fromLatin1(widget->metaObject()->className()),
+                                                           widget->objectName()));
+            }
+            qInfo().noquote() << press << path;
+        }
         hasComeRound = next == first;
         if (hasComeRound == false)
         {
@@ -117,7 +169,7 @@ TEST_CASE("Tab walks the main window's panels and comes back round without a tra
     // No control is reached twice in one round: the order is a single loop, not a cycle inside a panel.
     CHECK(QSet<QWidget*>(visited.begin(), visited.end()).size() == visited.size());
 
-    // The visible tool windows are part of the loop.
+    // The visible tool windows with controls are part of the loop.
     for (QDockWidget* dock : window.findChildren<QDockWidget*>())
     {
         if (dock->isVisible() == false || dock->visibleRegion().isEmpty() == true)
@@ -143,10 +195,56 @@ TEST_CASE("Tab walks the main window's panels and comes back round without a tra
     }
 
     // Shift+Tab walks the same loop backwards.
-    window.focusWidget()->clearFocus();
-    first->setFocus(Qt::TabFocusReason);
     QTest::keyClick(first, Qt::Key_Backtab, Qt::ShiftModifier);
     CHECK(window.focusWidget() == visited.last());
+}
+} // namespace
+
+TEST_CASE("Tab walks the main window's panels and comes back round without a trap", "[editor][keyboard][shell]")
+{
+    SetCodeEditorTabMovesFocus(false);
+    QTemporaryDir settings;
+    QTemporaryDir project;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    REQUIRE(ActivateWindow(window) == true);
+    SECTION("Welcome")
+    {
+        CheckTabLoop(window);
+    }
+    SECTION("A project's World with Properties")
+    {
+        const QString descriptor = QDir(project.path()).filePath(QStringLiteral("ludus.project.json"));
+        QFile file(descriptor);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        file.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+        file.close();
+        controller.OpenProject(descriptor);
+        REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
+        QTest::qWait(SETTLE_MILLISECONDS);
+        CheckTabLoop(window);
+
+        // The viewport's native surface hides a ring, so the strip above it lights with the focus accent instead.
+        QWidget* viewport = window.findChild<QWidget*>(QStringLiteral("worldViewport"));
+        REQUIRE(viewport != nullptr);
+        QWidget* strip = viewport->findChild<QWidget*>(QStringLiteral("viewportFocusStrip"));
+        REQUIRE(strip != nullptr);
+        CHECK(strip->height() > 0);
+        const QColor accent = strip->palette().color(QPalette::Link);
+        const auto isLit = [strip, &accent]() {
+            const QImage image = strip->grab().toImage();
+            return image.pixelColor(image.width() / 2, image.height() / 2).rgb() == accent.rgb();
+        };
+        viewport->setFocus(Qt::TabFocusReason);
+        REQUIRE(viewport->hasFocus() == true);
+        CHECK(isLit() == true);
+        const int surfaceHeight = viewport->height();
+        window.findChild<QWidget*>(QStringLiteral("worldEntities"))->setFocus(Qt::TabFocusReason);
+        CHECK(isLit() == false);
+        // Lighting the strip never resizes the render surface.
+        CHECK(viewport->height() == surfaceHeight);
+    }
 }
 
 TEST_CASE("Editable multi-line fields outside code pass Tab on", "[editor][keyboard][shell]")
