@@ -46,6 +46,26 @@ TEST_CASE("TryNormalize success, unit error, and aliasing", "[math][vector]")
     REQUIRE((a == Vector3{0, 1, 0}));
 }
 
+TEST_CASE("TryNormalize accepts finite vectors across the binary32 range", "[math][vector]")
+{
+    const float32 smallest = std::numeric_limits<float32>::denorm_min();
+    const float32 largest = std::numeric_limits<float32>::max();
+    const Vector3 unitX{1, 0, 0};
+
+    Vector3 normalized{};
+    REQUIRE(TryNormalize(Vector3{smallest, 0, 0}, normalized) == MathStatus::Success);
+    REQUIRE(normalized == unitX);
+    REQUIRE(TryNormalize(Vector3{smallest, 0, 0}, smallest, normalized) == MathStatus::Degenerate);
+    REQUIRE(normalized == unitX);
+
+    constexpr float64 UNIT_LENGTH_TOLERANCE = 2e-6;
+    REQUIRE(TryNormalize(Vector3{largest, largest, 0}, largest, normalized) == MathStatus::Success);
+    REQUIRE(normalized.X > 0.0f);
+    REQUIRE(normalized.X == normalized.Y);
+    REQUIRE(normalized.Z == 0.0f);
+    REQUIRE(std::fabs(ludus::math_test::VecLen(normalized) - 1.0) < UNIT_LENGTH_TOLERANCE);
+}
+
 TEST_CASE("TryNormalize failures leave output unchanged", "[math][vector]")
 {
     const Vector3 keep{9, 9, 9};
