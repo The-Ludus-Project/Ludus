@@ -1,6 +1,6 @@
 #include "internal/content_types.h"
 
-#include <QLatin1StringView>
+#include <QString>
 
 namespace ludus::editor
 {

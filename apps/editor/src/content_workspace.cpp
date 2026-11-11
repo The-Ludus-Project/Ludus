@@ -815,7 +815,13 @@ void ContentWorkspace::watchCatalogs()
 }
 bool ContentWorkspace::event(QEvent* event)
 {
-    if (event->type() == QEvent::DevicePixelRatioChange || event->type() == QEvent::Show)
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    constexpr QEvent::Type RATIO_CHANGE = QEvent::DevicePixelRatioChange;
+#else
+    // Before Qt 6.6 a widget hears of a new device pixel ratio only through the screen change it comes with.
+    constexpr QEvent::Type RATIO_CHANGE = QEvent::ScreenChangeInternal;
+#endif
+    if (event->type() == RATIO_CHANGE || event->type() == QEvent::Show)
     {
         Model_->SetDevicePixelRatio(devicePixelRatioF());
     }
