@@ -349,7 +349,11 @@ void ContentWorkspace::Refresh()
     auto request = Request();
     request.Operation = ++NextOperation_;
     ActiveOperation_ = request.Operation;
-    hideProblem();
+    // A refresh retries a catalog problem; an import failure stays until it is retried or dismissed.
+    if (mProblemImportId.isEmpty() == true)
+    {
+        hideProblem();
+    }
     Status_->setText(QStringLiteral("Reading content catalog…"));
     if (Jobs_->Start(request) == false)
     {
@@ -358,6 +362,11 @@ void ContentWorkspace::Refresh()
 }
 bool ContentWorkspace::Import(const QString& file, const QString& id)
 {
+    // A direct import starts now or not at all; QueueImport waits behind the running work instead.
+    if (Busy() == true)
+    {
+        return false;
+    }
     return QueueImport(file, id);
 }
 bool ContentWorkspace::QueueImport(const QString& file, const QString& id)
@@ -382,7 +391,10 @@ bool ContentWorkspace::QueueImport(const QString& file, const QString& id)
     ++mBatchTotal;
     Model_->SetOperation(id, { .Phase = ContentOperationPhase::Queued, .Progress = 0.0, .Message = {} });
     applyRows();
-    hideProblem();
+    if (mProblemImportId == id)
+    {
+        hideProblem();
+    }
     if (Jobs_->Busy() == false)
     {
         startNextImport();
@@ -560,7 +572,8 @@ void ContentWorkspace::showProblem(const ContentResult& result)
     if (result.Status == content::Status::Ok || result.Status == content::Status::Cancelled ||
         result.Status == content::Status::Pending)
     {
-        if (result.Request.Id.isEmpty() == true || result.Request.Id == mProblemImportId)
+        // A successful catalog read clears a catalog problem, and a successful import clears its own failure.
+        if (result.Request.Id == mProblemImportId)
         {
             hideProblem();
         }
