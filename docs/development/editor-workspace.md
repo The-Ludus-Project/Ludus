@@ -989,6 +989,7 @@ keeps the window and its draft open.
 | Ctrl+K / F3 | Command Palette (Ludus keymap; VS Code uses Ctrl+Shift+P) / Run Command in Context |
 | Ctrl+Alt+F9 | Record Profiling (every keymap profile) |
 | F9 | Toggle Breakpoint (when a code editor has focus) |
+| Ctrl+M (Control+Shift+M on macOS) | Tab Moves Focus on or off: Tab leaves code editors instead of indenting |
 | F1 | Keyboard Shortcuts help |
 
 Two keymap profiles ship: **Ludus** (the house layout, Ctrl+K opens the command
@@ -1002,13 +1003,39 @@ current project session.
 
 The **Command Palette** (Ctrl/Cmd+K) searches every menu command by name with fuzzy
 matching: letters must appear in order, and consecutive letters, word starts and
-short names rank higher. A command that is not available now is shown dimmed
-after the available ones and cannot run. **Run Command in Context** (F3) lists
-only the commands that can run right now. Enter runs the chosen command after
-the palette closes; Up and Down move through the list; Esc closes it. Both read
-the menu bar when they open and keep nothing while closed, so a command added
-to a menu appears in the palette and the F1 list with its label, shortcut and
-availability.
+short names rank higher. The matched letters are shown in bold, and each row
+shows the command's menu and shortcut. A command that is not available now is
+shown dimmed after the available ones and cannot run. **Run Command in Context**
+(F3) lists only the commands that can run right now. Focus stays in the search
+box: Enter runs the chosen command after the palette closes, Up and Down move
+through the list (wrapping), Page Up and Page Down move a page and stop at the
+ends, and Esc closes it. The search box's accessible description names the
+chosen command and its shortcut for screen readers. Both read the window's own
+QActions when they open and keep nothing while closed: the menu bar first, then
+commands that live only on a toolbar or the window itself. A command added to a
+menu or toolbar therefore appears in the palette and the F1 list with its label,
+shortcut and availability.
+
+### Keyboard focus and contrast
+
+Every control shows keyboard focus with the same accent ring (2 logical px, 3 in
+high contrast): buttons, fields, combo and spin boxes and tabs turn their edge
+into the ring; check boxes, radio buttons, sliders and the current row of a
+focused list, tree or table get the ring drawn around them. A selected row keeps
+its tinted fill and still shows the ring when it is the current row, so
+selection and focus never look the same. Tab walks the window's panels as one
+loop and comes back round; no control keeps focus on Tab. Multi-line prose
+fields pass Tab on. Code editors indent with Tab, so **Edit → Tab Moves Focus**
+(Ctrl+M, Control+Shift+M on macOS, as in VS Code) makes Tab and Shift+Tab move
+focus out of every code editor until it is turned off. The
+`[editor][keyboard]` tests walk the main window with Tab and fail on a trap.
+
+Colours come from [`config/design-tokens.json`](../../config/design-tokens.json).
+Every colour there is in at least one contrast pair or names why it is exempt
+(`contrastExempt`, decorative or inactive only), text pairs need WCAG AA 4.5:1
+(7:1 in high contrast) and control edges and the focus ring 3:1 (4.5:1).
+`scripts/python/test_design_tokens.py` and the `[design-tokens]` Editor tests
+fail when a token or the palette's mapping of tokens to Qt roles breaks one.
 
 The help dialog reads the same QAction bindings used by menus/toolbars, groups
 them by menu and has a search box. Qt's

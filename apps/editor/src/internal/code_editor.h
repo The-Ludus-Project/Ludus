@@ -291,4 +291,11 @@ private:
     /// it holds no Qt-child lifetime and is destroyed with the editor.
     mutable CodeMultiCursor mMultiCursor;
 };
+
+/// Make Tab and Shift+Tab move keyboard focus out of every code editor (true) or indent (false, the default), now and
+/// for editors created later. Edit > Tab Moves Focus drives it so a keyboard user is never trapped. GUI thread only.
+void SetCodeEditorTabMovesFocus(bool isTabMovingFocus);
+
+/// Whether Tab moves focus out of code editors instead of indenting. GUI thread only.
+[[nodiscard]] bool IsCodeEditorTabMovingFocus() noexcept;
 } // namespace ludus::editor

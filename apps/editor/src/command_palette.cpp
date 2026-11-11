@@ -2,6 +2,7 @@
 #include "design_tokens.h"
 
 #include "internal/theme_preferences.h"
+#include "internal/workspace_style.h"
 
 #include <QAction>
 #include <QApplication>
@@ -10,13 +11,17 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPainter>
 #include <QPropertyAnimation>
+#include <QSet>
 #include <QShowEvent>
 #include <QStyledItemDelegate>
+#include <QTextLayout>
 #include <QTimer>
+#include <QToolBar>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -41,6 +46,12 @@ constexpr int SHORTCUT_DIALOG_HEIGHT = 480;
 constexpr char PALETTE_COMMAND_ID[] = "tools.commandPalette";
 constexpr char RUN_IN_CONTEXT_COMMAND_ID[] = "tools.runInContext";
 const QChar GROUP_SEPARATOR = QChar(0x203A);
+constexpr qreal HALF = 0.5;
+/// Item data roles of a palette row: its entry index, its group and shortcut text, and the matched letters.
+constexpr int ENTRY_INDEX_ROLE = Qt::UserRole;
+constexpr int SECONDARY_TEXT_ROLE = Qt::UserRole + 1;
+constexpr int MATCHED_POSITIONS_ROLE = Qt::UserRole + 2;
+constexpr char WINDOW_GROUP[] = "Window";
 
 QString StripMnemonic(QString text)
 {
@@ -88,7 +99,59 @@ void CollectFromMenu(const QMenu& menu, const QString& group, QList<PaletteEntry
     }
 }
 
-/// Paints the label on the left and the group and shortcut, dimmer, on the right.
+/// The greedy in-order match behind ScoreFuzzyMatch, also reporting where each query letter landed.
+int MatchFuzzy(const QString& query, const QString& candidate, QList<int>& outPositions)
+{
+    outPositions.clear();
+    QString needle = query.toLower();
+    needle.remove(QLatin1Char(' '));
+    if (needle.isEmpty() == true)
+    {
+        return 0;
+    }
+    const QString haystack = candidate.toLower();
+    int score = 0;
+    int queryIndex = 0;
+    int previousMatch = -2;
+    for (int index = 0; index < haystack.size() && queryIndex < needle.size(); ++index)
+    {
+        if (haystack.at(index) != needle.at(queryIndex))
+        {
+            continue;
+        }
+        outPositions.append(index);
+        score += MATCH_SCORE;
+        if (index == previousMatch + 1)
+        {
+            score += CONSECUTIVE_BONUS;
+        }
+        if (index == 0 || haystack.at(index - 1).isLetterOrNumber() == false)
+        {
+            score += WORD_START_BONUS;
+        }
+        previousMatch = index;
+        ++queryIndex;
+    }
+    if (queryIndex < needle.size())
+    {
+        outPositions.clear();
+        return -1;
+    }
+    if (haystack.contains(needle) == true)
+    {
+        score += SUBSTRING_BONUS;
+    }
+    if (haystack.startsWith(needle) == true)
+    {
+        score += PREFIX_BONUS;
+    }
+    // Shorter candidates win ties: the same letters cover more of them. A match never scores below zero, which
+    // means no match.
+    return std::max(0, score - static_cast<int>(haystack.size() / MATCH_SCORE));
+}
+
+/// Paints the label on the left, with the letters the search matched in bold, and the group and shortcut in the
+/// secondary text colour on the right. A label too long for the room left is elided rather than run under them.
 class PaletteDelegate final : public QStyledItemDelegate
 {
 public:
@@ -98,18 +161,66 @@ public:
     {
         QStyleOptionViewItem copy = option;
         initStyleOption(&copy, index);
-        const QString secondary = index.data(Qt::UserRole + 1).toString();
-        copy.text = index.data(Qt::DisplayRole).toString();
-        QApplication::style()->drawControl(QStyle::CE_ItemViewItem, &copy, painter, copy.widget);
+        const QString label = copy.text;
+        const QString secondary = index.data(SECONDARY_TEXT_ROLE).toString();
+        const QList<int> matched = index.data(MATCHED_POSITIONS_ROLE).value<QList<int>>();
+        // The style paints the row (selection, hover and focus); the text is drawn here.
+        copy.text.clear();
+        QStyle* style = copy.widget != nullptr ? copy.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &copy, painter, copy.widget);
+        const bool isEnabled = copy.state.testFlag(QStyle::State_Enabled);
+        const bool isSelected = copy.state.testFlag(QStyle::State_Selected);
+        const QRect textRect = copy.rect.adjusted(ROW_PADDING, 0, -ROW_PADDING, 0);
+        const QFontMetrics metrics(copy.font);
+        int labelRight = textRect.right();
+        painter->save();
         if (secondary.isEmpty() == false)
         {
-            painter->save();
-            painter->setPen(copy.palette.color(QPalette::Disabled, QPalette::Text));
-            painter->drawText(copy.rect.adjusted(ROW_PADDING, 0, -ROW_PADDING, 0),
-                              Qt::AlignRight | Qt::AlignVCenter,
-                              secondary);
-            painter->restore();
+            painter->setPen(copy.palette.color(QPalette::Active, QPalette::PlaceholderText));
+            painter->drawText(textRect, Qt::AlignRight | Qt::AlignVCenter, secondary);
+            labelRight -= metrics.horizontalAdvance(secondary) + 2 * ROW_PADDING;
         }
+        const QRect labelRect(textRect.left(),
+                              textRect.top(),
+                              std::max(0, labelRight - textRect.left()),
+                              textRect.height());
+        QColor labelColour = copy.palette.color(QPalette::Active, QPalette::Text);
+        if (isEnabled == false)
+        {
+            labelColour = copy.palette.color(QPalette::Disabled, QPalette::Text);
+        }
+        else if (isSelected == true)
+        {
+            labelColour = copy.palette.color(QPalette::Active, QPalette::HighlightedText);
+        }
+        painter->setPen(labelColour);
+        const QString elided = metrics.elidedText(label, Qt::ElideRight, labelRect.width());
+        if (elided != label || matched.isEmpty() == true)
+        {
+            painter->drawText(labelRect, Qt::AlignLeft | Qt::AlignVCenter, elided);
+            painter->restore();
+            return;
+        }
+        QTextLayout layout(label, copy.font);
+        QList<QTextLayout::FormatRange> ranges;
+        QTextCharFormat bold;
+        bold.setFontWeight(QFont::Bold);
+        for (const int position : matched)
+        {
+            if (position >= 0 && position < label.size())
+            {
+                ranges.append({position, 1, bold});
+            }
+        }
+        layout.setFormats(ranges);
+        layout.beginLayout();
+        QTextLine line = layout.createLine();
+        line.setLineWidth(static_cast<qreal>(labelRect.width()));
+        layout.endLayout();
+        const qreal top =
+            static_cast<qreal>(labelRect.top()) + (static_cast<qreal>(labelRect.height()) - line.height()) * HALF;
+        layout.draw(painter, QPointF(static_cast<qreal>(labelRect.left()), top));
+        painter->restore();
     }
 };
 
@@ -141,50 +252,62 @@ QList<PaletteEntry> CollectPaletteEntries(const QMenuBar& menuBar)
     return entries;
 }
 
+QList<PaletteEntry> CollectWindowPaletteEntries(const QMainWindow& window)
+{
+    QList<PaletteEntry> entries = CollectPaletteEntries(*window.menuBar());
+    QSet<const QAction*> seen;
+    for (const PaletteEntry& entry : entries)
+    {
+        seen.insert(entry.Action.data());
+    }
+    const auto append = [&entries, &seen](QAction* action, const QString& group) {
+        if (action->isSeparator() == true || action->menu() != nullptr || seen.contains(action) == true)
+        {
+            return;
+        }
+        const QString id = action->objectName();
+        if (id == QLatin1String(PALETTE_COMMAND_ID) || id == QLatin1String(RUN_IN_CONTEXT_COMMAND_ID))
+        {
+            return;
+        }
+        PaletteEntry entry;
+        entry.Label = StripMnemonic(action->text());
+        if (entry.Label.isEmpty() == true)
+        {
+            return;
+        }
+        entry.Group = group;
+        entry.Shortcut = action->shortcut().toString(QKeySequence::NativeText);
+        entry.IsEnabled = action->isEnabled();
+        entry.Action = action;
+        seen.insert(action);
+        entries.append(entry);
+    };
+    for (QToolBar* toolbar : window.findChildren<QToolBar*>(QString(), Qt::FindDirectChildrenOnly))
+    {
+        for (QAction* action : toolbar->actions())
+        {
+            append(action, toolbar->windowTitle());
+        }
+    }
+    for (QAction* action : window.actions())
+    {
+        append(action, QString::fromLatin1(WINDOW_GROUP));
+    }
+    return entries;
+}
+
 int ScoreFuzzyMatch(const QString& query, const QString& candidate)
 {
-    QString needle = query.toLower();
-    needle.remove(QLatin1Char(' '));
-    if (needle.isEmpty() == true)
-    {
-        return 0;
-    }
-    const QString haystack = candidate.toLower();
-    int score = 0;
-    int queryIndex = 0;
-    int previousMatch = -2;
-    for (int index = 0; index < haystack.size() && queryIndex < needle.size(); ++index)
-    {
-        if (haystack.at(index) != needle.at(queryIndex))
-        {
-            continue;
-        }
-        score += MATCH_SCORE;
-        if (index == previousMatch + 1)
-        {
-            score += CONSECUTIVE_BONUS;
-        }
-        if (index == 0 || haystack.at(index - 1).isLetterOrNumber() == false)
-        {
-            score += WORD_START_BONUS;
-        }
-        previousMatch = index;
-        ++queryIndex;
-    }
-    if (queryIndex < needle.size())
-    {
-        return -1;
-    }
-    if (haystack.contains(needle) == true)
-    {
-        score += SUBSTRING_BONUS;
-    }
-    if (haystack.startsWith(needle) == true)
-    {
-        score += PREFIX_BONUS;
-    }
-    // Shorter candidates win ties: the same letters cover more of them.
-    return score - static_cast<int>(haystack.size() / MATCH_SCORE);
+    QList<int> positions;
+    return MatchFuzzy(query, candidate, positions);
+}
+
+QList<int> FindFuzzyMatchPositions(const QString& query, const QString& candidate)
+{
+    QList<int> positions;
+    static_cast<void>(MatchFuzzy(query, candidate, positions));
+    return positions;
 }
 
 PaletteIndexList RankPaletteEntries(const QList<PaletteEntry>& entries, const QString& query, bool isEnabledOnly)
@@ -233,6 +356,9 @@ CommandPalette::CommandPalette(QList<PaletteEntry> entries, bool isEnabledOnly, 
 {
     setObjectName(QStringLiteral("commandPalette"));
     setAttribute(Qt::WA_DeleteOnClose);
+    // A dialog is its own window, so it does not inherit the main window's palette; take the token palette here
+    // so its text and selection get the contrast-checked colours.
+    ApplyWorkspaceStyle(this);
     setModal(true);
     setAccessibleName(isEnabledOnly == true ? QStringLiteral("Run command in context")
                                             : QStringLiteral("Command palette"));
@@ -252,7 +378,13 @@ CommandPalette::CommandPalette(QList<PaletteEntry> entries, bool isEnabledOnly, 
     mListOrNull->setItemDelegate(new PaletteDelegate(mListOrNull));
     mListOrNull->setUniformItemSizes(true);
     layout->addWidget(mListOrNull);
+    // Keyboard first: say how to drive it, in the quiet secondary style.
+    QLabel* hint = new QLabel(QStringLiteral("↑ ↓ choose   Enter run   Esc close"), this);
+    hint->setObjectName(QStringLiteral("commandPaletteHint"));
+    hint->setProperty("visualRole", QStringLiteral("secondary"));
+    layout->addWidget(hint);
     setFixedWidth(PALETTE_WIDTH);
+    connect(mListOrNull, &QListWidget::currentRowChanged, this, [this]() { describeCurrent(); });
     connect(mSearchOrNull, &QLineEdit::textChanged, this, [this]() { refresh(); });
     connect(mListOrNull, &QListWidget::itemActivated, this, [this]() { runCurrent(); });
     connect(mSearchOrNull, &QLineEdit::returnPressed, this, [this]() { runCurrent(); });
@@ -274,7 +406,7 @@ PaletteIndexList CommandPalette::GetShownIndices() const
     QList<int> indices;
     for (int row = 0; row < mListOrNull->count(); ++row)
     {
-        const QVariant value = mListOrNull->item(row)->data(Qt::UserRole);
+        const QVariant value = mListOrNull->item(row)->data(ENTRY_INDEX_ROLE);
         if (value.isValid() == true)
         {
             indices.append(value.toInt());
@@ -318,38 +450,85 @@ bool CommandPalette::eventFilter(QObject* watched, QEvent* event)
 {
     if (watched == mSearchOrNull && event->type() == QEvent::KeyPress)
     {
+        // Focus stays in the search box; the arrows and page keys move the chosen command.
         const int key = static_cast<QKeyEvent*>(event)->key();
         if (key == Qt::Key_Down || key == Qt::Key_Up)
         {
-            const int step = key == Qt::Key_Down ? 1 : -1;
-            int row = mListOrNull->currentRow();
-            const int count = mListOrNull->count();
-            for (int tried = 0; tried < count; ++tried)
-            {
-                row = (row + step + count) % count;
-                if ((mListOrNull->item(row)->flags() & Qt::ItemIsEnabled) != 0)
-                {
-                    mListOrNull->setCurrentRow(row);
-                    break;
-                }
-            }
+            moveCurrent(key == Qt::Key_Down ? 1 : -1);
+            return true;
+        }
+        if (key == Qt::Key_PageDown || key == Qt::Key_PageUp)
+        {
+            moveCurrent(key == Qt::Key_PageDown ? PALETTE_VISIBLE_ROWS : -PALETTE_VISIBLE_ROWS);
             return true;
         }
     }
     return QDialog::eventFilter(watched, event);
 }
 
+void CommandPalette::moveCurrent(int step)
+{
+    const int count = mListOrNull->count();
+    if (count == 0)
+    {
+        return;
+    }
+    const int direction = step > 0 ? 1 : -1;
+    const bool isPage = step > 1 || step < -1;
+    int row = mListOrNull->currentRow();
+    if (isPage == true)
+    {
+        // A page stops at the ends instead of wrapping, then settles on the nearest available command.
+        row = std::clamp(row + step, 0, count - 1);
+        for (int tried = 0; tried < count; ++tried)
+        {
+            if ((mListOrNull->item(row)->flags() & Qt::ItemIsEnabled) != 0)
+            {
+                mListOrNull->setCurrentRow(row);
+                return;
+            }
+            row = std::clamp(row - direction, 0, count - 1);
+        }
+        return;
+    }
+    for (int tried = 0; tried < count; ++tried)
+    {
+        row = (row + direction + count) % count;
+        if ((mListOrNull->item(row)->flags() & Qt::ItemIsEnabled) != 0)
+        {
+            mListOrNull->setCurrentRow(row);
+            return;
+        }
+    }
+}
+
+void CommandPalette::describeCurrent()
+{
+    // The list never takes focus, so the search box tells assistive technology which command Enter runs.
+    const QListWidgetItem* item = mListOrNull->currentItem();
+    if (item == nullptr || item->data(ENTRY_INDEX_ROLE).isValid() == false)
+    {
+        mSearchOrNull->setAccessibleDescription(QString());
+        return;
+    }
+    const PaletteEntry& entry = mEntries.at(item->data(ENTRY_INDEX_ROLE).toInt());
+    mSearchOrNull->setAccessibleDescription(
+        entry.Shortcut.isEmpty() == true ? entry.Label : entry.Label + QStringLiteral(", ") + entry.Shortcut);
+}
+
 void CommandPalette::refresh()
 {
     mListOrNull->clear();
-    const QList<int> indices = RankPaletteEntries(mEntries, mSearchOrNull->text(), mIsEnabledOnly);
+    const QString query = mSearchOrNull->text();
+    const QList<int> indices = RankPaletteEntries(mEntries, query, mIsEnabledOnly);
     const int shown = std::min(static_cast<int>(indices.size()), PALETTE_MAX_RESULTS);
     for (int row = 0; row < shown; ++row)
     {
         const PaletteEntry& entry = mEntries.at(indices.at(row));
         QListWidgetItem* item = new QListWidgetItem(entry.Label, mListOrNull);
-        item->setData(Qt::UserRole, indices.at(row));
-        item->setData(Qt::UserRole + 1, GetSecondaryText(entry));
+        item->setData(ENTRY_INDEX_ROLE, indices.at(row));
+        item->setData(SECONDARY_TEXT_ROLE, GetSecondaryText(entry));
+        item->setData(MATCHED_POSITIONS_ROLE, QVariant::fromValue(FindFuzzyMatchPositions(query, entry.Label)));
         item->setToolTip(entry.Action != nullptr ? entry.Action->statusTip() : QString());
         if (entry.IsEnabled == false)
         {
@@ -377,11 +556,11 @@ void CommandPalette::refresh()
 void CommandPalette::runCurrent()
 {
     const QListWidgetItem* item = mListOrNull->currentItem();
-    if (item == nullptr || item->data(Qt::UserRole).isValid() == false)
+    if (item == nullptr || item->data(ENTRY_INDEX_ROLE).isValid() == false)
     {
         return;
     }
-    const PaletteEntry& entry = mEntries.at(item->data(Qt::UserRole).toInt());
+    const PaletteEntry& entry = mEntries.at(item->data(ENTRY_INDEX_ROLE).toInt());
     if (entry.IsEnabled == false || entry.Action == nullptr)
     {
         return;
@@ -399,6 +578,7 @@ void CommandPalette::runCurrent()
 
 ShortcutList::ShortcutList(const QList<PaletteEntry>& entries, QWidget* parentOrNull) : QDialog(parentOrNull)
 {
+    ApplyWorkspaceStyle(this);
     for (const PaletteEntry& entry : entries)
     {
         if (entry.Shortcut.isEmpty() == false)

@@ -1,4 +1,5 @@
 #include "internal/preview_viewport.h"
+#include "internal/editor_style.h"
 #include "internal/empty_world_view.h"
 #include "internal/orientation_widget.h"
 #include "internal/preview_shading.h"
@@ -42,6 +43,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QToolBar>
 #include <QToolButton>
 #include <QToolTip>
@@ -122,6 +124,58 @@ void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isV
 /// Places every presentation widget (message and grid, render surface, readback canvas, graph
 /// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
 /// Only one of them is visible at a time, so they share the frame instead of stacking.
+/// Accent strip along the bottom edge of the viewport controls, just above the frame, lit while the viewport has
+/// keyboard focus. The native render surface covers the frame, so a ring cannot be painted around it; the strip
+/// floats over the toolbar's edge rather than taking layout space, so focus never resizes the surface.
+class ViewportFocusStrip final : public QWidget
+{
+public:
+    ViewportFocusStrip(QWidget& inoutViewport, QWidget& inoutControls)
+        : QWidget(&inoutViewport), mViewport(inoutViewport), mControls(inoutControls)
+    {
+        setObjectName(QStringLiteral("viewportFocusStrip"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+        inoutViewport.installEventFilter(this);
+        inoutControls.installEventFilter(this);
+        place();
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        const QEvent::Type type = event->type();
+        const bool isFocusChange = watched == &mViewport && (type == QEvent::FocusIn || type == QEvent::FocusOut);
+        const bool isControlsChange = watched == &mControls && (type == QEvent::Resize || type == QEvent::Move ||
+                                                                type == QEvent::Show || type == QEvent::Hide);
+        if (isFocusChange == true || isControlsChange == true)
+        {
+            place();
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+    void paintEvent(QPaintEvent*) override
+    {
+        // Link carries the accent the editor style draws focus rings with.
+        QPainter(this).fillRect(rect(), palette().color(QPalette::Link));
+    }
+
+private:
+    void place()
+    {
+        const EditorStyle* editorStyleOrNull = GetEditorStyleOrNull();
+        const int height = editorStyleOrNull != nullptr ? editorStyleOrNull->GetFocusRingWidth()
+                                                        : style()->pixelMetric(QStyle::PM_DefaultFrameWidth);
+        const QRect controls = mControls.geometry();
+        setGeometry(controls.left(), controls.bottom() + 1 - height, controls.width(), height);
+        setVisible(mViewport.hasFocus() == true && mControls.isVisible() == true);
+        raise();
+    }
+
+    QWidget& mViewport;
+    QWidget& mControls;
+};
+
 class ViewportFrameLayout final : public QLayout
 {
 public:
@@ -1909,6 +1963,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                            navigationHint);
     });
     mState->Layout->addWidget(controls);
+    new ViewportFocusStrip(*this, *controls);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->StatisticsLabelOrNull = new QLabel(this);
     mState->StatisticsLabelOrNull->setObjectName(QStringLiteral("viewportStatisticsOverlay"));
@@ -2152,6 +2207,16 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     });
     QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this, *Preview_);
     mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls);
+    // Tab follows the toolbar left to right: the graph controls lead it, though they are created after the rest.
+    QWidget* previousInTabOrder = this;
+    for (QWidget* control : graphControls->findChildren<QWidget*>())
+    {
+        if ((control->focusPolicy() & Qt::TabFocus) != 0)
+        {
+            QWidget::setTabOrder(previousInTabOrder, control);
+            previousInTabOrder = control;
+        }
+    }
     SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);
     SetControlVisible(*mState->ControlsOrNull, findChild<QToolButton*>(QStringLiteral("viewportLiveShaders")), false);
     QToolButton* statistics = findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
