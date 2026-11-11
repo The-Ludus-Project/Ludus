@@ -26,7 +26,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_foundation_strings_tests tests/strings_tests.cpp)
     target_include_directories(ludus_foundation_strings_tests PRIVATE src)
     target_link_libraries(ludus_foundation_strings_tests
-        PRIVATE Ludus::FoundationStrings Ludus::FoundationContainers Catch2::Catch2WithMain Threads::Threads)
+        PRIVATE Ludus::FoundationThreading Ludus::FoundationStrings Ludus::FoundationContainers Catch2::Catch2WithMain Threads::Threads)
     ludus_apply_project_defaults(ludus_foundation_strings_tests)
     ludus_enable_test_exceptions(ludus_foundation_strings_tests)
     add_test(NAME ludus_foundation_strings_tests COMMAND ludus_foundation_strings_tests)

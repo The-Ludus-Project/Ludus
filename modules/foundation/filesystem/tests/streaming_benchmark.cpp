@@ -1,20 +1,21 @@
 #include "streaming_benchmark.hpp"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/async.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #if defined(LUDUS_PLATFORM_LINUX) || defined(LUDUS_PLATFORM_MACOS)
 #    include <sys/resource.h>
 #endif
@@ -30,6 +31,8 @@
 // See docs/development/filesystem-benchmark.md for measurement boundaries.
 using namespace ludus::foundation;
 using namespace ludus::foundation::filesystem;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 constexpr usize FILE_COUNT = 72;
@@ -65,23 +68,29 @@ struct Slot final
     bool IsOccupied = false;
     usize RequestIndex = 0;
 };
+/// Upper bound on the busy threads a benchmark run may request for CPU contention.
+constexpr usize MAX_CONTENTION_THREADS = 64;
 class CpuContentionLoad final
 {
 public:
     ~CpuContentionLoad()
     {
         mShouldStop.store(true);
-        for (std::thread& thread : mThreads)
+        for (usize index = 0; index < mCount; ++index)
         {
-            thread.join();
+            LUDUS_REQUIRE(mThreads[index].Join() == threading::ThreadStatus::Ok);
         }
     }
-    void Start(usize count)
+    /// Start count busy threads; false when count exceeds MAX_CONTENTION_THREADS (nothing starts).
+    [[nodiscard]] bool Start(usize count)
     {
-        mThreads.EnsureCapacity(count);
+        if (count > MAX_CONTENTION_THREADS)
+        {
+            return false;
+        }
         for (usize index = 0; index < count; ++index)
         {
-            mThreads.AddInPlace([this, index] {
+            LUDUS_REQUIRE(mThreads[index].Start([this, index] {
                 uint64 value = index + 1;
                 mReady.fetch_add(1);
                 while (mShouldStop.load(std::memory_order_relaxed) == false)
@@ -94,19 +103,22 @@ public:
                     }
                     mChecksum.fetch_xor(value, std::memory_order_relaxed);
                 }
-            });
+            }) == threading::ThreadStatus::Ok);
+            ++mCount;
         }
         while (mReady.load() != count)
         {
-            std::this_thread::yield();
+            threading::YieldThread();
         }
+        return true;
     }
 
 private:
     std::atomic<usize> mReady{0};
     std::atomic<bool> mShouldStop{false};
     std::atomic<uint64> mChecksum{0};
-    Array<std::thread> mThreads;
+    StaticArray<threading::Thread, MAX_CONTENTION_THREADS> mThreads;
+    usize mCount = 0;
 };
 bool ParseUnsigned(std::string_view input, uint64 maximum, uint64& outValue)
 {
@@ -351,7 +363,10 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
         return 26;
     }
     CpuContentionLoad contention;
-    contention.Start(contentionCount);
+    if (contention.Start(contentionCount) == false)
+    {
+        return 28;
+    }
     usize next = 0;
     usize collected = 0;
     uint64 bytes = 0;
@@ -378,7 +393,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
             const Request& request = requests[next];
             if (now - start < request.Release)
             {
-                std::this_thread::sleep_for(std::chrono::nanoseconds(request.Release - (now - start)));
+                threading::SleepFor(timing::Duration{request.Release - (now - start)});
                 continue;
             }
             Sample& sample = samples[next];
@@ -412,7 +427,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
         }
         if (now < nextPoll)
         {
-            std::this_thread::sleep_for(std::chrono::nanoseconds(nextPoll - now));
+            threading::SleepFor(timing::Duration{nextPoll - now});
             continue;
         }
         ++pollTicks;

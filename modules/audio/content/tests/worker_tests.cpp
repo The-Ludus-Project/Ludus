@@ -1,11 +1,11 @@
 #include <ludus/audio/content/loader.h>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "internal/worker_test_hooks.hpp"
 #include "wav_fixture.h"
 
 #include <atomic>
 #include <filesystem>
-#include <thread>
 #include <time.h>
 #include <unistd.h>
 
@@ -15,6 +15,7 @@
 using namespace ludus::foundation;
 namespace content = ludus::content;
 namespace audio = ludus::audio;
+namespace threading = ludus::foundation::threading;
 namespace
 {
 void WaitTurn()
@@ -241,9 +242,10 @@ TEST_CASE("Blocking cancellation still waits for native worker exit", "[content]
     gate.Started = true;
     gate.AllowWork();
     REQUIRE(Wait(gate.Completed));
-    std::thread release([&] { gate.AllowExit(); });
+    threading::Thread release;
+    REQUIRE(release.Start([&] { gate.AllowExit(); }) == threading::ThreadStatus::Ok);
     loader.Cancel();
-    release.join();
+    REQUIRE(release.Join() == threading::ThreadStatus::Ok);
     REQUIRE(gate.Exited.load());
     audio::content::Lease lease;
     content::Diagnostic diagnostic;

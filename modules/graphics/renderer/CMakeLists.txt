@@ -252,7 +252,7 @@ if(TARGET ludus_rhi_render_tests)
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/selection_outline_render_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
-    target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsRenderer Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
+    target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
     ludus_enable_test_exceptions(ludus_renderer_render_tests)
     if(APPLE)
@@ -562,7 +562,7 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_render_graph_dxil_tests tests/render_graph_dxil_tests.cpp tests/render_graph_render_tests.cpp
         tests/render_graph_pool_render_tests.cpp tests/render_graph_default_render_tests.cpp)
-    target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationContainers
+    target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::GraphicsRenderer Ludus::FoundationContainers
         Ludus::FoundationMath Catch2::Catch2WithMain)
     target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE LUDUS_TEST_DXIL=1)
     ludus_apply_project_defaults(ludus_render_graph_dxil_tests)
@@ -607,7 +607,7 @@ endif()
 
 if(TARGET ludus_renderer_render_tests)
     add_executable(ludus_wave_graph_tests tests/wave_tracing_graph_tests.cpp tests/wave_scene_graph_tests.cpp)
-    target_link_libraries(ludus_wave_graph_tests PRIVATE Ludus::GraphicsRenderer Ludus::Resources Ludus::Content
+    target_link_libraries(ludus_wave_graph_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::Resources Ludus::Content
         Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_wave_graph_tests)
     ludus_enable_test_exceptions(ludus_wave_graph_tests)
@@ -654,7 +654,7 @@ if(TARGET ludus_renderer_render_tests)
     set_tests_properties(ludus_metropolis_graph_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 180)
     add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp tests/one_more_vertex_oracle.cpp
         tests/shadow_occlusion_oracle.cpp)
-    target_link_libraries(ludus_render_graph_ray_tests PRIVATE Ludus::GraphicsRenderer
+    target_link_libraries(ludus_render_graph_ray_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer
         Ludus::FoundationFilesystem Ludus::FoundationTime Ludus::SceneSource Catch2::Catch2WithMain)
     # The engine's test scene files, which the scene-source checks compare with the fixtures.
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE LUDUS_TEST_SCENES_DIR="${PROJECT_SOURCE_DIR}/tests/scenes")

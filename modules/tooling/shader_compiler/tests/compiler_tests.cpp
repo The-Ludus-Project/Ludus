@@ -2,17 +2,20 @@
 
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
-#include <thread>
 
 using namespace ludus::foundation;
 namespace compiler = ludus::tooling::shader_compiler;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 BorrowedView<const char> View(const char* text)
@@ -40,12 +43,16 @@ struct Fixture final
 };
 compiler::Status Await(compiler::Client& inoutClient, compiler::Result& outResult)
 {
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    timing::Deadline deadline;
+    if (deadline.Arm(timing::Now(), timing::Seconds(10)) != timing::TimeStatus::Ok)
+    {
+        return compiler::Status::Pending;
+    }
     compiler::Status status = compiler::Status::Pending;
-    while (status == compiler::Status::Pending && std::chrono::steady_clock::now() < deadline)
+    while (status == compiler::Status::Pending && deadline.IsExpired(timing::Now()) == false)
     {
         status = inoutClient.Poll(outResult);
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
     }
     return status;
 }

@@ -4,8 +4,10 @@
 // listening socket. The final cases run WindowManager against a real
 // HostedWindowEndpoint.
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/input/key.h>
 #include <ludus/input/keyboard_event.h>
@@ -24,11 +26,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <sched.h>
 #include <string_view>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <thread>
 #include <unistd.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -58,6 +58,7 @@ using ludus::platform::WindowSystem;
 using ludus::platform::WindowVisibility;
 
 namespace hosted = ludus::platform::hosted;
+namespace threading = ludus::foundation::threading;
 
 namespace
 {
@@ -776,16 +777,16 @@ class EndpointPumpThread final
 {
 public:
     explicit EndpointPumpThread(HostedWindowEndpoint& inoutEndpoint)
-        : mThread([this, &inoutEndpoint] {
-              const Timestamp start = ludus::foundation::time::Now();
-              while (mShouldStop.load() == false &&
-                     ludus::foundation::time::Now().Nanoseconds - start.Nanoseconds < PUMP_DEADLINE_NANOSECONDS)
-              {
-                  static_cast<void>(inoutEndpoint.Pump());
-                  static_cast<void>(::sched_yield());
-              }
-          })
     {
+        LUDUS_REQUIRE(mThread.Start([this, &inoutEndpoint] {
+            const Timestamp start = ludus::foundation::time::Now();
+            while (mShouldStop.load() == false &&
+                   ludus::foundation::time::Now().Nanoseconds - start.Nanoseconds < PUMP_DEADLINE_NANOSECONDS)
+            {
+                static_cast<void>(inoutEndpoint.Pump());
+                threading::YieldThread();
+            }
+        }) == threading::ThreadStatus::Ok);
     }
     ~EndpointPumpThread()
     {
@@ -798,15 +799,15 @@ public:
     void Stop()
     {
         mShouldStop.store(true);
-        if (mThread.joinable() == true)
+        if (mThread.IsJoinable() == true)
         {
-            mThread.join();
+            static_cast<void>(mThread.Join());
         }
     }
 
 private:
     std::atomic<bool> mShouldStop{false};
-    std::thread mThread;
+    threading::Thread mThread;
 };
 } // namespace
 

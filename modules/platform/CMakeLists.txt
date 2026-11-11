@@ -273,7 +273,7 @@ if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE)
     endif()
     target_include_directories(ludus_platform_hosted_tests PRIVATE src)
     target_compile_definitions(ludus_platform_hosted_tests PRIVATE LUDUS_PLATFORM_HOSTED=1)
-    target_link_libraries(ludus_platform_hosted_tests PRIVATE
+    target_link_libraries(ludus_platform_hosted_tests PRIVATE Ludus::FoundationThreading
         Ludus::Platform Ludus::FoundationContainers Ludus::FoundationStrings Ludus::FoundationTime
         Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_platform_hosted_tests)
@@ -333,7 +333,7 @@ if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_ENABLE_WAYLAND)
     # The visibility cases name xdg_toplevel_state values from the generated protocol header.
     target_include_directories(ludus_platform_wayland_tests PRIVATE "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}")
     add_dependencies(ludus_platform_wayland_tests ludus_platform_wayland_protocols)
-    target_link_libraries(ludus_platform_wayland_tests PRIVATE
+    target_link_libraries(ludus_platform_wayland_tests PRIVATE Ludus::FoundationTime
         Ludus::Platform Catch2::Catch2WithMain PkgConfig::WAYLAND_CLIENT)
     target_compile_definitions(ludus_platform_wayland_tests PRIVATE LUDUS_PLATFORM_WAYLAND=1)
     ludus_apply_project_defaults(ludus_platform_wayland_tests)
@@ -357,7 +357,7 @@ if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_ENABLE_WAYLAND)
     # LIVE compositor keyboard lifecycle. Skips (code 4) unless LUDUS_TEST_WAYLAND
     # is set with a running compositor.
     add_executable(ludus_platform_live_keyboard_tests tests/wayland_live_keyboard_tests.cpp)
-    target_link_libraries(ludus_platform_live_keyboard_tests PRIVATE
+    target_link_libraries(ludus_platform_live_keyboard_tests PRIVATE Ludus::FoundationTime
         Ludus::Platform Ludus::Input Catch2::Catch2WithMain PkgConfig::WAYLAND_CLIENT)
     target_compile_definitions(ludus_platform_live_keyboard_tests PRIVATE LUDUS_PLATFORM_WAYLAND=1)
     ludus_apply_project_defaults(ludus_platform_live_keyboard_tests)

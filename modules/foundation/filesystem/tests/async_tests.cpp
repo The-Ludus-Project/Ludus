@@ -1,21 +1,25 @@
 #include <ludus/foundation/filesystem/async.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 
 #include "pack_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <new>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::foundation::filesystem;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
+constexpr uint64 ENTER_WAIT_SECONDS = 5;
 struct Control
 {
     std::mutex Mutex;
@@ -34,10 +38,29 @@ struct Control
         Released = true;
         Wake.notify_all();
     }
+    /// Poll until the provider entered the read or the wait budget expires.
     bool Wait() noexcept
     {
-        std::unique_lock lock(Mutex);
-        return Wake.wait_for(lock, std::chrono::seconds(5), [this] { return Entered; });
+        timing::Deadline deadline;
+        if (deadline.Arm(timing::Now(), timing::Seconds(ENTER_WAIT_SECONDS)) != timing::TimeStatus::Ok)
+        {
+            return false;
+        }
+        while (true)
+        {
+            {
+                const std::lock_guard lock(Mutex);
+                if (Entered == true)
+                {
+                    return true;
+                }
+            }
+            if (deadline.IsExpired(timing::Now()) == true)
+            {
+                return false;
+            }
+            threading::YieldThread();
+        }
     }
 };
 struct Unblock
@@ -119,7 +142,7 @@ ReadCompletion Collect(AsyncReader& reader)
     const uint64 until = AsyncNow() + 5'000'000'000;
     while (reader.Poll(completion) == false && AsyncNow() < until)
     {
-        std::this_thread::yield();
+        threading::YieldThread();
     }
     REQUIRE(completion.Handle.Sequence != 0);
     REQUIRE(completion.State == RequestState::Completed);
@@ -244,7 +267,8 @@ TEST_CASE("Async shutdown drains running reads cancels queue and preserves termi
     REQUIRE(state.Wait());
     REQUIRE(reader.Submit(file, 1, {buffers + 1, 1}, b) == AsyncStatus::Ok);
     std::atomic<bool> stopped{false};
-    std::thread shutdown([&] { stopped = reader.Shutdown() == AsyncStatus::Ok; });
+    threading::Thread shutdown;
+    REQUIRE(shutdown.Start([&] { stopped = reader.Shutdown() == AsyncStatus::Ok; }) == threading::ThreadStatus::Ok);
     // Wait for shutdown's queued cancellation intent without races or sleeping.
     AsyncStatus admission = AsyncStatus::CapacityExceeded;
     const auto until = AsyncNow() + 5'000'000'000ULL;
@@ -252,11 +276,11 @@ TEST_CASE("Async shutdown drains running reads cancels queue and preserves termi
     {
         RequestHandle spare;
         admission = reader.Submit(file, 2, {}, spare);
-        std::this_thread::yield();
+        threading::YieldThread();
     }
     const bool drainedEarly = stopped.load();
     state.Release();
-    shutdown.join();
+    REQUIRE(shutdown.Join() == threading::ThreadStatus::Ok);
     REQUIRE(admission == AsyncStatus::Stopped);
     REQUIRE_FALSE(drainedEarly);
     REQUIRE(stopped);
@@ -287,7 +311,7 @@ TEST_CASE("Async completed backlog limits admission stale handles never cancel r
     while (phase != RequestState::Completing && AsyncNow() < until)
     {
         REQUIRE(reader.GetState(a, phase) == AsyncStatus::Ok);
-        std::this_thread::yield();
+        threading::YieldThread();
     }
     REQUIRE(phase == RequestState::Completing);
     REQUIRE(reader.Cancel(a) == AsyncStatus::Ok); // Too late to change the terminal result.
@@ -344,10 +368,10 @@ TEST_CASE("Concurrent async producers cancellation and completion preserve every
     uint8 destinations[TOTAL][4]{};
     bool delivered[TOTAL]{};
     std::atomic<bool> failed{false};
-    std::thread producers[4];
+    threading::Thread producers[4];
     for (usize thread = 0; thread < 4; ++thread)
     {
-        producers[thread] = std::thread([&, thread] {
+        REQUIRE(producers[thread].Start([&, thread] {
             for (usize index = thread; index < TOTAL; index += 4)
             {
                 RequestHandle handle;
@@ -355,7 +379,7 @@ TEST_CASE("Concurrent async producers cancellation and completion preserve every
                 do
                 {
                     status = reader.Submit(file, 0, destinations[index], handle, {0, 0, index, nullptr});
-                    std::this_thread::yield();
+                    threading::YieldThread();
                 } while (status == AsyncStatus::CapacityExceeded);
                 if (status != AsyncStatus::Ok)
                 {
@@ -368,7 +392,7 @@ TEST_CASE("Concurrent async producers cancellation and completion preserve every
                     failed = true;
                 }
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
     usize count = 0;
     bool valid = true;
@@ -394,14 +418,14 @@ TEST_CASE("Concurrent async producers cancellation and completion preserve every
         }
         else
         {
-            std::this_thread::yield();
+            threading::YieldThread();
         }
     }
     // Stop admission before joining on failure, so bounded producers cannot remain stuck.
     REQUIRE(reader.Shutdown() == AsyncStatus::Ok);
-    for (auto& producer : producers)
+    for (threading::Thread& producer : producers)
     {
-        producer.join();
+        REQUIRE(producer.Join() == threading::ThreadStatus::Ok);
     }
     REQUIRE_FALSE(failed);
     REQUIRE(valid);

@@ -25,17 +25,18 @@
 #include "internal/mpsc_queue.hpp"
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "format_test_name.hpp"
 
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <thread>
 
 #if defined(_WIN32)
 #    include <process.h>
@@ -49,6 +50,8 @@ namespace
 {
 using namespace ludus::foundation;
 using namespace ludus::foundation::logging;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 
 inline constexpr LogCategory LogRegression{"Regression"};
 
@@ -190,7 +193,7 @@ TEST_CASE("F3: records become visible on the timed flush interval", "[logging][r
     bool visible = false;
     for (int i = 0; i < 100 && visible == false; ++i)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        threading::SleepFor(timing::Milliseconds(10));
         visible = read_file(path).find("timed-flush visibility marker") != std::string::npos;
     }
     CHECK(visible);
@@ -365,22 +368,22 @@ TEST_CASE("F1: concurrent producers do not corrupt or lose framing", "[logging][
     config.Directory = dir_str;
     LogSystem::Initialize(config);
 
-    constexpr int kThreads = 8;
+    constexpr usize THREAD_COUNT = 8;
     constexpr int kPerThread = 200;
-    Array<std::thread> workers;
-    workers.EnsureCapacity(kThreads);
-    for (int t = 0; t < kThreads; ++t)
+    StaticArray<threading::Thread, THREAD_COUNT> workers;
+    for (usize t = 0; t < THREAD_COUNT; ++t)
     {
-        workers.AddInPlace([t] {
+        const threading::ThreadStatus started = workers[t].Start([t] {
             for (int i = 0; i < kPerThread; ++i)
             {
                 LUDUS_LOG_WARN(LogRegression, "producer={} record={}", t, i);
             }
         });
+        REQUIRE(started == threading::ThreadStatus::Ok);
     }
-    for (auto& w : workers)
+    for (threading::Thread& w : workers)
     {
-        w.join();
+        REQUIRE(w.Join() == threading::ThreadStatus::Ok);
     }
     LogSystem::Flush();
     LogSystem::Shutdown();
@@ -407,7 +410,7 @@ TEST_CASE("F1: concurrent producers do not corrupt or lose framing", "[logging][
         }
     }
     CHECK_FALSE(torn);
-    CHECK(marker_lines == kThreads * kPerThread);
+    CHECK(marker_lines == THREAD_COUNT * kPerThread);
     std::filesystem::remove_all(dir);
 }
 
@@ -492,17 +495,18 @@ TEST_CASE("breadcrumb ring: concurrent writers and a reader are race-free",
     LogSystem::Initialize(config);
 
     std::atomic<bool> stop{false};
-    Array<std::thread> writers;
-    writers.EnsureCapacity(6);
-    for (int t = 0; t < 6; ++t)
+    constexpr usize WRITER_COUNT = 6;
+    StaticArray<threading::Thread, WRITER_COUNT> writers;
+    for (usize t = 0; t < WRITER_COUNT; ++t)
     {
-        writers.AddInPlace([t, &stop] {
+        const threading::ThreadStatus started = writers[t].Start([t, &stop] {
             int i = 0;
             while (stop.load(std::memory_order_relaxed) == false)
             {
                 LUDUS_LOG_WARN(LogRegression, "crumb t={} i={}", t, i++);
             }
         });
+        REQUIRE(started == threading::ThreadStatus::Ok);
     }
     // Concurrent reader: repeatedly snapshot the ring while writers run. Under
     // TSan this exercises the atomic-generation read protocol (requirements R34).
@@ -513,9 +517,9 @@ TEST_CASE("breadcrumb ring: concurrent writers and a reader are race-free",
         (void)n;
     }
     stop.store(true, std::memory_order_relaxed);
-    for (auto& w : writers)
+    for (threading::Thread& w : writers)
     {
-        w.join();
+        REQUIRE(w.Join() == threading::ThreadStatus::Ok);
     }
     CHECK(true); // the real assertion is "TSan reports no race"
     LogSystem::Shutdown();
@@ -612,22 +616,22 @@ TEST_CASE("async: many concurrent producers, bounded accounting, no corruption",
     config.Directory = dir_str;
     LogSystem::Initialize(config);
 
-    constexpr int kThreads = 8;
+    constexpr usize THREAD_COUNT = 8;
     constexpr int kPer = 500;
-    Array<std::thread> workers;
-    workers.EnsureCapacity(kThreads);
-    for (int t = 0; t < kThreads; ++t)
+    StaticArray<threading::Thread, THREAD_COUNT> workers;
+    for (usize t = 0; t < THREAD_COUNT; ++t)
     {
-        workers.AddInPlace([t] {
+        const threading::ThreadStatus started = workers[t].Start([t] {
             for (int i = 0; i < kPer; ++i)
             {
                 LUDUS_LOG_INFO(LogRegression, "t={} i={}", t, i);
             }
         });
+        REQUIRE(started == threading::ThreadStatus::Ok);
     }
-    for (auto& w : workers)
+    for (threading::Thread& w : workers)
     {
-        w.join();
+        REQUIRE(w.Join() == threading::ThreadStatus::Ok);
     }
     const FlushResult f = LogSystem::Flush(FlushKind::Visible, 5000);
     CHECK((f.Status == LogStatus::Ok || f.Status == LogStatus::TimedOut));
@@ -636,7 +640,7 @@ TEST_CASE("async: many concurrent producers, bounded accounting, no corruption",
     // Accounting is bounded and honest: delivered + dropped never exceeds
     // submitted, and every submitted record is either written or dropped once
     // fully drained (requirements R38/R48).
-    CHECK(stats.Submitted >= static_cast<ludus::foundation::uint64>(kThreads * kPer));
+    CHECK(stats.Submitted >= static_cast<ludus::foundation::uint64>(THREAD_COUNT * kPer));
     CHECK(stats.Written + stats.Dropped <= stats.Submitted);
 
     CHECK(LogSystem::Shutdown() == LogStatus::Ok);
@@ -745,7 +749,7 @@ TEST_CASE("async: Error is visible without an explicit flush (R54)", "[logging][
     bool visible = false;
     for (int i = 0; i < 200 && visible == false; ++i)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        threading::SleepFor(timing::Milliseconds(5));
         visible = read_file(path).find("async error visibility marker") != std::string::npos;
     }
     CHECK(visible);

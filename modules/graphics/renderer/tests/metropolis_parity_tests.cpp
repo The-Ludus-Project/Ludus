@@ -3,23 +3,23 @@
 #include "metropolis_parity.h"
 #include "metropolis_parity_layout.h"
 #include <catch2/catch_test_macros.hpp>
-#include <chrono>
 #include <cstring>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/metropolis.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
-#include <thread>
 namespace
 {
 using namespace ludus::foundation;
 namespace internal = ludus::graphics::renderer::internal;
 namespace rhi = ludus::graphics::rhi;
+namespace threading = ludus::foundation::threading;
 using AdvanceChainFunction = decltype(&internal::AdvanceMetropolisChain);
 using rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
@@ -27,7 +27,7 @@ constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
 constexpr uint64 COLD_KERNEL_TIMEOUT_NANOSECONDS =
     LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
 /// Leave CPU time for the software adapter's compiler and submission workers.
-constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
+constexpr time::Duration COMPLETION_POLL_INTERVAL = time::Milliseconds(1);
 constexpr usize READBACK_CHUNK_BYTES = usize{64} * 1024;
 constexpr usize GROUP_COUNT = LUDUS_MH_PARITY_INVOCATIONS / LUDUS_MH_PARITY_GROUP_SIZE;
 constexpr usize RESULT_BYTES =
@@ -181,7 +181,7 @@ void WaitReady(rhi::DeviceHandle device,
     RasterStatus status = rhi::GetStatus(device, handle);
     while (status == RasterStatus::Pending && time::NowTicks() - start < timeoutNanoseconds)
     {
-        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
         REQUIRE(rhi::PollLifetime(device) == RasterStatus::Ready);
         status = rhi::GetStatus(device, handle);
     }
@@ -341,7 +341,7 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
     const uint64 beginning = time::NowTicks();
     while (executed == RasterStatus::NotReady && time::NowTicks() - beginning < TIMEOUT_NANOSECONDS)
     {
-        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
         executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
     }
     REQUIRE(executed == RasterStatus::Ready);
@@ -354,7 +354,7 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
         const uint64 start = time::NowTicks();
         while (status == RasterStatus::Pending && time::NowTicks() - start < TIMEOUT_NANOSECONDS)
         {
-            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
             REQUIRE(rhi::PollLifetime(device) == RasterStatus::Ready);
             status = rhi::GetStatus(device, ticket);
         }

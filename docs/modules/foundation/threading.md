@@ -112,6 +112,52 @@ site once and never allocates. A capture contains:
 Jobs skipped as Blocked or Cancelled have no slice. A dependent with several
 prerequisites receives the arrow of the prerequisite that released it.
 
+## Threads, sleeping and yielding
+
+`<ludus/foundation/threading/thread.hpp>` provides `Thread`, one joinable native
+thread with explicit status, and the calling thread's `SleepFor`, `YieldThread`
+and `GetCallingThreadId`. They are implemented over the module's native
+backends (pthreads, Win32, the serial browser backend), so no engine or test
+translation unit needs `<thread>` or `<chrono>`; on libstdc++ those two headers
+pull `<format>` into every file that includes them, which the
+[build-time budget](../../development/build-profiling.md) measures. Tests and
+tools use these with FoundationTime's `Seconds`, `Milliseconds` and
+`Microseconds` for polling loops and deadlines (ADR 0003).
+
+```cpp
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
+
+bool RunOnWorker(ludus::foundation::uint32& inoutCounter) noexcept
+{
+    // The callable is referenced, not copied: keep it alive and unmoved until Join.
+    auto body = [&inoutCounter]() { ++inoutCounter; };
+    threading::Thread worker;
+    if (worker.Start(body) != threading::ThreadStatus::Ok)
+    {
+        return false; // Unavailable on browser builds or when the OS refuses a thread.
+    }
+    threading::SleepFor(timing::Milliseconds(1));
+    threading::YieldThread();
+    return worker.Join() == threading::ThreadStatus::Ok && inoutCounter == 1;
+}
+```
+
+`Start` takes a function pointer with a borrowed context, a caller-owned
+callable by reference, or a callable by value that the thread stores inline
+(at most `Thread::INLINE_CALLABLE_BYTES`, rejected at compile time otherwise);
+borrowed inputs and captured referents must outlive `Join`, and a stored copy is
+destroyed when `Join` returns. A started thread must be joined before the
+object is destroyed, and the object must not move while the thread runs: keep
+pools in a `StaticArray<Thread, COUNT>` or in locals. `Join` on an idle thread
+and `Start` on a running one report `InvalidState` without changing anything.
+`SleepFor` waits at least the interval at the operating system's granularity
+(whole milliseconds on Windows) and resumes interrupted waits; the browser
+backend returns immediately and reports one constant thread identity.
+
 ## Dedicated worker and owner completions
 
 `<ludus/foundation/threading/worker_queue.hpp>` provides `WorkerQueue` for native

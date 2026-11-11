@@ -9,7 +9,9 @@
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/views.hpp>
@@ -23,13 +25,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <span>
 #include <string>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::graphics::renderer::testing;
@@ -37,6 +37,8 @@ namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace packages = ludus::render_graph_packages;
 namespace shaders = ludus::shaders;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 // DXBC header: code, 16-byte hash, version and total size; unsigned output has a constant hash.
@@ -120,11 +122,12 @@ TEST_CASE("The Windows shader worker reloads a running Direct3D 12 graph", "[.na
     REQUIRE(reload.Initialize({rootPath.data(), rootPath.size()},
                               {"main.lurgrt", sizeof("main.lurgrt") - 1},
                               activation) == rhi::RasterStatus::Ready);
-    constexpr std::chrono::seconds DELIVERY_TIMEOUT{60};
+    constexpr uint64 DELIVERY_TIMEOUT_SECONDS = 60;
     uint64 observedRequest = 0;
     const auto awaitDelivery = [&](ReloadState expected) {
-        const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + DELIVERY_TIMEOUT;
-        while (std::chrono::steady_clock::now() < deadline)
+        timing::Deadline deadline;
+        REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(DELIVERY_TIMEOUT_SECONDS)) == timing::TimeStatus::Ok);
+        while (deadline.IsExpired(timing::Now()) == false)
         {
             const ludus::runtime::shader_development::ReloadReport report = reload.Service(time::NowTicks());
             if (report.State == expected && report.Request > observedRequest)
@@ -132,7 +135,7 @@ TEST_CASE("The Windows shader worker reloads a running Direct3D 12 graph", "[.na
                 observedRequest = report.Request;
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         FAIL("Timed out waiting for runtime publication delivery");
     };
@@ -163,7 +166,7 @@ TEST_CASE("The Windows shader worker reloads a running Direct3D 12 graph", "[.na
             {
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         FAIL("Timed out waiting for ready pipelines and scene activation");
     };

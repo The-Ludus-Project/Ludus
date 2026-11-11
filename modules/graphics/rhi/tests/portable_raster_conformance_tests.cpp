@@ -10,6 +10,9 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -21,9 +24,6 @@
 #    include <string_view>
 #endif
 
-#include <chrono>
-#include <thread>
-
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
@@ -31,6 +31,8 @@
 // Vulkan and Metal. No backend-specific expected image or rendering substitute.
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 constexpr uint32 WIDTH = 64;
@@ -121,10 +123,11 @@ ludus::foundation::BorrowedView<const uint8> GetBytes(const StaticArray<T, COUNT
 template <typename Handle>
 void RequireReady(rhi::DeviceHandle device, Handle handle, rhi::RasterStatus status = rhi::RasterStatus::Pending)
 {
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
+    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
     {
-        std::this_thread::yield();
+        threading::YieldThread();
         status = rhi::GetStatus(device, handle);
     }
     REQUIRE(status == rhi::RasterStatus::Ready);

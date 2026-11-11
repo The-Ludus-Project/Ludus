@@ -1,9 +1,9 @@
 // Standalone measurement tool; standard maps are comparison baselines.
 #include <ludus/foundation/containers/sorted_map.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <map>
 #include <unordered_map>
@@ -13,7 +13,7 @@ using ludus::foundation::SortedMap;
 using ludus::foundation::StaticArray;
 using ludus::foundation::uint64;
 using ludus::foundation::usize;
-using Clock = std::chrono::steady_clock;
+namespace timing = ludus::foundation::time;
 
 namespace
 {
@@ -27,12 +27,11 @@ float64 MedianNs(Function&& function, usize operations)
     StaticArray<float64, kSamples> samples{};
     for (usize sample = 0; sample < kSamples; ++sample)
     {
-        const auto start = Clock::now();
+        const timing::Timestamp start = timing::Now();
         const uint64 result = function();
-        const auto stop = Clock::now();
+        const timing::Timestamp stop = timing::Now();
         checksum = result;
-        samples[sample] =
-            std::chrono::duration<float64, std::nano>(stop - start).count() / static_cast<float64>(operations);
+        samples[sample] = static_cast<float64>(stop.Nanoseconds - start.Nanoseconds) / static_cast<float64>(operations);
     }
     std::sort(samples.begin(), samples.end());
     return samples[kSamples / 2];

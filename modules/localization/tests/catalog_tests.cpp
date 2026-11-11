@@ -1,5 +1,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/localization/catalog.hpp>
 
 #include "fixture.hpp"
@@ -7,13 +9,13 @@
 #include <atomic>
 #include <span>
 #include <string>
-#include <thread>
 #include <type_traits>
 #include <utility>
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::localization;
+namespace threading = ludus::foundation::threading;
 using ludus::foundation::AllocationDomain;
 using ludus::foundation::Array;
 using ludus::foundation::GetSystemAllocationDomain;
@@ -211,28 +213,42 @@ TEST_CASE("caller storage is copied; separate leases read safely during replacem
     }
     MessageBinding binding;
     REQUIRE(active.BindMessage(localization_fixture::kMenuPlay, binding) == Status::Ok);
-    std::atomic<bool> good{true};
-    Array<std::thread> readers;
-    for (usize index = 0; index < 4; ++index)
+    /// One reader's own lease and binding; too large for a Thread's inline closure, so started by reference.
+    struct ReaderContext final
     {
-        readers.AddInPlace([lease = active, binding, &good]() noexcept {
+        Catalog Lease;
+        MessageBinding Binding;
+        std::atomic<bool>* IsGoodOrNull = nullptr;
+        void operator()() noexcept
+        {
             for (usize iteration = 0; iteration < 10000; ++iteration)
             {
                 // Stress concurrent retains/releases of separate immutable handles.
                 // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
-                Catalog copy = lease;
+                Catalog copy = Lease;
                 ResolvedText text;
-                if (copy.ResolveStatic(binding, text) != Status::Ok || text.Text != "Play")
+                if (copy.ResolveStatic(Binding, text) != Status::Ok || text.Text != "Play")
                 {
-                    good.store(false, std::memory_order_relaxed);
+                    IsGoodOrNull->store(false, std::memory_order_relaxed);
                 }
             }
-        });
+        }
+    };
+    std::atomic<bool> good{true};
+    constexpr usize READER_COUNT = 4;
+    ludus::foundation::StaticArray<ReaderContext, READER_COUNT> contexts;
+    ludus::foundation::StaticArray<threading::Thread, READER_COUNT> readers;
+    for (usize index = 0; index < READER_COUNT; ++index)
+    {
+        contexts[index].Lease = active; // each reader copies the lease before the replacement below
+        contexts[index].Binding = binding;
+        contexts[index].IsGoodOrNull = &good;
+        REQUIRE(readers[index].Start(contexts[index]) == threading::ThreadStatus::Ok);
     }
     active = Load(kFrenchCatalog);
-    for (auto& reader : readers)
+    for (threading::Thread& reader : readers)
     {
-        reader.join();
+        REQUIRE(reader.Join() == threading::ThreadStatus::Ok);
     }
     REQUIRE(good.load());
     REQUIRE(Resolve(active, localization_fixture::kMenuPlay).Text == "Jouer");

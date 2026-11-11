@@ -215,7 +215,7 @@ if(LUDUS_BUILD_TESTS)
 
     add_executable(ludus_game_host_session_tests tests/session_tests.cpp)
     target_include_directories(ludus_game_host_session_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
-    target_link_libraries(ludus_game_host_session_tests PRIVATE
+    target_link_libraries(ludus_game_host_session_tests PRIVATE Ludus::FoundationThreading
         Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Ludus::FoundationTime
         Ludus::PlatformPacing Catch2::Catch2WithMain Threads::Threads ${CMAKE_DL_LIBS})
     ludus_apply_project_defaults(ludus_game_host_session_tests)

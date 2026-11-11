@@ -7,13 +7,13 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/memory/allocation_statistics.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include "internal/accounting.hpp"
 
 #include <atomic>
 #include <new>
 #include <string_view>
-#include <thread>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -46,6 +46,7 @@ using ludus::foundation::uint8;
 using ludus::foundation::usize;
 using ludus::foundation::memory_internal::AllocationCounters;
 namespace memory_internal = ludus::foundation::memory_internal;
+namespace threading = ludus::foundation::threading;
 
 constexpr usize MAX_USIZE = ~usize{0};
 constexpr uint64 MAX_UINT64 = ~uint64{0};
@@ -192,13 +193,14 @@ TEST_CASE("A free on another thread charges the domain after the allocating thre
     const AllocationDomain& domain = recorded.Domain;
     StaticArray<void*, BLOCK_COUNT> blocks{};
 
-    std::thread allocator([&] {
+    threading::Thread allocator;
+    REQUIRE(allocator.Start([&] {
         for (void*& block : blocks)
         {
             block = domain.TryAllocate(BLOCK_BYTES, BLOCK_ALIGNMENT);
         }
-    });
-    allocator.join();
+    }) == threading::ThreadStatus::Ok);
+    REQUIRE(allocator.Join() == threading::ThreadStatus::Ok);
 
     AllocationStatistics statistics = GetAllocationStatistics(domain);
     REQUIRE(statistics.LiveBlocks == BLOCK_COUNT);
@@ -229,10 +231,10 @@ TEST_CASE("Concurrent allocation and remote frees reconcile at quiescence", "[me
     // after every producer has exited.
     StaticArray<StaticArray<void*, SLOT_COUNT>, THREAD_COUNT> survivors{};
     StaticArray<StaticArray<usize, SLOT_COUNT>, THREAD_COUNT> survivorBytes{};
-    Array<std::thread> threads;
+    StaticArray<threading::Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
-        threads.AddInPlace([&domain, &survivors, &survivorBytes, t] {
+        REQUIRE(threads[t].Start([&domain, &survivors, &survivorBytes, t] {
             StaticArray<void*, SLOT_COUNT>& slots = survivors[t];
             StaticArray<usize, SLOT_COUNT>& sizes = survivorBytes[t];
             uint64 state = 0x9e3779b97f4a7c15ULL + t;
@@ -250,11 +252,11 @@ TEST_CASE("Concurrent allocation and remote frees reconcile at quiescence", "[me
                 slots[slot] = domain.TryAllocate(bytes, BLOCK_ALIGNMENT);
                 sizes[slot] = bytes;
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (std::thread& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
 
     AllocationStatistics statistics = GetAllocationStatistics(domain);

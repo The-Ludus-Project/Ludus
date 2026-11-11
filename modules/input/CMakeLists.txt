@@ -107,7 +107,7 @@ if(LUDUS_BUILD_TESTS)
     # under sanitizers (they skew timings and intercept the allocator).
     if(NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
         add_executable(ludus_input_bench benchmarks/input_bench.cpp)
-        target_link_libraries(ludus_input_bench PRIVATE Ludus::Input Ludus::FoundationContainers)
+        target_link_libraries(ludus_input_bench PRIVATE Ludus::FoundationTime Ludus::Input Ludus::FoundationContainers)
         ludus_apply_project_defaults(ludus_input_bench)
     endif()
 endif()

@@ -25,11 +25,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/rhi/spatial_upscale.h>
 
-#include <chrono>
 #include <cmath>
-#include <thread>
 
 using namespace ludus::foundation;
 using namespace ludus::graphics::renderer::testing;
@@ -38,6 +39,8 @@ namespace rhi = ludus::graphics::rhi;
 namespace packages = ludus::render_graph_packages;
 namespace shaders = ludus::shaders;
 namespace format = ludus::content::render_graph_format;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 /// Direct3D 12 publishes a texture upload as Pending and completes it through the queue fence;
@@ -49,7 +52,7 @@ void RequireTextureReady(rhi::DeviceHandle device, rhi::TextureHandle texture, r
     rhi::RasterStatus status = created;
     for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         status = rhi::GetStatus(device, texture);
     }
     REQUIRE(status == rhi::RasterStatus::Ready);
@@ -90,7 +93,7 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
         const auto poll = [&](rhi::RasterStatus status) {
             for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                threading::SleepFor(timing::Milliseconds(1));
                 status = fixture.Graph.Poll();
             }
             return status;
@@ -359,7 +362,7 @@ TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene 
     rhi::RasterStatus initialized = fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT);
     for (usize attempt = 0; attempt < 10000 && initialized == rhi::RasterStatus::Pending; ++attempt)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         initialized = fixture.Graph.Poll();
     }
     REQUIRE(initialized == rhi::RasterStatus::Ready);
@@ -385,7 +388,7 @@ TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene 
                                                         revision);
         for (usize attempt = 0; attempt < 10000 && status == rhi::RasterStatus::Pending; ++attempt)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
             status = fixture.Graph.Poll();
         }
         return status;
@@ -715,7 +718,7 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         const auto poll = [&](rhi::RasterStatus status) {
             for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                threading::SleepFor(timing::Milliseconds(1));
                 status = fixture.Graph.Poll();
             }
             return status;
@@ -1057,7 +1060,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
     const auto poll = [&](rhi::RasterStatus status) {
         for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
             status = fixture.Graph.Poll();
         }
         return status;
@@ -1521,7 +1524,7 @@ TEST_CASE("default deferred samples minified material textures at their mean", "
     const auto poll = [&](rhi::RasterStatus status) {
         for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
             status = fixture.Graph.Poll();
         }
         return status;
@@ -1811,10 +1814,11 @@ float64 IntegrateEarthBlueHigherOrders()
 }
 rhi::RasterStatus PollAtmosphereGraph(GraphGpuFixture& inoutFixture, rhi::RasterStatus status)
 {
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(60)) == timing::TimeStatus::Ok);
+    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         status = inoutFixture.Graph.Poll();
     }
     return status;
@@ -1836,10 +1840,11 @@ void ReadAtmosphereFrame(GraphGpuFixture& inoutFixture)
                                         ROW_BYTES,
                                         readback) == rhi::RasterStatus::Pending);
     rhi::RasterStatus status = rhi::GetStatus(inoutFixture.Device, readback);
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(60)) == timing::TimeStatus::Ok);
+    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
         REQUIRE(rhi::PollLifetime(inoutFixture.Device) == rhi::RasterStatus::Ready);
         status = rhi::GetStatus(inoutFixture.Device, readback);
     }

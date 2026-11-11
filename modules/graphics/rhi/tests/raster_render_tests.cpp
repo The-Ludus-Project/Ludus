@@ -1,15 +1,16 @@
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
-#include <thread>
 
 #include "cull.h"
 #include "internal/gpu_scope_backend.h"
@@ -22,6 +23,8 @@
 #include <catch2/catch_test_macros.hpp>
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 namespace
 {
 template <typename T, usize N>
@@ -325,10 +328,10 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                     for (uint32 turn = 0; turn < 2; ++turn)
                     {
                         const bool merge = (turn + iteration) % 2 != 0;
-                        const auto setupStart = std::chrono::steady_clock::now();
+                        const timing::Timestamp setupStart = timing::Now();
                         REQUIRE(ludus::qa::BuildMergedFrame(device, inputs, graph, report, merge, layers) ==
                                 rhi::RasterStatus::Ready);
-                        const auto armStart = std::chrono::steady_clock::now();
+                        const timing::Timestamp armStart = timing::Now();
                         const auto armed =
                             description.EnableGpuTiming ? rhi::ArmGpuTiming(device) : rhi::RasterStatus::Unsupported;
                         REQUIRE((armed == rhi::RasterStatus::Ready || armed == rhi::RasterStatus::Unsupported));
@@ -337,11 +340,11 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                                                                   : rhi::RasterStatus::Unsupported;
                         REQUIRE(
                             (passesArmed == rhi::RasterStatus::Ready || passesArmed == rhi::RasterStatus::Unsupported));
-                        const auto executeStart = std::chrono::steady_clock::now();
+                        const timing::Timestamp executeStart = timing::Now();
                         completion = {};
                         REQUIRE(rhi::ExecuteOrderedGraph(device, surface, graph, completion) ==
                                 rhi::RasterStatus::Ready);
-                        const auto executeEnd = std::chrono::steady_clock::now();
+                        const timing::Timestamp executeEnd = timing::Now();
                         if (forceTiming)
                         {
                             rhi::GpuTiming submittedTiming;
@@ -353,7 +356,7 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                             }
                         }
                         REQUIRE(rhi::backend::ReadHeadlessPixels(merge ? merged : baseline));
-                        const auto completionEnd = std::chrono::steady_clock::now();
+                        const timing::Timestamp completionEnd = timing::Now();
                         rhi::GpuTiming timing;
                         rhi::AllocationTelemetry memory;
                         REQUIRE(rhi::GetGpuTiming(device, timing) == rhi::RasterStatus::Ready);
@@ -364,7 +367,7 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                         {
                             REQUIRE(timing.State == rhi::GpuTimingState::Available);
                         }
-                        const auto pollEnd = std::chrono::steady_clock::now();
+                        const timing::Timestamp pollEnd = timing::Now();
                         if (passesArmed == rhi::RasterStatus::Ready)
                         {
                             rhi::GpuPassTimings passes;
@@ -385,9 +388,8 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                         CHECK(report.DrawCount == layers + 2);
                         if (benchmark && iteration >= 16)
                         {
-                            const auto ns = [](auto from, auto to) {
-                                return static_cast<float64>(
-                                    std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
+                            const auto ns = [](timing::Timestamp from, timing::Timestamp to) {
+                                return static_cast<float64>(to.Nanoseconds - from.Nanoseconds);
                             };
                             std::printf("R7,%u,%u,%u,%u,%.0f,%.9g,%u,%.0f,%u,%.0f,%.0f,%.0f,%.0f,%u,%.0f,%.0f\n",
                                         layers,
@@ -448,19 +450,15 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
         const rhi::RasterStatus passesArmed =
             description.EnableGpuTiming == true ? rhi::ArmGpuPassTimings(device) : rhi::RasterStatus::Unsupported;
         REQUIRE((passesArmed == rhi::RasterStatus::Ready || passesArmed == rhi::RasterStatus::Unsupported));
-        // NowTicks reads steady_clock nanoseconds; calibrated passes must lie inside this window.
-        const auto toTicks = [](std::chrono::steady_clock::time_point point) {
-            return static_cast<uint64>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(point.time_since_epoch()).count());
-        };
-        const uint64 executeTicks = toTicks(std::chrono::steady_clock::now());
+        // NowTicks and timing::Now read the same monotonic clock; calibrated passes must lie inside this window.
+        const uint64 executeTicks = timing::Now().Nanoseconds;
         REQUIRE(rhi::ExecuteOrderedGraph(device, surface, graph, completion) == rhi::RasterStatus::Ready);
         if (passesArmed == rhi::RasterStatus::Ready)
         {
             REQUIRE(rhi::backend::ReadHeadlessPixels(computePixels));
             rhi::GpuPassTimings passes;
             REQUIRE(rhi::GetGpuPassTimings(device, passes) == rhi::RasterStatus::Ready);
-            const uint64 pollTicks = toTicks(std::chrono::steady_clock::now());
+            const uint64 pollTicks = timing::Now().Nanoseconds;
             REQUIRE(passes.State == rhi::GpuTimingState::Available);
             CHECK(passes.Count == report.RasterPasses + report.ComputePasses);
             uint32 computePassCount = 0;
@@ -497,11 +495,12 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
         {
             rhi::ReadbackTicket ticket;
             REQUIRE(rhi::RequestBufferReadback(device, arguments, 0, 20, ticket) == rhi::RasterStatus::Pending);
-            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            timing::Deadline until;
+            REQUIRE(until.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
             while (rhi::GetStatus(device, ticket) == rhi::RasterStatus::Pending &&
-                   std::chrono::steady_clock::now() < until)
+                   until.IsExpired(timing::Now()) == false)
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                threading::SleepFor(timing::Milliseconds(1));
             }
             uint32 actual[5]{};
             REQUIRE(rhi::CopyReadback(device, ticket, reinterpret_cast<uint8*>(actual), sizeof(actual)) ==
@@ -600,10 +599,11 @@ TEST_CASE("Native upload and readback rings preserve bytes across source destruc
         REQUIRE(rhi::RequestBufferUpload(device, {role, sizeof(bytes)}, bytes, sizeof(bytes), upload) ==
                 rhi::RasterStatus::Pending);
         bytes[0] = 99;
-        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (rhi::GetStatus(device, upload) == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < until)
+        timing::Deadline until;
+        REQUIRE(until.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
+        while (rhi::GetStatus(device, upload) == rhi::RasterStatus::Pending && until.IsExpired(timing::Now()) == false)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         rhi::BufferHandle buffer;
         REQUIRE(rhi::TakeUploadedBuffer(device, upload, buffer) == rhi::RasterStatus::Ready);
@@ -611,9 +611,9 @@ TEST_CASE("Native upload and readback rings preserve bytes across source destruc
         REQUIRE(rhi::RequestBufferReadback(device, buffer, 0, sizeof(bytes), readback) == rhi::RasterStatus::Pending);
         REQUIRE(rhi::Destroy(device, buffer) == rhi::RasterStatus::Ready);
         while (rhi::GetStatus(device, readback) == rhi::RasterStatus::Pending &&
-               std::chrono::steady_clock::now() < until)
+               until.IsExpired(timing::Now()) == false)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
         }
         uint8 actual[16]{};
         REQUIRE(rhi::CopyReadback(device, readback, actual, sizeof(actual)) == rhi::RasterStatus::Ready);
@@ -652,12 +652,12 @@ TEST_CASE("Native asynchronous compute preparation retains detached dependencies
     rhi::RasterShaderHandle shader;
     REQUIRE(rhi::CreateRasterShader(device, kernel, shader) == rhi::RasterStatus::Pending);
     const auto awaitReady = [&]<typename Handle>(const Handle& handle) {
-        const std::chrono::steady_clock::time_point deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        timing::Deadline deadline;
+        REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
         rhi::RasterStatus status = rhi::GetStatus(device, handle);
-        while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+        while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            threading::SleepFor(timing::Milliseconds(1));
             status = rhi::GetStatus(device, handle);
         }
         REQUIRE(status == rhi::RasterStatus::Ready);

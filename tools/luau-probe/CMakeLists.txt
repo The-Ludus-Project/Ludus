@@ -21,7 +21,7 @@ add_dependencies(Luau.VM ludus_luau_verify)
 
 add_executable(ludus_luau_probe main.cpp)
 target_include_directories(ludus_luau_probe PRIVATE "${PROJECT_SOURCE_DIR}/out/luau-probe/cooked")
-target_link_libraries(ludus_luau_probe PRIVATE Luau.VM Ludus::FoundationLogging)
+target_link_libraries(ludus_luau_probe PRIVATE Ludus::FoundationTime Luau.VM Ludus::FoundationLogging)
 ludus_apply_project_defaults(ludus_luau_probe)
 configure_file("${luau_source}/LICENSE.txt" Luau-LICENSE.txt COPYONLY)
 configure_file("${luau_source}/lua_LICENSE.txt" Lua-LICENSE.txt COPYONLY)

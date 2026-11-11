@@ -12,19 +12,19 @@
 #include "internal/trace_chunk.hpp"
 #include "internal/trace_event.hpp"
 
-#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
-#include <thread> // std::thread element type for the producer pools
+
+namespace threading = ludus::foundation::threading;
 
 #if !defined(__EMSCRIPTEN__) || LUDUS_PROFILING_ENABLED
 
 namespace
 {
-using ludus::foundation::Array;
 using ludus::foundation::uint32;
 using ludus::foundation::uint64;
 using ludus::foundation::usize;
@@ -98,7 +98,7 @@ void WaitUntil(const std::atomic<bool>& flag)
 {
     while (flag.load(std::memory_order_acquire) == false)
     {
-        std::this_thread::yield();
+        threading::YieldThread();
     }
 }
 
@@ -106,7 +106,7 @@ void WaitForCount(const std::atomic<uint32>& counter, uint32 expected)
 {
     while (counter.load(std::memory_order_acquire) < expected)
     {
-        std::this_thread::yield();
+        threading::YieldThread();
     }
 }
 } // namespace
@@ -172,24 +172,23 @@ TEST_CASE("EndCapture publishes partial chunks held by live threads", "[profilin
     std::atomic<uint32> finishedEmitting{0};
     std::atomic<bool> shouldExit{false};
     std::atomic<uint64> accepted{0};
-    Array<std::thread> threads;
-    threads.EnsureCapacity(THREAD_COUNT);
+    StaticArray<threading::Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
-        threads.AddInPlace([&] {
+        REQUIRE(threads[t].Start([&] {
             accepted.fetch_add(EmitMany(EVENTS_PER_THREAD), std::memory_order_relaxed);
             finishedEmitting.fetch_add(1, std::memory_order_release);
             // Stay alive, holding a partial chunk, until the capture has ended.
             WaitUntil(shouldExit);
-        });
+        }) == threading::ThreadStatus::Ok);
     }
     WaitForCount(finishedEmitting, THREAD_COUNT);
     recorder.EndCapture();
     const DrainSummary summary = Drain();
     shouldExit.store(true, std::memory_order_release);
-    for (std::thread& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
 
     CHECK(accepted.load() == THREAD_COUNT * EVENTS_PER_THREAD);
@@ -207,16 +206,16 @@ TEST_CASE("threads exiting during a capture publish their partial chunks", "[pro
     REQUIRE(recorder.BeginCapture(static_cast<usize>(THREAD_COUNT) * 2) == true);
 
     std::atomic<uint64> accepted{0};
-    Array<std::thread> threads;
-    threads.EnsureCapacity(THREAD_COUNT);
+    StaticArray<threading::Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
         // No UnregisterThreadForTrace(): thread exit itself must publish.
-        threads.AddInPlace([&] { accepted.fetch_add(EmitMany(EVENTS_PER_THREAD), std::memory_order_relaxed); });
+        REQUIRE(threads[t].Start([&] { accepted.fetch_add(EmitMany(EVENTS_PER_THREAD), std::memory_order_relaxed); }) ==
+                threading::ThreadStatus::Ok);
     }
-    for (std::thread& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     recorder.EndCapture();
     const DrainSummary summary = Drain();
@@ -232,11 +231,10 @@ TEST_CASE("stop and restart with delayed producers never loses or invents events
     constexpr uint32 SESSION_COUNT = 40;
 
     std::atomic<bool> shouldStop{false};
-    Array<std::thread> threads;
-    threads.EnsureCapacity(THREAD_COUNT);
+    StaticArray<threading::Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
-        threads.AddInPlace([&shouldStop, t] {
+        REQUIRE(threads[t].Start([&shouldStop, t] {
             uint64 tick = 0;
             while (shouldStop.load(std::memory_order_relaxed) == false)
             {
@@ -244,10 +242,10 @@ TEST_CASE("stop and restart with delayed producers never loses or invents events
                 ++tick;
                 if ((tick & 0x3ffu) == t)
                 {
-                    std::this_thread::yield(); // vary producer timing around Begin/End
+                    threading::YieldThread(); // vary producer timing around Begin/End
                 }
             }
-        });
+        }) == threading::ThreadStatus::Ok);
     }
 
     uint64 sessionsWithEvents = 0;
@@ -259,7 +257,7 @@ TEST_CASE("stop and restart with delayed producers never loses or invents events
         REQUIRE(recorder.BeginCapture(chunkCount) == true);
         for (uint32 spin = 0; spin < 64; ++spin)
         {
-            std::this_thread::yield();
+            threading::YieldThread();
         }
         recorder.EndCapture();
         const uint64 recorded = recorder.Health().EventsRecorded;
@@ -278,9 +276,9 @@ TEST_CASE("stop and restart with delayed producers never loses or invents events
         }
     }
     shouldStop.store(true, std::memory_order_relaxed);
-    for (std::thread& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     CHECK(sessionsWithEvents > 0);
     CHECK(recorder.Reset() == true);
@@ -298,27 +296,27 @@ TEST_CASE("concurrent chunk acquisition and recycling keeps every event accounte
     std::atomic<uint32> finishedProducers{0};
     std::atomic<uint64> accepted{0};
     DrainSummary drained;
-    std::thread collector([&] {
+    threading::Thread collector;
+    REQUIRE(collector.Start([&] {
         while (finishedProducers.load(std::memory_order_acquire) < THREAD_COUNT)
         {
             DrainInto(drained);
-            std::this_thread::yield();
+            threading::YieldThread();
         }
-    });
-    Array<std::thread> threads;
-    threads.EnsureCapacity(THREAD_COUNT);
+    }) == threading::ThreadStatus::Ok);
+    StaticArray<threading::Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
-        threads.AddInPlace([&] {
+        REQUIRE(threads[t].Start([&] {
             accepted.fetch_add(EmitMany(EVENTS_PER_THREAD), std::memory_order_relaxed);
             finishedProducers.fetch_add(1, std::memory_order_release);
-        });
+        }) == threading::ThreadStatus::Ok);
     }
-    for (std::thread& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
-    collector.join();
+    REQUIRE(collector.Join() == threading::ThreadStatus::Ok);
     recorder.EndCapture();
     DrainInto(drained);
 
@@ -336,22 +334,22 @@ TEST_CASE("concurrent first use of a site and thread registration publish comple
     constexpr uint32 THREAD_COUNT = 8;
     std::atomic<bool> shouldStart{false};
     StaticArray<std::atomic<uint32>, THREAD_COUNT> threadIds{};
-    Array<std::thread> threads;
-    threads.EnsureCapacity(THREAD_COUNT);
+    StaticArray<threading::Thread, THREAD_COUNT> threads;
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {
-        threads.AddInPlace([&shouldStart, &threadIds, t] {
+        const threading::ThreadStatus started = threads[t].Start([&shouldStart, &threadIds, t] {
             WaitUntil(shouldStart);
             const uint32 id = TraceRecorder::Instance().RegisterThread("RegistrationWorker");
             threadIds[t].store(id, std::memory_order_relaxed);
             // Several threads reach this site's one-time registration together.
             LUDUS_PROFILE_MARK(ConcurrentFirstUse);
         });
+        REQUIRE(started == threading::ThreadStatus::Ok);
     }
     shouldStart.store(true, std::memory_order_release);
-    for (std::thread& thread : threads)
+    for (threading::Thread& thread : threads)
     {
-        thread.join();
+        REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
     }
     for (uint32 t = 0; t < THREAD_COUNT; ++t)
     {

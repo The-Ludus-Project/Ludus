@@ -90,7 +90,9 @@ closed argument set and an implementation-only parser.
   first. Revisit only when a custom job/threading system exists.
 - `<source_location>` — used by logging to capture call sites.
 - `<chrono>`, `<ctime>` — only within existing logging/time implementations;
-  new engine callers use the owning Ludus API.
+  new engine callers use the owning Ludus API. `std::this_thread::sleep_for`
+  and `std::thread` are likewise not for new code or tests; see the
+  FoundationThreading backend entry below.
 - POSIX `<time.h>` `nanosleep(2)` and `<errno.h>` `errno`/`EINTR` — only in
   Platform's native pacing wait (`modules/platform/src/frame_pacing.cpp`) on
   macOS and Linux. This is the operating-system wait primitive behind
@@ -107,6 +109,16 @@ closed argument set and an implementation-only parser.
   relative and is recomputed from FoundationTime `Now()`. No other kqueue filter,
   absolute or Mach-time timer, or file-descriptor operation is approved. See the
   [wake leeway trial](../development/high-resolution-time-evidence.md#wake-leeway-trial).
+- POSIX `nanosleep(2)`/`EINTR`, `<sched.h>` `sched_yield(2)` and `pthread_self`,
+  and Win32 `Sleep`, `SwitchToThread` and `GetCurrentThreadId` — only in
+  FoundationThreading's native backends (`modules/foundation/threading/src/native_*.cpp`)
+  behind `Thread`, `SleepFor`, `YieldThread` and `GetCallingThreadId` in
+  `<ludus/foundation/threading/thread.hpp>`. Engine code, tools and
+  repository-owned tests use that header with FoundationTime's `Seconds`,
+  `Milliseconds` and `Microseconds` instead of `<thread>` and `<chrono>`: on
+  libstdc++ both headers pull `<format>` into every including translation
+  unit (ADR 0005). The serial browser backend has no threads; `Start` reports
+  Unavailable, sleeping returns at once and the thread identity is constant.
 - `<type_traits>`, `<utility>`, `<concepts>` — compile-time utilities, zero
   runtime cost.
 - `<cstdint>`, `<cstddef>` — allowed **only** inside `types.h`, which aliases

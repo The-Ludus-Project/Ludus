@@ -9,9 +9,9 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -24,7 +24,6 @@ using ludus::foundation::int32;
 using ludus::foundation::isize;
 using ludus::foundation::uint32;
 using ludus::foundation::usize;
-using Clock = std::chrono::steady_clock;
 
 namespace
 {
@@ -48,10 +47,11 @@ double BestNs(Fn&& fn, int reps, long innerIters)
     double best = 1e300;
     for (int r = 0; r < reps; ++r)
     {
-        const auto t0 = Clock::now();
+        const ludus::foundation::time::Timestamp t0 = ludus::foundation::time::Now();
         fn();
-        const auto t1 = Clock::now();
-        const double ns = std::chrono::duration<double, std::nano>(t1 - t0).count() / static_cast<double>(innerIters);
+        const ludus::foundation::time::Timestamp t1 = ludus::foundation::time::Now();
+        const ludus::foundation::float64 ns = static_cast<ludus::foundation::float64>(t1.Nanoseconds - t0.Nanoseconds) /
+                                              static_cast<ludus::foundation::float64>(innerIters);
         if (ns < best)
         {
             best = ns;

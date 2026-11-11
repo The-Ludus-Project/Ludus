@@ -1,15 +1,17 @@
 #include "wav_fixture.h"
 #include <catch2/catch_test_macros.hpp>
-#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <ludus/audio/audio_source.h>
 #include <ludus/audio/audio_system.h>
+#include <ludus/foundation/threading/thread.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <new>
-#include <thread>
 
 using namespace ludus::audio;
 using namespace ludus::foundation;
+namespace threading = ludus::foundation::threading;
+namespace timing = ludus::foundation::time;
 TEST_CASE("Streaming instances refill concurrently, replay and retire independently",
           "[audio][stream][concurrency][native-audio-worker]")
 {
@@ -53,7 +55,7 @@ TEST_CASE("Streaming instances refill concurrently, replay and retire independen
             REQUIRE(system.Stop(voices[0]) == Status::Ok);
         }
         system.Service();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        threading::SleepFor(timing::Milliseconds(1));
     }
     REQUIRE(peak > 0.1F);
     StreamHandle replacement;
