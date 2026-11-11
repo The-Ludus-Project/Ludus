@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 #include "internal/code_editor.h"
 #include "internal/code_navigation.h"
 #include "internal/renderer_workspace.h"
@@ -135,7 +137,8 @@ TEST_CASE("Source preferences reject missing and escaping graphs before replacin
     QTemporaryDir outside;
     REQUIRE(outside.isValid() == true);
     const QString outsideGraph = MakeSourcePackage(outside, QStringLiteral("Outside"));
-    REQUIRE(QFile::link(QFileInfo(outsideGraph).absolutePath(), project.filePath(QStringLiteral("escaped"))) == true);
+    REQUIRE(CreateTestSymbolicLink(QFileInfo(outsideGraph).absolutePath(),
+                                   project.filePath(QStringLiteral("escaped"))) == true);
     invalidPaths.append(QStringLiteral("escaped/main.lurender.json"));
 #endif
     RendererWorkspace workspace(ToolingPaths{});

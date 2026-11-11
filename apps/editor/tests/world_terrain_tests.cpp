@@ -301,7 +301,8 @@ TEST_CASE("Flatten strokes retain their local target when the procedural base re
     CHECK(cropped.contains(QStringLiteral("flattenStrokes")) == false);
     CHECK(cropped.value(QStringLiteral("version")) == 1);
     const QJsonObject unchanged = recipe;
-    CHECK(AppendTerrainStroke(recipe, QJsonArray{QJsonArray{100, 0}}, 4, TerrainBrush::Flatten, 2, error) == false);
+    CHECK(AppendTerrainStroke(recipe, QJsonArray{QJsonValue(QJsonArray{100, 0})}, 4, TerrainBrush::Flatten, 2, error) ==
+          false);
     CHECK(recipe == unchanged);
 }
 
@@ -319,7 +320,10 @@ TEST_CASE("Mixed terrain strokes replay in order against the regenerated source"
     recipe.insert(QStringLiteral("depth"), 4);
     recipe.insert(QStringLiteral("samples"), 5);
 
-    const QJsonArray centerPoint{QJsonArray{0, 0}};
+    const QJsonArray centerPoint{QJsonValue(QJsonArray{0, 0})};
+    REQUIRE(centerPoint.size() == 1);
+    REQUIRE(centerPoint.first().isArray() == true);
+    INFO(error.toStdString());
     REQUIRE(AppendTerrainStroke(recipe, centerPoint, 1, TerrainBrush::Flatten, 2, error) == true);
     const QJsonArray flattenStrokes = recipe.value(QStringLiteral("flattenStrokes")).toArray();
     REQUIRE(flattenStrokes.size() == 1);

@@ -259,7 +259,7 @@ TEST_CASE("Project overview explains setup and reveals build details without edi
     REQUIRE(details != nullptr);
     REQUIRE(profile != nullptr);
     CHECK(identity->textFormat() == Qt::PlainText);
-    CHECK(identity->text().contains(directory.path()));
+    CHECK(QDir::fromNativeSeparators(identity->text()).contains(directory.path()));
     CHECK(identity->text().contains(QStringLiteral("linux-clang-debug")));
     CHECK(setup->text() == controller.State().SetupStatus);
     CHECK_FALSE(details->isVisible());

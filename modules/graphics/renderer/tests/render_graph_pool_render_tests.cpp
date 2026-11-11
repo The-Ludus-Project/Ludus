@@ -11,6 +11,7 @@
 #include "rg2_surface.h"
 
 #include <ludus/foundation/base/compiler.h>
+#include <ludus/foundation/base/pointer.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -294,7 +295,10 @@ TEST_CASE("RG4 no admitted cooked graph has a transient attachment for the pool"
         renderer::RenderGraphPrograms Programs;
         uint32 Exports = 0;
     };
-    const StaticArray<Fixture, COOKED_FIXTURE_COUNT> fixtures{{
+    // Materialize the six large program tables in owned heap storage. ASan's stack
+    // instrumentation otherwise exhausts the Windows test thread before this case starts.
+    using CookedFixtures = StaticArray<Fixture, COOKED_FIXTURE_COUNT>;
+    CookedFixtures* fixturesOrNull = new (std::nothrow) CookedFixtures{{
         {packages::rg2_surface::MakePlan(), packages::rg2_surface::MakePrograms(vertex, fragment), 0},
         {packages::rg2_offscreen::MakePlan(), packages::rg2_offscreen::MakePrograms(vertex, fragment), 1},
         {packages::rg2_depth::MakePlan(), packages::rg2_depth::MakePrograms(vertex, fragment), 1},
@@ -302,7 +306,9 @@ TEST_CASE("RG4 no admitted cooked graph has a transient attachment for the pool"
         {packages::rg2_masked_color::MakePlan(), packages::rg2_masked_color::MakePrograms(vertex, fragment), 1},
         {packages::rg2_masked_depth::MakePlan(), packages::rg2_masked_depth::MakePrograms(vertex, fragment), 1},
     }};
-    for (const Fixture& cooked : fixtures)
+    const UniquePtr<CookedFixtures> fixtures(fixturesOrNull);
+    REQUIRE(fixtures.Get() != nullptr);
+    for (const Fixture& cooked : *fixtures)
     {
         renderer::RenderGraph graph;
         REQUIRE(IsAccepted(graph.Initialize(fixture.Device, cooked.Plan, cooked.Programs, &pool)) == true);

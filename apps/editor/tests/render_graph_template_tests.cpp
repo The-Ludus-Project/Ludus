@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 // Built-in creation and canvas settings use the real shared backend and document history.
 #include "internal/controller.h"
 #include "internal/render_graph_build_limits.h"
@@ -60,9 +62,7 @@ constexpr int32 TEMPLATE_PROPERTIES_HEIGHT = 700;
 const QString ROOT_GRAPH = QStringLiteral("main.lurender.json");
 QString FindTemplatePython()
 {
-    const QString managed = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
-    return QFileInfo(managed).isExecutable() == true ? managed
-                                                     : QStandardPaths::findExecutable(QStringLiteral("python3"));
+    return QString::fromUtf8(LUDUS_TEST_PYTHON);
 }
 } // namespace
 
@@ -1316,7 +1316,7 @@ TEST_CASE("Nested template shader directories are prepared before saved graph re
     const QString parent = QDir(package).filePath(QStringLiteral("restir_di"));
     if (isLinkedDirectory == true)
     {
-        REQUIRE(QFile::link(outside.path(), parent) == true);
+        REQUIRE(CreateTestSymbolicLink(outside.path(), parent) == true);
     }
     else
     {

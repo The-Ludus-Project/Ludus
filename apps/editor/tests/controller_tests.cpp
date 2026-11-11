@@ -65,7 +65,7 @@ ToolingPaths AvailableTooling()
 {
     const QString root = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     ToolingPaths tooling;
-    tooling.PythonPath = QDir(root).filePath(QStringLiteral("out/host-tools/venv/bin/python"));
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.AdapterPath = QDir(root).filePath(QStringLiteral("scripts/python/editor_tool.py"));
     tooling.ToolingRoot = root;
     return tooling;
@@ -297,7 +297,7 @@ TEST_CASE("Opening an SDK project automatically reports missing setup without ru
     hook.close();
     const auto root = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     ToolingPaths tooling;
-    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.AdapterPath = root + QStringLiteral("/scripts/python/editor_tool.py");
     tooling.ToolingRoot = root;
     EditorController controller(tooling);
@@ -334,7 +334,7 @@ TEST_CASE("Editor New Project verifies the SDK project and opens it after bridge
     QTemporaryDir dir;
     const QString destination = dir.filePath(QStringLiteral("NewGame"));
     ToolingPaths paths;
-    paths.PythonPath = QStringLiteral("/usr/bin/python3");
+    paths.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     paths.AdapterPath = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT) + QStringLiteral("/scripts/python/editor_tool.py");
     paths.ToolingRoot = tools;
     EditorController controller(paths);
@@ -394,7 +394,7 @@ else:
 )py"));
     file.close();
     ToolingPaths paths;
-    paths.PythonPath = QStringLiteral("/usr/bin/python3");
+    paths.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     paths.AdapterPath = adapter;
     paths.ToolingRoot = dir.path();
     return paths;
@@ -556,7 +556,7 @@ TEST_CASE("Play menu follows saved project and tooling eligibility", "[editor][c
     sidecar.close();
 
     ToolingPaths tooling;
-    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     tooling.AdapterPath = QDir(tooling.ToolingRoot).filePath(QStringLiteral("scripts/python/editor_tool.py"));
     EditorController controller(tooling);

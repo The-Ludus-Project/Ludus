@@ -148,7 +148,7 @@ void CheckCompilerSelection(RenderGraphDocument& inoutDocument, const QString& p
 {
     QStringList saved;
     REQUIRE(inoutDocument.Save(saved) == RenderGraphDocumentStatus::Ok);
-    const QString python = QStandardPaths::findExecutable(QStringLiteral("python3"));
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
     REQUIRE(python.isEmpty() == false);
     QProcess process;
     process.setWorkingDirectory(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT));

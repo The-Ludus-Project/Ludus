@@ -149,7 +149,7 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
     REQUIRE(QDir(secondProject.path()).mkdir(QStringLiteral(".ludus")));
     REQUIRE(QFile::copy(project.filePath(QStringLiteral(".ludus/local.json")),
                         secondProject.filePath(QStringLiteral(".ludus/local.json"))));
-    EditorController controller({QDir(root).filePath(QStringLiteral("out/host-tools/venv/bin/python")),
+    EditorController controller({QString::fromUtf8(LUDUS_TEST_PYTHON),
                                  QDir(root).filePath(QStringLiteral("scripts/python/editor_tool.py")),
                                  root});
     MainWindow window(&controller);

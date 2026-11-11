@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
 #include <QTemporaryDir>
 #if !defined(Q_OS_WASM)
 #    include <QProcess>
@@ -35,7 +36,7 @@ constexpr ludus::foundation::int32 TRACE_FAILURE_EXIT_CODE = 3;
 // instead of silently producing no trace.
 int main(int argc, char* argv[])
 {
-    // Never read or change the user's editor history in offscreen tests.
+    // Never read or change the user's editor history or native registry settings.
     QTemporaryDir config;
     if (config.isValid() == false)
     {
@@ -43,7 +44,12 @@ int main(int argc, char* argv[])
     }
     qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
     qputenv("LUDUS_EDITOR_RECOVERY_DIRECTORY", config.filePath(QStringLiteral("source-recovery")).toUtf8());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, config.path());
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, config.path());
     QApplication application(argc, argv);
+    QCoreApplication::setOrganizationName(QStringLiteral("LudusTests"));
+    QCoreApplication::setApplicationName(QStringLiteral("Editor"));
     Catch::Session session;
     std::string tracePath;
     session.cli(session.cli() | Catch::Clara::Opt(tracePath, "path")["--trace-output"](

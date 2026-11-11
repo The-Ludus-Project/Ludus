@@ -1765,7 +1765,7 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
 {
     constexpr int32 TIMEOUT_MILLISECONDS = 60000;
     const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
-    const QString python = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
     if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
     {
         SKIP("pinned shader tools are required for the project recovery test");
@@ -1944,7 +1944,7 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     constexpr int32 SAMPLE_STRIDE = 4;
     constexpr usize COLORED_SAMPLE_MINIMUM = 100;
     const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
-    const QString python = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
     if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
     {
         SKIP("pinned shader tools are required for the real project reload test");
@@ -3580,7 +3580,7 @@ TEST_CASE("Supplied staircase2 World stays drawable through the engine default f
     {
         SKIP("Set LUDUS_EDITOR_STAIRCASE_PROJECT to an isolated copy of the supplied project.");
     }
-    const QString python = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
     const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
     const ToolingPaths tooling{python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
     RendererWorkspace renderer(tooling);

@@ -104,9 +104,7 @@ QString MakePackage(const QTemporaryDir& project)
 
 QString FindPython()
 {
-    const QString managed = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
-    return QFileInfo(managed).isExecutable() == true ? managed
-                                                     : QStandardPaths::findExecutable(QStringLiteral("python3"));
+    return QString::fromUtf8(LUDUS_TEST_PYTHON);
 }
 
 // File and configuration are distinct named identities.

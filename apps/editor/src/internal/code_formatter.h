@@ -22,6 +22,8 @@ struct CodeFormatterTool final
     QStringList Arguments;
     /// Pinned MAJOR.MINOR.PATCH; newer releases of the same major are accepted.
     QString MinimumVersion;
+    /// Interpreter arguments prepended to both version and formatting requests.
+    QStringList PrefixArguments;
 };
 
 /// Replacement positions refer to the captured UTF-8 source, in ascending order.

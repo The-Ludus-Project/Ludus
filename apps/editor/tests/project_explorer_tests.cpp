@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 #include "internal/project_explorer.h"
 #include "internal/project_files.h"
 
@@ -61,7 +63,7 @@ TEST_CASE("Project files preserve destinations and reject escape and child symli
     CHECK(ProjectFiles::Create(root, QStringLiteral("../escape.slang"), "bad", error) == false);
     CHECK(ProjectFiles::Create(root, QDir(outside.path()).filePath(QStringLiteral("escape.slang")), "bad", error) ==
           false);
-    REQUIRE(QFile::link(outside.path(), QDir(root).filePath(QStringLiteral("linked"))) == true);
+    REQUIRE(CreateTestSymbolicLink(outside.path(), QDir(root).filePath(QStringLiteral("linked"))) == true);
     CHECK(ProjectFiles::Create(root, QStringLiteral("linked/escape.slang"), "bad", error) == false);
     const QString external = QDir(outside.path()).filePath(QStringLiteral("external.slang"));
     WriteExplorerFile(external, "external shader");
@@ -76,7 +78,7 @@ TEST_CASE("Project files preserve destinations and reject escape and child symli
     REQUIRE(ProjectFiles::Duplicate(root, source, QStringLiteral("second.slang"), false, result) == true);
     CHECK(ReadExplorerFile(result.Path) == ReadExplorerFile(source));
     CHECK(ProjectFiles::Duplicate(root, source, QStringLiteral("second.slang"), false, result) == false);
-    REQUIRE(QFile::link(source, QDir(root).filePath(QStringLiteral("alias.slang"))) == true);
+    REQUIRE(CreateTestSymbolicLink(source, QDir(root).filePath(QStringLiteral("alias.slang"))) == true);
     CHECK(ProjectFiles::Remove(root, QDir(root).filePath(QStringLiteral("alias.slang")), result) == false);
     REQUIRE(ProjectFiles::Remove(root, source, result) == true);
     CHECK(QFileInfo(source).exists() == false);
@@ -97,7 +99,8 @@ TEST_CASE("Render graph duplicates stage a complete package and roll back refuse
     CHECK(result.Path == QDir(root).filePath(QStringLiteral("graphs/main_copy/main.lurender.json")));
     CHECK(ReadExplorerFile(result.Path) == ReadExplorerFile(graph));
     CHECK(ReadExplorerFile(QDir(root).filePath(QStringLiteral("graphs/main_copy/shaders/color.slang"))) == "shader");
-    REQUIRE(QFile::link(outside.path(), QDir(root).filePath(QStringLiteral("graphs/main/external"))) == true);
+    REQUIRE(CreateTestSymbolicLink(outside.path(), QDir(root).filePath(QStringLiteral("graphs/main/external"))) ==
+            true);
     const QString previous = result.Path;
     CHECK(ProjectFiles::Duplicate(root, graph, QStringLiteral("refused"), true, result) == false);
     CHECK(result.Path == previous);
@@ -113,7 +116,7 @@ TEST_CASE("Render graph duplicates stage a complete package and roll back refuse
           false);
     CHECK(QFileInfo(QDir(root).filePath(QStringLiteral("oversized_copy.slang"))).exists() == false);
     // A recovery folder redirected outside the project cannot receive a removed file.
-    REQUIRE(QFile::link(outside.path(), QDir(root).filePath(QStringLiteral(".ludus-trash"))) == true);
+    REQUIRE(CreateTestSymbolicLink(outside.path(), QDir(root).filePath(QStringLiteral(".ludus-trash"))) == true);
     CHECK(ProjectFiles::Remove(root, graph, result) == false);
     CHECK(QFileInfo(graph).isFile() == true);
 }

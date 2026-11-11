@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 #include "internal/code_editor.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_recovery.h"
@@ -336,7 +338,7 @@ TEST_CASE("Linked recovery locations and checkpoint files are never followed", "
     REQUIRE(document.SetText(QStringLiteral("main_shaders/color.slang"), "// recover\n") ==
             RenderGraphDocumentStatus::Ok);
     const QString linked = recovery.filePath(QStringLiteral("linked"));
-    REQUIRE(QFile::link(outside.path(), linked) == true);
+    REQUIRE(CreateTestSymbolicLink(outside.path(), linked) == true);
     RenderGraphRecoveryStore badDirectory(linked);
     QString error;
     CHECK(badDirectory.Write(document, error) == false);
@@ -347,7 +349,7 @@ TEST_CASE("Linked recovery locations and checkpoint files are never followed", "
     REQUIRE(file.open(QIODevice::WriteOnly) == true);
     file.write("original");
     file.close();
-    REQUIRE(QFile::link(target, store.GetPath(document)) == true);
+    REQUIRE(CreateTestSymbolicLink(target, store.GetPath(document)) == true);
     CHECK(store.Write(document, error) == false);
     REQUIRE(file.open(QIODevice::ReadOnly) == true);
     CHECK(file.readAll() == QByteArrayLiteral("original"));

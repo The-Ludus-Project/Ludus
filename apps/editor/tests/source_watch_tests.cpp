@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 #include "internal/source_watch.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -66,7 +68,7 @@ TEST_CASE("source watch rejects paths outside its project", "[editor][watch]")
     SourceWatch watch;
     REQUIRE_FALSE(watch.Start(project.path()));
     REQUIRE_FALSE(watch.Active());
-    REQUIRE(QFile::link(outside.path(), project.filePath(QStringLiteral("link"))));
+    REQUIRE(CreateTestSymbolicLink(outside.path(), project.filePath(QStringLiteral("link"))));
     Save(sidecar, QByteArrayLiteral("{\"watch_roots\":[\"link\"]}"));
     REQUIRE_FALSE(watch.Start(project.path()));
 }

@@ -136,7 +136,7 @@ TEST_CASE("The setup notice guides a repair from problem to progress to ready", 
     const QString adapter = directory.filePath(QStringLiteral("setup_adapter.py"));
     WriteFile(adapter, MakeAdapter());
     ToolingPaths tooling;
-    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.AdapterPath = adapter;
     tooling.ToolingRoot = directory.path();
     EditorController controller(tooling);

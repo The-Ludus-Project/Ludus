@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 // RG3 Renderer workspace: typed render-graph drafts, explicit save, mapped
 // diagnostics and CLI/editor equivalence through the shared ludus_tools backend.
 // Offscreen widgets prove document/job wiring, not GPU output or a node canvas.
@@ -129,9 +131,7 @@ FindNode(RenderGraphDocument& inoutDocument, const QString& file, const QString&
 
 QString FindPython()
 {
-    const QString managed = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
-    return QFileInfo(managed).isExecutable() == true ? managed
-                                                     : QStandardPaths::findExecutable(QStringLiteral("python3"));
+    return QString::fromUtf8(LUDUS_TEST_PYTHON);
 }
 
 /// Run the installed CLI exactly as a user would, for equivalence with the editor job.
@@ -240,7 +240,7 @@ TEST_CASE("Renderer creation refuses linked graph directories and ignores cancel
 {
     QTemporaryDir project;
     QTemporaryDir engine;
-    REQUIRE(QFile::link(engine.path(), QDir(project.path()).filePath(QStringLiteral("graphs"))) == true);
+    REQUIRE(CreateTestSymbolicLink(engine.path(), QDir(project.path()).filePath(QStringLiteral("graphs"))) == true);
     RenderGraphCreation creation;
     const ToolingPaths tooling{FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
     QString error;
@@ -449,7 +449,7 @@ TEST_CASE("RG3 build outputs stay inside a project opened through a symlink", "[
     REQUIRE(outside.isValid() == true);
     static_cast<void>(MakePackage(project));
     const QString link = QDir(links.path()).filePath(QStringLiteral("project"));
-    if (QFile::link(project.path(), link) == false)
+    if (CreateTestSymbolicLink(project.path(), link) == false)
     {
         SKIP("this file system cannot create a directory symlink");
     }

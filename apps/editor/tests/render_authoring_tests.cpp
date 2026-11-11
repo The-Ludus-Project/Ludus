@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/main_window.h"
@@ -200,7 +202,7 @@ TEST_CASE("Preview files reject traversal and symlinks and do not escape the pro
     const auto identity = f.Scene.Identity;
     CHECK_FALSE(RenderScene::Load(f.Root, f.World, f.Scene, f.Error));
     CHECK(f.Scene.Identity == identity);
-    REQUIRE(QFile::link(f.Path(QStringLiteral("cube.mesh.json")), f.Path(QStringLiteral("linked.json"))));
+    REQUIRE(CreateTestSymbolicLink(f.Path(QStringLiteral("cube.mesh.json")), f.Path(QStringLiteral("linked.json"))));
     mesh.insert(QStringLiteral("path"), QStringLiteral("authoring/linked.json"));
     meshes[0] = mesh;
     descriptor.insert(QStringLiteral("meshes"), meshes);

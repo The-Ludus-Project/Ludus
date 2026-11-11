@@ -202,7 +202,7 @@ else:
          cleanup_confirmed=True, exit_code=None, signal=None)
 )py"));
     ToolingPaths tooling;
-    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.AdapterPath = adapter;
     tooling.ToolingRoot = dir.path();
     EditorController controller(tooling);
@@ -264,7 +264,7 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     cleanup_confirmed=True, exit_code=None, signal=None)), flush=True)
 )py"));
     ToolingPaths tooling;
-    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.AdapterPath = adapter;
     tooling.ToolingRoot = directory.path();
     EditorController controller(tooling);

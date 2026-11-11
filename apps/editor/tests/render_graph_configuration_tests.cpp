@@ -458,7 +458,7 @@ if captured == 'broken':
     sys.exit(1)
 print(json.dumps({'schema': 1, 'captured': captured}))
 )PY"));
-    RendererWorkspace workspace({QStandardPaths::findExecutable(QStringLiteral("python3")), {}, tooling.path()});
+    RendererWorkspace workspace({QString::fromUtf8(LUDUS_TEST_PYTHON), {}, tooling.path()});
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
     workspace.SetBuildTools(QStringLiteral("helper"), QStringLiteral("compiler"));
