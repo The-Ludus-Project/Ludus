@@ -1062,6 +1062,133 @@ TEST_CASE("Viewport sensitivity scales look and orbit and persists without movin
     }
 }
 
+TEST_CASE("Wheel while flying scales the fly speed geometrically, shows it and persists it",
+          "[editor][navigation][fly-speed]")
+{
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
+    PreviewViewport viewport(&preview, nullptr, false);
+    viewport.EnableWorldContextMenu();
+    preview.Navigate(0, {25, 20}, 3, false);
+    const auto sendWheel = [&viewport](int32 angleY, int32 pixelY, Qt::MouseButtons buttons) {
+        QWheelEvent wheel(QPointF(100, 100),
+                          QPointF(100, 100),
+                          pixelY == 0 ? QPoint{} : QPoint(0, pixelY),
+                          QPoint(0, angleY),
+                          buttons,
+                          Qt::NoModifier,
+                          Qt::ScrollUpdate,
+                          false);
+        QApplication::sendEvent(&viewport, &wheel);
+    };
+    constexpr int32 WHEEL_NOTCH = 120;
+    constexpr int32 TRACKPAD_NOTCH_PIXELS = 80;
+    const float32 notchFactor = RenderPreview::FLY_SPEED_NOTCH_FACTOR;
+    CHECK(preview.GetFlySpeed() == 1);
+
+    // Without the right button the wheel dollies and leaves the speed alone.
+    const float32 distanceBefore = preview.GetFocusDistance();
+    sendWheel(WHEEL_NOTCH, 0, Qt::NoButton);
+    CHECK(preview.GetFocusDistance() != distanceBefore);
+    CHECK(preview.GetFlySpeed() == 1);
+    CHECK(viewport.GetShaderStatusText().isEmpty() == true);
+
+    // While flying it scales the speed without dollying and shows the multiplier.
+    const float32 flyingDistance = preview.GetFocusDistance();
+    const QJsonObject beforeWheel = preview.Navigation();
+    QTest::mousePress(&viewport, Qt::RightButton);
+    sendWheel(WHEEL_NOTCH, 0, Qt::RightButton);
+    CHECK(preview.GetFocusDistance() == flyingDistance);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(notchFactor));
+    CHECK(viewport.GetShaderStatusText() == QStringLiteral("Fly speed 1.25×"));
+    QJsonObject afterWheel = preview.Navigation();
+    CHECK(afterWheel.take(QStringLiteral("flySpeed")).toDouble() == Catch::Approx(notchFactor));
+    QJsonObject beforeWithoutSpeed = beforeWheel;
+    beforeWithoutSpeed.remove(QStringLiteral("flySpeed"));
+    CHECK(afterWheel == beforeWithoutSpeed);
+    sendWheel(2 * WHEEL_NOTCH, 0, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(notchFactor * notchFactor * notchFactor));
+    CHECK(viewport.GetShaderStatusText() == QStringLiteral("Fly speed 1.95×"));
+    // Three notches back undo three notches forward; a trackpad notch is 80 logical pixels.
+    sendWheel(-3 * WHEEL_NOTCH, 0, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(1));
+    sendWheel(0, TRACKPAD_NOTCH_PIXELS, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(notchFactor));
+    sendWheel(0, -TRACKPAD_NOTCH_PIXELS / 2, Qt::RightButton);
+    sendWheel(0, -TRACKPAD_NOTCH_PIXELS / 2, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(1));
+    QTest::mouseRelease(&viewport, Qt::RightButton);
+    CHECK(viewport.GetShaderStatusText().isEmpty() == true);
+
+    // The readout outlives a wheel change only for its timeout.
+    QTest::mousePress(&viewport, Qt::RightButton);
+    sendWheel(WHEEL_NOTCH, 0, Qt::RightButton);
+    REQUIRE(viewport.GetShaderStatusText().isEmpty() == false);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.GetShaderStatusText().isEmpty() == true; },
+                            2 * PreviewViewport::FLY_SPEED_STATUS_MILLISECONDS) == true);
+    QTest::mouseRelease(&viewport, Qt::RightButton);
+
+    // Scaling stops at the admitted range and ignores empty or nonfinite input.
+    constexpr float32 FAR_BEYOND_RANGE_NOTCHES = 1000;
+    CHECK(preview.ScaleFlySpeed(FAR_BEYOND_RANGE_NOTCHES) == true);
+    CHECK(preview.GetFlySpeed() == RenderPreview::MAXIMUM_FLY_SPEED);
+    CHECK(preview.ScaleFlySpeed(1) == false);
+    CHECK(preview.ScaleFlySpeed(-FAR_BEYOND_RANGE_NOTCHES) == true);
+    CHECK(preview.GetFlySpeed() == RenderPreview::MINIMUM_FLY_SPEED);
+    CHECK(preview.ScaleFlySpeed(-1) == false);
+    CHECK(preview.ScaleFlySpeed(0) == false);
+    CHECK(preview.ScaleFlySpeed(std::numeric_limits<float32>::quiet_NaN()) == false);
+    CHECK(preview.GetFlySpeed() == RenderPreview::MINIMUM_FLY_SPEED);
+
+    // The multiplier restores with navigation, rejects invalid values and follows the View menu control.
+    preview.SetFlySpeed(2);
+    RenderPreview restored;
+    restored.RestoreNavigation(preview.Navigation());
+    CHECK(restored.GetFlySpeed() == 2);
+    restored.SetFlySpeed(0);
+    restored.SetFlySpeed(RenderPreview::MAXIMUM_FLY_SPEED * 2);
+    restored.SetFlySpeed(std::numeric_limits<float32>::infinity());
+    CHECK(restored.GetFlySpeed() == 2);
+    PreviewViewport restoredViewport(&restored, nullptr, false);
+    QDoubleSpinBox* flySpeedOrNull = restoredViewport.findChild<QDoubleSpinBox*>(QStringLiteral("viewportFlySpeed"));
+    REQUIRE(flySpeedOrNull != nullptr);
+    CHECK(flySpeedOrNull->value() == 2);
+    flySpeedOrNull->setValue(0.5);
+    CHECK(restored.GetFlySpeed() == 0.5F);
+    REQUIRE(restored.ScaleFlySpeed(1) == true);
+    // The control shows two decimals, so it rounds the exact 0.625 to within half a hundredth.
+    CHECK(flySpeedOrNull->value() == Catch::Approx(0.5 * static_cast<float64>(notchFactor)).margin(0.005));
+    RenderPreview legacy;
+    QJsonObject legacyState = preview.Navigation();
+    legacyState.remove(QStringLiteral("flySpeed"));
+    legacy.RestoreNavigation(legacyState);
+    CHECK(legacy.GetFlySpeed() == 1);
+
+    // Exploring as the player keeps its authored walking speed: the wheel changes nothing.
+    RenderPreview walking;
+    const RenderScene walkingScene = MakeWalkingScene();
+    REQUIRE(walking.SetScene(walkingScene) == true);
+    PreviewViewport walkingViewport(&walking, nullptr, false);
+    camera::CameraSample spawn = walkingScene.Cameras[0].Sample;
+    spawn.Pose = { .Position = {0, 1.61, 0}, .Orientation = {} };
+    QString error;
+    REQUIRE(walkingViewport.BeginFirstPerson(spawn, 3, error) == true);
+    const math::Vector3d walkingEyeWorld = walking.GetVisibleCameraSample().Pose.Position;
+    QWheelEvent walkingWheel(QPointF(100, 100),
+                             QPointF(100, 100),
+                             QPoint{},
+                             QPoint(0, WHEEL_NOTCH),
+                             Qt::RightButton,
+                             Qt::NoModifier,
+                             Qt::ScrollUpdate,
+                             false);
+    QApplication::sendEvent(&walkingViewport, &walkingWheel);
+    CHECK(walking.GetFlySpeed() == 1);
+    CHECK(walking.GetVisibleCameraSample().Pose.Position == walkingEyeWorld);
+    CHECK(walkingViewport.GetShaderStatusText().isEmpty() == true);
+    walkingViewport.EndFirstPerson();
+}
+
 // Thanks to The Qt Company, "QCursor Class", setPos documentation:
 // https://doc.qt.io/qt-6/qcursor.html#setPos
 // Keep this fixture hidden: injected events must not mix with native cursor warps,

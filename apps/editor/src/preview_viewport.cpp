@@ -85,6 +85,18 @@ namespace
 constexpr QRgb VIEWPORT_BACKGROUND = GetViewportArgb(design::ThemeColour::SurfaceViewport);
 /// Arrow-key and spin-button step of the field of view control, in degrees.
 constexpr float64 FIELD_OF_VIEW_STEP_DEGREES = 5;
+/// Arrow-key and spin-button step of the fly speed control, as a multiplier.
+constexpr float64 FLY_SPEED_STEP = 0.25;
+/// Decimals the fly speed control shows, enough for a quarter step and the slowest admitted speed.
+constexpr int32 FLY_SPEED_DECIMALS = 2;
+/// Significant digits of the fly speed readout over the frame, such as "1.25×" or "0.0128×".
+constexpr int32 FLY_SPEED_READOUT_DIGITS = 3;
+/// The fly speed multiplier as the status overlay shows it.
+[[nodiscard]] QString FormatFlySpeedStatus(float32 multiplier)
+{
+    return QStringLiteral("Fly speed %1×")
+        .arg(QString::number(static_cast<float64>(multiplier), 'g', FLY_SPEED_READOUT_DIGITS));
+}
 /// Outline drawn around a letterboxed frame so its edge stays visible over a dark scene.
 constexpr QRgb FRAME_OUTLINE = GetViewportArgb(design::ThemeColour::BorderSubtle);
 /// Width of the shading menu in characters; longer labels are cut, and the full text is in the tooltip.
@@ -1560,6 +1572,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     setFocusPolicy(Qt::StrongFocus);
     mNavigationTimer.setInterval(16);
     connect(&mNavigationTimer, &QTimer::timeout, this, [this]() { advanceNavigation(); });
+    mFlySpeedStatusTimer.setSingleShot(true);
+    mFlySpeedStatusTimer.setInterval(FLY_SPEED_STATUS_MILLISECONDS);
+    connect(&mFlySpeedStatusTimer, &QTimer::timeout, this, [this]() { clearFlySpeedStatus(); });
     connect(preview, &RenderPreview::Stopped, this, [this]() {
         EndFirstPerson();
         stopNavigation();
@@ -1576,7 +1591,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     setToolTip(
         QStringLiteral("Right-drag to look · hold right mouse + WASD/QE to fly · Alt/Option-left-drag to orbit · "
                        "Shift-Alt/Option-left-drag or middle-drag to pan · "
-                       "wheel to dolly (right mouse: speed) · F frames selection · Home frames all"));
+                       "wheel to dolly (right mouse: fly speed) · F frames selection · Home frames all"));
     mState->Preview = preview;
     mState->Source = frameSource;
     mState->IsAutomatic = isAutomatic;
@@ -1724,6 +1739,23 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QWidgetAction* lookSensitivityAction = new QWidgetAction(viewMenu);
     lookSensitivityAction->setDefaultWidget(lookSensitivity);
     viewMenu->addAction(lookSensitivityAction);
+    // The fly speed multiplier the wheel adjusts while flying; here it can be read and set exactly.
+    QDoubleSpinBox* flySpeed = new QDoubleSpinBox(viewMenu);
+    flySpeed->setObjectName(QStringLiteral("viewportFlySpeed"));
+    flySpeed->setAccessibleName(QStringLiteral("Keyboard fly speed"));
+    flySpeed->setPrefix(QStringLiteral("Fly "));
+    flySpeed->setSuffix(QStringLiteral("×"));
+    flySpeed->setRange(static_cast<float64>(RenderPreview::MINIMUM_FLY_SPEED),
+                       static_cast<float64>(RenderPreview::MAXIMUM_FLY_SPEED));
+    flySpeed->setSingleStep(FLY_SPEED_STEP);
+    flySpeed->setDecimals(FLY_SPEED_DECIMALS);
+    flySpeed->setValue(static_cast<float64>(preview->GetFlySpeed()));
+    flySpeed->setToolTip(QStringLiteral("Speed of WASD/QE flight while the right mouse button is held, relative to "
+                                        "half the focus distance per second. Scroll the wheel while flying to speed "
+                                        "up or slow down by 1.25× per notch; Shift quadruples it. 1× is the default."));
+    QWidgetAction* flySpeedAction = new QWidgetAction(viewMenu);
+    flySpeedAction->setDefaultWidget(flySpeed);
+    viewMenu->addAction(flySpeedAction);
     // Edge filtering of the displayed frame (FXAA in the output pass). Fast is the default; Balanced searches farther
     // along each edge for smoother long edges; Off shows the raw rasterized image.
     viewMenu->addSeparator();
@@ -1804,6 +1836,13 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     connect(preview, &RenderPreview::NavigationChanged, lookSensitivity, [preview, lookSensitivity]() {
         const QSignalBlocker blocker(lookSensitivity);
         lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
+    });
+    connect(flySpeed, &QDoubleSpinBox::valueChanged, preview, [preview](float64 multiplier) {
+        preview->SetFlySpeed(static_cast<float32>(multiplier));
+    });
+    connect(preview, &RenderPreview::NavigationChanged, flySpeed, [preview, flySpeed]() {
+        const QSignalBlocker blocker(flySpeed);
+        flySpeed->setValue(static_cast<float64>(preview->GetFlySpeed()));
     });
     QComboBox* objectTool = new QComboBox(this);
     objectTool->setObjectName(QStringLiteral("viewportObjectTool"));
@@ -2838,6 +2877,37 @@ PreviewShaderReload* PreviewViewport::GetShaderReloadOrNull() const noexcept
 #else
     return nullptr;
 #endif
+}
+void PreviewViewport::showFlySpeedStatus()
+{
+    mState->ShaderStatusText = FormatFlySpeedStatus(Preview_->GetFlySpeed());
+    mState->HasShaderError = false;
+    mState->applyShaderStatus();
+    mIsShowingFlySpeedStatus = true;
+    mFlySpeedStatusTimer.start();
+}
+void PreviewViewport::clearFlySpeedStatus()
+{
+    mFlySpeedStatusTimer.stop();
+    if (mIsShowingFlySpeedStatus == false)
+    {
+        return;
+    }
+    mIsShowingFlySpeedStatus = false;
+    mState->ShaderStatusText.clear();
+    mState->HasShaderError = false;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsShowingRayPathStatus == true && mRayPaths.isNull() == false)
+    {
+        mState->ShaderStatusText = mRayPaths->GetStatus();
+    }
+    else if (mState->ShaderReloadOrNull != nullptr)
+    {
+        updateShaderStatus();
+        return;
+    }
+#endif
+    mState->applyShaderStatus();
 }
 void PreviewViewport::updateShaderStatus()
 {

@@ -10,6 +10,7 @@
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/gameplay/camera/camera.hpp>
 
 #include <QAction>
@@ -62,6 +63,7 @@ void WorldWorkspace::bindViewportInteraction()
         });
         connect(&interaction, &ViewportObjectInteraction::FrameRequested, this, &WorldWorkspace::frameEntity);
         connect(&interaction, &ViewportObjectInteraction::ProbeFaceCommitted, this, &WorldWorkspace::commitProbeFace);
+        connect(&interaction, &ViewportObjectInteraction::ProbeSizeCommitted, this, &WorldWorkspace::commitProbeSize);
         connect(&interaction,
                 &ViewportObjectInteraction::ProbeSpacingCommitted,
                 this,
@@ -97,10 +99,10 @@ void WorldWorkspace::frameEntity(const QString& id)
         return;
     }
     const QJsonObject components = Document_.Entity(id).value(QStringLiteral("components")).toObject();
-    graphics::renderer::GiProbeGrid grid;
+    WorldGiProbeVolume volume;
     QString error;
     const bool isProbeVolume = IsBuiltInWorld(Document_) == true &&
-                               ReadWorldGiProbeGrid(components, grid, error, true) == true && grid.Counts[0] != 0;
+                               ReadWorldGiProbeVolume(components, volume, error) == true && volume.Grid.Counts[0] != 0;
     QString spawnError;
     if (isProbeVolume == false && HasWorldFirstPersonPlayer(Document_, id) == true)
     {
@@ -116,7 +118,7 @@ void WorldWorkspace::frameEntity(const QString& id)
         }
     }
     const bool isFramed =
-        isProbeVolume == true ? preview.FrameBounds(ComputeWorldGiProbeBounds(grid)) : preview.FrameEntity(id);
+        isProbeVolume == true ? preview.FrameBounds(ComputeWorldGiProbeVolumeBounds(volume)) : preview.FrameEntity(id);
     if (isFramed == false)
     {
         Changed(
@@ -239,14 +241,27 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
                                                                  QStringLiteral("scale")};
     const bool isStandaloneProbeVolume =
         IsBuiltInWorld(Document_) == true && IsStandaloneWorldGiProbeVolume(entity, components) == true;
+    bool isProbeVolumeResized = false;
     if (isStandaloneProbeVolume == true)
     {
         const QJsonArray origin = placement.value(QStringLiteral("position")).toArray();
-        if (origin.size() != AXIS_COUNT)
+        const QJsonArray scale = placement.value(QStringLiteral("scale")).toArray();
+        if (origin.size() != AXIS_COUNT || scale.size() != AXIS_COUNT)
         {
             return;
         }
         WriteWorldGiProbeOrigin(components, origin);
+        if (ReadWorldGiProbeLayout(components) == GiProbeLayout::Volume)
+        {
+            // The Transform scale is the box size; the probes follow it at the authored spacing.
+            const QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+            for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
+            {
+                const QString key = QStringLiteral("s") + QChar('x' + axis);
+                isProbeVolumeResized = isProbeVolumeResized == true || transform.value(key) != scale[axis];
+                WriteWorldGiProbeSize(components, static_cast<usize>(axis), scale[axis].toDouble());
+            }
+        }
     }
     else if (scene.isEmpty() == false && sceneBinding.isEmpty() == true)
     {
@@ -299,6 +314,12 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
     }
     RenderInspector();
     Snapshot();
+    if (isProbeVolumeResized == true)
+    {
+        Changed(QStringLiteral("Probe volume resized. Undo restores its size. Save World keeps the edit.") +
+                describeProbeCoverage(components));
+        return;
+    }
     Changed(isStandaloneProbeVolume == true
                 ? QStringLiteral("Probe volume moved. Undo restores its placement. Save World keeps the edit.")
                 : QStringLiteral("Object transformed. Undo restores its placement; Save World keeps the edit."));
@@ -328,6 +349,23 @@ void WorldWorkspace::commitProbeFace(const QString& id, int32 axis, uint32 count
     commitProbeVolumeEdit(entity, components);
 }
 
+void WorldWorkspace::commitProbeSize(const QString& id, int32 axis, float64 sizeMetres, bool isMinimumFace)
+{
+    const QJsonObject entity = findEditableProbeVolume(id);
+    if (entity.isEmpty() == true || axis < 0 || axis >= AXIS_COUNT || foundation::math::IsFinite(sizeMetres) == false ||
+        sizeMetres < MIN_GI_PROBE_VOLUME_SIZE_METRES || sizeMetres > MAX_GI_PROBE_VOLUME_SIZE_METRES)
+    {
+        return;
+    }
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    if (ReadWorldGiProbeLayout(components) != GiProbeLayout::Volume)
+    {
+        return;
+    }
+    ResizeWorldGiProbeVolumeAxis(components, static_cast<usize>(axis), sizeMetres, isMinimumFace);
+    commitProbeVolumeEdit(entity, components);
+}
+
 void WorldWorkspace::commitProbeSpacing(const QString& id, float64 spacingMetres)
 {
     const QJsonObject entity = findEditableProbeVolume(id);
@@ -354,7 +392,19 @@ void WorldWorkspace::commitProbeVolumeEdit(const QJsonObject& entity, const QJso
     }
     RenderInspector();
     Snapshot();
-    Changed(QStringLiteral("Probe volume bounds updated. Undo restores them. Save World keeps the edit."));
+    Changed(QStringLiteral("Probe volume bounds updated. Undo restores them. Save World keeps the edit.") +
+            describeProbeCoverage(components));
+}
+
+QString WorldWorkspace::describeProbeCoverage(const QJsonObject& components) const
+{
+    WorldGiProbeVolume volume;
+    QString error;
+    if (ReadWorldGiProbeVolume(components, volume, error) == false || volume.IsCoverageLimited() == false)
+    {
+        return QString();
+    }
+    return QLatin1Char(' ') + DescribeWorldGiProbeCoverage(volume);
 }
 
 void WorldWorkspace::saveStartView()
