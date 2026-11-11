@@ -554,7 +554,7 @@ bool ComputeRenderGraphLayout(const QVector<RenderGraphLayoutNode>& nodes,
                               RenderGraphLayoutOperation operation,
                               QVector<RenderGraphNodePosition>& outPositions)
 {
-    if (nodes.isEmpty() == true || nodes.size() > RenderGraphDocument::MAX_NODES ||
+    if (nodes.isEmpty() == true || nodes.size() > MAXIMUM_RENDER_GRAPH_LAYOUT_CARDS ||
         (operation != RenderGraphLayoutOperation::Arrange && nodes.size() < 2) ||
         ((operation == RenderGraphLayoutOperation::DistributeHorizontal ||
           operation == RenderGraphLayoutOperation::DistributeVertical) &&
@@ -708,6 +708,154 @@ void ResolveRenderGraphOverlaps(const QVector<QRectF>& fixedCards, float64 gap, 
             card.translate(0, offsetScene);
         }
         placed.append(card);
+    }
+}
+
+RenderGraphWireMeasure MeasureRenderGraphWires(const QVector<QLineF>& wires)
+{
+    RenderGraphWireMeasure measure;
+    QVector<QLineF> sorted;
+    sorted.reserve(wires.size());
+    for (const QLineF& wire : wires)
+    {
+        measure.TotalLength += wire.length();
+        sorted.append(wire.x1() <= wire.x2() ? wire : QLineF(wire.p2(), wire.p1()));
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const QLineF& left, const QLineF& right) {
+        return left.x1() < right.x1();
+    });
+    // Wires that share a port touch there by construction; a fan from one output is not a tangle.
+    constexpr float64 SHARED_PORT_DISTANCE = 0.5;
+    const auto isShared = [](QPointF left, QPointF right) {
+        return (left - right).manhattanLength() < SHARED_PORT_DISTANCE;
+    };
+    for (qsizetype first = 0; first < sorted.size(); ++first)
+    {
+        const QLineF& wire = sorted.at(first);
+        const float64 top = qMin(wire.y1(), wire.y2());
+        const float64 bottom = qMax(wire.y1(), wire.y2());
+        for (qsizetype second = first + 1; second < sorted.size() && sorted.at(second).x1() <= wire.x2(); ++second)
+        {
+            const QLineF& other = sorted.at(second);
+            if (qMax(other.y1(), other.y2()) < top || qMin(other.y1(), other.y2()) > bottom ||
+                isShared(wire.p1(), other.p1()) == true || isShared(wire.p1(), other.p2()) == true ||
+                isShared(wire.p2(), other.p1()) == true || isShared(wire.p2(), other.p2()) == true)
+            {
+                continue;
+            }
+            QPointF intersection;
+            if (wire.intersects(other, &intersection) == QLineF::BoundedIntersection)
+            {
+                ++measure.Crossings;
+            }
+        }
+    }
+    return measure;
+}
+
+void PlaceUnsavedRenderGraphCards(const QVector<RenderGraphLayoutWire>& wires,
+                                  const QSet<QString>& savedCards,
+                                  float64 columnSpacing,
+                                  QVector<RenderGraphLayoutNode>& inoutCards)
+{
+    QHash<QString, qsizetype> indices;
+    for (qsizetype index = 0; index < inoutCards.size(); ++index)
+    {
+        indices.insert(inoutCards.at(index).Identity, index);
+    }
+    if (savedCards.isEmpty() == true)
+    {
+        QVector<RenderGraphLayoutEdge> edges;
+        for (const RenderGraphLayoutWire& wire : wires)
+        {
+            edges.append({wire.Source, wire.Destination});
+        }
+        QVector<RenderGraphNodePosition> positions;
+        if (ComputeRenderGraphLayout(inoutCards, edges, RenderGraphLayoutOperation::Arrange, positions) == true)
+        {
+            for (const RenderGraphNodePosition& position : std::as_const(positions))
+            {
+                inoutCards[indices.value(position.Node)].Bounds.moveTopLeft(QPointF(position.X, position.Y));
+            }
+        }
+        return;
+    }
+    // Wire indices per card, as producer and as consumer.
+    QVector<QVector<qsizetype>> outgoing(inoutCards.size());
+    QVector<QVector<qsizetype>> incoming(inoutCards.size());
+    for (qsizetype wire = 0; wire < wires.size(); ++wire)
+    {
+        const RenderGraphLayoutWire& value = wires.at(wire);
+        if (indices.contains(value.Source) == true && indices.contains(value.Destination) == true &&
+            value.Source != value.Destination)
+        {
+            outgoing[indices.value(value.Source)].append(wire);
+            incoming[indices.value(value.Destination)].append(wire);
+        }
+    }
+    QVector<uint8> isPlaced(inoutCards.size(), 0);
+    for (qsizetype index = 0; index < inoutCards.size(); ++index)
+    {
+        isPlaced[index] = savedCards.contains(inoutCards.at(index).Identity) == true ? 1 : 0;
+    }
+    const auto median = [](QVector<float64>& values) {
+        std::sort(values.begin(), values.end());
+        return values.at(values.size() / 2);
+    };
+    // Each round places the cards wired to an already placed card, so a chain of unsaved cards grows outward
+    // from the saved layout one column at a time. Cards placed in one round only anchor the next.
+    for (qsizetype round = 0; round < inoutCards.size(); ++round)
+    {
+        QVector<QPair<qsizetype, QPointF>> placements;
+        for (qsizetype index = 0; index < inoutCards.size(); ++index)
+        {
+            if (isPlaced.at(index) == 1)
+            {
+                continue;
+            }
+            QVector<float64> tops;
+            float64 left = std::numeric_limits<float64>::max();
+            for (const qsizetype wire : std::as_const(outgoing.at(index)))
+            {
+                const qsizetype consumer = indices.value(wires.at(wire).Destination);
+                if (isPlaced.at(consumer) == 1)
+                {
+                    tops.append(inoutCards.at(consumer).Bounds.top() + wires.at(wire).DestinationY -
+                                wires.at(wire).SourceY);
+                    left = qMin(left, inoutCards.at(consumer).Bounds.left());
+                }
+            }
+            if (tops.isEmpty() == false)
+            {
+                placements.append({index, QPointF(left - columnSpacing, median(tops))});
+                continue;
+            }
+            float64 right = std::numeric_limits<float64>::lowest();
+            for (const qsizetype wire : std::as_const(incoming.at(index)))
+            {
+                const qsizetype producer = indices.value(wires.at(wire).Source);
+                if (isPlaced.at(producer) == 1)
+                {
+                    tops.append(inoutCards.at(producer).Bounds.top() + wires.at(wire).SourceY -
+                                wires.at(wire).DestinationY);
+                    right = qMax(right, inoutCards.at(producer).Bounds.left());
+                }
+            }
+            if (tops.isEmpty() == false)
+            {
+                placements.append({index, QPointF(right + columnSpacing, median(tops))});
+            }
+        }
+        if (placements.isEmpty() == true)
+        {
+            break;
+        }
+        for (const QPair<qsizetype, QPointF>& placement : std::as_const(placements))
+        {
+            inoutCards[placement.first].Bounds.moveTopLeft(
+                QPointF(qRound(placement.second.x()), qRound(placement.second.y())));
+            isPlaced[placement.first] = 1;
+        }
     }
 }
 } // namespace ludus::editor

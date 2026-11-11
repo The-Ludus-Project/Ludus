@@ -12,12 +12,16 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineF>
 #include <QMouseEvent>
 #include <QPixmap>
+#include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest/QTest>
@@ -539,4 +543,248 @@ TEST_CASE("groups: a selection becomes a group, unselected cards are never swept
     }
     workspace.Undo();
     CHECK(canvas.GetNodePosition(QStringLiteral("d")).x() == 3000);
+}
+
+namespace
+{
+constexpr int32 FAN_COUNT = 4;
+constexpr float64 LOOSE_COLUMN_SPACING = 250;
+constexpr float64 LOOSE_ROW_SPACING = 140;
+constexpr int32 LAYER_COUNT = 8;
+constexpr int32 LAYER_WIDTH = 16;
+constexpr int32 LAYER_FAN_OUT = 4;
+constexpr int32 LARGE_CARD_COUNT = 1000;
+constexpr int64 LAYOUT_BUDGET_MILLISECONDS = 250;
+
+/// Sources s0..s3 feed exports listed in the opposite order, so dependency columns in file order cross every pair.
+QJsonObject MakeCrossedGraph(const QJsonArray& positions)
+{
+    QJsonArray nodes;
+    QJsonArray edges;
+    for (int32 index = 0; index < FAN_COUNT; ++index)
+    {
+        nodes.append(MakeNode(QStringLiteral("s%1").arg(index), QStringLiteral("Target")));
+    }
+    for (int32 index = 0; index < FAN_COUNT; ++index)
+    {
+        nodes.append(MakeNode(QStringLiteral("c%1").arg(index), QStringLiteral("Export")));
+        edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("s%1.texture").arg(FAN_COUNT - 1 - index)},
+                                 {QStringLiteral("to"), QStringLiteral("c%1.texture").arg(index)}});
+    }
+    QJsonObject configuration{{QStringLiteral("id"), QStringLiteral("Default")},
+                              {QStringLiteral("inputs"), QJsonArray{}},
+                              {QStringLiteral("outputs"), QJsonArray{}},
+                              {QStringLiteral("nodes"), nodes},
+                              {QStringLiteral("edges"), edges}};
+    if (positions.isEmpty() == false)
+    {
+        configuration.insert(QStringLiteral("layout"), QJsonObject{{QStringLiteral("positions"), positions}});
+    }
+    return QJsonObject{{QStringLiteral("version"), 2},
+                       {QStringLiteral("id"), QStringLiteral("Main")},
+                       {QStringLiteral("default"), QStringLiteral("Default")},
+                       {QStringLiteral("configurations"), QJsonArray{configuration}}};
+}
+
+QJsonArray ReadSavedPositions(const RenderGraphDocument& document)
+{
+    return QJsonDocument::fromJson(document.GetDraft(GetRoot()))
+        .object()
+        .value(QStringLiteral("configurations"))
+        .toArray()
+        .first()
+        .toObject()
+        .value(QStringLiteral("layout"))
+        .toObject()
+        .value(QStringLiteral("positions"))
+        .toArray();
+}
+
+void OpenGraphWorkspace(RendererWorkspace& inoutWorkspace, const QTemporaryDir& project, const QJsonObject& graph)
+{
+    WriteGraph(project, graph);
+    inoutWorkspace.SetProject(project.path(), 1);
+    REQUIRE(inoutWorkspace.OpenGraph(QDir(project.path()).filePath(GetRoot())) == true);
+    inoutWorkspace.SetLivePreview(false);
+    inoutWorkspace.resize(1400, 900);
+    inoutWorkspace.show();
+    QCoreApplication::processEvents();
+}
+} // namespace
+
+TEST_CASE("wire measure counts each crossing once and never counts wires that share a port",
+          "[editor][render-graph][layout]")
+{
+    CHECK(MeasureRenderGraphWires({}).Crossings == 0);
+    const RenderGraphWireMeasure crossed =
+        MeasureRenderGraphWires({QLineF(0, 0, 100, 100), QLineF(0, 100, 100, 0), QLineF(200, 0, 300, 0)});
+    CHECK(crossed.Crossings == 1);
+    CHECK(crossed.TotalLength > 2 * 141.4);
+    CHECK(crossed.TotalLength < 2 * 141.5 + 100);
+    // A fan from one output and wires meeting at one input touch only at the shared port.
+    CHECK(MeasureRenderGraphWires({QLineF(0, 0, 100, 0), QLineF(0, 0, 100, 100), QLineF(0, 50, 100, 100)}).Crossings ==
+          0);
+    // Direction does not matter.
+    CHECK(MeasureRenderGraphWires({QLineF(100, 100, 0, 0), QLineF(0, 100, 100, 0)}).Crossings == 1);
+}
+
+TEST_CASE("an unsaved graph opens with fewer wire crossings than dependency columns in file order",
+          "[editor][render-graph][layout]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenGraphWorkspace(workspace, project, MakeCrossedGraph({}));
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    // The loose layout every unsaved graph used to get: one column per dependency depth, rows in file order.
+    QHash<QString, QPointF> loose;
+    for (int32 index = 0; index < FAN_COUNT; ++index)
+    {
+        loose.insert(QStringLiteral("s%1").arg(index), QPointF(0, index * LOOSE_ROW_SPACING));
+        loose.insert(QStringLiteral("c%1").arg(index), QPointF(LOOSE_COLUMN_SPACING, index * LOOSE_ROW_SPACING));
+    }
+    const RenderGraphWireMeasure looseMeasure = canvas.MeasureWires(loose);
+    const RenderGraphWireMeasure shown = canvas.MeasureWires();
+    CHECK(looseMeasure.Crossings == FAN_COUNT * (FAN_COUNT - 1) / 2);
+    CHECK(shown.Crossings == 0);
+    CHECK(shown.TotalLength < looseMeasure.TotalLength);
+    // Display only: opening a graph never writes positions.
+    CHECK(workspace.GetDocument().IsDirty() == false);
+    CHECK(ReadSavedPositions(workspace.GetDocument()).isEmpty() == true);
+    // A tidy unsaved graph needs no suggestion.
+    CHECK(canvas.IsTidySuggested() == false);
+}
+
+TEST_CASE("the first move in an unsaved graph saves every shown card where it is", "[editor][render-graph][layout]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenGraphWorkspace(workspace, project, MakeCrossedGraph({}));
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    QHash<QString, QPointF> shown;
+    for (int32 index = 0; index < FAN_COUNT; ++index)
+    {
+        for (const QString& node : {QStringLiteral("s%1").arg(index), QStringLiteral("c%1").arg(index)})
+        {
+            shown.insert(node, canvas.GetNodePosition(node));
+        }
+    }
+    const QPointF delta(0, 40);
+    canvas.BeginDrag({QStringLiteral("c0")});
+    canvas.UpdateDrag(delta);
+    canvas.EndDrag();
+    const QJsonArray saved = ReadSavedPositions(workspace.GetDocument());
+    REQUIRE(saved.size() == 2 * FAN_COUNT);
+    for (auto iterator = shown.cbegin(); iterator != shown.cend(); ++iterator)
+    {
+        const QPointF expected = iterator.value() + (iterator.key() == QStringLiteral("c0") ? delta : QPointF());
+        CHECK(canvas.GetNodePosition(iterator.key()) == expected);
+    }
+    // One undo step puts the graph back to unsaved.
+    workspace.Undo();
+    CHECK(ReadSavedPositions(workspace.GetDocument()).isEmpty() == true);
+}
+
+TEST_CASE("an unsaved card sits beside the saved cards it feeds, level with their ports",
+          "[editor][render-graph][layout]")
+{
+    constexpr int32 SAVED_LEFT = 1500;
+    constexpr int32 SAVED_TOP = 600;
+    constexpr int32 SAVED_STEP = 200;
+    QJsonArray positions;
+    for (int32 index = 0; index < FAN_COUNT; ++index)
+    {
+        positions.append(QJsonObject{{QStringLiteral("node"), QStringLiteral("c%1").arg(index)},
+                                     {QStringLiteral("x"), SAVED_LEFT},
+                                     {QStringLiteral("y"), SAVED_TOP + index * SAVED_STEP}});
+    }
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenGraphWorkspace(workspace, project, MakeCrossedGraph(positions));
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    // Saved cards never move.
+    for (int32 index = 0; index < FAN_COUNT; ++index)
+    {
+        CHECK(canvas.GetNodePosition(QStringLiteral("c%1").arg(index)) ==
+              QPointF(SAVED_LEFT, SAVED_TOP + index * SAVED_STEP));
+    }
+    // Each source sits one column left of the export it feeds, its port level with the export's.
+    for (int32 index = 0; index < FAN_COUNT; ++index)
+    {
+        const QString source = QStringLiteral("s%1").arg(FAN_COUNT - 1 - index);
+        CHECK(canvas.GetNodePosition(source).x() < SAVED_LEFT);
+        CHECK(canvas.GetNodePosition(source).x() > 0);
+        CHECK(canvas.GetPortPosition(source + QStringLiteral(".texture"), true).y() ==
+              canvas.GetPortPosition(QStringLiteral("c%1.texture").arg(index), false).y());
+    }
+    CHECK(canvas.MeasureWires().Crossings == 0);
+    CHECK(workspace.GetDocument().IsDirty() == false);
+}
+
+TEST_CASE("a tangled saved layout suggests Tidy layout, which is one undoable step and can be dismissed",
+          "[editor][render-graph][layout]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenGraphWorkspace(workspace, project, MakeLargeGraph(true));
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const RenderGraphWireMeasure tangled = canvas.MeasureWires();
+    REQUIRE(tangled.Crossings >= 20);
+    REQUIRE(canvas.IsTidySuggested() == true);
+    const QLabel* text = canvas.findChild<QLabel*>(QStringLiteral("renderGraphTidyNoticeText"));
+    REQUIRE(text != nullptr);
+    CHECK(text->text().contains(QString::number(tangled.Crossings)) == true);
+    QPushButton* tidy = canvas.findChild<QPushButton*>(QStringLiteral("renderGraphTidyButton"));
+    REQUIRE(tidy != nullptr);
+    CHECK(tidy->property("visualRole").toString() == QStringLiteral("primary"));
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    const QByteArray before = workspace.GetDocument().GetDraft(GetRoot());
+    tidy->click();
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(canvas.MeasureWires().Crossings < tangled.Crossings / 2);
+    CHECK(canvas.IsTidySuggested() == false);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == before);
+    CHECK(canvas.IsTidySuggested() == true);
+    QPushButton* dismiss = canvas.findChild<QPushButton*>(QStringLiteral("renderGraphTidyDismiss"));
+    REQUIRE(dismiss != nullptr);
+    dismiss->click();
+    CHECK(canvas.IsTidySuggested() == false);
+    canvas.Rebuild();
+    CHECK(canvas.IsTidySuggested() == false);
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == before);
+}
+
+TEST_CASE("Auto Layout stays fast on a configuration's largest graphs and well beyond",
+          "[editor][render-graph][layout]")
+{
+    const auto measure = [](int32 layers, int32 width, int32 fanOut) {
+        QVector<RenderGraphLayoutNode> nodes;
+        QVector<RenderGraphLayoutEdge> edges;
+        for (int32 layer = 0; layer < layers; ++layer)
+        {
+            for (int32 row = 0; row < width; ++row)
+            {
+                nodes.append({QStringLiteral("n%1_%2").arg(layer).arg(row), QRectF(0, 0, 190, 120)});
+                for (int32 fan = 0; fan < fanOut && layer + 1 < layers; ++fan)
+                {
+                    // Scrambled consumers, and every fourth wire skips a layer, so bends and crossings both occur.
+                    const int32 next = (row * 7 + fan * 5 + layer) % width;
+                    const int32 skip = (fan % 4 == 3 && layer + 2 < layers) ? 2 : 1;
+                    edges.append({QStringLiteral("n%1_%2").arg(layer).arg(row),
+                                  QStringLiteral("n%1_%2").arg(layer + skip).arg(next)});
+                }
+            }
+        }
+        QVector<RenderGraphNodePosition> positions;
+        QElapsedTimer timer;
+        timer.start();
+        const bool isArranged = ComputeRenderGraphLayout(nodes, edges, RenderGraphLayoutOperation::Arrange, positions);
+        const int64 elapsed = timer.elapsed();
+        CHECK(isArranged == true);
+        CHECK(positions.size() == nodes.size());
+        return elapsed;
+    };
+    CHECK(measure(LAYER_COUNT, LAYER_WIDTH, LAYER_FAN_OUT) < LAYOUT_BUDGET_MILLISECONDS);
+    CHECK(measure(LARGE_CARD_COUNT / (2 * LAYER_COUNT), 2 * LAYER_COUNT, LAYER_FAN_OUT) <
+          4 * LAYOUT_BUDGET_MILLISECONDS);
 }
