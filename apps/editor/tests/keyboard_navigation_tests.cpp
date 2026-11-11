@@ -57,11 +57,11 @@ bool HasFocusIndicator(const QWidget& widget)
            widget.findChild<QWidget*>(QStringLiteral("viewportFocusStrip"), Qt::FindDirectChildrenOnly) != nullptr;
 }
 
-bool ActivateWindow(QWidget& window)
+bool ActivateWindow(QWidget& inoutWindow)
 {
-    window.show();
-    window.activateWindow();
-    return QTest::qWaitForWindowActive(&window);
+    inoutWindow.show();
+    inoutWindow.activateWindow();
+    return QTest::qWaitForWindowActive(&inoutWindow);
 }
 } // namespace
 
@@ -107,13 +107,14 @@ namespace
 {
 /// Walk window with Tab until focus comes back round, checking each stop, then check the loop covers the visible
 /// tool windows and that Shift+Tab walks it backwards.
-void CheckTabLoop(MainWindow& window)
+void CheckTabLoop(MainWindow& inoutWindow)
 {
     QApplication::processEvents();
-    if (window.focusWidget() == nullptr)
+    if (inoutWindow.focusWidget() == nullptr)
     {
         // Start where Tab would: the first control in the window's focus chain that takes Tab focus.
-        for (QWidget* widget = window.nextInFocusChain(); widget != &window; widget = widget->nextInFocusChain())
+        for (QWidget* widget = inoutWindow.nextInFocusChain(); widget != &inoutWindow;
+             widget = widget->nextInFocusChain())
         {
             if (widget->isVisible() == true && widget->isEnabled() == true &&
                 (widget->focusPolicy() & Qt::TabFocus) != 0)
@@ -123,14 +124,14 @@ void CheckTabLoop(MainWindow& window)
             }
         }
     }
-    REQUIRE(window.focusWidget() != nullptr);
+    REQUIRE(inoutWindow.focusWidget() != nullptr);
     // The window may start on a page container (Welcome) that is not itself a Tab stop; the first Tab leaves it for
     // the first control, which starts the loop.
-    if ((window.focusWidget()->focusPolicy() & Qt::TabFocus) == 0)
+    if ((inoutWindow.focusWidget()->focusPolicy() & Qt::TabFocus) == 0)
     {
-        QTest::keyClick(window.focusWidget(), Qt::Key_Tab);
+        QTest::keyClick(inoutWindow.focusWidget(), Qt::Key_Tab);
     }
-    QWidget* first = window.focusWidget();
+    QWidget* first = inoutWindow.focusWidget();
     REQUIRE(first != nullptr);
     INFO("Started on " << first->metaObject()->className() << " '" << first->objectName().toStdString() << "'");
 
@@ -138,9 +139,9 @@ void CheckTabLoop(MainWindow& window)
     bool hasComeRound = false;
     for (int press = 0; press < MAXIMUM_TAB_PRESSES && hasComeRound == false; ++press)
     {
-        QWidget* current = window.focusWidget();
+        QWidget* current = inoutWindow.focusWidget();
         QTest::keyClick(current, Qt::Key_Tab);
-        QWidget* next = window.focusWidget();
+        QWidget* next = inoutWindow.focusWidget();
         INFO("Tab from " << current->metaObject()->className() << " '" << current->objectName().toStdString() << "'");
         // A control that keeps focus on Tab traps the keyboard (WCAG 2.1.2).
         REQUIRE(next != current);
@@ -152,7 +153,8 @@ void CheckTabLoop(MainWindow& window)
         if (qEnvironmentVariableIsSet("LUDUS_PRINT_TAB_ORDER") == true)
         {
             QString path;
-            for (const QWidget* widget = next; widget != nullptr && widget != &window; widget = widget->parentWidget())
+            for (const QWidget* widget = next; widget != nullptr && widget != &inoutWindow;
+                 widget = widget->parentWidget())
             {
                 path.prepend(QStringLiteral("/%1(%2)").arg(QString::fromLatin1(widget->metaObject()->className()),
                                                            widget->objectName()));
@@ -170,7 +172,7 @@ void CheckTabLoop(MainWindow& window)
     CHECK(QSet<QWidget*>(visited.begin(), visited.end()).size() == visited.size());
 
     // The visible tool windows with controls are part of the loop.
-    for (QDockWidget* dock : window.findChildren<QDockWidget*>())
+    for (QDockWidget* dock : inoutWindow.findChildren<QDockWidget*>())
     {
         if (dock->isVisible() == false || dock->visibleRegion().isEmpty() == true)
         {
@@ -196,7 +198,7 @@ void CheckTabLoop(MainWindow& window)
 
     // Shift+Tab walks the same loop backwards.
     QTest::keyClick(first, Qt::Key_Backtab, Qt::ShiftModifier);
-    CHECK(window.focusWidget() == visited.last());
+    CHECK(inoutWindow.focusWidget() == visited.last());
 }
 } // namespace
 
@@ -230,20 +232,22 @@ TEST_CASE("Tab walks the main window's panels and comes back round without a tra
         REQUIRE(viewport != nullptr);
         QWidget* strip = viewport->findChild<QWidget*>(QStringLiteral("viewportFocusStrip"));
         REQUIRE(strip != nullptr);
-        CHECK(strip->height() > 0);
         const QColor accent = strip->palette().color(QPalette::Link);
         const auto isLit = [strip, &accent]() {
+            if (strip->isVisible() == false || strip->height() <= 0)
+            {
+                return false;
+            }
             const QImage image = strip->grab().toImage();
             return image.pixelColor(image.width() / 2, image.height() / 2).rgb() == accent.rgb();
         };
         viewport->setFocus(Qt::TabFocusReason);
         REQUIRE(viewport->hasFocus() == true);
         CHECK(isLit() == true);
-        const int surfaceHeight = viewport->height();
         window.findChild<QWidget*>(QStringLiteral("worldEntities"))->setFocus(Qt::TabFocusReason);
         CHECK(isLit() == false);
-        // Lighting the strip never resizes the render surface.
-        CHECK(viewport->height() == surfaceHeight);
+        // The strip floats over the controls' edge: lighting it never resizes the render surface.
+        CHECK(viewport->layout()->indexOf(strip) < 0);
     }
 }
 

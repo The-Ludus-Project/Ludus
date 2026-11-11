@@ -112,20 +112,21 @@ void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isV
 /// Places every presentation widget (message and grid, render surface, readback canvas, graph
 /// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
 /// Only one of them is visible at a time, so they share the frame instead of stacking.
-/// Accent strip between the controls and the frame that shows when the viewport has keyboard focus. The native
-/// render surface covers the frame, so the ring cannot be painted around it; the strip keeps its height whether or
-/// not it is lit, so focus never resizes the surface.
+/// Accent strip along the bottom edge of the viewport controls, just above the frame, lit while the viewport has
+/// keyboard focus. The native render surface covers the frame, so a ring cannot be painted around it; the strip
+/// floats over the toolbar's edge rather than taking layout space, so focus never resizes the surface.
 class ViewportFocusStrip final : public QWidget
 {
 public:
-    explicit ViewportFocusStrip(QWidget& viewport) : QWidget(&viewport), mViewport(viewport)
+    ViewportFocusStrip(QWidget& inoutViewport, QWidget& inoutControls)
+        : QWidget(&inoutViewport), mViewport(inoutViewport), mControls(inoutControls)
     {
         setObjectName(QStringLiteral("viewportFocusStrip"));
         setAttribute(Qt::WA_TransparentForMouseEvents);
         setFocusPolicy(Qt::NoFocus);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        updateHeight();
-        viewport.installEventFilter(this);
+        inoutViewport.installEventFilter(this);
+        inoutControls.installEventFilter(this);
+        place();
     }
 
 protected:
@@ -133,36 +134,35 @@ protected:
     {
         if (watched == &mViewport && (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut))
         {
-            update();
+            place();
+        }
+        else if (watched == &mControls && (event->type() == QEvent::Resize || event->type() == QEvent::Move ||
+                                           event->type() == QEvent::Show || event->type() == QEvent::Hide))
+        {
+            place();
         }
         return QWidget::eventFilter(watched, event);
     }
-    void changeEvent(QEvent* event) override
-    {
-        if (event->type() == QEvent::StyleChange)
-        {
-            updateHeight();
-        }
-        QWidget::changeEvent(event);
-    }
     void paintEvent(QPaintEvent*) override
     {
-        if (mViewport.hasFocus() == true)
-        {
-            // Link carries the accent the editor style draws focus rings with.
-            QPainter(this).fillRect(rect(), palette().color(QPalette::Link));
-        }
+        // Link carries the accent the editor style draws focus rings with.
+        QPainter(this).fillRect(rect(), palette().color(QPalette::Link));
     }
 
 private:
-    void updateHeight()
+    void place()
     {
         const EditorStyle* editorStyleOrNull = GetEditorStyleOrNull();
-        setFixedHeight(editorStyleOrNull != nullptr ? editorStyleOrNull->GetFocusRingWidth()
-                                                    : style()->pixelMetric(QStyle::PM_DefaultFrameWidth));
+        const int height = editorStyleOrNull != nullptr ? editorStyleOrNull->GetFocusRingWidth()
+                                                        : style()->pixelMetric(QStyle::PM_DefaultFrameWidth);
+        const QRect controls = mControls.geometry();
+        setGeometry(controls.left(), controls.bottom() + 1 - height, controls.width(), height);
+        setVisible(mViewport.hasFocus() == true && mControls.isVisible() == true);
+        raise();
     }
 
     QWidget& mViewport;
+    QWidget& mControls;
 };
 
 class ViewportFrameLayout final : public QLayout
@@ -1924,6 +1924,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                            navigationHint);
     });
     mState->Layout->addWidget(controls);
+    new ViewportFocusStrip(*this, *controls);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->StatisticsLabelOrNull = new QLabel(this);
     mState->StatisticsLabelOrNull->setObjectName(QStringLiteral("viewportStatisticsOverlay"));
@@ -1955,7 +1956,6 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mState->MessageOrNull->setWordWrap(true);
     // The orientation widget follows the message: it shows only while a frame is on screen.
     mState->MessageOrNull->installEventFilter(this);
-    mState->Layout->addWidget(new ViewportFocusStrip(*this));
     mState->FrameLayoutOrNull = new ViewportFrameLayout;
     mState->Layout->addLayout(mState->FrameLayoutOrNull, 1);
     mState->FrameLayoutOrNull->addWidget(mState->MessageOrNull);
