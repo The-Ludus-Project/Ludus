@@ -236,12 +236,12 @@ backend/profile and workload, retain a control path, and report unavailable
 GPU/latency/backing measurements explicitly. Adopt a technique only after its
 correctness, relevant benefit and maintenance cost are established. Required
 API/specification checks and the references already adopted above remain normal
-implementation inputs. This queue has not yet produced additional adopted changes.
+implementation inputs. The [conference review below](#synchronization-attachments-and-schedules)
+records design refinements from the expanded reference index.
 
-The venue programs, session descriptions and available abstracts were screened
-for this shortlist. None of the new talks or papers below has a completed full
-review, implementation trial or adoption record. The milestone mappings and
-experiments are Ludus research questions, not claims of demonstrated gains.
+The initial shortlist came from venue programs, session descriptions and
+available abstracts. The reading status in each row identifies the material
+consulted and links to any resulting decision.
 
 ### Venues to follow
 
@@ -265,10 +265,10 @@ or prove that an advanced native technique fits its portable backend contract.
 
 | ID | Source and attribution | Reading status | Question and possible trial after full review |
 | --- | --- | --- | --- |
-| RG-01 | Sebastian Aaltonen, **HypeHype Mobile Rendering Architecture**, SIGGRAPH Advances in Real-Time Rendering, 2023. [Course](https://advances.realtimerendering.com/s2023/); [slides](https://advances.realtimerendering.com/s2023/AaltonenHypeHypeAdvances2023.pdf) | Queued; session and opening slides screened | Which low-level API/backend choices improve our resource and ownership boundaries? Trial one bounded change against textured/indexed scenes, handle failures and the existing portable profiles. |
+| RG-01 | Sebastian Aaltonen, **HypeHype Mobile Rendering Architecture**, SIGGRAPH Advances in Real-Time Rendering, 2023. [Course and materials](https://advances.realtimerendering.com/s2023/) | Relevant slides and notes reviewed | [Attachment lifetime and pass groups](rhi-gdi.md#attachment-lifetime-and-pass-groups) |
 | RG-02 | Charles Giessen, **Frames in Flight Demystified**, Vulkanised 2026, LunarG. [Program, slides and recording](https://www.vulkan.org/events/vulkanised-2026#wednesday) | Queued; program screened | Does a different frame-storage/reuse policy improve tail latency or memory? Compare the same workload with slow-GPU, resize and destruction journeys; prove reuse against actual completion. |
 | RG-03 | Yuriy O'Donnell, **FrameGraph: Extensible Rendering Architecture in Frostbite**, GDC 2017, Frostbite / Electronic Arts. [Session](https://www.gdcvault.com/play/1024612/FrameGraph-) | Queued; session description screened | Which pass/resource abstractions simplify our ordered compiler? Compare a bounded compiler change with the reference plan, including history roots, imported uploads, feedback and undefined loads. |
-| RG-04 | Nicolas Lopez and Michel Bouchard, **Anvil Rendering Architecture**, REAC 2025, Ubisoft. [Abstract, slides and recording](https://enginearchitecture.org/2025.htm) | Queued; abstract screened | Which frame-graph, shader-binding and profiling practices fit our module boundaries? Trial one binding or planning improvement and measure CPU cost, retained memory and image agreement. |
+| RG-04 | Nicolas Lopez and Michel Bouchard, **Anvil Rendering Architecture**, REAC 2025, Ubisoft. [Abstract, slides and recording](https://enginearchitecture.org/2025.htm) | Frame Graph slides and notes reviewed | [Schedule comparison for R15](rhi-gdi.md#schedule-comparison-for-r15) |
 | RG-05 | Nia Bickford, **Upgrading from GLSL to Slang in the Vulkan Nvpro-Samples**, Shading Languages Symposium 2026; Dan Sinclair, **WGSL: Past, Present and Future**, same symposium. [Program and materials](https://www.khronos.org/events/shading-languages-symposium-2026) | Queued; program and available abstracts screened | Which reflection, layout and compilation practices improve our packages? Trial a verified package/schema change against target packing, interface mismatches and pipeline readiness on all supported backends. |
 
 Continue by screening these candidates when a concrete baseline limitation
@@ -293,6 +293,20 @@ justifies the additional reading:
   [Program](https://highperformancegraphics.org/2026/schedule/). Queued; program
   screened. Investigate scheduling only when a comparable compute workload exists;
   compare execution time, synchronization, memory and correctness.
+
+### Synchronization, attachments and schedules
+
+On 2026-11-11, the expanded table of contents directed this review to GDC,
+SIGGRAPH and REAC material. The comparison used Ludus `253c2f61a` on `develop`
+and the primary slide sections below, including their diagrams and available
+speaker notes. The decisions specify design and acceptance criteria. Runtime
+trials and hardware measurements remain open.
+
+| Source and scope read | Observation in Ludus | Decision |
+| --- | --- | --- |
+| Matt Pettineo, **Breaking Down Barriers: An Introduction to GPU Synchronization**, GDC 2019, Ready at Dawn. Slides “GPU Thread Barriers”, “GPU Cache Barriers”, “GPU Compression Barriers”, “D3D12 Barriers”, “Vulkan Barriers” and the multi-queue recap distinguish execution, visibility and layout costs. [Primary slides](https://media.gdcvault.com/gdc2019/presentations/Pettineo_Matt_Breaking%20Down%20Barriers.pdf) | `GraphReport` records semantic dependencies. Backend helpers emit synchronization during encoding and transfers. The report cannot show which native stage, access or range an optimization changed. | Observe actual Vulkan lowering before narrowing buffer barriers in R13a. Keep semantic edges distinct from observed native actions, including Direct3D 12 same-state UAV ordering. [Design](rhi-gdi.md#synchronization-evidence), [Khronos synchronization examples](https://docs.vulkan.org/guide/latest/synchronization_examples.html), [Microsoft resource barriers](https://learn.microsoft.com/en-us/windows/win32/direct3d12/using-resource-barriers-to-synchronize-resource-states-in-direct3d-12) |
+| Sebastian Aaltonen, **HypeHype Mobile Rendering Architecture**, SIGGRAPH Advances in Real-Time Rendering, 2023. Slides “Mainstream Phones vs Xbox 360 (and Xbox One)”, “GPU-Driven Rendering on Mainstream Phones?” and “Our Solution: Minimal Platform Abstraction” discuss on-chip attachments, bandwidth and API scope. [Primary slides and notes](https://advances.realtimerendering.com/s2023/AaltonenHypeHypeAdvances2023.pdf) | R5 can merge compatible consecutive draws. The current merge predicate requires both depth stores to be `Store`. Its published Metal comparison measured CPU cost. | Trial a physical group that honors an authored final depth discard. Qualify it using pixel agreement, initialization and target-GPU bandwidth evidence. Framebuffer fetch and broad implicit store elision need their own contracts and evidence. [Design](rhi-gdi.md#attachment-lifetime-and-pass-groups) |
+| Nicolas Lopez and Michel Bouchard, **Anvil Rendering Architecture**, REAC 2025, Ubisoft. The “Frame Graph” sequence, including “GetInputOutput” and “Render”, covers the explicit schedule, resource lifetime and platform-specific schedules. [Primary slides and notes](https://enginearchitecture.org/downloads/REAC_2025_Anvil.pdf) | Ludus already separates declared uses from packet execution and has an authored order. Its current whole-object pool retires by completion. Anvil's automatic producer insertion and heap aliasing require additional scheduling and lifetime machinery. | Preserve the authored list as the control for R15 schedule experiments. Make queue ownership, waits and retirement part of the comparison. Automatic producer insertion and heap aliasing remain outside this trial. [Design](rhi-gdi.md#schedule-comparison-for-r15) |
 
 ### Review and trial record
 

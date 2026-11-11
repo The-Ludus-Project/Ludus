@@ -4,7 +4,9 @@
 baseline reconciliation recorded 2026-10-11 at `5659894`; R0 negotiation and
 R6 storage implemented at `5014834`; R7 measurement/workflow implemented with
 physical Vulkan/Wayland and deployed-browser gates open (2026-10-12).
-The R6–R18 milestone assignment includes the reference-resource gap review of 2026-10-13.
+The R6–R18 milestone assignment includes the reference-resource gap review of
+2026-10-13 and the 2026-11-11 design review of synchronization and attachment
+lowering. The latter adds design and acceptance criteria for R5, R13 and R15.
 The initial design was drafted on 2026-10-04 before opening the article map,
 then refined through [five complete reference chapters](rhi-gdi-gems-review.md)
 and primary API documentation. The [implementation record](#implementation-phases-and-acceptance)
@@ -47,8 +49,9 @@ owns actual attachment bounds, full clears and completion semantics.
 
 ## Current implementation and compatibility
 
-The current RHI has Vulkan on Linux, Metal on macOS, and WebGPU or WebGL 2
-in the browser. General APIs share the compatibility facade's owner and registry.
+The current RHI has Vulkan on Linux, Metal on macOS, Direct3D 12 on Windows,
+and WebGPU or WebGL 2 in the browser. General APIs share the compatibility facade's
+owner and registry.
 Their capabilities describe implemented operations on the enabled device.
 
 | Existing boundary | Implemented scope | Design boundary |
@@ -58,8 +61,9 @@ Their capabilities describe implemented operations on the enabled device.
 | [Portable raster](../../modules/graphics/rhi/include/ludus/graphics/rhi/raster.h) | Typed generational resources, reflected immutable bindings/pipelines and indexed/instanced draws; renderer L1–L3 extend depth, targets and sampled mip formats | R8 adds bounded mutation/copy/readback; extended attachment/view and descriptor APIs remain deferred |
 | [Lifetime services](../../modules/graphics/rhi/include/ludus/graphics/rhi/lifetime.h) | Retained command batches, actual completion tokens, bounded buffer/texture transfers, initialized mip primitives and canonical pipeline requests | Partial sampled views, sparse memory/eviction and persistent driver cache remain extensions |
 | [Ordered graph](../../modules/graphics/rhi/include/ludus/graphics/rhi/graph.h) | Authored order, in-place versions, RAW/WAR/WAW reports, culling, completion-gated object pooling and opt-in raster merging | Conservative whole-resource hazards; no heap aliasing, parallel recording or async queues |
-| [Compute](../../modules/graphics/rhi/include/ludus/graphics/rhi/compute.h) | Single-queue buffer dispatch and indexed indirect drawing on Vulkan, Metal and WebGPU | WebGL 2 requires an authored CPU/direct variant; storage textures and indirect dispatch are deferred |
+| [Compute](../../modules/graphics/rhi/include/ludus/graphics/rhi/compute.h) | Single-queue buffer dispatch and indexed indirect drawing on Vulkan, Metal, Direct3D 12 and WebGPU, subject to profile limits | WebGL 2 requires an authored CPU/direct variant; storage textures and indirect dispatch are deferred |
 | [Vulkan](../../modules/graphics/rhi/src/rhi_vulkan.cpp) and [Metal](../../modules/graphics/rhi/src/rhi_metal.mm) | Both lower bounded raster/compute, R6 storage, R7 measurement and R8 transfers; Vulkan general allocations use private VMA 3.3.0, while legacy frame targets retain their allocation path | Keep native allocation, synchronization and presentation retirement private |
+| [Direct3D 12](windows-direct3d12.md) | Bounded raster, transfers, buffer compute and ordered graphs; DXIL and the adapter's enabled profile govern admission | Hosted WARP tests verify the software regression lane. [D7 qualification](windows-direct3d12.md#d7-qualify-the-windows-profiles) owns the outstanding physical GPU and desktop evidence |
 | [Browser dispatcher](../../modules/graphics/rhi/src/rhi_web.cpp) | WebGPU startup with one requirement-aware WebGL 2 fallback and Platform-managed canvas replacement | Preserve ADR 0014 and callback isolation |
 | [Shader build helper](../../cmake/shaders/compile_shader.py) | Pinned Slang emits SPIR-V/WGSL and macOS MSL 2.3; pinned SPIRV-Cross emits GLSL ES 3.00, with bounded raster/compute reflection and target layout validation | Reject unverified layout forms; broader package/feature support is future work |
 
@@ -93,6 +97,7 @@ flowchart TD
     Device --> RHI[GraphicsRhi device API]
     RHI --> Vulkan[Private Vulkan backend]
     RHI --> Metal[Private Metal backend]
+    RHI --> D3D12[Private Direct3D 12 backend]
     RHI --> WebGPU[Private WebGPU backend]
     RHI --> WebGL[Private WebGL 2 backend]
     RHI --> Platform[Platform window and canvas services]
@@ -541,8 +546,9 @@ Compilation proceeds through one inspectable implementation:
    setup-time pool matches complete descriptions and gates reuse on completion.
    Interval-driven allocation or heap aliasing would be separate extensions;
    fresh/aliased storage starts undefined.
-6. Produce semantic dependencies and a backend lowering plan, including upload
-   imports, final uses, presentation, and cross-execution obligations.
+6. Produce semantic dependencies and pass groups, including import and final-use
+   obligations. The backend derives transitions from live uses and its tracked
+   native state at encoding time. See [synchronization evidence](#synchronization-evidence).
 7. Encode and submit, transferring leases to submission records. Commit the
    RHI's persistent state ledger only for accepted work. If execution has begun and
    fails, do not pretend that a partial plan rolled back; fault affected state or
@@ -599,6 +605,8 @@ Queue submission order alone is not a complete Vulkan memory dependency.
 | Backend | Lowering rule |
 | --- | --- |
 | Vulkan | Maintain one tested semantic mapper. Retain the Vulkan 1.1 barrier/render-pass path; negotiate synchronization2, timeline semaphores, and dynamic rendering as independent optional paths. Preserve narrow stages, correct layouts, queue ownership, load/store and WSI retirement |
+| Direct3D 12 | Lower to transitions and UAV ordering on the direct command list for the admitted profile. Keep state promotion/decay at the native execution boundary. Dependent UAV accesses may require ordering even when the native state is unchanged |
+| Metal | Use encoder boundaries and the selected hazard-tracking mode. Apply the synchronization required by explicitly untracked or externally shared resources |
 | WebGPU | Use resource creation flags, legal scopes/pass boundaries, ordered queue operations, error scopes and asynchronous status. No fake explicit barriers, heaps, or queue families in the public API |
 | WebGL 2 | Apply context state snapshots, legal FBO operations, copies/uploads and batch sync on its owner. Reject unsupported commands before execution. No desktop GL persistent mapping or memory-barrier assumptions |
 
@@ -607,12 +615,59 @@ Vulkan baseline later, negotiate and test newer paths deliberately, then remove
 an obsolete lowering only through a supported-device policy change. Permanent
 duplication of two unmeasured implementations is a maintenance cost.
 
+### Synchronization evidence
+
+`GraphReport` describes logical dependencies. The current encoder walks live
+passes and asks backend helpers to lower their uses against native state. One
+dependency can need several native operations, share an operation with other
+edges, or be satisfied by attachment ordering or an API usage scope. A
+read-to-read change of texture layout can still require a native transition.
+Graph edges, encoded synchronization and submission completion answer different
+questions.
+
+Before narrowing R13a hazards, add opt-in observations at the existing Vulkan
+barrier call sites. Start with the
+[ordered-compute fixture](../../modules/graphics/rhi/tests/portable_raster_conformance_tests.cpp)
+that writes a storage buffer in successive dispatches and consumes generated
+geometry and indexed indirect arguments. Correlate the native operation with its
+graph pass or transfer boundary, retained resource identity and submission when
+available. Capture the emitted stage and access masks and affected byte range.
+For image transitions also capture the layout pair and aspect/mip/layer span. Reuse existing GPU scope identifiers
+where available, with bounded storage and an explicit truncated-record count.
+The observation path must leave recording, admission and resource state
+unchanged. Keep the data backend-private until another backend needs the same
+field. WebGPU scope validation and Direct3D 12 UAV/state transitions can supply
+their own evidence through the same test journeys.
+
+For the first range-aware trial, split buffer uses only at validated byte-range
+boundaries and keep the whole-resource plan as the control. Narrow a dependency
+only when the declared range covers every admitted binding/command access and
+the backend can order that range. Overlapping writes and reads, broader indirect
+or native uses, and a backend with coarser synchronization retain conservative
+ordering. Whole-resource version validation and culling stay in place during
+this first trial, as does conservative texture state. An import
+must carry the accepted native state and producer obligations for the covered
+range. If a direct update, another submission or a wider binding makes that
+snapshot stale, revalidate before encoding. Completion still governs backing
+reuse even when access ranges are disjoint.
+
+Compare the existing whole-resource path and the candidate with disjoint and
+partially overlapping buffer ranges, dependent writes in the same storage role,
+and an upload or readback across a submission boundary. Require matching
+readback bytes and rendered output, clean backend validation where available,
+and evidence of narrower native synchronization in the intended case. Record
+CPU plan/encode cost and GPU duration on the named device before adopting a
+performance optimization. A reduced logical edge count alone establishes
+neither native ordering nor a speedup.
+
 Transient pooling reuses equivalent resource objects after all uses finish.
 Native heap aliasing is a separate later feature: match memory requirements and
 resource classes, order old/new users, issue backend-required alias transitions,
 and initialize the new contents. Lifetime intervals on a CPU pass list are
 insufficient once queues overlap. WebGPU/WebGL can pool objects without claiming
 control over physical allocation aliasing.
+
+### Attachment lifetime and pass groups
 
 The shipped [R5 merging contract](../development/fullscreen-rendering.md#measured-pass-merging-r5)
 is explicit opt-in through `GraphCompileOptions::MergeRasterPasses`; the default
@@ -624,6 +679,31 @@ necessarily one submission. Start with one graphics submission per rendered
 frame plus budgeted upload work; split to feed the GPU sooner only when latency
 and utilization measurements justify it. No fixed historical millisecond,
 command-buffer, or submit count from a book is a shipping budget.
+
+For a bounded attachment trial, use two compatible consecutive offscreen raster
+passes that preserve color, with a depth clear in the first pass, a depth load
+in the second, and an authored depth discard after the second. The physical
+group must use the first pass's load/clear and the final pass's store for each
+attachment. The compiler still validates every logical pass and its observable
+outputs. Keep a scope boundary for feedback, a sampled or transferred attachment,
+incompatible views/extents, intervening side effects, or a dependency requiring
+a transition between draws. Start with the existing single-color, single-sample
+shape. Resolves and multiple attachments keep the existing path until their own
+cases are qualified.
+
+Honor authored stores for imported, exported, history, readback, presented, or
+otherwise externally accessible contents. Any later automatic store elision
+requires a lifetime proof covering all live uses and external observers. An
+attachment returned as a texture handle, or a pooled allocation, does not by
+itself establish that proof. Pass-local storage is a separate capability from
+completion-gated pooling and heap aliasing.
+
+Run the two-pass fixture with merging disabled and enabled. Compare color
+readback and verify that a later depth load after discard is rejected in both
+modes. Add a preserved-depth case and a case that must retain a scope boundary.
+Measure physical groups, GPU time and attachment traffic on a tile-based device
+where hardware counters are available. Planned bytes and host encode time are
+separate observations. Keep the unmerged path for each profile.
 
 Renderer packets are compact contiguous data with stable pipeline/binding/mesh
 references. Sort opaque objects within the declared pass by pipeline/material
@@ -689,11 +769,12 @@ counts. These are not driver allocations or physical backing estimates. The
 [R5 guide](../development/fullscreen-rendering.md#measured-pass-merging-r5) owns
 report definitions and measurement limits.
 
-Extend the readable execution report as needed with lowered barriers, binding
-layout, pipeline
-keys, pool assignments, upload/readback traffic, pending retirements, and
-surface generation. Normal logging and profiling may drop optional records
-under pressure; record diagnostic loss and never crash device work because a
+Correlate backend observations with the logical report as described in
+[synchronization evidence](#synchronization-evidence). Other useful diagnostic
+data includes binding layouts, pipeline keys, pool assignments, upload/readback
+traffic, pending retirements, and surface generation. Normal logging and
+profiling may drop optional records under pressure. Record diagnostic loss and
+never crash device work because a
 name, capture, or telemetry allocation failed. Do not build a custom capture
 viewer before existing logs/artifacts answer the needed questions.
 
@@ -719,8 +800,9 @@ GPU duration. Do not compare unrelated queue clocks without calibration.
 The current macOS Metal backend implements the same bounded device, raster,
 lifetime, ordered graph, buffer-compute and merging profiles as Vulkan, within
 its enabled capabilities. The [public rendering guide](../development/fullscreen-rendering.md#macos-metal)
-owns setup and platform limits. The [Direct3D 12 backend](windows-direct3d12.md) currently
-clears and presents only; its staged plan brings it to those contracts.
+owns setup and platform limits. The [Direct3D 12 backend](windows-direct3d12.md)
+has its own admitted profiles, including
+[buffer compute and ordered graphs](windows-direct3d12.md#compute-and-ordered-graphs-d4b).
 Their binding systems, residency, heaps, native barrier choices, command allocator
 reuse and completion mechanisms stay private. Future backend conformance must prove all common semantics before the renderer uses it.
 D3D12 allocator reset requires completed GPU uses, and Metal resource
@@ -841,9 +923,9 @@ requiring those higher-level systems to be implemented first.
 | **R10: attachment extensions (Implemented, bounded offscreen profiles)** | R10a: multiple color attachments, sampled depth and stencil. R10b: MSAA/resolve. R10c: partial attachment views and extended GDI load/store declarations. | Existing R1/R3 plus R6; R9a/view aspects for sampled depth and R10c; no dependency on all texture types or transfers | Validate per-format/sample limits, attachment compatibility, resolves, depth/stencil behavior, feedback and undefined loads. Prove graph/direct image agreement, loss/resize retirement and authored alternatives. Conservatively track full-resource hazards until R13a; stencil, attachment counts and MSAA are separate capabilities. |
 | **R11: scalable binding and optional bindless (Implemented, bounded binding and table profiles)** | R11a: descriptor arenas and dynamic offsets. R11b: reflected binding arrays and separately enabled descriptor indexing/bindless, with explicit reachable-resource declarations and completion-gated reuse. R11c (Implemented): wider fixed color texture/sampler/buffer descriptor kinds, separately enabled bounded runtime texture arrays, logical partially populated tables with retained fallback descriptors, and safe publication of replacement snapshots after earlier binds/submissions. Native in-place UPDATE_AFTER_BIND semantics are not claimed by this immutable snapshot profile. Each operation retains its documented backend and descriptor budgets. | R11a: R6 and existing R1/R2; R11b: R11a plus verified target reflection/capabilities; R9 only for new texture types/views | Alignment/range checks, descriptor exhaustion/rollback, in-flight replacement and stale index tests. Arrays do not imply runtime-sized/non-uniform indexing or update-after-bind. Retain all declared reachable resources; unsafe or undeclared access rejects. Compare binding CPU cost and retained memory through R7. Bindless is optional and does not remove table/memory budgets. |
 | **R12: expanded compute and indirect commands** | R12a: broader indexed/non-indexed indirect arguments and indirect dispatch. R12b: raster-stage storage buffers and storage textures. R12c: optional native multi-draw/GPU-provided draw counts. Preserve R4's bounded indexed-indirect path. | R12a/R12c: R6 and existing R4/R3; R12b: R6 and target shader reflection, plus R9 only for new texture/view types; bindless and mutable transfers are not prerequisites | Validate argument ABI/alignment/count/stride and enabled offsets, producer-to-command/shader dependencies, zero work and overflow. GPU-produced command fixtures match direct draws without reading counts back to the CPU. R12c reports native support separately from CPU loops over indirect commands. Retain a bounded single-command path and authored WebGL CPU/direct alternative. Visibility/compaction algorithms remain renderer policy. |
-| **R13: finer GDI hazards and transient aliasing** | R13a: buffer ranges and texture mip/layer/aspect tracking. R13b: transient backing/heap aliasing with explicit initialization and lifetime intervals. | R13a: R6 and existing R3; incorporate R8–R10/R12 uses when those profiles exist. R13b: R13a plus RHI allocation/alias capabilities and R7 memory evidence | Adversarial overlapping ranges/views, cross-frame imports, alias transitions/reuse, RAW/WAR/WAW, feedback and undefined loads. Aliasing excludes imported/persistent/in-flight backing unless ownership and last use explicitly permit it. Reject invalid plans before side effects. Compare images/synchronization with whole-resource, non-aliased execution and measure peak API-allocated memory. |
+| **R13: finer GDI hazards and transient aliasing** | R13a: [observe lowering, then trial buffer ranges](#synchronization-evidence) before texture mip/layer/aspect tracking. R13b: transient backing/heap aliasing with explicit initialization and lifetime intervals. | R13a: R6 and existing R3; incorporate R8–R10/R12 uses when those profiles exist. R13b: R13a plus RHI allocation/alias capabilities and R7 memory evidence | Adversarial overlapping ranges/views, cross-frame imports, alias transitions/reuse, RAW/WAR/WAW, feedback and undefined loads. Aliasing excludes imported/persistent/in-flight backing unless ownership and last use explicitly permit it. Reject invalid plans before side effects. Compare images/synchronization with whole-resource, non-aliased execution and measure peak API-allocated memory. |
 | **R14: independent devices and surfaces** | Multiple device/surface owners, raw adapter catalogs separated from enabled profiles, per-owner registries/completion and independent loss/presentation retirement. | R6 plus existing R0/R2 ownership; independent of aliasing, bindless and GPU-driven commands | Concurrent owners, stale/cross-owner rejection, independently resized/lost surfaces, pending browser callbacks and separate render/present completion. One owner's failure must not corrupt another. Preserve the single-owner facade. A separate GraphicsDevice module remains an ownership decision, not a duplicate registry. |
-| **R15: parallel recording and multiple queues** | R15a: native worker-owned recording/pools, deterministic owner-thread submission. R15b: optional queue domains, async work, release/acquire and completion joins. Preserve serial/single-queue execution. | R15a: existing R2/R3 plus R6 and R7 evidence. R15b: existing R3/R4 plus R6/R7 and explicit per-queue state/completion; R8a for transfer queues. Neither requires R12, R13b or R14; R13a is an optimization for overlap, not a correctness prerequisite | Worker/pool ownership, cancellation/loss, delayed completion and cross-queue RAW/WAR/WAW under stress. Whole-resource synchronization remains a legal conservative baseline. Validate ownership transfers and wait graphs without deadlocks; retain all backing until every participating queue completes. Prove image agreement and measured join/submit cost, tail latency and overlap memory. |
+| **R15: parallel recording and multiple queues** | R15a: native worker-owned recording/pools, deterministic owner-thread submission. R15b: optional queue domains, async work, release/acquire and completion joins. Preserve the [serial, single-queue control](#schedule-comparison-for-r15). | R15a: existing R2/R3 plus R6 and R7 evidence. R15b: existing R3/R4 plus R6/R7 and explicit per-queue state/completion; R8a for transfer queues. Neither requires R12, R13b or R14; R13a is an optimization for overlap, not a correctness prerequisite | Worker/pool ownership, cancellation/loss, delayed completion and cross-queue RAW/WAR/WAW under stress. Whole-resource synchronization remains a legal conservative baseline. Validate ownership transfers and wait graphs without deadlocks; retain all backing until every participating queue completes. Prove image agreement and measured join/submit cost, tail latency and overlap memory. |
 | **R16: ray-tracing resource foundation** | R16a: native acceleration-structure handles, static triangle BLAS/TLAS builds, instances and scratch sizing. R16b: supported update/refit and compaction. R16c: independently supported procedural bounds and motion geometry/instances, with explicit build inputs and limits. Declare build/read/copy uses in GDI and completion-gated retirement. | R6 plus existing R0/R2/R3 buffer/lifetime contracts; R8 for mutable input journeys; R7 for qualification. No scalable descriptors, bindless, aliasing, multi-device or multi-queue prerequisite | Input role/usage, size/alignment and build/update limits are explicit. Test rollback, invalid geometry, retained geometry/scratch/instances, topology-change rejection/rebuild, stale handles, loss and compaction retirement. Initial R16a can use immutable uploaded buffers. Build/lifetime completion does not claim traversal correctness: build-to-query and hit/miss qualification are completed jointly with R17a. |
 | **R17: ray queries and ray pipelines** | R17a: reflected acceleration-structure binding and compute-stage ray queries/intersectors. R17b: independently supported dedicated ray pipelines, trace commands and shader/function tables. R17c: broader query stages and procedural intersection/motion traversal, gated with R16c and target reflection. | R17a: R16a and existing R4 compute/reflection; extend ordinary R1 binding for acceleration structures. R17b: R16a and a verified backend/toolchain pipeline profile. R11, R12c, R13b and R15 are not prerequisites | Independent triangle intersection fixtures verify hit/miss, ray intervals, transforms, IDs, masks and admitted opacity behavior. Validate build-to-read synchronization, shader interfaces, table ranges, payload/recursion limits where relevant and in-flight replacement. Native query support never implies dedicated pipeline support. Test every claimed lowering; unsupported backends reject or use an authored raster alternative. Shading/denoising/path-tracing algorithms remain outside RHI/GDI. |
 
@@ -934,12 +1016,30 @@ new renderer algorithm. R17 must not impose Vulkan's shader-binding-table model
 on Metal intersectors/function tables; the backend-specific package and lowering
 must be verified against Ludus's pinned toolchains before support is enabled.
 
-The earlier candidate for D3D12 or external compute interoperability remains
-consumer-triggered work outside this assignment. A new backend or bridge needs
-its own scope and evidence; it is not implied by R14 or the native RT track.
+External compute interoperability remains consumer-triggered work outside this
+assignment. A new backend or bridge needs its own scope and evidence alongside
+the R14 and native RT work.
 Research trials continue to use the [review queue](rhi-gdi-gems-review.md#research-after-the-initial-implementation)
 and must retain a baseline/control path. Persistent driver pipeline caching and
 other unassigned optimizations remain consumer-triggered extensions.
+
+#### Schedule comparison for R15
+
+Use one authored pass list and a serial, single-queue execution as the control
+for each candidate recording or queue schedule. The candidate preserves the
+control's observable outputs, pass dependencies and ordering of side effects.
+Name the exact workload, enabled profile, queue assignment and schedule in the
+capture. Qualify worker recording on one queue before measuring a change that
+also adds queue overlap, so the evidence identifies the source of any gain.
+
+For an asynchronous schedule, report which dependency requires each queue wait,
+which queue owns each resource, and which completion tokens allow reuse. A
+queue wait orders the consumer only within its verified scope. A wait also
+allows a single token to cover both queues only when that token is known to
+complete after the wait and the relevant work. Test a delayed producer, a
+consumer that stays in flight, and cancellation before submission. Compare
+images or buffer bytes with the control and report tail GPU/CPU time and peak
+backing in the same run. Keep the control selectable on each enabled profile.
 
 ### Qualification targets
 
@@ -988,6 +1088,12 @@ bindings; private WebGL state deferral without delaying large uploads; explicit
 attachment load/store/resolve intent; enumerated/prewarmed pipeline variants;
 compact packets with measured recording granularity; and debugger controls that
 preserve resource-use validation.
+
+The [2026-11-11 conference review](rhi-gdi-gems-review.md#synchronization-attachments-and-schedules)
+adds a staged path to compare actual backend synchronization with graph intent,
+qualify an authored final depth discard in a physical pass group, and evaluate
+queue schedules against the serial control. These are design decisions with
+implementation and measurement gates.
 
 Do not adopt a universal software command interpreter, mandatory bindless path,
 public Vulkan subpasses/heaps, automatic arbitrary pass reordering, live resource

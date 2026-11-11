@@ -2,8 +2,9 @@
 
 Link `Ludus::GraphicsRhi`. Include `<ludus/graphics/rhi/rhi.h>` for lifecycle and
 frames and `<ludus/graphics/rhi/render.h>` for the bounded fullscreen rendering
-slice. The selected private backend is Vulkan on Linux, Metal on macOS, and WebGPU or
-WebGL 2 on Emscripten. Auto uses the pinned Emdawnwebgpu port before one eligible
+slice. The selected private backend is Vulkan on Linux, Metal on macOS,
+[Direct3D 12 on Windows](../../architecture/windows-direct3d12.md), and WebGPU
+or WebGL 2 on Emscripten. Browser Auto uses the pinned Emdawnwebgpu port before one eligible
 WebGL 2 fallback. Public descriptions use engine types
 and opaque handles; installed consumers need no backend or private headers.
 
@@ -13,7 +14,9 @@ including the [R3 ordered raster graph](../../development/fullscreen-rendering.m
 from `<ludus/graphics/rhi/graph.h>`. It shares the RHI resource/completion registry.
 The [R4 compute profile](../../development/fullscreen-rendering.md#buffer-compute-and-indirect-rendering-r4)
 adds buffer compute and indexed indirect draws on Vulkan, Metal and WebGPU,
-with an explicitly authored CPU/direct variant for WebGL 2.
+with an explicitly authored CPU/direct variant for WebGL 2. The corresponding
+Windows limits and admission rules are in the
+[Direct3D 12 profile](../../architecture/windows-direct3d12.md#compute-and-ordered-graphs-d4b).
 The [R5 measured pass-merging path](../../development/fullscreen-rendering.md#measured-pass-merging-r5)
 adds explicit investigation controls, planned scope/cost reports and a paired
 image/CPU measurement harness. Merging remains opt-in for compatible workloads.
