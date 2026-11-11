@@ -1066,6 +1066,12 @@ RHI preflight failed to compile two fixtures after the borrowed-view API
 change. The repair at `bec7c3a72` passed Clang/WARP and both complete
 editor jobs, including their ownership preflights, in the
 [replacement matrix](https://github.com/The-Ludus-Project/Ludus/actions/runs/42954832638).
+That candidate also passed 65 source runtime CTests, 77 runtime
+AddressSanitizer CTests, MSBuild, and the Debug and Profile relocated SDKs.
+The Release SDK job stopped at the Agility package download. The Development
+SDK built the relocated scripted game but stopped on a stale configuration
+name in its test driver. The driver correction is included in
+[Windows run 42957077450](https://github.com/The-Ludus-Project/Ludus/actions/runs/42957077450).
 
 #### Candidate hardware requirements
 
