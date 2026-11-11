@@ -83,7 +83,7 @@ void CheckPackage(const char* path)
         CHECK(IsSignedDxil(stage->Artifact.Dxil) == true);
         CHECK(stage->Artifact.DxilEntry.empty() == false);
         // A dxil-only package carries no other representation.
-        CHECK(stage->Artifact.Spirv.empty() == true);
+        CHECK(stage->Artifact.Spirv.IsEmpty() == true);
         CHECK(stage->Artifact.Wgsl.empty() == true);
     }
 }

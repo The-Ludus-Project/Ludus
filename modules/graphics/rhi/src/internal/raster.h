@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/native_compute.h>
@@ -357,7 +358,7 @@ RasterStatus RasterGrow(internal::RasterKind, foundation::usize) noexcept;
 RasterStatus RasterPrepareStorage() noexcept;
 RasterStatus RasterCreateBuffer(foundation::usize,
                                 const BufferDescription&,
-                                std::span<const foundation::uint8>,
+                                ludus::foundation::BorrowedView<const foundation::uint8>,
                                 foundation::uint32) noexcept;
 RasterStatus
 RasterCreateTexture(foundation::usize, const TextureDescription&, const TextureUpload&, foundation::uint32) noexcept;

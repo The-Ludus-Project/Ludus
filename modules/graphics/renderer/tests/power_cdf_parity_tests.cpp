@@ -140,16 +140,14 @@ void RunParity(rhi::DeviceHandle device,
     rhi::BufferHandle uniformBuffer;
     rhi::BufferHandle resultBuffer;
     REQUIRE(outWords.TryResize(RESULT_BYTES / sizeof(uint32), uint32{0}) == true);
-    REQUIRE(
-        IsAccepted(rhi::CreateBuffer(device,
-                                     { .Role = rhi::BufferRole::Uniform, .Size = sizeof(uniform) },
-                                     std::span<const uint8>{reinterpret_cast<const uint8*>(&uniform), sizeof(uniform)},
-                                     uniformBuffer)) == true);
-    REQUIRE(IsAccepted(rhi::CreateBuffer(
-                device,
-                { .Role = rhi::BufferRole::Storage, .Size = RESULT_BYTES },
-                std::span<const uint8>{reinterpret_cast<const uint8*>(outWords.GetData()), RESULT_BYTES},
-                resultBuffer)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
+                                         { .Role = rhi::BufferRole::Uniform, .Size = sizeof(uniform) },
+                                         {reinterpret_cast<const uint8*>(&uniform), sizeof(uniform)},
+                                         uniformBuffer)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
+                                         { .Role = rhi::BufferRole::Storage, .Size = RESULT_BYTES },
+                                         {reinterpret_cast<const uint8*>(outWords.GetData()), RESULT_BYTES},
+                                         resultBuffer)) == true);
     const rhi::RasterShaderDescription shader = ludus::shaders::power_cdf_parity::Compute();
     rhi::RasterShaderHandle shaderHandle;
     rhi::BindingLayoutHandle layout;
@@ -328,11 +326,10 @@ TEST_CASE("GPU power-CDF scene accessors match the CPU reference over the shared
     }
     REQUIRE(started == rhi::DeviceStatus::Ready);
     rhi::BufferHandle sceneBuffer;
-    REQUIRE(IsAccepted(rhi::CreateBuffer(
-                device,
-                { .Role = rhi::BufferRole::Storage, .Size = sceneBytes },
-                std::span<const uint8>{reinterpret_cast<const uint8*>(sceneWords.GetData()), sceneBytes},
-                sceneBuffer)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
+                                         { .Role = rhi::BufferRole::Storage, .Size = sceneBytes },
+                                         {reinterpret_cast<const uint8*>(sceneWords.GetData()), sceneBytes},
+                                         sceneBuffer)) == true);
     WaitReady(device, sceneBuffer);
 
     Array<uint32> words;

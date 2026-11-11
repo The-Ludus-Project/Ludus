@@ -2,7 +2,6 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
-
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/static_array.hpp>
@@ -11,11 +10,15 @@
 #include <ludus/graphics/rhi/profile.h>
 #include <ludus/graphics/rhi/render.h>
 
-#include <span>
 #include <string_view>
+
+/// @file
+/// Contiguous input views borrow caller storage for the documented consumption period.
+/// Invalid pointer/extent pairs return InvalidDescription before storage is accessed.
 
 namespace ludus::graphics::rhi
 {
+
 namespace internal
 {
 /// Private access to portable resource identities; not an application API.
@@ -276,7 +279,7 @@ struct TextureMipUpload final
 struct TextureUpload final
 {
     /// Rows in top-left image order, including optional padding between rows.
-    std::span<const ludus::foundation::uint8> Bytes;
+    ludus::foundation::BorrowedView<const ludus::foundation::uint8> Bytes;
     /// Encoded row/block-row pitch, at least ceil(Width/blockWidth) * blockBytes.
     /// Must be a multiple of four and of the format block byte count (eight for HDR/BC1, sixteen for BC3/BC5).
     ludus::foundation::usize RowPitch = 0;
@@ -284,7 +287,7 @@ struct TextureUpload final
     /// descriptors; RowPitch must be zero. All metadata is consumed before return.
     // Explicit default preserves two-field aggregate callers under -Wmissing-field-initializers.
     // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::span<const TextureMipUpload> Mips{};
+    ludus::foundation::BorrowedView<const TextureMipUpload> Mips{};
 };
 /// Borrowed immutable initialized texels of one mip, with original row padding.
 /// Valid only while the queried texture/view incarnation remains retained. Copy
@@ -505,9 +508,9 @@ struct RasterShaderDescription final
     /// Target artifact and explicit entry; UniformSize is unused by the raster API.
     ShaderDescription Artifact{};
     /// Reflected float vertex inputs; empty for fragment stages. Copied before return.
-    std::span<const RasterShaderInput> Inputs;
+    ludus::foundation::BorrowedView<const RasterShaderInput> Inputs;
     /// Binding requirements for this stage; copied before return.
-    std::span<const RasterBinding> Bindings;
+    ludus::foundation::BorrowedView<const RasterBinding> Bindings;
     /// GLSL ES uniform block names, indexed by binding number; empty for other kinds.
     ludus::foundation::StaticArray<std::string_view, RASTER_BINDING_COUNT> UniformBlocks{};
     /// Combined GLSL ES sampled-uniform names, indexed by texture binding number.
@@ -523,7 +526,7 @@ struct RasterShaderDescription final
     /// Consumed before shader creation returns; never retained as borrowed names.
     // Explicit default preserves existing aggregate callers under -Wmissing-field-initializers.
     // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::span<const RasterUniformMember> UniformMembers{};
+    ludus::foundation::BorrowedView<const RasterUniformMember> UniformMembers{};
     /// The native array cooker verified every descriptor index as an in-range
     /// constant or bounded unsigned min/clamp in the emitted target. Required for
     /// shaders declaring arrays. Runtime shader Count certifies the minimum safe
@@ -688,9 +691,9 @@ struct RasterPipelineDescription final
     /// Exact immutable binding-layout identity retained by the pipeline.
     BindingLayoutHandle Layout{};
     /// Up to two streams; copied before return.
-    std::span<const RasterVertexStream> Streams;
+    ludus::foundation::BorrowedView<const RasterVertexStream> Streams;
     /// Up to MaxVertexAttributes (at most sixteen) attributes; copied before return.
-    std::span<const RasterVertexAttribute> Attributes;
+    ludus::foundation::BorrowedView<const RasterVertexAttribute> Attributes;
     /// Enable the explicit comparison and optional depth writes; false preserves depth.
     bool Depth = false;
     /// Enable premultiplied-alpha blending in the target's linear domain.
@@ -704,7 +707,7 @@ struct RasterPipelineDescription final
     /// Explicit offscreen color format sequence, one to four; empty uses Target.
     /// Copied before return. Every format and sample count must be enabled.
     // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::span<const RasterFormat> ColorFormats{};
+    ludus::foundation::BorrowedView<const RasterFormat> ColorFormats{};
     /// One or enabled four samples; surface pipelines require one.
     ludus::foundation::uint32 SampleCount = 1;
     /// Require a depth/stencil attachment even when the stencil write mask is zero.
@@ -747,7 +750,7 @@ struct RasterDraw final
     /// Ready snapshot with the exact pipeline layout.
     BindingSetHandle Bindings{};
     /// One slice for every pipeline stream, in stream order.
-    std::span<const RasterVertexSlice> Vertices;
+    ludus::foundation::BorrowedView<const RasterVertexSlice> Vertices;
     /// Index16/Index32 buffer.
     BufferHandle Indices{};
     /// Byte offset into the index buffer, aligned to its element width.
@@ -771,7 +774,7 @@ struct RasterDraw final
     /// Consumed/validated before admission; GDI additionally requires all corresponding
     /// sampled uses. Empty is valid when the layout has no NonUniform arrays.
     // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::span<const RasterBindingIndex> ReachableBindings{};
+    ludus::foundation::BorrowedView<const RasterBindingIndex> ReachableBindings{};
 };
 /// Query the enabled raster profile. Invalid owner preserves output; non-ready devices
 /// return their state and zero the capability value. A resource-only backend can
@@ -786,8 +789,10 @@ struct RasterDraw final
 /// Create a buffer from exactly Size initial bytes; creation is forbidden in an open frame.
 /// Failure preserves a null output. Index content is copied into bounded engine storage
 /// for draw-range checks; vertex/uniform input is consumed by the backend before return.
-[[nodiscard]] RasterStatus
-CreateBuffer(DeviceHandle, const BufferDescription&, std::span<const ludus::foundation::uint8>, BufferHandle&) noexcept;
+[[nodiscard]] RasterStatus CreateBuffer(DeviceHandle,
+                                        const BufferDescription&,
+                                        ludus::foundation::BorrowedView<const ludus::foundation::uint8>,
+                                        BufferHandle&) noexcept;
 /// Create a sampled allocation from a complete original-format mip/slice chain, including enabled HDR/BC.
 /// The borrowed blob must not exceed RasterCapabilities::MaxBufferSize; all logical backing consumes
 /// StorageLimits::ResourceBytes. Empty upload/zero pitch selects an attachment or deferred RGBA8 D2
@@ -820,7 +825,7 @@ CreateRasterShader(DeviceHandle, const RasterShaderDescription&, RasterShaderHan
 /// checked independently. A runtime entry reserves the length slot and adds its
 /// uniform entry when absent; conflicting consumer bindings reject.
 [[nodiscard]] RasterStatus
-CreateBindingLayout(DeviceHandle, std::span<const RasterBinding>, BindingLayoutHandle&) noexcept;
+CreateBindingLayout(DeviceHandle, ludus::foundation::BorrowedView<const RasterBinding>, BindingLayoutHandle&) noexcept;
 /// Create an immutable snapshot of the layout's full descriptor capacity.
 /// Every element is required unless its binding enables HasPartialBinding; omitted
 /// elements then use a required element-zero fallback. Duplicates always reject.
@@ -828,8 +833,10 @@ CreateBindingLayout(DeviceHandle, std::span<const RasterBinding>, BindingLayoutH
 /// binding reject. Each runtime snapshot also owns one budgeted uniform buffer.
 /// Creation consumes StorageLimits::BindingDescriptors until physical retirement.
 /// It retains its layout and all resources even after public destruction.
-[[nodiscard]] RasterStatus
-CreateBindingSet(DeviceHandle, BindingLayoutHandle, std::span<const RasterBindingResource>, BindingSetHandle&) noexcept;
+[[nodiscard]] RasterStatus CreateBindingSet(DeviceHandle,
+                                            BindingLayoutHandle,
+                                            ludus::foundation::BorrowedView<const RasterBindingResource>,
+                                            BindingSetHandle&) noexcept;
 /// Allocate an explicitly sized snapshot of a runtime layout between frames.
 /// @param runtimeCount Positive runtime array length, no greater than layout Count.
 /// The borrowed entries are consumed before return. The RHI-owned length buffer

@@ -3,6 +3,7 @@
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/base/assert.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -797,8 +798,10 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
             const StaticArray<rhi::RasterBindingResource, IMAGE_BINDING_COUNT> bindings{
                 {{0, inoutJob.ImageParameters, 0, sizeof(math::Vector4)},
                  {1, inoutJob.Colors, 0, usize(inoutJob.Width) * inoutJob.Height * sizeof(math::Vector4)}}};
-            const Status created =
-                rhi::CreateBindingSet(device, inoutState.ImageLayout, bindings.AsSpan(), inoutJob.ImageBindings);
+            const Status created = rhi::CreateBindingSet(device,
+                                                         inoutState.ImageLayout,
+                                                         {bindings.GetData(), bindings.GetSize()},
+                                                         inoutJob.ImageBindings);
             if (Accepted(created) == false)
             {
                 return inoutJob.Setup = created;
@@ -1081,8 +1084,9 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     // A graph ray kernel declares its failure summary last, after every other slot.
     const rhi::RasterBinding* failureBindingOrNull =
-        compute.Bindings.empty() == false && compute.Bindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING
-            ? &compute.Bindings.back()
+        compute.Bindings.IsEmpty() == false &&
+                compute.Bindings[compute.Bindings.GetSize() - 1].Binding == LUDUS_GRAPH_FAILURE_BINDING
+            ? &compute.Bindings[compute.Bindings.GetSize() - 1]
             : nullptr;
     if (failureBindingOrNull != nullptr &&
         (failureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
@@ -1094,8 +1098,9 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return Status::InvalidDescription;
     }
-    const std::span<const rhi::RasterBinding> summaryBindings = compute.Bindings.first(
-        compute.Bindings.size() - (failureBindingOrNull != nullptr ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0));
+    const std::span<const rhi::RasterBinding> summaryBindings = {
+        compute.Bindings.GetDataOrNull(),
+        compute.Bindings.GetSize() - (failureBindingOrNull != nullptr ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0)};
     // A kernel reading the renderer's LTC table declares it next, after every remaining slot.
     const rhi::RasterBinding* ltcTableBindingOrNull =
         summaryBindings.empty() == false && summaryBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING
@@ -1222,13 +1227,13 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
             }
         }
     }
-    if (vertex.Inputs.size() != 1 || vertex.Inputs[0].Location != 0 ||
-        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float2 || vertex.Bindings.empty() == false ||
-        fragment.Bindings.size() != 2)
+    if (vertex.Inputs.GetSize() != 1 || vertex.Inputs[0].Location != 0 ||
+        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float2 || vertex.Bindings.IsEmpty() == false ||
+        fragment.Bindings.GetSize() != 2)
     {
         return Status::InvalidDescription;
     }
-    for (usize i = 0; i < fragment.Bindings.size(); ++i)
+    for (usize i = 0; i < fragment.Bindings.GetSize(); ++i)
     {
         const rhi::RasterBinding& expected = GPU_IMAGE_BINDINGS[i];
         const rhi::RasterBinding& actual = fragment.Bindings[i];
@@ -1255,8 +1260,8 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     state->Options.StorageBuffers = {state->StorageDescriptions.GetData(), options.StorageBuffers.GetSize()};
     state->WorkgroupWidth = compute.WorkgroupSize[0];
     state->WorkgroupHeight = compute.WorkgroupSize[1];
-    state->ComputeBindingCount = compute.Bindings.size();
-    for (usize i = 0; i < compute.Bindings.size(); ++i)
+    state->ComputeBindingCount = compute.Bindings.GetSize();
+    for (usize i = 0; i < compute.Bindings.GetSize(); ++i)
     {
         state->ComputeBindings[i] = compute.Bindings[i];
     }
@@ -2018,7 +2023,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
             static constexpr StaticArray<uint8, LUDUS_GPU_PREVIEW_VECTOR_BYTES> ZERO_WORD{};
             status = rhi::CreateBuffer(mState->Device,
                                        {rhi::BufferRole::Storage, ZERO_WORD.GetSize()},
-                                       ZERO_WORD.AsSpan(),
+                                       {ZERO_WORD.GetData(), ZERO_WORD.GetSize()},
                                        buffer.Buffer);
             buffer.Size = ZERO_WORD.GetSize();
             job.HasOwnedGraphBuffers[bufferIndex] = Accepted(status);

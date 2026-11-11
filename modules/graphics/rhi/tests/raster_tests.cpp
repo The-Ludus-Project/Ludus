@@ -1,6 +1,7 @@
 #include "internal/lifecycle.h"
 #include "internal/profile.h"
 #include "reference_raster.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -10,7 +11,6 @@
 #include <ludus/graphics/rhi/spatial_upscale.h>
 
 #include <cstring>
-#include <span>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -59,7 +59,7 @@ struct Session final
     }
 };
 template <typename T, usize N>
-std::span<const uint8> Bytes(const T (&data)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> Bytes(const T (&data)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(data), sizeof(data)};
 }
@@ -3393,8 +3393,10 @@ TEST_CASE("BC5 validates encoded mip and slice footprints before publication", "
         byteCount = 672;
     }
     TextureHandle texture;
-    REQUIRE(CreateTexture(session.Device, description, {{bytes.GetData(), byteCount}, 0, mips}, texture) ==
-            RasterStatus::Ready);
+    REQUIRE(CreateTexture(session.Device,
+                          description,
+                          {{bytes.GetData(), byteCount}, 0, {mips.GetData(), mips.GetSize()}},
+                          texture) == RasterStatus::Ready);
     TextureResidency residency;
     REQUIRE(GetTextureResidency(session.Device, texture, residency) == RasterStatus::Ready);
     CHECK(residency.InitializedBytes == byteCount);
@@ -3409,12 +3411,16 @@ TEST_CASE("BC5 validates encoded mip and slice footprints before publication", "
     REQUIRE(GetStorageUsage(session.Device, before) == RasterStatus::Ready);
     const usize publications = reference::Creates[static_cast<usize>(internal::RasterKind::Texture)];
     TextureHandle preserved = texture;
-    CHECK(CreateTexture(session.Device, description, {{bytes.GetData(), byteCount - 1}, 0, mips}, preserved) ==
-          RasterStatus::InvalidDescription);
+    CHECK(CreateTexture(session.Device,
+                        description,
+                        {{bytes.GetData(), byteCount - 1}, 0, {mips.GetData(), mips.GetSize()}},
+                        preserved) == RasterStatus::InvalidDescription);
     CHECK(GetStatus(session.Device, preserved) == RasterStatus::Ready);
     mips[1].RowPitch = 8;
-    CHECK(CreateTexture(session.Device, description, {{bytes.GetData(), byteCount}, 0, mips}, preserved) ==
-          RasterStatus::InvalidDescription);
+    CHECK(CreateTexture(session.Device,
+                        description,
+                        {{bytes.GetData(), byteCount}, 0, {mips.GetData(), mips.GetSize()}},
+                        preserved) == RasterStatus::InvalidDescription);
     CHECK(reference::Creates[static_cast<usize>(internal::RasterKind::Texture)] == publications);
     StorageUsage after;
     REQUIRE(GetStorageUsage(session.Device, after) == RasterStatus::Ready);
@@ -3440,29 +3446,34 @@ TEST_CASE("BC5 rejects unsupported allocation roles and rolls back native failur
     SECTION("CPU content")
     {
         description.RetainCpuContent = true;
-        CHECK(CreateTexture(session.Device, description, {bytes, 16}, texture) == RasterStatus::InvalidDescription);
+        CHECK(CreateTexture(session.Device, description, {{bytes.GetData(), bytes.GetSize()}, 16}, texture) ==
+              RasterStatus::InvalidDescription);
     }
     SECTION("volume")
     {
         description.Dimension = TextureDimension::D3;
-        CHECK(CreateTexture(session.Device, description, {bytes, 16}, texture) == RasterStatus::Unsupported);
+        CHECK(CreateTexture(session.Device, description, {{bytes.GetData(), bytes.GetSize()}, 16}, texture) ==
+              RasterStatus::Unsupported);
     }
     SECTION("unaligned base")
     {
         description.Width = 3;
-        CHECK(CreateTexture(session.Device, description, {bytes, 16}, texture) == RasterStatus::Unsupported);
+        CHECK(CreateTexture(session.Device, description, {{bytes.GetData(), bytes.GetSize()}, 16}, texture) ==
+              RasterStatus::Unsupported);
     }
     SECTION("backend failure")
     {
         StorageUsage before;
         REQUIRE(GetStorageUsage(session.Device, before) == RasterStatus::Ready);
         reference::Next = RasterStatus::OutOfMemory;
-        CHECK(CreateTexture(session.Device, description, {bytes, 16}, texture) == RasterStatus::OutOfMemory);
+        CHECK(CreateTexture(session.Device, description, {{bytes.GetData(), bytes.GetSize()}, 16}, texture) ==
+              RasterStatus::OutOfMemory);
         StorageUsage after;
         REQUIRE(GetStorageUsage(session.Device, after) == RasterStatus::Ready);
         CHECK(after.ResourceBytes == before.ResourceBytes);
         reference::Next = RasterStatus::Ready;
-        REQUIRE(CreateTexture(session.Device, description, {bytes, 16}, texture) == RasterStatus::Ready);
+        REQUIRE(CreateTexture(session.Device, description, {{bytes.GetData(), bytes.GetSize()}, 16}, texture) ==
+                RasterStatus::Ready);
         REQUIRE(Destroy(session.Device, texture) == RasterStatus::Ready);
     }
     CHECK(IsNull(texture) == true);
@@ -3475,24 +3486,32 @@ TEST_CASE("Negotiated large texture dimensions preserve byte budgets and outputs
     constexpr usize BYTE_COUNT = WIDTH * 4;
     StaticArray<uint8, BYTE_COUNT> bytes{};
     TextureHandle texture;
-    REQUIRE(CreateTexture(session.Device, { .Width = WIDTH, .Height = 1 }, {bytes, BYTE_COUNT}, texture) ==
-            RasterStatus::Ready);
+    REQUIRE(CreateTexture(session.Device,
+                          { .Width = WIDTH, .Height = 1 },
+                          {{bytes.GetData(), bytes.GetSize()}, BYTE_COUNT},
+                          texture) == RasterStatus::Ready);
     TextureDescription actual;
     REQUIRE(GetTextureDescription(session.Device, texture, actual) == RasterStatus::Ready);
     CHECK(actual.Width == WIDTH);
     constexpr usize LIMIT_BYTE_COUNT = usize{16384} * 4;
     StaticArray<uint8, LIMIT_BYTE_COUNT> boundary{};
     TextureHandle exact;
-    REQUIRE(CreateTexture(session.Device, { .Width = 16384, .Height = 1 }, {boundary, LIMIT_BYTE_COUNT}, exact) ==
-            RasterStatus::Ready);
+    REQUIRE(CreateTexture(session.Device,
+                          { .Width = 16384, .Height = 1 },
+                          {{boundary.GetData(), boundary.GetSize()}, LIMIT_BYTE_COUNT},
+                          exact) == RasterStatus::Ready);
     REQUIRE(Destroy(session.Device, exact) == RasterStatus::Ready);
     TextureHandle preserved = texture;
-    CHECK(CreateTexture(session.Device, { .Width = 16385, .Height = 1 }, {bytes, BYTE_COUNT}, preserved) ==
-          RasterStatus::Unsupported);
+    CHECK(CreateTexture(session.Device,
+                        { .Width = 16385, .Height = 1 },
+                        {{bytes.GetData(), bytes.GetSize()}, BYTE_COUNT},
+                        preserved) == RasterStatus::Unsupported);
     REQUIRE(GetTextureDescription(session.Device, preserved, actual) == RasterStatus::Ready);
     CHECK(actual.Width == WIDTH);
-    CHECK(CreateTexture(session.Device, { .Width = WIDTH, .Height = 8200 }, {bytes, BYTE_COUNT}, preserved) ==
-          RasterStatus::InvalidDescription);
+    CHECK(CreateTexture(session.Device,
+                        { .Width = WIDTH, .Height = 8200 },
+                        {{bytes.GetData(), bytes.GetSize()}, BYTE_COUNT},
+                        preserved) == RasterStatus::InvalidDescription);
     REQUIRE(GetTextureDescription(session.Device, preserved, actual) == RasterStatus::Ready);
     CHECK(actual.Width == WIDTH);
     REQUIRE(Destroy(session.Device, preserved) == RasterStatus::Ready);
@@ -3509,7 +3528,7 @@ TEST_CASE("BC5 dimensions do not override the resource byte budget", "[rhi][r18]
     TextureHandle texture;
     CHECK(CreateTexture(session.Device,
                         { .Width = 4, .Height = 4, .Format = RasterFormat::Bc5RgUnorm },
-                        {bytes, BLOCK_BYTES},
+                        {{bytes.GetData(), bytes.GetSize()}, BLOCK_BYTES},
                         texture) == RasterStatus::CapacityExceeded);
     CHECK(IsNull(texture) == true);
     CHECK(reference::Creates[static_cast<usize>(internal::RasterKind::Texture)] == 0);
@@ -3531,7 +3550,7 @@ TEST_CASE("Native BC5 edge dimensions retain complete blocks and mip packing", "
     TextureHandle texture;
     REQUIRE(CreateTexture(session.Device,
                           { .Width = 7, .Height = 3, .Format = RasterFormat::Bc5RgUnorm, .MipLevels = 3 },
-                          {bytes, 0, mips},
+                          {{bytes.GetData(), bytes.GetSize()}, 0, {mips.GetData(), mips.GetSize()}},
                           texture) == RasterStatus::Ready);
     TextureResidency residency;
     REQUIRE(GetTextureResidency(session.Device, texture, residency) == RasterStatus::Ready);
@@ -3558,11 +3577,13 @@ TEST_CASE("R18c array and volume extents admit their exact enabled boundary", "[
     {
         description.Dimension = TextureDimension::D3;
     }
-    REQUIRE(CreateTexture(session.Device, description, {bytes, 4}, texture) == RasterStatus::Ready);
+    REQUIRE(CreateTexture(session.Device, description, {{bytes.GetData(), bytes.GetSize()}, 4}, texture) ==
+            RasterStatus::Ready);
     REQUIRE(Destroy(session.Device, texture) == RasterStatus::Ready);
     description.DepthOrLayers = EXTENT + 1;
     const usize creates = reference::Creates[static_cast<usize>(internal::RasterKind::Texture)];
-    CHECK(CreateTexture(session.Device, description, {bytes, 4}, texture) == RasterStatus::Unsupported);
+    CHECK(CreateTexture(session.Device, description, {{bytes.GetData(), bytes.GetSize()}, 4}, texture) ==
+          RasterStatus::Unsupported);
     CHECK(IsNull(texture) == true);
     CHECK(reference::Creates[static_cast<usize>(internal::RasterKind::Texture)] == creates);
 }
@@ -3585,8 +3606,13 @@ TEST_CASE("R18c complete upload limit is independent of buffer and logical budge
     REQUIRE(Destroy(session.Device, texture) == RasterStatus::Ready);
     StorageUsage before;
     REQUIRE(GetStorageUsage(session.Device, before) == RasterStatus::Ready);
-    CHECK(CreateTexture(session.Device, { .Width = 1, .Height = 1 }, {bytes, 32}, texture) ==
-          RasterStatus::InvalidDescription);
+    CHECK(CreateTexture(session.Device,
+                        {
+                            .Width = 1,
+                            .Height = 1,
+                        },
+                        {{bytes.GetData(), bytes.GetSize()}, 32},
+                        texture) == RasterStatus::InvalidDescription);
     CHECK(IsNull(texture) == true);
     StorageUsage after;
     REQUIRE(GetStorageUsage(session.Device, after) == RasterStatus::Ready);
@@ -3684,4 +3710,95 @@ TEST_CASE("spatial encoding validates inputs and retains submitted effects and t
     reference::Completed = reference::Submitted;
     static_cast<void>(GetStatus(session.Device, wrongSize));
     CHECK(reference::Destroys[kind] == 1);
+}
+
+TEST_CASE("Portable RHI rejects invalid borrowed extents before accessing storage", "[rhi][raster]")
+{
+    Session session;
+    SECTION("buffer upload")
+    {
+        BufferHandle buffer;
+        CHECK(CreateBuffer(session.Device, {BufferRole::Uniform, 16}, {nullptr, 16}, buffer) ==
+              RasterStatus::InvalidDescription);
+        CHECK(GetStatus(session.Device, buffer) == RasterStatus::InvalidHandle);
+    }
+    SECTION("texture upload")
+    {
+        TextureHandle texture;
+        CHECK(CreateTexture(session.Device, { .Width = 1, .Height = 1 }, {{nullptr, 4}, 4}, texture) ==
+              RasterStatus::InvalidDescription);
+        const uint8 pixel[4]{};
+        CHECK(CreateTexture(session.Device, { .Width = 1, .Height = 1 }, {pixel, 0, {nullptr, 1}}, texture) ==
+              RasterStatus::InvalidDescription);
+        CHECK(IsNull(texture) == true);
+    }
+    SECTION("shader metadata and binary artifacts")
+    {
+        RasterShaderDescription description;
+        description.Artifact.Wgsl = "fixture vertex";
+        description.Artifact.WgslEntry = "vertexMain";
+        SECTION("inputs")
+        {
+            description.Inputs = {nullptr, 1};
+        }
+        SECTION("bindings")
+        {
+            description.Bindings = {nullptr, 1};
+        }
+        SECTION("uniform members")
+        {
+            description.UniformMembers = {nullptr, 1};
+        }
+        SECTION("SPIR-V")
+        {
+            description.Artifact.Spirv = {nullptr, 5};
+        }
+        SECTION("DXIL")
+        {
+            description.Artifact.Dxil = {nullptr, 1};
+        }
+        RasterShaderHandle shader;
+        CHECK(CreateRasterShader(session.Device, description, shader) == RasterStatus::InvalidDescription);
+        CHECK(GetStatus(session.Device, shader) == RasterStatus::InvalidHandle);
+    }
+    SECTION("binding layout")
+    {
+        BindingLayoutHandle layout;
+        CHECK(CreateBindingLayout(session.Device, {nullptr, 1}, layout) == RasterStatus::InvalidDescription);
+        CHECK(GetStatus(session.Device, layout) == RasterStatus::InvalidHandle);
+    }
+    SECTION("pipeline and draw metadata")
+    {
+        Scene scene(session.Device);
+        BindingSetHandle bindings;
+        CHECK(CreateBindingSet(session.Device, scene.Layout, {nullptr, 1}, bindings) ==
+              RasterStatus::InvalidDescription);
+        RasterPipelineDescription description;
+        description.Vertex = scene.Vertex;
+        description.Fragment = scene.Fragment;
+        description.Layout = scene.Layout;
+        SECTION("vertex streams")
+        {
+            description.Streams = {nullptr, 1};
+        }
+        SECTION("vertex attributes")
+        {
+            description.Attributes = {nullptr, 1};
+        }
+        SECTION("color formats")
+        {
+            description.ColorFormats = {nullptr, 1};
+        }
+        RasterPipelineHandle pipeline;
+        CHECK(CreateRasterPipeline(session.Device, description, pipeline) == RasterStatus::InvalidDescription);
+        CHECK(GetStatus(session.Device, pipeline) == RasterStatus::InvalidHandle);
+        REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+        RasterDraw draw = scene.Draw();
+        draw.Vertices = {nullptr, 1};
+        CHECK(DrawIndexed(session.Device, draw) == RasterStatus::InvalidDescription);
+        draw = scene.Draw();
+        draw.ReachableBindings = {nullptr, 1};
+        CHECK(DrawIndexed(session.Device, draw) == RasterStatus::InvalidDescription);
+        CHECK(EndFrame(session.Device) == DeviceStatus::Ready);
+    }
 }

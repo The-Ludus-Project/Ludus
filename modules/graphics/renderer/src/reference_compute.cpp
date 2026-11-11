@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
@@ -117,8 +118,8 @@ bool IsExpectedBinding(const rhi::RasterBinding& actual) noexcept
 bool IsExpectedKernel(const rhi::RasterShaderDescription& kernel, bool shouldBindEverything) noexcept
 {
     if (kernel.WorkgroupSize[0] != LUDUS_REFERENCE_GROUP_WIDTH || kernel.WorkgroupSize[1] != 1 ||
-        kernel.WorkgroupSize[2] != 1 || kernel.Bindings.size() > COMPUTE_BINDINGS.GetSize() ||
-        (shouldBindEverything == true && kernel.Bindings.size() != COMPUTE_BINDINGS.GetSize()))
+        kernel.WorkgroupSize[2] != 1 || kernel.Bindings.GetSize() > COMPUTE_BINDINGS.GetSize() ||
+        (shouldBindEverything == true && kernel.Bindings.GetSize() != COMPUTE_BINDINGS.GetSize()))
     {
         return false;
     }

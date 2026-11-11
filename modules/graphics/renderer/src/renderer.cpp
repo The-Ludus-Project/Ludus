@@ -6,6 +6,7 @@
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/stable_sort.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
@@ -1228,17 +1229,17 @@ Status Renderer::Initialize(rhi::DeviceHandle device,
     }
     internal::FlatUniformLayout uniforms;
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        (vertex.Inputs.size() != FLAT_ATTRIBUTE_COUNT && vertex.Inputs.size() != VISIBILITY_ATTRIBUTE_COUNT) ||
-        fragment.Inputs.empty() == false ||
-        internal::MergeFlatUniformLayout(vertex.Bindings,
-                                         fragment.Bindings,
+        (vertex.Inputs.GetSize() != FLAT_ATTRIBUTE_COUNT && vertex.Inputs.GetSize() != VISIBILITY_ATTRIBUTE_COUNT) ||
+        fragment.Inputs.IsEmpty() == false ||
+        internal::MergeFlatUniformLayout({vertex.Bindings.GetDataOrNull(), vertex.Bindings.GetSize()},
+                                         {fragment.Bindings.GetDataOrNull(), fragment.Bindings.GetSize()},
                                          capabilities.UniformOffsetAlignment,
                                          capabilities.MaxUniformRange,
                                          uniforms) == false)
     {
         return Status::InvalidDescription;
     }
-    for (usize i = 0; i < vertex.Inputs.size(); ++i)
+    for (usize i = 0; i < vertex.Inputs.GetSize(); ++i)
     {
         if (vertex.Inputs[i].Location != i ||
             vertex.Inputs[i].Format != (i == 0                     ? rhi::RasterVertexFormat::Float3
@@ -1256,7 +1257,7 @@ Status Renderer::Initialize(rhi::DeviceHandle device,
     mState.Reset(state);
     state->Device = device;
     state->FlatUniforms = uniforms;
-    state->HasVisibilityInputs = vertex.Inputs.size() == VISIBILITY_ATTRIBUTE_COUNT;
+    state->HasVisibilityInputs = vertex.Inputs.GetSize() == VISIBILITY_ATTRIBUTE_COUNT;
     status = state->ReserveStorage(limits);
     if (status != Status::Ready)
     {
@@ -1348,10 +1349,14 @@ Status Renderer::Poll() noexcept
                 status = rhi::GetStatus(state.Device, state.Bindings);
                 if (status == Status::Ready)
                 {
-                    status = rhi::CreateRasterPipeline(
-                        state.Device,
-                        {state.Vertex, state.Fragment, state.Layout, streams, {attributes, attributeCount}, true},
-                        state.Opaque);
+                    status = rhi::CreateRasterPipeline(state.Device,
+                                                       {state.Vertex,
+                                                        state.Fragment,
+                                                        state.Layout,
+                                                        {streams.GetData(), streams.GetSize()},
+                                                        {attributes, attributeCount},
+                                                        true},
+                                                       state.Opaque);
                     ++state.Phase;
                 }
                 break;
@@ -1363,7 +1368,7 @@ Status Renderer::Poll() noexcept
                                                        {state.Vertex,
                                                         state.Fragment,
                                                         state.Layout,
-                                                        streams,
+                                                        {streams.GetData(), streams.GetSize()},
                                                         {attributes, attributeCount},
                                                         false,
                                                         true},
@@ -1411,8 +1416,8 @@ Status Renderer::InitializeGrid(const rhi::RasterShaderDescription& vertex,
         return Status::Unsupported;
     }
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.size() != GRID_ATTRIBUTE_COUNT || vertex.Bindings.empty() == false ||
-        fragment.Inputs.empty() == false || fragment.Bindings.empty() == false)
+        vertex.Inputs.GetSize() != GRID_ATTRIBUTE_COUNT || vertex.Bindings.IsEmpty() == false ||
+        fragment.Inputs.IsEmpty() == false || fragment.Bindings.IsEmpty() == false)
     {
         return Status::InvalidDescription;
     }
@@ -1452,9 +1457,9 @@ Status Renderer::InitializeViews(const rhi::RasterShaderDescription& vertex,
         return Status::InvalidState;
     }
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.size() != 1 || vertex.Inputs[0].Location != 0 ||
-        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.empty() == false ||
-        fragment.Inputs.empty() == false || fragment.Bindings.size() != 2)
+        vertex.Inputs.GetSize() != 1 || vertex.Inputs[0].Location != 0 ||
+        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.IsEmpty() == false ||
+        fragment.Inputs.IsEmpty() == false || fragment.Bindings.GetSize() != 2)
     {
         return Status::InvalidDescription;
     }
@@ -1549,7 +1554,7 @@ Status Renderer::PollViews() noexcept
                 rhi::RasterPipelineDescription description{s.Vertex,
                                                            s.Fragment,
                                                            s.Layout,
-                                                           streams,
+                                                           {streams.GetData(), streams.GetSize()},
                                                            {attributes, attributeCount},
                                                            true};
                 description.DepthCompare = rhi::RasterDepthCompare::Greater;
@@ -1566,7 +1571,7 @@ Status Renderer::PollViews() noexcept
                 rhi::RasterPipelineDescription description{s.Vertex,
                                                            s.Fragment,
                                                            s.Layout,
-                                                           streams,
+                                                           {streams.GetData(), streams.GetSize()},
                                                            {attributes, attributeCount},
                                                            s.ViewsPhase != 4,
                                                            s.ViewsPhase == 4};
@@ -1646,8 +1651,8 @@ Status Renderer::State::PrepareAnalyticGridPipelines() noexcept
             rhi::RasterPipelineDescription pipeline{AnalyticGridVertex,
                                                     AnalyticGridFragment,
                                                     Layout,
-                                                    streams,
-                                                    attributes,
+                                                    {streams.GetData(), streams.GetSize()},
+                                                    {attributes.GetData(), attributes.GetSize()},
                                                     true};
             pipeline.Blend = true;
             pipeline.Target = i < WORLD_GRID_UNORM_PIPELINE ? rhi::RasterTarget::Surface
@@ -1686,7 +1691,12 @@ Status Renderer::State::PrepareGridPipelines() noexcept
         Status status;
         if (HasGridPipelines[i] == false)
         {
-            rhi::RasterPipelineDescription pipeline{Vertex, Fragment, Layout, streams, attributes, true};
+            rhi::RasterPipelineDescription pipeline{Vertex,
+                                                    Fragment,
+                                                    Layout,
+                                                    {streams.GetData(), streams.GetSize()},
+                                                    {attributes.GetData(), attributes.GetSize()},
+                                                    true};
             pipeline.Target = i < WORLD_GRID_UNORM_PIPELINE ? rhi::RasterTarget::Surface
                               : i < WORLD_GRID_HDR_PIPELINE ? rhi::RasterTarget::Rgba8Unorm
                                                             : rhi::RasterTarget::Rgba16Float;
@@ -2408,8 +2418,8 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     }
     if (depthOrNull != nullptr &&
         (shadowOrNull == nullptr || depthOrNull->Artifact.Stage != rhi::ShaderStage::Fragment ||
-         depthOrNull->Inputs.empty() == false || depthOrNull->Bindings.empty() == false ||
-         depthOrNull->UniformMembers.empty() == false))
+         depthOrNull->Inputs.IsEmpty() == false || depthOrNull->Bindings.IsEmpty() == false ||
+         depthOrNull->UniformMembers.IsEmpty() == false))
     {
         return Status::InvalidDescription;
     }
@@ -2426,7 +2436,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     }
     const bool isClustered =
         isLit == true &&
-        fragment.Bindings.size() ==
+        fragment.Bindings.GetSize() ==
             (hasAuthoredProfile == true ? CLUSTER_BINDING_COUNT + AUTHORED_BINDING_COUNT : CLUSTER_BINDING_COUNT);
     if (gBufferOrNull != nullptr && (isClustered == false || hasAuthoredProfile == false || depthOrNull == nullptr ||
                                      gBufferOrNull->Artifact.Stage != rhi::ShaderStage::Fragment))
@@ -2443,7 +2453,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                                     : PLAIN_BINDING_COUNT) +
                                (hasAuthoredProfile == true ? AUTHORED_BINDING_COUNT : 0);
     const bool isBakeBindingOmitted = isLit == true && isClustered == false && hasAuthoredProfile == true &&
-                                      fragment.Bindings.size() == bindingCount - 1;
+                                      fragment.Bindings.GetSize() == bindingCount - 1;
     const usize actualBindingCount = bindingCount - (isBakeBindingOmitted == true ? 1 : 0);
     const usize memberCount = (isClustered == true ? CLUSTER_MEMBER_COUNT
                                : isLit == true     ? LIT_MEMBER_COUNT
@@ -2459,10 +2469,10 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
         return Status::InvalidState;
     }
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.size() != (isLit == true ? LIT_VERTEX_ATTRIBUTE_COUNT : PLAIN_VERTEX_ATTRIBUTE_COUNT) ||
-        vertex.Bindings.empty() == false || vertex.UniformMembers.empty() == false ||
-        fragment.Inputs.empty() == false || fragment.Bindings.size() != actualBindingCount ||
-        fragment.UniformMembers.size() != memberCount)
+        vertex.Inputs.GetSize() != (isLit == true ? LIT_VERTEX_ATTRIBUTE_COUNT : PLAIN_VERTEX_ATTRIBUTE_COUNT) ||
+        vertex.Bindings.IsEmpty() == false || vertex.UniformMembers.IsEmpty() == false ||
+        fragment.Inputs.IsEmpty() == false || fragment.Bindings.GetSize() != actualBindingCount ||
+        fragment.UniformMembers.GetSize() != memberCount)
     {
         return Status::InvalidDescription;
     }
@@ -2591,9 +2601,9 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     }
     if (isLit == true)
     {
-        if (shadowOrNull->Artifact.Stage != rhi::ShaderStage::Fragment || shadowOrNull->Inputs.empty() == false ||
-            shadowOrNull->Bindings.size() != PLAIN_BINDING_COUNT ||
-            shadowOrNull->UniformMembers.size() != fragment.UniformMembers.size())
+        if (shadowOrNull->Artifact.Stage != rhi::ShaderStage::Fragment || shadowOrNull->Inputs.IsEmpty() == false ||
+            shadowOrNull->Bindings.GetSize() != PLAIN_BINDING_COUNT ||
+            shadowOrNull->UniformMembers.GetSize() != fragment.UniformMembers.GetSize())
         {
             return Status::InvalidDescription;
         }
@@ -2827,7 +2837,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
         rhi::RasterPipelineDescription description{p->Vertex,
                                                    p->Fragment,
                                                    p->Layout,
-                                                   streams,
+                                                   {streams.GetData(), streams.GetSize()},
                                                    {attributes, p->Lit ? 16U : 7U},
                                                    variant != 2,
                                                    variant == 2};
@@ -2879,7 +2889,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             description.Fragment = fragment;
             description.FillMode = rhi::RasterFillMode::Solid;
             description.Target = rhi::RasterTarget::Rgba16Float;
-            description.ColorFormats = FORMATS.AsSpan();
+            description.ColorFormats = {FORMATS.GetData(), FORMATS.GetSize()};
             description.Depth = true;
             description.DepthWrite = true;
             description.Blend = false;
@@ -4483,15 +4493,16 @@ Status Renderer::InitializeLighting(const rhi::RasterShaderDescription& outputVe
     {
         return Status::InvalidState;
     }
-    if (outputVertex.Artifact.Stage != rhi::ShaderStage::Vertex || outputVertex.Inputs.size() != 1 ||
+    if (outputVertex.Artifact.Stage != rhi::ShaderStage::Vertex || outputVertex.Inputs.GetSize() != 1 ||
         outputVertex.Inputs[0].Location != 0 || outputVertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 ||
-        outputVertex.Bindings.empty() == false || outputFragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        outputFragment.Inputs.empty() == false || outputFragment.Bindings.size() != OUTPUT_FRAGMENT_BINDING_COUNT ||
-        outputFragment.UniformMembers.size() != 1 || outputFragment.UniformMembers[0].Binding != 0 ||
+        outputVertex.Bindings.IsEmpty() == false || outputFragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
+        outputFragment.Inputs.IsEmpty() == false ||
+        outputFragment.Bindings.GetSize() != OUTPUT_FRAGMENT_BINDING_COUNT ||
+        outputFragment.UniformMembers.GetSize() != 1 || outputFragment.UniformMembers[0].Binding != 0 ||
         outputFragment.UniformMembers[0].Name != "Output" || outputFragment.UniformMembers[0].Offset != 0 ||
         outputFragment.UniformMembers[0].Shape != rhi::RasterUniformShape::Float4 ||
-        shadowFragment.Artifact.Stage != rhi::ShaderStage::Fragment || shadowFragment.Inputs.empty() == false ||
-        shadowFragment.Bindings.empty() == false)
+        shadowFragment.Artifact.Stage != rhi::ShaderStage::Fragment || shadowFragment.Inputs.IsEmpty() == false ||
+        shadowFragment.Bindings.IsEmpty() == false)
     {
         return Status::InvalidDescription;
     }
@@ -4605,7 +4616,7 @@ Status Renderer::PollLighting() noexcept
             description = {s.Vertex,
                            phase == 2 ? s.FlatShadowFragment : s.Fragment,
                            s.Layout,
-                           streams,
+                           {streams.GetData(), streams.GetSize()},
                            {attributes, attributeCount},
                            phase != 5,
                            phase == 5};

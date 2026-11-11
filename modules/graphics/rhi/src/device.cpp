@@ -1,3 +1,4 @@
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/device.h>
 
 #include "internal/backend.h"
@@ -489,8 +490,9 @@ ResourceStatus GetStatus(DeviceHandle device, PipelineHandle pipeline) noexcept
     const auto admission = ResourceAdmission(device);
     return admission == ResourceStatus::Ready ? ResourceResult(GetStatus(pipeline)) : admission;
 }
-ResourceStatus
-UpdateUniform(DeviceHandle device, UniformHandle uniform, std::span<const foundation::uint8> bytes) noexcept
+ResourceStatus UpdateUniform(DeviceHandle device,
+                             UniformHandle uniform,
+                             ludus::foundation::BorrowedView<const foundation::uint8> bytes) noexcept
 {
     const auto admission = ResourceAdmission(device);
     return admission == ResourceStatus::Ready ? ResourceResult(UpdateUniform(uniform, bytes)) : admission;

@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -11,7 +12,6 @@
 #include "raster.h"
 
 #include <cstring>
-#include <span>
 
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
@@ -121,7 +121,7 @@ int32 Selection() noexcept
 }
 #endif
 template <typename T, usize N>
-std::span<const uint8> Bytes(const T (&values)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> Bytes(const T (&values)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(values), sizeof(values)};
 }

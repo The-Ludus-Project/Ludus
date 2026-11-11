@@ -13,6 +13,7 @@
 #    endif
 #endif
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
@@ -21,7 +22,6 @@
 #include <ludus/graphics/rhi/measurement.h>
 
 #include <cstring>
-#include <span>
 #include <type_traits>
 
 namespace
@@ -61,7 +61,7 @@ uint8 gReferencePixels[PIXEL_BYTES]{};
 
 template <typename T, usize N>
     requires std::is_trivially_copyable_v<T>
-std::span<const uint8> GetBytes(const T (&values)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> GetBytes(const T (&values)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(values), sizeof(values)};
 }
@@ -465,11 +465,11 @@ bool RenderArrays(const rhi::RasterShaderDescription& fragment,
     constexpr usize LAYOUT_ENTRIES = rhi::RASTER_BINDING_COUNT;
     StaticArray<rhi::RasterBinding, LAYOUT_ENTRIES> bindings;
     const uint32 imageBinding = isRuntime == true ? rhi::RUNTIME_BINDING_ARRAY_SLOT : 1U;
-    if (fragment.Bindings.size() > LAYOUT_ENTRIES)
+    if (fragment.Bindings.GetSize() > LAYOUT_ENTRIES)
     {
         return false;
     }
-    for (usize entry = 0; entry < fragment.Bindings.size(); ++entry)
+    for (usize entry = 0; entry < fragment.Bindings.GetSize(); ++entry)
     {
         bindings[entry] = fragment.Bindings[entry];
         if (bindings[entry].Binding == imageBinding)
@@ -481,7 +481,8 @@ bool RenderArrays(const rhi::RasterShaderDescription& fragment,
             }
         }
     }
-    if (IsReady(rhi::CreateBindingLayout(gDevice, {bindings.GetData(), fragment.Bindings.size()}, layout)) == false ||
+    if (IsReady(rhi::CreateBindingLayout(gDevice, {bindings.GetData(), fragment.Bindings.GetSize()}, layout)) ==
+            false ||
         CreatePipeline(layout, vertex, shader, pipeline) == false)
     {
         return false;
@@ -543,7 +544,7 @@ bool RenderArrays(const rhi::RasterShaderDescription& fragment,
             };
         }
     }
-    const std::span<const rhi::RasterBindingResource> entries{resources.GetData(), resourceCount};
+    const ludus::foundation::BorrowedView<const rhi::RasterBindingResource> entries{resources.GetData(), resourceCount};
     const rhi::RasterStatus created =
         isRuntime == true ? rhi::CreateRuntimeBindingSet(gDevice, layout, {resources.GetData(), resourceCount}, 6, set)
                           : rhi::CreateBindingSet(gDevice, layout, entries, set);

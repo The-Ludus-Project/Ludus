@@ -8,6 +8,7 @@
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/queries.hpp>
@@ -444,7 +445,8 @@ struct ForwardSceneResources::State final
             {
                 rhi::TextureDescription description{source.Width, source.Height, source.Format};
                 description.AsyncUpload = true;
-                const Status status = rhi::CreateTexture(Device, description, {key.AsSpan(), rowBytes}, entry.Handle);
+                const Status status =
+                    rhi::CreateTexture(Device, description, {{key.GetData(), key.GetSize()}, rowBytes}, entry.Handle);
                 if (IsAccepted(status) == true)
                 {
                     IdentityBytes += size;
