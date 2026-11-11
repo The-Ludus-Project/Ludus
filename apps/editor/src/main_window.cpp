@@ -356,6 +356,16 @@ void MainWindow::BuildMenus()
     RedoAction_->setShortcuts(QKeySequence::keyBindings(QKeySequence::Redo));
     connect(UndoAction_, &QAction::triggered, this, &MainWindow::OnUndoRequested);
     connect(RedoAction_, &QAction::triggered, this, &MainWindow::OnRedoRequested);
+    mHistoryAction = CreateEditorCommand(EDIT_HISTORY_COMMAND, this);
+    editMenu->addAction(mHistoryAction);
+    connect(mHistoryAction, &QAction::triggered, this, [this]() {
+        if (mHistoryDockOrNull != nullptr && mHistoryPanelOrNull != nullptr)
+        {
+            showToolWindow(mHistoryDockOrNull);
+            renderHistory();
+            mHistoryPanelOrNull->GetList().setFocus(Qt::ShortcutFocusReason);
+        }
+    });
     editMenu->addSeparator();
     editMenu->addAction(mRemoveUnusedShadersAction);
     connect(mRemoveUnusedShadersAction, &QAction::triggered, this, [this]() {
@@ -650,6 +660,7 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_PROJECT_EXPLORER_COMMAND, mProjectExplorerDock);
     addToolWindowCommand(VIEW_PROPERTIES_COMMAND, mPropertiesDock);
     addToolWindowCommand(VIEW_ERROR_LIST_COMMAND, mErrorListDock);
+    viewMenu->addAction(mHistoryAction);
     // The Search tool window (CE07) gets a plain View-menu entry so it is
     // discoverable; its keymap binding (Find in Files) is added with the keymap
     // profiles in M2 batch 6, not here, to avoid a premature shortcut collision.

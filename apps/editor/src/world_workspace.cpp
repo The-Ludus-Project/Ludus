@@ -13,6 +13,7 @@
 #include "internal/world_probe_volume.h"
 
 #include "internal/controller.h"
+#include "internal/edit_history.h"
 #include "internal/editor_files.h"
 #include "internal/editor_icons.h"
 #include "internal/editor_identity.h"
@@ -1830,7 +1831,8 @@ void WorldWorkspace::assignProjectBrdf(const QString& material)
                        entity.value(QStringLiteral("components")).toObject(),
                        entity.value(QStringLiteral("name")).toString(),
                        error,
-                       &scene) == false)
+                       &scene,
+                       "Change Material") == false)
     {
         Changed(error);
         return;
@@ -1995,7 +1997,8 @@ void WorldWorkspace::restoreInheritedCoating()
                        entity.value(QStringLiteral("components")).toObject(),
                        entity.value(QStringLiteral("name")).toString(),
                        error,
-                       &scene) == false)
+                       &scene,
+                       "Remove Coating") == false)
     {
         Changed(error);
         return;
@@ -3318,7 +3321,7 @@ bool WorldWorkspace::Recover()
         return false;
     }
     // Recovery is one undoable edit against the saved document.
-    if (Document_.Restore(candidate.Draft(), error) == false)
+    if (Document_.Restore(candidate.Draft(), error, "Restore Recovered World") == false)
     {
         Changed(error);
         return false;
@@ -3542,7 +3545,12 @@ bool WorldWorkspace::ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& re
                          static_cast<foundation::float64>(repair.Placement.HalfExtentWorld));
         components.insert(QStringLiteral("transform"), transform);
         components.insert(QStringLiteral("luminaire"), luminaire);
-        if (Document_.Edit(id, components, entity.value(QStringLiteral("name")).toString(), error) == false)
+        if (Document_.Edit(id,
+                           components,
+                           entity.value(QStringLiteral("name")).toString(),
+                           error,
+                           nullptr,
+                           "Repair Luminaire") == false)
         {
             Changed(error);
             return false;
@@ -3591,20 +3599,37 @@ bool WorldWorkspace::addSun(const WorldSunPlacement& sun)
 }
 void WorldWorkspace::Undo()
 {
+    const char* nameOrNull = Document_.GetHistory().GetUndoNameOrNull();
     if (Pending_ == false && SceneBusy() == false && Document_.Undo())
     {
         Render();
         Snapshot();
-        Changed(QStringLiteral("World edit undone."));
+        Changed(MakeUndoFeedbackText(QString::fromUtf8(nameOrNull != nullptr ? nameOrNull : UNNAMED_EDIT_NAME)) +
+                QStringLiteral(". Redo brings it back."));
     }
 }
 void WorldWorkspace::Redo()
 {
+    const char* nameOrNull = Document_.GetHistory().GetRedoNameOrNull();
     if (Pending_ == false && SceneBusy() == false && Document_.Redo())
     {
         Render();
         Snapshot();
-        Changed(QStringLiteral("World edit redone."));
+        Changed(MakeRedoFeedbackText(QString::fromUtf8(nameOrNull != nullptr ? nameOrNull : UNNAMED_EDIT_NAME)) +
+                QStringLiteral(". Undo reverts it again."));
     }
+}
+bool WorldWorkspace::JumpToHistory(foundation::int32 cursor)
+{
+    const EditHistoryState before = MakeEditHistoryState(QStringLiteral("World"), Document_.GetHistory());
+    if (cursor < 0 || Pending_ == true || SceneBusy() == true ||
+        Document_.JumpToHistory(static_cast<foundation::usize>(cursor)) == false)
+    {
+        return false;
+    }
+    Render();
+    Snapshot();
+    Changed(MakeHistoryJumpFeedbackText(before, cursor) + QLatin1Char('.'));
+    return true;
 }
 } // namespace ludus::editor

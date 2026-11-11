@@ -723,7 +723,8 @@ bool EditWorldTerrain(WorldDocument& inoutWorld,
                                        outError,
                                        QStringLiteral("Terrain"),
                                        outKey,
-                                       {{QStringLiteral("transform"), transform}, {component, recipe}});
+                                       {{QStringLiteral("transform"), transform}, {component, recipe}},
+                                       "Add Terrain");
     }
     const QJsonObject entity = inoutWorld.Entity(key);
     QJsonObject components = entity.value(QStringLiteral("components")).toObject();

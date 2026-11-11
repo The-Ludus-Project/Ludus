@@ -245,7 +245,7 @@ RenderGraphDocumentStatus RenderGraphDocument::RenameNode(const QString& file,
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
     const RenderGraphDocumentStatus status =
-        commit(candidate, false, {}, {}, {file, configuration, node}, {file, configuration, name});
+        commit(candidate, "Rename Node", false, {}, {}, {file, configuration, node}, {file, configuration, name});
     if (status == RenderGraphDocumentStatus::Ok)
     {
         mLastMove.clear();
@@ -287,7 +287,7 @@ RenderGraphDocumentStatus RenderGraphDocument::AddConfiguration(const QString& f
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
     mLastMove.clear();
-    return commit(candidate, false);
+    return commit(candidate, "Add Configuration", false);
 }
 
 RenderGraphDocumentStatus
@@ -355,6 +355,7 @@ RenderGraphDocument::RemoveConfiguration(const QString& file, const QString& con
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
     const RenderGraphDocumentStatus status = commit(candidate,
+                                                    "Delete Configuration",
                                                     false,
                                                     {},
                                                     {},
@@ -413,7 +414,7 @@ RenderGraphDocumentStatus RenderGraphDocument::DuplicateConfiguration(const QStr
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
     const RenderGraphDocumentStatus status =
-        commit(candidate, false, {}, {}, {file, configuration, {}}, {file, name, {}});
+        commit(candidate, "Duplicate Configuration", false, {}, {}, {file, configuration, {}}, {file, name, {}});
     if (status == RenderGraphDocumentStatus::Ok)
     {
         mLastMove.clear();
@@ -474,7 +475,7 @@ RenderGraphDocument::DuplicateGraph(const QString& file, const QString& name, QS
     candidate.Files.insert(asset, EncodeCanonicalJson(graph));
     const QString selected = graph.value(QStringLiteral("default")).toString();
     const RenderGraphDocumentStatus status =
-        commit(candidate, false, {}, {}, {file, selected, {}}, {asset, selected, {}});
+        commit(candidate, "Duplicate Graph", false, {}, {}, {file, selected, {}}, {asset, selected, {}});
     if (status == RenderGraphDocumentStatus::Ok)
     {
         mLastMove.clear();
@@ -731,7 +732,7 @@ RenderGraphDocumentStatus RenderGraphDocument::PasteNodes(const QString& file,
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
     mLastMove.clear();
-    const RenderGraphDocumentStatus status = commit(candidate, false);
+    const RenderGraphDocumentStatus status = commit(candidate, "Paste Nodes", false);
     if (status == RenderGraphDocumentStatus::Ok)
     {
         outNodes = created;

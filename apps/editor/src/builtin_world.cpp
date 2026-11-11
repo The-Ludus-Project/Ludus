@@ -206,7 +206,8 @@ bool CreateWorldLuminaire(WorldDocument& inoutWorld,
         outError,
         QStringLiteral("Luminaire"),
         outId,
-        QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("luminaire"), luminaire}});
+        QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("luminaire"), luminaire}},
+        "Add Luminaire");
 }
 bool CreateWorldSun(WorldDocument& inoutWorld,
                     const foundation::identity::EntropySource& entropy,
@@ -238,7 +239,8 @@ bool CreateWorldSun(WorldDocument& inoutWorld,
         outError,
         QStringLiteral("Sun"),
         outId,
-        QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("light"), light}});
+        QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("light"), light}},
+        "Add Sun");
 }
 QString GetWorldAtmosphereComponentId()
 {
@@ -303,7 +305,8 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
             preset,
             outId,
             QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
-                        {component, MakeDefaultValues(inoutWorld, component)}});
+                        {component, MakeDefaultValues(inoutWorld, component)}},
+            "Add Aperture Slit");
     }
     if (IsBuiltInWorld(inoutWorld) == false)
     {
@@ -319,7 +322,8 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
                                        preset,
                                        outId,
                                        QJsonObject{{transform, MakeDefaultValues(inoutWorld, transform)},
-                                                   {component, MakeDefaultValues(inoutWorld, component)}});
+                                                   {component, MakeDefaultValues(inoutWorld, component)}},
+                                       "Add Atmosphere");
     }
     if (preset == QStringLiteral("GI Probe Volume"))
     {
@@ -330,7 +334,8 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
             preset,
             outId,
             QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
-                        {component, MakeDefaultValues(inoutWorld, component)}});
+                        {component, MakeDefaultValues(inoutWorld, component)}},
+            "Add GI Probe Volume");
     }
     if (preset == QStringLiteral("First Person Player"))
     {
@@ -340,7 +345,8 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
                                        preset,
                                        outId,
                                        QJsonObject{{QStringLiteral("transform"), MakeFirstPersonTransform(inoutWorld)},
-                                                   {component, MakeDefaultValues(inoutWorld, component)}});
+                                                   {component, MakeDefaultValues(inoutWorld, component)}},
+                                       "Add First Person Player");
     }
     const bool isGeometry =
         preset == QStringLiteral("Cube") || preset == QStringLiteral("Plane") || preset == QStringLiteral("Sphere");
@@ -374,6 +380,7 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
                                    outError,
                                    preset,
                                    outId,
-                                   QJsonObject{{QStringLiteral("transform"), transform}, {component, values}});
+                                   QJsonObject{{QStringLiteral("transform"), transform}, {component, values}},
+                                   isLight == true ? "Add Light" : "Add Object");
 }
 } // namespace ludus::editor

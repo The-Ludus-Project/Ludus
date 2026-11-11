@@ -498,6 +498,14 @@ public:
     }
     [[nodiscard]] bool Undo();
     [[nodiscard]] bool Redo();
+    /// Undo or redo every edit between the current draft and history position `cursor` as one step.
+    /// All-or-nothing; see DocumentHistory::JumpTo. Ends any text or move group, as Undo does.
+    [[nodiscard]] bool JumpToHistory(foundation::usize cursor);
+    /// The undo history with its command names, for presentation.
+    [[nodiscard]] LUDUS_INLINE const DocumentHistory<RenderGraphSnapshot, HISTORY_CAPACITY>& GetHistory() const noexcept
+    {
+        return mHistory;
+    }
 
     /// Write the selected source version into an empty directory for a validation or build job.
     /// Saved snapshots never include unsaved edits. Failure may leave a partial snapshot;
@@ -551,13 +559,16 @@ private:
                                                               const QString& configuration,
                                                               const QStringList& arguments,
                                                               EditFunction edit,
-                                                              bool shouldMerge);
+                                                              bool shouldMerge,
+                                                              const char* name);
     enum class CommitKind : foundation::uint8
     {
         Authoring,
         Source
     };
+    /// @param name Readable command name with static storage duration, shown in Undo/Redo and History.
     [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate,
+                                                   const char* name,
                                                    bool shouldMerge,
                                                    const RenderGraphTextState& beforeText = {},
                                                    const RenderGraphTextState& afterText = {},

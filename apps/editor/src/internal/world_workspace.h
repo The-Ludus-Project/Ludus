@@ -156,6 +156,8 @@ public:
     void RestoreSession(const QJsonObject& state);
     void Undo();
     void Redo();
+    /// Undo or redo to World history position `cursor` in one step, as Undo does; false leaves the World as is.
+    [[nodiscard]] bool JumpToHistory(foundation::int32 cursor);
     /// Apply a luminaire repair (RendererWorkspace::MakeRenderWarningRepair) to the open default-schema World as one
     /// undoable edit: create the fitted luminaire, or move and resize the named one, and select it.
     /// @return False, with the reason in the status, when the World cannot be edited, is not a default World or no
@@ -278,6 +280,8 @@ private:
     void updateViewportInteraction();
     void exploreFirstPerson();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);
+    /// Undo history name for a viewport placement, from the active gizmo tool ("Move Entity", ...).
+    [[nodiscard]] const char* getPlacementEditName() const;
     [[nodiscard]] QJsonObject findEditableProbeVolume(const QString& id) const;
     void commitProbeVolumeEdit(const QJsonObject& entity, const QJsonObject& components);
     void commitProbeSpacing(const QString& id, foundation::float64 spacingMetres);

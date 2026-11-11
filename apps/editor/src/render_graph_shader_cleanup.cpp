@@ -431,7 +431,7 @@ RenderGraphDocument::RemoveUnusedShaders(QStringList& outPrograms, QStringList& 
         outSources.clear();
         return RenderGraphDocumentStatus::Ok;
     }
-    const RenderGraphDocumentStatus status = commit(candidate, false);
+    const RenderGraphDocumentStatus status = commit(candidate, "Remove Unused Shaders", false);
     if (status == RenderGraphDocumentStatus::Ok)
     {
         outPrograms = programs;
@@ -548,7 +548,7 @@ RenderGraphDocumentStatus RenderGraphDocument::RemoveSubgraphLibrary(const QStri
         return prepared;
     }
     mLastMove.clear();
-    const RenderGraphDocumentStatus status = commit(candidate, false);
+    const RenderGraphDocumentStatus status = commit(candidate, "Remove Subgraph Library", false);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         outError =

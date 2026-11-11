@@ -6,7 +6,9 @@
 #include "internal/code_editor_area.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
+#include "internal/controller.h"
 #include "internal/document_well.h"
+#include "internal/edit_history.h"
 #include "internal/editor_files.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
@@ -15,10 +17,14 @@
 #include <QAbstractItemDelegate>
 #include <QAction>
 #include <QApplication>
+#include <QDockWidget>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QStatusBar>
 #include <QTextDocument>
 
 namespace ludus::editor
@@ -152,7 +158,9 @@ void MainWindow::RenderDocumentActions()
     }
     else
     {
-        const bool isInProject = isProject && (focus == nullptr || ProjectSettings_->isAncestorOf(focus));
+        const bool isHistoryFocus = mHistoryDockOrNull != nullptr && mHistoryDockOrNull->isAncestorOf(focus);
+        const bool isInProject =
+            isProject && (focus == nullptr || isHistoryFocus == true || ProjectSettings_->isAncestorOf(focus));
         UndoAction_->setEnabled(isWorld      ? World_->CanUndo()
                                 : isScripts  ? Scripts_->CanUndo()
                                 : isRenderer ? Renderer_->CanUndo()
@@ -162,6 +170,187 @@ void MainWindow::RenderDocumentActions()
                                 : isRenderer ? Renderer_->CanRedo()
                                              : isInProject && Controller_->CanRedoProject());
     }
+    // Name the command each action will act on ("Undo Rename Entity"). A name is a pointer read per history;
+    // QAction ignores an unchanged text, so this costs nothing when focus moves within one document.
+    const HistoryTarget target = getHistoryTarget();
+    const QString undoName = UndoAction_->isEnabled() == true ? getHistoryCommandName(target, false) : QString();
+    const QString redoName = RedoAction_->isEnabled() == true ? getHistoryCommandName(target, true) : QString();
+    const auto describe = [](QAction& action, const QString& text, const QString& unavailable) {
+        action.setText(text);
+        QString tip = action.isEnabled() == true ? QString(text).remove(QLatin1Char('&')) : unavailable;
+        const QString shortcut = action.shortcut().toString(QKeySequence::NativeText);
+        if (shortcut.isEmpty() == false)
+        {
+            tip += QStringLiteral(" (") + shortcut + QLatin1Char(')');
+        }
+        action.setToolTip(tip);
+        action.setStatusTip(tip);
+    };
+    describe(*UndoAction_, MakeUndoMenuText(undoName), QStringLiteral("Nothing to undo"));
+    describe(*RedoAction_, MakeRedoMenuText(redoName), QStringLiteral("Nothing to redo"));
+    renderHistory();
+}
+
+MainWindow::HistoryTarget MainWindow::getHistoryTarget() const
+{
+    // Mirrors RenderDocumentActions: a focused text control owns Undo before its document does.
+    QWidget* areaOrNull = getActiveWorkspaceOrNull();
+    QWidget* focusOrNull = QApplication::focusWidget();
+    if (areaOrNull == ProjectSettings_ && mRenderingSettingsOrNull->ContainsFocus() == true)
+    {
+        return HistoryTarget::Renderer;
+    }
+    if (qobject_cast<QLineEdit*>(focusOrNull) != nullptr || qobject_cast<QPlainTextEdit*>(focusOrNull) != nullptr)
+    {
+        return qobject_cast<CodeEditor*>(focusOrNull) != nullptr ? HistoryTarget::CodeEditor : HistoryTarget::TextField;
+    }
+    if (qobject_cast<CodeEditor*>(focusOrNull) != nullptr)
+    {
+        return HistoryTarget::CodeEditor;
+    }
+    if (areaOrNull == World_)
+    {
+        return HistoryTarget::World;
+    }
+    if (areaOrNull == Scripts_)
+    {
+        return HistoryTarget::Script;
+    }
+    if (areaOrNull == Renderer_)
+    {
+        return HistoryTarget::Renderer;
+    }
+    const bool isHistoryFocus = mHistoryDockOrNull != nullptr && mHistoryDockOrNull->isAncestorOf(focusOrNull);
+    if (areaOrNull == ProjectSettings_ &&
+        (focusOrNull == nullptr || isHistoryFocus == true || ProjectSettings_->isAncestorOf(focusOrNull)))
+    {
+        return HistoryTarget::Project;
+    }
+    return HistoryTarget::None;
+}
+
+QString MainWindow::getHistoryCommandName(HistoryTarget target, bool isRedo) const
+{
+    const char* nameOrNull = nullptr;
+    switch (target)
+    {
+        case HistoryTarget::None:
+            return {};
+        case HistoryTarget::TextField:
+        case HistoryTarget::CodeEditor:
+            return QString::fromUtf8(TYPING_EDIT_NAME);
+        case HistoryTarget::Script:
+            return QStringLiteral("Script Edit");
+        case HistoryTarget::World:
+            nameOrNull = isRedo == true ? World_->Document().GetHistory().GetRedoNameOrNull()
+                                        : World_->Document().GetHistory().GetUndoNameOrNull();
+            break;
+        case HistoryTarget::Renderer:
+            nameOrNull = isRedo == true ? Renderer_->GetDocument().GetHistory().GetRedoNameOrNull()
+                                        : Renderer_->GetDocument().GetHistory().GetUndoNameOrNull();
+            break;
+        case HistoryTarget::Project:
+            nameOrNull = isRedo == true ? Controller_->GetProjectHistory().GetRedoNameOrNull()
+                                        : Controller_->GetProjectHistory().GetUndoNameOrNull();
+            break;
+    }
+    return nameOrNull != nullptr ? QString::fromUtf8(nameOrNull) : QString();
+}
+
+foundation::uint64 MainWindow::getHistoryRevision(HistoryTarget target) const
+{
+    switch (target)
+    {
+        case HistoryTarget::World:
+            return World_->Document().GetHistory().Revision();
+        case HistoryTarget::Renderer:
+            return Renderer_->GetDocument().GetHistory().Revision();
+        case HistoryTarget::Project:
+            return Controller_->ProjectRevision();
+        case HistoryTarget::None:
+        case HistoryTarget::TextField:
+        case HistoryTarget::CodeEditor:
+        case HistoryTarget::Script:
+            break;
+    }
+    return 0;
+}
+
+EditHistoryState MainWindow::getHistoryState(HistoryTarget target) const
+{
+    switch (target)
+    {
+        case HistoryTarget::World:
+            return MakeEditHistoryState(QStringLiteral("World"), World_->Document().GetHistory());
+        case HistoryTarget::Renderer:
+            return MakeEditHistoryState(QStringLiteral("Render Graph"), Renderer_->GetDocument().GetHistory());
+        case HistoryTarget::Project:
+            return MakeEditHistoryState(QStringLiteral("Project Settings"), Controller_->GetProjectHistory());
+        case HistoryTarget::None:
+            return EditHistoryState{ .DocumentName = {}, .Names = {}, .Cursor = 0, .CanJump = true };
+        case HistoryTarget::TextField:
+        case HistoryTarget::CodeEditor:
+        case HistoryTarget::Script:
+            break;
+    }
+    return {};
+}
+
+void MainWindow::renderHistory()
+{
+    if (mHistoryDockOrNull == nullptr || mHistoryPanelOrNull == nullptr || mHistoryDockOrNull->isVisible() == false)
+    {
+        return;
+    }
+    mHistoryPanelOrNull->SetState(getHistoryState(getHistoryTarget()));
+}
+
+void MainWindow::onHistoryJumpRequested(foundation::int32 cursor)
+{
+    const HistoryTarget target = getHistoryTarget();
+    const EditHistoryState before = getHistoryState(target);
+    bool hasJumped = false;
+    switch (target)
+    {
+        case HistoryTarget::World:
+            hasJumped = World_->JumpToHistory(cursor);
+            break;
+        case HistoryTarget::Renderer:
+            hasJumped = Renderer_->JumpToHistory(cursor);
+            break;
+        case HistoryTarget::Project:
+            hasJumped = cursor >= 0 && Controller_->JumpToProjectHistory(static_cast<foundation::usize>(cursor));
+            break;
+        case HistoryTarget::None:
+        case HistoryTarget::TextField:
+        case HistoryTarget::CodeEditor:
+        case HistoryTarget::Script:
+            break;
+    }
+    if (hasJumped == true)
+    {
+        showUndoFeedback(MakeHistoryJumpFeedbackText(before, cursor));
+    }
+    else
+    {
+        statusBar()->showMessage(
+            QStringLiteral("That state isn't available right now. Finish the edit or wait for loading to end, "
+                           "then choose it again."));
+    }
+    RenderDocumentActions();
+}
+
+void MainWindow::showUndoFeedback(const QString& text)
+{
+    if (text.isEmpty() == true)
+    {
+        return;
+    }
+    if (mUndoToastOrNull == nullptr)
+    {
+        mUndoToastOrNull = new UndoFeedbackToast(this);
+    }
+    mUndoToastOrNull->ShowNotice(text, *mDocuments);
 }
 
 void MainWindow::OnUndoRequested()
@@ -171,10 +360,25 @@ void MainWindow::OnUndoRequested()
     {
         return;
     }
+    const HistoryTarget target = getHistoryTarget();
+    const QString name = getHistoryCommandName(target, false);
+    const foundation::uint64 revision = getHistoryRevision(target);
+    const auto confirm = [this, target, name, revision]() {
+        // Text fields and code editors show the change at the caret, so only document edits get a notice.
+        const bool isDocument =
+            target == HistoryTarget::World || target == HistoryTarget::Renderer || target == HistoryTarget::Project;
+        const bool hasChanged =
+            isDocument == true ? getHistoryRevision(target) != revision : target == HistoryTarget::Script;
+        if (name.isEmpty() == false && hasChanged == true)
+        {
+            showUndoFeedback(MakeUndoFeedbackText(name));
+        }
+    };
     CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(QApplication::focusWidget());
     if (getActiveWorkspaceOrNull() == ProjectSettings_ && mRenderingSettingsOrNull->ContainsFocus() == true)
     {
         Renderer_->Undo();
+        confirm();
         RenderDocumentActions();
         return;
     }
@@ -207,6 +411,7 @@ void MainWindow::OnUndoRequested()
     {
         Controller_->UndoProjectEdit();
     }
+    confirm();
     RenderDocumentActions();
 }
 
@@ -217,10 +422,25 @@ void MainWindow::OnRedoRequested()
     {
         return;
     }
+    const HistoryTarget target = getHistoryTarget();
+    const QString name = getHistoryCommandName(target, true);
+    const foundation::uint64 revision = getHistoryRevision(target);
+    const auto confirm = [this, target, name, revision]() {
+        // Text fields and code editors show the change at the caret, so only document edits get a notice.
+        const bool isDocument =
+            target == HistoryTarget::World || target == HistoryTarget::Renderer || target == HistoryTarget::Project;
+        const bool hasChanged =
+            isDocument == true ? getHistoryRevision(target) != revision : target == HistoryTarget::Script;
+        if (name.isEmpty() == false && hasChanged == true)
+        {
+            showUndoFeedback(MakeRedoFeedbackText(name));
+        }
+    };
     CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(QApplication::focusWidget());
     if (getActiveWorkspaceOrNull() == ProjectSettings_ && mRenderingSettingsOrNull->ContainsFocus() == true)
     {
         Renderer_->Redo();
+        confirm();
         RenderDocumentActions();
         return;
     }
@@ -253,6 +473,7 @@ void MainWindow::OnRedoRequested()
     {
         Controller_->RedoProjectEdit();
     }
+    confirm();
     RenderDocumentActions();
 }
 } // namespace ludus::editor

@@ -256,6 +256,16 @@ inline constexpr EditorCommand VIEW_RENDER_PREVIEW_COMMAND
     .Help = "Show the render-graph preview of the World viewport.",
     .IsCheckable = false,
 };
+// Undo history of the active document; the same action sits in the Edit and View menus.
+inline constexpr EditorCommand EDIT_HISTORY_COMMAND
+{
+    .Id = "edit.history",
+    .Text = "&History",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Show the active document's undo history; choose an edit to return to that state.",
+    .IsCheckable = false,
+};
 inline constexpr EditorCommand VIEW_TIMING_COMMAND
 {
     .Id = "view.timing",

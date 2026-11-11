@@ -255,7 +255,7 @@ void EditorController::EditDraft(const ProjectDescriptor& draft, bool shouldMerg
     {
         return;
     }
-    if (ProjectHistory_.Commit(State_.Draft, draft, shouldMerge) == false)
+    if (ProjectHistory_.Commit(State_.Draft, draft, shouldMerge, GetProjectEditName(State_.Draft, draft)) == false)
     {
         return;
     }
@@ -272,6 +272,42 @@ void EditorController::InvalidateDraftTargets()
         State_.DiscoveredTargets.clear();
         State_.DiscoveredPreset.clear();
     }
+}
+
+bool EditorController::JumpToProjectHistory(foundation::usize cursor)
+{
+    if (Caps().CanEdit == false || ProjectHistory_.JumpTo(State_.Draft, cursor) == false)
+    {
+        return false;
+    }
+    InvalidateDraftTargets();
+    Publish();
+    return true;
+}
+
+const char* GetProjectEditName(const ProjectDescriptor& before, const ProjectDescriptor& after)
+{
+    const char* nameOrNull = nullptr;
+    foundation::int32 changes = 0;
+    const auto consider = [&nameOrNull, &changes](bool hasChanged, const char* name) {
+        if (hasChanged == true)
+        {
+            nameOrNull = name;
+            ++changes;
+        }
+    };
+    consider(before.Name != after.Name, "Rename Project");
+    consider(before.ProviderKind != after.ProviderKind, "Change Project Provider");
+    consider(before.SourceDir != after.SourceDir, "Change Source Folder");
+    consider(before.Preset != after.Preset, "Change Build Preset");
+    consider(before.Target != after.Target, "Change Run Target");
+    consider(before.RunCwd != after.RunCwd, "Change Working Folder");
+    consider(before.RunArgs != after.RunArgs, "Edit Run Arguments");
+    consider(before.HasEngine != after.HasEngine || (before.Engine == after.Engine) == false,
+             "Change Engine Requirement");
+    consider(before.HasTemplate != after.HasTemplate || (before.Template == after.Template) == false,
+             "Change Project Template");
+    return changes == 1 && nameOrNull != nullptr ? nameOrNull : "Edit Project Settings";
 }
 
 bool EditorController::CanUndoProject() const

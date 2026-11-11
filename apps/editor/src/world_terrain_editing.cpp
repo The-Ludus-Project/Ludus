@@ -1435,7 +1435,7 @@ void WorldWorkspace::commitTerrainDraft()
         }
     }
     QString error;
-    if (Document_.Restore(panel.ReadyWorld.Draft(), error) == false)
+    if (Document_.Restore(panel.ReadyWorld.Draft(), error, "Apply Terrain Changes") == false)
     {
         panel.ClearStroke();
         panel.Status->setText(error);
