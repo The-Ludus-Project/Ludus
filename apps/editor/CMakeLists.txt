@@ -841,6 +841,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/main_window_project_files.cpp
     src/internal/command_palette.h
     src/command_palette.cpp
+    src/internal/edit_history.h
+    src/edit_history.cpp
     src/internal/options_dialog.h
     src/options_dialog.cpp
     src/internal/render_graph_build_settings.h
@@ -1251,6 +1253,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/timing_view_tests.cpp
         tests/controller_tests.cpp
         tests/document_history_tests.cpp
+        tests/edit_history_tests.cpp
         tests/document_interaction_tests.cpp
         tests/content_import_gate_tests.cpp
         tests/content_browser_tests.cpp

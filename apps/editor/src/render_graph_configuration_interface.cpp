@@ -667,6 +667,6 @@ RenderGraphDocument::ReplaceConfigurationInterface(const QString& file,
         return status;
     }
     mLastMove.clear();
-    return commit(candidate, false);
+    return commit(candidate, "Edit Configuration Interface", false);
 }
 } // namespace ludus::editor

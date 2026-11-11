@@ -183,8 +183,11 @@ TEST_CASE("Ctrl+K and F3 open the palette; F3 lists only what can run", "[editor
     REQUIRE(available != nullptr);
     const int availableCount = static_cast<int>(available->GetShownIndices().size());
     CHECK(availableCount > 0);
-    // With no project open, many commands are not available.
-    CHECK(availableCount < allCount);
+    // With no project open, many commands are not available. Both lists stop at PALETTE_MAX_RESULTS, so compare
+    // the ranked entries rather than the rows shown.
+    const QList<PaletteEntry> entries = CollectWindowPaletteEntries(window);
+    CHECK(RankPaletteEntries(entries, QString(), true).size() < RankPaletteEntries(entries, QString(), false).size());
+    CHECK(availableCount <= allCount);
     available->close();
 }
 

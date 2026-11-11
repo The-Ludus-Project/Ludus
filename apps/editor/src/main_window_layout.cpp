@@ -10,6 +10,7 @@
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
+#include "internal/edit_history.h"
 #include "internal/editor_commands.h"
 #include "internal/editor_icons.h"
 #include "internal/editor_style.h"
@@ -482,6 +483,21 @@ void MainWindow::BuildUi()
     Timing_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     TimingDock_->setWidget(Timing_);
 
+    // History lists the active document's edits; it does no work while closed (renderHistory).
+    mHistoryDockOrNull = new QDockWidget(QStringLiteral("History"), this);
+    mHistoryDockOrNull->setObjectName(QStringLiteral("historyDock"));
+    mHistoryDockOrNull->setWindowIcon(GetEditorIcon(EditorIcon::Undo));
+    mHistoryPanelOrNull = new EditHistoryPanel(mHistoryDockOrNull);
+    mHistoryPanelOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    mHistoryDockOrNull->setWidget(mHistoryPanelOrNull);
+    connect(mHistoryPanelOrNull, &EditHistoryPanel::JumpRequested, this, &MainWindow::onHistoryJumpRequested);
+    connect(mHistoryDockOrNull, &QDockWidget::visibilityChanged, this, [this](bool isVisible) {
+        if (isVisible == true)
+        {
+            renderHistory();
+        }
+    });
+
     OutputDock_ = new QDockWidget(QStringLiteral("Output"), this);
     OutputDock_->setObjectName(QStringLiteral("outputDock"));
     OutputDock_->setWindowIcon(GetEditorIcon(EditorIcon::Output));
@@ -856,6 +872,7 @@ void MainWindow::arrangeDefaultDocks()
     tabifyDockWidget(mProjectExplorerDock, mRenderPreviewDock);
     addDockWidget(Qt::RightDockWidgetArea, mPropertiesDock);
     tabifyDockWidget(mPropertiesDock, InspectorDock_);
+    tabifyDockWidget(mPropertiesDock, mHistoryDockOrNull);
     addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
     tabifyDockWidget(mErrorListDock, mSearchDockOrNull);
     tabifyDockWidget(mErrorListDock, OutputDock_);
@@ -878,6 +895,7 @@ QList<QDockWidget*> MainWindow::getToolWindows() const
         mRenderPreviewDock,
         mPropertiesDock,
         InspectorDock_,
+        mHistoryDockOrNull,
         mErrorListDock,
         mSearchDockOrNull,
         OutputDock_,
@@ -982,7 +1000,8 @@ void MainWindow::applyDefaultDockSizes()
     // The diagnostics group is closed until it has something to show: new errors or warnings reveal the
     // Error List, a build reveals Output, a play session reveals Timing, recording reveals Profiling and
     // Find in Files reveals Search.
-    for (QDockWidget* dock : {mErrorListDock, mSearchDockOrNull, OutputDock_, TimingDock_, mProfilingDock})
+    for (QDockWidget* dock :
+         {mErrorListDock, mSearchDockOrNull, OutputDock_, TimingDock_, mProfilingDock, mHistoryDockOrNull})
     {
         if (dock != nullptr)
         {
@@ -1086,6 +1105,7 @@ void MainWindow::buildWindowMenu(QMenu* menu)
                               mContentDock,
                               mRenderPreviewDock,
                               InspectorDock_,
+                              mHistoryDockOrNull,
                               TimingDock_,
                               mProfilingDock})
     {

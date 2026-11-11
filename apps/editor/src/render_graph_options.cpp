@@ -393,7 +393,7 @@ RenderGraphDocumentStatus RenderGraphDocument::SetConfigurationOptions(const QSt
             return RenderGraphDocumentStatus::Ok;
         }
         mLastMove.clear();
-        return commit(candidate, false);
+        return commit(candidate, "Edit Configuration Options", false);
     }
     outError = QStringLiteral("Configuration is unavailable.");
     return RenderGraphDocumentStatus::NotFound;

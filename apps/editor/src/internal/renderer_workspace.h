@@ -247,6 +247,9 @@ public:
     [[nodiscard]] bool CanRedo() const;
     void Undo();
     void Redo();
+    /// Undo or redo to render-graph history position `cursor` in one step, restoring the selection and source
+    /// view as Undo does. False leaves the draft unchanged.
+    [[nodiscard]] bool JumpToHistory(foundation::int32 cursor);
 
     /// True when a document is open and no job or creation is running, so Validate, Build,
     /// Build & Preview and Cook Runtime can start.

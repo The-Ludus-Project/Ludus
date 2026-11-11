@@ -222,6 +222,24 @@ void WorldWorkspace::exploreFirstPerson()
     Changed(QStringLiteral("Hold right mouse to look, WASD to walk, Shift to run, and Space to jump. "
                            "Escape returns to the editor view."));
 }
+const char* WorldWorkspace::getPlacementEditName() const
+{
+    // The gizmo tool names the edit, so Undo reads "Undo Rotate Entity" rather than a generic transform.
+    const bool hasImportedScene = Document_.Draft().contains(QStringLiteral("scene"));
+    PreviewViewport& viewport = hasImportedScene == true ? Scene_->GetViewport() : Render_->GetViewport();
+    switch (viewport.GetObjectInteraction().GetTool())
+    {
+        case ViewportObjectInteraction::Tool::Move:
+            return "Move Entity";
+        case ViewportObjectInteraction::Tool::Rotate:
+            return "Rotate Entity";
+        case ViewportObjectInteraction::Tool::Scale:
+            return "Scale Entity";
+        case ViewportObjectInteraction::Tool::Select:
+            break;
+    }
+    return "Transform Entity";
+}
 void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObject& placement)
 {
     if (tryPlaceTerrainDraft(id, placement) == true)
@@ -307,7 +325,8 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
                        components,
                        entity.value(QStringLiteral("name")).toString(),
                        error,
-                       scene.isEmpty() == true ? nullptr : &scene) == false)
+                       scene.isEmpty() == true ? nullptr : &scene,
+                       isStandaloneProbeVolume == true ? "Move Probe Volume" : getPlacementEditName()) == false)
     {
         Changed(error);
         return;
@@ -382,7 +401,12 @@ void WorldWorkspace::commitProbeVolumeEdit(const QJsonObject& entity, const QJso
 {
     const QString id = entity.value(QStringLiteral("id")).toString();
     QString error;
-    if (Document_.Edit(id, components, entity.value(QStringLiteral("name")).toString(), error) == false)
+    if (Document_.Edit(id,
+                       components,
+                       entity.value(QStringLiteral("name")).toString(),
+                       error,
+                       nullptr,
+                       "Resize Probe Volume") == false)
     {
         Changed(
             QStringLiteral(

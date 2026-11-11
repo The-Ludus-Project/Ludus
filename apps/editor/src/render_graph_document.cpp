@@ -957,6 +957,7 @@ bool RenderGraphDocument::GetGraph(const QString& file, QJsonObject& outGraph) c
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot& candidate,
+                                                      const char* name,
                                                       bool shouldMerge,
                                                       const RenderGraphTextState& beforeText,
                                                       const RenderGraphTextState& afterText,
@@ -1016,7 +1017,7 @@ RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot&
     before.NodeSelection = beforeSelection;
     after.TextState = afterText;
     after.NodeSelection = afterSelection;
-    if (mHistory.Commit(before, after, shouldMerge) == false)
+    if (mHistory.Commit(before, after, shouldMerge, name) == false)
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
@@ -1030,7 +1031,8 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
                                                                  const QString& configuration,
                                                                  const QStringList& arguments,
                                                                  EditFunction edit,
-                                                                 bool shouldMerge)
+                                                                 bool shouldMerge,
+                                                                 const char* name)
 {
     QJsonObject graph;
     if (GetGraph(file, graph) == false)
@@ -1075,7 +1077,7 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
             return status;
         }
     }
-    return commit(candidate, shouldMerge);
+    return commit(candidate, name, shouldMerge);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
@@ -1111,7 +1113,7 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
             return prepared;
         }
         mLastMove.clear();
-        return commit(candidate, false);
+        return commit(candidate, "Edit Node", false);
     }
     if (outErrorOrNull != nullptr)
     {
@@ -1141,7 +1143,8 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
                           configuration,
                           {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
                           &ReplaceNodeEdit,
-                          false);
+                          false,
+                          "Edit Node");
     if (status == RenderGraphDocumentStatus::Ok && outErrorOrNull != nullptr)
     {
         outErrorOrNull->clear();
@@ -1241,7 +1244,7 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
         return RenderGraphDocumentStatus::Ok;
     }
     mLastMove.clear();
-    return commit(candidate, false);
+    return commit(candidate, "Apply Pipeline", false);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::EnableSceneMaterials(QString& outError)
@@ -1260,7 +1263,7 @@ RenderGraphDocumentStatus RenderGraphDocument::EnableSceneMaterials(QString& out
         return status;
     }
     mLastMove.clear();
-    return commit(candidate, false);
+    return commit(candidate, "Enable Scene Materials", false);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::PrepareTechniques(QString& outError)
@@ -1272,7 +1275,7 @@ RenderGraphDocumentStatus RenderGraphDocument::PrepareTechniques(QString& outErr
         return status;
     }
     mLastMove.clear();
-    return commit(candidate, false);
+    return commit(candidate, "Prepare Techniques", false);
 }
 
 namespace
@@ -1308,11 +1311,12 @@ RenderGraphDocumentStatus RenderGraphDocument::AddNode(const QString& file,
                                      GetPositionArguments(positionOrNull) +
                                      QStringList{connectionOrNull->From, connectionOrNull->To},
                                  &AddNodeConnectedEdit,
-                                 false);
+                                 false,
+                                 "Add Node");
     }
     if (positionOrNull == nullptr)
     {
-        return editConfiguration(file, configuration, {record}, &AddNodeEdit, false);
+        return editConfiguration(file, configuration, {record}, &AddNodeEdit, false, "Add Node");
     }
     return editConfiguration(file,
                              configuration,
@@ -1321,7 +1325,8 @@ RenderGraphDocumentStatus RenderGraphDocument::AddNode(const QString& file,
                               QString::number(qBound(-MAX_COORDINATE, positionOrNull->x(), MAX_COORDINATE)),
                               QString::number(qBound(-MAX_COORDINATE, positionOrNull->y(), MAX_COORDINATE))},
                              &AddNodeAtEdit,
-                             false);
+                             false,
+                             "Add Node");
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::AddUpscalePreset(const QString& file,
@@ -1339,11 +1344,17 @@ RenderGraphDocumentStatus RenderGraphDocument::AddUpscalePreset(const QString& f
                                  QStringList{algorithm, identity} + GetPositionArguments(positionOrNull) +
                                      QStringList{connectionOrNull->From, connectionOrNull->To},
                                  &AddUpscalePresetConnectedEdit,
-                                 false);
+                                 false,
+                                 "Add Upscale Preset");
     }
     if (positionOrNull == nullptr)
     {
-        return editConfiguration(file, configuration, {algorithm, identity}, &AddUpscalePresetEdit, false);
+        return editConfiguration(file,
+                                 configuration,
+                                 {algorithm, identity},
+                                 &AddUpscalePresetEdit,
+                                 false,
+                                 "Add Upscale Preset");
     }
     return editConfiguration(file,
                              configuration,
@@ -1353,7 +1364,8 @@ RenderGraphDocumentStatus RenderGraphDocument::AddUpscalePreset(const QString& f
                               QString::number(qBound(-MAX_COORDINATE, positionOrNull->x(), MAX_COORDINATE)),
                               QString::number(qBound(-MAX_COORDINATE, positionOrNull->y(), MAX_COORDINATE))},
                              &AddUpscalePresetAtEdit,
-                             false);
+                             false,
+                             "Add Upscale Preset");
 }
 
 // File, child configuration and parent configuration are distinct authored identities.
@@ -1403,7 +1415,7 @@ RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
         return prepared;
     }
     mLastMove.clear();
-    const RenderGraphDocumentStatus status = commit(candidate, false);
+    const RenderGraphDocumentStatus status = commit(candidate, "Apply Template", false);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         outError =
@@ -1529,7 +1541,7 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& fil
         return prepared;
     }
     mLastMove.clear();
-    return commit(candidate, false);
+    return commit(candidate, "Create Subgraph", false);
 }
 
 RenderGraphDocumentStatus
@@ -1554,28 +1566,29 @@ RenderGraphDocument::RemoveNodes(const QString& file, const QString& configurati
             }
             return true;
         },
-        false);
+        false,
+        "Delete Nodes");
 }
 
 RenderGraphDocumentStatus
 RenderGraphDocument::RemoveNode(const QString& file, const QString& configuration, const QString& node)
 {
     mLastMove.clear();
-    return editConfiguration(file, configuration, {node}, &RemoveNodeEdit, false);
+    return editConfiguration(file, configuration, {node}, &RemoveNodeEdit, false, "Delete Node");
 }
 
 RenderGraphDocumentStatus
 RenderGraphDocument::ExpandSceneBundle(const QString& file, const QString& configuration, const QString& node)
 {
     mLastMove.clear();
-    return editConfiguration(file, configuration, {node}, &ExpandSceneBundleEdit, false);
+    return editConfiguration(file, configuration, {node}, &ExpandSceneBundleEdit, false, "Expand Scene Bundle");
 }
 
 RenderGraphDocumentStatus
 RenderGraphDocument::Connect(const QString& file, const QString& configuration, const QString& from, const QString& to)
 {
     mLastMove.clear();
-    return editConfiguration(file, configuration, {from, to}, &ConnectEdit, false);
+    return editConfiguration(file, configuration, {from, to}, &ConnectEdit, false, "Connect");
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::ReplaceConnection(const QString& file,
@@ -1584,7 +1597,7 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceConnection(const QString& 
                                                                  const QString& to)
 {
     mLastMove.clear();
-    return editConfiguration(file, configuration, {from, to}, &ReplaceConnectionEdit, false);
+    return editConfiguration(file, configuration, {from, to}, &ReplaceConnectionEdit, false, "Replace Connection");
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::Disconnect(const QString& file,
@@ -1593,7 +1606,7 @@ RenderGraphDocumentStatus RenderGraphDocument::Disconnect(const QString& file,
                                                           const QString& to)
 {
     mLastMove.clear();
-    return editConfiguration(file, configuration, {from, to}, &DisconnectEdit, false);
+    return editConfiguration(file, configuration, {from, to}, &DisconnectEdit, false, "Disconnect");
 }
 
 RenderGraphDocumentStatus
@@ -1605,7 +1618,8 @@ RenderGraphDocument::MoveNode(const QString& file, const QString& configuration,
                                                                configuration,
                                                                {node, QString::number(x), QString::number(y)},
                                                                &MoveNodeEdit,
-                                                               shouldMerge);
+                                                               shouldMerge,
+                                                               "Move Node");
     mLastMove = status == RenderGraphDocumentStatus::Ok ? key : QString();
     return status;
 }
@@ -1620,7 +1634,7 @@ RenderGraphDocumentStatus RenderGraphDocument::MoveNodes(const QString& file,
     {
         arguments += {position.Node, QString::number(position.X), QString::number(position.Y)};
     }
-    return editConfiguration(file, configuration, arguments, &MoveNodesEdit, false);
+    return editConfiguration(file, configuration, arguments, &MoveNodesEdit, false, "Move Nodes");
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::ReplaceCommentFrames(const QString& file,
@@ -1634,7 +1648,7 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceCommentFrames(const QStrin
     {
         arguments += {position.Node, QString::number(position.X), QString::number(position.Y)};
     }
-    return editConfiguration(file, configuration, arguments, &ReplaceCommentFramesEdit, false);
+    return editConfiguration(file, configuration, arguments, &ReplaceCommentFramesEdit, false, "Edit Comment Frames");
 }
 
 RenderGraphDocumentStatus
@@ -1645,7 +1659,8 @@ RenderGraphDocument::ReplaceWireRoutes(const QString& file, const QString& confi
                              configuration,
                              {QString::fromUtf8(QJsonDocument(routes).toJson(QJsonDocument::Compact))},
                              &ReplaceWireRoutesEdit,
-                             false);
+                             false,
+                             "Edit Wire Routes");
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::SetText(const QString& file, const QByteArray& bytes)
@@ -1657,7 +1672,7 @@ RenderGraphDocumentStatus RenderGraphDocument::SetText(const QString& file, cons
     }
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, bytes);
-    return commit(candidate, false, {}, {}, {}, {}, CommitKind::Source);
+    return commit(candidate, "Edit Source", false, {}, {}, {}, {}, CommitKind::Source);
 }
 
 CodeEditStatus RenderGraphDocument::ApplyTextEdit(const QString& file,
@@ -1729,7 +1744,7 @@ CodeEditStatus RenderGraphDocument::ApplyTextEdit(const QString& file,
     candidate.Files.insert(file, text);
     const bool canMerge = shouldMerge == true && mLastTextFile == file;
     const RenderGraphDocumentStatus status =
-        commit(candidate, canMerge, {file, before}, {file, after}, {}, {}, CommitKind::Source);
+        commit(candidate, "Typing", canMerge, {file, before}, {file, after}, {}, {}, CommitKind::Source);
     if (status == RenderGraphDocumentStatus::Ok)
     {
         mLastMove.clear();
@@ -1757,6 +1772,13 @@ bool RenderGraphDocument::Redo()
     BreakTextGroup();
     mLastMove.clear();
     return mHistory.Redo(mDraft);
+}
+
+bool RenderGraphDocument::JumpToHistory(usize cursor)
+{
+    BreakTextGroup();
+    mLastMove.clear();
+    return mHistory.JumpTo(mDraft, cursor);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& directory, RenderGraphSource source) const
@@ -1808,7 +1830,8 @@ RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChang
     {
         return RenderGraphDocumentStatus::Conflict;
     }
-    const RenderGraphDocumentStatus committed = commit(candidate, false, {}, {}, {}, {}, CommitKind::Source);
+    const RenderGraphDocumentStatus committed =
+        commit(candidate, "Reload Changed Files", false, {}, {}, {}, {}, CommitKind::Source);
     if (committed == RenderGraphDocumentStatus::Ok)
     {
         mSaved = candidate;
@@ -1886,7 +1909,7 @@ RenderGraphDocumentStatus RenderGraphDocument::RestoreRecoverySnapshot(const Ren
         }
     }
     BreakTextGroup();
-    return commit(snapshot, false, {}, {}, {}, {}, CommitKind::Source);
+    return commit(snapshot, "Restore Recovered Graph", false, {}, {}, {}, {}, CommitKind::Source);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)

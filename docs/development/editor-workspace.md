@@ -1044,6 +1044,36 @@ and use controller capability gates. Configurable mappings remain future work.
 See [art direction](../architecture/editor-art-direction.md) and
 [browser strategy](../architecture/editor-browser-strategy.md).
 
+## Undo history
+
+**Undo** and **Redo** name the edit they act on: the Edit menu reads
+**Undo Rename Entity**, and the toolbar tooltip reads *Undo Rename Entity (Ctrl+Z)*.
+With nothing to undo the item is disabled and its tooltip says so. Focused text
+fields read **Undo Typing**, and the script graph reads **Undo Script Edit**.
+
+When Undo or Redo changes the World, the Render Graph or Project Settings, a short
+note such as *Undid: Move Entity* appears at the bottom of the document area for
+about a second and a half. It never takes focus or blocks clicks. It fades in and
+out unless reduced motion is on, in which case it appears and disappears at once.
+Undo in a text field or code editor shows no note, because the change is already
+visible at the caret.
+
+**Edit → History** (also under View) opens the History tool window. It
+lists the active document's edits, oldest first, under an **Initial state** row.
+The current state is bold, undone edits are dimmed, and the caption counts the edits
+and how many are undone. Click a row, or select it and press Enter, to undo or redo
+straight to that state as one step; the note then reads, for example,
+*Undid 3 edits, back to: Create Entity*. A new edit after a jump clears the
+undone rows, as after Undo. Text fields and the script graph keep their own history,
+so the History window explains that instead of listing rows. The list refreshes
+only while the window is shown; recording an edit stores a name pointer and does
+no other work.
+
+Every edit records a name. Edits on the same field that merge into one undo step keep
+the first edit's name. A new command that commits to a document history passes a short
+verb-first name in title case (**Add Node**, **Change Build Preset**); edits without a
+name read **Edit**.
+
 ## Initial S2 document interactions
 
 Project Settings descriptor fields retain up to 64 before/after snapshots. Consecutive edits in

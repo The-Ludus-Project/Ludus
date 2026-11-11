@@ -10,6 +10,7 @@
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
+#include "internal/edit_history.h"
 #include "internal/editor_commands.h"
 #include "internal/editor_files.h"
 #include "internal/editor_icons.h"
@@ -359,6 +360,16 @@ void MainWindow::BuildMenus()
     RedoAction_->setShortcuts(QKeySequence::keyBindings(QKeySequence::Redo));
     connect(UndoAction_, &QAction::triggered, this, &MainWindow::OnUndoRequested);
     connect(RedoAction_, &QAction::triggered, this, &MainWindow::OnRedoRequested);
+    mHistoryActionOrNull = CreateEditorCommand(EDIT_HISTORY_COMMAND, this);
+    editMenu->addAction(mHistoryActionOrNull);
+    connect(mHistoryActionOrNull, &QAction::triggered, this, [this]() {
+        if (mHistoryDockOrNull != nullptr && mHistoryPanelOrNull != nullptr)
+        {
+            showToolWindow(mHistoryDockOrNull);
+            renderHistory();
+            mHistoryPanelOrNull->GetList().setFocus(Qt::ShortcutFocusReason);
+        }
+    });
     editMenu->addSeparator();
     editMenu->addAction(mRemoveUnusedShadersAction);
     editMenu->addSeparator();
@@ -662,6 +673,7 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_PROJECT_EXPLORER_COMMAND, mProjectExplorerDock);
     addToolWindowCommand(VIEW_PROPERTIES_COMMAND, mPropertiesDock);
     addToolWindowCommand(VIEW_ERROR_LIST_COMMAND, mErrorListDock);
+    viewMenu->addAction(mHistoryActionOrNull);
     // The Search tool window (CE07) gets a plain View-menu entry so it is
     // discoverable; its keymap binding (Find in Files) is added with the keymap
     // profiles in M2 batch 6, not here, to avoid a premature shortcut collision.

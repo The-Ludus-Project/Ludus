@@ -127,7 +127,7 @@ RenderGraphDocumentStatus RenderGraphDocument::SetSceneQueryBudgets(const Render
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(manifestFile, EncodeCanonicalJson(manifest));
     mLastMove.clear();
-    const RenderGraphDocumentStatus status = commit(candidate, false);
+    const RenderGraphDocumentStatus status = commit(candidate, "Set Scene Query Budgets", false);
     outError = status == RenderGraphDocumentStatus::Ok
                    ? QString()
                    : QStringLiteral("Query budgets exceed the document's source limits. The draft was preserved.");
