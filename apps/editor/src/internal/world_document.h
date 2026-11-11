@@ -71,30 +71,30 @@ public:
     }
     [[nodiscard]] bool CanUndo() const noexcept
     {
-        return History_.CanUndo();
+        return mHistory.CanUndo();
     }
     [[nodiscard]] bool CanRedo() const noexcept
     {
-        return History_.CanRedo();
+        return mHistory.CanRedo();
     }
     [[nodiscard]] bool Undo() noexcept
     {
-        return History_.Undo(Draft_);
+        return mHistory.Undo(Draft_);
     }
     [[nodiscard]] bool Redo() noexcept
     {
-        return History_.Redo(Draft_);
+        return mHistory.Redo(Draft_);
     }
     /// Undo or redo every edit between the current state and history position `cursor` as one step.
     /// All-or-nothing; see DocumentHistory::JumpTo.
     [[nodiscard]] bool JumpToHistory(foundation::usize cursor) noexcept
     {
-        return History_.JumpTo(Draft_, cursor);
+        return mHistory.JumpTo(Draft_, cursor);
     }
     /// The undo history with its command names, for presentation.
     [[nodiscard]] LUDUS_INLINE const History& GetHistory() const noexcept
     {
-        return History_;
+        return mHistory;
     }
     [[nodiscard]] const QJsonObject& Draft() const noexcept
     {
@@ -236,7 +236,7 @@ public:
     /// @param name Undo history name with static storage duration, such as "Paint Terrain".
     [[nodiscard]] bool Restore(const QJsonObject& candidate, QString& outError, const char* name)
     {
-        return Commit(candidate, outError, name);
+        return commit(candidate, outError, name);
     }
     void AcknowledgeSave();
     void Discard();
@@ -244,12 +244,12 @@ public:
     ParseValue(const QJsonObject& property, const QString& text, QJsonValue& value, QString& error);
 
 private:
-    [[nodiscard]] bool Commit(const QJsonObject& candidate, QString& outError, const char* name);
-    [[nodiscard]] bool ReplaceEntity(const QJsonObject& entity, QString& outError, const char* name);
+    [[nodiscard]] bool commit(const QJsonObject& candidate, QString& outError, const char* name);
+    [[nodiscard]] bool replaceEntity(const QJsonObject& entity, QString& outError, const char* name);
     QJsonObject Schema_;
     QJsonObject Draft_;
     QJsonObject Saved_;
-    History History_;
+    History mHistory;
     bool Loaded_ = false;
     bool mIsBuiltInSchema = false;
 };
