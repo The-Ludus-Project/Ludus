@@ -622,6 +622,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     inspectorPanelLayout->addWidget(scroll, 1);
     scroll->setObjectName(QStringLiteral("worldInspectorScroll"));
     scroll->setWidgetResizable(true);
+    // The inspector follows the dock's width: rows wrap and stack rather than hide behind a horizontal scroll bar
+    // (macOS draws none until scrolling, so the right edge just looked cut off).
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     QWidget* inspector = new QWidget(scroll);
     QVBoxLayout* inspectorLayout = new QVBoxLayout(inspector);
     inspectorLayout->setSizeConstraint(QLayout::SetMinimumSize);
@@ -652,13 +655,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     Reset_ = new QPushButton(QStringLiteral("Reset Fields"), this);
     Reset_->setObjectName(QStringLiteral("worldReset"));
     // The component choice sits beside Add Component; Apply and Reset share the row below,
-    // so the narrow Properties column keeps its fields in view.
-    QHBoxLayout* attach = new QHBoxLayout;
-    attach->addWidget(Components_, 1);
-    attach->addWidget(Attach_);
-    QHBoxLayout* commit = new QHBoxLayout;
-    commit->addWidget(Apply_);
-    commit->addWidget(Reset_);
+    // so the narrow Properties column keeps its fields in view. Too narrow for a pair, they stack.
+    WrappingRowLayout* attach = new WrappingRowLayout(nullptr, design::SPACING_SMALL);
+    attach->AddWidget(*Components_, 1);
+    attach->AddWidget(*Attach_, 0);
+    WrappingRowLayout* commit = new WrappingRowLayout(nullptr, design::SPACING_SMALL);
+    commit->AddWidget(*Apply_, 1);
+    commit->AddWidget(*Reset_, 1);
     for (QPushButton* button : {Attach_, Apply_, Reset_})
     {
         button->setProperty("density", QStringLiteral("compact"));
@@ -1568,6 +1571,7 @@ void WorldWorkspace::addLightGroup(const WorldLightRow& row)
     QGroupBox* group = new QGroupBox(QStringLiteral("Light"));
     group->setObjectName(QStringLiteral("worldLight"));
     QFormLayout* rows = new QFormLayout(group);
+    ConfigureInspectorForm(*rows);
     const QString origin = row.Origin == WorldLightOrigin::Missing
                                ? row.Detail
                                : QStringLiteral("Imported with the scene; it has no World entity. Switch it in the "
@@ -1610,6 +1614,7 @@ void WorldWorkspace::addMaterialGroup()
     QGroupBox* group = new QGroupBox(QStringLiteral("Material"));
     group->setObjectName(QStringLiteral("worldMaterial"));
     QFormLayout* rows = new QFormLayout(group);
+    ConfigureInspectorForm(*rows);
     const RenderScene& presented = Scene_->PreviewScene();
     const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(presented, Selected_);
     const QJsonObject scene = Document_.Entity(Selected_).value(QStringLiteral("scene")).toObject();
@@ -1632,11 +1637,22 @@ void WorldWorkspace::addMaterialGroup()
         {
             continue;
         }
-        QLabel* value = new QLabel(property.Value, group);
+        // A texture reference ("Texture 6 · 4 × 4 · sRGB") stays on one line beside its thumbnail, shortened in the
+        // middle when the panel is narrow, rather than wrapping into a column of fragments.
+        const bool isReference = property.Thumbnail.isNull() == false;
+        QLabel* value =
+            isReference == true ? new ElidedLabel(property.Value, group) : new QLabel(property.Value, group);
         value->setObjectName(QStringLiteral("worldMaterial:") + property.Label);
         value->setTextFormat(Qt::PlainText);
-        value->setWordWrap(true);
-        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        if (isReference == true)
+        {
+            value->setToolTip(property.Value);
+        }
+        else
+        {
+            value->setWordWrap(true);
+            value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        }
         if (property.Swatch.isValid() == false && property.Thumbnail.isNull() == true)
         {
             rows->addRow(property.Label, value);
@@ -2156,6 +2172,7 @@ void WorldWorkspace::RenderInspector()
     }
     auto* form = new QWidget;
     auto* nameLayout = new QFormLayout(form);
+    ConfigureInspectorForm(*nameLayout);
     Name_ = new QLineEdit(entity.value(QStringLiteral("name")).toString(), form);
     Name_->setObjectName(QStringLiteral("worldEntityName"));
     Name_->setAccessibleName(QStringLiteral("Entity name"));
@@ -2173,6 +2190,7 @@ void WorldWorkspace::RenderInspector()
     // A widget, not a bare layout, so RenderInspector's clean-up deletes the rows with it.
     QWidget* identifierBlock = new QWidget;
     QFormLayout* identifierForm = new QFormLayout(identifierBlock);
+    ConfigureInspectorForm(*identifierForm);
     identifierForm->setContentsMargins(0, 0, 0, 0);
     IdentifierRow* identifier = new IdentifierRow(Selected_, nullptr);
     identifier->setObjectName(QStringLiteral("worldEntityIdentifier"));
@@ -2183,6 +2201,7 @@ void WorldWorkspace::RenderInspector()
     {
         auto* group = new QGroupBox(QStringLiteral("Scene instance"));
         auto* rows = new QFormLayout(group);
+        ConfigureInspectorForm(*rows);
         const auto scene = entity.value(QStringLiteral("scene")).toObject();
         auto* help =
             new QLabel(QStringLiteral("Position is local to the parent. Rotation (X, Y, Z) and scale adjust the "
@@ -2286,6 +2305,7 @@ void WorldWorkspace::RenderInspector()
         }
         auto* group = new QGroupBox(label);
         auto* rows = new QFormLayout(group);
+        ConfigureInspectorForm(*rows);
         const auto help = component.value(QStringLiteral("help")).toString();
         auto* hint = new QLabel(help, group);
         hint->setTextFormat(Qt::PlainText);

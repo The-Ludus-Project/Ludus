@@ -8,17 +8,22 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QColorDialog>
+#include <QEvent>
 #include <QFontDatabase>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QLocale>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSignalBlocker>
+#include <QStyle>
+#include <QStyleOptionFrame>
 #include <QTimer>
 #include <QToolButton>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <cmath>
 
 namespace ludus::editor
@@ -39,7 +44,13 @@ constexpr float64 MAXIMUM_STEP = 1;
 constexpr float64 RANGE_DIVISOR = 1000;
 constexpr int32 SHOWN_HEAD = 8;
 constexpr int32 SHOWN_TAIL = 4;
-constexpr int32 FIELD_MINIMUM_WIDTH = design::SPACING_PAGE + design::SPACING_EXTRA_SMALL;
+/// A six-decimal value, the longest an imported colour or placement usually has; number fields always fit it.
+constexpr QStringView NUMBER_FIELD_SAMPLE = u"-0.000000";
+/// Pixels QLineEdit keeps between its contents rectangle and its text on each side (QLineEditPrivate's horizontal
+/// margin), which no style reports.
+constexpr int32 LINE_EDIT_TEXT_MARGIN = 2;
+/// Characters an elided label keeps at each end at its narrowest, so a shortened reference still reads.
+constexpr int32 ELIDED_KEPT_CHARACTERS = 3;
 constexpr int32 AXIS_WIDTH = design::SPACING_MEDIUM;
 constexpr int32 SWATCH_WIDTH = design::SPACING_EXTRA_LARGE + design::SPACING_MEDIUM;
 constexpr int32 SWATCH_HEIGHT = design::SPACING_EXTRA_LARGE;
@@ -264,7 +275,7 @@ QWidget* MakeSliderRow(QLineEdit& inoutField, const SliderMapping& mapping, QWid
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(design::SPACING_SMALL);
     inoutField.setParent(row);
-    inoutField.setMinimumWidth(FIELD_MINIMUM_WIDTH);
+    SetNumberFieldMinimumWidth(inoutField);
     inoutField.setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     BoundedSlider* slider = new BoundedSlider(inoutField, mapping, row);
     slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -312,6 +323,341 @@ float64 GetScrubStep(const QString& unit, float64 minimum, float64 maximum)
         return DISTANCE_STEP;
     }
     return math::Clamp(range / RANGE_DIVISOR, MINIMUM_STEP, MAXIMUM_STEP);
+}
+
+int32 ComputeLineEditWidth(const QLineEdit& field, const QString& text)
+{
+    QStyleOptionFrame option;
+    option.initFrom(&field);
+    option.rect = field.contentsRect();
+    option.lineWidth =
+        field.hasFrame() == true ? field.style()->pixelMetric(QStyle::PM_DefaultFrameWidth, &option, &field) : 0;
+    option.midLineWidth = 0;
+    option.state |= QStyle::State_Sunken;
+    option.features = QStyleOptionFrame::None;
+    const QMargins margins = field.textMargins();
+    const int32 cursorWidth = field.style()->pixelMetric(QStyle::PM_TextCursorWidth, &option, &field);
+    const QFontMetrics metrics = field.fontMetrics();
+    const int32 contentsWidth =
+        metrics.horizontalAdvance(text) + margins.left() + margins.right() + 2 * LINE_EDIT_TEXT_MARGIN + cursorWidth;
+    const QSize contents(contentsWidth, metrics.height() + margins.top() + margins.bottom());
+    return field.style()->sizeFromContents(QStyle::CT_LineEdit, &option, contents, &field).width();
+}
+
+void SetNumberFieldMinimumWidth(QLineEdit& inoutField)
+{
+    inoutField.setMinimumWidth(ComputeLineEditWidth(inoutField, NUMBER_FIELD_SAMPLE.toString()));
+    // A value too long for the field shows its start, where the sign and integer part are.
+    inoutField.setCursorPosition(0);
+}
+
+namespace
+{
+/// Puts every label of a form above its field while the label column would take more than half the form's width,
+/// so a long label such as "Reflectance (linear RGB)" does not squeeze every value into a sliver.
+class FormWrapFilter final : public QObject
+{
+public:
+    FormWrapFilter(QFormLayout& inoutForm, QWidget& inoutOwner) : QObject(&inoutOwner), mForm(inoutForm)
+    {
+        inoutOwner.installEventFilter(this);
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest)
+        {
+            update(*static_cast<QWidget*>(watched));
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    void update(const QWidget& owner)
+    {
+        int32 widestLabel = 0;
+        for (int32 row = 0; row < mForm.rowCount(); ++row)
+        {
+            const QLayoutItem* labelOrNull = mForm.itemAt(row, QFormLayout::LabelRole);
+            if (labelOrNull != nullptr && labelOrNull->isEmpty() == false)
+            {
+                widestLabel = std::max(widestLabel, labelOrNull->sizeHint().width());
+            }
+        }
+        const QMargins margins = mForm.contentsMargins();
+        const int32 width = owner.contentsRect().width() - margins.left() - margins.right();
+        const bool shouldWrapAll = (widestLabel + std::max(mForm.horizontalSpacing(), 0)) * 2 > width;
+        const QFormLayout::RowWrapPolicy policy =
+            shouldWrapAll == true ? QFormLayout::WrapAllRows : QFormLayout::WrapLongRows;
+        if (mForm.rowWrapPolicy() != policy)
+        {
+            mForm.setRowWrapPolicy(policy);
+        }
+    }
+
+    QFormLayout& mForm;
+};
+} // namespace
+
+void ConfigureInspectorForm(QFormLayout& inoutForm)
+{
+    inoutForm.setRowWrapPolicy(QFormLayout::WrapLongRows);
+    inoutForm.setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    QWidget* ownerOrNull = inoutForm.parentWidget();
+    if (ownerOrNull != nullptr)
+    {
+        static_cast<void>(new FormWrapFilter(inoutForm, *ownerOrNull));
+    }
+}
+
+WrappingRowLayout::WrappingRowLayout(QWidget* parentOrNull, int32 spacingPixels)
+    : QLayout(parentOrNull), mSpacingPixels(spacingPixels)
+{
+    setContentsMargins(0, 0, 0, 0);
+}
+
+WrappingRowLayout::~WrappingRowLayout()
+{
+    for (QLayoutItem* item : mItems)
+    {
+        delete item;
+    }
+}
+
+void WrappingRowLayout::AddWidget(QWidget& inoutWidget, int32 stretch)
+{
+    addChildWidget(&inoutWidget);
+    mItems.append(new QWidgetItem(&inoutWidget));
+    mStretches.append(stretch);
+    invalidate();
+}
+
+void WrappingRowLayout::addItem(QLayoutItem* item)
+{
+    mItems.append(item);
+    mStretches.append(0);
+    invalidate();
+}
+
+int WrappingRowLayout::count() const
+{
+    return static_cast<int>(mItems.size());
+}
+
+QLayoutItem* WrappingRowLayout::itemAt(int index) const
+{
+    return index >= 0 && index < mItems.size() ? mItems[index] : nullptr;
+}
+
+QLayoutItem* WrappingRowLayout::takeAt(int index)
+{
+    if (index < 0 || index >= mItems.size())
+    {
+        return nullptr;
+    }
+    mStretches.removeAt(index);
+    QLayoutItem* item = mItems.takeAt(index);
+    invalidate();
+    return item;
+}
+
+QSize WrappingRowLayout::sizeHint() const
+{
+    int32 width = 0;
+    int32 height = 0;
+    int32 shown = 0;
+    for (const QLayoutItem* item : mItems)
+    {
+        if (item->isEmpty() == true)
+        {
+            continue;
+        }
+        width += item->sizeHint().width();
+        height = std::max(height, item->sizeHint().height());
+        ++shown;
+    }
+    const QMargins margins = contentsMargins();
+    width += std::max(shown - 1, 0) * mSpacingPixels + margins.left() + margins.right();
+    return QSize(width, height + margins.top() + margins.bottom());
+}
+
+QSize WrappingRowLayout::minimumSize() const
+{
+    // Stacked, the layout is as narrow as its widest item.
+    int32 width = 0;
+    int32 height = 0;
+    for (const QLayoutItem* item : mItems)
+    {
+        if (item->isEmpty() == true)
+        {
+            continue;
+        }
+        width = std::max(width, item->minimumSize().width());
+        height = std::max(height, item->minimumSize().height());
+    }
+    const QMargins margins = contentsMargins();
+    return QSize(width + margins.left() + margins.right(), height + margins.top() + margins.bottom());
+}
+
+Qt::Orientations WrappingRowLayout::expandingDirections() const
+{
+    return Qt::Horizontal;
+}
+
+bool WrappingRowLayout::hasHeightForWidth() const
+{
+    return true;
+}
+
+int WrappingRowLayout::heightForWidth(int width) const
+{
+    const QMargins margins = contentsMargins();
+    const QRect area(0, 0, width - margins.left() - margins.right(), 0);
+    return arrange(area, false) + margins.top() + margins.bottom();
+}
+
+void WrappingRowLayout::setGeometry(const QRect& rectangle)
+{
+    QLayout::setGeometry(rectangle);
+    const QRect area = rectangle.marginsRemoved(contentsMargins());
+    mIsStacked = fitsInOneRow(area.width()) == false;
+    static_cast<void>(arrange(area, true));
+}
+
+bool WrappingRowLayout::fitsInOneRow(int32 width) const
+{
+    int32 needed = 0;
+    int32 shown = 0;
+    for (const QLayoutItem* item : mItems)
+    {
+        if (item->isEmpty() == false)
+        {
+            needed += item->minimumSize().width();
+            ++shown;
+        }
+    }
+    return needed + std::max(shown - 1, 0) * mSpacingPixels <= width;
+}
+
+int32 WrappingRowLayout::arrange(const QRect& area, bool shouldPlace) const
+{
+    QVector<qsizetype> shown;
+    for (qsizetype i = 0; i < mItems.size(); ++i)
+    {
+        if (mItems[i]->isEmpty() == false)
+        {
+            shown.append(i);
+        }
+    }
+    if (shown.isEmpty() == true)
+    {
+        return 0;
+    }
+    const auto getHeight = [](const QLayoutItem& item, int32 width) {
+        return item.hasHeightForWidth() == true ? item.heightForWidth(width) : item.sizeHint().height();
+    };
+    if (fitsInOneRow(area.width()) == false)
+    {
+        int32 y = area.top();
+        for (const qsizetype index : shown)
+        {
+            QLayoutItem* item = mItems[index];
+            const int32 width = std::min(area.width(), item->maximumSize().width());
+            const int32 height = getHeight(*item, width);
+            if (shouldPlace == true)
+            {
+                item->setGeometry(QRect(area.left(), y, width, height));
+            }
+            y += height + mSpacingPixels;
+        }
+        return y - mSpacingPixels - area.top();
+    }
+    // One row: every item starts at its minimum width; items without stretch grow to their size hint, then the rest
+    // of the width is shared by stretch.
+    QVector<int32> widths;
+    int32 spare = area.width() - std::max(static_cast<int32>(shown.size()) - 1, 0) * mSpacingPixels;
+    int32 totalStretch = 0;
+    for (const qsizetype index : shown)
+    {
+        widths.append(mItems[index]->minimumSize().width());
+        spare -= widths.last();
+        totalStretch += mStretches[index];
+    }
+    for (qsizetype i = 0; i < shown.size(); ++i)
+    {
+        const QLayoutItem* item = mItems[shown[i]];
+        if (mStretches[shown[i]] == 0 && spare > 0)
+        {
+            const int32 growth = std::min(spare, std::max(item->sizeHint().width() - widths[i], 0));
+            widths[i] += growth;
+            spare -= growth;
+        }
+    }
+    if (totalStretch > 0 && spare > 0)
+    {
+        const int32 shared = spare;
+        for (qsizetype i = 0; i < shown.size(); ++i)
+        {
+            const int32 share = shared * mStretches[shown[i]] / totalStretch;
+            widths[i] = std::min(widths[i] + share, mItems[shown[i]]->maximumSize().width());
+        }
+    }
+    int32 rowHeight = 0;
+    for (qsizetype i = 0; i < shown.size(); ++i)
+    {
+        rowHeight = std::max(rowHeight, getHeight(*mItems[shown[i]], widths[i]));
+    }
+    if (shouldPlace == true)
+    {
+        int32 x = area.left();
+        for (qsizetype i = 0; i < shown.size(); ++i)
+        {
+            QLayoutItem* item = mItems[shown[i]];
+            const int32 height = std::min(rowHeight, item->maximumSize().height());
+            item->setGeometry(QRect(x, area.top() + (rowHeight - height) / 2, widths[i], height));
+            x += widths[i] + mSpacingPixels;
+        }
+    }
+    return rowHeight;
+}
+
+ElidedLabel::ElidedLabel(const QString& text, QWidget* parentOrNull) : QLabel(text, parentOrNull)
+{
+    setTextFormat(Qt::PlainText);
+    setWordWrap(false);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+}
+
+bool ElidedLabel::IsElided() const
+{
+    return GetShownText() != text();
+}
+
+QString ElidedLabel::GetShownText() const
+{
+    return fontMetrics().elidedText(text(), Qt::ElideMiddle, contentsRect().width() - 2 * margin() - indent());
+}
+
+QSize ElidedLabel::minimumSizeHint() const
+{
+    const QString whole = text();
+    if (whole.size() <= 2 * ELIDED_KEPT_CHARACTERS)
+    {
+        return QLabel::minimumSizeHint();
+    }
+    const QString shortest =
+        whole.left(ELIDED_KEPT_CHARACTERS) + QStringLiteral("…") + whole.right(ELIDED_KEPT_CHARACTERS);
+    const QMargins margins = contentsMargins();
+    return QSize(fontMetrics().horizontalAdvance(shortest) + 2 * margin() + margins.left() + margins.right(),
+                 QLabel::minimumSizeHint().height());
+}
+
+void ElidedLabel::paintEvent(QPaintEvent* event)
+{
+    Q_UNUSED(event);
+    QPainter painter(this);
+    const QRect area = contentsRect().adjusted(margin(), margin(), -margin(), -margin());
+    style()->drawItemText(&painter, area, alignment(), palette(), isEnabled(), GetShownText(), foregroundRole());
 }
 
 QString ShortenIdentifier(const QString& identifier)
@@ -399,26 +745,32 @@ QWidget* MakeVectorRow(const QVector<VectorComponent>& components,
 {
     QWidget* row = new QWidget(parentOrNull);
     row->setObjectName(QStringLiteral("inspectorVectorRow"));
-    QHBoxLayout* layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(design::SPACING_EXTRA_SMALL);
-    for (const VectorComponent& component : components)
+    WrappingRowLayout* layout = new WrappingRowLayout(row, design::SPACING_SMALL);
+    for (qsizetype i = 0; i < components.size(); ++i)
     {
-        ScrubLabel* label = new ScrubLabel(component.Name, *component.FieldOrNull, component.Settings, row);
+        const VectorComponent& component = components[i];
+        // Each letter stays beside its field, so a stacked row still reads "X 0", "Y 1", "Z 0".
+        QWidget* pair = new QWidget(row);
+        pair->setObjectName(QStringLiteral("inspectorVectorPair:") + component.Name);
+        QHBoxLayout* pairLayout = new QHBoxLayout(pair);
+        pairLayout->setContentsMargins(0, 0, 0, 0);
+        pairLayout->setSpacing(design::SPACING_EXTRA_SMALL);
+        ScrubLabel* label = new ScrubLabel(component.Name, *component.FieldOrNull, component.Settings, pair);
         QObject::connect(label, &ScrubLabel::Scrubbed, row, onScrubbed);
-        component.FieldOrNull->setParent(row);
-        component.FieldOrNull->setMinimumWidth(FIELD_MINIMUM_WIDTH);
-        component.FieldOrNull->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        component.FieldOrNull->setParent(pair);
         component.FieldOrNull->setProperty("density", QStringLiteral("compact"));
-        layout->addWidget(label);
-        layout->addWidget(component.FieldOrNull, 1);
-    }
-    if (unit.isEmpty() == false)
-    {
-        QLabel* unitLabel = new QLabel(unit, row);
-        unitLabel->setObjectName(QStringLiteral("inspectorUnit"));
-        unitLabel->setForegroundRole(QPalette::PlaceholderText);
-        layout->addWidget(unitLabel);
+        SetNumberFieldMinimumWidth(*component.FieldOrNull);
+        component.FieldOrNull->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        pairLayout->addWidget(label);
+        pairLayout->addWidget(component.FieldOrNull, 1);
+        if (i + 1 == components.size() && unit.isEmpty() == false)
+        {
+            QLabel* unitLabel = new QLabel(unit, pair);
+            unitLabel->setObjectName(QStringLiteral("inspectorUnit"));
+            unitLabel->setForegroundRole(QPalette::PlaceholderText);
+            pairLayout->addWidget(unitLabel);
+        }
+        layout->AddWidget(*pair, 1);
     }
     return row;
 }
@@ -456,6 +808,16 @@ ColourSwatch::ColourSwatch(QLineEdit& inoutRed, QLineEdit& inoutGreen, QLineEdit
         connect(field, &QLineEdit::textChanged, this, qOverload<>(&QWidget::update));
     }
     connect(this, &QPushButton::clicked, this, &ColourSwatch::chooseColour);
+}
+
+QSize ColourSwatch::sizeHint() const
+{
+    return QSize(SWATCH_WIDTH, SWATCH_HEIGHT);
+}
+
+QSize ColourSwatch::minimumSizeHint() const
+{
+    return sizeHint();
 }
 
 QColor ColourSwatch::GetDisplayColour() const
@@ -542,7 +904,7 @@ void ColourChip::paintEvent(QPaintEvent* event)
 }
 
 IdentifierRow::IdentifierRow(const QString& identifier, QWidget* parentOrNull)
-    : QWidget(parentOrNull), mIdentifier(identifier), mText(new QLabel(ShortenIdentifier(identifier), this)),
+    : QWidget(parentOrNull), mIdentifier(identifier), mText(new ElidedLabel(ShortenIdentifier(identifier), this)),
       mCopy(new QToolButton(this))
 {
     setObjectName(QStringLiteral("inspectorIdentifier"));
@@ -558,9 +920,8 @@ IdentifierRow::IdentifierRow(const QString& identifier, QWidget* parentOrNull)
     mCopy->setToolTip(QStringLiteral("Copy the full identifier"));
     mCopy->setAccessibleName(QStringLiteral("Copy identifier"));
     mCopy->setAutoRaise(true);
-    layout->addWidget(mText);
+    layout->addWidget(mText, 1);
     layout->addWidget(mCopy);
-    layout->addStretch();
     connect(mCopy, &QToolButton::clicked, this, &IdentifierRow::Copy);
 }
 

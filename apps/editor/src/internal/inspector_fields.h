@@ -4,6 +4,7 @@
 
 #include <QColor>
 #include <QLabel>
+#include <QLayout>
 #include <QPushButton>
 #include <QSlider>
 #include <QString>
@@ -13,6 +14,7 @@
 #include <functional>
 
 QT_BEGIN_NAMESPACE
+class QFormLayout;
 class QLineEdit;
 class QToolButton;
 QT_END_NAMESPACE
@@ -117,6 +119,79 @@ private:
 /// name and signals and is reparented into the row.
 [[nodiscard]] QWidget* MakeSliderRow(QLineEdit& inoutField, const SliderMapping& mapping, QWidget* parentOrNull);
 
+/// Width, in device-independent pixels, field needs to show text whole: the text in the field's font plus its
+/// text margins, cursor and style frame. GUI thread only.
+[[nodiscard]] foundation::int32 ComputeLineEditWidth(const QLineEdit& field, const QString& text);
+
+/// Gives a number field the minimum width of a six-decimal value such as "-0.818579", so imported values never
+/// show clipped (for example "818579" for 0.818579) however narrow the panel is.
+void SetNumberFieldMinimumWidth(QLineEdit& inoutField);
+
+/// Arranges an inspector form for a narrow panel: a field that does not fit beside its label wraps below it rather
+/// than being clipped, every label moves above its field while the label column would take more than half the
+/// width, and fields fill the row on every platform (macOS otherwise keeps them at their size hint). Call it once
+/// the form is installed on its widget.
+void ConfigureInspectorForm(QFormLayout& inoutForm);
+
+/// Lays its items out in one row while their minimum widths fit, and otherwise stacks them, one per row at the full
+/// width, so a narrow panel grows taller instead of clipping a field. In a row, items without stretch grow to their
+/// size hint first and the rest of the width goes to stretched items. Hidden items take no space. GUI thread only.
+class WrappingRowLayout final : public QLayout
+{
+public:
+    /// spacingPixels separates neighbouring items in either arrangement.
+    WrappingRowLayout(QWidget* parentOrNull, foundation::int32 spacingPixels);
+    ~WrappingRowLayout() override;
+    WrappingRowLayout(const WrappingRowLayout&) = delete;
+    WrappingRowLayout& operator=(const WrappingRowLayout&) = delete;
+
+    /// Adds widget with a share of the row's spare width; 0 keeps it at its size hint.
+    void AddWidget(QWidget& inoutWidget, foundation::int32 stretch);
+    /// Whether the last geometry stacked the items rather than placing them in one row.
+    [[nodiscard]] bool IsStacked() const noexcept
+    {
+        return mIsStacked;
+    }
+
+    void addItem(QLayoutItem* item) override;
+    [[nodiscard]] int count() const override;
+    [[nodiscard]] QLayoutItem* itemAt(int index) const override;
+    [[nodiscard]] QLayoutItem* takeAt(int index) override;
+    [[nodiscard]] QSize sizeHint() const override;
+    [[nodiscard]] QSize minimumSize() const override;
+    [[nodiscard]] Qt::Orientations expandingDirections() const override;
+    [[nodiscard]] bool hasHeightForWidth() const override;
+    [[nodiscard]] int heightForWidth(int width) const override;
+    void setGeometry(const QRect& rectangle) override;
+
+private:
+    [[nodiscard]] bool fitsInOneRow(foundation::int32 width) const;
+    /// Places the items in area (when shouldPlace) and returns the height they need.
+    foundation::int32 arrange(const QRect& area, bool shouldPlace) const;
+
+    QVector<QLayoutItem*> mItems;
+    QVector<foundation::int32> mStretches;
+    foundation::int32 mSpacingPixels = 0;
+    bool mIsStacked = false;
+};
+
+/// A single-line label that shortens its text in the middle with an ellipsis when its width is too small, so a long
+/// reference keeps its start and end visible. text() stays the whole text; the owner sets the tooltip to it.
+class ElidedLabel final : public QLabel
+{
+    Q_OBJECT
+public:
+    ElidedLabel(const QString& text, QWidget* parentOrNull);
+    /// Whether the label is currently too narrow for its whole text.
+    [[nodiscard]] bool IsElided() const;
+    /// The text as currently shown, shortened when IsElided().
+    [[nodiscard]] QString GetShownText() const;
+    [[nodiscard]] QSize minimumSizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+};
+
 /// A long identifier (a UUID or hash) as its first eight and last four characters joined by an ellipsis, so a
 /// row stays narrow; identifiers that already fit are returned unchanged.
 [[nodiscard]] QString ShortenIdentifier(const QString& identifier);
@@ -162,8 +237,9 @@ struct VectorComponent final
 };
 
 /// A compact row of letter-and-field pairs with an optional trailing unit, such as "X 0.00  Y 1.00  Z 0.00  m".
-/// The fields keep their object names and signals; only their arrangement changes. onScrubbed is connected to
-/// every label's Scrubbed signal.
+/// The pairs share one line while their number fields fit and stack one per line in a narrower panel
+/// (WrappingRowLayout). The fields keep their object names and signals; only their arrangement changes.
+/// onScrubbed is connected to every label's Scrubbed signal.
 [[nodiscard]] QWidget* MakeVectorRow(const QVector<VectorComponent>& components,
                                      const QString& unit,
                                      QWidget* parentOrNull,
@@ -191,6 +267,9 @@ public:
     [[nodiscard]] QColor GetDisplayColour() const;
     /// Write a picked display colour into the fields (as the picker does) and notify.
     void SetDisplayColour(const QColor& display);
+    /// The swatch's fixed size; it has no text to fit.
+    [[nodiscard]] QSize sizeHint() const override;
+    [[nodiscard]] QSize minimumSizeHint() const override;
 
 Q_SIGNALS:
     /// The picker wrote new field text; the owner marks its fields as edited.
@@ -226,7 +305,8 @@ private:
     QColor mColour;
 };
 
-/// An identifier shown shortened, with a button that copies the full text. The full text is the tooltip.
+/// An identifier shown shortened, with a button that copies the full text. The full text is the tooltip. In a narrow
+/// panel the shortened text is shortened further in the middle.
 class IdentifierRow final : public QWidget
 {
     Q_OBJECT
@@ -241,7 +321,7 @@ public:
 
 private:
     QString mIdentifier;
-    QLabel* mText;
+    ElidedLabel* mText;
     QToolButton* mCopy;
 };
 } // namespace ludus::editor
