@@ -273,6 +273,68 @@ are evidence; the selected contracts and thresholds remain Ludus design choices.
 | [GLM clip-space API](https://glm.g-truc.net/0.9.9/api/a00243.html) | Explicit handedness/depth variants and default macro-controlled variants coexist. Avoid macro-dependent conventions in Ludus. |
 | [DirectXMath](https://github.com/microsoft/DirectXMath) and [RTM](https://github.com/nfrechette/rtm) | Established libraries provide optimized math implementations. They are credible performance references, not measured losers or required dependencies. |
 
+## Scalar reciprocal estimates on x64 and Arm64
+
+Thanks to Sebastian Sylvan for the idea of using a hardware estimate in
+a measured scalar hotspot and refining it with Newton–Raphson when the
+caller needs more accuracy.
+[“Using SSE intrinsics to optimize scalar code”](https://www.sebastiansylvan.com/post/scalarsseintrinsics/)
+(February 23, 2016).
+
+On x64, `RCPSS` estimates `1/x` and `RSQRTSS` estimates `1/√x`. A general
+quotient also needs multiplication by the numerator. Both instructions treat
+subnormal inputs as signed zero, and `RCPSS` also flushes tiny results.
+See the instruction entries in Intel's
+[Software Developer's Manual, Volume 2](https://cdrdv2-public.intel.com/774492/325383-sdm-vol-2abcd.pdf).
+
+On Arm64, `FRECPE` and `FRSQRTE` provide scalar estimates. `FRECPS` and
+`FRSQRTS` compute the respective Newton correction factors. The caller
+multiplies the estimate by the correction to complete a refinement.
+See the scalar reciprocal and square root operations in the
+[Arm Neon Intrinsics Reference](https://arm-software.github.io/acle/legacyreleases/advsimd/IHI0073D_arm_neon_intrinsics_ref.pdf).
+
+**Ludus decision.** Keep the checked CPU math in
+[ADR 0010](../decisions/0010-foundation-math-module.md). `TryNormalize` scales
+the input and computes the length in binary64, including the comparison
+against the caller's minimum. Squaring in binary32 can turn a valid tiny
+vector into zero or overflow for a valid large one before an estimate even
+runs. A regression now exercises both extremes and the inclusive minimum
+length check. Slang already exposes `rsqrt` for GPU kernels with suitable
+input contracts.
+
+**Probe, November 11, 2026.** Clang 23.1.3 at
+`-O3 -fno-fast-math -ffp-contract=off` emitted the estimate instructions
+above, along with the Arm64 correction instructions. Ordinary binary32
+inverse square root used a square root and division on both targets.
+Checked normalization retained binary64 arithmetic. For each probe, 257
+mantissa samples across each of the 254 positive normal exponents gave
+65,278 inputs for comparison against a binary64 baseline.
+
+| Probe | Operation | Raw maximum relative error | One refinement | Two refinements |
+| --- | --- | ---: | ---: | ---: |
+| Native Arm64 on Apple Silicon | Reciprocal | 2.81 × 10⁻³ | 8.00 × 10⁻⁶ | 2.67 × 10⁻⁷ |
+| Native Arm64 on Apple Silicon | Inverse square root | 3.28 × 10⁻³ | 1.62 × 10⁻⁵ | 1.18 × 10⁻⁷ |
+| x64 under Rosetta | Reciprocal, nonzero estimates | 2.90 × 10⁻⁴ | — | — |
+| x64 under Rosetta | Inverse square root | 3.25 × 10⁻⁴ | 2.31 × 10⁻⁷ | — |
+
+In the translated x64 run, `RCPSS` returned zero for 514 inputs where
+division returned a nonzero value. `RSQRTSS` returned infinity for the
+smallest positive subnormal. In the native Arm64 run with the default
+floating-point environment, `FRECPE` returned a nonzero subnormal for the
+largest finite input and `FRSQRTE` returned a finite estimate for the
+smallest positive subnormal. These observations establish code generation
+and sampled error. A Ludus speedup remains unmeasured on either target.
+
+**Revisit when a CPU profile identifies a suitable caller.** A private
+estimate needs a bounded input domain, a caller-specific error budget, and a
+native end-to-end timing comparison that includes guards and the portable
+fallback. For work over independent items, compare a batched implementation
+as well. For example, the normal-map mip cooker has a per-texel normalization
+loop, so a profile could justify comparing it on a representative texture
+corpus. Check its cooked bytes as well as its runtime. A change in a reference
+path tracer would also need the engine's
+[CPU and GPU acceptance checks](renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
+
 ## Alternatives and deliberate omissions
 
 | Option | Decision and reconsideration trigger |
