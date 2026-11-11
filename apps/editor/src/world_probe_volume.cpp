@@ -5,7 +5,10 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
+#include "internal/builtin_world.h"
 #include "internal/inspector_fields.h"
+#include "internal/render_scene.h"
+#include "internal/world_document.h"
 
 #include <QStringList>
 
@@ -88,6 +91,57 @@ bool IsStandaloneWorldGiProbeVolume(const QJsonObject& entity, const QJsonObject
     return components.size() == 2 && components.contains(GetGiProbeVolumeComponentId()) == true &&
            components.contains(QStringLiteral("transform")) == true &&
            entity.contains(QStringLiteral("scene")) == false;
+}
+
+bool TryReadStandaloneProbeEdit(const QJsonObject& before,
+                                const QJsonObject& after,
+                                const WorldDocument& world,
+                                const RenderScene& scene,
+                                rr::GiProbeGrid& outGrid)
+{
+    if (IsBuiltInWorld(world) == false || scene.Definition == nullptr)
+    {
+        return false;
+    }
+    const QString entitiesKey = QStringLiteral("entities");
+    const QString componentsKey = QStringLiteral("components");
+    QJsonArray previousEntities = before.value(entitiesKey).toArray();
+    const QJsonArray entities = after.value(entitiesKey).toArray();
+    if (entities.size() != previousEntities.size())
+    {
+        return false;
+    }
+    for (qsizetype index = 0; index < entities.size(); ++index)
+    {
+        if (entities[index] == previousEntities[index])
+        {
+            continue;
+        }
+        QJsonObject previous = previousEntities[index].toObject();
+        const QJsonObject edited = entities[index].toObject();
+        const QJsonObject components = edited.value(componentsKey).toObject();
+        if (IsStandaloneWorldGiProbeVolume(previous, previous.value(componentsKey).toObject()) == false ||
+            IsStandaloneWorldGiProbeVolume(edited, components) == false)
+        {
+            return false;
+        }
+        const QString entity = world.GetEntityKey(edited);
+        for (const PreviewCamera& camera : scene.Cameras)
+        {
+            if (camera.FollowId == entity)
+            {
+                // The same Transform also drives an evaluated camera, which needs a fresh extraction.
+                return false;
+            }
+        }
+        previous.insert(componentsKey, components);
+        previousEntities[index] = previous;
+        QJsonObject candidate = before;
+        candidate.insert(entitiesKey, previousEntities);
+        QString error;
+        return candidate == after && ReadWorldGiProbeGrid(components, outGrid, error);
+    }
+    return false;
 }
 
 void AppendGiProbeComponents(QJsonArray& inoutComponents)

@@ -3815,6 +3815,26 @@ TEST_CASE("The World inspector offers an explicit always-on bake for a static li
     reader.SetScene(moved);
     CHECK(reader.GetReady().isNull() == true);
 
+    // Start one bake and move its grid twice before polling for a result.
+    RenderScene probes = baked;
+    probes.ProbeGrid.Counts = {2, 2, 2};
+    reader.SetScene(probes);
+    reader.Poll(probes);
+    probes.ProbeGrid.OriginWorld.X = 1;
+    reader.InvalidateProbeGrid();
+    reader.Poll(probes);
+    probes.ProbeGrid.OriginWorld.X = 2;
+    reader.InvalidateProbeGrid();
+    CHECK(reader.GetReady().isNull() == true);
+    REQUIRE(QTest::qWaitFor([&reader, &probes]() {
+                reader.Poll(probes);
+                return reader.GetReady().isNull() == false || reader.GetFailure().isEmpty() == false;
+            }) == true);
+    INFO(reader.GetFailure().toStdString());
+    REQUIRE(reader.GetReady().isNull() == false);
+    CHECK(reader.GetReady()->LightingKey == preview_lighting::MakeKey(probes));
+    CHECK(reader.GetReady()->ProbeAtlas.Pixels.isEmpty() == false);
+
     REQUIRE(findStatic() != nullptr);
     findStatic()->setChecked(false);
     REQUIRE(workspace.Apply() == true);
@@ -5511,6 +5531,88 @@ TEST_CASE("Viewport placement commits present the cooked transform at once and v
     QLabel* statusOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldStatus"));
     REQUIRE(statusOrNull != nullptr);
     CHECK(statusOrNull->text().contains(QStringLiteral("validated")) == true);
+}
+
+TEST_CASE("An imported World publishes probe moves without assembling its scene",
+          "[editor][world][object-interaction][probe-gi]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString source = QDir(root).filePath(QStringLiteral("external"));
+    const QString levelPath = QStringLiteral("scenes/room.lulevel");
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    REQUIRE(tests::PrepareImportedLevel(root, levelPath, source, error) == true);
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const QJsonObject level = QJsonDocument::fromJson(Read(QDir(root).filePath(levelPath))).object();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString mesh =
+        level.value(QStringLiteral("objects")).toArray().first().toObject().value(QStringLiteral("id")).toString();
+    QString volume;
+    REQUIRE(CreateWorldObject(document,
+                              ludus::platform::GetSystemEntropySource(),
+                              QStringLiteral("GI Probe Volume"),
+                              volume,
+                              error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("probe.world.json"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    ViewportObjectInteraction& interaction = scene.GetViewport().GetObjectInteraction();
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    const QByteArray sceneIdentity = scene.PreviewScene().Identity;
+    const auto moveProbe = [&interaction, &volume](ludus::foundation::float64 xMetres) {
+        interaction.PlacementCommitted(volume,
+                                       QJsonObject{{QStringLiteral("position"), QJsonArray{xMetres, 0, 0}},
+                                                   {QStringLiteral("scale"),
+                                                    QJsonArray{DEFAULT_GI_PROBE_VOLUME_SIZE_METRES,
+                                                               DEFAULT_GI_PROBE_VOLUME_SIZE_METRES,
+                                                               DEFAULT_GI_PROBE_VOLUME_SIZE_METRES}}});
+    };
+    moveProbe(1);
+    CHECK(scene.CanStartOperation() == true);
+    CHECK(scene.PreviewScene().ProbeGrid.Counts[0] == 0);
+    CHECK(scene.PreviewScene().Identity == sceneIdentity);
+    CHECK(ReadWorldGiProbeOrigin(workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject())[0]
+              .toDouble() == 1);
+
+    QPushButton* bakeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldBakeGi"));
+    REQUIRE(bakeOrNull != nullptr);
+    bakeOrNull->click();
+    REQUIRE(scene.CanStartOperation() == true);
+    REQUIRE(scene.PreviewScene().ProbeGrid.Counts[0] != 0);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 1);
+
+    moveProbe(2);
+    REQUIRE(workspace.CanUndo() == true);
+    CHECK(scene.CanStartOperation() == true);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 2);
+    workspace.Undo();
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 1);
+    CHECK(scene.PreviewScene().Identity == sceneIdentity);
+
+    REQUIRE(workspace.SelectEntity(mesh) == true);
+    interaction.PlacementCommitted(mesh, MovePlacement(workspace, mesh, 1));
+    REQUIRE(scene.GetPlacementValidation() == PlacementValidation::Running);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    moveProbe(2);
+    CHECK(scene.Busy() == false);
+    CHECK(scene.GetPlacementValidation() == PlacementValidation::Running);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 2);
+    WaitForValidatedScene(workspace);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 2);
+    workspace.Undo();
+    CHECK(scene.CanStartOperation() == true);
+    CHECK(scene.PreviewScene().ProbeGrid.OriginWorld.X == 1);
 }
 
 TEST_CASE("Placement edits, Undo and Redo continue while the background validation runs",

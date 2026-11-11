@@ -154,6 +154,8 @@ public:
     /// @return Published, Unchanged, or RequiresAssembly when the caller must Assemble (nothing changed),
     /// including while a placement cook validates the presented scene.
     [[nodiscard]] PlacementPublication PublishLightSwitches(const QJsonObject& level, const WorldDocument& world);
+    /// Publish a standalone probe edit independently of imported asset assembly and placement validation.
+    [[nodiscard]] bool PublishProbeVolume(const QJsonObject& level, const WorldDocument& world);
     /// Validation state of the presented scene; Ready unless PublishPlacement presented a derived one.
     [[nodiscard]] PlacementValidation GetPlacementValidation() const noexcept
     {

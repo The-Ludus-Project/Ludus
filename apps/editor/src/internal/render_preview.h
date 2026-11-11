@@ -6,6 +6,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport_frame.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -47,6 +48,8 @@ public:
     ~RenderPreview() override;
     // Reject malformed private snapshots before touching fixed GPU handle arrays.
     [[nodiscard]] bool SetScene(const RenderScene& scene);
+    /// Update lighting inputs without changing the World extraction or its geometry resources.
+    void SetProbeGrid(const graphics::renderer::GiProbeGrid& grid) noexcept;
     void SetSurfaceBakeWorldPath(const QString& path);
     [[nodiscard]] bool SaveSurfaceBake();
     [[nodiscard]] QSharedPointer<const WorldSurfaceBake> GetSurfaceBake() const;

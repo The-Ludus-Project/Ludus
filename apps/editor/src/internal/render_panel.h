@@ -94,6 +94,7 @@ private:
     bool Pending_ = false;
     RenderLoadJob* Job_ = nullptr;
     foundation::uint64 Generation_ = 0;
+    foundation::uint64 mPublishedWorldGeneration = 0;
     bool Again_ = false;
     bool QueuedLaunch_ = false;
     bool mIsTerrainDraft = false;

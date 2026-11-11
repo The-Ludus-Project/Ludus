@@ -1446,8 +1446,10 @@ each artifact the level uses once before assembling the bundle:
   error. The World keeps the edit, as after any failed assembly; **Undo** removes it.
 - **Save World** during a validation waits for it, then verifies the scene assets
   and writes the World as it is at that point.
-- Any other edit, such as adding, renaming or deleting an entity, stops the running
-  validation and assembles the whole level. Selection, handles and World edits wait
+- Edits to a [standalone probe volume](#baking-probe-gi-for-moving-objects) can
+  publish while a mesh placement is being validated. Edits that require assembly,
+  such as adding, renaming or deleting an entity, stop the running validation
+  and assemble the whole level. Selection, handles and World edits wait
   for that assembly, as for a reassembly without a pending placement.
 - Opening, creating or importing into a World, a draft preview of inspector fields and
   restoring recovery wait until the validation has finished.
@@ -2150,8 +2152,11 @@ each authored mesh that should use the volume. Receiver geometry is excluded
 from the bake. Receivers keep realtime direct lighting and sample bounced
 diffuse at their current position. Static surfaces use their own charts.
 
-The viewport keeps drawing with realtime lighting while the bake runs. Outside
-the volume, or where no nearby probe has recorded visibility, receivers use
+Moving or resizing a standalone probe volume updates its placement immediately.
+Edits in Properties update the volume when you apply them. When baked GI is
+enabled, the viewport uses realtime lighting while the bake for the latest edit
+runs. You can keep editing or undo the move during the bake.
+Outside the volume, or where no nearby probe has recorded visibility, receivers use
 realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. The native editor generates the atlas in memory
 when the baked lighting inputs change. The prototype uses coarse directional
