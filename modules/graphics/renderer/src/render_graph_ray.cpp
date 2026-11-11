@@ -1,3 +1,4 @@
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 
 #include "../shaders/renderer_gpu_preview_layout.h"
@@ -120,17 +121,27 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
     {
         inoutDescription.Bindings =
             hasVisibilityBuffer == true
-                ? (hasPersistentBuffers == true ? PERSISTENT_VISIBILITY_BINDINGS.AsSpan()
-                                                : VISIBILITY_BINDINGS.AsSpan())
-                : (hasPersistentBuffers == true ? PERSISTENT_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan());
+                ? (hasPersistentBuffers == true
+                       ? ludus::foundation::BorrowedView{PERSISTENT_VISIBILITY_BINDINGS.GetData(),
+                                                         PERSISTENT_VISIBILITY_BINDINGS.GetSize()}
+                       : ludus::foundation::BorrowedView{VISIBILITY_BINDINGS.GetData(), VISIBILITY_BINDINGS.GetSize()})
+                : (hasPersistentBuffers == true
+                       ? ludus::foundation::BorrowedView{PERSISTENT_BINDINGS.GetData(), PERSISTENT_BINDINGS.GetSize()}
+                       : ludus::foundation::BorrowedView{COMPUTE_BINDINGS.GetData(), COMPUTE_BINDINGS.GetSize()});
         if (hasNativeRayQueries == false)
         {
             inoutDescription.Bindings =
                 hasVisibilityBuffer == true
-                    ? (hasPersistentBuffers == true ? SOFTWARE_PERSISTENT_VISIBILITY_BINDINGS.AsSpan()
-                                                    : SOFTWARE_VISIBILITY_BINDINGS.AsSpan())
-                    : (hasPersistentBuffers == true ? SOFTWARE_PERSISTENT_BINDINGS.AsSpan()
-                                                    : SOFTWARE_COMPUTE_BINDINGS.AsSpan());
+                    ? (hasPersistentBuffers == true
+                           ? ludus::foundation::BorrowedView{SOFTWARE_PERSISTENT_VISIBILITY_BINDINGS.GetData(),
+                                                             SOFTWARE_PERSISTENT_VISIBILITY_BINDINGS.GetSize()}
+                           : ludus::foundation::BorrowedView{SOFTWARE_VISIBILITY_BINDINGS.GetData(),
+                                                             SOFTWARE_VISIBILITY_BINDINGS.GetSize()})
+                    : (hasPersistentBuffers == true
+                           ? ludus::foundation::BorrowedView{SOFTWARE_PERSISTENT_BINDINGS.GetData(),
+                                                             SOFTWARE_PERSISTENT_BINDINGS.GetSize()}
+                           : ludus::foundation::BorrowedView{SOFTWARE_COMPUTE_BINDINGS.GetData(),
+                                                             SOFTWARE_COMPUTE_BINDINGS.GetSize()});
         }
         inoutDescription.WorkgroupSize[0] = WORKGROUP_WIDTH;
         inoutDescription.WorkgroupSize[1] = 1;
@@ -138,11 +149,11 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
     }
     else if (stage == rhi::ShaderStage::Vertex)
     {
-        inoutDescription.Inputs = IMAGE_INPUTS.AsSpan();
+        inoutDescription.Inputs = {IMAGE_INPUTS.GetData(), IMAGE_INPUTS.GetSize()};
     }
     else if (stage == rhi::ShaderStage::Fragment)
     {
-        inoutDescription.Bindings = IMAGE_BINDINGS.AsSpan();
+        inoutDescription.Bindings = {IMAGE_BINDINGS.GetData(), IMAGE_BINDINGS.GetSize()};
     }
 }
 } // namespace ludus::graphics::renderer

@@ -35,6 +35,65 @@ constexpr usize FINGERPRINT_ENVIRONMENT_BYTES = 3 * sizeof(float32);
 // luminaires hashes no luminaire bytes, so its fingerprint is unchanged.
 constexpr usize FINGERPRINT_LUMINAIRE_BYTES = sizeof(uint64) + 15 * sizeof(float32);
 constexpr uint32 FINGERPRINT_SURFACE_MAP_TAG = 0x53555246; // Numeric SURF tag; encoded little-endian.
+// A closure program's counts, constants, two words per instruction and the operation word and floats of each lobe.
+constexpr usize FINGERPRINT_PROGRAM_INSTRUCTION_WORDS = 2;
+constexpr usize FINGERPRINT_PROGRAM_BYTES =
+    (content::scene_format::MATERIAL_PROGRAM_HEADER_FIELDS +
+     content::scene_format::MAX_MATERIAL_PROGRAM_INSTRUCTIONS * FINGERPRINT_PROGRAM_INSTRUCTION_WORDS +
+     content::scene_format::MAX_MATERIAL_PROGRAM_LOBES) *
+        sizeof(uint32) +
+    (content::scene_format::MAX_MATERIAL_PROGRAM_CONSTANTS * content::scene_format::MATERIAL_PROGRAM_COMPONENTS +
+     content::scene_format::MAX_MATERIAL_PROGRAM_LOBES * content::scene_format::MATERIAL_PROGRAM_LOBE_FLOATS) *
+        sizeof(float32);
+/// Four bytes as one little-endian fingerprint word.
+[[nodiscard]] constexpr uint32 PackFingerprintBytes(uint8 first, uint8 second, uint8 third, uint8 fourth) noexcept
+{
+    constexpr uint32 SECOND_LANE_SHIFT = 8;
+    constexpr uint32 THIRD_LANE_SHIFT = 16;
+    constexpr uint32 FOURTH_LANE_SHIFT = 24;
+    return uint32{first} | (uint32{second} << SECOND_LANE_SHIFT) | (uint32{third} << THIRD_LANE_SHIFT) |
+           (uint32{fourth} << FOURTH_LANE_SHIFT);
+}
+/// Append every field of a closure program, so captures of different programs never share a fingerprint.
+template <typename WordWriter, typename ScalarWriter>
+void AppendMaterialProgramFingerprint(const content::scene_format::MaterialProgram& program,
+                                      const WordWriter& word,
+                                      const ScalarWriter& scalar) noexcept
+{
+    for (const uint32 value : {program.Version, program.ConstantCount, program.InstructionCount, program.LobeCount})
+    {
+        word(value);
+    }
+    for (const foundation::StaticArray<float32, content::scene_format::MATERIAL_PROGRAM_COMPONENTS>& constant :
+         program.Constants)
+    {
+        for (const float32 value : constant)
+        {
+            scalar(value);
+        }
+    }
+    for (const content::scene_format::MaterialProgramInstruction& instruction : program.Instructions)
+    {
+        word(PackFingerprintBytes(static_cast<uint8>(instruction.Opcode),
+                                  instruction.Destination,
+                                  instruction.OperandA,
+                                  instruction.OperandB));
+        word(instruction.OperandC);
+    }
+    for (const content::scene_format::MaterialProgramLobe& lobe : program.Lobes)
+    {
+        word(PackFingerprintBytes(static_cast<uint8>(lobe.Operation), lobe.WeightRegister, lobe.RoughnessRegister, 0));
+        for (const float32 value : lobe.Eta)
+        {
+            scalar(value);
+        }
+        for (const float32 value : lobe.K)
+        {
+            scalar(value);
+        }
+        scalar(lobe.Power);
+    }
+}
 /// Largest admitted RT1 tile, in pixels.
 constexpr uint32 MAXIMUM_REFERENCE_TILE_PIXELS = 2048;
 /// LUHDR01 flags bit identifying a GPU-compute capture.
@@ -181,6 +240,10 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         {
             bytes += sizeof(uint32) + content::scene_format::MATERIAL_SCATTERING_FLOATS * sizeof(float32);
         }
+        if (inoutJob.Scene.Instances[i].Surface->Bsdf.Scattering.Model == content::scene_format::MaterialModel::Program)
+        {
+            bytes += FINGERPRINT_PROGRAM_BYTES;
+        }
         if (inoutJob.Scene.Instances[i].Surface->HasSurfaceMap == true)
         {
             bytes += FINGERPRINT_SURFACE_MAP_BYTES;
@@ -263,6 +326,10 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
             scalar(surface.Bsdf.Scattering.AlphaV);
             scalar(surface.Bsdf.Scattering.CoatingEta);
             scalar(surface.Bsdf.Scattering.CoatingThickness);
+        }
+        if (surface.Bsdf.Scattering.Model == content::scene_format::MaterialModel::Program)
+        {
+            AppendMaterialProgramFingerprint(surface.Program, word, scalar);
         }
         vector(surface.Emission);
         scalar(surface.Tint.W);
@@ -496,6 +563,7 @@ Status Renderer::State::PrepareReferenceSurface(const MaterialDescription& surfa
     }
     data->Bsdf = {{surface.Tint.X, surface.Tint.Y, surface.Tint.Z}, lighting->Metallic, lighting->Roughness};
     data->Bsdf.Scattering = lighting->Scattering;
+    data->Program = lighting->Program;
     data->Tint = surface.Tint;
     data->UvTransform = surface.UvTransform;
     data->Sampler = surface.Sampler;

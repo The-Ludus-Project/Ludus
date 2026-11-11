@@ -9,7 +9,6 @@
 #include <ludus/foundation/parsing/json.hpp>
 
 #include <atomic>
-#include <cstddef>
 #include <cstring>
 #include <new>
 
@@ -87,82 +86,12 @@ private:
     const uint8* mBytes;
     usize mRemaining;
 };
-/// Read a LUSCN v11 program record field by field and validate it completely.
+/// Read a LUSCN v11 program record and validate it completely.
 bool ReadMaterialProgram(Reader& inoutReader, format::MaterialProgram& outProgram) noexcept
 {
-    format::MaterialProgram program;
-    if (inoutReader.Read(program.Version) == false || inoutReader.Read(program.ConstantCount) == false ||
-        inoutReader.Read(program.InstructionCount) == false || inoutReader.Read(program.LobeCount) == false)
-    {
-        return false;
-    }
-    for (foundation::StaticArray<float32, format::MATERIAL_PROGRAM_COMPONENTS>& constant : program.Constants)
-    {
-        for (float32& component : constant)
-        {
-            if (inoutReader.Read(component) == false)
-            {
-                return false;
-            }
-        }
-    }
-    for (format::MaterialProgramInstruction& instruction : program.Instructions)
-    {
-        const uint8* fieldsOrNull = inoutReader.Take(format::MATERIAL_PROGRAM_INSTRUCTION_BYTES);
-        if (fieldsOrNull == nullptr)
-        {
-            return false;
-        }
-        // One-byte fields have the same offsets on the wire as in the checked record struct.
-        using Instruction = format::MaterialProgramInstruction;
-        instruction.Opcode = static_cast<format::MaterialProgramOpcode>(fieldsOrNull[offsetof(Instruction, Opcode)]);
-        instruction.Destination = fieldsOrNull[offsetof(Instruction, Destination)];
-        instruction.OperandA = fieldsOrNull[offsetof(Instruction, OperandA)];
-        instruction.OperandB = fieldsOrNull[offsetof(Instruction, OperandB)];
-        instruction.OperandC = fieldsOrNull[offsetof(Instruction, OperandC)];
-        for (usize byte = 0; byte < format::MATERIAL_PROGRAM_INSTRUCTION_PADDING; ++byte)
-        {
-            instruction.Reserved[byte] = fieldsOrNull[offsetof(Instruction, Reserved) + byte];
-        }
-    }
-    for (format::MaterialProgramLobe& lobe : program.Lobes)
-    {
-        const uint8* fieldsOrNull =
-            inoutReader.Take(format::MATERIAL_PROGRAM_LOBE_BYTE_FIELDS + format::MATERIAL_PROGRAM_LOBE_PADDING);
-        if (fieldsOrNull == nullptr)
-        {
-            return false;
-        }
-        using Lobe = format::MaterialProgramLobe;
-        lobe.Operation = static_cast<format::MaterialLobeOperation>(fieldsOrNull[offsetof(Lobe, Operation)]);
-        lobe.WeightRegister = fieldsOrNull[offsetof(Lobe, WeightRegister)];
-        lobe.RoughnessRegister = fieldsOrNull[offsetof(Lobe, RoughnessRegister)];
-        lobe.Reserved[0] = fieldsOrNull[offsetof(Lobe, Reserved)];
-        for (float32& value : lobe.Eta)
-        {
-            if (inoutReader.Read(value) == false)
-            {
-                return false;
-            }
-        }
-        for (float32& value : lobe.K)
-        {
-            if (inoutReader.Read(value) == false)
-            {
-                return false;
-            }
-        }
-        if (inoutReader.Read(lobe.Power) == false)
-        {
-            return false;
-        }
-    }
-    if (format::IsMaterialProgramValid(program) == false)
-    {
-        return false;
-    }
-    outProgram = program;
-    return true;
+    const uint8* bytesOrNull = inoutReader.Take(format::MATERIAL_PROGRAM_BYTES);
+    return bytesOrNull != nullptr &&
+           format::DecodeMaterialProgram({bytesOrNull, format::MATERIAL_PROGRAM_BYTES}, outProgram) == true;
 }
 bool IsNonnegative(const math::Vector3& value, float32 maximum) noexcept
 {

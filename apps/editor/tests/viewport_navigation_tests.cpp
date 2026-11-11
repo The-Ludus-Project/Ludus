@@ -650,6 +650,81 @@ TEST_CASE("Axis views look along world axes orthographically and keep the pivot 
     CHECK(TryGetEditorAxisView(controller.GetSample(), unchanged) == false);
 }
 
+TEST_CASE("Axis view pans stay in the plane across the viewed world axis", "[editor][navigation][axis-view]")
+{
+    const math::Aabb3 boundsWorld{{-10, -1, -10}, {10, 5, 10}};
+    const float32 deltaX = 37;
+    const float32 deltaY = -53;
+    const float32 heightLogical = 400;
+    const float32 aspect = 1.5F;
+    struct Expectation final
+    {
+        EditorAxisView View;
+        math::Vector3d AxisWorld;
+    };
+    for (const Expectation& expectation : {Expectation{EditorAxisView::Top, {0, 1, 0}},
+                                           Expectation{EditorAxisView::Bottom, {0, 1, 0}},
+                                           Expectation{EditorAxisView::Front, {0, 0, 1}},
+                                           Expectation{EditorAxisView::Back, {0, 0, 1}},
+                                           Expectation{EditorAxisView::Right, {1, 0, 0}},
+                                           Expectation{EditorAxisView::Left, {1, 0, 0}}})
+    {
+        INFO(GetEditorAxisViewLabel(expectation.View));
+        EditorCameraController controller;
+        REQUIRE(controller.TrySetOrbit({1, 2, 3}, {25, 20}, 4) == true);
+        REQUIRE(controller.TrySetAxisView(expectation.View, &boundsWorld) == true);
+        // Both passes pan the same view; the second first turns it about the viewed axis where the
+        // view allows it (Top and Bottom), so the screen axes no longer follow world axes.
+        for (const float32 turnPixels : {0.0F, 130.0F})
+        {
+            INFO(turnPixels);
+            if (turnPixels != 0)
+            {
+                REQUIRE(controller.TryRotate(turnPixels, 0, true) == true);
+            }
+            EditorAxisView found = EditorAxisView::Top;
+            if (TryGetEditorAxisView(controller.GetSample(), found) == false || found != expectation.View)
+            {
+                continue;
+            }
+            const camera::CameraSample before = controller.GetSample();
+            const math::Vector3d pivotBeforeWorld = controller.GetPivotWorld();
+            REQUIRE(controller.TryPan(deltaX, deltaY, heightLogical, aspect) == true);
+            const math::Vector3d travelWorld = controller.GetSample().Pose.Position - before.Pose.Position;
+            // Exactly no movement along the viewed axis, for the eye and for the orbit pivot.
+            CHECK(math::Dot(travelWorld, expectation.AxisWorld) == 0);
+            CHECK(math::Dot(controller.GetPivotWorld() - pivotBeforeWorld, expectation.AxisWorld) == 0);
+            // The scene still follows the pointer: the eye moves by the drag across the screen.
+            const float64 worldUnitsPerPixel = static_cast<float64>(
+                math::Max(before.Lens.VerticalSpan, before.Lens.MinimumVisibleWidth / aspect) / heightLogical);
+            const math::Vector3 rightWorld = math::Rotate(before.Pose.Orientation, {1, 0, 0});
+            const math::Vector3 upWorld = math::Rotate(before.Pose.Orientation, {0, 1, 0});
+            const float64 tolerance = 0.000001;
+            CHECK(math::Dot(travelWorld,
+                            math::Vector3d{static_cast<float64>(rightWorld.X),
+                                           static_cast<float64>(rightWorld.Y),
+                                           static_cast<float64>(rightWorld.Z)}) ==
+                  Catch::Approx(static_cast<float64>(-deltaX) * worldUnitsPerPixel).margin(tolerance));
+            CHECK(math::Dot(travelWorld,
+                            math::Vector3d{static_cast<float64>(upWorld.X),
+                                           static_cast<float64>(upWorld.Y),
+                                           static_cast<float64>(upWorld.Z)}) ==
+                  Catch::Approx(static_cast<float64>(deltaY) * worldUnitsPerPixel).margin(tolerance));
+            CHECK(controller.GetSample().Pose.Orientation == before.Pose.Orientation);
+        }
+    }
+    // The 0.1 degree tilt of Top is what a camera-local pan would leak along Y: an orthographic view
+    // just off the axis tolerance still pans along its own screen axes.
+    EditorCameraController tilted;
+    REQUIRE(tilted.TrySetAxisView(EditorAxisView::Top, &boundsWorld) == true);
+    REQUIRE(tilted.TryRotate(0, -20, true) == true);
+    EditorAxisView unchanged = EditorAxisView::Back;
+    REQUIRE(TryGetEditorAxisView(tilted.GetSample(), unchanged) == false);
+    const math::Vector3d tiltedBeforeWorld = tilted.GetSample().Pose.Position;
+    REQUIRE(tilted.TryPan(0, deltaY, heightLogical, aspect) == true);
+    CHECK(tilted.GetSample().Pose.Position.Y != tiltedBeforeWorld.Y);
+}
+
 TEST_CASE("Editor field of view stays in its admitted range and keeps the pose", "[editor][navigation][axis-view]")
 {
     EditorCameraController controller;
@@ -1060,6 +1135,133 @@ TEST_CASE("Viewport sensitivity scales look and orbit and persists without movin
         restored.SetLookSensitivity(1);
         CHECK(sensitivityOrNull->value() == 1);
     }
+}
+
+TEST_CASE("Wheel while flying scales the fly speed geometrically, shows it and persists it",
+          "[editor][navigation][fly-speed]")
+{
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
+    PreviewViewport viewport(&preview, nullptr, false);
+    viewport.EnableWorldContextMenu();
+    preview.Navigate(0, {25, 20}, 3, false);
+    const auto sendWheel = [&viewport](int32 angleY, int32 pixelY, Qt::MouseButtons buttons) {
+        QWheelEvent wheel(QPointF(100, 100),
+                          QPointF(100, 100),
+                          pixelY == 0 ? QPoint{} : QPoint(0, pixelY),
+                          QPoint(0, angleY),
+                          buttons,
+                          Qt::NoModifier,
+                          Qt::ScrollUpdate,
+                          false);
+        QApplication::sendEvent(&viewport, &wheel);
+    };
+    constexpr int32 WHEEL_NOTCH = 120;
+    constexpr int32 TRACKPAD_NOTCH_PIXELS = 80;
+    const float32 notchFactor = RenderPreview::FLY_SPEED_NOTCH_FACTOR;
+    CHECK(preview.GetFlySpeed() == 1);
+
+    // Without the right button the wheel dollies and leaves the speed alone.
+    const float32 distanceBefore = preview.GetFocusDistance();
+    sendWheel(WHEEL_NOTCH, 0, Qt::NoButton);
+    CHECK(preview.GetFocusDistance() != distanceBefore);
+    CHECK(preview.GetFlySpeed() == 1);
+    CHECK(viewport.GetShaderStatusText().isEmpty() == true);
+
+    // While flying it scales the speed without dollying and shows the multiplier.
+    const float32 flyingDistance = preview.GetFocusDistance();
+    const QJsonObject beforeWheel = preview.Navigation();
+    QTest::mousePress(&viewport, Qt::RightButton);
+    sendWheel(WHEEL_NOTCH, 0, Qt::RightButton);
+    CHECK(preview.GetFocusDistance() == flyingDistance);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(notchFactor));
+    CHECK(viewport.GetShaderStatusText() == QStringLiteral("Fly speed 1.25×"));
+    QJsonObject afterWheel = preview.Navigation();
+    CHECK(afterWheel.take(QStringLiteral("flySpeed")).toDouble() == Catch::Approx(notchFactor));
+    QJsonObject beforeWithoutSpeed = beforeWheel;
+    beforeWithoutSpeed.remove(QStringLiteral("flySpeed"));
+    CHECK(afterWheel == beforeWithoutSpeed);
+    sendWheel(2 * WHEEL_NOTCH, 0, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(notchFactor * notchFactor * notchFactor));
+    CHECK(viewport.GetShaderStatusText() == QStringLiteral("Fly speed 1.95×"));
+    // Three notches back undo three notches forward; a trackpad notch is 80 logical pixels.
+    sendWheel(-3 * WHEEL_NOTCH, 0, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(1));
+    sendWheel(0, TRACKPAD_NOTCH_PIXELS, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(notchFactor));
+    sendWheel(0, -TRACKPAD_NOTCH_PIXELS / 2, Qt::RightButton);
+    sendWheel(0, -TRACKPAD_NOTCH_PIXELS / 2, Qt::RightButton);
+    CHECK(preview.GetFlySpeed() == Catch::Approx(1));
+    QTest::mouseRelease(&viewport, Qt::RightButton);
+    CHECK(viewport.GetShaderStatusText().isEmpty() == true);
+
+    // The readout outlives a wheel change only for its timeout.
+    QTest::mousePress(&viewport, Qt::RightButton);
+    sendWheel(WHEEL_NOTCH, 0, Qt::RightButton);
+    REQUIRE(viewport.GetShaderStatusText().isEmpty() == false);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.GetShaderStatusText().isEmpty() == true; },
+                            2 * PreviewViewport::FLY_SPEED_STATUS_MILLISECONDS) == true);
+    QTest::mouseRelease(&viewport, Qt::RightButton);
+
+    // Scaling stops at the admitted range and ignores empty or nonfinite input.
+    constexpr float32 FAR_BEYOND_RANGE_NOTCHES = 1000;
+    CHECK(preview.ScaleFlySpeed(FAR_BEYOND_RANGE_NOTCHES) == true);
+    CHECK(preview.GetFlySpeed() == RenderPreview::MAXIMUM_FLY_SPEED);
+    CHECK(preview.ScaleFlySpeed(1) == false);
+    CHECK(preview.ScaleFlySpeed(-FAR_BEYOND_RANGE_NOTCHES) == true);
+    CHECK(preview.GetFlySpeed() == RenderPreview::MINIMUM_FLY_SPEED);
+    CHECK(preview.ScaleFlySpeed(-1) == false);
+    CHECK(preview.ScaleFlySpeed(0) == false);
+    CHECK(preview.ScaleFlySpeed(std::numeric_limits<float32>::quiet_NaN()) == false);
+    CHECK(preview.GetFlySpeed() == RenderPreview::MINIMUM_FLY_SPEED);
+
+    // The multiplier restores with navigation, rejects invalid values and follows the View menu control.
+    preview.SetFlySpeed(2);
+    RenderPreview restored;
+    restored.RestoreNavigation(preview.Navigation());
+    CHECK(restored.GetFlySpeed() == 2);
+    restored.SetFlySpeed(0);
+    restored.SetFlySpeed(RenderPreview::MAXIMUM_FLY_SPEED * 2);
+    restored.SetFlySpeed(std::numeric_limits<float32>::infinity());
+    CHECK(restored.GetFlySpeed() == 2);
+    PreviewViewport restoredViewport(&restored, nullptr, false);
+    QDoubleSpinBox* flySpeedOrNull = restoredViewport.findChild<QDoubleSpinBox*>(QStringLiteral("viewportFlySpeed"));
+    REQUIRE(flySpeedOrNull != nullptr);
+    CHECK(flySpeedOrNull->value() == 2);
+    flySpeedOrNull->setValue(0.5);
+    CHECK(restored.GetFlySpeed() == 0.5F);
+    REQUIRE(restored.ScaleFlySpeed(1) == true);
+    // The control shows two decimals, so it rounds the exact 0.625 to within half a hundredth.
+    CHECK(flySpeedOrNull->value() == Catch::Approx(0.5 * static_cast<float64>(notchFactor)).margin(0.005));
+    RenderPreview legacy;
+    QJsonObject legacyState = preview.Navigation();
+    legacyState.remove(QStringLiteral("flySpeed"));
+    legacy.RestoreNavigation(legacyState);
+    CHECK(legacy.GetFlySpeed() == 1);
+
+    // Exploring as the player keeps its authored walking speed: the wheel changes nothing.
+    RenderPreview walking;
+    const RenderScene walkingScene = MakeWalkingScene();
+    REQUIRE(walking.SetScene(walkingScene) == true);
+    PreviewViewport walkingViewport(&walking, nullptr, false);
+    camera::CameraSample spawn = walkingScene.Cameras[0].Sample;
+    spawn.Pose = { .Position = {0, 1.61, 0}, .Orientation = {} };
+    QString error;
+    REQUIRE(walkingViewport.BeginFirstPerson(spawn, 3, error) == true);
+    const math::Vector3d walkingEyeWorld = walking.GetVisibleCameraSample().Pose.Position;
+    QWheelEvent walkingWheel(QPointF(100, 100),
+                             QPointF(100, 100),
+                             QPoint{},
+                             QPoint(0, WHEEL_NOTCH),
+                             Qt::RightButton,
+                             Qt::NoModifier,
+                             Qt::ScrollUpdate,
+                             false);
+    QApplication::sendEvent(&walkingViewport, &walkingWheel);
+    CHECK(walking.GetFlySpeed() == 1);
+    CHECK(walking.GetVisibleCameraSample().Pose.Position == walkingEyeWorld);
+    CHECK(walkingViewport.GetShaderStatusText().isEmpty() == true);
+    walkingViewport.EndFirstPerson();
 }
 
 // Thanks to The Qt Company, "QCursor Class", setPos documentation:

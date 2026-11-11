@@ -1,3 +1,4 @@
+#include "material_program_fixtures.h"
 #include "renderer_composite.h"
 
 #include <ludus/foundation/base/compiler.h>
@@ -80,6 +81,11 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
         hasSurface = true;
         model = format::MaterialModel::ProjectBrdf;
     }
+    SECTION("A closure program of continuous lobes offers fixed-dimension reflection")
+    {
+        hasSurface = true;
+        model = format::MaterialModel::Program;
+    }
     SECTION("A project BRDF without the guarantee fails the material requirement")
     {
         hasSurface = true;
@@ -118,6 +124,11 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
     material.BaseColor = {0.5F, 0.5F, 0.5F};
     material.Metallic = 0.25F;
     material.Scattering.Model = model;
+    if (model == format::MaterialModel::Program)
+    {
+        material.Roughness = 0.35F;
+        material.Program = ludus::renderer_tests::MakeParityProgram();
+    }
     if (model == format::MaterialModel::ProjectBrdf)
     {
         material.Roughness = 0.35F;

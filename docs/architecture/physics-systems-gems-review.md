@@ -6,6 +6,14 @@ The [physics architecture](physics-systems.md) recorded its initial decision
 table before searching [game-dev-gems-toc.md](../../references/game-dev-gems-toc.md).
 The revised architecture incorporates the decisions below.
 
+**Selection update, 2026-11-10.** This review was written when a third-party
+engine was expected to supply the solver. The architecture's
+[selection revision](physics-systems.md#selection-revision) now has Ludus
+implement it. Where a section below says "backend", read the Ludus-owned
+implementation; where it says to compare with or qualify the backend's
+behavior, that is now a test of Ludus's own kernels, optionally against a
+pinned test-only engine. The adopted contracts are unchanged.
+
 ## Reading scope and evidence
 
 The requested index was searched for physics, collision, rigid bodies,
@@ -242,7 +250,7 @@ Read proceedings and available presentations before considering conference trave
 
 | Priority and venue | What to look for | Ludus decision it can improve |
 | --- | --- | --- |
-| First: [GDC physics talks](https://www.gdcvault.com/play/1027891/Architecting-Jolt-Physics-for-Horizon) | Production streaming, game/physics synchronization, profiling, contact and CCD failure cases | P0 backend/job qualification and P4 world integration; turn reported problems into local regression scenes |
+| First: [GDC physics talks](https://www.gdcvault.com/play/1027891/Architecting-Jolt-Physics-for-Horizon) | Production streaming, game/physics synchronization, profiling, contact and CCD failure cases | P2 job design and P4 world integration; turn reported problems into local regression scenes |
 | First: [ACM SIGGRAPH/Eurographics Symposium on Computer Animation (SCA)](https://computeranimation.org/) | Contact, friction, constraints, integration, articulated and deformable simulation | P2-P3 quality tests; later compare solver/substep choices at equal total frame cost |
 | First: [SIGGRAPH technical papers](https://s2026.siggraph.org/program/technical-papers/) and ACM Transactions on Graphics (TOG) | New simulation algorithms, collision geometry and robust numerical methods | P5 experiments after a measured baseline; require reproduction and a compatible implementation before adoption |
 | Targeted: [Eurographics / Computer Graphics Forum (CGF)](https://www.eg.org/wp/eurographics-publications/cgf/) and State-of-the-Art Reports | Surveys that compare assumptions and limitations across methods | Choose a research direction before adding a new solver or coupling subsystem; avoid overlapping abstractions |
@@ -263,11 +271,12 @@ review of the talk, survey or AVBD paper, or reproduction of their results.
 Thanks to **Jorrit Rouwé**, *Architecting Jolt Physics for 'Horizon Forbidden West'*,
 [GDC 2022](https://www.gdcvault.com/play/1027891/Architecting-Jolt-Physics-for-Horizon).
 Its session overview identifies streaming and interaction with multithreaded game
-object updates as architectural bottlenecks. Read this during P0, then inspect the
-exact candidate revision for locking, publication and job dependencies. At P4,
+object updates as architectural bottlenecks. Read this before the P2 job design,
+and inspect the pinned Jolt revision's locking, publication and job dependencies
+as a worked example. At P4,
 measure terrain/collider installation while queries and game updates are active.
 The resulting decision is whether our command boundary and protected query views
-fit the backend's concurrency model. Guerrilla's reported savings are evidence
+hold under that streaming and update pressure. Guerrilla's reported savings are evidence
 for its workload; they are not a Ludus performance estimate or a reason to bypass
 the allocation/failure gate.
 
@@ -294,8 +303,9 @@ scenes expose a baseline quality/cost limitation. First reproduce relevant resul
 then compare end-to-end cost including collision detection, data movement and
 events on supported hardware. GPU results do not establish an advantage for our
 CPU path, and numerical stability does not establish collision completeness or
-small constraint error. A research prototype remains separate from the qualified
-backend until it passes the same contracts and maintenance review.
+small constraint error. A research prototype remains a separate
+[sibling module](physics-systems.md#simulation-siblings-and-research-solvers)
+until it passes the same contracts and maintenance review.
 
 ### Experiments and adoption criteria
 
@@ -307,13 +317,13 @@ an algorithm requires measured evidence after the relevant baseline exists.
 | --- | --- | --- |
 | Stack drift, joint stretch or stiff constraints | Substeps versus iterations at matched cost; later evaluate a reproduced research solver | Penetration/joint error, drift, contact refresh cost, worst-frame time and replay behavior |
 | Terrain seams or contact jitter | Stable contact patches and adjacency-aware cooked meshes versus current settings | Snagging failures, manifold churn, memory, cook/load cost and debugger visibility |
-| Resting jitter or premature sleep | Existing backend sleep versus envelope-informed policy | Wake latency, missed interaction, angular/linear drift and active-body cost |
+| Resting jitter or premature sleep | Baseline velocity-threshold sleep versus envelope-informed policy | Wake latency, missed interaction, angular/linear drift and active-body cost |
 | Query/cooking bottleneck | BVH quality/settings and coherent versus incoherent batches | Brute-force hit agreement, coverage, tail latency, cooked/runtime bytes and load time |
 | Streaming stalls or poor scaling | Serial versus parallel work and collider publication under load | Lock/job waits, frame tails, deterministic ordering, failure behavior and peak memory |
 
 For each experiment, save the source revision, license, compiler/build profile,
 hardware, scene/seed, settings and reproducer. Specify the failure and quality
-thresholds before tuning. Compare the qualified baseline with identical content
+thresholds before tuning. Compare the owned baseline with identical content
 and report whole-step/query costs as well as kernel costs. Include difficult
 mass ratios, thin/fast bodies, sleeping/waking islands and capacity exhaustion
 where relevant. Reject a speedup that violates query/event completeness, failure

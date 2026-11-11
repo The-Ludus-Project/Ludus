@@ -1474,47 +1474,12 @@ void ResolveCamera(const SceneIr& scene,
     return version;
 }
 
-/// Write a LUSCN v11 program record field by field (scene_format::MaterialProgram).
+/// Write a LUSCN v11 program record (scene_format::EncodeMaterialProgram).
 void AppendMaterialProgram(const format::MaterialProgram& program, detail::ByteWriter& inoutBlob) noexcept
 {
-    for (const uint32 value : {program.Version, program.ConstantCount, program.InstructionCount, program.LobeCount})
-    {
-        inoutBlob.AppendUint32(value);
-    }
-    for (const foundation::StaticArray<float32, format::MATERIAL_PROGRAM_COMPONENTS>& constant : program.Constants)
-    {
-        for (const float32 component : constant)
-        {
-            inoutBlob.AppendFloat32(static_cast<float64>(component));
-        }
-    }
-    for (const format::MaterialProgramInstruction& instruction : program.Instructions)
-    {
-        const foundation::StaticArray<uint8, format::MATERIAL_PROGRAM_INSTRUCTION_FIELDS> fields{
-            {static_cast<uint8>(instruction.Opcode),
-             instruction.Destination,
-             instruction.OperandA,
-             instruction.OperandB,
-             instruction.OperandC}};
-        inoutBlob.AppendBytes({fields.GetData(), fields.GetSize()});
-        inoutBlob.AppendBytes({instruction.Reserved.GetData(), instruction.Reserved.GetSize()});
-    }
-    for (const format::MaterialProgramLobe& lobe : program.Lobes)
-    {
-        const foundation::StaticArray<uint8, format::MATERIAL_PROGRAM_LOBE_BYTE_FIELDS> fields{
-            {static_cast<uint8>(lobe.Operation), lobe.WeightRegister, lobe.RoughnessRegister}};
-        inoutBlob.AppendBytes({fields.GetData(), fields.GetSize()});
-        inoutBlob.AppendBytes({lobe.Reserved.GetData(), lobe.Reserved.GetSize()});
-        for (const float32 value : lobe.Eta)
-        {
-            inoutBlob.AppendFloat32(static_cast<float64>(value));
-        }
-        for (const float32 value : lobe.K)
-        {
-            inoutBlob.AppendFloat32(static_cast<float64>(value));
-        }
-        inoutBlob.AppendFloat32(static_cast<float64>(lobe.Power));
-    }
+    format::MaterialProgramBytes bytes{};
+    format::EncodeMaterialProgram(program, bytes);
+    inoutBlob.AppendBytes({bytes.GetData(), bytes.GetSize()});
 }
 
 void PackBundle(const SceneIr& scene,

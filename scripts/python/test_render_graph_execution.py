@@ -139,6 +139,23 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn('result.ColorVertex.Artifact.Wgsl', text)
         self.assertIn('result.CompositeVertex = compositeVertex', text)
         self.assertNotIn('std::', text)
+        self.assertIn('result.ColorVertex.Inputs = {ColorVertexInputs.GetData(), ColorVertexInputs.GetSize()};', text)
+        self.assertNotIn('.AsSpan()', text)
+
+    def test_spirv_artifacts_emit_explicit_borrowed_word_extents(self):
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        key, artifact = next((key, item) for key, item in contents['artifacts'].items() if key[1] == 'vertex')
+        words = copy.deepcopy(artifact)
+        words['bytes'] = struct.pack('<5I', 0x07230203, 0, 0, 0, 0)
+        contents['artifacts'][(key[0], key[1], 'spirv')] = words
+        from unittest.mock import patch
+        destination = self.root / 'spirv.h'
+        with patch.object(execution, '_runtime_contents', return_value=contents):
+            execution.emit_runtime(self.output, destination)
+        text = destination.read_text()
+        self.assertRegex(text, r'Artifact\.Spirv = \{PROGRAM_\d+\.GetData\(\), PROGRAM_\d+\.GetSize\(\)\};')
+        self.assertNotIn('.AsSpan()', text)
 
     def test_shared_render_sizes_lower_to_numeric_sdk_resource_descriptors(self):
         value = json.loads(self.graph.read_text())
@@ -336,7 +353,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn('{0, format::ShaderTarget::Wgsl, 3, 1, 12},', text)
         # The stage admits the largest carried block so one layout serves every target.
         self.assertIn('{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, 32},', text)
-        self.assertIn('result.ColorFragment.Bindings = ColorFragmentBindings.AsSpan();', text)
+        self.assertIn('result.ColorFragment.Bindings = {ColorFragmentBindings.GetData(), ColorFragmentBindings.GetSize()};', text)
         self.assertNotIn('ColorVertexBindings', text)
         runtime = execution.cook_runtime(self.output, self.root / 'bound.lurgrt')
         self.assertEqual(runtime['interface_identity'], result['interface_identity'])

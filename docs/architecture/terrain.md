@@ -3,7 +3,9 @@
 Status: the [World editor](../development/editor-workspace.md#s4-scene-authoring)
 generates bounded heightfield meshes for default Worlds. The
 [viewport authoring slices](#delivery-and-review-gates) add docked source
-editing, native grayscale heightmap import, and three sculpt brushes. The tiled
+editing, native grayscale heightmap import, and three sculpt brushes.
+[`Ludus::ContentTerrain`](../modules/content/terrain.md) provides the headless
+slope, drainage, wetness and material-rule kernels. The tiled
 terrain module, streaming renderer, and physics adapter remain proposed. Sizes
 and performance budgets are starting profiles and require measurements on the
 selected targets.

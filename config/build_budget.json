@@ -102,9 +102,9 @@
       "the summed per-include averages (total ms / include count) of these unchanged",
       "libstdc++ headers, over the same sums from the baseline run. Baseline: run",
       "40639240762, ubuntu-24.04, LLVM 23.1.5 (20261023 snapshot),",
-      "libstdc++ 14, two uncached build jobs. ClangBuildAnalyzer lists only its ten",
-      "most expensive headers, so the factor uses the reference headers listed (run",
-      "41110487152 dropped <string_view>). With fewer than minimum_headers listed",
+      "libstdc++ 14, two uncached build jobs. ClangBuildAnalyzer.ini now reports the",
+      "top 50 headers; the factor uses the reference headers listed (run 41110487152",
+      "dropped <string_view> with the former top ten). With fewer than minimum_headers listed",
       "(another libstdc++, a local libc++ host) or a factor outside the bounds, the",
       "gate falls back to raw timings and says so. Re-baseline when libstdc++ or the",
       "reference compiler changes."

@@ -378,6 +378,8 @@ add_subdirectory(modules/content/identity_records)
 add_subdirectory(modules/content/world_restore)
 # Headless procedural scatter kernel (P0); Foundation-only, native and web.
 add_subdirectory(modules/content/procedural/environment)
+# Headless terrain fields, drainage, wetness and material rules (T1); Foundation-only, native and web.
+add_subdirectory(modules/content/terrain)
 # Scene cooker (pbrt-reference-v1). The library builds for every target; its
 # file I/O reports Unsupported where Ludus::Content has no native file access,
 # and the ludus-cook CLI plus golden tests are native-host only (Linux, macOS, Windows).
@@ -526,6 +528,7 @@ install(
 
 
 if(WIN32)
+    install(FILES "${PROJECT_SOURCE_DIR}/cmake/sdk/THIRD_PARTY_NOTICES.md" DESTINATION . RENAME NOTICE.txt)
     configure_file(cmake/LudusWindowsSdk.cmake.in "${PROJECT_BINARY_DIR}/cmake/LudusWindowsSdk.cmake" @ONLY)
     install(FILES "${PROJECT_BINARY_DIR}/cmake/LudusWindowsSdk.cmake"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${LUDUS_ENGINE_PACKAGE_NAME}")
@@ -696,7 +699,7 @@ install(
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${LUDUS_ENGINE_PACKAGE_NAME}/dependencies"
 )
 
-install(FILES cmake/LudusDependencies.cmake cmake/LudusShaders.cmake cmake/LudusRendererShaders.cmake cmake/LudusRenderGraph.cmake DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus")
+install(FILES cmake/LudusDependencies.cmake cmake/LudusShaders.cmake cmake/LudusRendererShaders.cmake cmake/LudusRenderGraph.cmake cmake/LudusWindowsDistribution.cmake DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus")
 install(FILES cmake/render_graph/build.py DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph")
 install(FILES scripts/export-light-transformer DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph" RENAME export-light-transformer.py)
 install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/errors.py
@@ -725,7 +728,7 @@ foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buf
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/templates/${template_directory}")
 endforeach()
 # Gameplay project helper + host/shipping main templates (project-live-reload).
-if(TARGET Ludus::GameHost AND NOT WIN32)
+if(TARGET Ludus::GameHost)
     install(FILES
         cmake/LudusGame.cmake
         cmake/LudusGameShippingMain.cpp

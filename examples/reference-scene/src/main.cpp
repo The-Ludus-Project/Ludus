@@ -138,6 +138,7 @@ bool Load(const uint8* bytes,
         description.Metallic = source.Metallic;
         description.Roughness = source.Roughness;
         description.Scattering = source.Scattering;
+        description.Program = source.Program;
         description.IsEmissionTwoSided = source.IsEmissionTwoSided;
         if (source.HasSourceMaterial == true)
         {

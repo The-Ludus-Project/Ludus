@@ -2,12 +2,11 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/graphics/rhi/profile.h>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
-
-#include <span>
 
 namespace ludus::graphics::rhi
 {
@@ -228,8 +227,11 @@ CreatePipeline(DeviceHandle device, const PipelineDescription& description, Pipe
 /// Poll a pipeline in this owner; stale/foreign resource identities return InvalidHandle.
 [[nodiscard]] ResourceStatus GetStatus(DeviceHandle device, PipelineHandle pipeline) noexcept;
 /// Replace uniform bytes under the existing frame/order/size rules; no ownership transfer.
+/// Consumes caller storage before return. Invalid pointer/extent pairs return InvalidDescription.
 [[nodiscard]] ResourceStatus
-UpdateUniform(DeviceHandle device, UniformHandle uniform, std::span<const ludus::foundation::uint8> bytes) noexcept;
+UpdateUniform(DeviceHandle device,
+              UniformHandle uniform,
+              ludus::foundation::BorrowedView<const ludus::foundation::uint8> bytes) noexcept;
 /// Destroy a shader between frames. Existing pipeline dependencies still return InUse.
 [[nodiscard]] ResourceStatus Destroy(DeviceHandle device, ShaderHandle shader) noexcept;
 /// Destroy a uniform between frames. Existing pipeline dependencies still return InUse.

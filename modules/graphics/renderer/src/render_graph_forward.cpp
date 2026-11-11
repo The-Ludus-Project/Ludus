@@ -1,3 +1,4 @@
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 
 #include "../shaders/renderer_environment_layout.h"
@@ -191,33 +192,33 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
         case format::StageRole::DeferredGBufferFragment:
         case format::StageRole::DeferredOpaqueGBufferFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
-            inoutDescription.Bindings = CLUSTERED_BINDINGS.AsSpan();
-            inoutDescription.UniformMembers = CLUSTERED_MEMBERS.AsSpan();
+            inoutDescription.Bindings = {CLUSTERED_BINDINGS.GetData(), CLUSTERED_BINDINGS.GetSize()};
+            inoutDescription.UniformMembers = {CLUSTERED_MEMBERS.GetData(), CLUSTERED_MEMBERS.GetSize()};
             break;
         case format::StageRole::DeferredLightingVertex:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Vertex;
-            inoutDescription.Inputs = OUTPUT_INPUTS.AsSpan();
+            inoutDescription.Inputs = {OUTPUT_INPUTS.GetData(), OUTPUT_INPUTS.GetSize()};
             break;
         case format::StageRole::DeferredLightingFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
-            inoutDescription.Bindings = DEFERRED_BINDINGS.AsSpan();
-            inoutDescription.UniformMembers = DEFERRED_MEMBERS.AsSpan();
+            inoutDescription.Bindings = {DEFERRED_BINDINGS.GetData(), DEFERRED_BINDINGS.GetSize()};
+            inoutDescription.UniformMembers = {DEFERRED_MEMBERS.GetData(), DEFERRED_MEMBERS.GetSize()};
             break;
         case format::StageRole::DeferredDepthCopyFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
-            inoutDescription.Bindings = DEPTH_COPY_BINDINGS.AsSpan();
+            inoutDescription.Bindings = {DEPTH_COPY_BINDINGS.GetData(), DEPTH_COPY_BINDINGS.GetSize()};
             break;
         case format::StageRole::ForwardDepth:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
             break;
         case format::StageRole::ForwardVertex:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Vertex;
-            inoutDescription.Inputs = FORWARD_INPUTS.AsSpan();
+            inoutDescription.Inputs = {FORWARD_INPUTS.GetData(), FORWARD_INPUTS.GetSize()};
             break;
         case format::StageRole::ForwardRealtimeFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
-            inoutDescription.Bindings = FORWARD_REALTIME_BINDINGS.AsSpan();
-            inoutDescription.UniformMembers = FORWARD_MEMBERS.AsSpan();
+            inoutDescription.Bindings = {FORWARD_REALTIME_BINDINGS.GetData(), FORWARD_REALTIME_BINDINGS.GetSize()};
+            inoutDescription.UniformMembers = {FORWARD_MEMBERS.GetData(), FORWARD_MEMBERS.GetSize()};
             break;
         case format::StageRole::ForwardFragment:
         case format::StageRole::ForwardSurfaceChartFragment:
@@ -229,16 +230,18 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
                                          : isClustered == true                    ? CLUSTERED_BINDING_COUNT
                                                                                   : FORWARD_BINDING_COUNT};
             inoutDescription.UniformMembers =
-                isClustered == true ? CLUSTERED_MEMBERS.AsSpan() : FORWARD_MEMBERS.AsSpan();
+                isClustered == true
+                    ? ludus::foundation::BorrowedView{CLUSTERED_MEMBERS.GetData(), CLUSTERED_MEMBERS.GetSize()}
+                    : ludus::foundation::BorrowedView{FORWARD_MEMBERS.GetData(), FORWARD_MEMBERS.GetSize()};
             break;
         case format::StageRole::LightingVertex:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Vertex;
-            inoutDescription.Inputs = OUTPUT_INPUTS.AsSpan();
+            inoutDescription.Inputs = {OUTPUT_INPUTS.GetData(), OUTPUT_INPUTS.GetSize()};
             break;
         case format::StageRole::LightingFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
-            inoutDescription.Bindings = OUTPUT_BINDINGS.AsSpan();
-            inoutDescription.UniformMembers = OUTPUT_MEMBERS.AsSpan();
+            inoutDescription.Bindings = {OUTPUT_BINDINGS.GetData(), OUTPUT_BINDINGS.GetSize()};
+            inoutDescription.UniformMembers = {OUTPUT_MEMBERS.GetData(), OUTPUT_MEMBERS.GetSize()};
             break;
         case format::StageRole::LightingShadow:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;

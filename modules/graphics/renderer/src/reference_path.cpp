@@ -642,6 +642,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         texel = math::Hadamard(texel, color);
     }
     ReferenceBsdf bsdf = surface.Bsdf;
+    bsdf.ProgramOrNull = &surface.Program;
     bsdf.BaseColor = math::Hadamard({texel.X, texel.Y, texel.Z}, bsdf.BaseColor);
     if (surface.HasSurfaceMap)
     {

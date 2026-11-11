@@ -378,8 +378,8 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidState;
     }
-    if (vertex.Inputs.size() != OVERLAY_VERTEX_INPUT_COUNT || vertex.Bindings.empty() == false ||
-        fragment.Inputs.empty() == false || fragment.Bindings.size() != OVERLAY_FRAGMENT_BINDING_COUNT ||
+    if (vertex.Inputs.GetSize() != OVERLAY_VERTEX_INPUT_COUNT || vertex.Bindings.IsEmpty() == false ||
+        fragment.Inputs.IsEmpty() == false || fragment.Bindings.GetSize() != OVERLAY_FRAGMENT_BINDING_COUNT ||
         vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment)
     {
         return Status::InvalidDescription;
