@@ -1,4 +1,4 @@
-# Terrain fields, drainage and material rules
+# Terrain fields, drainage, rivers and material rules
 
 `Ludus::ContentTerrain` (`modules/content/terrain`, headers under
 `ludus/content/terrain/`) holds the headless serial reference kernels of terrain
@@ -78,6 +78,40 @@ instead of dropping a layer, as the
 requires. Physical soil remains a separate field; visual palette reduction never
 changes it.
 
+## River channels (`terrain_rivers.h`)
+
+Rivers read the drainage outputs of one complete domain. A sample is a channel
+when its contributing area, accumulation times the sample area, reaches
+`TerrainRiverParameters::MinimumCatchmentSquareMetres`. Contributing area grows
+downstream, so every channel drains through channels to an outlet.
+
+`TryExtractTerrainRivers` turns the channels into a network of
+`TerrainRiverSegment`s. A segment starts at a source or a confluence, visited in
+ascending sample index, and runs downstream to the next confluence or outlet.
+A segment that ends at a confluence repeats that sample as its last point, which
+is also the first point of the downstream segment, so the polylines join. Each
+segment links to its downstream segment and carries its Strahler order. Callers
+supply the point and segment storage; too little storage returns
+`CapacityExceeded` with the required counts in the summary. Routing that does
+not strictly increase accumulation downstream is rejected as `InvalidRouting`,
+which also rules out cycles.
+
+`TryCarveTerrainRivers` cuts a channel profile into the terrain. Channel depth
+and half-width are power laws of contributing area, with authored coefficients
+and exponents in the parameters. The bed of a channel sample is its filled
+elevation minus the depth, so the bed descends downstream wherever the filled
+surface does. Samples within the half-width are lowered to the bed, and a smooth
+bank of width depth over `BankSlope` blends back to the original surface. The
+carved surface is the minimum over every profile and the original, so it never
+raises terrain and does not depend on traversal order. Each sample takes its
+water level from the channel that set its lowest target, so the cut and the
+water agree. Profile distances are in metres, so rectangular cells cut the
+same shape. A profile reaches at most `MAX_TERRAIN_RIVER_STENCIL_SAMPLES`
+samples of the finer axis; wider profiles are clamped and counted.
+
+Carving can move a watershed. Rerun `TryComputeTerrainDrainage` on the carved
+surface before deriving slope, wetness or materials from it.
+
 ## Limits and status
 
 | Limit | Value |
@@ -86,11 +120,13 @@ changes it.
 | Rules per rule set | 16 |
 | Cells per patch edge | 1 through 256 |
 | Halo samples | 0 through 4 |
+| River profile reach | 16 samples from the channel centre |
 
-Implemented: elevation recipe, slope, drainage, wetness, rules and palettes with
-regression tests in `modules/content/terrain/tests`. Not yet implemented from the
-pipeline: imports and stamps as module operations, thermal and hydraulic
-erosion, cooked pages and the renderer's blended terrain material.
+Implemented: elevation recipe, slope, drainage, wetness, rules and palettes,
+river networks and carving, with regression tests in
+`modules/content/terrain/tests`. Not yet implemented from the pipeline: imports
+and stamps as module operations, thermal and hydraulic erosion, cooked pages,
+river water meshes and the editor's use of these fields.
 
 ## References
 
@@ -105,6 +141,13 @@ erosion, cooked pages and the renderer's blended terrain material.
 - Keith J. Beven and Mike J. Kirkby, *A physically based, variable contributing
   area model of basin hydrology*, Hydrological Sciences Bulletin 24(1),
   pp. 43–69, 1979. Topographic wetness index.
+- Luna B. Leopold and Thomas Maddock Jr., *The hydraulic geometry of stream
+  channels and some physiographic implications*, U.S. Geological Survey
+  Professional Paper 252, 1953. Channel width and depth as power laws of
+  discharge; Ludus uses contributing area as the discharge proxy.
+- Arthur N. Strahler, *Quantitative analysis of watershed geomorphology*,
+  Transactions, American Geophysical Union 38(6), pp. 913–920, 1957. Stream
+  order.
 - Ken Perlin, *Implementing Improved Perlin Noise*, GPU Gems 1, chapter 5.
   Smooth fade and balanced gradients.
 - Ferenc Pintér, *Large-Scale Terrain Rendering for Outdoor Games*, GPU Pro 2,

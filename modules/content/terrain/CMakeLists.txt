@@ -1,12 +1,14 @@
 # Ludus::ContentTerrain: headless serial reference kernels of terrain slice T1
 # (docs/architecture/terrain-generation.md#ordered-pipeline): the addressed
 # gradient-noise elevation recipe, derived slope/drainage/wetness fields and
-# material rules with bounded patch palettes. Foundation-only, so it builds for
+# material rules with bounded patch palettes, and the T2 river channel network
+# and carving (terrain_rivers.h). Foundation-only, so it builds for
 # native and browser targets. In-tree only until an SDK consumer needs it.
 add_library(ludus_content_terrain STATIC
     src/terrain_noise.cpp
     src/terrain_fields.cpp
     src/terrain_materials.cpp
+    src/terrain_rivers.cpp
 )
 add_library(Ludus::ContentTerrain ALIAS ludus_content_terrain)
 target_sources(ludus_content_terrain PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
@@ -14,6 +16,7 @@ target_sources(ludus_content_terrain PUBLIC FILE_SET public_headers TYPE HEADERS
         include/ludus/content/terrain/terrain_noise.h
         include/ludus/content/terrain/terrain_fields.h
         include/ludus/content/terrain/terrain_materials.h
+        include/ludus/content/terrain/terrain_rivers.h
 )
 target_link_libraries(ludus_content_terrain
     PUBLIC Ludus::FoundationBase Ludus::FoundationContainers Ludus::FoundationMath)
@@ -25,6 +28,7 @@ if(LUDUS_BUILD_TESTS)
         tests/terrain_noise_tests.cpp
         tests/terrain_fields_tests.cpp
         tests/terrain_materials_tests.cpp
+        tests/terrain_rivers_tests.cpp
     )
     target_link_libraries(ludus_content_terrain_tests
         PRIVATE Ludus::ContentTerrain Catch2::Catch2WithMain)
