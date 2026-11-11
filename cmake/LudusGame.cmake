@@ -109,5 +109,16 @@ function(ludus_add_game)
         endif()
         set_target_properties(${GAME_NAME}_shipping PROPERTIES OUTPUT_NAME "${GAME_NAME}")
         _ludus_apply_game_policy(${GAME_NAME}_shipping)
+        if(WIN32)
+            # The DLL and player share a base name. Separate the player's linked
+            # PDB, import library and Agility runtime from the development build.
+            set(shipping_directory "${CMAKE_CURRENT_BINARY_DIR}/shipping")
+            set_target_properties(${GAME_NAME}_shipping PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${shipping_directory}"
+                ARCHIVE_OUTPUT_DIRECTORY "${shipping_directory}"
+                PDB_OUTPUT_DIRECTORY "${shipping_directory}")
+            ludus_enable_d3d12_agility(${GAME_NAME}_host)
+            ludus_enable_d3d12_agility(${GAME_NAME}_shipping)
+        endif()
     endif()
 endfunction()

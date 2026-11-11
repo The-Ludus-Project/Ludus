@@ -727,7 +727,7 @@ foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buf
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/templates/${template_directory}")
 endforeach()
 # Gameplay project helper + host/shipping main templates (project-live-reload).
-if(TARGET Ludus::GameHost AND NOT WIN32)
+if(TARGET Ludus::GameHost)
     install(FILES
         cmake/LudusGame.cmake
         cmake/LudusGameShippingMain.cpp
