@@ -688,6 +688,13 @@ the authoring compiler never commits speculative GPU state. Reflection and
 declared uses must agree; widen conservative ranges instead of guessing safety.
 Keep streaming outside the frame graph with explicit imported readiness.
 
+A retained operation can contain several Renderer-owned GPU stages, as in the
+clustered-deferred profile. The
+[Renderer execution plan](renderer-systems.md#render-pipeline-composition-and-execution)
+defines how to expose those stages and their resource uses under the parent
+pass while preserving its authored ports and order. A cross-operation
+dependency still uses the authored graph interface.
+
 Cache plans by topology/configuration/profile/resource compatibility. Bind fresh
 scene/view data and imported resources each frame, retaining exact versions.
 Extent-only resize updates checked resource descriptors/pools; shader rebuild is

@@ -940,7 +940,8 @@ profile. Detailed retention, state and submission rules remain owned by
    finite values and configured capacities before publication.
 4. Build render views, CPU visibility/LOD and draw lists from those values.
 5. Resolve ready pipelines/bindings and select declared effect variants.
-6. Build ordered passes; GDI validates declared subresource uses and plans imports.
+6. Bind ordered passes to the current inputs; GDI validates declared subresource
+   uses and plans imports.
 7. Record/submit through one RHI owner. On acceptance, transfer retained uses to
    its authoritative ledger; on failure discard unsubmitted reservations safely.
 8. Commit temporal state only for accepted render work under the view's policy.
@@ -962,6 +963,107 @@ Bounded diagnostics carry source/view/object/pass IDs. Optional debug geometry
 may be dropped with a counter; essential scene work must not silently disappear
 because a packet buffer overflowed. A frame admission failure returns a status
 and preserves the last valid presentation where the surface permits it.
+
+## Render pipeline composition and execution
+
+Proposed, November 2026. A cooked `RenderGraphPlan` describes authored
+operations in serial order. It is sufficient for the flat raster route, but
+some profiles expand an operation inside the encoder. For example,
+`RenderGraph::State::EncodePasses` can record a shadow atlas before
+`ColorAndDepth`, and `RenderGraphDeferredPass::Draw` can record atmosphere
+tables, copy depth, write the G-buffer, resolve lighting with sky, and draw
+overlays. The G-buffer and its consumers are private to Renderer. Existing GPU
+scopes time several of these stages, while the cooked pass and resource tables
+describe their parent operation and its public attachments. This makes it hard
+to trace a private resource from its producer to its last use or explain which
+work changed when a profile changed.
+
+### Expand the selected profile during preparation
+
+Keep authored pipeline nodes, their typed ports and ordered dependencies in
+the [authoring contract](render-graph-authoring.md#pipeline-readiness-and-execution).
+After package admission, Renderer expands each retained operation into a
+bounded, private serial plan for the selected profile. Use concrete records
+and existing stage encoders. Each stage has a parent pass index, a stable
+renderer-owned stage identifier, an ordinal, a view or shared-resource scope,
+and the resource accesses that cross the stage boundary. Resolve the parent
+index through the package's pass names and source mapping. Include attachment
+format, extent policy, aspects, load/store intent and explicit order constraints
+where they apply. Model shadow atlas production once at its existing scope and
+preserve every consumer and the current ordering. A stage may group draws in
+the same render pass, such as sky and lighting. The stage boundary should
+expose resource use without forcing an extra native pass.
+
+Use the same records to drive serial execution and produce a bounded report.
+For each stage, show planned order, declared accesses, whether recording
+completed, skipped or failed, and the reason where applicable. Associate GPU
+timings with those stage identities where available. Identify
+resources as imported, private scratch, per-view history or exported. Show the
+producer, first and last scheduled use, resolved descriptor, and logical
+attachment bytes when known. Logical bytes and scheduled last use describe the
+plan. Physical residency and reuse depend on the existing allocation and RHI
+completion contracts, including holds on exported images. RHI retains authority
+over legal bindings, barriers, accepted submission and retirement.
+
+Allow only profiles and structural alternatives defined by the cooked package
+and existing Renderer capabilities. Resolve their selection before recording
+and expose the requested and selected route with any rejection or fallback
+reason. Effect insertion requires an explicit authored dependency or a
+Renderer-owned expansion associated with a selected profile. This keeps the
+plan explainable across Editor and game hosts. Keep renderer-generated stages
+private to their parent until an authored consumer needs a new typed port.
+
+### Prepare by update frequency
+
+| Change | Work admitted before recording |
+| --- | --- |
+| Package, profile or structural setting | Expand and validate stage order, required resource uses and ready pipeline recipes. Resolve formats, samples and layout compatibility with the existing recipe keys. |
+| Drawable extent or target binding | Re-resolve affected descriptors and stage bindings. A compatible extent-only change keeps the stage order and pipeline keys. Prepare replacements under the existing resize and activation boundaries. |
+| Scene, camera or ordinary uniform change | Bind the exact accepted snapshots and leases, prepare visibility and per-view data, and service uploads. Reuse compatible prepared stages. |
+
+Give history to the owning graph instance, view and effect output. Share
+immutable packages and ready pipelines across compatible instances. Initialize
+history when the producer or output contract becomes incompatible, the extent
+changes, or the view declares a cut. Effects still own their additional
+invalidation conditions. Advance history only after the corresponding work is
+accepted, and report presentation separately. Keep the active generation
+drawable during candidate preparation or failure. Stage reports identify the
+plan generation and view revision so a candidate diagnostic can be understood
+alongside an older presented image.
+
+### First migration and acceptance
+
+Start with the existing [clustered-deferred](../development/render-graph-authoring.md#default-clustered-deferred-lighting)
+`ColorAndDepth` operation. Make its
+shadow, atmosphere-table, conditional depth-copy, geometry, lighting/sky and
+overlay stages visible through the private plan and record through the current
+encoders. In the load-depth route, the copy reads logical depth and initializes
+private depth. Geometry writes private depth and three G-buffer color targets.
+The lighting resolve reads them and writes the logical color and depth, which
+the overlay stage loads. Keep existing package bytes, attachment allocation,
+load/store behavior, submission ordering and completion tracking for this
+slice. Treat a later change to the private attachment allocator or GPU
+scheduling as an independent optimization.
+
+- Compare the serial stage list, bound attachment accesses and command order
+  against the existing route for clear and load depth, with atmosphere and
+  shadows enabled and disabled. Check stage omissions and their reasons.
+- Compare frozen color/depth outputs and coverage for the same scene, camera
+  and settings. Verify a compatible extent-only resize reuses the plan and
+  pipeline identities. Exercise pending, rejected and successful replacement,
+  including a frame still in flight and an outstanding exported-image consumer.
+- Exercise the production World viewport on an admitted native deferred
+  target and the portable raster fallback through its existing browser path.
+  Report cold preparation, warm CPU recording time, GPU pass time and peak
+  logical attachment bytes under matched inputs. Require image and submission
+  parity before attributing any performance change to the new plan.
+
+Thanks to Charlie Birtwistle and Francois Durand for their typed task inputs
+and stage inspection, Nicolas Lopez and Michel Bouchard for their account of
+explicit schedules and runtime feature registration, and Sebastian Aaltonen
+for separating low-frequency preparation from draws. The
+[conference review](renderer-systems-gems-review.md#render-pipeline-composition-follow-up)
+records the sources and how Ludus adapts them.
 
 ## Primitive submission, visibility and batching
 
