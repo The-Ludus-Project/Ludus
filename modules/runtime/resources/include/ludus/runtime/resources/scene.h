@@ -111,8 +111,8 @@ struct SceneEnvironment final
 struct SceneDefinition final
 {
     // Counts are bounded by the bundle version's content::scene_format::GetBundleLimits:
-    // the resident reference profile (versions 1-4) or the import profile (version 5).
-    foundation::Array<SceneTexture> Textures;   ///< Textures; 32 MiB (v1-v4) or 256 MiB (v5) combined pixels.
+    // the resident reference profile (versions 1-4) or the assembly profile (versions 5-11).
+    foundation::Array<SceneTexture> Textures;   ///< Textures; 32 MiB (v1-v4) or 352 MiB (v5-v11) combined pixels.
     foundation::Array<SceneMaterial> Materials; ///< Distinct materials; at most 8 (v1-v4) or 256 (v5).
     foundation::Array<SceneMesh> Meshes;        ///< Distinct meshes; at most 6 (v1-v4) or 256 (v5).
     foundation::Array<SceneObject> Objects;     ///< Independent instances; at most 128 (v1-v4) or 1024 (v5).
@@ -123,7 +123,7 @@ struct SceneDefinition final
     foundation::math::Vector3 Up;               ///< Camera up direction not parallel to its forward direction.
     float32 VerticalFov = 1;                    ///< Perspective vertical field of view in radians, in (0,pi).
     /// Decode LUSCN01 versions one through eleven little-endian interchange, at most 64 MiB for versions one to
-    /// four and 384 MiB for versions five through eleven (BundleLimits::BundleBytes). No file I/O or source
+    /// four and 576 MiB for versions five through eleven (BundleLimits::BundleBytes). No file I/O or source
     /// import. Failure preserves output; allocation failures return OutOfMemory. The caller owns all resulting arrays
     /// and must keep them immutable while any adapter/lease references them.
     [[nodiscard]] static Status Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept;

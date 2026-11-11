@@ -482,11 +482,11 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 {
     return version >= VERSION_6;
 }
-/// Admission ceilings for a supported version: the import profile for versions 5
-/// through 11, otherwise the resident reference profile.
+/// Decode and assembly ceilings for a supported version. Versions 5-11 admit
+/// combined World bundles. A single-source best-effort cook uses IMPORT_LIMITS.
 [[nodiscard]] constexpr const BundleLimits& GetBundleLimits(uint32 version) noexcept
 {
-    return version >= VERSION_5 ? IMPORT_LIMITS : RESIDENT_REFERENCE_LIMITS;
+    return version >= VERSION_5 ? ASSEMBLED_IMPORT_LIMITS : RESIDENT_REFERENCE_LIMITS;
 }
 /// Bytes of one serialized vertex for a supported version.
 [[nodiscard]] constexpr usize GetVertexRecordBytes(uint32 version) noexcept

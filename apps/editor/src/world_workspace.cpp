@@ -1300,7 +1300,7 @@ void WorldWorkspace::ShowImportPreview(bool isAccepted)
     DiscardImport_->setVisible(isShown);
     if (isShown == true)
     {
-        Changed(QStringLiteral("Import preview ready; review it, then import or discard."));
+        Changed(QStringLiteral("Import plan ready. Choose Import previewed scene to add it to this World."));
     }
 }
 void WorldWorkspace::ShowImportReports()

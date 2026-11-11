@@ -527,9 +527,9 @@ file name:
 
 Choosing a file first runs a dry-run preview on the scene worker thread, with
 progress and **Cancel scene operation**. The preview panel lists source and
-cooked counts, budget use against the runtime limits and every warning-level
-fallback. Nothing is written until **Import previewed scene**; **Discard
-preview** drops it.
+planned cooked counts and every warning-level fallback. **Import previewed
+scene** cooks the source and checks the combined World before publication.
+**Discard preview** closes the plan.
 
 A best-effort import stores its full report in the scene manifest, beside the
 input digests that guard against a source changing mid-import. Opening or
@@ -664,6 +664,34 @@ their authored normal detail and shape masks. Full geometry import/runtime decod
 interactive viewport performance, GPU memory use or PBRT material/lighting parity.
 Earlier SDKs can reject the larger geometry counts even though the LUSCN v6 wire
 layout is unchanged.
+
+### Intel New Sponza with curtains
+
+Import `main_sponza/NewSponza_Main_glTF_003.gltf`, then import
+`pkg_a_curtains/NewSponza_Curtains_glTF.gltf` into the same World. The preview is
+an import plan. The viewport displays the World with the curtains after the
+import commits and the combined scene reaches the renderer. Adding the curtains
+preserves the World start view and the active viewport camera.
+
+Thanks to Intel's New Sponza team for the main scene and curtain add-on.
+Keep both packages' license files with the source assets. With the licensed
+inputs available, exercise catalog preparation, publication, assembly and
+runtime decode with the following command:
+
+```sh
+LUDUS_NEW_SPONZA_DIR=references/resources \
+  out/build/macos-clang-development/modules/content/scene_cook/ludus_scene_assets_tests '[sponza]' -s
+```
+
+The regression checks 3,106,815 cooked vertices and all 17,233,152 indices
+from the two packages. A combined World uses the
+[assembly ceilings](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)
+so it can retain the texture payloads produced by each source cook. On macOS
+arm64, the combined bundle was 548 MiB including 340 MiB of RGBA8 textures. The
+import, assembly and decode regression reached 2.9 GiB peak process RSS in a
+local run. The largest curtain mesh exceeds the per-mesh light-bake chart limit.
+It keeps its indexed geometry in the realtime viewport. Older Editors and SDKs
+can reject the resulting bundle.
 
 ## Third-party code
 

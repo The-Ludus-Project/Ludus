@@ -715,6 +715,42 @@ TEST_CASE("World composes schema meshes into cooked renderer data with bounded f
     }
 }
 
+TEST_CASE("World composition keeps indexed geometry that exceeds the bake chart capacity",
+          "[editor][unified][render-authoring][scene-capacity]")
+{
+    namespace format = ludus::content::scene_format;
+    constexpr uint32 CHART_TILES_PER_SIDE = format::MAX_BAKE_CHART_DIMENSION / format::BAKE_CHART_TILE_PIXELS;
+    constexpr uint32 TRIANGLE_COUNT = CHART_TILES_PER_SIDE * CHART_TILES_PER_SIDE + 1;
+    constexpr uint32 INDEX_COUNT = TRIANGLE_COUNT * format::TRIANGLE_CORNERS;
+    format::BakeChartLayout layout;
+    CHECK(format::TryMakeBakeChartLayout(TRIANGLE_COUNT, layout) == false);
+
+    Fixture fixture;
+    PreviewMesh& mesh = fixture.Scene.Meshes[0];
+    REQUIRE(mesh.Indices.size() >= format::TRIANGLE_CORNERS);
+    mesh.Indices.resize(INDEX_COUNT);
+    for (qsizetype index = format::TRIANGLE_CORNERS; index < mesh.Indices.size(); ++index)
+    {
+        mesh.Indices[index] = mesh.Indices[index % format::TRIANGLE_CORNERS];
+    }
+    mesh.Normals.fill({0, 0, 1}, mesh.Positions.size());
+    const QJsonObject level{{QStringLiteral("id"), QStringLiteral("a8517f65-8127-4bf4-99c2-e53b1a6d9700")},
+                            {QStringLiteral("objects"), QJsonArray{}},
+                            {QStringLiteral("camera"),
+                             QJsonObject{{QStringLiteral("eye"), QJsonArray{0, 0, 3}},
+                                         {QStringLiteral("target"), QJsonArray{0, 0, 0}},
+                                         {QStringLiteral("up"), QJsonArray{0, 1, 0}},
+                                         {QStringLiteral("fov"), 1.0}}}};
+    RenderScene combined;
+    const bool isMerged = RenderScene::Merge(fixture.Scene, {}, level, combined, fixture.Error, {});
+    INFO(fixture.Error.toStdString());
+    REQUIRE(isMerged);
+    REQUIRE(combined.Definition != nullptr);
+    REQUIRE(combined.Definition->Meshes.GetSize() == 1);
+    CHECK(combined.Definition->Meshes[0].Positions.GetSize() == static_cast<usize>(mesh.Positions.size()));
+    CHECK(combined.Definition->Meshes[0].Indices.GetSize() == INDEX_COUNT);
+}
+
 TEST_CASE("World composition keeps imported LUSCN v4 meshes indexed beside schema meshes",
           "[editor][unified][render-authoring]")
 {

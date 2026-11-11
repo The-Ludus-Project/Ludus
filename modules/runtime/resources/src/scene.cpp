@@ -30,8 +30,8 @@ static_assert(sizeof(format::ObjectRecord::Linear) == sizeof(math::Affine3::Colu
 static_assert(sizeof(format::Header::Eye) == sizeof(math::Vector3));
 /// Largest decoded definition an adapter binds: every admitted bundle's arrays, which
 /// are no larger than their wire records, plus the per-record container headers.
-constexpr uint64 MAX_RESIDENT_SCENE_BYTES = uint64{512} * 1024 * 1024;
-static_assert(MAX_RESIDENT_SCENE_BYTES > format::IMPORT_LIMITS.BundleBytes);
+constexpr uint64 MAX_RESIDENT_SCENE_BYTES = uint64{640} * 1024 * 1024;
+static_assert(MAX_RESIDENT_SCENE_BYTES > format::MAX_ASSEMBLED_BUNDLE_BYTES);
 class Reader final
 {
 public:
@@ -211,7 +211,7 @@ uint64 ReserveEpoch() noexcept
 } // namespace
 Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept
 {
-    if (bytesOrNull == nullptr || count < sizeof(format::Header) || count > format::IMPORT_LIMITS.BundleBytes)
+    if (bytesOrNull == nullptr || count < sizeof(format::Header) || count > format::MAX_ASSEMBLED_BUNDLE_BYTES)
     {
         return Status::Failed;
     }

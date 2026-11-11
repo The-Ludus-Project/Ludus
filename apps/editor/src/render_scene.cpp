@@ -299,6 +299,7 @@ private:
 // LUSCN v6 mesh: indexed VertexRecordV6s; consumers derive the per-triangle bake charts.
 // Meshes without normals are expanded per corner so each triangle keeps its face normal.
 // Tangents are copied when supplied (one per vertex); otherwise vertices carry none.
+// The bake pass checks chart capacity when requested. Raster uses the indexed mesh directly.
 bool WriteSceneMesh(QDataStream& inoutStream,
                     foundation::BorrowedView<const math::Vector3> positions,
                     foundation::BorrowedView<const math::Vector3> normals,
@@ -309,7 +310,6 @@ bool WriteSceneMesh(QDataStream& inoutStream,
                     usize& inoutIndexCount,
                     QString& outError)
 {
-    format::BakeChartLayout layout;
     const bool isExpanded = normals.IsEmpty() == true;
     const usize vertexCount = isExpanded == true ? indices.GetSize() : positions.GetSize();
     if (positions.IsValid() == false || normals.IsValid() == false || texcoords.IsValid() == false ||
@@ -317,9 +317,8 @@ bool WriteSceneMesh(QDataStream& inoutStream,
         indices.GetSize() % format::TRIANGLE_CORNERS != 0 || texcoords.GetSize() != positions.GetSize() ||
         tangents.IsValid() == false || (tangents.IsEmpty() == false && tangents.GetSize() != positions.GetSize()) ||
         (isExpanded == false && normals.GetSize() != positions.GetSize()) ||
-        vertexCount > format::IMPORT_LIMITS.Vertices - inoutVertexCount ||
-        indices.GetSize() > format::IMPORT_LIMITS.TotalIndices - inoutIndexCount ||
-        format::TryMakeBakeChartLayout(static_cast<uint32>(indices.GetSize() / 3), layout) == false)
+        vertexCount > format::ASSEMBLED_IMPORT_LIMITS.Vertices - inoutVertexCount ||
+        indices.GetSize() > format::ASSEMBLED_IMPORT_LIMITS.TotalIndices - inoutIndexCount)
     {
         return Fail(outError, QStringLiteral("World geometry exceeds the scene vertex or index capacity."));
     }
@@ -1855,8 +1854,7 @@ bool ComposeWorldScene(const RenderScene& authored,
     const usize materialCount = imported.Materials.GetSize() + static_cast<usize>(authored.Objects.size());
     const usize textureCount = imported.Textures.GetSize() + static_cast<usize>(authored.Objects.size());
     const usize objectCount = imported.Objects.GetSize() + static_cast<usize>(authored.Objects.size());
-    // The composed World is a version 6 bundle: the import profile's limits apply.
-    const format::BundleLimits& limits = format::IMPORT_LIMITS;
+    const format::BundleLimits& limits = format::ASSEMBLED_IMPORT_LIMITS;
     if (meshCount > limits.Meshes || materialCount > limits.Materials || textureCount > limits.Textures ||
         objectCount > limits.Objects)
     {

@@ -876,15 +876,15 @@ owns GPU resources/retirement independently of the CPU lease. The initial
 and 128 instances; combined geometry is limited to 500000 vertices, each mesh to
 1500000 indices, and textures to 16 MiB each/32 MiB combined. Version 5 admits the
 larger import profile (256 meshes, materials and textures, 1,024 instances,
-geometry bounded by encoded bundle bytes and 256 MiB of textures; see
-[the import profile](content-resources.md#import-profile-and-alpha-masks-luscn-v5)).
-Encoded logical dependency closures admit 512 MiB through SceneCook's
+geometry bounded by encoded bundle bytes and up to 352 MiB of assembled textures. See
+[the import profile](content-resources.md#import-profile-and-alpha-masks-luscn-v5).
+Encoded logical dependency closures admit 640 MiB through SceneCook's
 `MAX_RESIDENT_CLOSURE_BYTES`, allowing manifests, material JSON and licenses
-beside payloads that already fill a 384 MiB assembled bundle. Single artifacts
+beside payloads that already fill a 576 MiB assembled bundle. Single artifacts
 remain bounded by `MAX_ASSET_BYTES`; assembly still enforces its version's
 bundle limit. This encoded-byte admission policy is separate from decoded
 residency and peak-memory accounting below.
-A bound decoded aggregate is capped at 512 MiB, above the largest 384 MiB bundle; renderer
+A bound decoded aggregate is capped at 640 MiB, above the largest 576 MiB bundle. The renderer's
 reference storage has an explicit 128 MiB budget, with RHI storage accounted in its
 separate R6 budgets. Worker scratch, retained candidate/last-good CPU definitions,
 Qt display images and driver allocations are not misreported as coordinator-owned

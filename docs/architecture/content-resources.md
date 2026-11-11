@@ -412,9 +412,10 @@ remain in that range; overflow rejects the candidate. A single imported map reta
 its original texels and multiplier, including zero-energy channels. Different HDR
 map dimensions reject explicitly: this storage codec does not choose a resampling
 policy. The combined light list remains bounded at 128 and the assembled packet
-remains bounded by its version's byte limit (64 MiB, or 384 MiB for version 5); the
-individual artifacts retain the 384 MiB `MAX_ASSET_BYTES` ceiling. Encoded logical
-dependency closures have a separate 512 MiB `MAX_RESIDENT_CLOSURE_BYTES` ceiling
+remains bounded by its version's byte limit (64 MiB for versions 1–4 and 576 MiB
+for versions 5–11). Individual artifacts retain the 384 MiB `MAX_ASSET_BYTES`
+ceiling. Encoded logical dependency closures have a separate 640 MiB
+`MAX_RESIDENT_CLOSURE_BYTES` ceiling
 because they also carry material JSON, scene manifests and licenses. Shared files
 are charged once per selected logical resource. This is not a decoded or peak-memory
 budget, and assembly still enforces the version's bundle limit. No environment or
@@ -463,24 +464,24 @@ Versions 1 to 4 share the *resident reference profile*: 6 meshes, 8 materials,
 first reference scene. Real scenes need one material per source material; the
 best-effort planner used to merge Khronos Sponza's 25 materials into six. Version 5
 keeps every version 4 record except the material, and admits the larger *import
-profile*. `content::scene_format::GetBundleLimits(version)` returns the limits of a
-version (`RESIDENT_REFERENCE_LIMITS` or `IMPORT_LIMITS` in `limits.h`); producers,
-the Resources decoder, the scene asset pipeline and the Editor read them there.
+profile*. `IMPORT_LIMITS` in SceneFormat's `limits.h` governs one source cook.
+`content::scene_format::GetBundleLimits(version)` selects the assembly and
+decoder limits for the version.
 
-| Limit | Versions 1-4 | Versions 5-6 |
-| --- | --- | --- |
-| Meshes / materials / textures | 6 / 8 / 8 | 256 / 256 / 256 |
-| Placed objects | 128 | 1,024 |
-| Unique vertices (combined) | 500,000 | Bounded by encoded bundle bytes |
-| Indices (combined; versions 4-6) | 1,500,000 | Bounded by encoded bundle bytes |
-| Combined RGBA8 texture bytes | 32 MiB | 256 MiB |
-| Bundle bytes | 64 MiB | 384 MiB |
+| Limit | Versions 1–4 | One source cook, versions 5–11 | Assembled World, versions 5–11 |
+| --- | --- | --- | --- |
+| Meshes / materials / textures | 6 / 8 / 8 | 256 / 256 / 256 | 256 / 256 / 256 |
+| Placed objects | 128 | 1,024 | 1,024 |
+| Unique vertices (combined) | 500,000 | Bounded by encoded bundle bytes | Bounded by encoded bundle bytes |
+| Indices (combined, versions 4 and later) | 1,500,000 | Bounded by encoded bundle bytes | Bounded by encoded bundle bytes |
+| Combined RGBA8 texture bytes | 32 MiB | 256 MiB | 352 MiB |
+| Bundle bytes | 64 MiB | 384 MiB | 576 MiB |
 
 Per-texture limits (4096 texels per side, 16 MiB) are unchanged.
 
 The import profile no longer imposes separate 2,000,000-vertex and
 6,000,000-index scene ceilings. Its conservative count guards are derived from
-`MAX_IMPORT_BUNDLE_BYTES` and the wire component widths, so any geometry that
+the corresponding bundle byte ceiling and the wire component widths, so any geometry that
 fits the actual bundle passes those guards. The decoder validates each mesh's
 encoded extent before allocating. The best-effort planner reserves the complete
 geometry (32 bytes per v5 vertex, 48 per v6 vertex, four per index, plus records)
