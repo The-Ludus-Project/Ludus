@@ -123,8 +123,9 @@ private:
 /// text margins, cursor and style frame. GUI thread only.
 [[nodiscard]] foundation::int32 ComputeLineEditWidth(const QLineEdit& field, const QString& text);
 
-/// Gives a number field the minimum width of a six-decimal value such as "-0.818579", so imported values never
-/// show clipped (for example "818579" for 0.818579) however narrow the panel is.
+/// Keeps a number field at least as wide as its current value (and never narrower than a short value such as
+/// "-0.000"), following edits, so a value such as 0.818579 never shows clipped as "818579" however narrow the panel
+/// is; the surrounding row wraps or stacks instead.
 void SetNumberFieldMinimumWidth(QLineEdit& inoutField);
 
 /// Arranges an inspector form for a narrow panel: a field that does not fit beside its label wraps below it rather

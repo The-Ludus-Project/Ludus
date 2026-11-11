@@ -51,11 +51,11 @@ struct WorldLightChange;
 struct WorldLightRow;
 enum class PlacementValidationResult : foundation::uint8;
 struct ToolingPaths;
-/// Where Play opens the game: a local editor preference, not project data.
 /// Narrowest the Properties tool window becomes, in device-independent pixels: seven page gutters, room for a label
-/// column beside one number field that fits a six-decimal value. Below it the inspector would have to clip.
+/// column beside a number field. Below it the inspector would have to clip.
 inline constexpr foundation::int32 WORLD_PROPERTIES_MINIMUM_WIDTH = design::SPACING_PAGE * 7;
 
+/// Where Play opens the game: a local editor preference, not project data.
 enum class PlayMode : foundation::uint8
 {
     /// The World viewport becomes the game's window (the default).

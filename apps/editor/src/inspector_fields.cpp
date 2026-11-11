@@ -44,8 +44,8 @@ constexpr float64 MAXIMUM_STEP = 1;
 constexpr float64 RANGE_DIVISOR = 1000;
 constexpr int32 SHOWN_HEAD = 8;
 constexpr int32 SHOWN_TAIL = 4;
-/// A six-decimal value, the longest an imported colour or placement usually has; number fields always fit it.
-constexpr QStringView NUMBER_FIELD_SAMPLE = u"-0.000000";
+/// The shortest value a number field always has room for; it widens beyond this to fit the value it holds.
+constexpr QStringView NUMBER_FIELD_SAMPLE = u"-0.000";
 /// Pixels QLineEdit keeps between its contents rectangle and its text on each side (QLineEditPrivate's horizontal
 /// margin), which no style reports.
 constexpr int32 LINE_EDIT_TEXT_MARGIN = 2;
@@ -346,9 +346,17 @@ int32 ComputeLineEditWidth(const QLineEdit& field, const QString& text)
 
 void SetNumberFieldMinimumWidth(QLineEdit& inoutField)
 {
-    inoutField.setMinimumWidth(ComputeLineEditWidth(inoutField, NUMBER_FIELD_SAMPLE.toString()));
-    // A value too long for the field shows its start, where the sign and integer part are.
-    inoutField.setCursorPosition(0);
+    const auto fit = [&inoutField]() {
+        const int32 shortest = ComputeLineEditWidth(inoutField, NUMBER_FIELD_SAMPLE.toString());
+        inoutField.setMinimumWidth(std::max(shortest, ComputeLineEditWidth(inoutField, inoutField.text())));
+    };
+    fit();
+    // Connected once: the property marks a field whose width already follows its text.
+    if (inoutField.property("isFittedToValue").toBool() == false)
+    {
+        inoutField.setProperty("isFittedToValue", true);
+        QObject::connect(&inoutField, &QLineEdit::textChanged, &inoutField, fit);
+    }
 }
 
 namespace
@@ -389,7 +397,7 @@ private:
         const int32 width = owner.contentsRect().width() - margins.left() - margins.right();
         const int32 fieldColumn = width - widestLabel - std::max(mForm.horizontalSpacing(), 0);
         const int32 readableField =
-            owner.fontMetrics().horizontalAdvance(NUMBER_FIELD_SAMPLE.toString()) + design::SPACING_EXTRA_LARGE;
+            owner.fontMetrics().horizontalAdvance(NUMBER_FIELD_SAMPLE.toString()) + design::SPACING_PAGE;
         const bool shouldWrapAll = widestLabel > 0 && fieldColumn < readableField;
         const QFormLayout::RowWrapPolicy policy =
             shouldWrapAll == true ? QFormLayout::WrapAllRows : QFormLayout::WrapLongRows;
