@@ -294,17 +294,25 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     {
         INFO("Dock width " << width);
         dock.resize(width, DOCK_HEIGHT);
-        // The material form wraps at the new width. Let the scroll area process the resulting layout requests
+        // The forms wrap at the new width. Let the scroll area process the resulting layout requests
         // before checking the geometry, including the height that the wrapped rows need.
         // Thanks to the Qt contributors for QScrollArea::event's layout-request handling:
         // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qscrollarea.cpp#L252-L267
         CHECK(QTest::qWaitFor(
                   [&dock, scrollOrNull, width]() {
-                      const QGroupBox* materialOrNull = dock.findChild<QGroupBox*>(QStringLiteral("worldMaterial"));
-                      return dock.width() == width &&
-                             scrollOrNull->widget()->width() <= scrollOrNull->viewport()->width() &&
-                             materialOrNull != nullptr && materialOrNull->isVisible() == true &&
-                             materialOrNull->height() >= materialOrNull->heightForWidth(materialOrNull->width());
+                      if (dock.width() != width || scrollOrNull->widget()->width() > scrollOrNull->viewport()->width())
+                      {
+                          return false;
+                      }
+                      for (const QGroupBox* group : dock.findChildren<QGroupBox*>())
+                      {
+                          if (group->isVisible() == true && group->hasHeightForWidth() == true &&
+                              group->height() < group->heightForWidth(group->width()))
+                          {
+                              return false;
+                          }
+                      }
+                      return true;
                   },
                   SETTLE_TIMEOUT_MILLISECONDS) == true);
         CHECK(dock.width() == width);
