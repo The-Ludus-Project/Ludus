@@ -1133,16 +1133,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Use native Windows widget metrics. Widget/logic suites do not submit GPU
     # frames; the dedicated native journeys below exercise WARP presentation.
     set(editor_test_environment "QT_QPA_PLATFORM=offscreen")
+    set(code_editor_timeout 30)
     if(WIN32)
         set(editor_test_environment "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1;LUDUS_EDITOR_VIEWPORT=disabled")
+        # The full code editor suite can exceed 30 seconds on hosted Windows.
+        # Its individual performance assertions still enforce their own limits.
+        set(code_editor_timeout 90)
     endif()
-    set(code_editor_timeout 30)
     set(content_editor_timeout 60)
     set(graph_configuration_timeout 180)
     if(WIN32 AND LUDUS_ENABLE_ASAN)
         # The instrumented content scan took 57 seconds on the hosted runner;
         # keep the process deadlines distinct from the tests' own assertions.
-        set(code_editor_timeout 90)
         set(content_editor_timeout 120)
         set(graph_configuration_timeout 300)
     endif()
