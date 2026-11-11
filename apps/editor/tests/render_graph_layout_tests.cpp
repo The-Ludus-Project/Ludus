@@ -404,7 +404,10 @@ TEST_CASE("bounded arrangement handles a maximum-size cycle and rejects excess c
         CHECK(position.Y >= 0);
         CHECK(position.Y <= RenderGraphDocument::MAX_COORDINATE);
     }
-    nodes.append({QStringLiteral("excess"), QRectF(0, 0, 100, 100)});
+    while (nodes.size() <= MAXIMUM_RENDER_GRAPH_LAYOUT_CARDS)
+    {
+        nodes.append({QStringLiteral("excess") + QString::number(nodes.size()), QRectF(0, 0, 100, 100)});
+    }
     CHECK(ComputeRenderGraphLayout(nodes, edges, RenderGraphLayoutOperation::Arrange, positions) == false);
     CHECK(positions.size() == RenderGraphDocument::MAX_NODES);
 }

@@ -14,6 +14,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QPointF>
+#include <QSet>
 #include <QSize>
 #include <QString>
 #include <QStringList>
@@ -32,6 +33,7 @@ class QFocusEvent;
 class QResizeEvent;
 class QPaintEvent;
 class QAction;
+class QFrame;
 class QLabel;
 class QToolBar;
 class QMenu;
@@ -204,6 +206,12 @@ public:
     [[nodiscard]] foundation::uint64 GetDocumentRevision() const noexcept;
     /// Copy authored card geometry without configuration interface boxes.
     [[nodiscard]] QVector<RenderGraphLayoutNode> GetAuthoredNodeBounds() const;
+    /// Crossings and total length of the shown wires as straight port-to-port chords. movedCards measures as if
+    /// those cards had these top-left positions instead, without moving anything.
+    [[nodiscard]] RenderGraphWireMeasure MeasureWires(const QHash<QString, QPointF>& movedCards = {}) const;
+    /// Whether the canvas is suggesting Tidy layout: the saved layout is tangled and Auto Layout would at least
+    /// halve its crossings. Dismissing it lasts for this configuration until the editor restarts.
+    [[nodiscard]] bool IsTidySuggested() const;
     /// Preview supplied saved integer positions without editing or changing selection/trace.
     /// Unknown nodes are ignored; callers cancel or commit the corresponding gesture afterward.
     void PreviewNodePositions(const QVector<RenderGraphNodePosition>& positions);
@@ -332,6 +340,13 @@ private:
     void placeMinimap();
     /// Pin the availability notice to the viewport's top edge, above the scene.
     void placeAvailabilityNotice();
+    void placeTidyNotice();
+    /// Display-only placement of cards without saved positions; saved cards and interface boxes stay put.
+    void placeDisplayCards(const QSet<QString>& savedCards);
+    /// Offer Tidy layout when the saved layout is tangled and Auto Layout would untangle it.
+    void refreshTidySuggestion();
+    /// A first move in a configuration fixes every shown card where it is, so no card jumps to a new spot.
+    void appendUnsavedPositions(QVector<RenderGraphNodePosition>& inoutPositions) const;
     void updateFramingControls();
     void applyViewTransform(const RenderGraphViewState& state);
     void rebuildNavigation();
@@ -357,6 +372,9 @@ private:
     QLabel* mZoomLabel;
     /// Viewport overlay naming why the displayed configuration cannot run here; hidden when it can.
     QLabel* mAvailabilityNotice;
+    QFrame* mTidyNotice;
+    QLabel* mTidyNoticeText;
+    QSet<QString> mDismissedTidyLayouts;
     RenderGraphDeviceProfile mDeviceProfile;
     RenderGraphConfigurationAvailability mAvailability;
     foundation::float64 mPresentedScale = 0;
