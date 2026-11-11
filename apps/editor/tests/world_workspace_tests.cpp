@@ -29,6 +29,7 @@
 #include "mouse_fixture.h"
 #include "scene_fixture.h"
 #include <QCheckBox>
+#include <QClipboard>
 #include <QColor>
 #include <QImage>
 #include <QMenu>
@@ -60,6 +61,7 @@
 #include <QLayout>
 #include <QLineEdit>
 #include <QLineF>
+#include <QList>
 #include <QListWidget>
 #include <QLockFile>
 #include <QMessageBox>
@@ -4697,6 +4699,12 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
         CHECK(materialOrNull->Roughness == roughness);
     };
     checkMaterial(workspace, donor, 0.35F);
+    QTreeWidget* materialsOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldMaterials"));
+    REQUIRE(materialsOrNull != nullptr);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 2);
+    const WorldDocument& document = workspace.Document();
+    const QString donorMaterial = document.GetMaterialResourceId(document.ScenePlacement(document.Entity(donor)));
+    REQUIRE(donorMaterial.startsWith(QStringLiteral("material/")) == true);
     REQUIRE(workspace.SelectEntity(recipient) == true);
     QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignProjectBrdf"));
     REQUIRE(assignOrNull != nullptr);
@@ -4705,6 +4713,41 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
     WaitForValidatedScene(workspace);
     checkMaterial(workspace, recipient, 0.35F);
     CHECK(GetLevel(workspace).PreviewScene().Definition->Materials.GetSize() == 1);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 1);
+    QTreeWidgetItem* resource = materialsOrNull->topLevelItem(0);
+    REQUIRE(resource->childCount() == 2);
+    CHECK(resource->text(0) == QStringLiteral("demo/glaze"));
+    CHECK(resource->data(0, Qt::UserRole).toString() == donorMaterial);
+    QPushButton* revealOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldRevealMaterial"));
+    REQUIRE(revealOrNull != nullptr);
+    revealOrNull->click();
+    QTabWidget* listsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("worldSidebarLists"));
+    REQUIRE(listsOrNull != nullptr);
+    CHECK(listsOrNull->currentWidget()->isAncestorOf(materialsOrNull) == true);
+    CHECK(materialsOrNull->currentItem() == resource);
+    CHECK(resource->isExpanded() == true);
+    QPushButton* copyOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldCopyMaterialId"));
+    REQUIRE(copyOrNull != nullptr);
+    copyOrNull->click();
+    CHECK(QApplication::clipboard()->text() == donorMaterial);
+
+    workspace.show();
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    REQUIRE(workspace.SelectEntity(donor) == true);
+    QTreeWidgetItem* recipientRow =
+        resource->child(0)->data(0, Qt::UserRole).toString() == recipient ? resource->child(0) : resource->child(1);
+    REQUIRE(recipientRow->data(0, Qt::UserRole).toString() == recipient);
+    REQUIRE(materialsOrNull->isEnabled() == true);
+    materialsOrNull->setCurrentItem(recipientRow);
+    materialsOrNull->setFocus();
+    QTest::keyClick(materialsOrNull, Qt::Key_Return);
+    const QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(entitiesOrNull->currentItem() != nullptr);
+    REQUIRE(entitiesOrNull->currentItem()->data(0, Qt::UserRole).toString() == recipient);
+    propertiesOrNull->show();
 
     const QString roughnessField = QStringLiteral("scene/project_brdf/roughness");
     Type(Field(workspace, roughnessField), QStringLiteral("0"));
@@ -4716,6 +4759,8 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
     checkMaterial(workspace, recipient, 0.75F);
     checkMaterial(workspace, donor, 0.35F);
     CHECK(GetLevel(workspace).PreviewScene().Definition->Materials.GetSize() == 2);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 1);
+    CHECK(materialsOrNull->topLevelItem(0)->childCount() == 2);
 
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
@@ -4842,6 +4887,13 @@ Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer in
     WaitForValidatedScene(workspace);
     checkProgram(workspace, unsupported[0]);
     CHECK(findObjects(workspace, format::MaterialModel::Unresolved).isEmpty() == true);
+    const QTreeWidget* materialsOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldMaterials"));
+    REQUIRE(materialsOrNull != nullptr);
+    REQUIRE(materialsOrNull->topLevelItemCount() == 3);
+    const QList<QTreeWidgetItem*> goldRows =
+        materialsOrNull->findItems(QStringLiteral("Weathered gold"), Qt::MatchExactly);
+    REQUIRE(goldRows.size() == 1);
+    CHECK(goldRows.front()->childCount() == 2);
     REQUIRE(workspace.Save() == true);
     WaitForValidatedScene(workspace);
     workspace.StopPreview();

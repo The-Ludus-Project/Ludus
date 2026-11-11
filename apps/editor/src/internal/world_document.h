@@ -186,6 +186,10 @@ public:
     [[nodiscard]] bool MapSceneMaterial(const QString& source, const QString& replacement, QString& outError);
     /// Resolve an imported slot's inherited material through the World repair mapping.
     [[nodiscard]] QString GetInheritedMaterialId(const QJsonObject& placement) const;
+    /// Get the material resource bound by a World or cooked level placement.
+    /// Explicit project BRDF bindings take precedence over the level's imported-material mappings.
+    [[nodiscard]] static QString GetMaterialResourceId(const QJsonObject& placement, const QJsonObject& level);
+    [[nodiscard]] QString GetMaterialResourceId(const QJsonObject& placement) const;
     /// Shared parameters of this resolved material, or an empty object for imported defaults.
     [[nodiscard]] QJsonObject GetSharedCoating(const QString& material) const;
     /// Set the World-owned instance shared by inherited slots of this material as one undo step.
