@@ -1205,7 +1205,8 @@ the same opt-in. Remove the component to let the player pass through the mesh.
 Apply or cancel any open Terrain draft. Select a player in the hierarchy and
 click **Explore as Player**. Hold the right
 mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
-**Space** to jump. Use **Escape** or leave the viewport to return to the previous
+**Space** to jump. The wheel does not change the walking speed, which the player's
+**Move speed** authors. Use **Escape** or leave the viewport to return to the previous
 editor camera. Movement is temporary and applies gravity even while you stand
 still. If you fall below the World, you return to the spawn.
 
@@ -1491,6 +1492,15 @@ The **Look** multiplier, below **FOV** in the **View** menu, controls mouse sens
 look and Alt/Option orbit, from **0.1×** to **4×** (default **1×**). Lower it for
 finer aiming. It is saved with viewport navigation; changing it preserves the
 current camera pose and does not change pan, dolly or keyboard movement speed.
+
+The **Fly** multiplier, below **Look**, is the keyboard flight speed relative to
+half the focus distance per second, from **0.01×** to **100×** (default **1×**).
+While the right mouse button is held, each wheel notch forward multiplies it by
+1.25 and each notch back divides it by 1.25, so a notch back undoes a notch
+forward exactly; a high-resolution trackpad scrolls through the same scale in
+finer steps. The viewport shows the new value, such as **Fly speed 2.44×**, over
+the frame for a moment, and **Shift** still quadruples the speed while held. The
+multiplier is saved with viewport navigation and can be typed exactly in the menu.
 On macOS, right-drag uses relative mouse/trackpad motion without repeatedly
 recentering the cursor. Releasing the button, pressing Escape, losing focus or
 hiding the viewport releases capture. If native capture is unavailable, dragging
@@ -1509,7 +1519,7 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 | Hold right mouse + WASD | Fly forward/backward and sideways |
 | Q / E while flying | Move down/up along world Y |
 | Shift while flying | Four-times movement speed |
-| Wheel while holding right mouse | Adjust fly speed without dollying |
+| Wheel while holding right mouse | Speed flight up by 1.25× per notch forward, or slow it down by the same factor per notch back, without dollying; the new multiplier shows over the frame |
 | Alt/Option + left-drag | Orbit around the current focus pivot |
 | Middle-drag or Shift + Alt/Option + left-drag | Pan in the camera plane |
 | Wheel / high-resolution trackpad scroll | Proportional dolly; orthographic views change visible span |
