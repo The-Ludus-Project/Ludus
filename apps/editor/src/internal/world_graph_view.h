@@ -13,6 +13,7 @@
 
 class QComboBox;
 class QLabel;
+class QAction;
 
 namespace ludus::editor
 {
@@ -20,6 +21,19 @@ class ViewportObjectInteraction;
 class RendererWorkspace;
 class RenderGraphPreview;
 class RenderPreview;
+/// Width @p comboBox needs to show @p text whole beside its arrow, measured as the style lays it out.
+[[nodiscard]] foundation::int32 ComputeComboBoxWidth(const QComboBox& comboBox, const QString& text);
+/// Keep @p inoutComboBox at least as wide as its current choice, so a crowded toolbar moves it
+/// behind the overflow chevron whole instead of squeezing its text away. Follows later choices.
+void FitComboBoxToCurrentText(QComboBox& inoutComboBox);
+/// Viewport toolbar controls a World graph view contributes, placed in different groups.
+struct WorldGraphControls
+{
+    /// Configuration and output choice; they decide what the viewport shows, so they lead the row.
+    QWidget* Output = nullptr;
+    /// Exposure adjustment; it joins the display group and overflows before the output choice.
+    QAction* Exposure = nullptr;
+};
 /// Interactive World output of the project's active graph. Owns only display/target selection;
 /// RendererWorkspace owns builds and RenderGraphPreview owns GPU production and readback.
 class WorldGraphView final : public QWidget
@@ -29,7 +43,7 @@ public:
     /// Native graph preview must exist; parent owns this display and its controls.
     WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent);
     /// Move the graph controls into the viewport toolbar once.
-    QWidget* TakeControls(QWidget* parent, RenderPreview& inoutSource);
+    [[nodiscard]] WorldGraphControls TakeControls(QWidget* parent, RenderPreview& inoutSource);
     void SetObjectInteraction(ViewportObjectInteraction& inoutInteraction);
     /// Hold the last image while a candidate import waits for catalog publication.
     void SetCanPresent(bool canPresent);
