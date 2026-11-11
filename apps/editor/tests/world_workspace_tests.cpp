@@ -43,7 +43,6 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
-#include <QDate>
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QDialog>
@@ -76,8 +75,6 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
-#include <QTime>
-#include <QTimeZone>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -3287,7 +3284,7 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     REQUIRE(reopened.Apply() == true);
     roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
     driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
-    dateTimeOrNull->setDateTime(QDateTime(QDate(2000, 1, 2), QTime(0, 0), QTimeZone(QTimeZone::UTC)));
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-02T00:00:00Z"), Qt::ISODate));
     REQUIRE(reopened.Apply() == true);
     REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
     CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
@@ -3315,7 +3312,7 @@ TEST_CASE("Earth preview time preserves the saved offset and copies the UTC cloc
     QPushButton* nowOrNull = time.findChild<QPushButton*>(QStringLiteral("worldEarthUseNow"));
     REQUIRE(dateTimeOrNull != nullptr);
     REQUIRE(nowOrNull != nullptr);
-    CHECK(dateTimeOrNull->dateTime() == QDateTime(QDate(2000, 1, 1), QTime(0, 0), QTimeZone(QTimeZone::UTC)));
+    CHECK(dateTimeOrNull->dateTime() == QDateTime::fromString(QStringLiteral("2000-01-01T00:00:00Z"), Qt::ISODate));
     CHECK(time.GetDaysSinceEpoch() == LEGACY_DAYS);
     CHECK(dateTimeOrNull->calendarPopup() == true);
 
