@@ -272,7 +272,7 @@ void ContentCatalogModel::SetOperation(const QString& id, const ContentOperation
 }
 void ContentCatalogModel::ClearOperation(const QString& id)
 {
-    if (mOperations.remove(id) > 0)
+    if (mOperations.remove(id) == true)
     {
         emitRowChanged(id);
     }

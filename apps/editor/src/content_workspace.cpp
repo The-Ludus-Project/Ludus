@@ -435,7 +435,7 @@ bool ContentWorkspace::RetryImport(const QString& id)
 }
 void ContentWorkspace::DismissFailure(const QString& id)
 {
-    if (mFailedImports.remove(id) == 0)
+    if (mFailedImports.remove(id) == false)
     {
         return;
     }
