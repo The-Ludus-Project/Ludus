@@ -800,6 +800,14 @@ attachments. The **Stats** toggle shows live update FPS, CPU/GPU time and readba
 latency; see the [graph viewport measurement definitions](render-graph-authoring.md#start-customizing-the-renderer). The current static graph profile does not provide the former Lit material
 preview; its input and presentation limits are documented with that workflow.
 
+The viewport toolbar reads left to right in priority order: the configuration
+and output choice, size and view, then editing (object tool, **Edit Terrain…**,
+**Frame all**), display diagnostics (**Exposure**, **Force raster**, **Stats**,
+**Reference…**) and finally navigation help. The configuration menu appears only
+when the graph defines more than one configuration. When the viewport is too
+narrow, commands from the right end move into the **»** overflow menu whole,
+rather than being squeezed until their text is cut off.
+
 ### Apertures
 
 An aperture is an opaque flat screen with a centred slit whose sizes are entity
