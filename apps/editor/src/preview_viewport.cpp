@@ -144,12 +144,11 @@ public:
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override
     {
-        if (watched == &mViewport && (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut))
-        {
-            place();
-        }
-        else if (watched == &mControls && (event->type() == QEvent::Resize || event->type() == QEvent::Move ||
-                                           event->type() == QEvent::Show || event->type() == QEvent::Hide))
+        const QEvent::Type type = event->type();
+        const bool isFocusChange = watched == &mViewport && (type == QEvent::FocusIn || type == QEvent::FocusOut);
+        const bool isControlsChange = watched == &mControls && (type == QEvent::Resize || type == QEvent::Move ||
+                                                                type == QEvent::Show || type == QEvent::Hide);
+        if (isFocusChange == true || isControlsChange == true)
         {
             place();
         }
