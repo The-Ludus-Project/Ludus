@@ -1951,6 +1951,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     });
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull = new BrowserViewport(*preview, this);
+    mState->BrowserOrNull->SetObjectInteraction(*mObjectInteraction);
     mState->BrowserOrNull->hide();
     mState->FrameLayoutOrNull->addWidget(mState->BrowserOrNull);
     connect(preview, &RenderPreview::DeviceRequested, this, [this]() {
@@ -2414,8 +2415,10 @@ void PreviewViewport::ShowObjectTools()
 void PreviewViewport::updateObjectInteractionAvailability()
 {
     const ViewportPresentation presentation = GetPresentation();
-    const bool canShowOverlay =
-        presentation == ViewportPresentation::SharedDevice || presentation == ViewportPresentation::OffscreenReadback;
+    // The browser draws the overlay on a canvas above its engine canvas (BrowserViewport).
+    const bool canShowOverlay = presentation == ViewportPresentation::SharedDevice ||
+                                presentation == ViewportPresentation::OffscreenReadback ||
+                                presentation == ViewportPresentation::BrowserCanvas;
     const bool canInteract = canShowOverlay == true && mPlayEndpointOrNull == nullptr &&
                              mIsInspectingRayPaths == false && Preview_->IsExploringFirstPerson() == false;
     mObjectInteraction->SetActive(canInteract);

@@ -7,6 +7,7 @@
 #    include "internal/viewport_object_interaction.h"
 #    include "internal/viewport_object_overlay.h"
 #    include "internal/viewport_object_overlay_item.h"
+#    include "internal/viewport_overlay_layer.h"
 #    include "internal/world_document.h"
 
 #    include <ludus/foundation/base/types.h>
@@ -391,5 +392,225 @@ TEST_CASE("Native selection highlighting renders without a full-viewport painted
         }
     }
     CHECK(hasRemainingHighlight == false);
+}
+namespace
+{
+/// Straight-alpha RGBA8 pixel of a layer's packed pixels at a physical position; transparent outside its painted
+/// region.
+QColor ReadLayerPixel(const ViewportOverlayLayer& layer, QPoint positionPhysical)
+{
+    const QRect region = layer.GetPaintedRegion();
+    constexpr usize RGBA_BYTES = 4;
+    const usize offset = (static_cast<usize>(positionPhysical.y() - region.y()) * static_cast<usize>(region.width()) +
+                          static_cast<usize>(positionPhysical.x() - region.x())) *
+                         RGBA_BYTES;
+    if (region.contains(positionPhysical) == false || offset + RGBA_BYTES > layer.GetPixelBytes())
+    {
+        return QColor(0, 0, 0, 0);
+    }
+    const uint8* pixel = layer.GetPixels() + offset;
+    return QColor(pixel[0], pixel[1], pixel[2], pixel[3]);
+}
+} // namespace
+
+TEST_CASE("Object overlay bounds cover every stroke, fill and readout and stay inside the frame",
+          "[editor][object-interaction][browser-overlay]")
+{
+    ViewportObjectOverlay overlay;
+    overlay.FramePixel = {0, 0, 400, 300};
+    CHECK(ComputeViewportObjectOverlayBounds(overlay).isEmpty() == true);
+    REQUIRE(overlay.OutlineLinesPixel.TryAdd(QLineF(100, 100, 200, 100)) == true);
+    const QRectF outline = ComputeViewportObjectOverlayBounds(overlay);
+    // The casing is the widest stroke; its half width and caps lie inside the bounds.
+    constexpr float64 CASING_HALF_WIDTH = static_cast<float64>(ViewportObjectOverlay::CASING_WIDTH_PIXELS) * 0.5;
+    CHECK(outline.contains(QRectF(QPointF(100 - CASING_HALF_WIDTH, 100 - CASING_HALF_WIDTH),
+                                  QPointF(200 + CASING_HALF_WIDTH, 100 + CASING_HALF_WIDTH))) == true);
+    CHECK(outline.width() < 120);
+    ViewportHandleFill fill;
+    fill.CornersPixel = {QPointF(300, 200), QPointF(320, 200), QPointF(310, 220), QPointF(0, 0)};
+    fill.CornerCount = ViewportHandleFill::TRIANGLE_CORNERS;
+    fill.Color = qRgb(0, 255, 0);
+    REQUIRE(overlay.HandleFills.TryAdd(fill) == true);
+    const QRectF withFill = ComputeViewportObjectOverlayBounds(overlay);
+    CHECK(withFill.contains(QRectF(300, 200, 20, 20)) == true);
+    // The unused fourth corner at the origin is not part of the triangle.
+    CHECK(withFill.left() > 50);
+    overlay.ReadoutText = QStringLiteral("X +0.250 m");
+    overlay.ReadoutAnchorPixel = {150, 150};
+    const QSizeF labelSize = MeasureGizmoReadout(overlay.ReadoutText);
+    const QRectF label(PlaceGizmoReadout(overlay.ReadoutAnchorPixel, labelSize, overlay.FramePixel), labelSize);
+    CHECK(ComputeViewportObjectOverlayBounds(overlay).contains(label) == true);
+    // Strokes beyond the frame are clipped by the painter, so the bounds stop at the frame.
+    REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(-50, 10, 600, 10), qRgb(255, 0, 0), 4}) == true);
+    CHECK(overlay.FramePixel.contains(ComputeViewportObjectOverlayBounds(overlay)) == true);
+}
+
+TEST_CASE("The browser overlay layer repaints only the covered region and clears the previous one",
+          "[editor][object-interaction][browser-overlay]")
+{
+    ViewportOverlayLayer layer;
+    ViewportObjectOverlay overlay;
+    overlay.FramePixel = {0, 0, 400, 300};
+    const QSize layerSize(400, 300);
+    // Nothing drawn before or now leaves the canvas alone.
+    CHECK(layer.Update(overlay, layerSize, 1) == false);
+    CHECK(layer.GetPaintedRegion().isEmpty() == true);
+
+    REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(100, 50, 100, 150), qRgb(255, 0, 0), 4}) == true);
+    REQUIRE(layer.Update(overlay, layerSize, 1) == true);
+    const QRect first = layer.GetPaintedRegion();
+    CHECK(layer.GetClearedRegion().isEmpty() == true);
+    CHECK(first.contains(QRect(98, 50, 4, 100)) == true);
+    // Only the stroke's neighbourhood is rasterized and copied, not the viewport.
+    CHECK(first.width() < 20);
+    CHECK(layer.GetPixelBytes() == static_cast<usize>(first.width() * first.height()) * 4);
+    // Straight alpha: the stroke is opaque red; away from it the layer is transparent.
+    const QColor stroke = ReadLayerPixel(layer, {100, 100});
+    CHECK(stroke.red() == 255);
+    CHECK(stroke.green() == 0);
+    CHECK(stroke.alpha() == 255);
+    CHECK(ReadLayerPixel(layer, first.topLeft()).alpha() == 0);
+
+    // Moving the stroke clears where it was and paints where it is.
+    overlay.HandleStrokes[0].LinePixel.translate(200, 0);
+    REQUIRE(layer.Update(overlay, layerSize, 1) == true);
+    CHECK(layer.GetClearedRegion() == first);
+    CHECK(layer.GetPaintedRegion().intersects(first) == false);
+
+    // Removing it only clears.
+    const QRect second = layer.GetPaintedRegion();
+    overlay.HandleStrokes.Clear();
+    REQUIRE(layer.Update(overlay, layerSize, 1) == true);
+    CHECK(layer.GetClearedRegion() == second);
+    CHECK(layer.GetPaintedRegion().isEmpty() == true);
+    CHECK(layer.Update(overlay, layerSize, 1) == false);
+
+    // A resized canvas starts blank, so nothing is left to clear.
+    REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(100, 50, 100, 150), qRgb(255, 0, 0), 4}) == true);
+    REQUIRE(layer.Update(overlay, layerSize, 1) == true);
+    layer.Invalidate();
+    REQUIRE(layer.Update(overlay, layerSize, 1) == true);
+    CHECK(layer.GetClearedRegion().isEmpty() == true);
+}
+
+TEST_CASE("The browser overlay layer paints at the screen's pixel ratio inside the layer",
+          "[editor][object-interaction][browser-overlay]")
+{
+    ViewportOverlayLayer layer;
+    ViewportObjectOverlay overlay;
+    overlay.FramePixel = {0, 0, 400, 300};
+    REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(100, 50, 100, 150), qRgb(255, 0, 0), 4}) == true);
+    REQUIRE(layer.Update(overlay, {400, 300}, 1) == true);
+    const QRect logical = layer.GetPaintedRegion();
+    constexpr float64 HIGH_DENSITY = 2;
+    REQUIRE(layer.Update(overlay, {800, 600}, HIGH_DENSITY) == true);
+    const QRect physical = layer.GetPaintedRegion();
+    CHECK(physical.width() >= logical.width() * 2 - 1);
+    CHECK(physical.contains(QRect(196, 100, 8, 200)) == true);
+    // The stroke is four logical pixels, eight physical ones, wide.
+    CHECK(ReadLayerPixel(layer, {197, 200}).alpha() == 255);
+    CHECK(ReadLayerPixel(layer, {202, 200}).alpha() == 255);
+    // A region past the layer's edge is cut to the layer.
+    REQUIRE(layer.Update(overlay, {220, 120}, HIGH_DENSITY) == true);
+    CHECK(layer.GetPaintedRegion().isEmpty() == false);
+    CHECK(QRect(0, 0, 220, 120).contains(layer.GetPaintedRegion()) == true);
+}
+
+TEST_CASE("The browser overlay layer shows the pixels the readback canvas paints",
+          "[editor][object-interaction][browser-overlay]")
+{
+    ViewportObjectOverlay overlay;
+    overlay.FramePixel = {0, 0, 320, 240};
+    REQUIRE(overlay.OutlineLinesPixel.TryAdd(QLineF(40, 40, 200, 60)) == true);
+    REQUIRE(overlay.OutlineLinesPixel.TryAdd(QLineF(200, 60, 120, 180)) == true);
+    REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(150, 120, 250, 120), qRgb(230, 70, 60), 3}) == true);
+    ViewportHandleFill fill;
+    fill.CornersPixel = {QPointF(250, 112), QPointF(266, 120), QPointF(250, 128), QPointF(0, 0)};
+    fill.Color = qRgb(230, 70, 60);
+    REQUIRE(overlay.HandleFills.TryAdd(fill) == true);
+    overlay.ReadoutText = QStringLiteral("X +0.250 m");
+    overlay.ReadoutAnchorPixel = {150, 120};
+
+    // The readback canvas paints the whole frame transparent, then the overlay.
+    QImage reference(320, 240, QImage::Format_ARGB32_Premultiplied);
+    reference.fill(Qt::transparent);
+    {
+        QPainter painter(&reference);
+        PaintViewportObjectOverlay(painter, overlay);
+    }
+    ViewportOverlayLayer layer;
+    REQUIRE(layer.Update(overlay, reference.size(), 1) == true);
+    const QRect region = layer.GetPaintedRegion();
+    // Every pixel the full-frame painting changed lies in the layer's region and matches it, within the rounding of
+    // converting premultiplied to straight alpha.
+    constexpr int32 ROUNDING = 2;
+    int32 paintedPixels = 0;
+    for (int32 y = 0; y < reference.height(); ++y)
+    {
+        for (int32 x = 0; x < reference.width(); ++x)
+        {
+            const QRgb expected = qUnpremultiply(reference.pixel(x, y));
+            if (qAlpha(expected) == 0)
+            {
+                continue;
+            }
+            ++paintedPixels;
+            REQUIRE(region.contains(x, y) == true);
+            const QColor actual = ReadLayerPixel(layer, {x, y});
+            CHECK(qAbs(actual.alpha() - qAlpha(expected)) <= ROUNDING);
+            if (qAlpha(expected) > ROUNDING * ROUNDING * ROUNDING)
+            {
+                CHECK(qAbs(actual.red() - qRed(expected)) <= ROUNDING);
+                CHECK(qAbs(actual.green() - qGreen(expected)) <= ROUNDING);
+                CHECK(qAbs(actual.blue() - qBlue(expected)) <= ROUNDING);
+            }
+        }
+    }
+    CHECK(paintedPixels > 0);
+}
+
+TEST_CASE("The browser overlay layer draws a selected object's outline from its interaction",
+          "[editor][object-interaction][browser-overlay]")
+{
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("browser-overlay-layer-fixture");
+    PreviewMesh mesh;
+    mesh.Positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("selected");
+    scene.Objects.append(object);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    WorldDocument document;
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, object.Id, false);
+    // The browser builds the overlay in the proxy widget's logical frame, as its pointer input does.
+    const QRectF framePixel{0, 0, 640, 480};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    REQUIRE(overlay.OutlineLinesPixel.GetSize() == 3);
+    ViewportOverlayLayer layer;
+    REQUIRE(layer.Update(overlay, {640, 480}, 1) == true);
+    for (const QLineF& linePixel : overlay.OutlineLinesPixel)
+    {
+        // The pixel under the middle of each edge is covered by the outline or its casing.
+        const QPointF middle = linePixel.center();
+        const QPoint pixel(static_cast<int32>(middle.x()), static_cast<int32>(middle.y()));
+        CHECK(ReadLayerPixel(layer, pixel).alpha() > 0);
+    }
+    // The amber stroke itself is opaque somewhere along the outline.
+    const QRect region = layer.GetPaintedRegion();
+    bool hasAmber = false;
+    for (int32 y = region.top(); y <= region.bottom() && hasAmber == false; ++y)
+    {
+        for (int32 x = region.left(); x <= region.right() && hasAmber == false; ++x)
+        {
+            hasAmber =
+                ReadLayerPixel(layer, {x, y}).rgba() == QColor::fromRgb(ViewportObjectOverlay::SELECTION_COLOR).rgba();
+        }
+    }
+    CHECK(hasAmber == true);
 }
 #endif

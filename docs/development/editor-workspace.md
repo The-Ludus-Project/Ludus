@@ -1451,8 +1451,18 @@ viewport-sized overlay texture. Camera and gesture changes are projected once
 per Qt frame, and the readback presentation draws the same strokes in one batch.
 CPU profiling includes `EditorObjectOverlayBuild`, `EditorObjectOverlayUpload`
 and `EditorObjectOverlayPaint` to distinguish these costs, and `EditorSilhouetteBuild`,
-`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the CPU outline. The browser's separate
-GPU canvas does not yet composite the overlay.
+`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the CPU outline.
+
+The browser editor shows the same overlay, with the same picking, transform handles
+and drag readout. Its engine canvas, WebGPU or WebGL 2, covers Qt's own canvas, so a
+second transparent 2D canvas sits above it on the same rectangle and lets pointer
+input through to Qt. The browser paints the overlay with the readback
+presentation's painter at the screen's pixel ratio, but only over the rectangle
+the outline, handles and readout cover. It copies that rectangle into the canvas
+after clearing the one painted before. The browser repaints only when the overlay
+changes, a new frame arrives or the viewport is resized. It uses the CPU outline;
+the GPU outline needs the project render graph's display frames, which the
+browser editor does not use.
 
 To compare the old painted texture with the batched geometry, build the optional
 `ludus_viewport_overlay_benchmark` target in a native editor build with tests enabled.
