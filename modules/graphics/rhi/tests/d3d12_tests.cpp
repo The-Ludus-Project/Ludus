@@ -314,7 +314,8 @@ TEST_CASE("Direct3D 12 checks the DXIL stage and entry before creating shaders",
     CHECK(rhi::Destroy(mismatched) == rhi::ResourceStatus::Ready);
     // A truncated container no longer matches its recorded size.
     rhi::ShaderDescription truncated = vertexDescription;
-    truncated.Dxil = truncated.Dxil.first(truncated.Dxil.size() - 1);
+    REQUIRE(truncated.Dxil.IsEmpty() == false);
+    truncated.Dxil = {truncated.Dxil.GetDataOrNull(), truncated.Dxil.GetSize() - 1};
     rhi::ShaderHandle rejected;
     CHECK(rhi::CreateShader(truncated, rejected) == rhi::ResourceStatus::InvalidDescription);
     rhi::ShaderHandle vertex;

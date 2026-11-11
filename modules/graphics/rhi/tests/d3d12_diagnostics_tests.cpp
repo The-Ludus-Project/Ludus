@@ -207,8 +207,10 @@ TEST_CASE("Direct3D 12 allocation telemetry includes padding, depth, retained up
     constexpr uint64 ALLOCATION_ALIGNMENT = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     StaticArray<uint8, BUFFER_BYTES> bytes{};
     rhi::BufferHandle buffer;
-    REQUIRE(rhi::CreateBuffer(session.Device, {rhi::BufferRole::Uniform, BUFFER_BYTES}, bytes.AsSpan(), buffer) ==
-            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(session.Device,
+                              {rhi::BufferRole::Uniform, BUFFER_BYTES},
+                              {bytes.GetData(), bytes.GetSize()},
+                              buffer) == rhi::RasterStatus::Ready);
     rhi::BindingLayoutHandle layout;
     rhi::BindingSetHandle set;
     const rhi::RasterBinding binding{0,
@@ -253,7 +255,10 @@ TEST_CASE("Direct3D 12 allocation telemetry includes padding, depth, retained up
         gate.Hold();
         REQUIRE(rhi::CreateTexture(session.Device,
                                    { .Width = WIDTH, .Height = HEIGHT, .AsyncUpload = true },
-                                   { .Bytes = pixels.AsSpan(), .RowPitch = WIDTH * BYTES_PER_PIXEL },
+                                   {
+                                       .Bytes = {pixels.GetData(), pixels.GetSize()},
+                                       .RowPitch = WIDTH * BYTES_PER_PIXEL,
+                                   },
                                    texture) == rhi::RasterStatus::Pending);
         REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
         REQUIRE(memory.ApiBytesAvailable == true);
