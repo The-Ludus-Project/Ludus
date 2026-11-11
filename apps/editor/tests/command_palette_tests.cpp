@@ -166,6 +166,12 @@ TEST_CASE("Ctrl+K and F3 open the palette; F3 lists only what can run", "[editor
     paletteAction->trigger();
     CommandPalette* all = window.findChild<CommandPalette*>(QStringLiteral("commandPalette"));
     REQUIRE(all != nullptr);
+    // The palette is its own window but draws with the window's token palette, not the platform's.
+    for (const QPalette::ColorRole role :
+         {QPalette::Window, QPalette::Base, QPalette::Text, QPalette::Highlight, QPalette::PlaceholderText})
+    {
+        CHECK(all->palette().color(role) == window.palette().color(role));
+    }
     const int allCount = static_cast<int>(all->GetShownIndices().size());
     CHECK(allCount > 0);
     all->close();

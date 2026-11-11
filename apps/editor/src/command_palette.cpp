@@ -2,6 +2,7 @@
 #include "design_tokens.h"
 
 #include "internal/theme_preferences.h"
+#include "internal/workspace_style.h"
 
 #include <QAction>
 #include <QApplication>
@@ -355,6 +356,9 @@ CommandPalette::CommandPalette(QList<PaletteEntry> entries, bool isEnabledOnly, 
 {
     setObjectName(QStringLiteral("commandPalette"));
     setAttribute(Qt::WA_DeleteOnClose);
+    // A dialog is its own window, so it does not inherit the main window's palette; take the token palette here
+    // so its text and selection get the contrast-checked colours.
+    ApplyWorkspaceStyle(this);
     setModal(true);
     setAccessibleName(isEnabledOnly == true ? QStringLiteral("Run command in context")
                                             : QStringLiteral("Command palette"));
@@ -574,6 +578,7 @@ void CommandPalette::runCurrent()
 
 ShortcutList::ShortcutList(const QList<PaletteEntry>& entries, QWidget* parentOrNull) : QDialog(parentOrNull)
 {
+    ApplyWorkspaceStyle(this);
     for (const PaletteEntry& entry : entries)
     {
         if (entry.Shortcut.isEmpty() == false)
