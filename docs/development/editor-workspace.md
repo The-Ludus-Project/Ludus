@@ -1995,25 +1995,39 @@ Browser and packaged game hosts continue to use their existing inputs.
 ### Baking probe GI for moving objects
 
 Create a **GI Probe Volume** from **Add World Preset** in a default World.
-Select it to see the grid's wire box before baking. Double-click its name in
-the entity list or press **F** in the viewport to frame the box. With **Move**
-selected, drag the arrows or plane handles to position it, or drag a coloured
-square on a face to resize along that axis. Resizing keeps the opposite face
-fixed and adds or removes whole probe intervals at the current spacing. The
-drag readout shows the new count and length.
+Its Transform position is the box's minimum corner and its Transform scale is
+the box's size in metres; a new volume is a 3 m cube. Select it to see the
+wire box before baking. Double-click its name in the entity list or press **F**
+in the viewport to frame the box.
 
-Switch to **Scale (R)** and drag the white center square to scale the entire
-volume. Drag up and right to enlarge it or down and left to shrink it. This
-changes spacing on all three axes while keeping the minimum corner and probe
-counts fixed. Hold **Shift** to snap the scale factor. The colored face handles
-still resize one axis at the current spacing. Releasing the pointer applies one
-undoable edit. Press **Escape** during a drag to discard it.
+By default the **Probe layout** is `volume`: probes start at the minimum
+corner and fill the box at **Probe spacing**, with the last probe plane
+nearest the far face, so a 10 m edge at 1 m spacing holds 11 probes, a
+10.4 m edge still holds 11 and a 10.6 m edge holds 12. Resize the box and the
+counts follow. With **Move** selected, drag the arrows or plane handles to
+position it, or drag a coloured square on a face to move that face; the
+opposite face stays fixed and the readout shows the new length and count.
+Switch to **Scale (R)** to use the ordinary scale handles at the minimum
+corner: the axis handles stretch one edge and the white centre square scales
+all three. Hold **Shift** to snap. Releasing the pointer applies one undoable
+edit; press **Escape** during a drag to discard it. The Properties panel
+reports the probes the box holds. When the box is not a whole number of
+spacings, or the per-axis limit of 12 probes is reached, a second outline
+shows where the probes stop, and the panel offers **Use N m
+spacing**, which asks before raising the spacing so 12 probes reach every
+edge.
 
-For precise values, set the Transform position to the volume's minimum corner
-and set **Probe spacing** in metres and the number of points along each axis,
-including both endpoints. The box follows the World axes. The native Lit
-viewport supports one volume, with 2 to 12 points on each axis and spacing from
-0.1 to 100 metres.
+Choose the `counts` layout to set **Probes along X**, **Y** and **Z**
+yourself: the box is then `(count - 1) × spacing` on each edge and the
+Transform scale is not used. In this layout the face handles add or remove
+whole probe intervals and the Scale tool's centre square changes the spacing
+while keeping the minimum corner and counts fixed. Switching layouts keeps
+the probes where they are: `counts` to `volume` writes the probe extent into
+the Transform scale, and `volume` to `counts` writes the derived counts.
+Worlds saved before the layout existed load as `counts`.
+
+The box follows the World axes. The native Lit viewport supports one volume,
+with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.
 
 Opt one or more static lights into [always-on baking](#baking-always-on-lights),
 then select the volume and click **Bake GI**. Attach **GI Probe Receiver** to
