@@ -1476,8 +1476,6 @@ void MainWindow::RenderCapabilities()
     // Lifecycle buttons reuse the same command gates as menus/toolbars.
     ProjectCheckButton_->setEnabled(CheckSetupAction_->isEnabled());
     ProjectCheckButton_->setToolTip(CheckSetupAction_->toolTip());
-    mSetupNoticeRepairOrNull->setEnabled(SetupProjectAction_->isEnabled());
-    mSetupNoticeCheckOrNull->setEnabled(CheckSetupAction_->isEnabled());
     ProjectRepairButton_->setEnabled(SetupProjectAction_->isEnabled());
     ProjectRepairButton_->setToolTip(SetupProjectAction_->toolTip());
     ProjectRunButton_->setEnabled(BuildRunAction_->isEnabled());
@@ -1603,23 +1601,23 @@ void MainWindow::renderSetupNotice(bool hasSetupProblem)
     QString tooltip;
     bool isRepairShown = false;
     bool isProgressShown = false;
-    SetupGuidance guidance;
+    SetupNoticeContent notice;
     switch (stage)
     {
         case SetupNoticeStage::Hidden:
             break;
         case SetupNoticeStage::NeedsRepair: {
-            guidance = DescribeSetupProblem(state.SetupProblem);
+            RepairGate gate;
+            gate.IsRepairAllowed = SetupProjectAction_->isEnabled();
+            gate.IsPlaySessionActive = Controller_->PlayState().Phase != PlayPhase::Stopped;
+#if defined(Q_OS_WASM)
+            gate.IsBrowser = true;
+#endif
+            notice = DescribeSetupNotice(state.SetupProblem, GetRepairBlocker(state, gate));
             isShown = state.SetupProblem != mDismissedSetupProblem && mIsViewportFocused == false;
-            headline = guidance.Headline;
-            detail = guidance.Detail.section(QLatin1Char('\n'), 0, 0);
-            if (state.Dirty() == true)
-            {
-                detail += QStringLiteral(" Save project settings to enable repair.");
-            }
-            tooltip = QStringLiteral("%1\n\n%2\n\nRepair now, or keep editing and repair later. Repair updates local "
-                                     "build settings and verifies a build and tests.")
-                          .arg(guidance.Fix, ReplaceResultCodeNames(state.SetupProblem));
+            headline = notice.Headline;
+            detail = notice.Detail;
+            tooltip = notice.Tooltip;
             isRepairShown = true;
             break;
         }
@@ -1651,18 +1649,12 @@ void MainWindow::renderSetupNotice(bool hasSetupProblem)
         mSetupNoticeProgressOrNull->setRange(0, progress.has_value() == true ? PROGRESS_COMPLETE : 0);
         mSetupNoticeProgressOrNull->setValue(progress.value_or(0));
     }
-    if (isRepairShown == true && guidance.IsRepairable == false)
-    {
-        mSetupNoticeRepairOrNull->setText(QStringLiteral("Open Project Settings"));
-        mSetupNoticeRepairOrNull->setProperty("opensSettings", true);
-        mSetupNoticeRepairOrNull->setEnabled(true);
-    }
-    else
-    {
-        mSetupNoticeRepairOrNull->setText(QStringLiteral("Repair project"));
-        mSetupNoticeRepairOrNull->setProperty("opensSettings", false);
-        mSetupNoticeRepairOrNull->setEnabled(SetupProjectAction_->isEnabled());
-    }
+    // Repair is the primary action whenever it is the fix: enabled when it can start, and when it can't, the reason
+    // sits in the detail line and the button's tooltip rather than leaving a greyed-out button to explain itself.
+    mSetupNoticeRepairOrNull->setText(isRepairShown == true ? notice.ActionLabel : QStringLiteral("Repair project"));
+    mSetupNoticeRepairOrNull->setProperty("opensSettings", notice.IsOpeningSettings);
+    mSetupNoticeRepairOrNull->setEnabled(notice.IsActionEnabled);
+    mSetupNoticeRepairOrNull->setToolTip(notice.ActionTooltip);
     mSetupNoticeRepairOrNull->setVisible(isRepairShown);
     mSetupNoticeCheckOrNull->setVisible(isRepairShown);
     mSetupNoticeCheckOrNull->setEnabled(CheckSetupAction_->isEnabled());

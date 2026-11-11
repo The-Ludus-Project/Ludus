@@ -25,6 +25,9 @@ class EditorStyle final : public QProxyStyle
 {
 public:
     EditorStyle();
+    /// An editor style over the given platform style, which it takes ownership of; tests use it to stand in for a
+    /// platform whose native drawing differs from the one running them.
+    explicit EditorStyle(QStyle* baseStyle);
 
     /// Re-read the appearance, tokens and theme preferences from the application palette. Call after either changes.
     void Refresh();
