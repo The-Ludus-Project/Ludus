@@ -570,6 +570,16 @@ void EditorStyle::drawControl(ControlElement element,
     const bool isEnabled = option->state.testFlag(State_Enabled);
     switch (element)
     {
+#if defined(Q_OS_WIN)
+        case CE_ItemViewItem:
+            // Thanks to the Qt Company for QCommonStyle::drawControl (Qt 6.8.3).
+            // QWindowsVistaStyle can suppress the current item's focus rectangle.
+            // The common path calls our focus primitive for selected and unselected rows.
+            // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/styles/qcommonstyle.cpp#L2178-L2244
+            // https://github.com/qt/qtbase/blob/v6.8.3/src/plugins/styles/modernwindows/qwindowsvistastyle.cpp#L2934-L2976
+            QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+            return;
+#endif
         case CE_PushButtonBevel: {
             // Some platform styles, macOS's among them, draw a push button's bevel natively and never ask for
             // PE_PanelButtonCommand, so the accent fill of a primary button was lost while its label still took the
