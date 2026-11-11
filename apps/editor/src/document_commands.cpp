@@ -188,6 +188,11 @@ void MainWindow::RenderDocumentActions()
     };
     describe(*UndoAction_, MakeUndoMenuText(undoName), QStringLiteral("Nothing to undo"));
     describe(*RedoAction_, MakeRedoMenuText(redoName), QStringLiteral("Nothing to redo"));
+    if (mHistoryActionOrNull != nullptr)
+    {
+        // Every history belongs to an open project; without one there is nothing to list.
+        mHistoryActionOrNull->setEnabled(Controller_->State().Document == DocumentState::ProjectLoaded);
+    }
     renderHistory();
 }
 

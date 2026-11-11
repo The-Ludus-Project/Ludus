@@ -21,7 +21,7 @@ constexpr foundation::int32 TOAST_HORIZONTAL_PADDING = design::SPACING_MEDIUM;
 constexpr foundation::int32 TOAST_VERTICAL_PADDING = design::SPACING_SMALL;
 constexpr foundation::int32 TOAST_BOTTOM_MARGIN = design::SPACING_PAGE;
 constexpr foundation::int32 TOAST_BORDER_WIDTH = 1;
-constexpr foundation::int32 PANEL_ROW_PADDING = design::SPACING_EXTRA_SMALL;
+constexpr foundation::int32 PANEL_ROW_SPACING = design::SPACING_EXTRA_SMALL;
 const QString VERB_SEPARATOR = QStringLiteral(": ");
 
 QString MakeMenuText(const QString& verb, const QString& name)
@@ -170,7 +170,7 @@ EditHistoryPanel::EditHistoryPanel(QWidget* parentOrNull)
     mList->setSelectionMode(QAbstractItemView::SingleSelection);
     mList->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mList->setUniformItemSizes(true);
-    mList->setSpacing(PANEL_ROW_PADDING / 2);
+    mList->setSpacing(PANEL_ROW_SPACING);
     mList->setFrameShape(QFrame::NoFrame);
     mEmpty->setObjectName(QStringLiteral("editHistoryEmpty"));
     mEmpty->setForegroundRole(QPalette::PlaceholderText);
