@@ -959,9 +959,16 @@ with optional tooling absent.
   from the job's active process count. Inherited lease guards keep generations
   available until their last owner exits.
 
-  The Windows workflow's editor step runs the native authoring and
-  hosted Play journeys with WARP. Physical GPU and mixed-DPI display coverage
-  still need desktop evidence.
+  The Windows workflow's on-demand editor lane passed at `93a6053da` with
+  MSVC 14.44, Qt 6.8.3 and WARP on Windows Server 2022
+  ([run 42921153750](https://github.com/The-Ludus-Project/Ludus/actions/runs/42921153750)).
+  Its seven CTests cover the Win32 channel, Direct3D 12 RHI, staged GameHost
+  supervision, World authoring and graph publication, 1.5-scale authoring,
+  startup-sound lifecycle and hosted World Play. The Play journey exercises
+  physical-key forwarding, resize, Stop and crash recovery. Eight Python
+  regressions cover both adapters, job/descendant cleanup, supervisor death,
+  inherited guards, Agility publication and tuning saves. Physical GPU,
+  mixed-monitor DPI and native file dialogs still need desktop evidence for D7.
 
 ### D7: qualify the Windows profiles
 
@@ -1000,6 +1007,18 @@ Candidate `67545696` additionally passed the MSVC AddressSanitizer job in
 [run 42912155947](https://github.com/The-Ludus-Project/Ludus/actions/runs/42912155947).
 The combined D6d/D7 candidate requires its own complete run before these
 observations can establish a shared profile result.
+
+The expanded candidate `a37618b6c976079308c692c53d2dd5b9900fde7a` passed all 64
+required runtime CTests on WARP in
+[Windows run 42934446164](https://github.com/The-Ludus-Project/Ludus/actions/runs/42934446164).
+The runtime artifact records Windows Server 2022 Datacenter `10.0.20348.5773`,
+MSVC `19.44.35229.0`, Windows SDK `10.0.26100.0` and CMake `3.31.10`.
+The same run passed the installed shader worker, Clang/WARP, MSBuild source
+and SDK journeys, all four relocated runtime SDK flavor jobs, and all 76
+source runtime AddressSanitizer CTests, including the fatal control. Both
+editor lanes passed native channel ownership, World authoring at normal and
+fractional DPI, startup sound and hosted Play. The full editor suites still
+had failures and timeouts; this run does not qualify the broader editor.
 
 #### Candidate hardware requirements
 

@@ -20,6 +20,34 @@
 
 namespace ludus::editor::tests
 {
+/// Opt a test into native presentation without changing the other widget cases.
+class ScopedViewportMode final
+{
+public:
+    explicit ScopedViewportMode(const QByteArray& mode) : mPrevious(qgetenv("LUDUS_EDITOR_VIEWPORT"))
+    {
+        qputenv("LUDUS_EDITOR_VIEWPORT", mode);
+    }
+
+    ~ScopedViewportMode()
+    {
+        if (mPrevious.isNull() == true)
+        {
+            qunsetenv("LUDUS_EDITOR_VIEWPORT");
+        }
+        else
+        {
+            qputenv("LUDUS_EDITOR_VIEWPORT", mPrevious);
+        }
+    }
+
+    ScopedViewportMode(const ScopedViewportMode&) = delete;
+    ScopedViewportMode& operator=(const ScopedViewportMode&) = delete;
+
+private:
+    QByteArray mPrevious;
+};
+
 /// Shadowed point lamps in the lit regression scene: six cube faces each gives
 /// 72 shadow regions, within the renderer's 80-region atlas.
 inline constexpr foundation::int32 LAMP_COUNT = 12;

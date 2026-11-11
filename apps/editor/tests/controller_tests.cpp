@@ -98,6 +98,14 @@ QByteArray ValidDescriptor()
                              "  \"source_dir\": \".\",\n  \"preset\": \"linux-clang-debug\",\n  \"target\": \"app\",\n"
                              "  \"run\": {\n    \"cwd\": \".\",\n    \"args\": []\n  }\n}\n");
 }
+QByteArray MakePlayDescriptor()
+{
+    QByteArray descriptor = ValidDescriptor();
+#if defined(Q_OS_WIN)
+    descriptor.replace("linux-clang-debug", "windows-msvc-debug");
+#endif
+    return descriptor;
+}
 } // namespace
 
 TEST_CASE("Open loads a project and executes no project code", "[editor][controller]")
@@ -549,7 +557,7 @@ TEST_CASE("An existing RAD executable can open a session without installation", 
 TEST_CASE("Play menu follows saved project and tooling eligibility", "[editor][controller][play]")
 {
     QTemporaryDir dir;
-    const QString path = WriteDescriptor(dir, ValidDescriptor());
+    const QString path = WriteDescriptor(dir, MakePlayDescriptor());
     QFile sidecar(dir.filePath(QStringLiteral("ludus.play.json")));
     REQUIRE(sidecar.open(QIODevice::WriteOnly));
     sidecar.write(QByteArrayLiteral("{\"version\":1,\"host_target\":\"game_host\",\"module_target\":\"game_module\"}"));
@@ -596,7 +604,7 @@ TEST_CASE("Live Play ownership prevents a competing RAD debug job", "[editor][de
     sidecar.close();
     EditorController controller(tooling);
     MainWindow window(&controller);
-    controller.OpenProject(WriteDescriptor(dir, ValidDescriptor()));
+    controller.OpenProject(WriteDescriptor(dir, MakePlayDescriptor()));
     REQUIRE(QTest::qWaitFor([&] { return controller.CanPlay(); }, ADAPTER_WAIT_MILLISECONDS));
     controller.Play();
     REQUIRE(controller.PlayState().Phase == PlayPhase::Starting);

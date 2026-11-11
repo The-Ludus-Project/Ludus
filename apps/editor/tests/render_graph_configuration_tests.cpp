@@ -359,7 +359,9 @@ TEST_CASE("canvas interface editing previews repairs with Properties hidden", "[
     workspace.Redo();
     CHECK(document.GetDraft(library) == repairedChild);
     CHECK(document.GetDraft(ROOT_GRAPH) == repairedParent);
-    REQUIRE(workspace.Save() == true);
+    const bool isSaved = workspace.Save();
+    INFO(workspace.GetStatusText().toStdString());
+    REQUIRE(isSaved == true);
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(library) == repairedChild);

@@ -582,12 +582,17 @@ TEST_CASE("The World viewport keeps most of a MacBook Air-sized editor window", 
 {
     QTemporaryDir directory;
     EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    QWidget layoutHost;
     MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
     QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
     REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
     descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
 "source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
     descriptor.close();
+    // Test layout at the requested logical size even on runners with a
+    // smaller display. The window manager clamps native top-level windows.
+    window.setParent(&layoutHost, Qt::Widget);
+    layoutHost.show();
     // A 13-inch MacBook Air's default scale: about 1470 x 920 points for a maximized window.
     window.resize(1470, 920);
     window.show();

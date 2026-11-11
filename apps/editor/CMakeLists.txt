@@ -1090,10 +1090,21 @@ endif()
 # Offscreen Qt tests verify logic and widget wiring without a GPU/compositor.
 # They do NOT prove native Wayland interaction or that a game rendered a frame.
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
-    # Windows viewport tests need the native Qt surface and the WARP adapter.
+    # Use native Windows widget metrics. Widget/logic suites do not submit GPU
+    # frames; the dedicated native journeys below exercise WARP presentation.
     set(editor_test_environment "QT_QPA_PLATFORM=offscreen")
     if(WIN32)
-        set(editor_test_environment "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1")
+        set(editor_test_environment "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1;LUDUS_EDITOR_VIEWPORT=disabled")
+    endif()
+    set(code_editor_timeout 30)
+    set(content_editor_timeout 60)
+    set(graph_configuration_timeout 180)
+    if(WIN32 AND LUDUS_ENABLE_ASAN)
+        # The instrumented content scan took 57 seconds on the hosted runner;
+        # keep the process deadlines distinct from the tests' own assertions.
+        set(code_editor_timeout 90)
+        set(content_editor_timeout 120)
+        set(graph_configuration_timeout 300)
     endif()
     add_executable(ludus_editor_texture_benchmark EXCLUDE_FROM_ALL
         tests/texture_display_benchmark.cpp src/texture_inspection.cpp)
@@ -1116,7 +1127,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # One Catch2 session entry point for every editor test executable. Its
     # `--trace-output` option captures CPU scopes and viewport spans for the
     # runtime profile scenarios, so the trace libraries come with it.
-    ludus_editor_add_objects(ludus_editor_test_main tests/main.cpp tests/filesystem_fixture.cpp)
+    ludus_editor_add_objects(ludus_editor_test_main tests/main.cpp tests/filesystem_fixture.cpp tests/widget_fixture.cpp)
     target_compile_definitions(ludus_editor_test_main PUBLIC "LUDUS_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
     target_link_libraries(ludus_editor_test_main PUBLIC Qt6::Widgets Catch2::Catch2 Ludus::FoundationBase
         Ludus::FoundationContainers Ludus::FoundationProfiling ludus_editor_viewport_trace)
@@ -1161,7 +1172,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_code_editor_tests COMMAND ludus_code_editor_tests)
     # Linear-work and search cases assert wall-clock ceilings; keep them off a
     # runner shared with parallel CTest GPU cases.
-    set_tests_properties(ludus_code_editor_tests PROPERTIES LABELS "unit;editor;text" TIMEOUT 30
+    set_tests_properties(ludus_code_editor_tests PROPERTIES LABELS "unit;editor;text" TIMEOUT "${code_editor_timeout}"
         ENVIRONMENT "${editor_test_environment}" RUN_SERIAL TRUE)
     # Replay the content suite through the browser's single-owner scheduler as
     # well as the normal native worker. No Qt/Wasm-private APIs enter this target.
@@ -1177,7 +1188,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_editor_browser_content_tests)
     add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
-        LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "${editor_test_environment}")
+        LABELS "unit;editor;browser" TIMEOUT "${content_editor_timeout}" ENVIRONMENT "${editor_test_environment}")
     add_executable(ludus_project_explorer_tests tests/project_explorer_tests.cpp)
     set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_project_explorer_tests PRIVATE src)
@@ -1640,7 +1651,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
     # The combined canvas suite exceeds 180 s on macOS, including ASan; keep every case
     # under its existing hang deadline without accumulating all cases into that deadline.
-    ludus_add_editor_test_shards(ludus_render_graph_configuration_tests 2 180 "editor;render-graph")
+    ludus_add_editor_test_shards(ludus_render_graph_configuration_tests 2 "${graph_configuration_timeout}" "editor;render-graph")
 
     add_executable(ludus_render_graph_live_build_tests tests/render_graph_live_build_tests.cpp)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)

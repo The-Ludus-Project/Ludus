@@ -342,6 +342,8 @@ TEST_CASE("A viewport device that cannot start names its cause in the scene publ
     {
         SKIP("macOS presents only through the Metal-shared device (run with QT_QPA_PLATFORM=cocoa)");
     }
+#    elif defined(Q_OS_WIN)
+    qunsetenv("LUDUS_EDITOR_VIEWPORT"); // Use the native Windows surface for the injected failure.
 #    else
     // Readback presentation reaches the same first-frame wait without a display.
     qputenv("LUDUS_EDITOR_VIEWPORT", QByteArrayLiteral("offscreen"));

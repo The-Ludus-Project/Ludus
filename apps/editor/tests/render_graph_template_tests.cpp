@@ -1,4 +1,5 @@
 #include "filesystem_fixture.h"
+#include "internal/render_graph_template_registry.h"
 
 // Built-in creation and canvas settings use the real shared backend and document history.
 #include "internal/controller.h"
@@ -64,11 +65,71 @@ QString FindTemplatePython()
 {
     return QString::fromUtf8(LUDUS_TEST_PYTHON);
 }
+
+void RequirePickerProfile(const QString& identity)
+{
+#if defined(Q_OS_WIN)
+    // The native New Graph picker targets DXIL. These positive picker tests
+    // require an admitted Metal or Vulkan target; the Windows rejection has
+    // separate coverage below. Source-only configuration imports still run.
+    for (const RenderGraphTemplate& entry :
+         RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Graph))
+    {
+        if (entry.Identity == identity && (entry.Requirements.contains(QStringLiteral("native-ray-tracing")) == true ||
+                                           entry.Requirements.contains(QStringLiteral("compute-ray-tracing")) == true))
+        {
+            SKIP("This template requires a Metal or Vulkan package; the Windows picker targets DXIL.");
+        }
+    }
+#else
+    static_cast<void>(identity);
+#endif
+}
+
+void CustomizeTemplateBase(RendererWorkspace& inoutWorkspace)
+{
+    REQUIRE(inoutWorkspace.CustomizeBuiltIn() == true);
+#if defined(Q_OS_WIN)
+    // These tests edit and validate source packages, without using the local
+    // GPU. Give them the same Vulkan/WGSL targets as the Linux authoring cases.
+    RenderGraphDocument& document = inoutWorkspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    REQUIRE(manifest.isEmpty() == false);
+    manifest.insert(QStringLiteral("profiles"), QJsonArray{QStringLiteral("spirv"), QStringLiteral("wgsl")});
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const bool isSaved = inoutWorkspace.Save();
+    INFO(inoutWorkspace.GetStatusText().toStdString());
+    REQUIRE(isSaved == true);
+    REQUIRE(inoutWorkspace.OpenGraph(QDir(document.GetPackageRoot()).filePath(ROOT_GRAPH)) == true);
+#endif
+}
 } // namespace
+
+#if defined(Q_OS_WIN)
+TEST_CASE("DXIL graph creation refuses a Metal or Vulkan ray template without publishing files",
+          "[editor][render-graph][windows][template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    const QByteArray original = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.CreateGraph(QStringLiteral("Unsupported"), QStringLiteral("restir-di")) == true);
+    REQUIRE((finished.isEmpty() == false || finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true));
+    const QString status = workspace.GetStatusText();
+    INFO(status.toStdString());
+    CHECK(status.contains(QStringLiteral("select Metal or Vulkan")) == true);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+    CHECK(QFileInfo::exists(project.filePath(QStringLiteral("graphs/Unsupported"))) == false);
+}
+#endif
 
 TEST_CASE("ReSTIR template settings are editable from the canvas with Properties hidden",
           "[editor][render-graph][restir-template]")
 {
+    RequirePickerProfile(QStringLiteral("restir-di"));
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
     QWidget properties;
@@ -95,7 +156,7 @@ TEST_CASE("ReSTIR template settings are editable from the canvas with Properties
     });
     REQUIRE(workspace.PromptNewGraph() == true);
     REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
-    INFO(workspace.GetLastResult().Message.toStdString());
+    INFO(workspace.GetStatusText().toStdString());
     REQUIRE(workspace.GetDocument().GetDraft(QStringLiteral("library.lurender.json")).contains("bytes_per_pixel") ==
             true);
     const QString manifest = QStringLiteral("main.lushader.json");
@@ -184,6 +245,7 @@ TEST_CASE("Visibility templates are created from the editor picker with Properti
     {
         identity = QStringLiteral("tiled-vbuffer-nee");
     }
+    RequirePickerProfile(identity);
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
     QWidget properties;
@@ -207,7 +269,7 @@ TEST_CASE("Visibility templates are created from the editor picker with Properti
     });
     REQUIRE(workspace.PromptNewGraph() == true);
     REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
-    INFO(workspace.GetLastResult().Message.toStdString());
+    INFO(workspace.GetStatusText().toStdString());
     REQUIRE(workspace.GetCanvas().GetNodeCount() > 0);
     CHECK(inspector->isVisible() == false);
     const QByteArray manifest = workspace.GetDocument().GetDraft(QStringLiteral("main.lushader.json"));
@@ -243,7 +305,7 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
     inspector->hide();
     properties.hide();
     workspace.show();
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     REQUIRE(workspace.IsBuiltIn() == false);
     REQUIRE(QFileInfo::exists(QDir(workspace.GetDocument().GetPackageRoot()).filePath(ROOT_GRAPH)) == true);
     REQUIRE(workspace.CreateSubgraph(QStringLiteral("raytracing")) == true);
@@ -1302,7 +1364,7 @@ TEST_CASE("Nested template shader directories are prepared before saved graph re
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString package = document.GetPackageRoot();
     const QString manifest = QStringLiteral("main.lushader.json");
@@ -1660,6 +1722,7 @@ void ReplaceRasterSubgraph(RenderGraphDocument& inoutDocument, const QString& su
 // Choose a template in File -> New Render Graph and wait for its creation job.
 void CreateGraphFromPicker(RendererWorkspace& inoutWorkspace, const QString& identity)
 {
+    RequirePickerProfile(identity);
     QSignalSpy finished(&inoutWorkspace, &RendererWorkspace::JobFinished);
     QTimer::singleShot(0, &inoutWorkspace, [identity]() {
         QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
@@ -1673,7 +1736,8 @@ void CreateGraphFromPicker(RendererWorkspace& inoutWorkspace, const QString& ide
     });
     REQUIRE(inoutWorkspace.PromptNewGraph() == true);
     REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
-    INFO(inoutWorkspace.GetLastResult().Message.toStdString());
+    INFO(inoutWorkspace.GetStatusText().toStdString());
+    REQUIRE(inoutWorkspace.GetStatusText().startsWith(QStringLiteral("Created ")) == true);
 }
 
 void RequireValidation(RendererWorkspace& inoutWorkspace)
@@ -1693,7 +1757,7 @@ TEST_CASE("Simple triangle-loop configuration imports one kernel and numbers aro
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString identity = QStringLiteral("simple-compute-ray-tracing");
     const QString source = QStringLiteral("simple_compute_ray_tracing/main_shaders/trace.slang");
@@ -1770,7 +1834,7 @@ TEST_CASE("Compute ray-tracing configuration inserts on the root canvas and vali
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString library = QStringLiteral("Lighting.lurender.json");
     const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
@@ -1847,7 +1911,7 @@ TEST_CASE("Veach and Guibas MIS configuration imports its shade passes and setti
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     const QString identity = QStringLiteral("veach-guibas-mis");
     const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
@@ -1929,7 +1993,7 @@ TEST_CASE("Steinberg PLT configuration imports its passes, shader closure and se
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Plt"), QStringLiteral("steinberg-plt")) == true);
     const QByteArray library = document.GetDraft(QStringLiteral("Plt.lurender.json"));
@@ -2036,7 +2100,7 @@ TEST_CASE("Steinberg physical-optics configuration imports its passes, shader cl
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Optics"),
                                                  QStringLiteral("steinberg-physical-optics")) == true);
@@ -2108,7 +2172,7 @@ TEST_CASE("MH template picker and canvas import expose all estimators with Prope
     }
     SECTION("root canvas import")
     {
-        REQUIRE(workspace.CustomizeBuiltIn() == true);
+        CustomizeTemplateBase(workspace);
         workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
         bool hasAppliedTemplate = false;
         QTimer::singleShot(0, &workspace, [&workspace, &hasAppliedTemplate]() {
@@ -2221,7 +2285,7 @@ TEST_CASE("ReSTIR GI configuration imports its passes, shader closure and settin
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Indirect"), QStringLiteral("restir-gi")) == true);
     const QByteArray library = document.GetDraft(QStringLiteral("Indirect.lurender.json"));
@@ -2301,7 +2365,7 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Indirect"), QStringLiteral("conditional-restir")) ==
             true);
@@ -2393,7 +2457,7 @@ TEST_CASE("Line-sampling snippet applies from Quick Add on the canvas with Prope
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     QWidget* inspector = workspace.TakeInspectorPanel(&properties);
     inspector->hide();
     properties.hide();
@@ -3049,7 +3113,7 @@ TEST_CASE("Salesin and Jarosz snippet applies from Quick Add on the canvas with 
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     QWidget* inspector = workspace.TakeInspectorPanel(&properties);
     inspector->hide();
     properties.hide();
@@ -3114,7 +3178,7 @@ TEST_CASE("Salesin and Jarosz configuration applies from the canvas Configuratio
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     QWidget* inspector = workspace.TakeInspectorPanel(&properties);
     inspector->hide();
     properties.hide();
@@ -3177,7 +3241,7 @@ TEST_CASE("Veach and Guibas and Salesin and Jarosz configurations apply to one p
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
     // Return to the root canvas, as the user does, so the second import makes its own library.
@@ -3201,7 +3265,7 @@ qsizetype PadSavedPackage(const QString& project, qsizetype fileCount)
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project, 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     REQUIRE(workspace.Save() == true);
     const QDir root(workspace.GetDocument().GetPackageRoot());
     const qsizetype savedFiles = workspace.GetDocument().GetFiles().size();
@@ -3224,7 +3288,7 @@ TEST_CASE("The Reference window offers each saved library output, and a library 
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
     const RenderGraphCaptureTarget lines{QStringLiteral("PointLineMis.lurender.json"),
                                          QStringLiteral("PointLineMis"),
@@ -3395,7 +3459,7 @@ TEST_CASE("Delete Subgraph and Library is on a Subgraph node's canvas menu with 
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     const QStringList files = document.GetFiles();
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
@@ -3632,7 +3696,7 @@ TEST_CASE("Canvas template picker offers to remove unused settings that block a 
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     QWidget* inspector = workspace.TakeInspectorPanel(&properties);
     inspector->hide();
     properties.hide();
@@ -3728,7 +3792,7 @@ TEST_CASE("Guided FG imports its complete photon graph and undoes the insertion"
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     const QByteArray before = document.GetDraft(COMPUTE_MANIFEST);
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Photons"), QStringLiteral("guided-restir-fg-plus")) ==
@@ -3804,7 +3868,7 @@ TEST_CASE("One-more-vertex configuration imports its hierarchy, editable closure
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     RenderGraphDocument& document = workspace.GetDocument();
     const QByteArray originalManifest = document.GetDraft(COMPUTE_MANIFEST);
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Indirect"), QStringLiteral("one-more-vertex-nee")) ==
@@ -3841,7 +3905,7 @@ TEST_CASE("Light Transformer snippet applies from Quick Add on the canvas with P
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    CustomizeTemplateBase(workspace);
     QWidget* inspector = workspace.TakeInspectorPanel(&properties);
     inspector->hide();
     properties.hide();

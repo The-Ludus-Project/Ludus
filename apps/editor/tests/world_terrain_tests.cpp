@@ -1,3 +1,5 @@
+#include "viewport_fixture.h"
+
 #include "entropy_fixture.h"
 #include "internal/builtin_world.h"
 #include "internal/controller.h"
@@ -379,6 +381,9 @@ TEST_CASE("Mixed terrain strokes replay in order against the regenerated source"
 
 TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hidden", "[editor][world][terrain]")
 {
+#if defined(Q_OS_WIN)
+    const tests::ScopedViewportMode viewportMode(QByteArrayLiteral("native"));
+#endif
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
     const QString path = QDir(root).filePath(QStringLiteral("terrain.world.json"));
@@ -712,6 +717,9 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
 TEST_CASE("Terrain draft publication keeps the delegated World view during a renderer refusal",
           "[editor][world][terrain][world-graph]")
 {
+#    if defined(Q_OS_WIN)
+    const tests::ScopedViewportMode viewportMode(QByteArrayLiteral("native"));
+#    endif
     if (PreviewViewport::CanPresent() == false)
     {
         SKIP("Requires a native rendered World viewport.");

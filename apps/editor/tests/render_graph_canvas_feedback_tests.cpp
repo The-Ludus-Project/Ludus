@@ -23,6 +23,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QProcess>
 #include <QSet>
 #include <QStandardPaths>
@@ -853,11 +854,20 @@ TEST_CASE("hovering a card focuses its wires and fades the others", "[editor][re
     QGraphicsRectItem* half = FindFrame(canvas, QStringLiteral("half"));
     REQUIRE(half != nullptr);
     const QPoint hover = canvas.mapFromScene(half->sceneBoundingRect().center());
-    QTest::mouseMove(canvas.viewport(), hover);
+    const auto moveWithinViewport = [&canvas](const QPoint& position) {
+        QMouseEvent event(QEvent::MouseMove,
+                          position,
+                          canvas.viewport()->mapToGlobal(position),
+                          Qt::NoButton,
+                          Qt::NoButton,
+                          Qt::NoModifier);
+        QCoreApplication::sendEvent(canvas.viewport(), &event);
+    };
+    moveWithinViewport(hover);
     QCoreApplication::processEvents();
     CHECK(sizeWire->opacity() == 1);
     CHECK(outputWire->opacity() < 0.5);
-    QTest::mouseMove(canvas.viewport(), QPoint(2, 2));
+    moveWithinViewport(QPoint(2, 2));
     QCoreApplication::processEvents();
     CHECK(outputWire->opacity() == 1);
 }

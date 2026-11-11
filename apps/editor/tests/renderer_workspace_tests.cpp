@@ -246,7 +246,12 @@ TEST_CASE("Renderer creation refuses linked graph directories and ignores cancel
     QString error;
     CHECK(creation.Start(tooling, project.path(), QStringLiteral("Main"), 1, error) == false);
     CHECK(QDir(engine.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty() == true);
+#if defined(Q_OS_WIN)
+    // Windows deletes a directory symlink with RemoveDirectory, not DeleteFile.
+    REQUIRE(QDir(project.path()).rmdir(QStringLiteral("graphs")) == true);
+#else
     REQUIRE(QFile::remove(QDir(project.path()).filePath(QStringLiteral("graphs"))) == true);
+#endif
     QSignalSpy finished(&creation, &RenderGraphCreation::Finished);
     QSignalSpy created(&creation, &RenderGraphCreation::Created);
     QSignalSpy failed(&creation, &RenderGraphCreation::Failed);

@@ -440,8 +440,12 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     }
     const QByteArray captured = document.GetState().Text;
     REQUIRE(formatter.Start(tool) == true);
-    CHECK(formatter.Start(tool) == false); // One in-flight job.
-    REQUIRE(finished.wait(12000) == true);
+    if (formatter.IsRunning() == true)
+    {
+        CHECK(formatter.Start(tool) == false); // One in-flight job.
+    }
+    // QProcess can report a missing executable synchronously on Windows.
+    REQUIRE((finished.isEmpty() == false || finished.wait(12000) == true));
     INFO(formatter.GetMessage().toStdString());
     CHECK(finished.at(0).at(0).toBool() == shouldSucceed);
     CHECK(formatter.IsRunning() == false);
