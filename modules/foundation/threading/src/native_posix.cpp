@@ -7,9 +7,9 @@
 #endif
 
 #include <cerrno>
-#include <cstring>
 #include <ctime>
 #include <sched.h>
+#include <type_traits>
 
 namespace ludus::foundation::threading::detail
 {
@@ -105,13 +105,26 @@ void NativeYield() noexcept
 {
     (void)sched_yield();
 }
+namespace
+{
+// pthread_t is an integer on Linux and a pointer on macOS; both convert to the identity by value.
+template <typename Handle>
+uint64 ToThreadIdentity(Handle handle) noexcept
+{
+    static_assert(sizeof(Handle) <= sizeof(uint64), "pthread_t must fit the thread identity");
+    if constexpr (std::is_pointer_v<Handle>)
+    {
+        return static_cast<uint64>(reinterpret_cast<usize>(handle));
+    }
+    else
+    {
+        return static_cast<uint64>(handle);
+    }
+}
+} // namespace
+
 uint64 NativeCallingThreadId() noexcept
 {
-    // pthread_t is an integer on Linux and a pointer on macOS; copy its bytes into the identity.
-    static_assert(sizeof(pthread_t) <= sizeof(uint64), "pthread_t must fit the thread identity");
-    const pthread_t self = pthread_self();
-    uint64 identity = 0;
-    std::memcpy(&identity, &self, sizeof(self));
-    return identity;
+    return ToThreadIdentity(pthread_self());
 }
 } // namespace ludus::foundation::threading::detail

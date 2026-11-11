@@ -90,45 +90,44 @@ TEST_CASE("a thread invokes a caller-owned callable", "[threading][thread]")
 
 TEST_CASE("a thread owns a callable passed by value until it is joined", "[threading][thread]")
 {
+    struct TallyCounters final
+    {
+        std::atomic<uint32> Calls{0};
+        std::atomic<uint32> Destroyed{0};
+    };
     struct Tally final
     {
-        std::atomic<uint32>* CallsOrNull = nullptr;
-        std::atomic<uint32>* DestroyedOrNull = nullptr;
-        Tally(std::atomic<uint32>& inoutCalls, std::atomic<uint32>& inoutDestroyed) noexcept
-            : CallsOrNull(&inoutCalls), DestroyedOrNull(&inoutDestroyed)
+        TallyCounters* CountersOrNull = nullptr;
+        explicit Tally(TallyCounters& inoutCounters) noexcept : CountersOrNull(&inoutCounters) {}
+        Tally(Tally&& other) noexcept : CountersOrNull(other.CountersOrNull)
         {
-        }
-        Tally(Tally&& other) noexcept : CallsOrNull(other.CallsOrNull), DestroyedOrNull(other.DestroyedOrNull)
-        {
-            other.CallsOrNull = nullptr;
-            other.DestroyedOrNull = nullptr;
+            other.CountersOrNull = nullptr;
         }
         Tally(const Tally&) = delete;
         Tally& operator=(const Tally&) = delete;
         Tally& operator=(Tally&&) = delete;
         ~Tally() noexcept
         {
-            if (DestroyedOrNull != nullptr)
+            if (CountersOrNull != nullptr)
             {
-                DestroyedOrNull->fetch_add(1, std::memory_order_relaxed);
+                CountersOrNull->Destroyed.fetch_add(1, std::memory_order_relaxed);
             }
         }
         void operator()() noexcept
         {
-            CallsOrNull->fetch_add(1, std::memory_order_relaxed);
+            CountersOrNull->Calls.fetch_add(1, std::memory_order_relaxed);
         }
     };
-    std::atomic<uint32> calls{0};
-    std::atomic<uint32> destroyed{0};
+    TallyCounters counters;
     threading::Thread thread;
-    REQUIRE(thread.Start(Tally{calls, destroyed}) == threading::ThreadStatus::Ok);
+    REQUIRE(thread.Start(Tally{counters}) == threading::ThreadStatus::Ok);
     // A rejected start stores nothing; the caller's temporary is the caller's to destroy.
     CHECK(thread.Start([]() {}) == threading::ThreadStatus::InvalidState);
-    CHECK(destroyed.load() == 0);
+    CHECK(counters.Destroyed.load() == 0);
     REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
-    CHECK(calls.load() == 1);
+    CHECK(counters.Calls.load() == 1);
     // The moved-from temporary destroys without counting; the stored copy counts once at Join.
-    CHECK(destroyed.load() == 1);
+    CHECK(counters.Destroyed.load() == 1);
 
     uint32 plain = 0;
     REQUIRE(thread.Start([&plain]() { ++plain; }) == threading::ThreadStatus::Ok);
