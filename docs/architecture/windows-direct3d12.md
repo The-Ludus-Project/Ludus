@@ -1063,8 +1063,8 @@ at `a731df54a` passed all 19 entries in
 [Windows run 42953291760](https://github.com/The-Ludus-Project/Ludus/actions/runs/42953291760).
 The instrumented suite reported no sanitizer finding. The jobs' separate
 RHI preflight failed to compile two fixtures after the borrowed-view API
-change. The repair at `bec7c3a72` passed Clang/WARP, the full ordinary
-editor job, and the instrumented MSVC ownership preflight in the
+change. The repair at `bec7c3a72` passed Clang/WARP and both complete
+editor jobs, including their ownership preflights, in the
 [replacement matrix](https://github.com/The-Ludus-Project/Ludus/actions/runs/42954832638).
 
 #### Candidate hardware requirements
