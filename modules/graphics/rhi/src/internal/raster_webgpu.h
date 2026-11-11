@@ -1,6 +1,7 @@
 #pragma once
 
 #include "profile.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 // Included only by the WebGPU backend. Thanks to W3C, WebGPU, sections
 // "Error Scopes" and "GPUQueue" (validation and ordered completion):
 // https://www.w3.org/TR/webgpu/#error-scopes and https://www.w3.org/TR/webgpu/#gpuqueue
@@ -331,12 +332,15 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     return RasterStatus::Ready;
 }
 void ComputeBufferBarrier(usize, GraphAccessMode) noexcept {}
-RasterStatus
-RasterCreateBuffer(usize slot, const BufferDescription& info, std::span<const uint8> bytes, uint32 request) noexcept
+RasterStatus RasterCreateBuffer(usize slot,
+                                const BufferDescription& info,
+                                ludus::foundation::BorrowedView<const uint8> bytes,
+                                uint32 request) noexcept
 {
     RasterScopes(request);
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-    descriptor.size = (bytes.size() + 3) & ~usize{3};
+    descriptor.size =
+        (bytes.GetSize() + internal::BUFFER_ALIGNMENT_BYTES - 1) & ~(internal::BUFFER_ALIGNMENT_BYTES - 1);
     descriptor.mappedAtCreation = true;
     descriptor.usage = info.Role == BufferRole::Uniform           ? WGPUBufferUsage_Uniform
                        : info.Role == BufferRole::Vertex          ? WGPUBufferUsage_Vertex
@@ -353,7 +357,7 @@ RasterCreateBuffer(usize slot, const BufferDescription& info, std::span<const ui
         if (mapped != nullptr)
         {
             std::memset(mapped, 0, descriptor.size);
-            std::memcpy(mapped, bytes.data(), bytes.size());
+            std::memcpy(mapped, bytes.GetDataOrNull(), bytes.GetSize());
         }
         else
         {
@@ -399,7 +403,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         uint32 width = info.Width, height = info.Height;
         for (uint32 level = 0; level < info.MipLevels; ++level)
         {
-            const auto mip = upload.Mips.empty() ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
+            const TextureMipUpload mip =
+                upload.Mips.IsEmpty() == true ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
             WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
             destination.texture = texture;
             destination.mipLevel = level;
@@ -412,7 +417,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                                       internal::TextureSlices(info, level)};
             wgpuQueueWriteTexture(gQueue,
                                   &destination,
-                                  upload.Bytes.data() + mip.Offset,
+                                  upload.Bytes.GetDataOrNull() + mip.Offset,
                                   mip.RowPitch * layout.rowsPerImage * extent.depthOrArrayLayers,
                                   &layout,
                                   &extent);

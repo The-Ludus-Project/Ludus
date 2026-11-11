@@ -40,6 +40,7 @@ OTHER_TARGETS = (
 )
 OTHER_TESTS = (
     "ludus_world_packed_room_d3d12", "ludus_world_frame_renderer_pixels", "ludus_shader_worker_protocol",
+    "ludus_shader_reload_gpu",
     "ludus_game_host_windows_symbols", "ludus_game_host_windows_supervisor", "ludus_behavior_cook",
     "ludus_behavior_profiles", "ludus_behavior_evidence", "ludus_localization_cooker",
     "ludus_localization_release", "ludus_rhi_windows_profile_smoke",

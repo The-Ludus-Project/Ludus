@@ -101,6 +101,8 @@ bool IsTextureValid(const rhi::TextureCpuContent& texture, bool isData) noexcept
 bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
 {
     return content::scene_format::IsMaterialScatteringValid(material.Scattering) == true &&
+           (material.Scattering.Model != content::scene_format::MaterialModel::Program ||
+            content::scene_format::IsMaterialProgramValid(material.Program) == true) &&
            internal::IsReferenceCoatingSupported(material.Scattering) == true &&
            internal::IsReferenceDielectricSupported(material.Scattering) == true &&
            (material.Scattering.Model != content::scene_format::MaterialModel::Conductor ||
@@ -454,6 +456,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                 material.Metallic,
                 material.Roughness,
                 material.Scattering};
+            surface.Program = material.Program;
             surface.Emission = material.Emission;
             surface.IsEmissionTwoSided = material.IsEmissionTwoSided;
             surface.UvTransform = material.UvTransform;

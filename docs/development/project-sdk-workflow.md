@@ -362,8 +362,34 @@ The Debug, Development and Profile SDKs embed MSVC debug information in the
 engine objects, so linking a relocated archive does not require the producer's
 compiler PDB. Use the matching `windows-msvc-<flavor>` or
 `windows-msvc-visual-studio-<flavor>` project preset with the corresponding
-prefix under `out/install`. The runtime SDK includes the scene cooker (`SceneCook`). It omits shader file delivery (`ShaderDevelopment`),
-the development diagnostic session, Behavior, Unicode and the OIDN denoiser.
+prefix under `out/install`. The runtime SDK includes the scene cooker (`SceneCook`) and shader file delivery
+(`ShaderDevelopment`). It omits the development diagnostic session, Unicode and
+the OIDN denoiser. Behavior is an opt-in for the Development SDK journey.
+
+To include the optional Luau Behavior provider and its paired cooking tools,
+run these commands from the same x64 developer shell:
+
+```powershell
+python scripts/script-provider bootstrap
+./scripts/install-sdk.ps1 windows-msvc-runtime-sdk --behavior
+```
+
+Configure the scripted game sample against this prefix to cook its assets and
+build the static player, host and reloadable DLL:
+
+```powershell
+cmake -S examples/scripted-game -B out/scripted-game -G Ninja `
+  -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+  "-DCMAKE_PREFIX_PATH=$PWD/out/install/windows-msvc-runtime-sdk"
+cmake --build out/scripted-game
+ctest --test-dir out/scripted-game --output-on-failure
+```
+
+See [S5](../architecture/behavior-s5.md) for the debugger contract. The Windows SDK lane relocates the prefix before building the
+sample, launches the static player, and exercises the module's script debugger
+through the host's inherited socket. The Windows game helper places the static
+player and its PDB under `shipping/` in the build directory. The development
+DLL and its matching PDB stay beside the host executable.
 
 ### VS Code and Visual Studio on Windows
 

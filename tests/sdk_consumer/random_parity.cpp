@@ -13,8 +13,6 @@
 #include "random_parity.h"
 #include "random_parity_corpus.h"
 
-#include <span>
-
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
 #    include <ludus/foundation/base/pointer.hpp>
@@ -124,8 +122,10 @@ bool CreateResources() noexcept
     {
         return false;
     }
-    const std::span<const uint8> caseSource{reinterpret_cast<const uint8*>(gCorpus.GetCases().GetData()), caseBytes};
-    const std::span<const uint8> resultSource{zeros.GetData(), zeros.GetSize()};
+    const ludus::foundation::BorrowedView<const uint8> caseSource{
+        reinterpret_cast<const uint8*>(gCorpus.GetCases().GetData()),
+        caseBytes};
+    const ludus::foundation::BorrowedView<const uint8> resultSource{zeros.GetData(), zeros.GetSize()};
     const rhi::RasterShaderDescription shader = ludus::shaders::random_parity::Compute();
     return IsAccepted(rhi::CreateBuffer(gDevice,
                                         { .Role = rhi::BufferRole::Storage, .Size = caseBytes },

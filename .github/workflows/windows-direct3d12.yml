@@ -224,9 +224,15 @@ jobs:
           conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial --profile:host $hostProfile --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$env:SDK_CONFIGURATION" --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK dependencies failed to install' }
           $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
-          & $python scripts/python/engine.py install-sdk $env:SDK_PRESET
+          $behavior = @()
+          if ($env:SDK_FLAVOR -eq 'Development') {
+            & $python scripts/script-provider bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Behavior host tool bootstrap failed' }
+            $behavior += '--behavior'
+          }
+          & $python scripts/python/engine.py install-sdk $env:SDK_PRESET @behavior
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK install failed' }
-          & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe" --flavor $env:SDK_FLAVOR
+          & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe" --flavor $env:SDK_FLAVOR @behavior
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK consumers failed' }
       - name: Prepare Catch2 for the four RHI build flavors
         if: matrix.generator == 'Ninja' || matrix.generator == 'MSBuild'

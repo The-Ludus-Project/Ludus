@@ -7,6 +7,11 @@ itch.io account. This implements the first part of the
 Editor setup, browser packaging and automated uploads are described in
 [Editor-managed game releases](editor-game-releases.md).
 
+Windows SDK, game and staged Editor distributions use the explicit
+[Windows portable Release workflow](#windows-portable-release-distributions-d8)
+below. The installed `ludus project package` and Editor release actions retain
+their existing supported platforms.
+
 Native ZIP manifests (4 MiB), central directories (8 MiB), Mach-O load-command
 tables (8 MiB) and native inspection output (8 MiB) use named policies from
 `scripts/python/ludus_tools/package_limits.py`. These encoded metadata and
@@ -228,3 +233,186 @@ See CI for macOS 14 native and sanitizer gates. These checks establish the recor
 package/relocation scope; real hosted gameplay needs its own acceptance. The transport is tested with
 isolated stubs; no live-account upload is part of local validation. See the
 [evidence ledger](game-packaging-publishing-evidence.md).
+
+## Windows portable Release distributions (D8)
+
+`scripts/package-windows` produces a versioned ZIP from an explicit installed
+Windows x64 payload. It includes a SHA-256 inventory, SDK identity, candidate
+revision, dependency/license records, matching PDBs, and the existing offline
+Markdown/HTML documentation archive. Python 3.10+ is sufficient for internal
+bundle creation and verification; public signature verification requires Windows
+and the Windows SDK's `signtool.exe`. It never builds, downloads, signs, launches,
+installs prerequisites, uploads, or modifies an existing version directory.
+
+The channel is **portable ZIP**, with manual side-by-side upgrades and removal.
+There is no MSI/MSIX registration, automatic updater or store submission.
+`internal` bundles permit unsigned images; `public` bundles require successful
+`signtool verify /pa /all` on every executable image, including third-party DLLs
+and a bundled VC Redistributable. Sign the final staged bytes before packaging.
+Signature verification establishes Windows trust, not the release publisher's
+identity policy, timestamp longevity, SmartScreen reputation or store acceptance.
+Acquire/approve certificates and perform signing in the release channel's own
+workflow; this command never accesses private keys.
+
+### Install a Release payload and its symbols
+
+Use the MSVC 14.44 / Windows SDK 10.0.26100.0 developer environment. The admitted
+Foundation/Platform/RHI SDK closure can be installed from a Visual Studio build:
+
+```powershell
+cmake --preset windows-msvc-visual-studio -B out/build/windows-release-sdk -DLUDUS_BUILD_TESTS=OFF -DLUDUS_WARNINGS_AS_ERRORS=ON
+cmake --build out/build/windows-release-sdk --config Release --target ludus_windows_sdk
+cmake --install out/build/windows-release-sdk --config Release --prefix out/install/windows-release-sdk
+```
+
+This scope is the SDK's declared component set; it does not admit other modules
+or certify the D7 physical-adapter matrix. Native MSVC Release engine objects
+retain CodeView information with `/Z7`, so SDK `.lib` files contain their debug
+information. Retain the exact libraries with their final executable/PDB pair.
+PDB identity checks cover final images, not each static library's debug coverage.
+
+Game/tool CMake install rules can use the SDK's
+`ludus_install_windows_application` helper after creating an executable:
+
+```cmake
+find_package(Ludus CONFIG REQUIRED)
+add_executable(MyGame src/main.cpp)
+target_link_libraries(MyGame PRIVATE Ludus::FoundationBase)
+ludus_install_windows_application(MyGame
+    DESTINATION bin COMPONENT GameRelease SYMBOL_COMPONENT GameSymbols)
+# When this executable enables Agility, also install its runtime:
+# ludus_install_d3d12_agility_runtime(MyGame bin COMPONENT GameRelease)
+install(FILES NOTICE.txt LICENSE.txt DESTINATION . COMPONENT GameRelease)
+# Install authored assets, cooked DXIL/reflection, and dependency licenses here.
+```
+
+The helper applies `/Z7`, `/DEBUG:FULL`, `/INCREMENTAL:NO`, `/OPT:REF`, `/OPT:ICF`
+and a basename-only `/PDBALTPATH` for Release. It preserves optimization and
+installs the runtime and PDB into separate components. Build successfully first,
+then install `GameRelease` and `GameSymbols` to different empty prefixes with
+`cmake --install <build> --config Release --component <component> --prefix <prefix>`.
+Use the exact Release SDK identity used to link the game. The packager checks
+that identity's platform/flavor/compiler and the final PDB GUID/age; it cannot
+infer compilation flags or prove the declared project's provenance from PE bytes.
+
+For an Editor distribution, first supply a complete installed D6d Release
+payload: Editor, shader worker, runtime helpers, authored templates/assets,
+manifest-owned shaders and their notices. Deploy the matching Qt runtime into
+the Editor executable's directory with `windeployqt --release --no-compiler-runtime
+<editor.exe>` from that Qt installation. Include `platforms/qwindows.dll` and a
+relative `qt.conf` (`[Paths]`, `Prefix=.` and `Plugins=.` on separate lines). Record all Qt
+DLLs/plugins and their license texts in `dependencies`; dynamically loaded
+helpers/assets must also be listed in `requiredFiles`. The packager requires the
+platform plugin and configuration, but does not build or qualify the D6d Editor
+or infer every dynamically loaded asset. The existing Editor remains a developer
+tool outside the default SDK install; this workflow accepts a separately staged
+Editor payload without changing that boundary.
+
+### Declare the payload
+
+Keep a release spec outside the installed payload. Paths inside the payload use
+forward slashes; PDB/installer input paths are local release-machine inputs and
+are omitted from the published manifest. Replace the example revision with the
+actual full game candidate commit and include every owned EXE/DLL in `symbols`:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "game",
+  "version": "0.1.0",
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "channel": "internal",
+  "entryPoint": "bin/MyGame.exe",
+  "license": "LICENSE.txt",
+  "requiredFiles": ["assets/catalog.json"],
+  "symbols": {"bin/MyGame.exe": "out/install/game-symbols/bin/MyGame.pdb"},
+  "dependencies": []
+}
+```
+
+`kind` is `sdk`, `game`, or `editor`. SDK bundles omit `entryPoint` and may use
+an empty symbol map when they contain only static Ludus libraries and licensed
+third-party runtime images. Their installed `share/Ludus/LudusSdkManifest.json`
+must equal the selected manifest, including the candidate source revision.
+Every bundled PE image has exactly one owner: an owned symbol mapping, or a
+`dependencies` record with `name`, exact `version`, payload-relative `license`,
+and a nonempty `files` list. The installed SDK identity additionally inventories
+its static dependencies. Include `NOTICE.txt`, full license texts and any asset
+licenses. Listing a license does not establish redistribution permission.
+
+Non-system normal and delay imports must resolve inside the package beside their
+image/hosts; developer PATH and installed Qt/SDK locations are never searched.
+Windows OS DLLs and API sets use an explicit allowlist. Debug CRTs, non-x64 PEs,
+missing assets, missing/mismatched PDBs, SDK/debug files in player payloads,
+links/reparse points, Windows reserved names, case collisions and overly long
+relative paths fail with a repair. Limits are 10,000 entries, 30 GB expanded,
+200 characters per bundle-relative path, 8 MiB ZIP central metadata, 4 MiB manifest,
+and 16 MiB per binary metadata read. Extract under a short root; this does not
+claim support for every consumer's MAX_PATH behavior.
+
+When images import the dynamic MSVC CRT, add `redistributable` with `path`,
+reviewed `sha256`, exact `version`, and a payload-relative `license` notice.
+Supply the official `VC_redist.x64.exe` matching or newer than the build tools,
+with its redistribution terms; do not sweep DLLs from the developer machine.
+The installer is included under `prerequisites/`; users run it interactively,
+with its own elevation/reboot behavior. The packager never installs it. For
+example, the license path can name an installed notice that preserves Microsoft's
+terms and redistribution attribution. Review permission for the exact installer.
+
+### Create, verify, install and update
+
+Build/check docs using the [wiki workflow](wiki.md), then run
+`python scripts/package-docs` to obtain `out/ludus-docs-offline.zip`. Packaging
+requires the canonical README, site index and source ledger in this archive;
+use the producer's wiki checks to establish freshness before passing it in.
+
+```powershell
+python scripts/package-windows create --payload out/install/game-release --output out/packages/windows-0.1.0 --spec release-windows.json --sdk-manifest out/install/windows-release-sdk/share/Ludus/LudusSdkManifest.json --docs out/ludus-docs-offline.zip
+python scripts/package-windows verify out/packages/windows-0.1.0/windows.zip
+```
+
+For `public`, pass `--signtool <absolute-path-to-signtool.exe>` to both commands.
+Output is `windows.zip` and `SHA256SUMS`. Preserve both through the release's
+support lifetime. Verification privately extracts and checks the inventory,
+loader closure and PDBs again before the destination directory becomes visible.
+Existing destinations are never replaced. ZIP hashes/inventories detect changes;
+a separately trusted channel must authenticate the expected archive digest.
+Symbols live under `symbols/`, separately from `payload/`; treat them as potentially
+sensitive release engineering artifacts when deciding who can access the bundle.
+
+Extract into a new version directory, install the bundled prerequisite if
+present, then launch the manifest's entry point under `payload/` or explicitly
+select that SDK prefix. Keep projects, saves and settings outside the version
+directory. To upgrade, close the old process, extract/verify the new version
+beside it, test it, then explicitly select it. To roll back, select the old
+version. To uninstall, close processes and delete only that version directory;
+retain authored data and the shared Microsoft runtime. No migration or registry
+cleanup is implied. Applications must themselves honor their declared external
+save/settings paths; portable packaging cannot enforce that runtime behavior.
+
+The **Windows Release distribution** workflow builds checked offline docs and a
+Release MSBuild SDK, runs the archive guards with Python and `python -O`, then
+packages/verifies the installed SDK. It also compiles a real MSVC application,
+installs its runtime/PDB components and launches a relocated copy with developer
+PATH entries removed. The SDK and logs are candidate artifacts, never published
+releases. Its developer runner already has Windows/CRT/tooling: this is not
+pristine-machine, GPU or interactive Editor acceptance.
+
+Before distribution acceptance, record the exact archive SHA, D7 candidate,
+Windows/driver/tool versions and physical adapter; on a clean supported Windows
+machine without Visual Studio/Qt/Ludus, install the prerequisite, verify/launch,
+exercise an authored project and shader-worker path, trigger useful missing-file
+failure diagnostics, upgrade with nonempty saves/settings/projects, roll back,
+and remove the version while checking those data remain. For public delivery,
+record signing trust and timestamp/channel policy separately. These observations
+remain pending until recorded; the archive manifest explicitly says
+`pending-clean-machine-and-D7-acceptance`.
+
+Thanks to Microsoft, [PE Format](https://learn.microsoft.com/windows/win32/debug/pe-format),
+[SignTool](https://learn.microsoft.com/windows/win32/seccrypto/signtool) and
+[Redistribute Visual C++ files](https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files);
+LLVM contributors, [MSF](https://llvm.org/docs/PDB/MsfFile.html) and
+[PDB Info Stream](https://llvm.org/docs/PDB/PdbStream.html); and The Qt Company,
+[Qt for Windows deployment](https://doc.qt.io/qt-6/windows-deployment.html).
+Their loader, identity and deployment contracts inform these checks; no
+third-party parser or deployment implementation is copied into the packager.

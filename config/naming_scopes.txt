@@ -7,6 +7,7 @@ modules/content/scene_source
 modules/tooling/shader_language
 modules/content/identity_records
 modules/content/procedural/environment
+modules/content/terrain
 modules/content/string_dictionary
 modules/content/string_dictionary_format
 modules/foundation/identity

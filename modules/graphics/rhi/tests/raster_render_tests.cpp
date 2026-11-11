@@ -4,6 +4,7 @@
 #include <cstring>
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -19,15 +20,13 @@
 #include "raster.h"
 #include "raster_test_readiness.h"
 
-#include <span>
-
 #include <catch2/catch_test_macros.hpp>
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
 namespace
 {
 template <typename T, usize N>
-std::span<const uint8> RasterBytes(const T (&data)[N]) noexcept
+ludus::foundation::BorrowedView<const uint8> RasterBytes(const T (&data)[N]) noexcept
 {
     return {reinterpret_cast<const uint8*>(data), sizeof(data)};
 }

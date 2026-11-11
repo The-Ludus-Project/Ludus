@@ -4,6 +4,7 @@
 #include "render_graph_scratch.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -443,12 +444,12 @@ struct ActivationFixture final
         compositeVertex.Artifact.Stage = rhi::ShaderStage::Vertex;
         compositeVertex.Artifact.Wgsl = "composite vertex fixture";
         compositeVertex.Artifact.WgslEntry = "VertexMain";
-        compositeVertex.Inputs = CompositeInputs.AsSpan();
+        compositeVertex.Inputs = {CompositeInputs.GetData(), CompositeInputs.GetSize()};
         rhi::RasterShaderDescription compositeFragment;
         compositeFragment.Artifact.Stage = rhi::ShaderStage::Fragment;
         compositeFragment.Artifact.Wgsl = "composite fragment fixture";
         compositeFragment.Artifact.WgslEntry = "FragmentMain";
-        compositeFragment.Bindings = CompositeBindings.AsSpan();
+        compositeFragment.Bindings = {CompositeBindings.GetData(), CompositeBindings.GetSize()};
         REQUIRE(Activation.Initialize(Device,
                                       {Interface.GetData(), Interface.GetSize()},
                                       compositeVertex,
@@ -529,8 +530,8 @@ TEST_CASE("RG3 runtime packages decode plan records and copy caller bytes", "[re
     const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
     CHECK(programs.ColorVertex.Artifact.Wgsl == VERTEX_TEXT);
     CHECK(programs.ColorVertex.Artifact.WgslEntry == "VertexMain");
-    CHECK(programs.ColorVertex.Inputs.size() == format::STATIC_INPUT_COUNT);
-    CHECK(programs.ColorFragment.Inputs.empty() == true);
+    CHECK(programs.ColorVertex.Inputs.GetSize() == format::STATIC_INPUT_COUNT);
+    CHECK(programs.ColorFragment.Inputs.IsEmpty() == true);
     CHECK(programs.DepthFragment.Artifact.Wgsl == FRAGMENT_TEXT);
     CHECK(package.GetInterfaceIdentity()[0] == HOST_INTERFACE);
     CHECK(package.GetGenerationIdentity()[31] == 1);
@@ -608,7 +609,7 @@ TEST_CASE("RG3 runtime packages decode SPIR-V words little-endian beside every t
     for (const rhi::RasterShaderDescription* description : {&programs.ColorVertex, &programs.ColorFragment})
     {
         const rhi::ShaderDescription& artifact = description->Artifact;
-        REQUIRE(artifact.Spirv.size() == SPIRV_WORD_COUNT);
+        REQUIRE(artifact.Spirv.GetSize() == SPIRV_WORD_COUNT);
         for (usize word = 0; word < SPIRV_WORD_COUNT; ++word)
         {
             CHECK(artifact.Spirv[word] == SPIRV_WORDS[word]);
@@ -625,8 +626,8 @@ TEST_CASE("RG3 runtime packages decode SPIR-V words little-endian beside every t
     CHECK(programs.ColorVertex.Artifact.Stage == rhi::ShaderStage::Vertex);
     CHECK(programs.ColorFragment.Artifact.Stage == rhi::ShaderStage::Fragment);
     // A color-only generation leaves both DepthOnly roles empty, like its compiled header.
-    CHECK(programs.DepthVertex.Artifact.Spirv.empty() == true);
-    CHECK(programs.DepthVertex.Inputs.empty() == true);
+    CHECK(programs.DepthVertex.Artifact.Spirv.IsEmpty() == true);
+    CHECK(programs.DepthVertex.Inputs.IsEmpty() == true);
     CHECK(programs.DepthFragment.Artifact.Stage == rhi::ShaderStage::Vertex);
 }
 
@@ -649,8 +650,8 @@ TEST_CASE("RG3 runtime packages carry DXIL containers as bytes for Direct3D 12",
     for (const rhi::RasterShaderDescription* description : {&programs.ColorVertex, &programs.ColorFragment})
     {
         const rhi::ShaderDescription& artifact = description->Artifact;
-        REQUIRE(artifact.Dxil.size() == DXIL_BYTES.size());
-        CHECK(std::memcmp(artifact.Dxil.data(), DXIL_BYTES.data(), DXIL_BYTES.size()) == 0);
+        REQUIRE(artifact.Dxil.GetSize() == DXIL_BYTES.size());
+        CHECK(std::memcmp(artifact.Dxil.GetDataOrNull(), DXIL_BYTES.data(), DXIL_BYTES.size()) == 0);
     }
     CHECK(programs.ColorVertex.Artifact.DxilEntry == "VertexMain");
     CHECK(programs.ColorFragment.Artifact.DxilEntry == "FragmentMain");
@@ -875,9 +876,9 @@ TEST_CASE("RG3 runtime packages decode uniform tables and derive stage bindings"
     CHECK(plan.UniformFields[1].ByteOffset == 12);
     CHECK(plan.UniformFields[3].ByteOffset == 16);
     const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
-    CHECK(programs.ColorVertex.Bindings.empty() == true);
-    CHECK(programs.DepthFragment.Bindings.empty() == true);
-    REQUIRE(programs.ColorFragment.Bindings.size() == 1);
+    CHECK(programs.ColorVertex.Bindings.IsEmpty() == true);
+    CHECK(programs.DepthFragment.Bindings.IsEmpty() == true);
+    REQUIRE(programs.ColorFragment.Bindings.GetSize() == 1);
     const rhi::RasterBinding& binding = programs.ColorFragment.Bindings[0];
     CHECK(binding.Binding == 0);
     CHECK(binding.Kind == rhi::RasterBindingKind::UniformBuffer);
@@ -1407,7 +1408,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         CHECK(programs.ColorFragment.Artifact.Wgsl.empty() == true);
         CHECK(programs.AdditionalRasterStages[0].Artifact.WgslEntry == "GBufferVertex");
         CHECK(programs.AdditionalRasterStages[1].Artifact.WgslEntry == "GBufferFragment");
-        REQUIRE(programs.AdditionalRasterStages[1].Bindings.size() == 1);
+        REQUIRE(programs.AdditionalRasterStages[1].Bindings.GetSize() == 1);
         CHECK(programs.AdditionalRasterStages[1].Bindings[0].MinSize == METAL_MATERIAL_BYTES);
         // Old formats must never reinterpret an extended role as a legacy program.
         writer.Bytes[sizeof(uint32)] = static_cast<uint8>(format::NATIVE_RAY_PACKAGE_VERSION);
@@ -1756,8 +1757,9 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
                 renderer::RenderGraphPackageStatus::Ready);
         const renderer::RenderGraphPrograms ordinary = without.GetPrograms({}, {});
         CHECK(ordinary.HasLtcTable == false);
-        REQUIRE(ordinary.RayCompute.Bindings.empty() == false);
-        CHECK(ordinary.RayCompute.Bindings.back().Binding != LUDUS_GRAPH_LTC_TABLE_BINDING);
+        REQUIRE(ordinary.RayCompute.Bindings.IsEmpty() == false);
+        CHECK(ordinary.RayCompute.Bindings[ordinary.RayCompute.Bindings.GetSize() - 1].Binding !=
+              LUDUS_GRAPH_LTC_TABLE_BINDING);
 
         renderer::RenderGraphPackage with;
         const Array<uint8> withBytes = MakeRayPackageBytes(compute, format::SCENE_RESOURCE_LTC_TABLE);
@@ -1765,14 +1767,14 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
         const renderer::RenderGraphPrograms table = with.GetPrograms({}, {});
         CHECK(table.HasLtcTable == true);
         // The frozen ABI is unchanged; the table slot follows it, as reflection orders it in a header.
-        REQUIRE(table.RayCompute.Bindings.size() ==
-                ordinary.RayCompute.Bindings.size() + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT);
-        for (usize i = 0; i < ordinary.RayCompute.Bindings.size(); ++i)
+        REQUIRE(table.RayCompute.Bindings.GetSize() ==
+                ordinary.RayCompute.Bindings.GetSize() + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT);
+        for (usize i = 0; i < ordinary.RayCompute.Bindings.GetSize(); ++i)
         {
             CHECK(table.RayCompute.Bindings[i].Binding == ordinary.RayCompute.Bindings[i].Binding);
             CHECK(table.RayCompute.Bindings[i].Kind == ordinary.RayCompute.Bindings[i].Kind);
         }
-        const rhi::RasterBinding& last = table.RayCompute.Bindings.back();
+        const rhi::RasterBinding& last = table.RayCompute.Bindings[table.RayCompute.Bindings.GetSize() - 1];
         CHECK(last.Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
         CHECK(last.Kind == rhi::RasterBindingKind::StorageRead);
         CHECK(last.Visibility == rhi::RasterVisibility::Compute);
@@ -1785,11 +1787,11 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
         REQUIRE(summarized.Decode({summarizedBytes.GetData(), summarizedBytes.GetSize()}) ==
                 renderer::RenderGraphPackageStatus::Ready);
         const renderer::RenderGraphPrograms counted = summarized.GetPrograms({}, {});
-        REQUIRE(counted.RayCompute.Bindings.size() ==
-                table.RayCompute.Bindings.size() + LUDUS_GRAPH_FAILURE_BINDING_COUNT);
-        CHECK(counted.RayCompute.Bindings[table.RayCompute.Bindings.size() - 1].Binding ==
+        REQUIRE(counted.RayCompute.Bindings.GetSize() ==
+                table.RayCompute.Bindings.GetSize() + LUDUS_GRAPH_FAILURE_BINDING_COUNT);
+        CHECK(counted.RayCompute.Bindings[table.RayCompute.Bindings.GetSize() - 1].Binding ==
               LUDUS_GRAPH_LTC_TABLE_BINDING);
-        const rhi::RasterBinding& failures = counted.RayCompute.Bindings.back();
+        const rhi::RasterBinding& failures = counted.RayCompute.Bindings[counted.RayCompute.Bindings.GetSize() - 1];
         CHECK(failures.Binding == LUDUS_GRAPH_FAILURE_BINDING);
         CHECK(failures.Kind == rhi::RasterBindingKind::StorageReadWrite);
         CHECK(failures.Visibility == rhi::RasterVisibility::Compute);
@@ -1918,7 +1920,7 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
             CHECK(programs.DeferredOpaqueGBufferFragment.Artifact.Wgsl.empty() == (hasOpaqueGBuffer == false));
             if (hasOpaqueGBuffer == true)
             {
-                CHECK(programs.DeferredOpaqueGBufferFragment.Bindings.size() == 11);
+                CHECK(programs.DeferredOpaqueGBufferFragment.Bindings.GetSize() == 11);
             }
         }
         if (version == format::PACKAGE_VERSION)
@@ -1926,9 +1928,9 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
             const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
             CHECK(programs.HasClusteredDeferred == true);
             CHECK(programs.HasClusteredForward == true);
-            CHECK(programs.DeferredLightingVertex.Inputs.size() == 1);
-            CHECK(programs.DeferredGBufferFragment.Bindings.size() == 11);
-            CHECK(programs.DeferredLightingFragment.Bindings.size() == 16);
+            CHECK(programs.DeferredLightingVertex.Inputs.GetSize() == 1);
+            CHECK(programs.DeferredGBufferFragment.Bindings.GetSize() == 11);
+            CHECK(programs.DeferredLightingFragment.Bindings.GetSize() == 16);
             CHECK(programs.DeferredDepthCopyFragment.Bindings[0].Kind == rhi::RasterBindingKind::TextureDepth2D);
         }
     }

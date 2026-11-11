@@ -8,6 +8,8 @@
 #include "raster.h"
 #include "raster_test_readiness.h"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
+
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/compute.h>
@@ -115,7 +117,7 @@ struct DeviceOwner final
     }
 };
 template <typename T, usize COUNT>
-std::span<const uint8> GetBytes(const StaticArray<T, COUNT>& values)
+ludus::foundation::BorrowedView<const uint8> GetBytes(const StaticArray<T, COUNT>& values)
 {
     return {reinterpret_cast<const uint8*>(values.GetData()), sizeof(T) * COUNT};
 }
@@ -158,7 +160,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
     const rhi::RasterStatus textureStatus =
         rhi::CreateTexture(owner.Device,
                            {2, 2, isSrgb == true ? rhi::RasterFormat::Rgba8Srgb : rhi::RasterFormat::Rgba8Unorm},
-                           {image.AsSpan(), 8},
+                           {{image.GetData(), image.GetSize()}, 8},
                            texture);
     RequireReady(owner.Device, texture, textureStatus);
     rhi::TextureViewHandle view;
@@ -171,9 +173,11 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
     bindings[2] = { .Binding = 2, .Sampler = sampler };
     rhi::BindingSetHandle set;
     rhi::BindingSetHandle darkSet;
-    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, bindings.AsSpan(), set) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, {bindings.GetData(), bindings.GetSize()}, set) ==
+            rhi::RasterStatus::Ready);
     bindings[0].Buffer = darkUniform;
-    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, bindings.AsSpan(), darkSet) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, {bindings.GetData(), bindings.GetSize()}, darkSet) ==
+            rhi::RasterStatus::Ready);
     const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{20, false}, {8, true}}};
     const StaticArray<rhi::RasterVertexAttribute, ATTRIBUTE_COUNT> attributes{
         {{0, 0, 0, rhi::RasterVertexFormat::Float3},
@@ -182,8 +186,8 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
     rhi::RasterPipelineDescription pipelineDescription{vertexShader,
                                                        fragmentShader,
                                                        layout,
-                                                       streams.AsSpan(),
-                                                       attributes.AsSpan(),
+                                                       {streams.GetData(), streams.GetSize()},
+                                                       {attributes.GetData(), attributes.GetSize()},
                                                        true,
                                                        hasBlend};
     pipelineDescription.DepthCompare =
@@ -204,7 +208,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
         REQUIRE(rhi::CreateTextureView(owner.Device, attachment, attachmentView) == rhi::RasterStatus::Ready);
         bindings[0].Buffer = uniform;
         bindings[1].Texture = attachmentView;
-        REQUIRE(rhi::CreateBindingSet(owner.Device, layout, bindings.AsSpan(), compositeSet) ==
+        REQUIRE(rhi::CreateBindingSet(owner.Device, layout, {bindings.GetData(), bindings.GetSize()}, compositeSet) ==
                 rhi::RasterStatus::Ready);
         pipelineDescription.Target = mode == 7   ? rhi::RasterTarget::Rgba8Srgb
                                      : mode == 8 ? rhi::RasterTarget::Rgba16Float
@@ -286,7 +290,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
             {{vertices, 0, sizeof(points)}, {instances, 0, sizeof(offsets)}}};
         rhi::RasterDraw draw{hasOffscreen == true ? offscreenPipeline : pipeline,
                              set,
-                             slices.AsSpan(),
+                             {slices.GetData(), slices.GetSize()},
                              indices,
                              0,
                              INDEX_COUNT,
@@ -381,7 +385,10 @@ TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", 
     rhi::TextureHandle texture;
     RequireReady(owner.Device,
                  texture,
-                 rhi::CreateTexture(owner.Device, {1, 1, rhi::RasterFormat::Rgba8Unorm}, {white.AsSpan(), 4}, texture));
+                 rhi::CreateTexture(owner.Device,
+                                    {1, 1, rhi::RasterFormat::Rgba8Unorm},
+                                    {{white.GetData(), white.GetSize()}, 4},
+                                    texture));
     rhi::TextureViewHandle view;
     rhi::SamplerHandle sampler;
     REQUIRE(rhi::CreateTextureView(owner.Device, texture, view) == rhi::RasterStatus::Ready);
@@ -391,7 +398,8 @@ TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", 
     bindings[1] = { .Binding = 1, .Texture = view };
     bindings[2] = { .Binding = 2, .Sampler = sampler };
     rhi::BindingSetHandle set;
-    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, bindings.AsSpan(), set) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, {bindings.GetData(), bindings.GetSize()}, set) ==
+            rhi::RasterStatus::Ready);
     const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{20, false}, {8, true}}};
     const StaticArray<rhi::RasterVertexAttribute, ATTRIBUTE_COUNT> attributes{
         {{0, 0, 0, rhi::RasterVertexFormat::Float3},
@@ -400,8 +408,8 @@ TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", 
     rhi::RasterPipelineDescription description{vertexShader,
                                                fragmentShader,
                                                layout,
-                                               streams.AsSpan(),
-                                               attributes.AsSpan(),
+                                               {streams.GetData(), streams.GetSize()},
+                                               {attributes.GetData(), attributes.GetSize()},
                                                true};
     description.FillMode = rhi::RasterFillMode::Lines;
     rhi::RasterPipelineHandle pipeline;
@@ -430,7 +438,7 @@ TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", 
     REQUIRE(rhi::BeginRasterPass(owner.Device, pass) == rhi::RasterStatus::Ready);
     const StaticArray<rhi::RasterVertexSlice, STREAM_COUNT> slices{
         {{vertices, 0, sizeof(points)}, {instance, 0, sizeof(center)}}};
-    const rhi::RasterDraw draw{pipeline, set, slices.AsSpan(), indices, 0, INDEX_COUNT, 4, 1};
+    const rhi::RasterDraw draw{pipeline, set, {slices.GetData(), slices.GetSize()}, indices, 0, INDEX_COUNT, 4, 1};
     REQUIRE(rhi::DrawIndexed(owner.Device, draw) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::EndFrame(owner.Device) == rhi::DeviceStatus::Ready);
     StaticArray<uint8, PIXEL_BYTES> pixels{};
@@ -514,9 +522,9 @@ TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip cont
     rhi::RasterPipelineDescription pipelineDescription{vertex,
                                                        fragment,
                                                        emptyLayout,
-                                                       streams.AsSpan(),
-                                                       attributes.AsSpan()};
-    pipelineDescription.ColorFormats = formats.AsSpan();
+                                                       {streams.GetData(), streams.GetSize()},
+                                                       {attributes.GetData(), attributes.GetSize()}};
+    pipelineDescription.ColorFormats = {formats.GetData(), formats.GetSize()};
     pipelineDescription.Stencil = hasStencil;
     pipelineDescription.StencilReference = 7;
     pipelineDescription.StencilFront.Pass = rhi::RasterStencilOperation::Replace;
@@ -531,7 +539,11 @@ TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip cont
     pipelineDescription.StencilFront.Pass = rhi::RasterStencilOperation::Keep;
     pipelineDescription.StencilWriteMask = 0;
     REQUIRE(rhi::CreateRasterPipeline(owner.Device, pipelineDescription, maskPipeline) == rhi::RasterStatus::Ready);
-    pipelineDescription = {vertex, sampleFragment, sampleLayout, streams.AsSpan(), attributes.AsSpan()};
+    pipelineDescription = {vertex,
+                           sampleFragment,
+                           sampleLayout,
+                           {streams.GetData(), streams.GetSize()},
+                           {attributes.GetData(), attributes.GetSize()}};
     REQUIRE(rhi::CreateRasterPipeline(owner.Device, pipelineDescription, samplePipeline) == rhi::RasterStatus::Ready);
     const StaticArray<float32, MESH_VALUES> mesh{-1, -1, 0, 1, -1, 1, 0, 0, 1, 1, 1, 0, 1, -1, 1, 1};
     // Counter-clockwise in canonical clip coordinates; front/back stencil must agree across APIs.
@@ -567,12 +579,14 @@ TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip cont
                                        sampled[target]) == rhi::RasterStatus::Ready);
         const StaticArray<rhi::RasterBindingResource, TARGETS> resources{
             {{ .Binding = 0, .Texture = sampled[target] }, { .Binding = 1, .Sampler = sampler }}};
-        REQUIRE(rhi::CreateBindingSet(owner.Device, sampleLayout, resources.AsSpan(), sets[target]) ==
-                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateBindingSet(owner.Device,
+                                      sampleLayout,
+                                      {resources.GetData(), resources.GetSize()},
+                                      sets[target]) == rhi::RasterStatus::Ready);
         colors[target].View = attachments[target];
     }
     const StaticArray<rhi::RasterVertexSlice, SINGLE_STREAM_COUNT> slices{{{vertices, 0, sizeof(mesh)}}};
-    rhi::RasterDraw draw{pipeline, emptySet, slices.AsSpan(), indices, 0, INDEX_COUNT, 4, 1};
+    rhi::RasterDraw draw{pipeline, emptySet, {slices.GetData(), slices.GetSize()}, indices, 0, INDEX_COUNT, 4, 1};
     REQUIRE(rhi::BeginFrame(owner.Device, owner.Surface) == rhi::DeviceStatus::Ready);
     rhi::RasterPassDescription pass;
     pass.Colors = colors.GetData();
@@ -688,7 +702,7 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
     rhi::BufferHandle counter;
     REQUIRE(rhi::CreateBuffer(device,
                               {rhi::BufferRole::Storage, initialCounter.GetSize()},
-                              initialCounter.AsSpan(),
+                              {initialCounter.GetData(), initialCounter.GetSize()},
                               counter) == rhi::RasterStatus::Ready);
     constexpr uint32 COUNTER_SEED = 40;
     rhi::TransferTicket update;
@@ -723,7 +737,7 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
                               indices) == rhi::RasterStatus::Ready);
 
     const auto makeDispatch = [&](const rhi::RasterShaderDescription& description,
-                                  std::span<const rhi::RasterBindingResource> resources) {
+                                  ludus::foundation::BorrowedView<const rhi::RasterBindingResource> resources) {
         rhi::RasterShaderHandle shader;
         rhi::BindingLayoutHandle layout;
         rhi::ComputeDispatch dispatch;
@@ -747,7 +761,7 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
         {prepareShader.Bindings[2].Binding, arguments, 0, sizeof(initialArguments)},
     }};
     rhi::ComputeDispatch advance = makeDispatch(advanceShader, {&counterBinding, 1});
-    rhi::ComputeDispatch prepare = makeDispatch(prepareShader, prepareBindings.AsSpan());
+    rhi::ComputeDispatch prepare = makeDispatch(prepareShader, {prepareBindings.GetData(), prepareBindings.GetSize()});
 
     rhi::RasterShaderHandle vertex;
     rhi::RasterShaderHandle fragment;

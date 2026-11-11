@@ -107,6 +107,7 @@ float4 SceneValue(uint index)
 {
     return asfloat(sceneWords[index]);
 }
+#include "material_program.slang"
 float4 TriangleValue(uint triangle, uint word)
 {
     return SceneValue(triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + word);
@@ -659,6 +660,7 @@ struct Bsdf
     float Metallic;
     float Roughness;
     MaterialModel Model;
+    uint ProgramOffset;
     float3 Eta;
     float3 K;
     float Alpha;
@@ -666,6 +668,14 @@ struct Bsdf
     float CoatingThickness;
     bool IsViewerInside;
 };
+MaterialProgramInputs MakeMaterialProgramInputs(Bsdf bsdf)
+{
+    MaterialProgramInputs inputs;
+    inputs.BaseColor = bsdf.BaseColor;
+    inputs.Roughness = bsdf.Roughness;
+    inputs.Metallic = bsdf.Metallic;
+    return inputs;
+}
 CoatingMaterial MakeCoatingMaterial(Bsdf bsdf)
 {
     CoatingMaterial material;
@@ -708,6 +718,12 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
         return 0;
     if (bsdf.Model == MaterialModel::ProjectBrdf)
         return EvaluateProjectBrdf(bsdf.BaseColor, bsdf.Roughness, bsdf.Eta, bsdf.K, nv, nl);
+    if (bsdf.Model == MaterialModel::Program)
+        return EvaluateMaterialProgram(bsdf.ProgramOffset,
+                                       MakeMaterialProgramInputs(bsdf),
+                                       normalWorld,
+                                       viewWorld,
+                                       lightWorld);
     bool isMix = bsdf.Model == MaterialModel::DiffuseConductorMix;
     if (bsdf.Model == MaterialModel::Diffuse || (isMix == true && bsdf.Metallic == 0))
         return float4(bsdf.BaseColor / PI, nl / PI);
@@ -741,6 +757,12 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
 // SampleReferenceBsdf; returns zero for an ordinary null proposal.
 float3 SampleBsdfDirection(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 samples)
 {
+    if (bsdf.Model == MaterialModel::Program)
+        return SampleMaterialProgramDirection(bsdf.ProgramOffset,
+                                              MakeMaterialProgramInputs(bsdf),
+                                              normalWorld,
+                                              viewWorld,
+                                              samples);
     if (bsdf.Model == MaterialModel::ProjectBrdf)
         return SampleProjectBrdfDirection(bsdf.Roughness, bsdf.Eta, bsdf.K, normalWorld, viewWorld, samples);
     if (dot(normalWorld, viewWorld) <= 0)
@@ -1734,6 +1756,7 @@ PathSample TracePath(uint pixel, uint sample)
         float4 coatingParameters = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD);
         bsdf.CoatingEta = coatingParameters.y;
         bsdf.CoatingThickness = coatingParameters.z;
+        bsdf.ProgramOffset = asuint(coatingParameters.w);
         float4 surfaceMap = SurfaceValue(instance, 6);
         if (asuint(surfaceMap.w) != 0)
         {

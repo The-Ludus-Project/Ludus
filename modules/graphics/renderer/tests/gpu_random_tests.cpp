@@ -1,8 +1,8 @@
 #include "random_parity.h"
 #include "random_parity_corpus.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
-#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/compute.h>
@@ -11,7 +11,6 @@
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include <catch2/catch_test_macros.hpp>
-#include <span>
 
 // GPU evidence for FoundationMath's shader port of addressed random v1
 // (modules/foundation/math/shaders/math.slang); see
@@ -85,7 +84,8 @@ TEST_CASE("GPU addressed random matches the CPU v1 reference and Random123 known
     rhi::BufferHandle resultBuffer;
     Array<uint8> zeros;
     REQUIRE(zeros.TryResize(resultBytes, uint8{0}) == true);
-    const std::span<const uint8> caseSource{reinterpret_cast<const uint8*>(cases.GetData()), caseBytes};
+    const ludus::foundation::BorrowedView<const uint8> caseSource{reinterpret_cast<const uint8*>(cases.GetData()),
+                                                                  caseBytes};
     REQUIRE(IsAccepted(rhi::CreateBuffer(device,
                                          {
                                              .Role = rhi::BufferRole::Storage,
@@ -95,7 +95,7 @@ TEST_CASE("GPU addressed random matches the CPU v1 reference and Random123 known
                                          caseBuffer)) == true);
     REQUIRE(IsAccepted(rhi::CreateBuffer(device,
                                          { .Role = rhi::BufferRole::Storage, .Size = resultBytes },
-                                         std::span<const uint8>{zeros.GetData(), zeros.GetSize()},
+                                         ludus::foundation::BorrowedView<const uint8>{zeros.GetData(), zeros.GetSize()},
                                          resultBuffer)) == true);
     const rhi::RasterShaderDescription shader = ludus::shaders::random_parity::Compute();
     rhi::RasterShaderHandle shaderHandle;

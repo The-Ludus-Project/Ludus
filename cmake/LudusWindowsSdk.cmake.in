@@ -30,6 +30,7 @@ unset(_ludus_consumer_configurations)
 unset(_ludus_multi_config)
 
 include("${CMAKE_CURRENT_LIST_DIR}/LudusD3D12Agility.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/LudusWindowsDistribution.cmake")
 
 function(ludus_enable_d3d12_agility target_name)
     set(runtime "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/agility")

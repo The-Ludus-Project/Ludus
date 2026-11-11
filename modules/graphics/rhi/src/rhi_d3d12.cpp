@@ -16,6 +16,7 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/platform/native_window.h>
 
@@ -1214,7 +1215,9 @@ bool EndFrame() noexcept
 ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32) noexcept
 {
     // The facade checked the container header; Direct3D 12 itself never sees the entry name.
-    if (internal::HasDxilEntry(description.Dxil, description.Stage, description.DxilEntry) == false)
+    if (internal::HasDxilEntry({description.Dxil.GetDataOrNull(), description.Dxil.GetSize()},
+                               description.Stage,
+                               description.DxilEntry) == false)
     {
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: DXIL container does not hold the requested stage and entry");
         return ResourceStatus::Failed;
@@ -1405,9 +1408,9 @@ void DestroyPipeline(usize slot) noexcept
     pipeline.State.Reset();
     pipeline.UniformSlot = 0;
 }
-void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
+void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.data(), bytes.size());
+    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 FrameInfo GetFrameInfo() noexcept
 {

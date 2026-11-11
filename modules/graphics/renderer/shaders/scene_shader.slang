@@ -145,6 +145,8 @@ struct SurfaceHit
 struct MaterialSample
 {
     MaterialModel Model;
+    /// Packed closure program of a Program material, read by the standard BSDF calls; zero otherwise.
+    uint ProgramOffset;
     float3 Eta;
     float3 K;
     float AlphaU;
@@ -433,6 +435,7 @@ MaterialSample GetMaterial(SceneContext scene, uint materialIndex)
     float4 etaAndModel = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
     float4 extinctionAndAlpha = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
     result.Model = MaterialModel(asuint(etaAndModel.w));
+    result.ProgramOffset = asuint(SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD).w);
     result.Eta = etaAndModel.xyz;
     result.K = extinctionAndAlpha.xyz;
     result.AlphaU = extinctionAndAlpha.w;
@@ -1411,6 +1414,7 @@ void EvaluateStandardBsdf(MaterialSample material,
                        material.Eta,
                        material.K,
                        material.AlphaU,
+                       material.ProgramOffset,
                        material.ShadingNormalWorld,
                        viewDirectionWorld,
                        lightDirectionWorld,
@@ -1419,6 +1423,18 @@ void EvaluateStandardBsdf(MaterialSample material,
 }
 float3 SampleStandardBsdf(MaterialSample material, float3 viewDirectionWorld, float3 samples)
 {
+    if (material.Model == MaterialModel::Program)
+    {
+        MaterialProgramInputs inputs;
+        inputs.BaseColor = material.BaseColor;
+        inputs.Roughness = material.Roughness;
+        inputs.Metallic = material.Metallic;
+        return SampleMaterialProgramDirection(material.ProgramOffset,
+                                              inputs,
+                                              material.ShadingNormalWorld,
+                                              viewDirectionWorld,
+                                              samples);
+    }
     if (material.Model == MaterialModel::ProjectBrdf)
         return SampleProjectBrdfDirection(material.Roughness,
                                           material.Eta,

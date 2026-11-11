@@ -45,7 +45,6 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
-#include <QDate>
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QDialog>
@@ -78,14 +77,13 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
-#include <QTime>
-#include <QTimeZone>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
@@ -3289,7 +3287,7 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     REQUIRE(reopened.Apply() == true);
     roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
     driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
-    dateTimeOrNull->setDateTime(QDateTime(QDate(2000, 1, 2), QTime(0, 0), QTimeZone::utc()));
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-02T00:00:00Z"), Qt::ISODate));
     REQUIRE(reopened.Apply() == true);
     REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
     CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
@@ -3317,7 +3315,7 @@ TEST_CASE("Earth preview time preserves the saved offset and copies the UTC cloc
     QPushButton* nowOrNull = time.findChild<QPushButton*>(QStringLiteral("worldEarthUseNow"));
     REQUIRE(dateTimeOrNull != nullptr);
     REQUIRE(nowOrNull != nullptr);
-    CHECK(dateTimeOrNull->dateTime() == QDateTime(QDate(2000, 1, 1), QTime(0, 0), QTimeZone::utc()));
+    CHECK(dateTimeOrNull->dateTime() == QDateTime::fromString(QStringLiteral("2000-01-01T00:00:00Z"), Qt::ISODate));
     CHECK(time.GetDaysSinceEpoch() == LEGACY_DAYS);
     CHECK(dateTimeOrNull->calendarPopup() == true);
 
@@ -3880,7 +3878,140 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
     workspace.StopPreview();
 }
 
-TEST_CASE("World viewport moves, resizes and scales an unbaked GI probe volume with the inspector hidden",
+namespace
+{
+/// Switch an authored volume to the given layout through the document, as the inspector's Apply would.
+void SetGiProbeLayout(WorldDocument& inoutDocument, const QString& volume, GiProbeLayout layout)
+{
+    const QJsonObject entity = inoutDocument.Entity(volume);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject values = components.value(GetGiProbeVolumeComponentId()).toObject();
+    values.insert(GetGiProbeLayoutKey(), GetGiProbeLayoutWord(layout));
+    components.insert(GetGiProbeVolumeComponentId(), values);
+    QString error;
+    REQUIRE(inoutDocument.Edit(volume, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+}
+
+/// The volume's Transform scale on one axis, as the World stores it.
+ludus::foundation::float64 ReadGiProbeScale(const WorldDocument& document, const QString& volume, const QString& key)
+{
+    return document.Entity(volume)
+        .value(QStringLiteral("components"))
+        .toObject()
+        .value(QStringLiteral("transform"))
+        .toObject()
+        .value(key)
+        .toDouble();
+}
+} // namespace
+
+TEST_CASE("GI probe volumes lay probes out from the Transform scale and keep them across layout changes",
+          "[editor][world][probe-gi]")
+{
+    namespace math = ludus::foundation::math;
+    namespace renderer = ludus::graphics::renderer;
+    using ludus::foundation::float64;
+    SECTION("Counts come from whole spacings inside the edge, at least two, without a limit")
+    {
+        CHECK(ComputeGiProbeCountForSize(3, 1) == 4);
+        CHECK(ComputeGiProbeCountForSize(0.3, 0.1) == 4);
+        CHECK(ComputeGiProbeCountForSize(4.9999, 1) == 6);
+        CHECK(ComputeGiProbeCountForSize(10.4, 1) == 11);
+        CHECK(ComputeGiProbeCountForSize(10.6, 1) == 12);
+        CHECK(ComputeGiProbeCountForSize(0.2, 1) == 2);
+        CHECK(ComputeGiProbeCountForSize(43, 1) == 44);
+        GiProbeCounts required{};
+        const renderer::GiProbeGrid grid = ComputeGiProbeGridForVolume({0, 0, 0}, {43, 3, 10.4F}, 1, required);
+        CHECK(grid.Counts == GiProbeCounts{renderer::MAX_GI_PROBE_AXIS_COUNT, 4, 11});
+        CHECK(required == GiProbeCounts{44, 4, 11});
+        const float64 covering = ComputeGiProbeSpacingCoveringSize({43, 3, 10.4F});
+        CHECK(covering == 3.91);
+        CHECK(ComputeGiProbeCountForSize(43, covering) == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        // A tiny box keeps the exact spacing when whole centimetres would drop a probe.
+        const float64 tinyCovering = ComputeGiProbeSpacingCoveringSize({1.15F, 1, 1});
+        CHECK(ComputeGiProbeCountForSize(1.15, tinyCovering) == renderer::MAX_GI_PROBE_AXIS_COUNT);
+    }
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString volume;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    const auto readVolume = [&document, &volume, &error]() {
+        WorldGiProbeVolume read;
+        REQUIRE(ReadWorldGiProbeVolume(document.Entity(volume).value(QStringLiteral("components")).toObject(),
+                                       read,
+                                       error) == true);
+        return read;
+    };
+    SECTION("A new volume is a three-metre box holding four probes per axis at one-metre spacing")
+    {
+        const WorldGiProbeVolume created = readVolume();
+        CHECK(created.Layout == GiProbeLayout::Volume);
+        CHECK(created.SizeWorld == math::Vector3{3, 3, 3});
+        CHECK(created.Grid.Counts == GiProbeCounts{4, 4, 4});
+        CHECK(created.Grid.Spacing == 1);
+        CHECK(created.IsCoverageLimited() == false);
+        CHECK(DescribeWorldGiProbeCoverage(created).isEmpty() == true);
+    }
+    SECTION("Scaling the Transform adds probes at the same spacing and reports the limit")
+    {
+        const QJsonObject entity = document.Entity(volume);
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        WriteWorldGiProbeSize(components, 0, 43);
+        WriteWorldGiProbeSize(components, 2, 10.4);
+        REQUIRE(document.Edit(volume, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+        const WorldGiProbeVolume scaled = readVolume();
+        CHECK(scaled.Grid.Counts == GiProbeCounts{renderer::MAX_GI_PROBE_AXIS_COUNT, 4, 11});
+        CHECK(scaled.IsCoverageLimited() == true);
+        const QString coverage = DescribeWorldGiProbeCoverage(scaled);
+        CHECK(coverage.contains(QStringLiteral("44 along X")) == true);
+        CHECK(coverage.contains(QStringLiteral("3.91 m")) == true);
+        CHECK(ComputeWorldGiProbeVolumeBounds(scaled).Max.X == scaled.Grid.OriginWorld.X + 43);
+        CHECK(ComputeWorldGiProbeBounds(scaled.Grid).Max.X == scaled.Grid.OriginWorld.X + 11);
+    }
+    SECTION("A volume saved without the layout keeps its counts and ignores the Transform scale")
+    {
+        const QJsonObject entity = document.Entity(volume);
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        QJsonObject values = components.value(GetGiProbeVolumeComponentId()).toObject();
+        values.remove(GetGiProbeLayoutKey());
+        values.insert(QStringLiteral("countX"), static_cast<int>(renderer::MAX_GI_PROBE_AXIS_COUNT));
+        components.insert(GetGiProbeVolumeComponentId(), values);
+        REQUIRE(document.Edit(volume, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+        const WorldGiProbeVolume legacy = readVolume();
+        CHECK(legacy.Layout == GiProbeLayout::Counts);
+        CHECK(legacy.Grid.Counts == GiProbeCounts{renderer::MAX_GI_PROBE_AXIS_COUNT, 4, 4});
+        CHECK(legacy.SizeWorld == math::Vector3{11, 3, 3});
+        // Choosing the volume layout writes that extent into the Transform scale, so nothing moves.
+        QJsonObject chosen = components;
+        values.insert(GetGiProbeLayoutKey(), GetGiProbeLayoutWord(GiProbeLayout::Volume));
+        chosen.insert(GetGiProbeVolumeComponentId(), values);
+        SynchronizeWorldGiProbeLayout(components, chosen);
+        CHECK(chosen.value(QStringLiteral("transform")).toObject().value(QStringLiteral("sx")).toDouble() == 11);
+        WorldGiProbeVolume synchronized;
+        REQUIRE(ReadWorldGiProbeVolume(chosen, synchronized, error) == true);
+        CHECK(synchronized.Layout == GiProbeLayout::Volume);
+        CHECK(synchronized.Grid.Counts == legacy.Grid.Counts);
+    }
+    SECTION("Choosing the counts layout writes the counts the Transform scale produced")
+    {
+        QJsonObject components = document.Entity(volume).value(QStringLiteral("components")).toObject();
+        WriteWorldGiProbeSize(components, 1, 7);
+        QJsonObject chosen = components;
+        QJsonObject values = chosen.value(GetGiProbeVolumeComponentId()).toObject();
+        values.insert(GetGiProbeLayoutKey(), GetGiProbeLayoutWord(GiProbeLayout::Counts));
+        chosen.insert(GetGiProbeVolumeComponentId(), values);
+        SynchronizeWorldGiProbeLayout(components, chosen);
+        CHECK(chosen.value(GetGiProbeVolumeComponentId()).toObject().value(QStringLiteral("countY")).toInt() == 8);
+        CHECK(chosen.value(GetGiProbeVolumeComponentId()).toObject().value(QStringLiteral("countX")).toInt() == 4);
+    }
+}
+
+TEST_CASE("World viewport resizes a volume-layout GI probe box and its probes follow with the inspector hidden",
           "[editor][world][object-interaction][probe-gi]")
 {
     namespace math = ludus::foundation::math;
@@ -3902,6 +4033,203 @@ TEST_CASE("World viewport moves, resizes and scales an unbaked GI probe volume w
     QString volume;
     REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), mesh, error) == true);
     REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("probe-box.world.json"));
+    Write(path, document.Encode());
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    RenderPanel* panelOrNull = workspace.findChild<RenderPanel*>();
+    REQUIRE(panelOrNull != nullptr);
+
+    const auto readVolume = [&workspace, &volume, &error]() {
+        const QJsonObject components =
+            workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject();
+        WorldGiProbeVolume read;
+        REQUIRE(ReadWorldGiProbeVolume(components, read, error) == true);
+        return read;
+    };
+    const WorldGiProbeVolume original = readVolume();
+    REQUIRE(original.Layout == GiProbeLayout::Volume);
+    const math::Aabb3 boundsWorld = ComputeWorldGiProbeVolumeBounds(original);
+    const math::Vector3 centerWorld = (boundsWorld.Min + boundsWorld.Max) * 0.5F;
+    RenderScene scene = MakeInteractionScene();
+    scene.Cameras[0].Sample.Pose.Position = {static_cast<float64>(centerWorld.X),
+                                             static_cast<float64>(centerWorld.Y),
+                                             10};
+    RenderPreview& preview = workspace.GetRenderPreview();
+    ConfigureInteractionPreview(preview, scene);
+
+    ViewportObjectInteraction& interaction = panelOrNull->GetViewport().GetObjectInteraction();
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Move);
+    const QRectF framePixel{0, 0, 800, 600};
+    renderer::ViewDescription view;
+    REQUIRE(preview.DescribeView(static_cast<uint32>(framePixel.width()),
+                                 static_cast<uint32>(framePixel.height()),
+                                 view,
+                                 error) == true);
+    const auto project = [&view, &framePixel](math::Vector3 positionWorld) {
+        const math::Vector4 clip =
+            view.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+        return QPointF((static_cast<float64>(clip.X / clip.W) + 1) * framePixel.width() * 0.5,
+                       (1 - static_cast<float64>(clip.Y / clip.W)) * framePixel.height() * 0.5);
+    };
+    const QJsonObject before = workspace.Document().Draft();
+
+    SECTION("The inspector shows the derived grid and hides the counts until the counts layout is chosen")
+    {
+        QLabel* summaryOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldProbeSummary"));
+        REQUIRE(summaryOrNull != nullptr);
+        CHECK(summaryOrNull->text().contains(QStringLiteral("4 × 4 × 4 probes")) == true);
+        QLineEdit* countOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:giProbeVolume/countX"));
+        REQUIRE(countOrNull != nullptr);
+        CHECK(countOrNull->isVisibleTo(propertiesOrNull) == false);
+        QPushButton* coverOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldProbeCoverSpacing"));
+        REQUIRE(coverOrNull != nullptr);
+        CHECK(coverOrNull->isVisibleTo(propertiesOrNull) == false);
+        QComboBox* layoutOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:giProbeVolume/layout"));
+        REQUIRE(layoutOrNull != nullptr);
+        layoutOrNull->setCurrentIndex(layoutOrNull->findData(GetGiProbeLayoutWord(GiProbeLayout::Counts)));
+        CHECK(countOrNull->isVisibleTo(propertiesOrNull) == true);
+        REQUIRE(workspace.Apply() == true);
+        const WorldGiProbeVolume counted = readVolume();
+        CHECK(counted.Layout == GiProbeLayout::Counts);
+        CHECK(counted.Grid.Counts == original.Grid.Counts);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sx")) == 3);
+    }
+
+    SECTION("The inspector offers the spacing that reaches every edge of a box past the probe limit")
+    {
+        // Stretch the box past the probe limit through the Transform's Scale X field.
+        QLineEdit* scaleOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sx"));
+        REQUIRE(scaleOrNull != nullptr);
+        Type(scaleOrNull, QStringLiteral("43"));
+        REQUIRE(workspace.Apply() == true);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sx")) == 43);
+        propertiesOrNull->hide();
+        REQUIRE(workspace.SelectEntity(mesh) == true);
+        REQUIRE(workspace.SelectEntity(volume) == true);
+        QPushButton* coverOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldProbeCoverSpacing"));
+        REQUIRE(coverOrNull != nullptr);
+        CHECK(coverOrNull->isVisibleTo(propertiesOrNull) == true);
+        CHECK(coverOrNull->text() == QStringLiteral("Use 3.91 m spacing"));
+        QTimer::singleShot(0, []() {
+            QMessageBox* boxOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            REQUIRE(boxOrNull != nullptr);
+            QPushButton* applyOrNull = boxOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmProbeSpacing"));
+            REQUIRE(applyOrNull != nullptr);
+            applyOrNull->click();
+        });
+        coverOrNull->click();
+        const WorldGiProbeVolume covered = readVolume();
+        CHECK(covered.Grid.Spacing == 3.91F);
+        CHECK(covered.Grid.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        CHECK(covered.IsCoverageLimited() == false);
+        CHECK(ComputeWorldGiProbeBounds(covered.Grid).Max.X ==
+              covered.Grid.OriginWorld.X + 3.91F * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT - 1));
+        workspace.Undo();
+        CHECK(readVolume().Grid.Spacing == 1);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+
+    propertiesOrNull->hide();
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.OutlineLinesPixel.GetSize() == 12);
+
+    SECTION("Dragging the maximum face lengthens the box and the probes follow at the spacing")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
+        const QPointF handlePixel = project(faceWorld);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(project(faceWorld + math::Vector3{2, 0, 0}), false) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("6 probes")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const WorldGiProbeVolume resized = readVolume();
+        CHECK(resized.Grid.OriginWorld == original.Grid.OriginWorld);
+        CHECK(resized.Grid.Counts == GiProbeCounts{6, 4, 4});
+        CHECK(resized.Grid.Spacing == original.Grid.Spacing);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sx")) == 5);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readVolume().Grid.Counts[0] == 6);
+    }
+
+    SECTION("The minimum face keeps the far corner fixed, stops at the probe limit and outlines the gap")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT);
+        REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("(limit)")) == true);
+        REQUIRE(interaction.Release() == true);
+        const WorldGiProbeVolume resized = readVolume();
+        CHECK(resized.Grid.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        CHECK(resized.IsCoverageLimited() == true);
+        CHECK(resized.Grid.OriginWorld.X < original.Grid.OriginWorld.X);
+        CHECK(ComputeWorldGiProbeVolumeBounds(resized).Max == boundsWorld.Max);
+        CHECK(ReadGiProbeScale(workspace.Document(), volume, QStringLiteral("sx")) ==
+              static_cast<float64>(3 + dragMetres));
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+
+    SECTION("The Scale tool's centre handle scales the box uniformly about its minimum corner")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        const QPointF handlePixel = project(boundsWorld.Min);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::Uniform);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(handlePixel + QPointF(56, -56), true) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const WorldGiProbeVolume scaled = readVolume();
+        CHECK(scaled.Grid.OriginWorld == original.Grid.OriginWorld);
+        CHECK(scaled.SizeWorld == math::Vector3{6, 6, 6});
+        CHECK(scaled.Grid.Counts == GiProbeCounts{7, 7, 7});
+        CHECK(scaled.Grid.Spacing == original.Grid.Spacing);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+    workspace.StopPreview();
+}
+
+TEST_CASE("World viewport moves, resizes and scales an unbaked counts-layout GI probe volume with the inspector hidden",
+          "[editor][world][object-interaction][probe-gi]")
+{
+    namespace math = ludus::foundation::math;
+    namespace renderer = ludus::graphics::renderer;
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    using ludus::foundation::uint32;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString mesh;
+    QString volume;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), mesh, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    SetGiProbeLayout(document, volume, GiProbeLayout::Counts);
     const QString path = QDir(root).filePath(QStringLiteral("probe-gizmo.world.json"));
     Write(path, document.Encode());
     WorldWorkspace workspace;
@@ -4406,6 +4734,125 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
     checkMaterial(reopened, recipient, 0.75F);
     checkMaterial(reopened, donor, 0.35F);
     CHECK(Field(reopened, roughnessField)->text() == QStringLiteral("0.75"));
+    reopened.StopPreview();
+}
+
+TEST_CASE("World imports, inspects and maps closure programs across save, reopen and reimport",
+          "[editor][world][program]")
+{
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString block = directory.filePath(QStringLiteral("closure-program-block.luscene.json"));
+    REQUIRE(QFile::copy(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                            .filePath(QStringLiteral("tests/scenes/materials/closure-program-block.luscene.json")),
+                        block) == true);
+    const QString fibers = directory.filePath(QStringLiteral("fibers.pbrt"));
+    Write(fibers, QByteArrayLiteral(R"(LookAt 0 0 4 0 0 0 0 1 0
+Camera "perspective" "float fov" 55
+WorldBegin
+MakeNamedMaterial "Fiber" "string type" "hair" "float eta" 1.55
+NamedMaterial "Fiber"
+Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer indices" [0 1 2]
+)"));
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.ImportScene(block) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.ImportScene(fibers) == true);
+    WaitForValidatedScene(workspace);
+
+    const auto findObjects = [](const WorldWorkspace& view, format::MaterialModel model) {
+        QStringList ids;
+        const RenderScene& scene = GetLevel(view).PreviewScene();
+        for (const PreviewObject& object : scene.Objects)
+        {
+            const ludus::resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, object.Id);
+            if (materialOrNull != nullptr && materialOrNull->Scattering.Model == model)
+            {
+                ids.append(object.Id);
+            }
+        }
+        return ids;
+    };
+    const auto checkProgram = [](const WorldWorkspace& view, const QString& id) {
+        const RenderScene& scene = GetLevel(view).PreviewScene();
+        const ludus::resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, id);
+        REQUIRE(materialOrNull != nullptr);
+        CHECK(materialOrNull->Scattering.Model == format::MaterialModel::Program);
+        CHECK(format::IsMaterialProgramValid(materialOrNull->Program) == true);
+        CHECK(materialOrNull->Program.LobeCount == 3);
+        CHECK(materialOrNull->Program.Lobes[1].Operation == format::MaterialLobeOperation::Conductor);
+        CHECK(format::SupportsFixedDimensionReflection(materialOrNull->Scattering, materialOrNull->Program) == true);
+        // The World's renderer surfaces carry the program to every preview profile.
+        const PreviewSurface& surface = scene.Surfaces[GetPresentedObject(view, id).Surface];
+        CHECK(surface.Scattering.Model == format::MaterialModel::Program);
+        CHECK(surface.Program.LobeCount == 3);
+        CHECK(surface.HasUnresolvedMaterial == false);
+    };
+    const QStringList programs = findObjects(workspace, format::MaterialModel::Program);
+    REQUIRE(programs.size() == 1);
+    const QString& program = programs[0];
+    checkProgram(workspace, program);
+
+    PreviewViewport& viewport = GetLevel(workspace).GetViewport();
+    viewport.GetObjectInteraction().SelectionRequested(program);
+    const auto label = [&workspace](const QString& name) {
+        const QLabel* labelOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:") + name);
+        REQUIRE(labelOrNull != nullptr);
+        return labelOrNull->text();
+    };
+    CHECK(label(QStringLiteral("Model")) == QStringLiteral("Closure program"));
+    CHECK(label(QStringLiteral("Lobe 1")) == QStringLiteral("Diffuse"));
+    CHECK(label(QStringLiteral("Lobe 2")).startsWith(QStringLiteral("Conductor")) == true);
+    CHECK(label(QStringLiteral("Lobe 3")) == QStringLiteral("Cosine power 12"));
+    CHECK(label(QStringLiteral("Capabilities")) == QStringLiteral("Continuous reflection, fixed three-value sampler"));
+    CHECK(label(QStringLiteral("Metallic (program input)")) == QStringLiteral("0.7"));
+
+    // Map the unsupported PBRT material to the imported program.
+    const QStringList unsupported = findObjects(workspace, format::MaterialModel::Unresolved);
+    REQUIRE(unsupported.size() == 1);
+    viewport.GetObjectInteraction().SelectionRequested(unsupported[0]);
+    QComboBox* replacementsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldMaterialReplacement"));
+    REQUIRE(replacementsOrNull != nullptr);
+    const ludus::foundation::int32 choice =
+        replacementsOrNull->findText(QStringLiteral("Weathered gold"), Qt::MatchStartsWith);
+    REQUIRE(choice >= 0);
+    replacementsOrNull->setCurrentIndex(choice);
+    QPushButton* mapOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldMapMaterial"));
+    REQUIRE(mapOrNull != nullptr);
+    REQUIRE(mapOrNull->isEnabled() == true);
+    QTimer::singleShot(0, []() {
+        QMessageBox* dialogOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QPushButton* applyOrNull = dialogOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialMapping"));
+        REQUIRE(applyOrNull != nullptr);
+        applyOrNull->click();
+    });
+    mapOrNull->click();
+    WaitForValidatedScene(workspace);
+    checkProgram(workspace, unsupported[0]);
+    CHECK(findObjects(workspace, format::MaterialModel::Unresolved).isEmpty() == true);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    workspace.StopPreview();
+
+    WorldWorkspace reopened;
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkProgram(reopened, program);
+    checkProgram(reopened, unsupported[0]);
+    // Reimporting the scene keeps the program and the mapping.
+    REQUIRE(reopened.ImportScene(block) == true);
+    WaitForValidatedScene(reopened);
+    const QStringList reimported = findObjects(reopened, format::MaterialModel::Program);
+    CHECK(reimported.size() >= 2);
+    for (const QString& id : reimported)
+    {
+        checkProgram(reopened, id);
+    }
     reopened.StopPreview();
 }
 

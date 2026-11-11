@@ -770,8 +770,10 @@ TEST_CASE("Resource-only profiles never admit a required raster workload", "[rhi
     constexpr ludus::foundation::usize BUFFER_BYTES = 16;
     const ludus::foundation::StaticArray<ludus::foundation::uint8, BUFFER_BYTES> bytes{};
     BufferHandle buffer;
-    REQUIRE(CreateBuffer(device, { .Role = BufferRole::Uniform, .Size = BUFFER_BYTES }, bytes.AsSpan(), buffer) ==
-            RasterStatus::Ready);
+    REQUIRE(CreateBuffer(device,
+                         { .Role = BufferRole::Uniform, .Size = BUFFER_BYTES },
+                         {bytes.GetData(), bytes.GetSize()},
+                         buffer) == RasterStatus::Ready);
     REQUIRE(Destroy(device, buffer) == RasterStatus::Ready);
     REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
     surface = {};

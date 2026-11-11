@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
@@ -10,7 +11,6 @@
 #include "r18c.h"
 
 #include <cstring>
-#include <span>
 
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
@@ -92,7 +92,7 @@ bool PrepareBuffers() noexcept
                                          .Role = rhi::BufferRole::Storage,
                                          .Size = LARGE_BYTES,
                                      },
-                                     bytes,
+                                     {bytes.GetData(), bytes.GetSize()},
                                      gBuffers[0])) == false)
     {
         return false;
@@ -108,7 +108,8 @@ bool PrepareBuffers() noexcept
             words[1] = 1;
         }
         const usize size = binding < 5 ? sizeof(uint32) : sizeof(words);
-        const std::span<const uint8> initial{reinterpret_cast<const uint8*>(words.GetData()), size};
+        const ludus::foundation::BorrowedView<const uint8> initial{reinterpret_cast<const uint8*>(words.GetData()),
+                                                                   size};
         if (IsAccepted(rhi::CreateBuffer(
                 gDevice,
                 { .Role = binding < 5 ? rhi::BufferRole::Storage : rhi::BufferRole::Uniform, .Size = size },
@@ -132,7 +133,8 @@ bool PrepareDispatch() noexcept
         resources[binding].Size = binding == 0 ? RANGE_BYTES : binding < 5 ? 4U : 16U;
         resources[binding].Offset = binding == 0 ? RANGE_OFFSET : 0;
     }
-    return IsAccepted(rhi::CreateBindingSet(gDevice, gLayout, resources, gSet)) == true &&
+    return IsAccepted(rhi::CreateBindingSet(gDevice, gLayout, {resources.GetData(), resources.GetSize()}, gSet)) ==
+               true &&
            IsAccepted(rhi::CreateComputePipeline(gDevice, { .Shader = gShader, .Layout = gLayout }, gPipeline)) == true;
 }
 bool PrepareGraph() noexcept

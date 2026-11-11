@@ -5,6 +5,7 @@
 #include "internal/raster.h"
 
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <cstring>
@@ -464,10 +465,10 @@ bool RasterAllocationBytes(RasterKind kind, usize slot, uint64& outBytes) noexce
 }
 RasterStatus RasterCreateBuffer(usize slot,
                                 const BufferDescription& description,
-                                std::span<const uint8> bytes,
+                                ludus::foundation::BorrowedView<const uint8> bytes,
                                 uint32 request) noexcept
 {
-    return CreateInitialBuffer({slot, request}, description, {bytes.data(), bytes.size()});
+    return CreateInitialBuffer({slot, request}, description, {bytes.GetDataOrNull(), bytes.GetSize()});
 }
 RasterStatus RasterCreateTexture(usize slot,
                                  const TextureDescription& description,
@@ -609,8 +610,8 @@ RasterStatus RasterCreateTexture(usize slot,
         const uint32 height = TextureMipExtent(description.Height, mip);
         const usize rows = TextureBlockRows(description.Format, height);
         const usize slices = TextureSlices(description, mip);
-        const usize pitch = upload.Mips.empty() == true ? upload.RowPitch : upload.Mips[mip].RowPitch;
-        const usize offset = upload.Mips.empty() == true ? sourceMipOffset : upload.Mips[mip].Offset;
+        const usize pitch = upload.Mips.IsEmpty() == true ? upload.RowPitch : upload.Mips[mip].RowPitch;
+        const usize offset = upload.Mips.IsEmpty() == true ? sourceMipOffset : upload.Mips[mip].Offset;
         const usize rowBytes = usize{TextureBlockRows(description.Format, TextureMipExtent(description.Width, mip))} *
                                TextureBlockBytes(description.Format);
         for (usize slice = 0; slice < slices; ++slice)
@@ -622,7 +623,7 @@ RasterStatus RasterCreateTexture(usize slot,
             for (usize row = 0; row < rows; ++row)
             {
                 std::memcpy(mapped + footprint.Offset + (destinationSlice * rows + row) * footprint.Footprint.RowPitch,
-                            upload.Bytes.data() + offset + (slice * rows + row) * pitch,
+                            upload.Bytes.GetDataOrNull() + offset + (slice * rows + row) * pitch,
                             rowBytes);
             }
         }
@@ -779,18 +780,22 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& descripti
 RasterStatus
 RasterCreateShader(usize slot, const ShaderDescription& description, const RasterShaderInfo& info, uint32) noexcept
 {
-    if ((info.Stage == ShaderStage::Compute && HasDxilWorkgroupSize(description.Dxil, info.WorkgroupSize) == false) ||
-        HasDxilEntry(description.Dxil, info.Stage, description.DxilEntry) == false ||
-        HasDxilBindings(description.Dxil, info.Layout) == false)
+    if ((info.Stage == ShaderStage::Compute &&
+         HasDxilWorkgroupSize({description.Dxil.GetDataOrNull(), description.Dxil.GetSize()}, info.WorkgroupSize) ==
+             false) ||
+        HasDxilEntry({description.Dxil.GetDataOrNull(), description.Dxil.GetSize()},
+                     info.Stage,
+                     description.DxilEntry) == false ||
+        HasDxilBindings({description.Dxil.GetDataOrNull(), description.Dxil.GetSize()}, info.Layout) == false)
     {
         return RasterStatus::InvalidDescription;
     }
     Shader& shader = gRasterShaders[slot];
-    if (shader.Bytes.TryResize(description.Dxil.size()) == false)
+    if (shader.Bytes.TryResize(description.Dxil.GetSize()) == false)
     {
         return StorageFailure();
     }
-    std::memcpy(shader.Bytes.GetData(), description.Dxil.data(), description.Dxil.size());
+    std::memcpy(shader.Bytes.GetData(), description.Dxil.GetDataOrNull(), description.Dxil.GetSize());
     return RasterStatus::Ready;
 }
 RasterStatus RasterCreateLayout(usize slot, const RasterLayout& layout, uint32) noexcept

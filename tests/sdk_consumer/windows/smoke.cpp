@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -11,7 +12,6 @@
 #include "diagnostic.h"
 
 #include <bit>
-#include <span>
 
 #include <windows.h>
 #undef CreateWindow
@@ -88,7 +88,8 @@ int main()
         1,
         1,
     };
-    const std::span<const uint8> bytes{reinterpret_cast<const uint8*>(values.GetData()), sizeof(values)};
+    const ludus::foundation::BorrowedView<const uint8> bytes{reinterpret_cast<const uint8*>(values.GetData()),
+                                                             sizeof(values)};
     rhi::ShaderHandle vertex;
     rhi::ShaderHandle fragment;
     rhi::UniformHandle uniform;
@@ -97,7 +98,7 @@ int main()
                   rhi::ResourceStatus::Ready);
     LUDUS_REQUIRE(rhi::CreateShader(device, ludus::shaders::diagnostic::Fragment(), fragment) ==
                   rhi::ResourceStatus::Ready);
-    LUDUS_REQUIRE(rhi::CreateUniform(device, bytes.size(), uniform) == rhi::ResourceStatus::Ready);
+    LUDUS_REQUIRE(rhi::CreateUniform(device, bytes.GetSize(), uniform) == rhi::ResourceStatus::Ready);
     LUDUS_REQUIRE(rhi::CreatePipeline(device, {vertex, fragment, uniform}, pipeline) == rhi::ResourceStatus::Ready);
     LUDUS_REQUIRE(rhi::UpdateUniform(device, uniform, bytes) == rhi::ResourceStatus::Ready);
     LUDUS_REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = extent.Width, .Height = extent.Height }) ==

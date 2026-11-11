@@ -9,6 +9,7 @@
 #include "viewport_fixture.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/graphics/rhi/rhi.h>
 
@@ -85,8 +86,8 @@ QByteArray GetCode(const rhi::RasterShaderDescription& description)
     {
         return ToBytes(description.Artifact.Msl);
     }
-    return QByteArray(reinterpret_cast<const char*>(description.Artifact.Spirv.data()),
-                      static_cast<qsizetype>(description.Artifact.Spirv.size_bytes()));
+    return QByteArray(reinterpret_cast<const char*>(description.Artifact.Spirv.GetDataOrNull()),
+                      static_cast<qsizetype>((description.Artifact.Spirv.GetSize() * sizeof(uint32))));
 }
 /// Host target code of artifact, in the representation GetCode returns.
 QByteArray GetCode(const PreviewShaderArtifact& artifact)
@@ -360,11 +361,11 @@ TEST_CASE("Preview shader sets replace one stage and identify their content", "[
     CHECK(GetCode(replaced) == GetCode(artifact));
     CHECK(GetEntry(replaced) == artifact.Entry);
     // Bindings and uniform layout always come from the built-in description.
-    CHECK(replaced.Bindings.size() == builtIn.Bindings.size());
+    CHECK(replaced.Bindings.GetSize() == builtIn.Bindings.GetSize());
     const rhi::RasterShaderDescription vertex = shaders.Get(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex);
     const rhi::RasterShaderDescription builtInVertex =
         GetBuiltInPreviewShader(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex);
-    CHECK(vertex.Artifact.Spirv.data() == builtInVertex.Artifact.Spirv.data());
+    CHECK(vertex.Artifact.Spirv.GetDataOrNull() == builtInVertex.Artifact.Spirv.GetDataOrNull());
     CHECK(vertex.Artifact.Msl.data() == builtInVertex.Artifact.Msl.data());
     CHECK(shaders.ComputeDigest() != builtInDigest);
     shaders.SetArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment, {});

@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
@@ -7,7 +8,6 @@
 #include "diagnostic.h"
 
 #include <initializer_list>
-#include <span>
 #include <string_view>
 #include <type_traits>
 
@@ -192,7 +192,8 @@ void Tick() noexcept
         .Padding1 = 0,
         .Tint = {0.6F, 0.4F, 0.2F, 1.0F},
     };
-    const auto bytes = std::span<const uint8>(reinterpret_cast<const uint8*>(&uniforms), sizeof(uniforms));
+    const ludus::foundation::BorrowedView<const uint8> bytes =
+        ludus::foundation::BorrowedView<const uint8>(reinterpret_cast<const uint8*>(&uniforms), sizeof(uniforms));
     if (rhi::UpdateUniform(gDevice, gUniform, bytes) != rhi::ResourceStatus::Ready)
     {
         Stop(true);

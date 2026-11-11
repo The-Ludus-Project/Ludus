@@ -87,8 +87,10 @@ TEST_CASE("D4a cancellation retains pending upload and readback slices until the
     GatedDevice owner;
     StaticArray<uint8, BUFFER_BYTES> bytes{};
     rhi::BufferHandle source;
-    REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, BUFFER_BYTES}, bytes.AsSpan(), source) ==
-            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(owner.Device,
+                              {rhi::BufferRole::Vertex, BUFFER_BYTES},
+                              {bytes.GetData(), bytes.GetSize()},
+                              source) == rhi::RasterStatus::Ready);
     owner.BlockQueue();
     rhi::UploadTicket upload;
     REQUIRE(rhi::RequestBufferUpload(owner.Device,
@@ -172,8 +174,10 @@ TEST_CASE("D4a rejected staging admission preserves texture state and permits la
     // The same null ticket and freed budget can admit a smaller transfer.
     StaticArray<uint8, BUFFER_BYTES> bytes{};
     rhi::BufferHandle buffer;
-    REQUIRE(rhi::CreateBuffer(device, {rhi::BufferRole::Vertex, BUFFER_BYTES}, bytes.AsSpan(), buffer) ==
-            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Vertex, BUFFER_BYTES},
+                              {bytes.GetData(), bytes.GetSize()},
+                              buffer) == rhi::RasterStatus::Ready);
     REQUIRE(native::WaitForQueue() == true);
     REQUIRE(rhi::PollLifetime(device) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::RequestBufferUpdate(device, buffer, 0, bytes.GetData(), bytes.GetSize(), update) ==
@@ -215,8 +219,10 @@ TEST_CASE("D4a initial buffer staging retains detached logical storage until com
     owner.BlockQueue();
     StaticArray<uint8, BUFFER_BYTES> bytes{};
     rhi::BufferHandle buffer;
-    REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, BUFFER_BYTES}, bytes.AsSpan(), buffer) ==
-            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(owner.Device,
+                              {rhi::BufferRole::Vertex, BUFFER_BYTES},
+                              {bytes.GetData(), bytes.GetSize()},
+                              buffer) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, buffer) == rhi::RasterStatus::Ready);
     rhi::StorageUsage usage;
     REQUIRE(rhi::GetStorageUsage(owner.Device, usage) == rhi::RasterStatus::Ready);
