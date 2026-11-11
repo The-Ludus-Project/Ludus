@@ -1937,6 +1937,7 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         constexpr float32 DISK_RADIUS = 0.15F;
         constexpr float64 TOP_KILOMETRES = 100;
         constexpr usize STEPS = 4096;
+        constexpr StaticArray<float64, CHANNEL_COUNT> LIMB_EXPONENT{{0.397, 0.503, 0.652}};
         camera.CameraForward = {0, 1, 0};
         camera.Atmosphere.SolarIlluminance = {DISK_ILLUMINANCE, DISK_ILLUMINANCE, DISK_ILLUMINANCE};
         camera.Atmosphere.SolarAngularRadiusRadians = DISK_RADIUS;
@@ -1959,9 +1960,10 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
             {
                 depth += ComputeEarthExtinction((static_cast<float64>(sample) + 0.5) * step, channel) * step;
             }
+            const float64 peakRadiance = (1 + 0.5 * LIMB_EXPONENT[channel]) / (math::kPi * diskSine * diskSine);
             const float64 expected =
-                static_cast<float64>(DISK_ILLUMINANCE) * (std::exp(-depth) / (math::kPi * diskSine * diskSine) +
-                                                          IntegrateEarthSky(0, {0, 1, 0}, {0, 1, 0}, channel).Radiance);
+                static_cast<float64>(DISK_ILLUMINANCE) *
+                (std::exp(-depth) * peakRadiance + IntegrateEarthSky(0, {0, 1, 0}, {0, 1, 0}, channel).Radiance);
             const float64 actual = static_cast<float64>(fixture.Pixels[sky + channel]) / 255;
             CHECK(math::Abs(actual - expected) <= 2.0 / 255);
         }
@@ -2209,4 +2211,111 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
     CHECK(stars != starless);
     render();
     CHECK(fixture.Pixels == stars);
+}
+
+TEST_CASE("The resolved solar disk darkens toward its limb and preserves authored illuminance",
+          "[render-graph][atmosphere][gpu][reference-compute]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+
+    constexpr float32 ORBIT_HEIGHT_METRES = 500000;
+    constexpr float32 NEAR_METRES = 1000;
+    constexpr float32 FAR_METRES = 2000000;
+    constexpr float64 AVERAGE_RADIANCE = 0.4;
+    constexpr float64 WIDE_ANGULAR_RADIUS = 0.5;
+    const float64 radius =
+        GENERATE_COPY(static_cast<float64>(renderer::AtmosphereDescription::DEFAULT_SOLAR_RADIUS_RADIANS),
+                      WIDE_ANGULAR_RADIUS);
+    const float64 diskSine = std::sin(radius);
+    const float64 authoredIlluminance = AVERAGE_RADIANCE * math::kPi * diskSine * diskSine;
+    const float32 illuminance = static_cast<float32>(authoredIlluminance);
+    // Point away from the planet. Every ray sees the solar boundary in vacuum.
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.CameraPosition = {0, ORBIT_HEIGHT_METRES, 0};
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.Celestial.IsEnabled = true;
+    camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    camera.Atmosphere.SolarIlluminance = {illuminance, illuminance, illuminance};
+    camera.Atmosphere.SolarAngularRadiusRadians = static_cast<float32>(radius);
+    camera.OrthographicCamera = false;
+    const float64 halfHeight = 2 * std::tan(radius);
+    math::Matrix4 worldToView;
+    math::Matrix4 viewToClip;
+    REQUIRE(math::TryLookAt(camera.CameraPosition,
+                            camera.CameraPosition + math::Vector3{0, 1, 0},
+                            {0, 0, 1},
+                            worldToView) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(static_cast<float32>(2 * std::atan(halfHeight)),
+                                         static_cast<float32>(WIDTH) / HEIGHT,
+                                         NEAR_METRES,
+                                         FAR_METRES,
+                                         viewToClip) == math::MathStatus::Success);
+    for (math::Vector4& column : viewToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    camera.WorldToClip = viewToClip * worldToView;
+    const renderer::SceneShaderInputs inputs;
+    renderer::RenderGraphReport report;
+    REQUIRE(PollAtmosphereGraph(fixture,
+                                fixture.Graph.Update({},
+                                                     {},
+                                                     {&camera, 1},
+                                                     1,
+                                                     renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                     report,
+                                                     &inputs)) == rhi::RasterStatus::Ready);
+    ReadAtmosphereFrame(fixture);
+
+    constexpr usize CHANNEL_COUNT = 3;
+    constexpr usize NEAR_LIMB_OFFSET_PIXELS = 13;
+    constexpr float64 UNORM_SCALE = 255;
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const usize nearLimb = GetPixel(WIDTH / 2 + NEAR_LIMB_OFFSET_PIXELS, HEIGHT / 2);
+    const usize outside = GetPixel(WIDTH - 1, HEIGHT / 2);
+    constexpr StaticArray<float64, CHANNEL_COUNT> LIMB_EXPONENT{{0.397, 0.503, 0.652}};
+    const float64 pixelWidth = 2 * halfHeight / HEIGHT;
+    const float64 limbX = (static_cast<float64>(NEAR_LIMB_OFFSET_PIXELS) + 0.5) * pixelWidth;
+    const float64 limbY = 0.5 * pixelWidth;
+    const float64 limbTangentSquared = limbX * limbX + limbY * limbY;
+    const float64 limbSineSquared = limbTangentSquared / (1 + limbTangentSquared);
+    const float64 limbMu = std::sqrt(1 - limbSineSquared / (diskSine * diskSine));
+    for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+    {
+        INFO("radius " << radius << " channel " << channel);
+        CHECK(fixture.Pixels[center + channel] > fixture.Pixels[nearLimb + channel]);
+        CHECK(fixture.Pixels[outside + channel] == 0);
+        const float64 centerRadiance = fixture.Pixels[center + channel] / UNORM_SCALE;
+        const float64 expectedCenter = AVERAGE_RADIANCE * (1 + 0.5 * LIMB_EXPONENT[channel]);
+        CHECK(math::Abs(centerRadiance - expectedCenter) <= 1 / UNORM_SCALE);
+        const float64 limbRadiance = fixture.Pixels[nearLimb + channel] / UNORM_SCALE;
+        const float64 expectedLimb = expectedCenter * std::pow(limbMu, LIMB_EXPONENT[channel]);
+        CHECK(math::Abs(limbRadiance - expectedLimb) <= 1 / UNORM_SCALE);
+
+        // Integrate the readback over the projection plane. Each pixel's
+        // solid angle times its cosine to the Sun gives the projected measure.
+        float64 measuredIlluminance = 0;
+        for (usize row = 0; row < HEIGHT; ++row)
+        {
+            const float64 y = (static_cast<float64>(row) + 0.5 - HEIGHT * 0.5) * pixelWidth;
+            for (usize column = 0; column < WIDTH; ++column)
+            {
+                const float64 x = (static_cast<float64>(column) + 0.5 - WIDTH * 0.5) * pixelWidth;
+                const float64 distanceSquared = 1 + x * x + y * y;
+                const float64 radiance = fixture.Pixels[GetPixel(column, row) + channel] / UNORM_SCALE;
+                measuredIlluminance += radiance * pixelWidth * pixelWidth / (distanceSquared * distanceSquared);
+            }
+        }
+        // Allow discretization at the filtered limb and RGBA8 rounding.
+        constexpr float64 ILLUMINANCE_RELATIVE_TOLERANCE = 0.025;
+        CHECK(math::Abs(measuredIlluminance / authoredIlluminance - 1) <= ILLUMINANCE_RELATIVE_TOLERANCE);
+    }
 }
