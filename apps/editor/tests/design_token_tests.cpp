@@ -118,6 +118,63 @@ TEST_CASE("Every design token contrast pair reaches its high-contrast minimum in
     }
 }
 
+TEST_CASE("Every palette role pair the widgets draw meets WCAG AA in every appearance", "[editor][design-tokens]")
+{
+    // The token pairs prove the JSON; this proves the mapping from tokens to Qt roles, so a role pointed at the
+    // wrong token fails here even when every token pair holds. Text needs 4.5:1 (7:1 in high contrast); control
+    // edges and the focus ring need 3:1 (4.5:1). The focus ring and links use the Link role.
+    constexpr double TEXT_MINIMUM = 4.5;
+    constexpr double TEXT_HIGH_CONTRAST_MINIMUM = 7.0;
+    constexpr double COMPONENT_MINIMUM = 3.0;
+    constexpr double COMPONENT_HIGH_CONTRAST_MINIMUM = 4.5;
+    struct RolePair final
+    {
+        const char* Label;
+        QPalette::ColorRole Foreground;
+        QPalette::ColorRole Background;
+        bool IsText;
+    };
+    const RolePair pairs[] = {
+        {"Text on fields and lists", QPalette::Text, QPalette::Base, true},
+        {"Text on the window", QPalette::WindowText, QPalette::Window, true},
+        {"Text on buttons", QPalette::ButtonText, QPalette::Button, true},
+        {"Text on alternate rows", QPalette::Text, QPalette::AlternateBase, true},
+        {"Text on a selected row", QPalette::HighlightedText, QPalette::Highlight, true},
+        {"Tooltip text", QPalette::ToolTipText, QPalette::ToolTipBase, true},
+        {"Secondary text on fields", QPalette::PlaceholderText, QPalette::Base, true},
+        {"Secondary text on the window", QPalette::PlaceholderText, QPalette::Window, true},
+        {"Secondary text on buttons", QPalette::PlaceholderText, QPalette::Button, true},
+        {"Secondary text on a selected row", QPalette::PlaceholderText, QPalette::Highlight, true},
+        {"Links on fields", QPalette::Link, QPalette::Base, true},
+        {"Links on the window", QPalette::Link, QPalette::Window, true},
+        {"Links in tooltips", QPalette::Link, QPalette::ToolTipBase, true},
+        {"Text on the accent fill", QPalette::BrightText, QPalette::Link, true},
+        {"Control edge on the window", QPalette::Mid, QPalette::Window, false},
+        {"Control edge on fields", QPalette::Mid, QPalette::Base, false},
+        {"Control edge on buttons", QPalette::Mid, QPalette::Button, false},
+        {"Focus ring on buttons", QPalette::Link, QPalette::Button, false},
+        {"Focus ring on a selected row", QPalette::Link, QPalette::Highlight, false},
+    };
+    for (const bool isDark : {true, false})
+    {
+        for (const bool isHighContrast : {false, true})
+        {
+            const QPalette palette = MakeEditorPalette(QPalette(), isDark, isHighContrast);
+            for (const RolePair& pair : pairs)
+            {
+                INFO(pair.Label << (isDark == true ? " (dark" : " (light")
+                                << (isHighContrast == true ? ", high contrast)" : ")"));
+                const double minimum =
+                    pair.IsText == true
+                        ? (isHighContrast == true ? TEXT_HIGH_CONTRAST_MINIMUM : TEXT_MINIMUM)
+                        : (isHighContrast == true ? COMPONENT_HIGH_CONTRAST_MINIMUM : COMPONENT_MINIMUM);
+                CHECK(ContrastRatio(palette.color(QPalette::Active, pair.Foreground).rgb(),
+                                    palette.color(QPalette::Active, pair.Background).rgb()) >= minimum);
+            }
+        }
+    }
+}
+
 TEST_CASE("High contrast changes the workspace style and keeps the viewport", "[editor][design-tokens]")
 {
     const QPalette original = QApplication::palette();

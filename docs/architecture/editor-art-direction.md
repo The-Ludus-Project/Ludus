@@ -179,16 +179,18 @@ generated block of `--ludus-*` custom properties (`python3
 scripts/python/design_tokens.py --write` refreshes it). The file also lists the
 contrast pairs that must hold in both appearances; the Editor tests
 (`[design-tokens]`) and `scripts/python/test_design_tokens.py` fail when a value
-breaks one. The table shows the core roles; the file is authoritative.
+breaks one, when a colour is in no pair without a `contrastExempt` reason, or
+when `MakeEditorPalette` maps a Qt role pair below WCAG AA. The table shows the
+core roles; the file is authoritative.
 
 | Semantic token | Dark appearance | Light appearance |
 | --- | --- | --- |
 | Workspace / panel | `#18232c` / `#222f39` | `#f1efea` / `#ffffff` |
 | Raised surface | `#2c3c47` | `#e6e3dc` |
-| Text / secondary text / hints | `#e9f2f1` / `#b5c5c9` / `#9bafb4` | `#18232c` / `#4c6267` / `#4f6468` |
-| Border (controls) / divider | `#80969e` / `#3a4d59` | `#71878b` / `#d3d0c8` |
-| Primary fill / text on fill | `#57d2c1` / `#18232c` | `#14786f` / `#ffffff` |
-| Focus ring / interactive text | `#57d2c1` | `#14786f` |
+| Text / secondary text / hints | `#e9f2f1` / `#b5c5c9` / `#a5b7bc` | `#18232c` / `#4c6267` / `#4f6468` |
+| Border (controls) / divider | `#80969e` / `#3a4d59` | `#6d8387` / `#d3d0c8` |
+| Primary fill / text on fill | `#57d2c1` / `#18232c` | `#127066` / `#ffffff` |
+| Focus ring / interactive text | `#57d2c1` | `#127066` |
 | Selected surface / text | `#294b4b` / `#e9f2f1` | `#d5eee8` / `#18232c` |
 | Viewport (both appearances) | `#090c0f` | `#090c0f` |
 | Selection amber (viewport and graph canvas) | `#ffd25a` | `#ffd25a` |

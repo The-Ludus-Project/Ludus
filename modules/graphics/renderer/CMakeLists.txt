@@ -32,7 +32,7 @@ target_link_libraries(ludus_renderer_probe_volume PRIVATE
 target_compile_options(ludus_renderer_probe_volume PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_renderer_probe_volume)
 
-add_library(ludus_graphics_renderer STATIC src/light_transformer_graph.cpp src/light_transformer_encoded_queries.cpp src/light_transformer_encoder.cpp src/light_transformer_topology.cpp src/light_transformer.cpp src/point_neighbors.cpp src/surface_points.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/raster_mesh_light_shadows.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/selection_outline.cpp src/lighting.cpp src/static_lighting.cpp "$<TARGET_OBJECTS:ludus_renderer_probe_volume>" src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/reference_dielectric.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp)
+add_library(ludus_graphics_renderer STATIC src/light_transformer_graph.cpp src/light_transformer_encoded_queries.cpp src/light_transformer_encoder.cpp src/light_transformer_topology.cpp src/light_transformer.cpp src/point_neighbors.cpp src/surface_points.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/raster_mesh_light_shadows.cpp src/render_graph_scene_resources.cpp src/texture_mip_chain.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/selection_outline.cpp src/lighting.cpp src/static_lighting.cpp "$<TARGET_OBJECTS:ludus_renderer_probe_volume>" src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/reference_dielectric.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp)
 target_sources(ludus_graphics_renderer PRIVATE src/render_graph_atmosphere.cpp)
 # Minimal SDK builds can omit offline shader tools and reject explicit atmosphere requests.
 if(LUDUS_SLANG_COMPILER)
@@ -81,6 +81,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/overlays.hpp
     include/ludus/graphics/renderer/selection_outline.hpp
     include/ludus/graphics/renderer/materials.hpp
+    include/ludus/graphics/renderer/texture_mip_chain.hpp
     include/ludus/graphics/renderer/environment.hpp
     include/ludus/graphics/renderer/static_lighting.hpp
     include/ludus/graphics/renderer/deferred_layout.h
@@ -188,6 +189,7 @@ if(LUDUS_BUILD_TESTS)
         tests/guided_fg_oracle_tests.cpp
         tests/shadow_occlusion_oracle.cpp
         tests/shadow_occlusion_oracle_tests.cpp
+        tests/texture_mip_chain_tests.cpp
         tests/wave_tracing_tests.cpp
         tests/wave_scene_queries_tests.cpp
     )

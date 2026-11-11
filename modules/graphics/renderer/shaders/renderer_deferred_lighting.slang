@@ -32,6 +32,10 @@ ConstantBuffer<DeferredViewParameters> deferredView LUDUS_SHADER_UNIFORM_REGISTE
 
 #include "renderer_clustered_authored.slang"
 
+// Relative uncertainty of a float32 depth after rasterization, storage and the reconstruction arithmetic:
+// four units in the last place (2^-22).
+static const float DEFERRED_DEPTH_RELATIVE_UNCERTAINTY = 2.384185791015625e-07;
+
 struct DeferredLightingOutput
 {
     float4 Color : SV_Target0;
@@ -58,6 +62,17 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     Varying input = (Varying)0;
     input.PositionClip = value.PositionClip;
     input.PositionWorld = positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
+    // The world position is a rational function of the stored depth, so its derivative says how far one
+    // rounding of that depth moves it. Conventional depth near one with a small near plane moves it by
+    // centimetres tens of metres away; the shadow comparison allows for that distance.
+    float4 depthColumn = float4(deferredView.ClipToWorldRows[0].z,
+                                deferredView.ClipToWorldRows[1].z,
+                                deferredView.ClipToWorldRows[2].z,
+                                deferredView.ClipToWorldRows[3].z);
+    float3 positionPerDepthWorld =
+        (depthColumn.xyz * positionHomogeneousWorld.w - positionHomogeneousWorld.xyz * depthColumn.w) /
+        (positionHomogeneousWorld.w * positionHomogeneousWorld.w);
+    input.PositionUncertaintyWorld = positionPerDepthWorld * (depth * DEFERRED_DEPTH_RELATIVE_UNCERTAINTY);
     input.EyeWorld = deferredView.EyeWorld;
     input.IsDirectReference = deferredView.Options.x;
     float4 normalRoughness = normalRoughnessTexture.Load(int3(positionPixel, 0));

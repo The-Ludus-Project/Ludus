@@ -81,9 +81,11 @@ public:
           Cancel(new QPushButton(QStringLiteral("Cancel"), this)), Commit(new QPushButton(this)),
           Import(new QPushButton(QStringLiteral("Choose Heightmap…"), this)), HeightmapInfo(new QLabel(this)),
           FlipX(new QCheckBox(QStringLiteral("Flip X"), this)), FlipZ(new QCheckBox(QStringLiteral("Flip Z"), this)),
-          Sculpt(new QComboBox(this)), PickHeight(new QPushButton(QStringLiteral("Pick from surface"), this)),
-          BrushRadius(new QDoubleSpinBox(this)), BrushHeight(new QDoubleSpinBox(this)),
-          BrushDelta(new QDoubleSpinBox(this)), BrushStrength(new QDoubleSpinBox(this)),
+          PaintSurface(new QCheckBox(QStringLiteral("Paint surface materials"), this)),
+          Rivers(new QCheckBox(QStringLiteral("Carve rivers"), this)), Sculpt(new QComboBox(this)),
+          PickHeight(new QPushButton(QStringLiteral("Pick from surface"), this)), BrushRadius(new QDoubleSpinBox(this)),
+          BrushHeight(new QDoubleSpinBox(this)), BrushDelta(new QDoubleSpinBox(this)),
+          BrushStrength(new QDoubleSpinBox(this)),
           ShowSlope(new QCheckBox(QStringLiteral("Show slope at cursor"), this)), mForm(new QFormLayout),
           mPresetRow(new QWidget(this))
     {
@@ -136,6 +138,12 @@ public:
         addField(QStringLiteral("featureSize"), QStringLiteral("Feature size (m)"));
         addField(QStringLiteral("roughness"), QStringLiteral("Roughness"));
         addField(QStringLiteral("samples"), QStringLiteral("Samples per side"));
+        PaintSurface->setObjectName(QStringLiteral("worldTerrainPaintSurface"));
+        mForm->addRow(PaintSurface);
+        addField(QStringLiteral("snowLine"), QStringLiteral("Snow line (m)"));
+        Rivers->setObjectName(QStringLiteral("worldTerrainRivers"));
+        mForm->addRow(Rivers);
+        addField(QStringLiteral("riverSource"), QStringLiteral("River sources"));
         Sculpt->setObjectName(QStringLiteral("worldTerrainSculptBrush"));
         Sculpt->addItem(QStringLiteral("Off"), static_cast<int32>(TerrainBrush::Off));
         Sculpt->addItem(QStringLiteral("Flatten"), static_cast<int32>(TerrainBrush::Flatten));
@@ -238,6 +246,17 @@ public:
         }
         Advanced->setChecked(false);
         Compare->setChecked(false);
+        {
+            const QSignalBlocker surfaceBlock(PaintSurface);
+            const QSignalBlocker riversBlock(Rivers);
+            PaintSurface->setChecked(mInitialRecipe.value(QStringLiteral("surface")).toString() !=
+                                     QStringLiteral("Plain"));
+            PaintSurface->setToolTip(
+                mDefinitions.value(QStringLiteral("surface")).toObject().value(QStringLiteral("help")).toString());
+            Rivers->setChecked(mInitialRecipe.value(QStringLiteral("rivers")).toBool());
+            Rivers->setToolTip(
+                mDefinitions.value(QStringLiteral("rivers")).toObject().value(QStringLiteral("help")).toString());
+        }
         for (QMap<QString, QLineEdit*>::const_iterator field = Fields.constBegin(); field != Fields.constEnd(); ++field)
         {
             const QSignalBlocker blocker(field.value());
@@ -287,6 +306,8 @@ public:
         mForm->setRowVisible(BrushDelta, brush == TerrainBrush::RaiseLower);
         mForm->setRowVisible(BrushStrength, brush == TerrainBrush::Smooth);
         mForm->setRowVisible(ShowSlope, brush != TerrainBrush::Off);
+        mForm->setRowVisible(Fields.value(QStringLiteral("snowLine")), PaintSurface->isChecked());
+        mForm->setRowVisible(Fields.value(QStringLiteral("riverSource")), Rivers->isChecked());
         for (const QString& key : {QStringLiteral("seed"),
                                    QStringLiteral("featureSize"),
                                    QStringLiteral("roughness"),
@@ -326,11 +347,17 @@ public:
         {
             recipe.remove(HEIGHTMAP_FIELD);
         }
+        recipe.insert(QStringLiteral("surface"),
+                      PaintSurface->isChecked() == true ? QStringLiteral("Generated") : QStringLiteral("Plain"));
+        recipe.insert(QStringLiteral("rivers"), Rivers->isChecked());
         for (QMap<QString, QLineEdit*>::const_iterator field = Fields.constBegin(); field != Fields.constEnd(); ++field)
         {
+            // Surface and river fields apply to every source; the shape fields only to generated terrain.
+            const bool isSourceIndependent =
+                field.key() == QStringLiteral("width") || field.key() == QStringLiteral("depth") ||
+                field.key() == QStringLiteral("minimumElevation") || IsTerrainSurfaceProperty(field.key()) == true;
             if (field.key() == QStringLiteral("relief") ||
-                ((isFlat == true || isImport == true) && field.key() != QStringLiteral("width") &&
-                 field.key() != QStringLiteral("depth") && field.key() != QStringLiteral("minimumElevation")))
+                ((isFlat == true || isImport == true) && isSourceIndependent == false))
             {
                 continue;
             }
@@ -426,6 +453,8 @@ public:
 #endif
         FlipX->setEnabled(isPending == false);
         FlipZ->setEnabled(isPending == false);
+        PaintSurface->setEnabled(isPending == false);
+        Rivers->setEnabled(isPending == false);
         BrushRadius->setEnabled(isPending == false);
         BrushHeight->setEnabled(isPending == false);
         BrushDelta->setEnabled(isPending == false);
@@ -501,6 +530,8 @@ public:
     QLabel* HeightmapInfo;
     QCheckBox* FlipX;
     QCheckBox* FlipZ;
+    QCheckBox* PaintSurface;
+    QCheckBox* Rivers;
     QComboBox* Sculpt;
     QPushButton* PickHeight;
     QDoubleSpinBox* BrushRadius;
@@ -624,6 +655,12 @@ void WorldWorkspace::initializeTerrainAuthoring()
     });
     connect(panel->Advanced, &QCheckBox::toggled, panel, &WorldTerrainPanel::UpdateFields);
     connect(panel->FlipX, &QCheckBox::toggled, this, changeSource);
+    const auto changePresentation = [panel, changeSource]() {
+        panel->UpdateFields();
+        changeSource();
+    };
+    connect(panel->PaintSurface, &QCheckBox::toggled, this, changePresentation);
+    connect(panel->Rivers, &QCheckBox::toggled, this, changePresentation);
     connect(panel->FlipZ, &QCheckBox::toggled, this, changeSource);
 #if !defined(Q_OS_WASM)
     connect(panel->Import, &QPushButton::clicked, this, [this, panel, changeSource]() {
