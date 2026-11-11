@@ -51,6 +51,7 @@ extern slang
         ThinDielectric = 5,
         DiffuseConductorMix = 6,
         ProjectBrdf = 8,
+        Program = 9,
     };
     enum class IncidentLightMeasure : uint32
     {
@@ -133,6 +134,7 @@ extern slang
     struct MaterialSample
     {
         MaterialModel Model;
+        uint32 ProgramOffset;
         float32x3 Eta;
         float32x3 K;
         float32 AlphaU;

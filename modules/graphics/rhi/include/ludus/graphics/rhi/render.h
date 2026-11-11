@@ -1,8 +1,8 @@
 #pragma once
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
-#include <span>
 #include <string_view>
 
 namespace ludus::graphics::rhi
@@ -59,6 +59,7 @@ enum class ShaderStage : ludus::foundation::uint8
 /// Per-target shader artifacts, borrowed only during CreateShader.
 /// Each backend consumes its own source/binary and explicit entry name.
 /// A browser build carries both WGSL and GLSL ES for startup selection.
+/// Invalid pointer/extent pairs return InvalidDescription before reading storage.
 struct ShaderDescription final
 {
     /// Shader stage; the selected entry must have this stage.
@@ -66,7 +67,7 @@ struct ShaderDescription final
     /// Minimum occupied uniform bytes from the selected artifact's reflection.
     ludus::foundation::usize UniformSize = 0;
     /// Vulkan SPIR-V words.
-    std::span<const ludus::foundation::uint32> Spirv;
+    ludus::foundation::BorrowedView<const ludus::foundation::uint32> Spirv;
     /// WebGPU WGSL source.
     std::string_view Wgsl;
     /// WebGL 2 GLSL ES 3.00 source.
@@ -88,9 +89,9 @@ struct ShaderDescription final
     /// Stage, and use at most one constant buffer at register b0, space 0.
     /// @note `ludus_compile_shader` emits DXIL only when CMake targets a Windows host.
     // Like Msl, defaulted so designated initializers that predate it stay complete under
-    // -Wmissing-designated-field-initializers (which fires for the MSVC STL span).
+    // -Wmissing-designated-field-initializers.
     // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::span<const ludus::foundation::uint8> Dxil = {};
+    ludus::foundation::BorrowedView<const ludus::foundation::uint8> Dxil = {};
     /// @brief Entry in Dxil, checked against the container's pipeline state validation part.
     ///
     /// A container records one entry; a different name or stage fails CreateShader.
@@ -138,7 +139,10 @@ struct FrameInfo final
 ///
 /// No allocation; latest bytes are snapshotted
 /// into the next acquired frame. A uniform must be updated before its first draw.
-[[nodiscard]] ResourceStatus UpdateUniform(UniformHandle, std::span<const ludus::foundation::uint8>) noexcept;
+/// Bytes are consumed before return; caller storage remains owned by the caller.
+/// Invalid pointer/extent pairs return InvalidDescription without changing the uniform.
+[[nodiscard]] ResourceStatus UpdateUniform(UniformHandle,
+                                           ludus::foundation::BorrowedView<const ludus::foundation::uint8>) noexcept;
 [[nodiscard]] ResourceStatus Destroy(ShaderHandle) noexcept;
 [[nodiscard]] ResourceStatus Destroy(UniformHandle) noexcept;
 [[nodiscard]] ResourceStatus Destroy(PipelineHandle) noexcept;

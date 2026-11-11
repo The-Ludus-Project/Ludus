@@ -21,6 +21,7 @@ class QMenu;
 class QPoint;
 class QComboBox;
 class QFormLayout;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QTreeWidget;
@@ -286,6 +287,17 @@ private:
     void commitProbeVolumeEdit(const QJsonObject& entity, const QJsonObject& components);
     void commitProbeSpacing(const QString& id, foundation::float64 spacingMetres);
     void commitProbeFace(const QString& id, foundation::int32 axis, foundation::uint32 count, bool isMinimumFace);
+    void commitProbeSize(const QString& id, foundation::int32 axis, foundation::float64 sizeMetres, bool isMinimumFace);
+    /// Offer to raise the selected volume's spacing so the probe limit reaches every edge, then apply it.
+    void coverProbeVolume(foundation::float64 spacingMetres);
+    /// Show the GI Probe Volume's layout-dependent rows: counts for the counts layout, the derived grid and a
+    /// spacing repair for the volume layout.
+    void configureProbeVolumeFields(QGroupBox& inoutGroup,
+                                    QFormLayout& inoutRows,
+                                    const QString& cid,
+                                    const QJsonObject& components);
+    /// A leading space and the coverage sentence when the probe limit leaves part of the volume unsampled.
+    [[nodiscard]] QString describeProbeCoverage(const QJsonObject& components) const;
     /// Store the scene viewport's current perspective view as the level start view (one undo step).
     void saveStartView();
     void Changed(const QString& message = {});

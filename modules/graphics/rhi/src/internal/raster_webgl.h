@@ -1,6 +1,7 @@
 #pragma once
 
 #include "profile.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 // Included only by rhi_webgl.cpp. Thanks to Khronos, OpenGL ES 3.0.6,
 // sections 2.8 (vertex arrays), 2.12.6 (uniform blocks) and 5.2 (sync objects):
 // https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf
@@ -434,8 +435,10 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     return result;
 }
 
-RasterStatus
-RasterCreateBuffer(usize slot, const BufferDescription& info, std::span<const uint8> bytes, uint32) noexcept
+RasterStatus RasterCreateBuffer(usize slot,
+                                const BufferDescription& info,
+                                ludus::foundation::BorrowedView<const uint8> bytes,
+                                uint32) noexcept
 {
     const bool indices = info.Role == BufferRole::Index16 || info.Role == BufferRole::Index32;
     const GLenum target = indices                            ? GL_ELEMENT_ARRAY_BUFFER
@@ -449,7 +452,7 @@ RasterCreateBuffer(usize slot, const BufferDescription& info, std::span<const ui
     }
     glGenBuffers(1, &gRasterBuffers[slot]);
     glBindBuffer(target, gRasterBuffers[slot]);
-    glBufferData(target, static_cast<GLsizeiptr>(bytes.size()), bytes.data(), GL_STATIC_DRAW);
+    glBufferData(target, static_cast<GLsizeiptr>(bytes.GetSize()), bytes.GetDataOrNull(), GL_STATIC_DRAW);
     glBindBuffer(target, 0);
     return RasterGlResult();
 }
@@ -464,14 +467,17 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     uint32 width = info.Width, height = info.Height;
     for (uint32 level = 0; level < info.MipLevels; ++level)
     {
-        const auto mip = upload.Mips.empty() ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
+        const TextureMipUpload mip =
+            upload.Mips.IsEmpty() == true ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[level];
         const auto channels = internal::TextureBlockBytes(info.Format);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, static_cast<GLint>(mip.RowPitch / channels));
         const auto format = info.Format == RasterFormat::R8Unorm    ? GL_RED
                             : info.Format == RasterFormat::Rg8Unorm ? GL_RG
                                                                     : GL_RGBA;
         const auto type = info.Format == RasterFormat::Rgba16Float ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE;
-        const auto* bytes = info.Attachment || info.DeferredInitialization ? nullptr : upload.Bytes.data() + mip.Offset;
+        const uint8* bytesOrNull = info.Attachment == true || info.DeferredInitialization == true
+                                       ? nullptr
+                                       : upload.Bytes.GetDataOrNull() + mip.Offset;
         if (info.Dimension == TextureDimension::D3 || info.Dimension == TextureDimension::D2Array)
         {
             glTexImage3D(target,
@@ -483,7 +489,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                          0,
                          format,
                          type,
-                         bytes);
+                         bytesOrNull);
         }
         else
         {
@@ -491,7 +497,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
             {
                 const auto face =
                     info.Dimension == TextureDimension::Cube ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + slice : target;
-                const auto* source = bytes == nullptr ? nullptr : bytes + slice * mip.RowPitch * height;
+                const uint8* sourceOrNull =
+                    bytesOrNull == nullptr ? nullptr : bytesOrNull + slice * mip.RowPitch * height;
                 glTexImage2D(face,
                              static_cast<GLint>(level),
                              static_cast<GLint>(RasterGlTextureFormat(info.Format)),
@@ -500,7 +507,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                              0,
                              format,
                              type,
-                             source);
+                             sourceOrNull);
             }
         }
         width = width > 1 ? width / 2 : 1;

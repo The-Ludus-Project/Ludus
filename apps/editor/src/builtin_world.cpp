@@ -328,14 +328,19 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
     if (preset == QStringLiteral("GI Probe Volume"))
     {
         const QString component = GetGiProbeVolumeComponentId();
-        return inoutWorld.CreateEntity(
-            entropy,
-            outError,
-            preset,
-            outId,
-            QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
-                        {component, MakeDefaultValues(inoutWorld, component)}},
-            "Add GI Probe Volume");
+        // The Transform scale is the volume's size: a new volume spans the default probes at the default spacing.
+        QJsonObject transform = MakeDefaultValues(inoutWorld, QStringLiteral("transform"));
+        for (const QString& scaleKey : {QStringLiteral("sx"), QStringLiteral("sy"), QStringLiteral("sz")})
+        {
+            transform.insert(scaleKey, DEFAULT_GI_PROBE_VOLUME_SIZE_METRES);
+        }
+        return inoutWorld.CreateEntity(entropy,
+                                       outError,
+                                       preset,
+                                       outId,
+                                       QJsonObject{{QStringLiteral("transform"), transform},
+                                                   {component, MakeDefaultValues(inoutWorld, component)}},
+                                       "Add GI Probe Volume");
     }
     if (preset == QStringLiteral("First Person Player"))
     {

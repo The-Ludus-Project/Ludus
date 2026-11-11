@@ -38,7 +38,11 @@ void EndpointSession::Configure(const Token& token, uint32 expectedUserId, const
     mNonce = {};
     mHasConsumerAdapter = false;
     mConsumerAdapter = {};
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    mPeerProcess.Reset();
+#else
     mPeerProcessId = -1;
+#endif
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     mRendezvous.Stop();
 #endif
@@ -110,6 +114,14 @@ void EndpointSession::Admit(SocketDescriptor&& connection, foundation::time::Tim
         return;
     }
     mConnection = foundation::Move(peer);
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    mPeerProcess = OpenPipePeer(mConnection.Get(), true);
+    if (mPeerProcess.Get() == nullptr)
+    {
+        refuse(HostedRefusal::WrongUser);
+        return;
+    }
+#else
     uint32 peerUserId = 0;
     int32 peerProcessId = -1;
     if (TryReadPeerUserId(mConnection.Get(), peerUserId) == false || peerUserId != mExpectedUserId ||
@@ -119,6 +131,7 @@ void EndpointSession::Admit(SocketDescriptor&& connection, foundation::time::Tim
         return;
     }
     mPeerProcessId = peerProcessId;
+#endif
     mPhase = SessionPhase::Handshaking;
     mConnectedAt = now;
     mHelloSize = 0;
@@ -168,6 +181,9 @@ void EndpointSession::refuse(HostedRefusal refusal) noexcept
         static_cast<void>(SendSome(mConnection.Get(), {bytes.GetData(), size}, sent));
     }
     mConnection.Reset();
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    mPeerProcess.Reset();
+#endif
     mPhase = SessionPhase::Idle;
     mHelloSize = 0;
     mLastRefusal = refusal;
@@ -191,6 +207,9 @@ void EndpointSession::receiveHello(foundation::time::Timestamp now) noexcept
         {
             // The peer left before authenticating; nothing was admitted.
             mConnection.Reset();
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+            mPeerProcess.Reset();
+#endif
             mPhase = SessionPhase::Idle;
             mHelloSize = 0;
             return;
@@ -256,6 +275,12 @@ void EndpointSession::receiveFromWindow() noexcept
             {
                 break;
             }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+            if (mPending.GetSize() - mPendingSize < HEADER_BYTES + IMAGES_COPIED_PAYLOAD_BYTES)
+            {
+                return;
+            }
+#endif
             if (decoded == DecodeStatus::Malformed || applyWindowMessage(message) == false)
             {
                 disconnect();
@@ -268,8 +293,14 @@ void EndpointSession::receiveFromWindow() noexcept
         {
             return;
         }
-        foundation::StaticArray<int32, MAX_PENDING_DESCRIPTORS> descriptors{};
         usize received = 0;
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+        const TransferStatus status =
+            ReceiveSome(mConnection.Get(),
+                        {mReceived.GetData() + mReceivedSize, mReceived.GetSize() - mReceivedSize},
+                        received);
+#else
+        foundation::StaticArray<int32, MAX_PENDING_DESCRIPTORS> descriptors{};
         usize descriptorCount = 0;
         const TransferStatus status =
             ReceiveWithDescriptors(mConnection.Get(),
@@ -278,6 +309,7 @@ void EndpointSession::receiveFromWindow() noexcept
                                    descriptors.GetData(),
                                    MAX_PENDING_DESCRIPTORS - mDescriptorCount,
                                    descriptorCount);
+#endif
         if (status == TransferStatus::WouldBlock)
         {
             return;
@@ -288,11 +320,13 @@ void EndpointSession::receiveFromWindow() noexcept
             return;
         }
         mReceivedSize += received;
+#if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
         for (usize i = 0; i < descriptorCount; ++i)
         {
             mDescriptors[mDescriptorCount] = HostedImageHandle::FromFileDescriptor(descriptors[i]);
             ++mDescriptorCount;
         }
+#endif
     }
 }
 
@@ -340,6 +374,24 @@ bool EndpointSession::applyWindowMessage(const Message& message) noexcept
 
 bool EndpointSession::tryAttachHandles(const Message& message, HostedSurfaceImages& inoutImages) noexcept
 {
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    if (message.HandleKind != HostedHandleKind::Win32SharedResource || mPeerProcess.Get() == nullptr)
+    {
+        return false;
+    }
+    for (usize i = 0; i < HOSTED_SURFACE_IMAGE_COUNT; ++i)
+    {
+        inoutImages.Handles[i] = DuplicateImageHandle(mPeerProcess, message.Win32HandleValues[i]);
+        if (inoutImages.Handles[i].IsValid() == false)
+        {
+            return false;
+        }
+    }
+    Message copied;
+    copied.Kind = MessageKind::ImagesCopied;
+    copied.Generation = message.Generation;
+    return enqueue(copied);
+#else
     if (message.HandleKind == HostedHandleKind::OpaqueFileDescriptor)
     {
         // The descriptors arrived with the first byte of this message, in send order.
@@ -358,7 +410,7 @@ bool EndpointSession::tryAttachHandles(const Message& message, HostedSurfaceImag
         mDescriptorCount -= HOSTED_SURFACE_IMAGE_COUNT;
         return true;
     }
-#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+#    if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     // The window sends the Mach message before the socket message, so it is queued by now.
     for (usize attempt = 0; attempt < MAX_REJECTED_RENDEZVOUS_MESSAGES; ++attempt)
     {
@@ -379,13 +431,17 @@ bool EndpointSession::tryAttachHandles(const Message& message, HostedSurfaceImag
         }
         return true;
     }
-#endif
+#    endif
     return false;
+#endif
 }
 
 void EndpointSession::disconnect() noexcept
 {
     mConnection.Reset();
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    mPeerProcess.Reset();
+#endif
     mPhase = SessionPhase::Disconnected;
     mPendingSize = 0;
     mIsResynchronizationPending = false;

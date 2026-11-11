@@ -907,7 +907,11 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     const bool isNewAtmosphereField =
                         HasBuiltInSchema() == true && c.key() == GetWorldAtmosphereComponentId() &&
                         (property == QStringLiteral("moon") || property == QStringLiteral("stars"));
-                    if (isNewAtmosphereField == true ||
+                    // A volume saved before the layout choice existed keeps its counts.
+                    const bool isNewProbeVolumeField = HasBuiltInSchema() == true &&
+                                                       c.key() == GetGiProbeVolumeComponentId() &&
+                                                       property == GetGiProbeLayoutKey();
+                    if (isNewAtmosphereField == true || isNewProbeVolumeField == true ||
                         (isBuiltInLight == true &&
                          (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
                           property == QStringLiteral("bakeAlwaysOn") || property == WORLD_RASTER_SHADOWS)))

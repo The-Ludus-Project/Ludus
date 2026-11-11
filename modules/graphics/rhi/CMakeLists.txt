@@ -41,11 +41,19 @@ target_link_libraries(ludus_graphics_rhi
 if(NOT EMSCRIPTEN)
     target_link_libraries(ludus_graphics_rhi PRIVATE Ludus::FoundationThreading)
 endif()
+# The unsupported ray backend is also used by deterministic tests. Embed its one
+# compiled object in native archives that need it and directly in reference tests.
+if(LUDUS_BUILD_TESTS OR EMSCRIPTEN OR WIN32)
+    add_library(ludus_rhi_ray_unsupported OBJECT src/ray_unsupported.cpp)
+    target_include_directories(ludus_rhi_ray_unsupported PRIVATE include)
+    target_link_libraries(ludus_rhi_ray_unsupported PRIVATE Ludus::FoundationContainers Ludus::Platform)
+    ludus_apply_project_defaults(ludus_rhi_ray_unsupported)
+endif()
 if(EMSCRIPTEN)
     # Browser Auto build: both web sub-backends plus the dispatcher are linked
     # into one artifact, each sub-backend in its own leaf namespace, and the
     # dispatcher provides backend:: with the WebGPU->WebGL 2 fallback policy.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp src/ray_unsupported.cpp src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>" src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
     set_source_files_properties(src/rhi_webgpu.cpp PROPERTIES
         COMPILE_DEFINITIONS "LUDUS_RHI_WEBGPU_NAMESPACE=webgpu")
     set_source_files_properties(src/rhi_webgl.cpp PROPERTIES
@@ -68,8 +76,8 @@ elseif(WIN32)
     # Direct3D 12 bring-up: device, swap chain, clear and present
     # (docs/architecture/windows-direct3d12.md). Unimplemented feature families
     # use the portable Unsupported implementations.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/compute_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/measurement_d3d12.cpp src/debug_d3d12.cpp src/ray_unsupported.cpp
-        src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/compute_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/measurement_d3d12.cpp src/debug_d3d12.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>"
+        src/native_interop_d3d12.cpp src/hosted_d3d12.cpp src/hosted_consumer_d3d12.cpp)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
 else()
@@ -126,11 +134,33 @@ endif()
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/gpu_scope_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/compute_workload_tests.cpp tests/hosted_ring_tests.cpp tests/hosted_adapter_tests.cpp tests/dxil_container_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/dxil_container.cpp src/gpu_scope.cpp src/gpu_pass_timing_buffer.cpp src/profile.cpp src/raster.cpp src/compute_workload.cpp src/compute_cache.cpp src/ray_unsupported.cpp)
+    # Storage failure injection is private to test-enabled builds, as renderer
+    # readback is. Share the instrumented registry instead of recompiling the RHI.
+    set_source_files_properties(src/profile.cpp PROPERTIES COMPILE_DEFINITIONS LUDUS_RHI_TEST_STORAGE=1)
+    add_library(ludus_rhi_reference_backend OBJECT tests/reference_raster.cpp)
+    target_link_libraries(ludus_rhi_reference_backend INTERFACE "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>")
+    target_include_directories(ludus_rhi_reference_backend PRIVATE src)
+    target_link_libraries(ludus_rhi_reference_backend PRIVATE Ludus::GraphicsRhi)
+    target_compile_options(ludus_rhi_reference_backend PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
+    ludus_apply_project_defaults(ludus_rhi_reference_backend)
+    add_executable(ludus_rhi_lifecycle_tests
+        tests/lifecycle_tests.cpp
+        tests/gpu_scope_tests.cpp
+        tests/device_tests.cpp
+        tests/profile_tests.cpp
+        tests/raster_tests.cpp
+        tests/binding_tests.cpp
+        tests/native_interop_tests.cpp
+        tests/compute_tests.cpp
+        tests/compute_workload_tests.cpp
+        tests/hosted_ring_tests.cpp
+        tests/hosted_adapter_tests.cpp
+        tests/dxil_container_tests.cpp
+    )
     target_compile_definitions(ludus_rhi_lifecycle_tests PRIVATE LUDUS_RHI_TEST_STORAGE=1)
-    target_include_directories(ludus_rhi_lifecycle_tests PRIVATE include src)
-    target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE
-        Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationStrings Catch2::Catch2WithMain)
+    target_include_directories(ludus_rhi_lifecycle_tests PRIVATE src)
+    target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE ludus_rhi_reference_backend
+        Ludus::GraphicsRhi Ludus::FoundationMath Ludus::FoundationStrings Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_rhi_lifecycle_tests)
     ludus_enable_test_exceptions(ludus_rhi_lifecycle_tests)
     add_test(NAME ludus_rhi_lifecycle_tests COMMAND ludus_rhi_lifecycle_tests)
@@ -153,7 +183,7 @@ endif()
 
 if(LUDUS_BUILD_TESTS AND WIN32)
     target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
-    add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp tests/d3d12_diagnostics_tests.cpp tests/d3d12_resource_tests.cpp tests/d3d12_transfer_tests.cpp tests/portable_transfer_conformance_tests.cpp)
+    add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp tests/d3d12_native_interop_tests.cpp tests/d3d12_diagnostics_tests.cpp tests/d3d12_resource_tests.cpp tests/d3d12_transfer_tests.cpp tests/portable_transfer_conformance_tests.cpp)
     target_include_directories(ludus_rhi_d3d12_tests PRIVATE src)
     target_link_libraries(ludus_rhi_d3d12_tests PRIVATE Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationLogging Catch2::Catch2WithMain user32)
     ludus_attach_d3d12_agility(ludus_rhi_d3d12_tests "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
@@ -204,11 +234,16 @@ if(LUDUS_BUILD_TESTS AND APPLE)
     endif()
 endif()
 
-if(LUDUS_BUILD_TESTS AND (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT EMSCRIPTEN)
+if(LUDUS_BUILD_TESTS AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT EMSCRIPTEN)
     # Hosted surface: an ordinary RHI application renders into a hosted window
     # whose endpoint and consumer live in the test process.
     add_executable(ludus_rhi_hosted_producer tests/hosted_producer.cpp)
     target_link_libraries(ludus_rhi_hosted_producer PRIVATE Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationTime)
+    if(WIN32)
+        ludus_configure_win32_target(ludus_rhi_hosted_producer)
+        ludus_attach_d3d12_agility(ludus_rhi_hosted_producer "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+            "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+    endif()
     ludus_apply_project_defaults(ludus_rhi_hosted_producer)
 endif()
 

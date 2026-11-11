@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
 
@@ -40,6 +41,8 @@ struct StaticLightingSurfaceDescription final
     foundation::float32 AlphaCutoff = .5F;       ///< Masked alpha threshold in [0,1].
     /// Typed source material parameters; default retains the legacy reflection model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Closure program read when Scattering.Model is Program; it must satisfy IsMaterialProgramValid.
+    content::scene_format::MaterialProgram Program{};
     /// Exclude this moving object from bake intersections and encode zero in its chart.
     /// Its source identity and triangle order are preserved.
     bool ShouldExcludeFromBake = false;

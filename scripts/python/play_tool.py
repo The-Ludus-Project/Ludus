@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+from editor_pipe_io import pipe_selector, read_pipe, set_nonblocking, write_pipe
 import signal
 import socket
 import struct
@@ -49,7 +50,7 @@ class OutputQueue:
         self.frames = deque()
         self.bytes = 0
         self.dropped = 0
-        os.set_blocking(fd, False)
+        set_nonblocking(fd, write=True)
 
     def emit(self, value, *, log=False, terminal=False):
         value = {"protocol":1, **value}
@@ -68,7 +69,7 @@ class OutputQueue:
             if not self.frames:
                 break
             try:
-                count = os.write(self.fd, self.frames[0])
+                count = write_pipe(self.fd, self.frames[0])
             except (BlockingIOError, InterruptedError):
                 break
             if count <= 0:
@@ -86,7 +87,7 @@ class PlaySupervisor:
         self.context = context
         self.in_fd = in_fd
         self.output = OutputQueue(out_fd)
-        os.set_blocking(in_fd, False)
+        set_nonblocking(in_fd)
         self.input = bytearray()
         self.host_input = bytearray()
         self.host_frames = deque()
@@ -248,7 +249,7 @@ class PlaySupervisor:
     def read_frontend(self):
         for _ in range(64):
             try:
-                data = os.read(self.in_fd, 4096)
+                data = read_pipe(self.in_fd, 4096)
             except (BlockingIOError, InterruptedError):
                 break
             if not data:
@@ -479,12 +480,17 @@ class PlaySupervisor:
                     *self.plan.descriptor.run_args]
             if manifest["authored_file"] is not None:
                 argv.extend(["--authored-document", str(candidate["path"] / manifest["authored_file"])])
-            self.child = OwnedProcess(argv, str(self.plan.run_cwd), self.plan.env,
-                                      pass_fds=(child.fileno(), candidate["lease"].fileno(), self.store_lease.fileno()))
+            leases = (candidate["lease"].fileno(), self.store_lease.fileno())
+            if os.name == "nt":
+                self.child = OwnedProcess(argv, str(self.plan.run_cwd), self.plan.env,
+                                          pass_fds=leases, pass_handles=(child.fileno(),))
+            else:
+                self.child = OwnedProcess(argv, str(self.plan.run_cwd), self.plan.env,
+                                          pass_fds=(child.fileno(), *leases))
             self.control = parent
             parent.setblocking(False)
-            os.set_blocking(self.child.stdout_fd, False)
-            os.set_blocking(self.child.stderr_fd, False)
+            set_nonblocking(self.child.stdout_fd)
+            set_nonblocking(self.child.stderr_fd)
             self.active = candidate
             self.emit("host_started", pid=self.child.pid, argv=argv, cwd=str(self.plan.run_cwd),
                       generation=candidate["generation"], manifest=manifest)
@@ -506,7 +512,7 @@ class PlaySupervisor:
         for fd, stream in ((self.child.stdout_fd, "stdout"), (self.child.stderr_fd, "stderr")):
             for _ in range(16):
                 try:
-                    data = os.read(fd, 4096)
+                    data = read_pipe(fd, 4096)
                 except (BlockingIOError, InterruptedError):
                     break
                 if not data:
@@ -699,7 +705,7 @@ class PlaySupervisor:
         self.flush_deadline = time.monotonic()+2
 
     def run(self):
-        selector = selectors.DefaultSelector()
+        selector = pipe_selector()
         selector.register(self.in_fd, selectors.EVENT_READ)
         try:
             while True:

@@ -2,25 +2,30 @@
 #include "internal/content_import.h"
 #include <ludus/audio/audio_source.h>
 #include <ludus/audio/content/loader.h>
+#include <ludus/foundation/base/assert.hpp>
+#include <ludus/foundation/threading/worker_queue.hpp>
 
 #include <QByteArray>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QThread>
 
 #include <atomic>
 #include <new>
-#include <pthread.h>
-#include <time.h>
 
 namespace ludus::editor
 {
 using namespace foundation;
+namespace
+{
+constexpr uint32 PREVIEW_POLL_INTERVAL_MICROSECONDS = 16667;
+}
 struct AudioPreview::Impl final
 {
     explicit Impl(AudioPreview* preview) : Preview(preview) {}
     AudioPreview* Preview;
-    pthread_t Thread{};
-    bool Started = false;
+    threading::WorkerQueue Worker;
+    bool HasStarted = false;
     std::atomic<uint64> Epoch{0};
     std::atomic<bool> Closing{false};
     std::atomic<bool> Done{true};
@@ -56,7 +61,7 @@ struct AudioPreview::Impl final
             Q_EMIT Preview->Imported(source.Root);
         }
     }
-    void Run()
+    void Run() noexcept
     {
         audio::BusConfig buses[3];
         buses[0].ParentIndex = audio::kNoParent;
@@ -250,8 +255,7 @@ struct AudioPreview::Impl final
                                           snapshot.StreamStarvations);
                 }
             }
-            const timespec delay{0, 16666667};
-            nanosleep(&delay, nullptr);
+            QThread::usleep(PREVIEW_POLL_INTERVAL_MICROSECONDS);
         }
         loader.Cancel();
         system.StopAll();
@@ -259,49 +263,54 @@ struct AudioPreview::Impl final
     }
 };
 AudioPreview::AudioPreview(QObject* parent) : QObject(parent), Impl_(new (std::nothrow) Impl(this)) {}
-bool AudioPreview::Start()
+bool AudioPreview::start()
 {
-    if (Impl_ == nullptr || Impl_->Closing.load(std::memory_order_acquire))
+    if (Impl_ == nullptr || Impl_->Closing.load(std::memory_order_acquire) == true)
     {
         return false;
     }
-    if (Impl_->Started)
+    if (Impl_->HasStarted == true)
     {
         return true;
     }
     Impl_->Done.store(false, std::memory_order_release);
-    const int result = pthread_create(
-        &Impl_->Thread,
-        nullptr,
-        [](void* input) -> void* {
-            auto* impl = static_cast<Impl*>(input);
-            impl->Run();
-            impl->Done.store(true, std::memory_order_release);
-            return nullptr;
-        },
-        Impl_);
-    Impl_->Started = result == 0;
-    if (Impl_->Started == false)
+    if (Impl_->Worker.Initialize() != threading::WorkerQueueStatus::Ready)
     {
         Impl_->Done.store(true, std::memory_order_release);
+        return false;
     }
-    return Impl_->Started;
+    const threading::WorkerQueueStatus submitted = Impl_->Worker.Submit(
+        [](void* context) noexcept {
+            LUDUS_ASSERT(context != nullptr);
+            Impl* implementation = static_cast<Impl*>(context);
+            implementation->Run();
+            implementation->Done.store(true, std::memory_order_release);
+        },
+        [](void*) noexcept {},
+        Impl_);
+    Impl_->HasStarted = submitted == threading::WorkerQueueStatus::Ready;
+    if (Impl_->HasStarted == false)
+    {
+        static_cast<void>(Impl_->Worker.Shutdown());
+        Impl_->Done.store(true, std::memory_order_release);
+    }
+    return Impl_->HasStarted;
 }
 AudioPreview::~AudioPreview()
 {
     Shutdown();
     if (Impl_ != nullptr)
     {
-        if (Impl_->Started)
+        if (Impl_->HasStarted == true)
         {
-            pthread_join(Impl_->Thread, nullptr);
+            static_cast<void>(Impl_->Worker.Shutdown());
         }
         delete Impl_;
     }
 }
 void AudioPreview::Play(const QString& root, const audio::content::Sound& sound)
 {
-    if (Start() == false)
+    if (start() == false)
     {
         Q_EMIT Message(QStringLiteral("Preview worker unavailable."));
         return;
@@ -317,7 +326,7 @@ void AudioPreview::Play(const QString& root, const audio::content::Sound& sound)
 }
 void AudioPreview::Play(const QString& root, const audio::content::Music& music)
 {
-    if (Start() == false)
+    if (start() == false)
     {
         Q_EMIT Message(QStringLiteral("Preview worker unavailable."));
         return;
@@ -333,7 +342,7 @@ void AudioPreview::Play(const QString& root, const audio::content::Music& music)
 }
 void AudioPreview::Import(const ContentImportSource& source)
 {
-    if (Start() == false)
+    if (start() == false)
     {
         return;
     }
@@ -376,9 +385,9 @@ bool ludus::editor::AudioPreview::Reset()
     {
         return false;
     }
-    if (Impl_ != nullptr && Impl_->Started)
+    if (Impl_ != nullptr && Impl_->HasStarted == true)
     {
-        pthread_join(Impl_->Thread, nullptr);
+        static_cast<void>(Impl_->Worker.Shutdown());
     }
     delete Impl_;
     Impl_ = new (std::nothrow) Impl(this);

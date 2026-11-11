@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -50,6 +51,8 @@ struct SceneShaderMaterial final
     bool HasError = false; ///< Import diagnostic: error material in preview; reject strict admission.
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Closure program read when Scattering.Model is Program; it must satisfy IsMaterialProgramValid.
+    content::scene_format::MaterialProgram Program{};
     /// Test base-texture and vertex coverage against AlphaCutoff. Supported by the
     /// ray scene, raster color/G-buffer and shadow passes; the clustered opaque Z
     /// prepass rejects material tables containing masks before publication.

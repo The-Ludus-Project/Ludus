@@ -2,6 +2,8 @@
 #include "internal/d3d12_diagnostics.h"
 #include "internal/d3d12_raster.h"
 #include "internal/dxil_container.h"
+#include "internal/hosted_adapter.h"
+#include "internal/hosted_d3d12.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -14,6 +16,7 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/platform/native_window.h>
 
@@ -138,6 +141,7 @@ ComOwner<ID3D12Resource> gBackBuffers[FRAME_COUNT];
 uint32 gSwapWidth = 0;
 uint32 gSwapHeight = 0;
 ComOwner<ID3D12Resource> gHeadless;
+HostedProducer gHosted;
 /// Shared by every fullscreen pipeline; created with the device.
 ComOwner<ID3D12RootSignature> gRootSignature;
 Shader gShaders[internal::RESOURCE_CAPACITY];
@@ -185,7 +189,10 @@ void LogFailure(const char* operation, HRESULT result) noexcept
     {
         return true;
     }
-    // Hosted surfaces have no Windows transport yet.
+    if (window.System == platform::WindowSystem::Hosted)
+    {
+        return window.HostedSurfaceOrNull != nullptr;
+    }
     return window.System == platform::WindowSystem::Win32 && window.Win32WindowOrNull != nullptr &&
            IsOwnedWin32Window(static_cast<HWND>(window.Win32WindowOrNull)) == true;
 }
@@ -358,8 +365,23 @@ void EnableDebugLayer() noexcept
 }
 
 /// Prefers the highest-performance hardware adapter with a WARP fallback.
-[[nodiscard]] bool SelectAdapter() noexcept
+[[nodiscard]] bool SelectAdapter(const platform::HostedSurfaceChannel* channelOrNull) noexcept
 {
+    platform::HostedAdapterIdentity preferred;
+    if (channelOrNull != nullptr && channelOrNull->TryGetConsumerAdapter(preferred) == true)
+    {
+        IDXGIAdapter1* adapterOrNull = nullptr;
+        const HRESULT found = gFactory->EnumAdapterByLuid(DecodeHostedAdapter(preferred),
+                                                          GetInterfaceId(adapterOrNull),
+                                                          GetInterfaceOutput(adapterOrNull));
+        ComOwner<IDXGIAdapter1> adapter = Adopt(adapterOrNull);
+        if (FAILED(found) == true || adapter.Get() == nullptr || CreateDeviceOn(adapter.Get()) == false)
+        {
+            return false;
+        }
+        gAdapter = Move(adapter);
+        return true;
+    }
     const bool shouldUseWarp = IsWarpRequired();
     for (UINT index = 0; shouldUseWarp == false; ++index)
     {
@@ -405,7 +427,44 @@ void EnableDebugLayer() noexcept
     return true;
 }
 
-[[nodiscard]] bool CreateQueueObjects() noexcept
+// Thanks to Microsoft, "IDXGIFactory4::EnumAdapterByLuid method", DXGI API
+// reference, for resolving the adapter from the retained device's LUID.
+// https://learn.microsoft.com/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgifactory4-enumadapterbyluid
+[[nodiscard]] bool AdoptNativeDevice(const NativeDeviceIdentity& identity) noexcept
+{
+    ID3D12Device* device = static_cast<ID3D12Device*>(identity.Device.GetObject());
+    ID3D12CommandQueue* queue = static_cast<ID3D12CommandQueue*>(identity.CommandQueue.GetObject());
+    LUDUS_ASSERT(device != nullptr && queue != nullptr);
+    if (queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT || device->GetNodeCount() != 1 ||
+        device->GetDeviceRemovedReason() != S_OK)
+    {
+        return false;
+    }
+    ID3D12Device* queueDeviceOrNull = nullptr;
+    const HRESULT queueResult =
+        queue->GetDevice(GetInterfaceId(queueDeviceOrNull), GetInterfaceOutput(queueDeviceOrNull));
+    const ComOwner<ID3D12Device> queueDevice = Adopt(queueDeviceOrNull);
+    if (FAILED(queueResult) == true || queueDevice.Get() != device)
+    {
+        return false;
+    }
+    IDXGIAdapter1* adapterOrNull = nullptr;
+    const HRESULT adapterResult = gFactory->EnumAdapterByLuid(device->GetAdapterLuid(),
+                                                              GetInterfaceId(adapterOrNull),
+                                                              GetInterfaceOutput(adapterOrNull));
+    if (FAILED(adapterResult) == true || adapterOrNull == nullptr)
+    {
+        return false;
+    }
+    gAdapter = Adopt(adapterOrNull);
+    device->AddRef();
+    queue->AddRef();
+    gDevice = Adopt(device);
+    gQueue = Adopt(queue);
+    return true;
+}
+
+[[nodiscard]] bool CreateDirectQueue() noexcept
 {
     const D3D12_COMMAND_QUEUE_DESC queueDescription =
     {
@@ -423,6 +482,15 @@ void EnableDebugLayer() noexcept
     }
     gQueue = Adopt(queueOrNull);
     static_cast<void>(gQueue->SetName(L"Ludus/DirectQueue"));
+    return true;
+}
+
+[[nodiscard]] bool CreateQueueObjects() noexcept
+{
+    if (gQueue.Get() == nullptr && CreateDirectQueue() == false)
+    {
+        return false;
+    }
     ID3D12Fence* fenceOrNull = nullptr;
     if (FAILED(gDevice->CreateFence(0,
                                     D3D12_FENCE_FLAG_NONE,
@@ -661,7 +729,7 @@ void ReleaseBackBuffers() noexcept
         .Height = height,
         .DepthOrArraySize = 1,
         .MipLevels = 1,
-        .Format = SURFACE_FORMAT,
+        .Format = GetSurfaceColorFormat(),
         .SampleDesc = { .Count = 1, .Quality = 0 },
         .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
         .Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
@@ -719,6 +787,7 @@ namespace d3d12
 {
 void DiscardRecording() noexcept
 {
+    gHosted.Cancel();
     if (isRecording == true)
     {
         CloseTimingScopes(*gCommands);
@@ -730,6 +799,10 @@ void DiscardRecording() noexcept
 ID3D12GraphicsCommandList* GetCommandsOrNull() noexcept
 {
     return isRecording == true ? gCommands.Get() : nullptr;
+}
+DXGI_FORMAT GetSurfaceColorFormat() noexcept
+{
+    return gHosted.IsConnected() == true ? HOSTED_SURFACE_FORMAT : SURFACE_FORMAT;
 }
 Attachment GetSurfaceAttachment() noexcept
 {
@@ -778,6 +851,14 @@ bool WaitForQueue() noexcept
 {
     return WaitForIdle();
 }
+bool SignalQueueFence(uint64& outValue) noexcept
+{
+    return SignalFence(outValue);
+}
+bool WaitForQueueFence(uint64 value) noexcept
+{
+    return WaitForFence(value);
+}
 bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept
 {
     LUDUS_ASSERT(commands != nullptr);
@@ -805,14 +886,60 @@ bool Supports(BackendSelection selection) noexcept
 {
     return selection == BackendSelection::Auto;
 }
-StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 token, BackendSelection) noexcept
+static bool InitializeDevice(const platform::HostedSurfaceChannel* channelOrNull) noexcept
+{
+    if (gDevice.Get() != nullptr)
+    {
+        return gCommands.Get() != nullptr;
+    }
+    const NativeDeviceDescription* importedOrNull = internal::NativeDeviceRequest();
+    InitializePixMarkers();
+    if (importedOrNull == nullptr)
+    {
+        ConfigureDred();
+        EnableDebugLayer();
+    }
+    UINT factoryFlags = 0;
+#if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
+    factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
+#endif
+    IDXGIFactory6* factoryOrNull = nullptr;
+    HRESULT result = CreateDXGIFactory2(factoryFlags, GetInterfaceId(factoryOrNull), GetInterfaceOutput(factoryOrNull));
+    if (FAILED(result) == true && factoryFlags != 0)
+    {
+        // The DXGI debug factory also requires Graphics Tools.
+        result = CreateDXGIFactory2(0, GetInterfaceId(factoryOrNull), GetInterfaceOutput(factoryOrNull));
+    }
+    if (FAILED(result) == true || factoryOrNull == nullptr)
+    {
+        LogFailure("CreateDXGIFactory2", result);
+        return false;
+    }
+    gFactory = Adopt(factoryOrNull);
+    const bool hasDevice =
+        importedOrNull != nullptr ? AdoptNativeDevice(importedOrNull->Identity) : SelectAdapter(channelOrNull);
+    if (hasDevice == false)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: no compatible device and direct queue");
+        return false;
+    }
+    if (CreateQueueObjects() == false || CreateRootSignature() == false)
+    {
+        // The device stays until Shutdown() so Start reports DeviceUnavailable.
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: creating the queue, fence or command objects failed");
+        return false;
+    }
+    InitializeCompute();
+    return true;
+}
+StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 token, BackendSelection) noexcept
 {
     if (IsValidWindow(window) == false)
     {
         return StartupError::InvalidWindow;
     }
     gToken = token;
-    if (backend::Initialize(app) == false)
+    if (InitializeDevice(window.HostedSurfaceOrNull) == false)
     {
         return gFactory.Get() == nullptr  ? StartupError::InstanceUnavailable
                : gDevice.Get() == nullptr ? StartupError::AdapterUnavailable
@@ -833,48 +960,7 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
 }
 bool Initialize(const ApplicationInfo&) noexcept
 {
-    if (gDevice.Get() != nullptr)
-    {
-        return gCommands.Get() != nullptr;
-    }
-    // Native device import is a Metal/Vulkan interop contract.
-    if (internal::NativeDeviceRequest() != nullptr)
-    {
-        return false;
-    }
-    ConfigureDred();
-    InitializePixMarkers();
-    EnableDebugLayer();
-    UINT factoryFlags = 0;
-#if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
-    factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
-#endif
-    IDXGIFactory6* factoryOrNull = nullptr;
-    HRESULT result = CreateDXGIFactory2(factoryFlags, GetInterfaceId(factoryOrNull), GetInterfaceOutput(factoryOrNull));
-    if (FAILED(result) == true && factoryFlags != 0)
-    {
-        // The DXGI debug factory also requires Graphics Tools.
-        result = CreateDXGIFactory2(0, GetInterfaceId(factoryOrNull), GetInterfaceOutput(factoryOrNull));
-    }
-    if (FAILED(result) == true || factoryOrNull == nullptr)
-    {
-        LogFailure("CreateDXGIFactory2", result);
-        return false;
-    }
-    gFactory = Adopt(factoryOrNull);
-    if (SelectAdapter() == false)
-    {
-        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: no adapter supports feature level 11_0");
-        return false;
-    }
-    if (CreateQueueObjects() == false || CreateRootSignature() == false)
-    {
-        // The device stays until Shutdown() so Start reports DeviceUnavailable.
-        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: creating the queue, fence or command objects failed");
-        return false;
-    }
-    InitializeCompute();
-    return true;
+    return InitializeDevice(nullptr);
 }
 bool ConnectWindow(const WindowInfo& window) noexcept
 {
@@ -892,6 +978,19 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         }
         gWindowOrNull = handle;
     }
+    if (window.System == platform::WindowSystem::Hosted)
+    {
+        platform::HostedSurfaceChannel* channelOrNull = window.HostedSurfaceOrNull;
+        LUDUS_ASSERT(channelOrNull != nullptr);
+        platform::HostedAdapterIdentity preferred;
+        if (channelOrNull->TryGetConsumerAdapter(preferred) == true &&
+            internal::AreAdaptersEqual(preferred, EncodeHostedAdapter(gDevice->GetAdapterLuid())) == false)
+        {
+            LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: the hosted viewport requires the editor's GPU adapter");
+            return false;
+        }
+        gHosted.Connect(*channelOrNull);
+    }
     gTarget = { .Width = window.Width, .Height = window.Height };
     isConnected = true;
     return true;
@@ -906,13 +1005,14 @@ void ShutdownRendering() noexcept
     const bool isDrained = WaitForIdle();
     DiscardRecording();
     ReleaseTimings(isDrained);
+    gHosted.Disconnect();
     gHeadless.Reset();
     gSurfaceOrNull = nullptr;
     gFrame = {};
     gSlot = 0;
     isRendering = false;
 }
-void Shutdown() noexcept
+void NativeInteropDetachSurface() noexcept
 {
     ShutdownRendering();
     ReleaseBackBuffers();
@@ -925,9 +1025,13 @@ void Shutdown() noexcept
     gSwapWidth = 0;
     gSwapHeight = 0;
     gWindowOrNull = nullptr;
-    ReleaseDevice();
     gTarget = {};
     isConnected = false;
+}
+void Shutdown() noexcept
+{
+    NativeInteropDetachSurface();
+    ReleaseDevice();
     gToken = 0;
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
@@ -983,6 +1087,19 @@ FrameStatus Begin() noexcept
         const uint32 index = gSwapChain->GetCurrentBackBufferIndex();
         gSurfaceOrNull = gBackBuffers[index].Get();
         gSurfaceDescriptor = GetTargetDescriptor(index);
+    }
+    else if (gHosted.IsConnected() == true && gTarget.ShouldPresentToSurface == true)
+    {
+        const HostedAcquire acquired =
+            gHosted.Acquire(gTarget.Width, gTarget.Height, gSurfaceOrNull, gSurfaceDescriptor);
+        if (acquired == HostedAcquire::Pending)
+        {
+            return FrameStatus::Skipped;
+        }
+        if (acquired == HostedAcquire::Failed)
+        {
+            return FailFrame(IsDeviceRemoved() == true ? StartupError::DeviceLost : StartupError::SurfaceUnavailable);
+        }
     }
     else
     {
@@ -1064,6 +1181,7 @@ FrameStatus End() noexcept
         return FailFrame(StartupError::DeviceLost);
     }
     SubmitTimings(value);
+    gHosted.Submit(value);
     gSubmitted[gSlot] = value;
     gSlot = (gSlot + 1) % FRAME_COUNT;
     return FrameStatus::Ready;
@@ -1079,7 +1197,9 @@ bool EndFrame() noexcept
 ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32) noexcept
 {
     // The facade checked the container header; Direct3D 12 itself never sees the entry name.
-    if (internal::HasDxilEntry(description.Dxil, description.Stage, description.DxilEntry) == false)
+    if (internal::HasDxilEntry({description.Dxil.GetDataOrNull(), description.Dxil.GetSize()},
+                               description.Stage,
+                               description.DxilEntry) == false)
     {
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: DXIL container does not hold the requested stage and entry");
         return ResourceStatus::Failed;
@@ -1220,7 +1340,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
         .IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
         .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
         .NumRenderTargets = 1,
-        .RTVFormats = {SURFACE_FORMAT},
+        .RTVFormats = {GetSurfaceColorFormat()},
         .DSVFormat = DXGI_FORMAT_UNKNOWN,
         .SampleDesc = { .Count = 1, .Quality = 0 },
         .NodeMask = 0,
@@ -1270,9 +1390,9 @@ void DestroyPipeline(usize slot) noexcept
     pipeline.State.Reset();
     pipeline.UniformSlot = 0;
 }
-void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
+void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.data(), bytes.size());
+    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 FrameInfo GetFrameInfo() noexcept
 {

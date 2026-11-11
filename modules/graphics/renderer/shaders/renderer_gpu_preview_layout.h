@@ -19,9 +19,17 @@
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS 4
 // Word of a luminaire record holding beam steering, spread and twist.
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD 3
-// 12: panel luminaires after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order in order
-// word Z, beside native opacity ranges in X.
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 14
+// 15: closure programs after the environment; 12: panel luminaires after the lights; 9: emitter bounds after the
+// emitter records; 8: BVH leaf order in order word Z, beside native opacity ranges in X.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 15
+// Closure programs (material_program.h) follow the environment. Each has a header word (instruction, lobe and
+// constant counts in X, Y and Z bits), its constants, one word per instruction (opcode, destination and operand A
+// bits, then operands B | C << PROGRAM_OPERAND_SHIFT), then PROGRAM_LOBE_WORDS per lobe: (operation, weight and
+// roughness register bits, power), eta and k. A Program surface's SCATTERING_ALPHA word W holds the bits of its
+// program's first word; offset zero never holds a program.
+#define LUDUS_GPU_PREVIEW_PROGRAM_HEADER_WORDS 1
+#define LUDUS_GPU_PREVIEW_PROGRAM_LOBE_WORDS 3
+#define LUDUS_GPU_PREVIEW_PROGRAM_OPERAND_SHIFT 8
 // Words per mesh emitter in the bounds records that follow the emitter records:
 // sphere centre/radius, normal-cone axis/cosine, then flags (X) and the mesh power CDF (Y).
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3

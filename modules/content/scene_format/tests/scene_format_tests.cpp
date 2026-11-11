@@ -172,15 +172,21 @@ TEST_CASE("Closure programs validate every operand, slot and parameter", "[scene
     CHECK(format::IsMaterialProgramValid(program) == false);
 }
 
-TEST_CASE("Closure-program materials are stored but not yet evaluated", "[scene_format][materials]")
+TEST_CASE("Closure-program materials keep default scattering and take the program's capabilities",
+          "[scene_format][materials]")
 {
     format::MaterialScattering scattering;
     scattering.Model = format::MaterialModel::Program;
     CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
-    // No renderer admits a program until an evaluator lands, so installation rejects it.
-    CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    // The model alone guarantees nothing; the program declares the capabilities.
     CHECK(format::GetMaterialCapabilities(scattering) == 0);
     CHECK(format::SupportsFixedDimensionReflection(scattering) == false);
+    const format::MaterialProgram program = MakeMixProgram();
+    CHECK(format::SupportsFixedDimensionReflection(scattering, program) == true);
+    format::MaterialScattering coated;
+    coated.Model = format::MaterialModel::CoatedDiffuse;
+    CHECK(format::SupportsFixedDimensionReflection(coated, program) == false);
     CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::Program) == format::VERSION_11);
     CHECK(format::IsSupportedVersion(format::VERSION_11) == true);
     // Its scattering fields keep their defaults, so equal programs cook to equal bytes.
@@ -189,7 +195,7 @@ TEST_CASE("Closure-program materials are stored but not yet evaluated", "[scene_
     scattering = {};
     scattering.Model = format::MaterialModel::Program;
     scattering.CoatingThickness = 1;
-    CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
 }
 
 TEST_CASE("Triangle bake charts are deterministic, guttered and capacity bounded", "[scene_format]")

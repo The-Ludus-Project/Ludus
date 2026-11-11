@@ -6,6 +6,12 @@
 #include <QFile>
 #include <QFileInfo>
 
+#if defined(Q_OS_WIN)
+#    include <QUuid>
+
+#    include <windows.h>
+#endif
+
 namespace ludus::editor
 {
 namespace
@@ -13,6 +19,15 @@ namespace
 constexpr foundation::int32 POLL_MILLISECONDS = 10;
 constexpr foundation::int32 MAX_START_POLLS = 300;
 constexpr foundation::int32 STOP_MILLISECONDS = 300;
+
+[[nodiscard]] bool IsEndpointReady(const QString& endpoint)
+{
+#if defined(Q_OS_WIN)
+    return WaitNamedPipeW(reinterpret_cast<const wchar_t*>(endpoint.utf16()), NMPWAIT_NOWAIT) != FALSE;
+#else
+    return QFileInfo::exists(endpoint);
+#endif
+}
 } // namespace
 RenderGraphWorker::RenderGraphWorker(QObject* parentOrNull)
     : QObject(parentOrNull), mDirectory(QDir::temp().filePath(QStringLiteral("ludus-rg-XXXXXX")))
@@ -47,26 +62,34 @@ QString RenderGraphWorker::Prepare()
     {
         return {};
     }
-    if (mEndpoint.isEmpty() == false && mProcess.state() == QProcess::Running && QFileInfo::exists(mEndpoint) == true)
+    if (mProcess.state() != QProcess::NotRunning)
     {
-        mState = RenderGraphWorkerState::Ready;
-        return mEndpoint;
+        return mState == RenderGraphWorkerState::Ready ? mEndpoint : QString{};
     }
     mState = RenderGraphWorkerState::Stopped;
     mError.clear();
     mEndpoint.clear();
     const QString executable = QString::fromUtf8(shader_reload_paths::WORKER_EXECUTABLE);
-    if (mDirectory.isValid() == false || QFileInfo(executable).isExecutable() == false)
+    if (QFileInfo(executable).isExecutable() == false)
     {
         mState = RenderGraphWorkerState::Failed;
         mError = QStringLiteral("The shader compiler worker is unavailable. Rerun editor setup with 3D preview.");
         return {};
     }
-    if (mProcess.state() == QProcess::NotRunning)
+#if defined(Q_OS_WIN)
+    // The worker uses a unique local named pipe rather than a filesystem socket.
+    mEndpoint = QStringLiteral("\\\\.\\pipe\\ludus-rg-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+#else
+    if (mDirectory.isValid() == false)
     {
-        static_cast<void>(QFile::remove(mDirectory.filePath(QStringLiteral("compiler.sock"))));
+        mState = RenderGraphWorkerState::Failed;
+        mError =
+            QStringLiteral("The shader compiler needs a writable temporary directory. Check the editor's temp folder.");
+        return {};
     }
     mEndpoint = mDirectory.filePath(QStringLiteral("compiler.sock"));
+    static_cast<void>(QFile::remove(mEndpoint));
+#endif
     mPolls = 0;
     mState = RenderGraphWorkerState::Starting;
     // The worker exits with the editor, even when the editor itself is killed mid-compile.
@@ -84,7 +107,7 @@ RenderGraphWorkerState RenderGraphWorker::GetState() const noexcept
 }
 void RenderGraphWorker::poll()
 {
-    if (mProcess.state() == QProcess::Running && QFileInfo::exists(mEndpoint) == true)
+    if (mProcess.state() == QProcess::Running && IsEndpointReady(mEndpoint) == true)
     {
         mPoll.stop();
         mState = RenderGraphWorkerState::Ready;
@@ -94,7 +117,15 @@ void RenderGraphWorker::poll()
     {
         mPoll.stop();
         mState = RenderGraphWorkerState::Failed;
-        mError = QStringLiteral("The shader compiler worker could not start: %1").arg(mProcess.errorString());
+        if (mProcess.state() != QProcess::NotRunning)
+        {
+            mProcess.kill();
+            mError = QStringLiteral("The shader compiler worker did not open its endpoint. Retry Build & Preview.");
+        }
+        else
+        {
+            mError = QStringLiteral("The shader compiler worker could not start: %1").arg(mProcess.errorString());
+        }
         Q_EMIT Failed();
     }
 }

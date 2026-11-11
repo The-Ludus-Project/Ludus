@@ -1,4 +1,5 @@
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
@@ -613,4 +614,321 @@ TEST_CASE("Project BRDF samples the authored powers and full mixture density",
                 rhi::RasterStatus::Ready);
         CHECK(math::Distance(reversed.Value, sample.Evaluation.Value) < 1e-6F);
     }
+}
+
+namespace
+{
+namespace program_format = ludus::content::scene_format;
+using program_format::MaterialLobeOperation;
+using program_format::MaterialProgram;
+using program_format::MaterialProgramInput;
+using program_format::MaterialProgramOpcode;
+
+/// Append one instruction writing register destination.
+void AddInstruction(MaterialProgram& inoutProgram,
+                    MaterialProgramOpcode opcode,
+                    uint8 destination,
+                    uint8 operandA,
+                    uint8 operandB = 0,
+                    uint8 operandC = 0)
+{
+    inoutProgram.Instructions[inoutProgram.InstructionCount] =
+    {
+        .Opcode = opcode,
+        .Destination = destination,
+        .OperandA = operandA,
+        .OperandB = operandB,
+        .OperandC = operandC,
+    };
+    ++inoutProgram.InstructionCount;
+}
+/// Load an RGB constant into register destination.
+void AddConstant(MaterialProgram& inoutProgram, uint8 destination, math::Vector3 value)
+{
+    inoutProgram.Constants[inoutProgram.ConstantCount] = {{value.X, value.Y, value.Z, 0}};
+    AddInstruction(inoutProgram,
+                   MaterialProgramOpcode::Constant,
+                   destination,
+                   static_cast<uint8>(inoutProgram.ConstantCount));
+    ++inoutProgram.ConstantCount;
+}
+void AddLobe(MaterialProgram& inoutProgram, program_format::MaterialProgramLobe lobe)
+{
+    inoutProgram.Lobes[inoutProgram.LobeCount] = lobe;
+    ++inoutProgram.LobeCount;
+}
+/// The built-in Mix as a program: diffuse weighted by (1 - metallic) * base colour, and a conductor
+/// weighted by metallic with roughness 0.5, so alpha 0.25.
+MaterialProgram MakeMixProgram(math::Vector3 eta, math::Vector3 k)
+{
+    MaterialProgram program;
+    AddInstruction(program, MaterialProgramOpcode::SurfaceInput, 0, static_cast<uint8>(MaterialProgramInput::Metallic));
+    AddInstruction(program, MaterialProgramOpcode::OneMinus, 1, 0);
+    AddInstruction(program,
+                   MaterialProgramOpcode::SurfaceInput,
+                   2,
+                   static_cast<uint8>(MaterialProgramInput::BaseColor));
+    AddInstruction(program, MaterialProgramOpcode::Multiply, 3, 1, 2);
+    AddConstant(program, 4, {0.5F, 0.5F, 0.5F});
+    AddLobe(program,
+            {
+                .Operation = MaterialLobeOperation::Diffuse,
+                .WeightRegister = 3,
+                .RoughnessRegister = program_format::NO_MATERIAL_PROGRAM_REGISTER,
+            });
+    AddLobe(program,
+            {
+                .Operation = MaterialLobeOperation::Conductor,
+                .WeightRegister = 0,
+                .RoughnessRegister = 4,
+                .Eta = {{eta.X, eta.Y, eta.Z}},
+                .K = {{k.X, k.Y, k.Z}},
+            });
+    return program;
+}
+/// Directions over the upper hemisphere, including grazing ones.
+math::Vector3 MakeHemisphereDirection(float32 cosine, float32 azimuth)
+{
+    const float32 sine = math::Sqrt(1 - cosine * cosine);
+    return {sine * math::Cos(azimuth), sine * math::Sin(azimuth), cosine};
+}
+} // namespace
+
+TEST_CASE("Closure programs reproduce the built-in Mix and project BRDF", "[renderer][rt1][materials][program]")
+{
+    const math::Vector3 normalWorld{0, 0, 1};
+    const math::Vector3 eta{0.7F, 0.8F, 0.9F};
+    const math::Vector3 k{3, 4, 5};
+    const MaterialProgram mixProgram = MakeMixProgram(eta, k);
+    REQUIRE(program_format::IsMaterialProgramValid(mixProgram) == true);
+    rr::ReferenceBsdf mixed;
+    mixed.Scattering.Model = program_format::MaterialModel::DiffuseConductorMix;
+    mixed.Scattering.AlphaU = 0.25F;
+    mixed.Scattering.AlphaV = 0.25F;
+    mixed.Scattering.Eta = {{eta.X, eta.Y, eta.Z}};
+    mixed.Scattering.K = {{k.X, k.Y, k.Z}};
+    mixed.Metallic = 0.4F;
+    rr::ReferenceBsdf lowered = mixed;
+    lowered.Scattering = {};
+    lowered.Scattering.Model = program_format::MaterialModel::Program;
+    lowered.ProgramOrNull = &mixProgram;
+    // Selection uses the mean weight, which equals the Mix's conductor probability for a white base,
+    // so value and density both match; a tinted base keeps the value but samples differently.
+    for (const math::Vector3 baseColor : {math::Vector3{1, 1, 1}, math::Vector3{0.2F, 0.4F, 0.8F}})
+    {
+        mixed.BaseColor = baseColor;
+        lowered.BaseColor = baseColor;
+        const bool isWhite = baseColor.X == 1;
+        for (const float32 viewCosine : {0.95F, 0.4F, 0.05F})
+        {
+            const math::Vector3 viewWorld = MakeHemisphereDirection(viewCosine, 0.3F);
+            for (const float32 lightCosine : {0.9F, 0.5F, 0.1F})
+            {
+                for (const float32 azimuth : {0.0F, 1.5F, 3.0F})
+                {
+                    const math::Vector3 lightWorld = MakeHemisphereDirection(lightCosine, azimuth);
+                    rr::ReferenceBsdfEvaluation expected;
+                    rr::ReferenceBsdfEvaluation actual;
+                    REQUIRE(rr::EvaluateReferenceBsdf(mixed, normalWorld, viewWorld, lightWorld, expected) ==
+                            rhi::RasterStatus::Ready);
+                    REQUIRE(rr::EvaluateReferenceBsdf(lowered, normalWorld, viewWorld, lightWorld, actual) ==
+                            rhi::RasterStatus::Ready);
+                    CHECK(actual.Value.X == Catch::Approx(expected.Value.X).epsilon(1e-5));
+                    CHECK(actual.Value.Y == Catch::Approx(expected.Value.Y).epsilon(1e-5));
+                    CHECK(actual.Value.Z == Catch::Approx(expected.Value.Z).epsilon(1e-5));
+                    if (isWhite == true)
+                    {
+                        CHECK(actual.Pdf == Catch::Approx(expected.Pdf).epsilon(1e-5));
+                    }
+                }
+            }
+        }
+    }
+
+    // A two-lobe project BRDF: weights 0.25 and 0.75 of the base colour, powers 12 and 4.
+    MaterialProgram brdfProgram;
+    AddInstruction(brdfProgram,
+                   MaterialProgramOpcode::SurfaceInput,
+                   0,
+                   static_cast<uint8>(MaterialProgramInput::BaseColor));
+    AddConstant(brdfProgram, 1, {0.25F, 0.25F, 0.25F});
+    AddConstant(brdfProgram, 2, {0.75F, 0.75F, 0.75F});
+    AddInstruction(brdfProgram, MaterialProgramOpcode::Multiply, 3, 0, 1);
+    AddInstruction(brdfProgram, MaterialProgramOpcode::Multiply, 4, 0, 2);
+    AddInstruction(brdfProgram,
+                   MaterialProgramOpcode::SurfaceInput,
+                   5,
+                   static_cast<uint8>(MaterialProgramInput::Roughness));
+    AddLobe(brdfProgram,
+            {
+                .Operation = MaterialLobeOperation::CosinePower,
+                .WeightRegister = 3,
+                .RoughnessRegister = 5,
+                .Power = 12,
+            });
+    AddLobe(brdfProgram,
+            {
+                .Operation = MaterialLobeOperation::CosinePower,
+                .WeightRegister = 4,
+                .RoughnessRegister = 5,
+                .Power = 4,
+            });
+    REQUIRE(program_format::IsMaterialProgramValid(brdfProgram) == true);
+    rr::ReferenceBsdf brdf;
+    brdf.Scattering.Model = program_format::MaterialModel::ProjectBrdf;
+    brdf.Scattering.Eta = {{0.25F, 0.75F, 0}};
+    brdf.Scattering.K = {{12, 4, 0}};
+    brdf.Scattering.CoatingThickness = 1;
+    brdf.BaseColor = {0.2F, 0.4F, 0.8F};
+    brdf.Roughness = 0.3F;
+    rr::ReferenceBsdf brdfLowered = brdf;
+    brdfLowered.Scattering = {};
+    brdfLowered.Scattering.Model = program_format::MaterialModel::Program;
+    brdfLowered.ProgramOrNull = &brdfProgram;
+    for (const float32 viewCosine : {0.95F, 0.4F})
+    {
+        const math::Vector3 viewWorld = MakeHemisphereDirection(viewCosine, 0.3F);
+        for (const float32 lightCosine : {0.9F, 0.5F, 0.1F})
+        {
+            const math::Vector3 lightWorld = MakeHemisphereDirection(lightCosine, 2.0F);
+            rr::ReferenceBsdfEvaluation expected;
+            rr::ReferenceBsdfEvaluation actual;
+            REQUIRE(rr::EvaluateReferenceBsdf(brdf, normalWorld, viewWorld, lightWorld, expected) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(brdfLowered, normalWorld, viewWorld, lightWorld, actual) ==
+                    rhi::RasterStatus::Ready);
+            CHECK(math::Distance(actual.Value, expected.Value) < 1e-5F * (1 + math::Length(expected.Value)));
+            CHECK(actual.Pdf == Catch::Approx(expected.Pdf).epsilon(1e-5));
+        }
+    }
+}
+
+TEST_CASE("Closure-program sampling matches its density, energy and reciprocity", "[renderer][rt1][materials][program]")
+{
+    // Diffuse, conductor and cosine-power lobes whose weights come from the surface inputs.
+    MaterialProgram program = MakeMixProgram({0.2F, 0.9F, 1.1F}, {3.9F, 2.4F, 2.2F});
+    AddInstruction(program, MaterialProgramOpcode::Clamp, 5, 1);
+    AddConstant(program, 6, {0.3F, 0.2F, 0.1F});
+    AddInstruction(program, MaterialProgramOpcode::Lerp, 7, 6, 5, 0);
+    AddLobe(program,
+            {
+                .Operation = MaterialLobeOperation::CosinePower,
+                .WeightRegister = 7,
+                .RoughnessRegister = 4,
+                .Power = 16,
+            });
+    REQUIRE(program_format::IsMaterialProgramValid(program) == true);
+    rr::ReferenceBsdf material;
+    material.Scattering.Model = program_format::MaterialModel::Program;
+    material.ProgramOrNull = &program;
+    material.BaseColor = {0.6F, 0.3F, 0.1F};
+    material.Metallic = 0.35F;
+    material.Roughness = 0.4F;
+    constexpr usize SIDE = 96;
+    const math::Vector3 normalWorld{0, 0, 1};
+    for (const float32 viewCosine : {1.0F, 0.3F})
+    {
+        const math::Vector3 viewWorld = MakeHemisphereDirection(viewCosine, 0);
+        float64 densityIntegral = 0;
+        float64 energyIntegral = 0;
+        float64 sampledEnergy = 0;
+        usize accepted = 0;
+        for (usize y = 0; y < SIDE; ++y)
+        {
+            const float32 cosine = (static_cast<float32>(y) + 0.5F) / static_cast<float32>(SIDE);
+            for (usize x = 0; x < SIDE; ++x)
+            {
+                const float32 azimuthSample = (static_cast<float32>(x) + 0.5F) / static_cast<float32>(SIDE);
+                const math::Vector3 lightWorld = MakeHemisphereDirection(cosine, math::kTauF * azimuthSample);
+                rr::ReferenceBsdfEvaluation evaluated;
+                REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, lightWorld, evaluated) ==
+                        rhi::RasterStatus::Ready);
+                densityIntegral += static_cast<float64>(evaluated.Pdf) * math::kTau;
+                energyIntegral += static_cast<float64>(evaluated.Value.X * cosine) * math::kTau;
+                rr::ReferenceBsdfEvaluation reversed;
+                REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, lightWorld, viewWorld, reversed) ==
+                        rhi::RasterStatus::Ready);
+                CHECK(math::Distance(reversed.Value, evaluated.Value) <= 1e-5F * (1 + math::Length(evaluated.Value)));
+                // A lattice offset decorrelates the lobe selector from both direction values.
+                constexpr usize SELECTOR_X_STRIDE = 37;
+                constexpr usize SELECTOR_Y_STRIDE = 11;
+                const float32 selector =
+                    (static_cast<float32>((x * SELECTOR_X_STRIDE + y * SELECTOR_Y_STRIDE) % SIDE) + 0.5F) /
+                    static_cast<float32>(SIDE);
+                rr::ReferenceBsdfSample sampled;
+                REQUIRE(rr::SampleReferenceBsdf(material,
+                                                normalWorld,
+                                                viewWorld,
+                                                {selector, cosine, azimuthSample},
+                                                sampled) == rhi::RasterStatus::Ready);
+                if (sampled.Accepted == true)
+                {
+                    ++accepted;
+                    rr::ReferenceBsdfEvaluation matched;
+                    REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, sampled.Direction, matched) ==
+                            rhi::RasterStatus::Ready);
+                    CHECK(matched.Pdf == sampled.Evaluation.Pdf);
+                    CHECK(sampled.MisPdf == matched.Pdf);
+                    sampledEnergy += static_cast<float64>(sampled.Weight.X);
+                }
+            }
+        }
+        const float64 sampleCount = static_cast<float64>(SIDE * SIDE);
+        // The density integrates to the accepted fraction; the conductor's null proposals keep their mass.
+        CHECK(math::Abs(densityIntegral / sampleCount - static_cast<float64>(accepted) / sampleCount) < 0.01);
+        CHECK(math::Abs(energyIntegral / sampleCount - sampledEnergy / sampleCount) < 0.02);
+    }
+}
+
+TEST_CASE("Closure programs reject a missing program and stay finite", "[renderer][rt1][materials][program]")
+{
+    const math::Vector3 normalWorld{0, 0, 1};
+    const math::Vector3 viewWorld = MakeHemisphereDirection(0.8F, 0);
+    const math::Vector3 lightWorld = MakeHemisphereDirection(0.6F, 2);
+    rr::ReferenceBsdf material;
+    material.Scattering.Model = program_format::MaterialModel::Program;
+    rr::ReferenceBsdfEvaluation evaluation;
+    CHECK(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, lightWorld, evaluation) ==
+          rhi::RasterStatus::InvalidDescription);
+    MaterialProgram invalid = MakeMixProgram({1, 1, 1}, {1, 1, 1});
+    invalid.Lobes[0].WeightRegister = program_format::MAX_MATERIAL_PROGRAM_REGISTERS;
+    material.ProgramOrNull = &invalid;
+    CHECK(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, lightWorld, evaluation) ==
+          rhi::RasterStatus::InvalidDescription);
+
+    // Products of large constants clamp at the register limit instead of overflowing.
+    MaterialProgram large;
+    AddConstant(large, 0, {10000, 10000, 10000});
+    AddInstruction(large, MaterialProgramOpcode::Multiply, 1, 0, 0);
+    AddInstruction(large, MaterialProgramOpcode::Multiply, 1, 1, 1);
+    AddLobe(large,
+            {
+                .Operation = MaterialLobeOperation::Diffuse,
+                .WeightRegister = 1,
+                .RoughnessRegister = program_format::NO_MATERIAL_PROGRAM_REGISTER,
+            });
+    REQUIRE(program_format::IsMaterialProgramValid(large) == true);
+    material.ProgramOrNull = &large;
+    REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, lightWorld, evaluation) ==
+            rhi::RasterStatus::Ready);
+    CHECK(evaluation.Value.X == Catch::Approx(10000 / math::kPiF));
+
+    // Zero weights make a black surface whose proposals are ordinary null samples.
+    MaterialProgram black;
+    AddConstant(black, 0, {-1, 0, -2});
+    AddLobe(black,
+            {
+                .Operation = MaterialLobeOperation::Diffuse,
+                .WeightRegister = 0,
+                .RoughnessRegister = program_format::NO_MATERIAL_PROGRAM_REGISTER,
+            });
+    material.ProgramOrNull = &black;
+    REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, lightWorld, evaluation) ==
+            rhi::RasterStatus::Ready);
+    CHECK(evaluation.Value == math::Vector3{});
+    CHECK(evaluation.Pdf == 0);
+    rr::ReferenceBsdfSample sample;
+    REQUIRE(rr::SampleReferenceBsdf(material, normalWorld, viewWorld, {0.5F, 0.5F, 0.5F}, sample) ==
+            rhi::RasterStatus::Ready);
+    CHECK(sample.Accepted == false);
 }

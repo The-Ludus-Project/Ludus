@@ -25,7 +25,12 @@
 
 #include <cstdlib>
 #include <string_view>
-#include <unistd.h>
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <windows.h>
+#    undef CreateWindow
+#else
+#    include <unistd.h>
+#endif
 
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
@@ -40,11 +45,29 @@ constexpr int32 EXIT_FRAME = 4;
 constexpr int32 EXIT_STATISTICS = 5;
 constexpr uint64 NANOSECONDS_PER_SECOND = 1'000'000'000;
 constexpr uint64 RUN_DEADLINE_NANOSECONDS = 60 * NANOSECONDS_PER_SECOND;
+#if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
 constexpr uint32 IDLE_MICROSECONDS = 500;
+#endif
+
+void WaitForNextFrame() noexcept
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    ::Sleep(1);
+#else
+    static_cast<void>(::usleep(IDLE_MICROSECONDS));
+#endif
+}
 
 bool WriteStatistics(const hosted_test::ProducerStatistics& statistics)
 {
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    DWORD written = 0;
+    return ::WriteFile(::GetStdHandle(STD_OUTPUT_HANDLE), &statistics, sizeof(statistics), &written, nullptr) !=
+               FALSE &&
+           written == sizeof(statistics);
+#else
     return ::write(STDOUT_FILENO, &statistics, sizeof(statistics)) == static_cast<ssize_t>(sizeof(statistics));
+#endif
 }
 
 int32 RunForged(platform::Window& inoutWindow)
@@ -61,7 +84,12 @@ int32 RunForged(platform::Window& inoutWindow)
     for (usize i = 0; i < images.Handles.GetSize(); ++i)
     {
         // Ordinary open files stand in for exported memory of another adapter.
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+        images.Handles[i] =
+            platform::HostedImageHandle::FromWin32Handle(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
+#else
         images.Handles[i] = platform::HostedImageHandle::FromFileDescriptor(::dup(STDERR_FILENO));
+#endif
         images.AllocationSizes[i] = hosted_test::FORGED_ALLOCATION_BYTES;
     }
     images.DeviceUuid.Fill(hosted_test::FORGED_UUID_BYTE);
@@ -72,7 +100,7 @@ int32 RunForged(platform::Window& inoutWindow)
            time::Now().Nanoseconds - start.Nanoseconds < RUN_DEADLINE_NANOSECONDS)
     {
         status = channelOrNull->PublishImages(images);
-        static_cast<void>(::usleep(IDLE_MICROSECONDS));
+        WaitForNextFrame();
     }
     if (status != platform::HostedSurfaceStatus::Ok)
     {
@@ -81,7 +109,7 @@ int32 RunForged(platform::Window& inoutWindow)
     while (inoutWindow.HandleEvent({}) == true &&
            time::Now().Nanoseconds - start.Nanoseconds < RUN_DEADLINE_NANOSECONDS)
     {
-        static_cast<void>(::usleep(IDLE_MICROSECONDS));
+        WaitForNextFrame();
     }
     return WriteStatistics({}) == true ? 0 : EXIT_STATISTICS;
 }
@@ -139,7 +167,7 @@ int32 RunRender(platform::Window& inoutWindow)
             exitCode = EXIT_FRAME;
             break;
         }
-        static_cast<void>(::usleep(IDLE_MICROSECONDS));
+        WaitForNextFrame();
     }
     static_cast<void>(rhi::DestroyDevice(device));
     if (WriteStatistics(statistics) == false)

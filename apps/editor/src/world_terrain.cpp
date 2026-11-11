@@ -3,6 +3,7 @@
 #include "internal/render_scene.h"
 #include "internal/world_document.h"
 
+#include <ludus/content/terrain/terrain_noise.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -46,11 +47,7 @@ constexpr QLatin1StringView RAISE_LOWER_KIND("RaiseLower");
 constexpr QLatin1StringView SMOOTH_KIND("Smooth");
 constexpr QLatin1StringView HEIGHTMAP_SHAPE("Heightmap");
 constexpr uint32 TERRAIN_RANDOM_DOMAIN = 1;
-constexpr uint32 TERRAIN_OCTAVES = 3;
 constexpr uint32 INDICES_PER_CELL = 6;
-constexpr uint32 COORDINATE_BITS = 32;
-/// V1 lattice addresses use signed 32-bit coordinates and sample the next lattice point too.
-constexpr float64 MAX_LATTICE_POSITION = 2147483646;
 struct TerrainStroke final
 {
     QList<math::Vector2> PointsMesh;
@@ -318,65 +315,6 @@ void ApplyTerrainStrokes(const QList<TerrainStroke>& strokes,
     }
 }
 
-struct TerrainShape final
-{
-    float64 Minimum = 0;
-    float64 Maximum = 0;
-    float64 FeatureSize = 1;
-    float64 Roughness = 0;
-    bool IsFlat = false;
-    bool IsRidged = false;
-};
-
-// Pack the two signed lattice coordinates as their unsigned bit patterns.
-// The octave gets its own address, so resolution and traversal never change a sample.
-float64 ComputeGradient(math::RandomKey key, uint32 octave, int32 x, int32 z, float64 offsetX, float64 offsetZ)
-{
-    const uint64 scope = (static_cast<uint64>(static_cast<uint32>(x)) << COORDINATE_BITS) | static_cast<uint32>(z);
-    const uint32 gradient = math::SampleUInt32(key, { .Scope = scope, .Event = octave });
-    return ((gradient & 1U) == 0 ? offsetX : -offsetX) + ((gradient & 2U) == 0 ? offsetZ : -offsetZ);
-}
-
-// This bounded editor recipe uses the global lattice and detail octaves from
-// docs/architecture/terrain-generation.md. The lattice is independent of the mesh grid.
-float64 SampleTerrainNoise(math::RandomKey key, uint32 octave, float64 positionX, float64 positionZ)
-{
-    const int32 x = static_cast<int32>(math::Floor(positionX));
-    const int32 z = static_cast<int32>(math::Floor(positionZ));
-    const float64 offsetX = positionX - x;
-    const float64 offsetZ = positionZ - z;
-    const float64 fadeX = math::SmoothStep01(offsetX);
-    const float64 fadeZ = math::SmoothStep01(offsetZ);
-    const float64 near = math::Lerp(ComputeGradient(key, octave, x, z, offsetX, offsetZ),
-                                    ComputeGradient(key, octave, x + 1, z, offsetX - 1, offsetZ),
-                                    fadeX);
-    const float64 far = math::Lerp(ComputeGradient(key, octave, x, z + 1, offsetX, offsetZ - 1),
-                                   ComputeGradient(key, octave, x + 1, z + 1, offsetX - 1, offsetZ - 1),
-                                   fadeX);
-    return math::Clamp(math::Lerp(near, far, fadeZ), -1.0, 1.0);
-}
-
-float64 ComputeElevation(const TerrainShape& shape, math::RandomKey key, float64 positionX, float64 positionZ)
-{
-    if (shape.IsFlat == true || shape.Minimum == shape.Maximum)
-    {
-        return shape.Minimum;
-    }
-    float64 frequency = 1 / shape.FeatureSize;
-    float64 amplitude = 1;
-    float64 totalWeight = 0;
-    float64 elevation = 0;
-    for (uint32 octave = 0; octave < TERRAIN_OCTAVES; ++octave)
-    {
-        const float64 noise = SampleTerrainNoise(key, octave, positionX * frequency, positionZ * frequency);
-        elevation += amplitude * (shape.IsRidged == true ? 1 - math::Abs(noise) : (noise + 1) * 0.5);
-        totalWeight += amplitude;
-        amplitude *= shape.Roughness;
-        frequency *= 2;
-    }
-    return math::Lerp(shape.Minimum, shape.Maximum, elevation / totalWeight);
-}
-
 void BuildTerrainNormals(uint32 columns, uint32 rows, PreviewMesh& inoutMesh)
 {
     for (uint32 z = 0; z < rows; ++z)
@@ -609,23 +547,23 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
     const float64 width = recipe.value(QStringLiteral("width")).toDouble();
     const float64 depth = recipe.value(QStringLiteral("depth")).toDouble();
     const QString preset = recipe.value(QStringLiteral("shape")).toString();
-    const TerrainShape shape
+    const content::terrain::TerrainNoiseShape shape
     {
-        .Minimum = recipe.value(QStringLiteral("minimumElevation")).toDouble(),
-        .Maximum = recipe.value(QStringLiteral("maximumElevation")).toDouble(),
-        .FeatureSize = recipe.value(QStringLiteral("featureSize")).toDouble(),
+        .MinimumElevationMetres = recipe.value(QStringLiteral("minimumElevation")).toDouble(),
+        .MaximumElevationMetres = recipe.value(QStringLiteral("maximumElevation")).toDouble(),
+        .FeatureSizeMetres = recipe.value(QStringLiteral("featureSize")).toDouble(),
         .Roughness = recipe.value(QStringLiteral("roughness")).toDouble(),
-        .IsFlat = preset == QStringLiteral("Flat"),
-        .IsRidged = preset == QStringLiteral("Ridges"),
+        .Profile = preset == QStringLiteral("Flat")     ? content::terrain::TerrainNoiseProfile::Flat
+                   : preset == QStringLiteral("Ridges") ? content::terrain::TerrainNoiseProfile::Ridges
+                                                        : content::terrain::TerrainNoiseProfile::Hills,
     };
     if (IsGridAxisAdmitted(samples) == false)
     {
         outError = QStringLiteral("Choose Samples per side within the supported terrain mesh size.");
         return false;
     }
-    constexpr uint32 HIGHEST_OCTAVE_MULTIPLIER = 1U << (TERRAIN_OCTAVES - 1);
-    if (width <= 0 || depth <= 0 || shape.Minimum > shape.Maximum || shape.FeatureSize <= 0 ||
-        math::Max(width, depth) * 0.5 / shape.FeatureSize * HIGHEST_OCTAVE_MULTIPLIER > MAX_LATTICE_POSITION)
+    if (width <= 0 || depth <= 0 ||
+        content::terrain::CanSampleTerrainNoise(shape, math::Max(width, depth) * 0.5) == false)
     {
         outError = QStringLiteral("Use positive terrain dimensions and increase Feature size for this extent.");
         return false;
@@ -662,11 +600,11 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
             const uint32 sourceX = payload.ShouldFlipX == true ? cellsX - x : x;
             const float64 elevation =
                 hasHeightmapSource == true
-                    ? math::Lerp(shape.Minimum,
-                                 shape.Maximum,
+                    ? math::Lerp(shape.MinimumElevationMetres,
+                                 shape.MaximumElevationMetres,
                                  static_cast<float64>(payload.Heights[sourceZ * columns + sourceX]) /
                                      HEIGHTMAP_SAMPLE_MAXIMUM)
-                    : ComputeElevation(shape, key, positionX, positionZ);
+                    : content::terrain::ComputeTerrainElevation(shape, key, positionX, positionZ);
             const math::Vector2 positionMesh{static_cast<float32>(positionX), static_cast<float32>(positionZ)};
             mesh.Positions.append({positionMesh.X, static_cast<float32>(elevation), positionMesh.Y});
             mesh.Uvs.append({static_cast<float32>(u), static_cast<float32>(v)});

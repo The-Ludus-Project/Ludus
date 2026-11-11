@@ -9,7 +9,7 @@ function(_ludus_render_graph_helper_files out)
     file(READ "${renderer_directory}/recipes.json" renderer_recipes)
     set(helper_files compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py
         recipes.json renderer_lit.slang renderer_environment_layout.h probe_volume_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang
-        renderer_surface_functions.slang material_scattering.slang coated_diffuse.slang dielectric.slang coated_diffuse_layout.h material.h scene_shader.slang stochastic_reuse.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
+        renderer_surface_functions.slang material_scattering.slang material_program.slang material_program.h coated_diffuse.slang dielectric.slang coated_diffuse_layout.h material.h scene_shader.slang stochastic_reuse.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
         ray_shader.luslh math.luslh scene_shader.luslh scene_payload.luslh
         wave_scene_layout.h wave_scene_queries.slang wave_connection_layout.h wave_connection.slang wave_reference_scene.slang elliptical_cone.slang
         ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_nodes.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h

@@ -5,6 +5,7 @@
 #include "internal/profile.h"
 #include "internal/spatial_upscale_backend.h"
 #include <cstring>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 namespace ludus::graphics::rhi::reference
 {
 void Reset() noexcept
@@ -226,19 +227,21 @@ RasterCapabilities RasterLimits() noexcept
             internal::GetResourceSizeLimit(usize{512} * 1024 * 1024),
             reference::HasLineFill};
 }
-RasterStatus
-RasterCreateBuffer(usize slot, const BufferDescription&, std::span<const uint8> bytes, uint32 request) noexcept
+RasterStatus RasterCreateBuffer(usize slot,
+                                const BufferDescription&,
+                                ludus::foundation::BorrowedView<const uint8> bytes,
+                                uint32 request) noexcept
 {
-    if (bytes.size() > internal::LIFETIME_TRANSFER_BYTES)
+    if (bytes.GetSize() > internal::LIFETIME_TRANSFER_BYTES)
     {
         return RasterStatus::OutOfMemory;
     }
-    if (reference::BufferBytes[slot].TryResize(bytes.size()) == false)
+    if (reference::BufferBytes[slot].TryResize(bytes.GetSize()) == false)
     {
         return RasterStatus::OutOfMemory;
     }
-    std::memcpy(reference::BufferBytes[slot].GetData(), bytes.data(), bytes.size());
-    reference::BufferSizes[slot] = bytes.size();
+    std::memcpy(reference::BufferBytes[slot].GetData(), bytes.GetDataOrNull(), bytes.GetSize());
+    reference::BufferSizes[slot] = bytes.GetSize();
     return Created(internal::RasterKind::Buffer, request);
 }
 RasterStatus
@@ -268,11 +271,12 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
             usize offset = 0;
             for (uint32 mip = 0; mip < info.MipLevels; ++mip)
             {
-                const auto rows = upload.Mips.empty() ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[mip];
+                const TextureMipUpload rows =
+                    upload.Mips.IsEmpty() == true ? TextureMipUpload{0, upload.RowPitch} : upload.Mips[mip];
                 for (uint32 row = 0; row < height; ++row)
                 {
                     std::memcpy(reference::TextureBytes[slot].GetData() + offset + usize{row} * width * 4,
-                                upload.Bytes.data() + rows.Offset + usize{row} * rows.RowPitch,
+                                upload.Bytes.GetDataOrNull() + rows.Offset + usize{row} * rows.RowPitch,
                                 usize{width} * 4);
                 }
                 offset += usize{width} * height * 4;

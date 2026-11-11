@@ -1,4 +1,5 @@
 """Read-only project SDK/tool selection for graph builds; no setup or downloads."""
+import os
 from pathlib import Path
 
 from .errors import ToolingError
@@ -9,7 +10,7 @@ from .shader_tools import REPAIR_MESSAGE, required_shader_tools, verify_translat
 
 
 def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compiler=None,
-                        validator=None, spirv_cross=None, store=None, assistance_only=False):
+                        validator=None, spirv_cross=None, dxc=None, store=None, assistance_only=False):
     """Resolve the current saved SDK and prepared tools for one immutable build.
 
     Explicit tool paths override detection for this operation. Project SDK
@@ -78,7 +79,9 @@ def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compile
         except ToolingError as error:
             raise ToolingError(error.code, REPAIR_MESSAGE) from error
 
-    compiler = Path(compiler) if compiler else configured_tool("LUDUS_SLANG_COMPILER", lambda: managed_tool("slang/bin/slangc"))
+    compiler_name = "slangc.exe" if os.name == "nt" else "slangc"
+    compiler = Path(compiler) if compiler else configured_tool("LUDUS_SLANG_COMPILER",
+                                                              lambda: managed_tool(f"slang/bin/{compiler_name}"))
     options = {"helper": helper, "compiler": prepared_executable(compiler)}
     if validator or "validator" in required:
         def managed_validator():
@@ -91,7 +94,16 @@ def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compile
             "LUDUS_SPIRV_CROSS", lambda: managed_tool("spirv-cross/bin/spirv-cross")))
         verify_translator(options["spirv_cross"], helper / "spirv_cross_toolchain.json")
 
-    targets = {path: path.resolve() for path in (resolved.resolution.prefix, *options.values())}
+    if dxc or "dxc" in required:
+        dxc = Path(dxc) if dxc else configured_tool("LUDUS_DXC_DIRECTORY", lambda: managed_tool("dxc"))
+        dxc_libraries = tuple(dxc / name for name in ("dxcompiler.dll", "dxil.dll"))
+        if not all(path.is_file() for path in dxc_libraries):
+            raise ToolingError("MissingTools", REPAIR_MESSAGE)
+        options["dxc"] = dxc
+    else:
+        dxc_libraries = ()
+
+    targets = {path: path.resolve() for path in (resolved.resolution.prefix, *options.values(), *dxc_libraries)}
     def check_unchanged():
         if snapshot() != before or any(path.resolve() != target for path, target in targets.items()):
             raise ToolingError("RenderGraphProjectChanged", "Project SDK or shader-tool selection changed during "

@@ -36,6 +36,8 @@ enum class HostedHandleKind : foundation::uint8
     /// Linux: an opaque file descriptor from `vkGetMemoryFdKHR`
     /// (`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`).
     OpaqueFileDescriptor = 2,
+    /// Windows: a Direct3D 12 shared resource NT handle, owned by this process.
+    Win32SharedResource = 3,
 };
 
 /// @brief Owning operating-system handle of one hosted image.
@@ -70,6 +72,16 @@ public:
     /// @param descriptor A descriptor owned by the caller; a negative value yields an empty handle.
     [[nodiscard]] static HostedImageHandle FromFileDescriptor(foundation::int32 descriptor) noexcept;
 
+    /// @brief Take ownership of a Windows NT shared resource handle.
+    /// @param handleOrNull A valid local handle or null. The owner closes it with CloseHandle on Windows.
+    [[nodiscard]] static HostedImageHandle FromWin32Handle(void* handleOrNull) noexcept;
+
+    /// Borrow the owned local Windows handle, or null.
+    [[nodiscard]] LUDUS_INLINE void* GetWin32Handle() const noexcept
+    {
+        return mWin32HandleOrNull;
+    }
+
     /// Kind of the owned handle; None when empty.
     [[nodiscard]] LUDUS_INLINE HostedHandleKind GetKind() const noexcept
     {
@@ -103,6 +115,7 @@ private:
     HostedHandleKind mKind = HostedHandleKind::None;
     foundation::uint32 mMachPort = 0;
     foundation::int32 mFileDescriptor = -1;
+    void* mWin32HandleOrNull = nullptr;
 };
 
 /// @brief Identity of the GPU adapter and driver that import a hosted surface.
@@ -114,9 +127,9 @@ private:
 /// has no adapter identity.
 struct HostedAdapterIdentity final
 {
-    /// `deviceUUID`: the physical device.
+    /// Vulkan device UUID, or the Direct3D 12 adapter LUID encoded little-endian and zero padded.
     foundation::StaticArray<foundation::uint8, HOSTED_ADAPTER_UUID_BYTES> DeviceUuid{};
-    /// `driverUUID`: the driver that exposes it.
+    /// Vulkan driver UUID. Zero for Direct3D 12.
     foundation::StaticArray<foundation::uint8, HOSTED_ADAPTER_UUID_BYTES> DriverUuid{};
 };
 
@@ -140,11 +153,11 @@ struct HostedSurfaceImages final
     foundation::StaticArray<foundation::uint64, HOSTED_SURFACE_IMAGE_COUNT> AllocationSizes{};
     /// Vulkan only: the producer's memory type index for every image. Zero on macOS.
     foundation::uint32 MemoryTypeIndex = 0;
-    /// Vulkan only: the producer's `VkPhysicalDeviceIDProperties::deviceUUID`. Zero on macOS.
+    /// Vulkan device UUID or Direct3D 12 adapter LUID, as in HostedAdapterIdentity. Zero on macOS.
     foundation::StaticArray<foundation::uint8, HOSTED_ADAPTER_UUID_BYTES> DeviceUuid{};
     /// Vulkan only: the producer's `VkPhysicalDeviceIDProperties::driverUUID`. Zero on macOS.
     foundation::StaticArray<foundation::uint8, HOSTED_ADAPTER_UUID_BYTES> DriverUuid{};
-    /// One owned sharing handle per image: Mach send rights on macOS, opaque fds on Linux.
+    /// One owned sharing handle per image. Windows uses NT shared resource handles.
     foundation::StaticArray<HostedImageHandle, HOSTED_SURFACE_IMAGE_COUNT> Handles{};
 };
 
@@ -215,7 +228,8 @@ public:
     ///
     /// On macOS the Mach send rights travel through the session's Mach rendezvous
     /// and the description over the socket; on Linux the file descriptors travel
-    /// with the description using `SCM_RIGHTS`.
+    /// with the description using `SCM_RIGHTS`. Windows retains the published handles
+    /// until the authenticated endpoint has duplicated and acknowledged them.
     /// @param inoutImages Generation to publish. On Ok its handles are consumed and
     /// left empty; on any other result they stay owned by the caller.
     /// @return Ok, Busy, Disconnected, InvalidArgument or Unavailable.
@@ -245,6 +259,7 @@ public:
     /// adapter with these UUIDs when it connects a device to the window. It is a preference,
     /// not a guarantee: without a matching adapter, RHI selects as usual and the consumer
     /// refuses the images.
+    /// Direct3D 12 uses the announced adapter LUID and fails device creation if it is unavailable.
     /// @param outAdapter The consumer's adapter; unchanged unless true is returned.
     /// @return true when the endpoint announced an adapter.
     [[nodiscard]] virtual bool TryGetConsumerAdapter(HostedAdapterIdentity& outAdapter) const noexcept = 0;

@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/measurement.h>
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/graphics/rhi/render.h>
@@ -11,7 +12,6 @@
 
 #include <cstdlib>
 #include <initializer_list>
-#include <span>
 #include <string_view>
 
 #import <AppKit/AppKit.h>
@@ -149,7 +149,7 @@ TEST_CASE("Metal verifies compiled stages and actual pipeline bindings", "[rhi][
     REQUIRE(rhi::CreatePipeline({vertex, fragment, uniform}, pipeline) == rhi::ResourceStatus::Ready);
     CHECK(rhi::Destroy(uniform) == rhi::ResourceStatus::InUse);
     const float32 color[] = {0.25F, 0.5F, 0.75F, 1};
-    const std::span<const uint8> bytes(reinterpret_cast<const uint8*>(color), sizeof(color));
+    const ludus::foundation::BorrowedView<const uint8> bytes(reinterpret_cast<const uint8*>(color), sizeof(color));
     REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
     CHECK(rhi::DrawFullscreen(pipeline) == rhi::ResourceStatus::InvalidState);
     REQUIRE(rhi::UpdateUniform(uniform, bytes) == rhi::ResourceStatus::Ready);

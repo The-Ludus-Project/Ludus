@@ -3,6 +3,7 @@
 #include "reference_raster.h"
 
 #include <ludus/foundation/base/compiler.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -144,7 +145,7 @@ struct GraphFixture final
         programs.ColorVertex.Artifact.Stage = rhi::ShaderStage::Vertex;
         programs.ColorVertex.Artifact.Wgsl = "flat vertex fixture";
         programs.ColorVertex.Artifact.WgslEntry = "VertexMain";
-        programs.ColorVertex.Inputs = Inputs.AsSpan();
+        programs.ColorVertex.Inputs = {Inputs.GetData(), Inputs.GetSize()};
         programs.ColorFragment.Artifact.Stage = rhi::ShaderStage::Fragment;
         programs.ColorFragment.Artifact.Wgsl = "flat fragment fixture";
         programs.ColorFragment.Artifact.WgslEntry = "FragmentMain";
@@ -159,16 +160,16 @@ struct GraphFixture final
         programs.MaskedDepthFragment.Artifact.Wgsl = "masked coverage fixture";
         if (IsBound == true)
         {
-            programs.ColorFragment.Bindings = MaterialBindings.AsSpan();
+            programs.ColorFragment.Bindings = {MaterialBindings.GetData(), MaterialBindings.GetSize()};
         }
         programs.CompositeVertex.Artifact.Stage = rhi::ShaderStage::Vertex;
         programs.CompositeVertex.Artifact.Wgsl = "composite vertex fixture";
         programs.CompositeVertex.Artifact.WgslEntry = "VertexMain";
-        programs.CompositeVertex.Inputs = CompositeInputs.AsSpan();
+        programs.CompositeVertex.Inputs = {CompositeInputs.GetData(), CompositeInputs.GetSize()};
         programs.CompositeFragment.Artifact.Stage = rhi::ShaderStage::Fragment;
         programs.CompositeFragment.Artifact.Wgsl = "composite fragment fixture";
         programs.CompositeFragment.Artifact.WgslEntry = "FragmentMain";
-        programs.CompositeFragment.Bindings = CompositeBindings.AsSpan();
+        programs.CompositeFragment.Bindings = {CompositeBindings.GetData(), CompositeBindings.GetSize()};
         return programs;
     }
     rhi::RasterStatus Initialize()

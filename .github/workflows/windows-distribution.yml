@@ -1,0 +1,111 @@
+name: Windows Release distribution
+
+# Candidate artifacts only. This lane neither signs nor publishes a release,
+# and does not replace D7 or the develop-to-main batch/promotion process.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-distribution.yml"
+      - "scripts/package-windows"
+      - "scripts/python/ludus_tools/windows_*.py"
+      - "scripts/python/test_windows_distribution.py"
+      - "cmake/LudusWindowsDistribution.cmake"
+      - "tests/sdk_consumer/windows/verify_distribution.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  documentation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r docs/wiki-requirements.txt
+      - run: python scripts/check-docs
+      - run: python -m mkdocs build --strict
+      - run: python scripts/build-api --bootstrap
+      - run: python scripts/check-wiki --documentation-only
+      - run: python scripts/package-docs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-documentation
+          path: out/ludus-docs-offline.zip
+          if-no-files-found: error
+
+  release:
+    needs: documentation
+    runs-on: windows-2022
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: "true"
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release-documentation
+          path: out/distribution-docs
+      - name: Select the pinned MSVC and Windows SDK
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw 'Install Visual Studio 2022 C++ Build Tools' }
+          $command = "`"$installation\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=14.44 -winsdk=10.0.26100.0 >nul && set"
+          $environment = & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned MSVC/Windows SDK unavailable' }
+          foreach ($line in $environment) {
+            if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCToolsVersion|VCToolsInstallDir|VSINSTALLDIR|VCINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UniversalCRTSdkDir|UCRTVersion)=(.*)$') {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+      - name: Install pinned build tools
+        run: |
+          $pins = Get-Content config/tool_versions.json | ConvertFrom-Json
+          python -m pip install "cmake==$($pins.windows_msvc_probe.cmake)" "ninja==$($pins.managed.ninja)"
+          if ($LASTEXITCODE -ne 0) { throw 'Host tools failed' }
+      - name: Verify archive guards and real MSVC symbol/relocation journey
+        run: |
+          $env:PYTHONPATH = 'scripts/python'
+          python -m unittest test_windows_distribution -v
+          if ($LASTEXITCODE -ne 0) { throw 'Distribution tests failed' }
+          python -O -m unittest test_windows_distribution -q
+          if ($LASTEXITCODE -ne 0) { throw 'Optimized acceptance guards failed' }
+      - name: Build and install the Release SDK closure
+        run: |
+          cmake --preset windows-msvc-visual-studio -B out/build/windows-distribution-sdk -DLUDUS_BUILD_TESTS=OFF -DLUDUS_BUILD_SMOKE_APP=OFF -DLUDUS_WARNINGS_AS_ERRORS=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Release SDK configure failed' }
+          cmake --build out/build/windows-distribution-sdk --config Release --target ludus_windows_sdk
+          if ($LASTEXITCODE -ne 0) { throw 'Release SDK build failed' }
+          cmake --install out/build/windows-distribution-sdk --config Release --prefix "$PWD/out/install/windows-release"
+          if ($LASTEXITCODE -ne 0) { throw 'Release SDK install failed' }
+      - name: Package and verify the installed SDK
+        run: |
+          $redist = Get-ChildItem "$env:VCINSTALLDIR/Redist/MSVC" -Filter VC_redist.x64.exe -Recurse | Select-Object -First 1
+          if (-not $redist) { throw 'Official VC Redistributable not found in the Visual Studio installation' }
+          if ((Get-AuthenticodeSignature $redist.FullName).Status -ne 'Valid') { throw 'VC Redistributable signature is invalid' }
+          python tests/sdk_consumer/windows/verify_distribution.py --sdk out/install/windows-release --docs out/distribution-docs/ludus-docs-offline.zip --output out/windows-distribution --redist $redist.FullName --redist-version $redist.VersionInfo.FileVersion
+          if ($LASTEXITCODE -ne 0) { throw 'SDK distribution verification failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-release-candidate
+          path: |
+            out/windows-distribution/
+            out/build/windows-distribution-sdk/CMakeCache.txt
+            out/build/windows-distribution-sdk/install_manifest.txt
+          if-no-files-found: error

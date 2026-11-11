@@ -141,7 +141,7 @@ TEST_CASE("D6c fragment stages read structured storage buffers while storage wri
     rhi::BufferHandle buffer;
     REQUIRE(rhi::CreateBuffer(device,
                               { .Role = rhi::BufferRole::Storage, .Size = bytes.GetSize() },
-                              bytes.AsSpan(),
+                              {bytes.GetData(), bytes.GetSize()},
                               buffer) == rhi::RasterStatus::Ready);
     const rhi::RasterBinding read
     {
@@ -178,7 +178,7 @@ TEST_CASE("D3a binding snapshots retain native buffers and descriptors within co
     rhi::BufferHandle buffer;
     REQUIRE(rhi::CreateBuffer(owner.Device,
                               { .Role = rhi::BufferRole::Uniform, .Size = bytes.GetSize() },
-                              bytes.AsSpan(),
+                              {bytes.GetData(), bytes.GetSize()},
                               buffer) == rhi::RasterStatus::Ready);
     const rhi::RasterBinding binding
     {
@@ -285,8 +285,8 @@ TEST_CASE("D3a uploads complete padded mip chains and retains sampled dependenci
     REQUIRE(rhi::CreateTexture(owner.Device,
                                description,
                                {
-                                   .Bytes = bytes.AsSpan(),
-                                   .Mips = mips.AsSpan(),
+                                   .Bytes = {bytes.GetData(), bytes.GetSize()},
+                                   .Mips = {mips.GetData(), mips.GetSize()},
                                },
                                texture) == rhi::RasterStatus::Pending);
     RequireReady(owner.Device, texture);
@@ -306,9 +306,11 @@ TEST_CASE("D3a uploads complete padded mip chains and retains sampled dependenci
         { .Binding = 2, .Sampler = sampler },
     }};
     rhi::BindingLayoutHandle layout;
-    REQUIRE(rhi::CreateBindingLayout(owner.Device, bindings.AsSpan(), layout) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingLayout(owner.Device, {bindings.GetData(), bindings.GetSize()}, layout) ==
+            rhi::RasterStatus::Ready);
     rhi::BindingSetHandle set;
-    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, resources.AsSpan(), set) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, {resources.GetData(), resources.GetSize()}, set) ==
+            rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, texture) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, view) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, sampler) == rhi::RasterStatus::Ready);
@@ -327,7 +329,7 @@ TEST_CASE("D3a shutdown safely drains destroyed pending creation uploads", "[rhi
         rhi::TextureHandle texture;
         REQUIRE(rhi::CreateTexture(owner.Device,
                                    { .Width = 1, .Height = 1 },
-                                   { .Bytes = bytes.AsSpan(), .RowPitch = TEXEL_BYTES },
+                                   { .Bytes = {bytes.GetData(), bytes.GetSize()}, .RowPitch = TEXEL_BYTES },
                                    texture) == rhi::RasterStatus::Pending);
         REQUIRE(rhi::Destroy(owner.Device, texture) == rhi::RasterStatus::Ready);
     }
@@ -361,13 +363,13 @@ TEST_CASE("D3a failed staging admission releases resource budget and preserves o
     rhi::TextureHandle texture;
     CHECK(rhi::CreateTexture(owner.Device,
                              { .Width = 1, .Height = 2 },
-                             { .Bytes = bytes.AsSpan(), .RowPitch = 4 },
+                             { .Bytes = {bytes.GetData(), bytes.GetSize()}, .RowPitch = 4 },
                              texture) == rhi::RasterStatus::CapacityExceeded);
     CHECK(rhi::GetStatus(owner.Device, texture) == rhi::RasterStatus::InvalidHandle);
     rhi::BufferHandle buffer;
     REQUIRE(rhi::CreateBuffer(owner.Device,
                               { .Role = rhi::BufferRole::Vertex, .Size = LOGICAL_BYTES },
-                              bytes.AsSpan(),
+                              {bytes.GetData(), bytes.GetSize()},
                               buffer) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, buffer) == rhi::RasterStatus::Ready);
 }

@@ -227,6 +227,29 @@ class GenerationPublishTests(unittest.TestCase):
             path.chmod(0o644); path.write_text(json.dumps(data))
             self.assertIsNone(play_session.read_manifest(legacy)["host_symbol_file"])
 
+    def test_windows_agility_payload_is_published_and_verified(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            module, _, _ = self._artifacts(root)
+            host = root / "host.exe"
+            host.write_bytes(b"host")
+            (root / "D3D12").mkdir()
+            arguments = dict(generations_root=root / "generations", module_artifact=module, host_artifact=host,
+                             symbol_artifact=None, manifest_fields=self._fields(), declared_source_inputs=[module])
+            with self.assertRaisesRegex(play_session.PublishError, "output is incomplete"):
+                play_session.publish_generation(**arguments)
+            for name in play_session.AGILITY_PAYLOADS:
+                (root / name).write_bytes(name.encode())
+            generation = play_session.publish_generation(**arguments)
+            manifest = play_session.read_manifest(generation)
+            for name in play_session.AGILITY_PAYLOADS:
+                self.assertEqual(manifest["files"][name], play_session.sha256_file(root / name))
+            changed = generation / play_session.AGILITY_PAYLOADS[0]
+            changed.chmod(0o644)
+            changed.write_bytes(b"changed")
+            with self.assertRaisesRegex(play_session.PublishError, "hash mismatch"):
+                play_session.read_manifest(generation)
+
     def test_darwin_rename_then_seal_and_failed_seal_cleanup(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

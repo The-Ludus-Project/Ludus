@@ -10,6 +10,7 @@
 #include "internal/ray_backend.h"
 #include "internal/resources.h"
 #include "internal/vma.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
@@ -1571,18 +1572,19 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
 {
     // Check the declared SPIR-V entry/stage before passing it to the driver.
     bool found = false;
-    for (usize offset = 5; offset < description.Spirv.size();)
+    for (usize offset = internal::SPIRV_HEADER_WORDS; offset < description.Spirv.GetSize();)
     {
         const uint32 word = description.Spirv[offset];
         const usize count = word >> 16;
-        if (count == 0 || count > description.Spirv.size() - offset)
+        if (count == 0 || count > description.Spirv.GetSize() - offset)
         {
             return ResourceFailure();
         }
         if ((word & 65535U) == 15 && count >= 4)
         {
-            const auto* name = reinterpret_cast<const char*>(description.Spirv.data() + offset + 3);
-            const usize capacity = (count - 3) * sizeof(uint32);
+            const char* name = reinterpret_cast<const char*>(description.Spirv.GetDataOrNull() + offset +
+                                                             internal::SPIRV_ENTRY_POINT_NAME_WORD_OFFSET);
+            const usize capacity = (count - internal::SPIRV_ENTRY_POINT_NAME_WORD_OFFSET) * sizeof(uint32);
             const usize length = description.SpirvEntry.size();
             const uint32 stage = description.Stage == ShaderStage::Vertex ? 0U : 4U;
             found = found || (description.Spirv[offset + 1] == stage && length < capacity && name[length] == '\0' &&
@@ -1600,8 +1602,8 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
     shader.Entry[description.SpirvEntry.size()] = '\0';
     VkShaderModuleCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    info.codeSize = description.Spirv.size_bytes();
-    info.pCode = description.Spirv.data();
+    info.codeSize = (description.Spirv.GetSize() * sizeof(uint32));
+    info.pCode = description.Spirv.GetDataOrNull();
     return Check(vkCreateShaderModule(gDevice, &info, nullptr, &shader.Module)) ? ResourceStatus::Ready
                                                                                 : ResourceFailure();
 }
@@ -1641,9 +1643,9 @@ ResourceStatus CreateUniform(usize slot, const UniformDescription& description, 
     }
     return ResourceStatus::Ready;
 }
-void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
+void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.data(), bytes.size());
+    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 void DestroyUniform(usize slot) noexcept
 {

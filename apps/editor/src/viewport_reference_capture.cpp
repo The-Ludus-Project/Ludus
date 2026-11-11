@@ -20,7 +20,7 @@
 
 #include <ludus/runtime/resources/scene.h>
 
-#if defined(LUDUS_EDITOR_GPU_PREVIEW) && defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_REFERENCE_COMPUTE)
 #    include "renderer_reference.h"
 #    include "renderer_reference_reduce.h"
 #endif
@@ -147,7 +147,7 @@ bool ResolveTileAndShader(rhi::DeviceHandle device,
     }
     if (traversal == renderer::ReferenceTraversal::GpuCompute)
     {
-#    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    if defined(LUDUS_EDITOR_REFERENCE_COMPUTE)
         rhi::ComputeCapabilities capabilities;
         if (rhi::GetComputeCapabilities(device, capabilities) != rhi::RasterStatus::Ready)
         {

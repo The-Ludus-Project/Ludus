@@ -63,6 +63,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QStringList>
@@ -2609,6 +2610,7 @@ void WorldWorkspace::RenderInspector()
                 });
                 rows->addRow(bake);
             }
+            configureProbeVolumeFields(*group, *rows, cid, attached);
         }
         if (component.value(QStringLiteral("required")).toBool())
         {
@@ -2870,6 +2872,129 @@ bool WorldWorkspace::readCoatingFields(QJsonObject& inoutScene, QString& outErro
     return true;
 }
 
+void WorldWorkspace::configureProbeVolumeFields(QGroupBox& inoutGroup,
+                                                QFormLayout& inoutRows,
+                                                const QString& cid,
+                                                const QJsonObject& components)
+{
+    QComboBox* layoutOrNull = qobject_cast<QComboBox*>(Fields_.value(FieldKey(cid, GetGiProbeLayoutKey())));
+    if (layoutOrNull == nullptr)
+    {
+        return;
+    }
+    const GiProbeLayout authoredLayout = ReadWorldGiProbeLayout(components);
+    {
+        // A volume saved before the layout existed keeps its counts; show that without marking an edit.
+        const QSignalBlocker blocker(layoutOrNull);
+        layoutOrNull->setCurrentIndex(layoutOrNull->findData(GetGiProbeLayoutWord(authoredLayout)));
+    }
+    QVector<QWidget*> countFields;
+    for (const QString& axis : {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")})
+    {
+        QWidget* fieldOrNull = Fields_.value(FieldKey(cid, QStringLiteral("count") + axis));
+        if (fieldOrNull != nullptr)
+        {
+            countFields.append(GetFormRowWidget(inoutRows, fieldOrNull));
+        }
+    }
+    WorldGiProbeVolume volume;
+    QString error;
+    const bool hasVolume = ReadWorldGiProbeVolume(components, volume, error) == true && volume.Grid.Counts[0] != 0;
+    QLabel* summary = new QLabel(&inoutGroup);
+    summary->setObjectName(QStringLiteral("worldProbeSummary"));
+    summary->setWordWrap(true);
+    QPushButton* cover = new QPushButton(&inoutGroup);
+    cover->setObjectName(QStringLiteral("worldProbeCoverSpacing"));
+    const foundation::float64 coveringSpacing =
+        hasVolume == true ? ComputeGiProbeSpacingCoveringSize(volume.SizeWorld) : 0;
+    cover->setText(QStringLiteral("Use %1 m spacing").arg(FormatInspectorNumber(coveringSpacing)));
+    connect(cover, &QPushButton::clicked, this, [this, coveringSpacing]() { coverProbeVolume(coveringSpacing); });
+    inoutRows.addRow(summary);
+    inoutRows.addRow(cover);
+    QString volumeSummary;
+    if (hasVolume == true && volume.Layout == GiProbeLayout::Volume)
+    {
+        volumeSummary = QStringLiteral("%1 × %2 × %3 probes fill the %4 × %5 × %6 m volume at %7 m spacing.")
+                            .arg(volume.Grid.Counts[0])
+                            .arg(volume.Grid.Counts[1])
+                            .arg(volume.Grid.Counts[2])
+                            .arg(FormatInspectorNumber(static_cast<foundation::float64>(volume.SizeWorld.X)),
+                                 FormatInspectorNumber(static_cast<foundation::float64>(volume.SizeWorld.Y)),
+                                 FormatInspectorNumber(static_cast<foundation::float64>(volume.SizeWorld.Z)),
+                                 FormatInspectorNumber(static_cast<foundation::float64>(volume.Grid.Spacing)));
+        if (volume.IsCoverageLimited() == true)
+        {
+            volumeSummary += QLatin1Char(' ') + DescribeWorldGiProbeCoverage(volume);
+        }
+    }
+    const bool isCoverageLimited = hasVolume == true && volume.IsCoverageLimited() == true;
+    const auto refresh =
+        [layoutOrNull, countFields, summary, cover, volumeSummary, authoredLayout, isCoverageLimited, &inoutRows]() {
+            const bool isCountsLayout =
+                layoutOrNull->currentData().toString() == GetGiProbeLayoutWord(GiProbeLayout::Counts);
+            for (QWidget* field : countFields)
+            {
+                inoutRows.setRowVisible(field, isCountsLayout);
+            }
+            const bool isAuthoredLayout = (authoredLayout == GiProbeLayout::Counts) == isCountsLayout;
+            summary->setText(isAuthoredLayout == true
+                                 ? volumeSummary
+                                 : QStringLiteral("Apply changes to place probes by the Transform scale."));
+            inoutRows.setRowVisible(summary, isCountsLayout == false);
+            inoutRows.setRowVisible(cover,
+                                    isCountsLayout == false && isAuthoredLayout == true && isCoverageLimited == true);
+        };
+    connect(layoutOrNull, &QComboBox::currentIndexChanged, summary, refresh);
+    refresh();
+}
+
+void WorldWorkspace::coverProbeVolume(foundation::float64 spacingMetres)
+{
+    if (Pending_ == true || SceneBusy() == true || mSelectedEntities.size() != 1)
+    {
+        Changed(QStringLiteral("Apply or reset fields before changing the probe spacing."));
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    WorldGiProbeVolume volume;
+    QString error;
+    if (components.contains(GetGiProbeVolumeComponentId()) == false ||
+        ReadWorldGiProbeVolume(components, volume, error) == false)
+    {
+        return;
+    }
+    QMessageBox confirmation(
+        QMessageBox::Question,
+        QStringLiteral("Reach every edge of the GI Probe Volume"),
+        QStringLiteral("Set Probe spacing from %1 m to %2 m? The limit of %3 probes per axis then reaches every "
+                       "edge of the volume, with fewer, farther-apart probes.")
+            .arg(FormatInspectorNumber(static_cast<foundation::float64>(volume.Grid.Spacing)),
+                 FormatInspectorNumber(spacingMetres))
+            .arg(graphics::renderer::MAX_GI_PROBE_AXIS_COUNT),
+        QMessageBox::Cancel,
+        this);
+    confirmation.setTextFormat(Qt::PlainText);
+    QPushButton* apply = confirmation.addButton(QStringLiteral("Set spacing"), QMessageBox::AcceptRole);
+    apply->setObjectName(QStringLiteral("worldConfirmProbeSpacing"));
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.exec();
+    if (confirmation.clickedButton() != apply || Pending_ == true || SceneBusy() == true)
+    {
+        return;
+    }
+    WriteWorldGiProbeSpacing(components, spacingMetres);
+    if (Document_.Edit(Selected_, components, entity.value(QStringLiteral("name")).toString(), error) == false)
+    {
+        Changed(error);
+        return;
+    }
+    Render();
+    Snapshot();
+    Changed(QStringLiteral("Probe spacing set to %1 m. Undo restores it. Save World keeps the edit.")
+                .arg(FormatInspectorNumber(spacingMetres)));
+}
+
 bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                                QString& outError,
                                QWidget*& outInvalidOrNull,
@@ -2932,6 +3057,12 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             }
         }
         c.value() = values;
+    }
+    if (Document_.HasBuiltInSchema() == true && components.contains(GetGiProbeVolumeComponentId()) == true)
+    {
+        // A layout change keeps the probes where they are: the other representation is written from the current one.
+        SynchronizeWorldGiProbeLayout(Document_.Entity(Selected_).value(QStringLiteral("components")).toObject(),
+                                      components);
     }
     auto scene = Document_.Entity(Selected_).value(QStringLiteral("scene")).toObject();
     if (scene.isEmpty() == false && Document_.Schema().contains(QStringLiteral("scene_transform")) == false)

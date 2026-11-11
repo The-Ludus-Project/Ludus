@@ -7,11 +7,11 @@
 #include "internal/raster.h"
 #include "internal/resources.h"
 #include "internal/storage.h"
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <initializer_list>
-#include <span>
 #include <string_view>
 namespace ludus::graphics::rhi
 {
@@ -649,7 +649,8 @@ ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& 
     {
         return ResourceStatus::InvalidState;
     }
-    if (description.UniformSize > internal::UNIFORM_CAPACITY)
+    if (description.Spirv.IsValid() == false || description.Dxil.IsValid() == false ||
+        description.UniformSize > internal::UNIFORM_CAPACITY)
     {
         return ResourceStatus::InvalidDescription;
     }
@@ -660,12 +661,13 @@ ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& 
     const auto kind = backend::Kind();
     // The backend later checks the DXIL program kind and entry inside the container.
     const bool validArtifact =
-        kind == Backend::Vulkan   ? (description.Spirv.size() >= 5 && description.Spirv[0] == 0x07230203U &&
-                                     ValidEntry(description.SpirvEntry))
+        kind == Backend::Vulkan ? (description.Spirv.GetSize() >= internal::SPIRV_HEADER_WORDS &&
+                                   description.Spirv[0] == internal::SPIRV_MAGIC && ValidEntry(description.SpirvEntry))
         : kind == Backend::WebGL2 ? (description.GlslEs.empty() == false && description.GlslEsEntry == "main")
         : kind == Backend::Metal  ? (description.Msl.empty() == false && ValidEntry(description.MslEntry))
         : kind == Backend::Direct3D12
-            ? (internal::IsDxilContainer(description.Dxil) == true && ValidEntry(description.DxilEntry))
+            ? (internal::IsDxilContainer({description.Dxil.GetDataOrNull(), description.Dxil.GetSize()}) == true &&
+               ValidEntry(description.DxilEntry))
             : (description.Wgsl.empty() == false && ValidEntry(description.WgslEntry));
     if ((description.Stage != ShaderStage::Vertex && description.Stage != ShaderStage::Fragment) ||
         validArtifact == false)
@@ -761,7 +763,8 @@ FrameInfo GetFrameInfo() noexcept
 {
     return gFrame && gStartup.State == StartupState::Ready ? backend::GetFrameInfo() : FrameInfo{};
 }
-ResourceStatus UpdateUniform(UniformHandle handle, std::span<const foundation::uint8> bytes) noexcept
+ResourceStatus UpdateUniform(UniformHandle handle,
+                             ludus::foundation::BorrowedView<const foundation::uint8> bytes) noexcept
 {
     const auto slot = Find(gUniforms, ResourceAccess::Id(handle));
     if (slot == MISSING)
@@ -776,7 +779,7 @@ ResourceStatus UpdateUniform(UniformHandle handle, std::span<const foundation::u
     {
         return gUniforms[slot].Status;
     }
-    if (bytes.size() != gUniforms[slot].Size)
+    if (bytes.IsValid() == false || bytes.GetSize() != gUniforms[slot].Size)
     {
         return ResourceStatus::InvalidDescription;
     }
