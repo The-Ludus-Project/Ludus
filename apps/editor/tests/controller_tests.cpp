@@ -65,7 +65,7 @@ ToolingPaths AvailableTooling()
 {
     const QString root = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     ToolingPaths tooling;
-    tooling.PythonPath = QDir(root).filePath(QStringLiteral("out/host-tools/venv/bin/python"));
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.AdapterPath = QDir(root).filePath(QStringLiteral("scripts/python/editor_tool.py"));
     tooling.ToolingRoot = root;
     return tooling;
@@ -97,6 +97,16 @@ QByteArray ValidDescriptor()
     return QByteArrayLiteral("{\n  \"version\": 1,\n  \"name\": \"demo\",\n  \"provider\": \"cmake\",\n"
                              "  \"source_dir\": \".\",\n  \"preset\": \"linux-clang-debug\",\n  \"target\": \"app\",\n"
                              "  \"run\": {\n    \"cwd\": \".\",\n    \"args\": []\n  }\n}\n");
+}
+QByteArray MakePlayDescriptor()
+{
+#if defined(Q_OS_WIN)
+    return QByteArrayLiteral(R"json({"version":2,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"windows-msvc-debug","target":"app","run":{"cwd":".","args":[]},
+"engine":{"version":"0.1.0"}})json");
+#else
+    return ValidDescriptor();
+#endif
 }
 } // namespace
 
@@ -297,7 +307,7 @@ TEST_CASE("Opening an SDK project automatically reports missing setup without ru
     hook.close();
     const auto root = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     ToolingPaths tooling;
-    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.AdapterPath = root + QStringLiteral("/scripts/python/editor_tool.py");
     tooling.ToolingRoot = root;
     EditorController controller(tooling);
@@ -334,7 +344,7 @@ TEST_CASE("Editor New Project verifies the SDK project and opens it after bridge
     QTemporaryDir dir;
     const QString destination = dir.filePath(QStringLiteral("NewGame"));
     ToolingPaths paths;
-    paths.PythonPath = QStringLiteral("/usr/bin/python3");
+    paths.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     paths.AdapterPath = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT) + QStringLiteral("/scripts/python/editor_tool.py");
     paths.ToolingRoot = tools;
     EditorController controller(paths);
@@ -394,7 +404,7 @@ else:
 )py"));
     file.close();
     ToolingPaths paths;
-    paths.PythonPath = QStringLiteral("/usr/bin/python3");
+    paths.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     paths.AdapterPath = adapter;
     paths.ToolingRoot = dir.path();
     return paths;
@@ -549,14 +559,14 @@ TEST_CASE("An existing RAD executable can open a session without installation", 
 TEST_CASE("Play menu follows saved project and tooling eligibility", "[editor][controller][play]")
 {
     QTemporaryDir dir;
-    const QString path = WriteDescriptor(dir, ValidDescriptor());
+    const QString path = WriteDescriptor(dir, MakePlayDescriptor());
     QFile sidecar(dir.filePath(QStringLiteral("ludus.play.json")));
     REQUIRE(sidecar.open(QIODevice::WriteOnly));
     sidecar.write(QByteArrayLiteral("{\"version\":1,\"host_target\":\"game_host\",\"module_target\":\"game_module\"}"));
     sidecar.close();
 
     ToolingPaths tooling;
-    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
     tooling.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     tooling.AdapterPath = QDir(tooling.ToolingRoot).filePath(QStringLiteral("scripts/python/editor_tool.py"));
     EditorController controller(tooling);
@@ -581,8 +591,8 @@ TEST_CASE("Play menu follows saved project and tooling eligibility", "[editor][c
 
 TEST_CASE("Live Play ownership prevents a competing RAD debug job", "[editor][debug][play]")
 {
-#if defined(Q_OS_MACOS)
-    SKIP("RAD sessions are Linux-only; macOS capability gates are tested separately");
+#if !defined(Q_OS_LINUX)
+    SKIP("Competing RAD ownership is exercised on the Linux profile that supports it.");
 #endif
     QTemporaryDir dir;
     const auto tooling = DebugTooling(dir);
@@ -596,7 +606,7 @@ TEST_CASE("Live Play ownership prevents a competing RAD debug job", "[editor][de
     sidecar.close();
     EditorController controller(tooling);
     MainWindow window(&controller);
-    controller.OpenProject(WriteDescriptor(dir, ValidDescriptor()));
+    controller.OpenProject(WriteDescriptor(dir, MakePlayDescriptor()));
     REQUIRE(QTest::qWaitFor([&] { return controller.CanPlay(); }, ADAPTER_WAIT_MILLISECONDS));
     controller.Play();
     REQUIRE(controller.PlayState().Phase == PlayPhase::Starting);

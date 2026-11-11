@@ -1,3 +1,5 @@
+#include "viewport_fixture.h"
+
 #include "entropy_fixture.h"
 #include "internal/builtin_world.h"
 #include "internal/controller.h"
@@ -413,7 +415,8 @@ TEST_CASE("Flatten strokes retain their local target when the procedural base re
     CHECK(cropped.contains(QStringLiteral("flattenStrokes")) == false);
     CHECK(cropped.value(QStringLiteral("version")) == 1);
     const QJsonObject unchanged = recipe;
-    CHECK(AppendTerrainStroke(recipe, QJsonArray{QJsonArray{100, 0}}, 4, TerrainBrush::Flatten, 2, error) == false);
+    CHECK(AppendTerrainStroke(recipe, QJsonArray{QJsonValue(QJsonArray{100, 0})}, 4, TerrainBrush::Flatten, 2, error) ==
+          false);
     CHECK(recipe == unchanged);
 }
 
@@ -431,7 +434,10 @@ TEST_CASE("Mixed terrain strokes replay in order against the regenerated source"
     recipe.insert(QStringLiteral("depth"), 4);
     recipe.insert(QStringLiteral("samples"), 5);
 
-    const QJsonArray centerPoint{QJsonArray{0, 0}};
+    const QJsonArray centerPoint{QJsonValue(QJsonArray{0, 0})};
+    REQUIRE(centerPoint.size() == 1);
+    REQUIRE(centerPoint.first().isArray() == true);
+    INFO(error.toStdString());
     REQUIRE(AppendTerrainStroke(recipe, centerPoint, 1, TerrainBrush::Flatten, 2, error) == true);
     const QJsonArray flattenStrokes = recipe.value(QStringLiteral("flattenStrokes")).toArray();
     REQUIRE(flattenStrokes.size() == 1);
@@ -487,6 +493,9 @@ TEST_CASE("Mixed terrain strokes replay in order against the regenerated source"
 
 TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hidden", "[editor][world][terrain]")
 {
+#if defined(Q_OS_WIN)
+    const tests::ScopedViewportMode viewportMode(QByteArrayLiteral("native"));
+#endif
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
     const QString path = QDir(root).filePath(QStringLiteral("terrain.world.json"));
@@ -820,6 +829,9 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
 TEST_CASE("Terrain draft publication keeps the delegated World view during a renderer refusal",
           "[editor][world][terrain][world-graph]")
 {
+#    if defined(Q_OS_WIN)
+    const tests::ScopedViewportMode viewportMode(QByteArrayLiteral("native"));
+#    endif
     if (PreviewViewport::CanPresent() == false)
     {
         SKIP("Requires a native rendered World viewport.");

@@ -359,7 +359,9 @@ TEST_CASE("canvas interface editing previews repairs with Properties hidden", "[
     workspace.Redo();
     CHECK(document.GetDraft(library) == repairedChild);
     CHECK(document.GetDraft(ROOT_GRAPH) == repairedParent);
-    REQUIRE(workspace.Save() == true);
+    const bool isSaved = workspace.Save();
+    INFO(workspace.GetStatusText().toStdString());
+    REQUIRE(isSaved == true);
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(library) == repairedChild);
@@ -458,7 +460,7 @@ if captured == 'broken':
     sys.exit(1)
 print(json.dumps({'schema': 1, 'captured': captured}))
 )PY"));
-    RendererWorkspace workspace({QStandardPaths::findExecutable(QStringLiteral("python3")), {}, tooling.path()});
+    RendererWorkspace workspace({QString::fromUtf8(LUDUS_TEST_PYTHON), {}, tooling.path()});
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
     workspace.SetBuildTools(QStringLiteral("helper"), QStringLiteral("compiler"));
@@ -775,7 +777,14 @@ TEST_CASE("canvas pipeline edits keep active controls and Save commits the activ
             REQUIRE(field->hasFocus() == true);
             field->selectAll();
             QTest::keyClicks(field, QStringLiteral("latest"));
-            REQUIRE(workspace.Save() == true);
+            const bool isSaved = workspace.Save();
+            INFO(workspace.GetStatusText().toStdString());
+            CHECK(isSaved == true);
+            if (isSaved == false)
+            {
+                dialogOrNull->reject();
+                return;
+            }
             CHECK(workspace.GetDocument().GetSaved(ROOT_GRAPH).contains("latest") == true);
             CHECK(workspace.GetDocument().IsDirty() == false);
             dialogOrNull->reject();

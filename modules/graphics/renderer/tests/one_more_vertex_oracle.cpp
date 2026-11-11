@@ -111,8 +111,7 @@ uint32 FindTriangle(const internal::ReferenceSceneData& scene, const rhi::RayRes
             return index;
         }
     }
-    LUDUS_ASSERT(false && "A successful oracle hit must name an admitted triangle");
-    return 0;
+    LUDUS_FATAL("A successful oracle hit must name an admitted triangle");
 }
 } // namespace
 

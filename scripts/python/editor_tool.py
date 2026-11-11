@@ -33,6 +33,7 @@ import platform
 import re
 import selectors
 from editor_pipe_io import pipe_selector, read_pipe, set_nonblocking, write_pipe
+from process_cleanup import CleanupReport, KILL_OBSERVE_DEADLINE
 import shutil
 import signal
 import subprocess
@@ -66,7 +67,6 @@ MAX_PROTOCOL_LINE = 256 * 1024          # inbound control line cap (framing)
 STDERR_CAP = 64 * 1024                  # adapter stderr per operation
 READY_REQUEST_TIMEOUT = 5.0             # seconds to receive the one request
 TERM_DEADLINE = 2.0                     # seconds before escalating TERM -> KILL
-KILL_OBSERVE_DEADLINE = 1.0             # seconds to observe termination after KILL
 
 # Keep uncertain leaders waitable. Reaping before descendant absence is proved
 # would allow PID/process-group reuse while a caller still believes it owns it.
@@ -318,14 +318,6 @@ class ProtocolWriter:
 # --------------------------------------------------------------------------- #
 # Owned child process group and non-reaping cleanup (POSIX)
 # --------------------------------------------------------------------------- #
-@dataclass
-class CleanupReport:
-    confirmed: bool
-    forced: bool = False
-    exit_code: Optional[int] = None
-    signal: Optional[int] = None
-
-
 class OwnedProcess:
     """One Popen child in its own session/process group, with group cleanup.
 

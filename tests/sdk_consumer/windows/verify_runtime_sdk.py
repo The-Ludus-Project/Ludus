@@ -14,9 +14,9 @@ import sys
 
 FIXTURE = Path(__file__).resolve().parent
 ROOT = FIXTURE.parents[2]
-PRESET = "windows-msvc-runtime-sdk"
 TARGET = "ludus_windows_runtime_consumer"
-CONFIGURATION = "RelWithDebInfo"
+CONFIGURATIONS = {"Debug": "Debug", "Development": "RelWithDebInfo",
+                  "Profile": "RelWithDebInfo", "Release": "Release"}
 RUNTIME_COMPONENTS = "GraphicsRenderer,GraphicsText,Text,Resources,GameplayWorld,Ui,GameHost"
 
 
@@ -38,10 +38,18 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def relocate(workspace):
-    installed = ROOT / "out/install" / PRESET
-    require((installed / "lib/cmake/Ludus/LudusConfig.cmake").is_file(), f"Install {PRESET} first")
-    relocated = workspace / "relocated runtime SDK" / "Development"
+def relocate(workspace, flavor):
+    preset = "windows-msvc-runtime-sdk"
+    if flavor != "Development":
+        preset += f"-{flavor.lower()}"
+    installed = ROOT / "out/install" / preset
+    require((installed / "lib/cmake/Ludus/LudusConfig.cmake").is_file(), f"Install {preset} first")
+    manifest = json.loads((installed / "share/Ludus/LudusSdkManifest.json").read_text(encoding="utf-8"))
+    revision = run("git", "rev-parse", "HEAD").strip()
+    require(manifest["source_revision"] == revision, f"{preset} was built from a different candidate")
+    require(manifest["build_flavor"] == flavor and manifest["build_type"] == CONFIGURATIONS[flavor],
+            f"{preset} has the wrong flavor or build type")
+    relocated = workspace / "relocated runtime SDK" / flavor
     if relocated.exists():
         shutil.rmtree(relocated)
     relocated.parent.mkdir(parents=True, exist_ok=True)
@@ -56,41 +64,43 @@ def relocate(workspace):
     return relocated
 
 
-def consume(sdk, workspace, visual_studio):
+def consume(sdk, workspace, flavor, visual_studio):
+    configuration = CONFIGURATIONS[flavor]
     generator = "MSBuild" if visual_studio else "Ninja"
     print(f"\n=== Runtime consumer / {generator} ===", flush=True)
-    source = workspace / "runtime consumer" / generator / "source files"
+    source = workspace / "runtime-consumer" / flavor / generator / "src"
     build = source.parent / "build"
     shutil.copytree(FIXTURE / "runtime", source, dirs_exist_ok=True)
     if visual_studio:
         toolset = os.environ["VCToolsVersion"].rstrip("\\")
         options = ("-G", "Visual Studio 17 2022", "-A", "x64,version=10.0.26100.0",
-                   "-T", f"v143,version={toolset},host=x64", f"-DCMAKE_CONFIGURATION_TYPES={CONFIGURATION}")
+                   "-T", f"v143,version={toolset},host=x64", f"-DCMAKE_CONFIGURATION_TYPES={configuration}")
     else:
-        options = ("-G", "Ninja", "-DCMAKE_CXX_COMPILER=cl.exe", f"-DCMAKE_BUILD_TYPE={CONFIGURATION}")
+        options = ("-G", "Ninja", "-DCMAKE_CXX_COMPILER=cl.exe", f"-DCMAKE_BUILD_TYPE={configuration}")
     shader_tools = ROOT / "out/shader-tools"
-    run("cmake", "-S", source, "-B", build, *options, f"-DCMAKE_PREFIX_PATH={sdk}",
+    run("cmake", "-S", source, "-B", build, *options, f"-DCMAKE_PREFIX_PATH={sdk}", f"-DEXPECTED_LUDUS_FLAVOR={flavor}",
         f"-DLUDUS_SLANG_COMPILER={shader_tools / 'slang/bin/slangc.exe'}",
         f"-DLUDUS_DXC_DIRECTORY={shader_tools / 'dxc'}")
-    run("cmake", "--build", build, "--config", CONFIGURATION, "--target", TARGET)
+    run("cmake", "--build", build, "--config", configuration, "--target", TARGET)
     shader = build / "ludus-shaders" / TARGET / "renderer_flat"
     for stage in ("vertex", "fragment"):
         require((shader / f"renderer_flat.{stage}.dxil").is_file(), f"Missing renderer_flat {stage} DXIL")
-    executable = (build / CONFIGURATION if visual_studio else build) / (TARGET + ".exe")
+    executable = (build / configuration if visual_studio else build) / (TARGET + ".exe")
     require((executable.parent / "D3D12" / "D3D12Core.dll").is_file(), "The Agility runtime was not staged")
-    run("ctest", "--test-dir", build, "-C", CONFIGURATION, "--output-on-failure", "--no-tests=error",
+    run("ctest", "--test-dir", build, "-C", configuration, "--output-on-failure", "--no-tests=error",
         contains="100% tests passed")
 
 
 def consume_behavior(sdk, workspace):
+    configuration = CONFIGURATIONS["Development"]
     print("\n=== Behavior SDK / cook, play and debug ===", flush=True)
     source = workspace / "scripted game" / "source files"
     build = source.parent / "build"
     shutil.copytree(ROOT / "examples/scripted-game", source, dirs_exist_ok=True)
     run("cmake", "-S", source, "-B", build, "-G", "Ninja", "-DCMAKE_CXX_COMPILER=cl.exe",
-        f"-DCMAKE_BUILD_TYPE={CONFIGURATION}", f"-DCMAKE_PREFIX_PATH={sdk}")
-    run("cmake", "--build", build, "--config", CONFIGURATION)
-    run("ctest", "--test-dir", build, "-C", CONFIGURATION, "--output-on-failure", "--no-tests=error",
+        f"-DCMAKE_BUILD_TYPE={configuration}", f"-DCMAKE_PREFIX_PATH={sdk}")
+    run("cmake", "--build", build, "--config", configuration)
+    run("ctest", "--test-dir", build, "-C", configuration, "--output-on-failure", "--no-tests=error",
         contains="100% tests passed")
     for executable_directory in (build, build / "shipping"):
         require((executable_directory / "D3D12/D3D12Core.dll").is_file(), "The Agility runtime was not staged")
@@ -105,14 +115,14 @@ def consume_behavior(sdk, workspace):
     script = source / "behaviors/encounter.luau"
     valid_source = script.read_text(encoding="utf-8")
     script.write_text("--!strict\nreturn function(\n", encoding="utf-8")
-    run("cmake", "--build", build, "--config", CONFIGURATION, "--target", "scripted_game_module",
+    run("cmake", "--build", build, "--config", configuration, "--target", "scripted_game_module",
         contains="SyntaxError", should_fail=True)
     require(pointer.read_bytes() == original_pointer, "Failed cook changed the current script package")
     require(module.read_bytes() == first_generation.read_bytes(), "Failed cook changed the game DLL")
     changed = valid_source.replace("state.Interactions += event.Amount", "state.Interactions += event.Amount * 2")
     require(changed != valid_source, "The scripted-game fixture no longer has the expected increment")
     script.write_text(changed, encoding="utf-8")
-    run("cmake", "--build", build, "--config", CONFIGURATION, "--target", "scripted_game_module")
+    run("cmake", "--build", build, "--config", configuration, "--target", "scripted_game_module")
     acceptance = ROOT / "modules/runtime/game_host/tests"
     run(sys.executable, acceptance / "windows_symbols_acceptance.py",
         "--a", first_generation, "--a-pdb", first_generation.with_suffix(".pdb"),
@@ -152,12 +162,17 @@ def verify_project(sdk, workspace):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workspace", type=Path)
-    parser.add_argument("--behavior", action="store_true", help="exercise the opt-in installed Behavior component")
+    parser.add_argument("--flavor", choices=CONFIGURATIONS, default="Development")
+    parser.add_argument("--behavior", action="store_true",
+                        help="exercise installed Behavior in the Development SDK")
     args = parser.parse_args()
+    if args.behavior and args.flavor != "Development":
+        parser.error("--behavior requires the Development SDK")
     workspace = args.workspace.resolve()
-    sdk = relocate(workspace)
+    sdk = relocate(workspace, args.flavor)
     for visual_studio in (False, True):
-        consume(sdk, workspace, visual_studio)
-    verify_project(sdk, workspace)
+        consume(sdk, workspace, args.flavor, visual_studio)
+    if args.flavor == "Development":
+        verify_project(sdk, workspace)
     if args.behavior:
         consume_behavior(sdk, workspace)

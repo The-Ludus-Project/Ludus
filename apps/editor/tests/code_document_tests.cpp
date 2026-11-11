@@ -355,7 +355,10 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     controller.Bind(&document);
     CodeFormatter formatter(controller);
     QSignalSpy finished(&formatter, &CodeFormatter::Finished);
-    CodeFormatterTool tool{fixture, {QStringLiteral("success")}, profile.MinimumVersion};
+    CodeFormatterTool tool{QString::fromUtf8(LUDUS_TEST_PYTHON),
+                           {QStringLiteral("success")},
+                           profile.MinimumVersion,
+                           {fixture}};
     bool shouldSucceed = false;
     SECTION("success")
     {
@@ -437,8 +440,12 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     }
     const QByteArray captured = document.GetState().Text;
     REQUIRE(formatter.Start(tool) == true);
-    CHECK(formatter.Start(tool) == false); // One in-flight job.
-    REQUIRE(finished.wait(12000) == true);
+    if (formatter.IsRunning() == true)
+    {
+        CHECK(formatter.Start(tool) == false); // One in-flight job.
+    }
+    // QProcess can report a missing executable synchronously on Windows.
+    REQUIRE((finished.isEmpty() == false || finished.wait(12000) == true));
     INFO(formatter.GetMessage().toStdString());
     CHECK(finished.at(0).at(0).toBool() == shouldSucceed);
     CHECK(formatter.IsRunning() == false);
@@ -453,7 +460,7 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     CHECK(document.GetSnapshot().Identity.Revision <= 1);
     // Failure/cancellation leaves the service reusable.
     document.LimitBytes = 4096;
-    tool = {fixture, {QStringLiteral("success")}, profile.MinimumVersion};
+    tool = {QString::fromUtf8(LUDUS_TEST_PYTHON), {QStringLiteral("success")}, profile.MinimumVersion, {fixture}};
     REQUIRE(formatter.Start(tool) == true);
     REQUIRE(finished.wait(12000) == true);
     CHECK(formatter.IsRunning() == false);

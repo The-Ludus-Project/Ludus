@@ -112,6 +112,21 @@ StorageArray<Submission> gSubmissions;
 uint64 gCompletedOrdinal = 0;
 usize gReservedSubmission = RASTER_INVALID;
 
+// Thanks to Microsoft, "ID3D12Device::GetResourceAllocationInfo", Direct3D 12 API
+// reference: query this adapter's padded allocation size for each committed backing.
+// https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-id3d12device-getresourceallocationinfo(uint_uint_constd3d12_resource_desc)
+// These are resource allocation requirements, not physical residency or descriptor bytes.
+[[nodiscard]] bool AddAllocationBytes(ID3D12Resource* resourceOrNull, uint64& inoutBytes) noexcept
+{
+    if (resourceOrNull == nullptr)
+    {
+        return true;
+    }
+    const D3D12_RESOURCE_DESC description = resourceOrNull->GetDesc();
+    const D3D12_RESOURCE_ALLOCATION_INFO allocation = GetDeviceOrNull()->GetResourceAllocationInfo(0, 1, &description);
+    return allocation.SizeInBytes != ~uint64{0} && TryAdd(inoutBytes, allocation.SizeInBytes, inoutBytes) == true;
+}
+
 [[nodiscard]] RasterStatus GetFailure(HRESULT result) noexcept
 {
     return result == E_OUTOFMEMORY                               ? RasterStatus::OutOfMemory
@@ -429,6 +444,24 @@ RasterStatus RasterPrepareStorage() noexcept
     PollTextures();
     PollInitialBuffers();
     return gSubmissions.TryResize(CurrentStorageLimits().Submissions) == true ? RasterStatus::Ready : StorageFailure();
+}
+bool RasterAllocationBytes(RasterKind kind, usize slot, uint64& outBytes) noexcept
+{
+    uint64 bytes = 0;
+    bool isAvailable = false;
+    if (kind == RasterKind::Buffer && slot < gBuffers.GetSize())
+    {
+        isAvailable = AddAllocationBytes(gBuffers[slot].Resource.Get(), bytes);
+    }
+    else if (kind == RasterKind::Texture && slot < gTextures.GetSize())
+    {
+        const Texture& texture = gTextures[slot];
+        isAvailable = AddAllocationBytes(texture.Resource.Get(), bytes) == true &&
+                      AddAllocationBytes(texture.Depth.Get(), bytes) == true &&
+                      AddAllocationBytes(texture.Upload.Get(), bytes) == true;
+    }
+    outBytes = isAvailable == true ? bytes : 0;
+    return isAvailable;
 }
 RasterStatus RasterCreateBuffer(usize slot,
                                 const BufferDescription& description,

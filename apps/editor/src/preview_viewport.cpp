@@ -3220,6 +3220,11 @@ ViewportPresentation PreviewViewport::GetPresentation() noexcept
     return ViewportPresentation::BrowserCanvas;
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const QString viewportMode = qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT");
+    if (viewportMode == QStringLiteral("disabled"))
+    {
+        return ViewportPresentation::Unavailable;
+    }
     const QString platform = QGuiApplication::platformName();
 #    if defined(Q_OS_MACOS)
     return platform == QStringLiteral("cocoa") ? ViewportPresentation::SharedDevice : ViewportPresentation::Unavailable;
@@ -3227,7 +3232,7 @@ ViewportPresentation PreviewViewport::GetPresentation() noexcept
     return platform == QStringLiteral("windows") ? ViewportPresentation::SharedDevice
                                                  : ViewportPresentation::Unavailable;
 #    else
-    if (qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT") == QStringLiteral("offscreen"))
+    if (viewportMode == QStringLiteral("offscreen"))
     {
         return ViewportPresentation::OffscreenReadback;
     }

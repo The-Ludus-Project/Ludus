@@ -6,13 +6,11 @@
 #include "ordered_draw.h"
 #include "ordered_prepare.h"
 #include "raster.h"
-#include <ludus/foundation/containers/borrowed_view.hpp>
+#include "raster_test_readiness.h"
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
-#include <ludus/foundation/threading/thread.hpp>
-#include <ludus/foundation/time/time.hpp>
-#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -30,9 +28,8 @@
 // The same shader, packet authoring and complete-image oracle run on D3D12,
 // Vulkan and Metal. No backend-specific expected image or rendering substitute.
 using namespace ludus::foundation;
+using ludus::graphics::rhi::testing::RequireReady;
 namespace rhi = ludus::graphics::rhi;
-namespace threading = ludus::foundation::threading;
-namespace timing = ludus::foundation::time;
 namespace
 {
 constexpr uint32 WIDTH = 64;
@@ -119,18 +116,6 @@ template <typename T, usize COUNT>
 ludus::foundation::BorrowedView<const uint8> GetBytes(const StaticArray<T, COUNT>& values)
 {
     return {reinterpret_cast<const uint8*>(values.GetData()), sizeof(T) * COUNT};
-}
-template <typename Handle>
-void RequireReady(rhi::DeviceHandle device, Handle handle, rhi::RasterStatus status = rhi::RasterStatus::Pending)
-{
-    timing::Deadline deadline;
-    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
-    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
-    {
-        threading::YieldThread();
-        status = rhi::GetStatus(device, handle);
-    }
-    REQUIRE(status == rhi::RasterStatus::Ready);
 }
 } // namespace
 

@@ -521,7 +521,8 @@ public:
     /// For a built-in document, Save creates every file below the destination, even when
     /// nothing was edited, and then becomes an ordinary project package. Any existing file
     /// there is a Conflict; a failed creation removes the files it wrote and stays built-in.
-    [[nodiscard]] RenderGraphDocumentStatus Save(QStringList& outSavedFiles);
+    /// Optional error identifies an existing file that could not be atomically replaced.
+    [[nodiscard]] RenderGraphDocumentStatus Save(QStringList& outSavedFiles, QString* outErrorOrNull = nullptr);
     /// Read external saves using the package admission limits. Changed disk content is
     /// adopted only when the draft is clean, as one undoable revision. Conflict, read
     /// failure or capacity failure preserves the draft/history. Built-ins are unchanged.

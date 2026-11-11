@@ -2,6 +2,8 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
 
+#include <limits>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -48,8 +50,8 @@ TEST_CASE("PBR Neutral keeps hue below the compression start and never exceeds o
     CHECK(bright.X >= bright.Y);
     CHECK(bright.Y >= bright.Z);
     CheckColour(renderer::ApplyPbrNeutral({-1, 0.5F, -1}), renderer::ApplyPbrNeutral({0, 0.5F, 0}), 0);
-    CheckColour(renderer::ApplyPbrNeutral({__builtin_inff(), 0, 0}), {1, 1, 1}, 0);
-    CheckColour(renderer::ApplyPbrNeutral({__builtin_nanf(""), 0, 0}), {1, 1, 1}, 0);
+    CheckColour(renderer::ApplyPbrNeutral({std::numeric_limits<float32>::infinity(), 0, 0}), {1, 1, 1}, 0);
+    CheckColour(renderer::ApplyPbrNeutral({std::numeric_limits<float32>::quiet_NaN(), 0, 0}), {1, 1, 1}, 0);
 }
 
 TEST_CASE("PBR Neutral is monotone in every channel", "[renderer][tone-mapping]")
@@ -112,7 +114,7 @@ TEST_CASE("InvertPbrNeutral stays finite and clamps unreachable displays", "[ren
 TEST_CASE("Reinhard and the curve selector keep the existing behaviour", "[renderer][tone-mapping]")
 {
     CheckColour(renderer::ApplyReinhard({1, 3, 0}), {0.5F, 0.75F, 0}, ROUND_TRIP_TOLERANCE);
-    CheckColour(renderer::ApplyReinhard({__builtin_inff(), -2, 0}), {1, 0, 0}, 0);
+    CheckColour(renderer::ApplyReinhard({std::numeric_limits<float32>::infinity(), -2, 0}), {1, 0, 0}, 0);
     CheckColour(renderer::ApplyToneCurve(renderer::ToneCurve::Reinhard, {1, 1, 1}),
                 {0.5F, 0.5F, 0.5F},
                 ROUND_TRIP_TOLERANCE);

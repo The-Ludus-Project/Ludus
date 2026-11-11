@@ -106,9 +106,7 @@ bool HasVisibleDialog()
 
 QString FindPython()
 {
-    const QString managed = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
-    return QFileInfo(managed).isExecutable() == true ? managed
-                                                     : QStandardPaths::findExecutable(QStringLiteral("python3"));
+    return QString::fromUtf8(LUDUS_TEST_PYTHON);
 }
 } // namespace
 
@@ -355,9 +353,12 @@ TEST_CASE("Project graph resolution selects named packages and keeps libraries u
           "[editor][render-graph]")
 {
     QTemporaryDir project;
-    RendererWorkspace workspace({});
-    workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    {
+        RendererWorkspace workspace({});
+        workspace.SetProject(project.path(), 1);
+        REQUIRE(workspace.CustomizeBuiltIn() == true);
+    }
+    // Close the first workspace and release its directory watches before moving the package.
     const QDir graphs(QDir(project.path()).filePath(QStringLiteral("graphs")));
     REQUIRE(QDir().rename(graphs.filePath(QStringLiteral("Main")), graphs.filePath(QStringLiteral("Other"))) == true);
     RendererWorkspace reopened({});

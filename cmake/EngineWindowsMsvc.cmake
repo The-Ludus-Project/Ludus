@@ -29,3 +29,11 @@ if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
         set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,Development,Profile>:Embedded>")
     endif()
 endif()
+
+if(LUDUS_ENABLE_ASAN)
+    # Thanks to Microsoft, "AddressSanitizer", Build integration and compatibility,
+    # for the /RTC, edit-and-continue and incremental-link restrictions.
+    # https://learn.microsoft.com/cpp/sanitizers/asan
+    string(REGEX REPLACE "(^| )[/-]RTC[1su]+( |$)" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+endif()

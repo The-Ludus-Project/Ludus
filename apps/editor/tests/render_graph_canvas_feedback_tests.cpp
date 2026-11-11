@@ -1,3 +1,5 @@
+#include "widget_fixture.h"
+
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_pipeline_node.h"
@@ -148,7 +150,7 @@ void CheckCompilerSelection(RenderGraphDocument& inoutDocument, const QString& p
 {
     QStringList saved;
     REQUIRE(inoutDocument.Save(saved) == RenderGraphDocumentStatus::Ok);
-    const QString python = QStandardPaths::findExecutable(QStringLiteral("python3"));
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
     REQUIRE(python.isEmpty() == false);
     QProcess process;
     process.setWorkingDirectory(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT));
@@ -854,11 +856,11 @@ TEST_CASE("hovering a card focuses its wires and fades the others", "[editor][re
     QGraphicsRectItem* half = FindFrame(canvas, QStringLiteral("half"));
     REQUIRE(half != nullptr);
     const QPoint hover = canvas.mapFromScene(half->sceneBoundingRect().center());
-    QTest::mouseMove(canvas.viewport(), hover);
+    SendTestMouseMove(*canvas.viewport(), hover);
     QCoreApplication::processEvents();
     CHECK(sizeWire->opacity() == 1);
     CHECK(outputWire->opacity() < 0.5);
-    QTest::mouseMove(canvas.viewport(), QPoint(2, 2));
+    SendTestMouseMove(*canvas.viewport(), QPoint(2, 2));
     QCoreApplication::processEvents();
     CHECK(outputWire->opacity() == 1);
 }

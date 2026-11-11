@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 #include "design_tokens.h"
 #include "entropy_fixture.h"
 #include "internal/builtin_world.h"
@@ -430,7 +432,7 @@ TEST_CASE("World saves refuse changed files schemas locks and symlink paths whil
     REQUIRE(view.Save());
 
     const auto alias = QDir(QFileInfo(dir.path()).canonicalFilePath()).filePath(QStringLiteral("alias.world.json"));
-    REQUIRE(QFile::link(path, alias));
+    REQUIRE(CreateTestSymbolicLink(path, alias));
     WorldWorkspace second;
     second.SetProject(dir.path(), 2);
     CHECK_FALSE(second.Open(alias));
@@ -1089,8 +1091,8 @@ TEST_CASE("World provides scene authoring without a project component schema", "
     CHECK_FALSE(QFileInfo::exists(directory.filePath(QStringLiteral("authoring/world.schema.json"))));
     const auto root = QFileInfo(directory.path()).canonicalFilePath();
     REQUIRE(QDir(root).mkdir(QStringLiteral("authoring")));
-    REQUIRE(QFile::link(QDir(root).filePath(QStringLiteral("missing.schema.json")),
-                        QDir(root).filePath(QStringLiteral("authoring/world.schema.json"))));
+    REQUIRE(CreateTestSymbolicLink(QDir(root).filePath(QStringLiteral("missing.schema.json")),
+                                   QDir(root).filePath(QStringLiteral("authoring/world.schema.json"))));
     WorldWorkspace unsafe;
     unsafe.SetProject(root, 3);
     CHECK_FALSE(unsafe.Create(QDir(root).filePath(QStringLiteral("unsafe.world.json"))));

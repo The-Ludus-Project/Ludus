@@ -1,3 +1,5 @@
+#include "widget_fixture.h"
+
 #include "internal/renderer_workspace.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1061,8 +1063,8 @@ TEST_CASE("graph connections highlight selection and port hover without editing 
     CHECK(outputWireOrNull->pen().widthF() > original.widthF());
     CHECK(outputWireOrNull->pen().color() != original.color());
     CHECK(cameraWireOrNull->opacity() < cameraOpacity);
-    QTest::mouseMove(canvas.viewport(),
-                     canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("texture.texture"), true)));
+    SendTestMouseMove(*canvas.viewport(),
+                      canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("texture.texture"), true)));
     CHECK(cameraWireOrNull->pen().color() == outputWireOrNull->pen().color());
     CHECK(cameraWireOrNull->opacity() == 1);
     QEvent leave(QEvent::Leave);

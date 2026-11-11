@@ -1,4 +1,5 @@
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
@@ -6,7 +7,9 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
+#include <ludus/graphics/rhi/raster.h>
 
 #include "internal/d3d12_device.h"
 
@@ -192,6 +195,89 @@ TEST_CASE("Direct3D 12 frame and pass timestamps follow submission fences", "[rh
     REQUIRE(rhi::EndFrame(session.Device) == rhi::DeviceStatus::Ready);
 }
 
+TEST_CASE("Direct3D 12 allocation telemetry includes padding, depth, retained uploads and retirement",
+          "[rhi][windows][gpu][d7]")
+{
+    DeviceSession session;
+    session.Open(false);
+    rhi::AllocationTelemetry memory;
+    REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
+    REQUIRE(memory.ApiBytesAvailable == true);
+    CHECK(memory.ApiBytes == 0);
+    CHECK(memory.PhysicalBytesAvailable == false);
+    CHECK(memory.AllocatorBlockBytesAvailable == false);
+
+    constexpr usize BUFFER_BYTES = 16;
+    constexpr uint64 ALLOCATION_ALIGNMENT = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    StaticArray<uint8, BUFFER_BYTES> bytes{};
+    rhi::BufferHandle buffer;
+    REQUIRE(rhi::CreateBuffer(session.Device,
+                              {rhi::BufferRole::Uniform, BUFFER_BYTES},
+                              {bytes.GetData(), bytes.GetSize()},
+                              buffer) == rhi::RasterStatus::Ready);
+    rhi::BindingLayoutHandle layout;
+    rhi::BindingSetHandle set;
+    const rhi::RasterBinding binding{0,
+                                     rhi::RasterBindingKind::UniformBuffer,
+                                     rhi::RasterVisibility::Both,
+                                     BUFFER_BYTES};
+    REQUIRE(rhi::CreateBindingLayout(session.Device, {&binding, 1}, layout) == rhi::RasterStatus::Ready);
+    const rhi::RasterBindingResource resource{ .Buffer = buffer, .Size = BUFFER_BYTES };
+    REQUIRE(rhi::CreateBindingSet(session.Device, layout, {&resource, 1}, set) == rhi::RasterStatus::Ready);
+
+    rhi::TextureHandle attachment;
+    REQUIRE(
+        rhi::CreateTexture(session.Device, { .Width = WIDTH, .Height = HEIGHT, .Attachment = true }, {}, attachment) ==
+        rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
+    REQUIRE(memory.ApiBytesAvailable == true);
+    // One committed buffer, a color texture and its private depth texture.
+    constexpr uint64 ATTACHMENT_ALLOCATION_COUNT = 3;
+    CHECK(memory.ApiBytes >= ATTACHMENT_ALLOCATION_COUNT * ALLOCATION_ALIGNMENT);
+    const uint64 peakBytes = memory.PeakObservedApiBytes;
+    REQUIRE(rhi::Destroy(session.Device, attachment) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::PollLifetime(session.Device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(session.Device, buffer) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
+    CHECK(memory.LogicalBytes == BUFFER_BYTES);
+    CHECK(memory.ApiBytes == ALLOCATION_ALIGNMENT);
+    CHECK(memory.RetiringApiBytes == ALLOCATION_ALIGNMENT);
+    REQUIRE(rhi::Destroy(session.Device, set) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(session.Device, layout) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::PollLifetime(session.Device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
+    CHECK(memory.ApiBytes == 0);
+    CHECK(memory.RetiringApiBytes == 0);
+    CHECK(memory.PeakObservedApiBytes == peakBytes);
+
+    constexpr usize BYTES_PER_PIXEL = 4;
+    constexpr usize PIXEL_BYTES = WIDTH * HEIGHT * BYTES_PER_PIXEL;
+    StaticArray<uint8, PIXEL_BYTES> pixels{};
+    rhi::TextureHandle texture;
+    {
+        SubmissionGate gate;
+        gate.Hold();
+        REQUIRE(rhi::CreateTexture(session.Device,
+                                   { .Width = WIDTH, .Height = HEIGHT, .AsyncUpload = true },
+                                   {
+                                       .Bytes = {pixels.GetData(), pixels.GetSize()},
+                                       .RowPitch = WIDTH * BYTES_PER_PIXEL,
+                                   },
+                                   texture) == rhi::RasterStatus::Pending);
+        REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
+        REQUIRE(memory.ApiBytesAvailable == true);
+        CHECK(memory.ApiBytes >= 2 * ALLOCATION_ALIGNMENT);
+    }
+    REQUIRE(d3d12::WaitForQueue() == true);
+    REQUIRE(rhi::GetStatus(session.Device, texture) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
+    CHECK(memory.ApiBytes == ALLOCATION_ALIGNMENT);
+    REQUIRE(rhi::Destroy(session.Device, texture) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::PollLifetime(session.Device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetAllocationTelemetry(session.Device, memory) == rhi::RasterStatus::Ready);
+    CHECK(memory.ApiBytes == 0);
+}
+
 TEST_CASE("Direct3D 12 device removal invalidates pending timestamps and logs diagnostics", "[rhi][windows][gpu][d5b]")
 {
     const LogSession logs;
@@ -200,10 +286,9 @@ TEST_CASE("Direct3D 12 device removal invalidates pending timestamps and logs di
     ID3D12Device5* removableOrNull = nullptr;
     const HRESULT interfaceResult =
         d3d12::GetDeviceOrNull()->QueryInterface(IID_ID3D12Device5, d3d12::GetInterfaceOutput(removableOrNull));
-    if (FAILED(interfaceResult) == true)
-    {
-        SKIP("The Windows D3D12 runtime has no ID3D12Device5 removal fixture");
-    }
+    // Device-loss recovery is mandatory for the pinned Agility runtime.
+    REQUIRE(interfaceResult == S_OK);
+    REQUIRE(removableOrNull != nullptr);
     d3d12::ComOwner<ID3D12Device5> removable(removableOrNull);
     REQUIRE(rhi::ArmGpuTiming(session.Device) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::BeginFrame(session.Device, session.Surface) == rhi::DeviceStatus::Ready);

@@ -1,3 +1,5 @@
+#include "filesystem_fixture.h"
+
 #include "internal/editor_files.h"
 #include "internal/project_creation_dialog.h"
 #include "internal/project_setup_dialog.h"
@@ -17,6 +19,7 @@
 #include <QList>
 #include <QProcess>
 #include <QPushButton>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 
 #include <utility>
@@ -266,7 +269,7 @@ TEST_CASE("Project targets derive from names as the Python tooling does", "[edit
 TEST_CASE("New projects render the bundled template without the tooling", "[editor][setup]")
 {
     QTemporaryDir projects;
-    const QString destination = projects.filePath(QStringLiteral("Quote \"Game\" 日本"));
+    const QString destination = projects.filePath(QStringLiteral("Quote Game 日本"));
     QString descriptor = QStringLiteral("previous");
     QString problem;
     REQUIRE(CreateEditorProjectFromTemplate(QStringLiteral("Quote \"Game\" 日本"), destination, descriptor, problem));
@@ -335,11 +338,11 @@ TEST_CASE("Project exports round trip binary assets and source paths", "[editor]
     REQUIRE(saved.write(archive) == archive.size());
     saved.close();
     QProcess tar;
-    tar.start(QStringLiteral("/usr/bin/tar"), {QStringLiteral("-tf"), archivePath});
+    tar.start(QStandardPaths::findExecutable(QStringLiteral("tar")), {QStringLiteral("-tf"), archivePath});
     REQUIRE(tar.waitForFinished());
     CHECK(tar.exitCode() == 0);
     CHECK_FALSE(tar.readAllStandardOutput().contains("setup.json"));
-    tar.start(QStringLiteral("/usr/bin/tar"),
+    tar.start(QStandardPaths::findExecutable(QStringLiteral("tar")),
               {QStringLiteral("-xOf"), archivePath, QStringLiteral("assets/nested/image.bin")});
     REQUIRE(tar.waitForFinished());
     CHECK(tar.exitCode() == 0);
@@ -347,7 +350,7 @@ TEST_CASE("Project exports round trip binary assets and source paths", "[editor]
     const auto previous = archive;
     CHECK_FALSE(EncodeEditorProjectArchive(project.filePath(QStringLiteral("missing")), archive));
     CHECK(archive == previous);
-    REQUIRE(QFile::link(asset.fileName(), project.filePath(QStringLiteral("link.bin"))));
+    REQUIRE(CreateTestSymbolicLink(asset.fileName(), project.filePath(QStringLiteral("link.bin"))));
     CHECK_FALSE(EncodeEditorProjectArchive(project.path(), archive));
     CHECK(archive == previous);
 }

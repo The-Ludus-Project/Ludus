@@ -219,7 +219,7 @@ bool CodeFormatter::Start(const CodeFormatterTool& tool)
     mPhase = Phase::Version;
     mTimeout.start(FORMAT_TIMEOUT_MILLISECONDS);
 #if !defined(Q_OS_WASM)
-    mProcess.start(mTool.Program, {QStringLiteral("--version")});
+    mProcess.start(mTool.Program, mTool.PrefixArguments + QStringList{QStringLiteral("--version")});
 #endif
     return true;
 }
@@ -310,7 +310,7 @@ void CodeFormatter::processFinished(int32 exitCode, bool hasCrashed)
         mErrors.clear();
         mPhase = Phase::Format;
 #if !defined(Q_OS_WASM)
-        mProcess.start(mTool.Program, mTool.Arguments);
+        mProcess.start(mTool.Program, mTool.PrefixArguments + mTool.Arguments);
 #endif
         return;
     }
@@ -458,7 +458,8 @@ CodeFormatterTool MakeShaderFormatter(const QString& program, const QString& sou
              QStringLiteral("--sort-includes=false"),
              QStringLiteral("--qualifier-alignment=Leave"),
              QStringLiteral("--output-replacements-xml")},
-            QString::fromLatin1(formatter_config::VERSION)};
+            QString::fromLatin1(formatter_config::VERSION),
+            {}};
 }
 
 QString FindShaderFormatter()

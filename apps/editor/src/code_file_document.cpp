@@ -1,4 +1,5 @@
 #include "internal/code_file_document.h"
+#include "internal/editor_file_write.h"
 
 #include "internal/code_edit_set.h"
 #include "internal/code_editor_config.h"
@@ -8,7 +9,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QObject>
-#include <QSaveFile>
 
 #include <utility>
 
@@ -248,15 +248,12 @@ bool CodeFileDocument::Save(QString& outError)
     }
     output.append(mDraft);
 
-    QSaveFile file(mCanonicalPath);
-    if (file.open(QIODevice::WriteOnly) == false)
+    QString error;
+    if (WriteEditorFileAtomically(mCanonicalPath, output, error) == false)
     {
-        outError = QObject::tr("The file could not be opened for writing: %1").arg(file.errorString());
-        return false;
-    }
-    if (file.write(output) != output.size() || file.commit() == false)
-    {
-        outError = QObject::tr("The file could not be saved: %1").arg(file.errorString());
+        outError = QObject::tr("The file could not be saved: %1. Close other programs using it or check its "
+                               "permissions, then save again.")
+                       .arg(error);
         return false;
     }
     mSaved = mDraft;

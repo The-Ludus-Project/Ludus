@@ -1,3 +1,5 @@
+#include "widget_fixture.h"
+
 #include "internal/editor_style.h"
 #include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
@@ -245,7 +247,7 @@ TEST_CASE("Combo boxes keep room for their whole text and draw a small chevron",
         CHECK(field.right() < arrow.left());
         CHECK(combo->rect().contains(arrow) == true);
         // The chevron stays inside its column and is small: a few pixels either way, not a platform-sized arrow.
-        const QImage image = combo->grab().toImage();
+        const QImage image = RenderWidgetAtLogicalSize(*combo);
         const QColor background = combo->palette().color(QPalette::Base);
         QRect inked;
         // Scan inside the edge so only the chevron can leave a mark.
@@ -292,7 +294,7 @@ TEST_CASE("A menu button keeps its label and its chevron apart", "[editor][style
         CHECK(button->sizeHint().width() >=
               button->fontMetrics().horizontalAdvance(button->text()) +
                   button->style()->pixelMetric(QStyle::PM_MenuButtonIndicator, nullptr, button));
-        const QImage image = button->grab().toImage();
+        const QImage image = RenderWidgetAtLogicalSize(*button);
         const QColor background = image.pixelColor(image.width() / 2, 1);
         // The inked columns inside the edge form the label, then the chevron: two runs with blank columns between.
         QList<bool> columns;
@@ -356,11 +358,10 @@ TEST_CASE("A mode toggle that is on fills with the accent; a disclosure button d
     QApplication::processEvents();
     const QColor accent = root.palette().color(QPalette::Link);
     // Sample the padding left of the label: inside the one-pixel edge, clear of the rounded corners.
-    constexpr qreal BODY_SAMPLE_X = 3.0;
+    constexpr ludus::foundation::int32 BODY_SAMPLE_X = 3;
     const auto sampleInside = [](QToolButton* button) {
-        const QImage image = button->grab().toImage();
-        const qreal scale = image.devicePixelRatio();
-        return image.pixelColor(static_cast<int>(BODY_SAMPLE_X * scale), image.height() / 2);
+        const QImage image = RenderWidgetAtLogicalSize(*button);
+        return image.pixelColor(BODY_SAMPLE_X, image.height() / 2);
     };
     CHECK(sampleInside(on) == accent);
     CHECK(sampleInside(off) != accent);
@@ -453,7 +454,7 @@ TEST_CASE("Tabs below their content draw the accent rule on the edge facing it",
     root.show();
     QApplication::processEvents();
     const QRect tab = bar->tabRect(0);
-    const QImage image = bar->grab().toImage();
+    const QImage image = RenderWidgetAtLogicalSize(*bar);
     const QColor accent = bar->palette().color(QPalette::Link);
     const int centre = tab.center().x();
     // The rule is on the top edge, toward the content above, and not on the outer edge.

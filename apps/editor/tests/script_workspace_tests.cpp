@@ -267,7 +267,7 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
                     QJsonObject{{QStringLiteral("cwd"), QStringLiteral(".")},
                                 {QStringLiteral("args"), QJsonArray{QStringLiteral("--headless")}}});
     WriteScript(descriptor, QJsonDocument(settings).toJson());
-    EditorController controller({QDir(root).filePath(QStringLiteral("out/host-tools/venv/bin/python")),
+    EditorController controller({QString::fromUtf8(LUDUS_TEST_PYTHON),
                                  QDir(root).filePath(QStringLiteral("scripts/python/editor_tool.py")),
                                  root});
     PlayCleanup cleanup{controller, project.path()};

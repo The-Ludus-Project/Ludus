@@ -314,7 +314,7 @@ class OwnedWindowsProcess:
                 setattr(self, attribute, None)
 
     def cleanup(self, *, cancelled, now=time.monotonic, sleep=time.sleep):
-        from editor_tool import CleanupReport, KILL_OBSERVE_DEADLINE
+        from process_cleanup import CleanupReport, KILL_OBSERVE_DEADLINE
 
         if self._job is None:
             return CleanupReport(True, forced=self._was_terminated, exit_code=self._exit)

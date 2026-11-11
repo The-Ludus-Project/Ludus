@@ -57,6 +57,15 @@
       }
     },
     {
+      "name": "windows-msvc-asan",
+      "displayName": "Windows MSVC Runtime AddressSanitizer (Ninja)",
+      "inherits": "windows-msvc-runtime",
+      "cacheVariables": {
+        "LUDUS_ENABLE_ASAN": "ON",
+        "LUDUS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "windows-msvc-runtime",
       "displayName": "Windows MSVC Runtime (Ninja)",
       "inherits": "windows-msvc-development",
@@ -73,8 +82,36 @@
       "installDir": "${sourceDir}/out/install/${presetName}",
       "cacheVariables": {
         "LUDUS_BUILD_TESTS": "OFF",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>",
         "LUDUS_BUILD_WORLD_DEMO": "OFF",
         "LUDUS_BUILD_SMOKE_APP": "OFF"
+      }
+    },
+    {
+      "name": "windows-msvc-runtime-sdk-debug",
+      "displayName": "Windows MSVC Runtime SDK Debug (Ninja)",
+      "inherits": "windows-msvc-runtime-sdk",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LUDUS_BUILD_FLAVOR": "Debug"
+      }
+    },
+    {
+      "name": "windows-msvc-runtime-sdk-profile",
+      "displayName": "Windows MSVC Runtime SDK Profile (Ninja)",
+      "inherits": "windows-msvc-runtime-sdk",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_BUILD_FLAVOR": "Profile"
+      }
+    },
+    {
+      "name": "windows-msvc-runtime-sdk-release",
+      "displayName": "Windows MSVC Runtime SDK Release (Ninja)",
+      "inherits": "windows-msvc-runtime-sdk",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LUDUS_BUILD_FLAVOR": "Release"
       }
     },
     {
@@ -98,6 +135,15 @@
   ],
   "buildPresets": [
     {
+      "name": "windows-msvc-asan",
+      "configurePreset": "windows-msvc-asan",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
       "name": "windows-msvc-runtime",
       "configurePreset": "windows-msvc-runtime",
       "condition": {
@@ -109,6 +155,33 @@
     {
       "name": "windows-msvc-runtime-sdk",
       "configurePreset": "windows-msvc-runtime-sdk",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-runtime-sdk-debug",
+      "configurePreset": "windows-msvc-runtime-sdk-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-runtime-sdk-profile",
+      "configurePreset": "windows-msvc-runtime-sdk-profile",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-runtime-sdk-release",
+      "configurePreset": "windows-msvc-runtime-sdk-release",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -193,6 +266,21 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "windows-msvc-asan",
+      "configurePreset": "windows-msvc-asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
     {
       "name": "windows-msvc-runtime",
       "configurePreset": "windows-msvc-runtime",

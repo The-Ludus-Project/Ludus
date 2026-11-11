@@ -2524,8 +2524,11 @@ admits the same storage budgets and raster profile as the shared device, so Lit
 shadow atlases fit on both paths. The copy costs some latency and bandwidth, and the
 frame is capped at 1024 pixels on its long side, the same as the shared path. Set
 `LUDUS_EDITOR_VIEWPORT=offscreen` to force this path for testing.
+Set `LUDUS_EDITOR_VIEWPORT=disabled` to exercise native widget layout and
+document logic without starting GPU presentation. The Windows CI editor
+journeys that exercise presentation run with the native D3D12 path enabled.
 
-Offscreen Qt plugins without that variable, or machines with no Vulkan driver,
+Offscreen Qt plugins without readback enabled, or machines with no Vulkan driver,
 keep document editing and asset validation available, and the viewport explains
 why it cannot show a frame. Lightweight builds can still disable native preview
 explicitly. Browser scene import and a game's

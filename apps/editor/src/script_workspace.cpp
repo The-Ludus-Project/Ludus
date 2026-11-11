@@ -1,6 +1,7 @@
 #include "internal/script_workspace.h"
 #include "internal/code_document_controller.h"
 #include "internal/code_editor.h"
+#include "internal/editor_file_write.h"
 #include "internal/item_selection.h"
 
 #include <ludus/foundation/base/core.h>
@@ -26,7 +27,6 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QSaveFile>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -467,11 +467,12 @@ bool ScriptWorkspace::Save()
     {
         return false;
     }
-    QSaveFile file(Path_);
-    file.setDirectWriteFallback(false);
-    if (file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size() || file.commit() == false)
+    QString error;
+    if (WriteEditorFileAtomically(Path_, bytes, error) == false)
     {
-        Status_->setText(QStringLiteral("Asset save failed."));
+        Status_->setText(QStringLiteral("Could not save the asset: %1. Close other programs using the file or "
+                                        "check its permissions, then save again.")
+                             .arg(error));
         return false;
     }
     Disk_ = bytes;

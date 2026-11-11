@@ -88,6 +88,10 @@ QString GetFlavorForProfile(const QString& profile)
     {
         return QStringLiteral("Development");
     }
+    if (profile.endsWith(QStringLiteral("-profile")) == true)
+    {
+        return QStringLiteral("Profile");
+    }
     if (profile.endsWith(QStringLiteral("-release")))
     {
         return QStringLiteral("Release");

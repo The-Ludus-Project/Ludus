@@ -7,6 +7,7 @@
 #include "internal/theme_colour.h"
 #include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
+#include "widget_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -295,7 +296,7 @@ TEST_CASE("Overlay widgets draw their token colours without a style sheet", "[ed
     QApplication::processEvents();
     CHECK(field.findChildren<QWidget*>(QStringLiteral("diagnosticOutline"), Qt::FindDirectChildrenOnly).size() == 1);
     CHECK(field.styleSheet().isEmpty() == true);
-    const QImage frame = host.grab().toImage();
+    const QImage frame = RenderWidgetAtLogicalSize(host);
     const QColor danger = GetThemeQColour(design::ThemeColour::StatusDanger);
     CHECK(QColor(frame.pixel(60, 20)) == danger);
     CHECK(QColor(frame.pixel(20, 35)) == danger);
@@ -308,7 +309,7 @@ TEST_CASE("Overlay widgets draw their token colours without a style sheet", "[ed
     hud.show();
     QApplication::processEvents();
     CHECK(hud.styleSheet().isEmpty() == true);
-    const QImage withHud = host.grab().toImage();
+    const QImage withHud = RenderWidgetAtLogicalSize(host);
     // The panel is darker than the host behind it and carries the HUD text colour.
     CHECK(QColor(withHud.pixel(102, 80)).lightness() < QColor(withHud.pixel(5, 5)).lightness());
     CHECK(hud.palette().color(QPalette::WindowText).rgb() == GetViewportArgb(design::ThemeColour::TextHud));
@@ -319,7 +320,7 @@ TEST_CASE("Overlay widgets draw their token colours without a style sheet", "[ed
     button.move(20, 90);
     button.show();
     QApplication::processEvents();
-    const QImage buttonImage = button.grab().toImage();
+    const QImage buttonImage = RenderWidgetAtLogicalSize(button);
     int firstInk = buttonImage.width();
     int lastInk = 0;
     const QColor surface = QColor(buttonImage.pixel(1, 1));

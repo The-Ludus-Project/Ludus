@@ -434,9 +434,10 @@ function(ludus_editor_add_default_render_graph target)
         PREFIX "/render-graph/default" BASE "${default_graph}" FILES ${default_graph_files})
 endfunction()
 
-# Source provenance admission follows the offline compiler's existing expanded-node/pass bounds.
-set_source_files_properties(tests/render_graph_execution_plan_tests.cpp PROPERTIES
+# Interpreter-driven fixtures use the configured host Python.
+set_source_files_properties(tests/external_code_editor_tests.cpp tests/render_graph_execution_plan_tests.cpp PROPERTIES
     COMPILE_DEFINITIONS "LUDUS_EDITOR_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
+# Source provenance admission follows the offline compiler's existing expanded-node/pass bounds.
 set(graph_plan_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${graph_plan_policy}")
 execute_process(COMMAND "${Python3_EXECUTABLE}" -c
@@ -451,6 +452,26 @@ foreach(limit PLAN_VERSION MAX_NODES MAX_EXPANDED_NODES MAX_PASSES MAX_DEPTH MAX
 endforeach()
 configure_file(src/internal/render_graph_plan_policy.h.in
     "${graph_layout_directory}/render_graph_plan_policy.h" @ONLY)
+
+# The installed tooling owns the version-2 native profile vocabulary.
+set(native_profile_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/native.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${native_profile_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0, sys.argv[1]); from ludus_tools.native import PRESET_FLAVOR; print(' '.join(PRESET_FLAVOR))"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE native_profile_status OUTPUT_VARIABLE native_project_profiles
+    ERROR_VARIABLE native_profile_error OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT native_profile_status EQUAL 0 OR native_project_profiles STREQUAL "")
+    message(FATAL_ERROR "Cannot read native project profiles: ${native_profile_error}")
+endif()
+
+# One atomic publication boundary shared by editor source and graph saves.
+add_library(ludus_editor_file_write STATIC src/editor_file_write.cpp)
+target_include_directories(ludus_editor_file_write PRIVATE src)
+target_compile_definitions(ludus_editor_file_write PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+target_link_libraries(ludus_editor_file_write PRIVATE Qt6::Core
+    "$<$<PLATFORM_ID:Windows>:Ludus::FoundationFilesystem>")
+ludus_apply_project_defaults(ludus_editor_file_write)
 
 # --- Shared editor logic library ---------------------------------------------
 # The transition function, project store, tool-process protocol framing and log
@@ -478,7 +499,8 @@ add_library(ludus_editor_core STATIC
 )
 set_target_properties(ludus_editor_core PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_compile_definitions(ludus_editor_core PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+target_compile_definitions(ludus_editor_core PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
+    "LUDUS_EDITOR_NATIVE_PROJECT_PROFILES=\"${native_project_profiles}\"")
 target_link_libraries(ludus_editor_core
     PUBLIC
         Qt6::Core
@@ -486,6 +508,7 @@ target_link_libraries(ludus_editor_core
         Ludus::FoundationBase
         Ludus::FoundationLogging
         Ludus::AudioContent
+        ludus_editor_file_write
 )
 ludus_apply_project_defaults(ludus_editor_core)
 
@@ -570,7 +593,7 @@ set_target_properties(ludus_editor_code PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_code PRIVATE src)
 target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
 target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationContainers
-    PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling Ludus::FoundationStrings)
+    PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling Ludus::FoundationStrings ludus_editor_file_write)
 # LUSL coloring and formatting use the LUSL compiler library in process, natively and in the browser.
 target_link_libraries(ludus_editor_code PRIVATE Ludus::ShaderLanguage)
 # The syntax service's parsers; tree-sitter types stay inside the editor's syntax worker.
@@ -633,7 +656,8 @@ ludus_editor_add_objects(ludus_editor_render_graph_model
     src/internal/render_graph_options.h src/render_graph_options.cpp
     src/internal/render_graph_shader_interface.h src/render_graph_shader_interface.cpp)
 target_link_libraries(ludus_editor_render_graph_model PUBLIC Qt6::Core Qt6::Widgets
-    Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationStrings)
+    Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationStrings
+    PRIVATE ludus_editor_file_write)
 
 # Editor-private curve/surface authoring adapters (curves and surfaces G5):
 # a Qt-free document/undo, async prepare job, transactional preview and cursor
@@ -1108,6 +1132,24 @@ endif()
 # Offscreen Qt tests verify logic and widget wiring without a GPU/compositor.
 # They do NOT prove native Wayland interaction or that a game rendered a frame.
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    # Use native Windows widget metrics. Widget/logic suites do not submit GPU
+    # frames; the dedicated native journeys below exercise WARP presentation.
+    set(editor_test_environment "QT_QPA_PLATFORM=offscreen")
+    set(code_editor_timeout 30)
+    if(WIN32)
+        set(editor_test_environment "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1;LUDUS_EDITOR_VIEWPORT=disabled")
+        # The full code editor suite can exceed 30 seconds on hosted Windows.
+        # Its individual performance assertions still enforce their own limits.
+        set(code_editor_timeout 90)
+    endif()
+    set(content_editor_timeout 60)
+    set(graph_configuration_timeout 180)
+    if(WIN32 AND LUDUS_ENABLE_ASAN)
+        # The instrumented content scan took 57 seconds on the hosted runner;
+        # keep the process deadlines distinct from the tests' own assertions.
+        set(content_editor_timeout 120)
+        set(graph_configuration_timeout 300)
+    endif()
     add_executable(ludus_editor_texture_benchmark EXCLUDE_FROM_ALL
         tests/texture_display_benchmark.cpp src/texture_inspection.cpp)
     target_include_directories(ludus_editor_texture_benchmark PRIVATE src)
@@ -1129,7 +1171,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # One Catch2 session entry point for every editor test executable. Its
     # `--trace-output` option captures CPU scopes and viewport spans for the
     # runtime profile scenarios, so the trace libraries come with it.
-    ludus_editor_add_objects(ludus_editor_test_main tests/main.cpp)
+    ludus_editor_add_objects(ludus_editor_test_main tests/main.cpp tests/filesystem_fixture.cpp tests/widget_fixture.cpp)
+    target_compile_definitions(ludus_editor_test_main PUBLIC "LUDUS_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
     target_link_libraries(ludus_editor_test_main PUBLIC Qt6::Widgets Catch2::Catch2 Ludus::FoundationBase
         Ludus::FoundationContainers Ludus::FoundationProfiling ludus_editor_viewport_trace)
     ludus_enable_test_exceptions(ludus_editor_test_main)
@@ -1143,7 +1186,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_document_well_tests)
     add_test(NAME ludus_document_well_tests COMMAND ludus_document_well_tests)
     set_tests_properties(ludus_document_well_tests PROPERTIES LABELS "unit;editor;layout" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "${editor_test_environment}")
     if(APPLE)
         add_executable(ludus_editor_accessibility_tests tests/accessibility_tests.mm)
         target_include_directories(ludus_editor_accessibility_tests PRIVATE src)
@@ -1173,8 +1216,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_code_editor_tests COMMAND ludus_code_editor_tests)
     # Linear-work and search cases assert wall-clock ceilings; keep them off a
     # runner shared with parallel CTest GPU cases.
-    set_tests_properties(ludus_code_editor_tests PROPERTIES LABELS "unit;editor;text" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RUN_SERIAL TRUE)
+    set_tests_properties(ludus_code_editor_tests PROPERTIES LABELS "unit;editor;text" TIMEOUT "${code_editor_timeout}"
+        ENVIRONMENT "${editor_test_environment}" RUN_SERIAL TRUE)
     # Replay the content suite through the browser's single-owner scheduler as
     # well as the normal native worker. No Qt/Wasm-private APIs enter this target.
     add_executable(ludus_editor_browser_content_tests tests/content_browser_tests.cpp src/content_jobs.cpp)
@@ -1189,7 +1232,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_editor_browser_content_tests)
     add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
-        LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        LABELS "unit;editor;browser" TIMEOUT "${content_editor_timeout}" ENVIRONMENT "${editor_test_environment}")
     add_executable(ludus_project_explorer_tests tests/project_explorer_tests.cpp)
     set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_project_explorer_tests PRIVATE src)
@@ -1200,7 +1243,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_project_explorer_tests)
     add_test(NAME ludus_project_explorer_tests COMMAND ludus_project_explorer_tests)
     set_tests_properties(ludus_project_explorer_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "${editor_test_environment}")
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         add_executable(ludus_light_transformer_preview_setup_tests tests/light_transformer_preview_setup_tests.cpp)
         target_include_directories(ludus_light_transformer_preview_setup_tests PRIVATE src)
@@ -1337,6 +1380,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Catch2::Catch2)
     ludus_apply_project_defaults(ludus_editor_tests)
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::Platform)
+    if(WIN32)
+        target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationFilesystem)
+    endif()
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
     # The tests also replay committed migration manifests to produce version-2 World fixtures.
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity)
@@ -1528,10 +1574,26 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             add_test(NAME "${test_name}" COMMAND "${target_name}" --order decl
                 --shard-count "${shard_count}" --shard-index "${shard_index}" --durations yes ${ARGN})
             set_tests_properties("${test_name}" PROPERTIES LABELS "${labels}" TIMEOUT "${timeout}"
-                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RESOURCE_LOCK ludus_editor)
+                ENVIRONMENT "${editor_test_environment}" RESOURCE_LOCK ludus_editor)
         endforeach()
     endfunction()
-    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor" "~[reference-compute]")
+    set(editor_shard_filter "~[reference-compute]")
+    if(WIN32)
+        # This journey runs in ludus_editor_hosted_play with a native viewport.
+        string(APPEND editor_shard_filter "~[native-hosted-frames]")
+    endif()
+    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor" "${editor_shard_filter}")
+    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)
+        # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.
+        get_target_property(editor_reference_case_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS)
+        add_test(NAME ludus_editor_reference_emissive_patches COMMAND ludus_editor_tests
+            "[reference-compute][emissive-patches]" --durations yes)
+        add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests
+            "[reference-compute][oracle-parity]" --durations yes)
+        set_tests_properties(ludus_editor_reference_emissive_patches ludus_editor_reference_oracle_parity
+            PROPERTIES LABELS "unit;editor;gpu" TIMEOUT "${editor_reference_case_timeout}" SKIP_RETURN_CODE 4
+            ENVIRONMENT "${editor_test_environment}" RESOURCE_LOCK ludus_editor)
+    endif()
     if(WIN32 AND LUDUS_EDITOR_RENDER_PREVIEW)
         # The other native graph fixtures require SPIR-V or Metal ray traversal.
         target_sources(ludus_editor_tests PRIVATE tests/d3d12_viewport_tests.cpp)
@@ -1549,17 +1611,6 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             LABELS "editor;windows;gpu" TIMEOUT 180 RESOURCE_LOCK ludus_editor
             ENVIRONMENT "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1")
         set_property(TEST ludus_editor_d3d12_high_dpi APPEND PROPERTY ENVIRONMENT "QT_SCALE_FACTOR=1.5")
-    endif()
-    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)
-        # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.
-        get_target_property(editor_reference_case_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS)
-        add_test(NAME ludus_editor_reference_emissive_patches COMMAND ludus_editor_tests
-            "[reference-compute][emissive-patches]" --durations yes)
-        add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests
-            "[reference-compute][oracle-parity]" --durations yes)
-        set_tests_properties(ludus_editor_reference_emissive_patches ludus_editor_reference_oracle_parity
-            PROPERTIES LABELS "unit;editor;gpu" TIMEOUT "${editor_reference_case_timeout}" SKIP_RETURN_CODE 4
-            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RESOURCE_LOCK ludus_editor)
     endif()
     # Transitional, empty: batch CI runs the workflow definitions on main against
     # the develop candidate, and main's ci.yml still builds this target, which
@@ -1595,7 +1646,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_texture_display_conversion_tests)
     add_test(NAME ludus_texture_display_conversion_tests COMMAND ludus_texture_display_conversion_tests)
     set_tests_properties(ludus_texture_display_conversion_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "${editor_test_environment}")
 
     add_executable(ludus_render_graph_pipeline_tests tests/render_graph_pipeline_tests.cpp
         tests/render_graph_shader_cleanup_tests.cpp)
@@ -1612,7 +1663,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_render_graph_pipeline_tests)
     add_test(NAME ludus_render_graph_pipeline_tests COMMAND ludus_render_graph_pipeline_tests)
     set_tests_properties(ludus_render_graph_pipeline_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "${editor_test_environment}")
 
     add_executable(ludus_shader_interface_tests tests/render_graph_shader_interface_tests.cpp)
     target_include_directories(ludus_shader_interface_tests PRIVATE src)
@@ -1623,7 +1674,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_shader_interface_tests)
     add_test(NAME ludus_shader_interface_tests COMMAND ludus_shader_interface_tests)
     set_tests_properties(ludus_shader_interface_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "${editor_test_environment}")
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
@@ -1656,7 +1707,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
     # The combined canvas suite exceeds 180 s on macOS, including ASan; keep every case
     # under its existing hang deadline without accumulating all cases into that deadline.
-    ludus_add_editor_test_shards(ludus_render_graph_configuration_tests 2 180 "editor;render-graph")
+    ludus_add_editor_test_shards(ludus_render_graph_configuration_tests 2 "${graph_configuration_timeout}" "editor;render-graph")
 
     add_executable(ludus_render_graph_live_build_tests tests/render_graph_live_build_tests.cpp)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
@@ -1668,7 +1719,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_render_graph_live_build_tests)
     add_test(NAME ludus_render_graph_live_build_tests COMMAND ludus_render_graph_live_build_tests)
     set_tests_properties(ludus_render_graph_live_build_tests PROPERTIES LABELS "editor;shader" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "${editor_test_environment}")
 
     # Editor-private curve/surface adapter tests (curves and surfaces G5). The
     # adapters are Qt-free logic, so these run headless without a GPU/compositor.
@@ -1683,7 +1734,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_editor_geometry_tests)
     add_test(NAME ludus_editor_geometry_tests COMMAND ludus_editor_geometry_tests)
     set_tests_properties(ludus_editor_geometry_tests PROPERTIES LABELS "editor;geometry" TIMEOUT 60
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "${editor_test_environment}")
 endif()
 
 # Keep the established editor test build entry point complete as suites move into

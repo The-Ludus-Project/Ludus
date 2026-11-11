@@ -154,7 +154,8 @@ TEST_CASE("A play source opens a private window channel and closes it on Stop", 
 }
 #endif
 
-TEST_CASE("A hosted game's frames appear in the viewport and return to the game", "[editor][play][viewport][gpu]")
+TEST_CASE("A hosted game's frames appear in the viewport and return to the game",
+          "[editor][play][viewport][gpu][native-hosted-frames]")
 {
 #if defined(LUDUS_HOSTED_PRODUCER) && (defined(Q_OS_MACOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN))
     if (IsSharedDisplay() == false)

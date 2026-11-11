@@ -229,7 +229,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         LUDUS_REFERENCE_TEST_COLD_TIMEOUT_SECONDS "${renderer_test_reference_cold_gpu_timeout_seconds}"
         LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS "${renderer_test_case_timeout_seconds}")
 endif()
-if(TARGET ludus_rhi_render_tests)
+# The Windows raster closure uses ludus_render_graph_dxil_tests below.
+# The complete renderer oracle suite also needs translated reference kernels.
+if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     # Software-adapter shader preparation belongs to correctness qualification.
     # Sanitizer allocation interception also affects the driver's compiler;
     # give that cold work room without changing warm-frame or numerical checks.

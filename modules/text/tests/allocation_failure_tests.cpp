@@ -5,6 +5,8 @@
 // Array allocations. Built as its own executable, without sanitizers, because
 // it replaces global allocation functions.
 
+#include <ludus/foundation/base/config.h>
+#include <ludus/foundation/base/types.h>
 #include <ludus/text/font_system.h>
 
 #include "fixture_support.h"
@@ -15,23 +17,40 @@
 #include <cstdlib>
 #include <new>
 
+#if defined(LUDUS_PLATFORM_WINDOWS)
+#    include <malloc.h>
+#endif
+
 namespace
 {
 bool gShouldRejectArrayAllocation = false;
 ludus::foundation::uint64 gRejectedAllocations = 0;
 
-void* AllocateAligned(std::size_t bytes, std::size_t alignment) noexcept
+void* AllocateAligned(ludus::foundation::usize bytes, ludus::foundation::usize alignment) noexcept
 {
     if (alignment < alignof(std::max_align_t))
     {
         alignment = alignof(std::max_align_t);
     }
-    std::size_t rounded = (bytes + alignment - 1) & ~(alignment - 1);
+    ludus::foundation::usize rounded = (bytes + alignment - 1) & ~(alignment - 1);
     if (rounded == 0)
     {
         rounded = alignment;
     }
+#if defined(LUDUS_PLATFORM_WINDOWS)
+    return _aligned_malloc(rounded, alignment);
+#else
     return std::aligned_alloc(alignment, rounded);
+#endif
+}
+
+void FreeAligned(void* pointerOrNull) noexcept
+{
+#if defined(LUDUS_PLATFORM_WINDOWS)
+    _aligned_free(pointerOrNull);
+#else
+    std::free(pointerOrNull);
+#endif
 }
 
 // Arms rejection for one scope so Catch2 assertions run with allocation intact.
@@ -54,22 +73,22 @@ struct RejectArrayAllocationScope final
 // libc++ names the replaceable allocation functions' parameters with reserved
 // identifiers (`__sz`), so these replacements cannot match its declarations.
 // NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
-void* operator new(std::size_t bytes, std::align_val_t alignment, const std::nothrow_t&) noexcept
+void* operator new(ludus::foundation::usize bytes, std::align_val_t alignment, const std::nothrow_t&) noexcept
 {
     if (gShouldRejectArrayAllocation == true)
     {
         ++gRejectedAllocations;
         return nullptr;
     }
-    return AllocateAligned(bytes, static_cast<std::size_t>(alignment));
+    return AllocateAligned(bytes, static_cast<ludus::foundation::usize>(alignment));
 }
-void operator delete(void* pointer, std::align_val_t) noexcept
+void operator delete(void* pointerOrNull, std::align_val_t) noexcept
 {
-    std::free(pointer);
+    FreeAligned(pointerOrNull);
 }
-void operator delete(void* pointer, std::size_t, std::align_val_t) noexcept
+void operator delete(void* pointerOrNull, ludus::foundation::usize, std::align_val_t) noexcept
 {
-    std::free(pointer);
+    FreeAligned(pointerOrNull);
 }
 // NOLINTEND(readability-inconsistent-declaration-parameter-name)
 

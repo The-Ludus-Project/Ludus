@@ -93,7 +93,7 @@ bool SourceWatch::Rearm()
         const QFileInfo info(project.filePath(relative));
         const auto path = info.canonicalFilePath();
         if (root.isString() == false || relative.isEmpty() || QDir::isAbsolutePath(relative) || info.isSymLink() ||
-            path.isEmpty() || (path != Project_ && path.startsWith(Project_ + QDir::separator()) == false))
+            path.isEmpty() || (path != Project_ && path.startsWith(Project_ + QStringLiteral("/")) == false))
         {
             return false;
         }

@@ -50,10 +50,12 @@ void BuildRoom(internal::ReferenceSceneData& outScene, const internal::Reference
         const math::Vector3 center{sequence.Next() * ROOM_EXTENT,
                                    sequence.Next() * ROOM_EXTENT,
                                    sequence.Next() * ROOM_EXTENT};
-        AddTriangle(outScene,
-                    center,
-                    center + math::Vector3{SMALL_EXTENT, sequence.Next() * SMALL_EXTENT, 0},
-                    center + math::Vector3{0, SMALL_EXTENT, sequence.Next() * SMALL_EXTENT});
+        // Sequence random draws before the call: argument evaluation order differs between compilers.
+        const math::Vector3 secondPositionWorld =
+            center + math::Vector3{SMALL_EXTENT, sequence.Next() * SMALL_EXTENT, 0};
+        const math::Vector3 thirdPositionWorld =
+            center + math::Vector3{0, SMALL_EXTENT, sequence.Next() * SMALL_EXTENT};
+        AddTriangle(outScene, center, secondPositionWorld, thirdPositionWorld);
     }
     AddTriangle(outScene, {0, 0, 0}, {ROOM_EXTENT, 0, 0}, {0, ROOM_EXTENT, 0});
     AddTriangle(outScene, {0, 0, 0}, {0, 0, ROOM_EXTENT}, {ROOM_EXTENT, 0, 0});

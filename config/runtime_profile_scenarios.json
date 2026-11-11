@@ -134,7 +134,7 @@
       "parser": {
         "kind": "tagged-rows",
         "tables": [
-          {"tag": "R7", "columns": ["layers", "sample", "merge", "state", "gpu_duration_ns", "tick_ns", "valid_bits", "logical_bytes", "api_bytes_available", "api_bytes", "peak_api_bytes", "arm_cpu_ns", "poll_and_memory_cpu_ns", "allocator_blocks_available", "allocator_block_bytes", "peak_allocator_block_bytes"], "key": ["layers", "merge"], "metrics": ["gpu_duration_ns"], "where": {"state": "3"}, "rows": 1024},
+          {"tag": "R7", "columns": ["layers", "sample", "merge", "state", "gpu_duration_ns", "tick_ns", "valid_bits", "logical_bytes", "api_bytes_available", "api_bytes", "peak_api_bytes", "arm_cpu_ns", "poll_and_memory_cpu_ns", "allocator_blocks_available", "allocator_block_bytes", "peak_allocator_block_bytes"], "key": ["layers", "merge"], "metrics": ["gpu_duration_ns", "logical_bytes", "api_bytes_available", "peak_api_bytes"], "where": {"state": "3"}, "rows": 1024},
           {"tag": "R5", "columns": ["layers", "sample", "merge", "setup_cpu_ns", "execute_cpu_ns", "readback_wait_cpu_ns", "raster_passes", "draws", "plan_bytes", "buffer_bytes", "texture_bytes"], "key": ["layers", "merge"], "metrics": ["setup_cpu_ns", "execute_cpu_ns", "readback_wait_cpu_ns"], "where": {}, "rows": 1024}
         ],
         "observe": ["R7ADAPTER", "R7PROFILE", "R5BACKEND"]

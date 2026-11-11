@@ -352,14 +352,13 @@ void EnableDebugLayer() noexcept
     return true;
 }
 
-/// Test builds can select WARP explicitly to keep CI independent of host adapters.
-/// A function, not a constant, so builds without test readback have no constant loop
-/// condition (MSVC C4127 under /W4 /WX).
-[[nodiscard]] bool IsWarpRequired() noexcept
+/// Test builds can require one adapter class for reproducible qualification.
+[[nodiscard]] bool IsTestAdapterRequired(const wchar_t* variable) noexcept
 {
 #if defined(LUDUS_RHI_TEST_READBACK)
-    return ::GetEnvironmentVariableW(L"LUDUS_TEST_REQUIRE_WARP", nullptr, 0) != 0;
+    return ::GetEnvironmentVariableW(variable, nullptr, 0) != 0;
 #else
+    static_cast<void>(variable);
     return false;
 #endif
 }
@@ -367,6 +366,13 @@ void EnableDebugLayer() noexcept
 /// Prefers the highest-performance hardware adapter with a WARP fallback.
 [[nodiscard]] bool SelectAdapter(const platform::HostedSurfaceChannel* channelOrNull) noexcept
 {
+    const bool shouldUseWarp = IsTestAdapterRequired(L"LUDUS_TEST_REQUIRE_WARP");
+    const bool isHardwareRequired = IsTestAdapterRequired(L"LUDUS_TEST_REQUIRE_HARDWARE");
+    if (shouldUseWarp == true && isHardwareRequired == true)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: set only one test adapter requirement");
+        return false;
+    }
     platform::HostedAdapterIdentity preferred;
     if (channelOrNull != nullptr && channelOrNull->TryGetConsumerAdapter(preferred) == true)
     {
@@ -375,14 +381,21 @@ void EnableDebugLayer() noexcept
                                                           GetInterfaceId(adapterOrNull),
                                                           GetInterfaceOutput(adapterOrNull));
         ComOwner<IDXGIAdapter1> adapter = Adopt(adapterOrNull);
-        if (FAILED(found) == true || adapter.Get() == nullptr || CreateDeviceOn(adapter.Get()) == false)
+        DXGI_ADAPTER_DESC1 description{};
+        if (FAILED(found) == true || adapter.Get() == nullptr || FAILED(adapter->GetDesc1(&description)) == true)
+        {
+            return false;
+        }
+        const bool isSoftware = (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+        if ((shouldUseWarp == true && isSoftware == false) || (isHardwareRequired == true && isSoftware == true) ||
+            CreateDeviceOn(adapter.Get()) == false)
         {
             return false;
         }
         gAdapter = Move(adapter);
+        isSoftwareAdapter = isSoftware;
         return true;
     }
-    const bool shouldUseWarp = IsWarpRequired();
     for (UINT index = 0; shouldUseWarp == false; ++index)
     {
         IDXGIAdapter1* adapterOrNull = nullptr;
@@ -409,6 +422,11 @@ void EnableDebugLayer() noexcept
             isSoftwareAdapter = false;
             return true;
         }
+    }
+    if (isHardwareRequired == true)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: enable a compatible physical adapter for hardware qualification");
+        return false;
     }
     IDXGIAdapter1* warpOrNull = nullptr;
     if (FAILED(gFactory->EnumWarpAdapter(GetInterfaceId(warpOrNull), GetInterfaceOutput(warpOrNull))) == true ||
@@ -1464,10 +1482,6 @@ MeasurementAdapter TimingAdapter() noexcept
     output.SoftwareKnown = true;
     output.Software = isSoftwareAdapter == true || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
     return output;
-}
-bool RasterAllocationBytes(internal::RasterKind, usize, uint64&) noexcept
-{
-    return false;
 }
 #if defined(LUDUS_RHI_TEST_READBACK)
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept

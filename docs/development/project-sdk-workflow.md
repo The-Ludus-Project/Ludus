@@ -18,7 +18,7 @@ continues to honor an explicit shell `SDKROOT` override.
 > Apple silicon acceptance; Intel identity/architecture selection is covered by
 > unit tests and still needs native Intel acceptance. [Windows MSVC project setup](#windows-msvc-projects)
 > covers the installed Foundation, Input, Platform, and RHI SDK in four flavors and the
-> [Development runtime SDK](#windows-runtime-sdk), with
+> [runtime SDK](#windows-runtime-sdk), with
 > [VS Code and Visual Studio](#vs-code-and-visual-studio-on-windows) journeys. General scene authoring
 > requires separate acceptance. [Browser releases](editor-game-releases.md) and
 > [native live editing](project-live-reload.md) have their own implemented scope;
@@ -272,6 +272,11 @@ $project = 'C:/Projects/MyGame'
 & $python -m ludus_tools project check $project --tools $tools --profile windows-msvc-profile
 ```
 
+The native editor accepts the same version-2 Windows profiles as the project
+tooling. The Project profile control lists both Ninja and Visual Studio
+configurations. A new Windows editor project starts with the Ninja Development
+preset; hosted Play uses the Ninja Debug and Development presets.
+
 The minimal template provides `windows-msvc-debug`,
 `windows-msvc-development`, `windows-msvc-profile`, and
 `windows-msvc-release` as configure, build, and test presets. Select a matching
@@ -303,8 +308,8 @@ D3D12 applications, select the installed `Platform` and `GraphicsRhi`
 components. Repair prepares Slang and DXC for projects using
 `ludus_compile_shader`. The Windows workflow uses a local SDK prefix. The
 Visual Studio solution installs the Foundation, Input, Platform, and RHI closure
-in all four flavors; the runtime SDK below adds the renderer and content closure
-for Development. Editor hosting, dynamic GameHost loading, browser setup, and
+in all four flavors. The runtime SDK below adds the renderer and content closure
+with a Ninja producer and consumers for both generators. Editor hosting, dynamic GameHost loading, browser setup, and
 release automation have separate acceptance requirements.
 
 ### Windows runtime SDK
@@ -339,8 +344,27 @@ prefix with `--sdk` for the `windows-msvc-development` or
 `windows-msvc-visual-studio-development` profile, and list the modules you link
 in `--components`.
 
-The runtime SDK includes the scene cooker (`SceneCook`) and shader file delivery
-(`ShaderDevelopment`). Debug, Profile and Release runtime SDKs are still pending.
+Use a separate CMakeDeps folder for each dependency configuration and install
+each flavor to its own prefix. Switch the Conan host `build_type` in the command
+above to match the selected SDK preset. For Debug, pass
+`config/conan/profiles/windows-msvc-debug-x86_64` as the host profile.
+It supplies the pinned FreeType feature results to HarfBuzz because CMake's
+Debug feature probe cannot resolve the nested Conan import.
+
+| Flavor | SDK preset and install directory name | Conan host build type |
+| --- | --- | --- |
+| Debug | `windows-msvc-runtime-sdk-debug` | `Debug` |
+| Development | `windows-msvc-runtime-sdk` | `RelWithDebInfo` |
+| Profile | `windows-msvc-runtime-sdk-profile` | `RelWithDebInfo` |
+| Release | `windows-msvc-runtime-sdk-release` | `Release` |
+
+The Debug, Development and Profile SDKs embed MSVC debug information in the
+engine objects, so linking a relocated archive does not require the producer's
+compiler PDB. Use the matching `windows-msvc-<flavor>` or
+`windows-msvc-visual-studio-<flavor>` project preset with the corresponding
+prefix under `out/install`. The runtime SDK includes the scene cooker (`SceneCook`) and shader file delivery
+(`ShaderDevelopment`). It omits the development diagnostic session, Unicode and
+the OIDN denoiser. Behavior is an opt-in for the Development SDK journey.
 
 To include the optional Luau Behavior provider and its paired cooking tools,
 run these commands from the same x64 developer shell:

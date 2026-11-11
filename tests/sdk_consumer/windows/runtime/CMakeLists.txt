@@ -12,8 +12,8 @@ string(REGEX REPLACE "(^| )[/-]W[0-4]( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLA
 find_package(Ludus CONFIG REQUIRED
     COMPONENTS GraphicsRenderer GraphicsText Text Resources Content GameplayWorld GameplayCamera Ui Localization GameHost
     PATHS "${CMAKE_PREFIX_PATH}" NO_DEFAULT_PATH)
-if(NOT Ludus_BUILD_FLAVOR STREQUAL "Development")
-    message(FATAL_ERROR "Expected the Development runtime SDK, found ${Ludus_BUILD_FLAVOR}.")
+if(NOT Ludus_BUILD_FLAVOR STREQUAL EXPECTED_LUDUS_FLAVOR)
+    message(FATAL_ERROR "Expected the ${EXPECTED_LUDUS_FLAVOR} runtime SDK, found ${Ludus_BUILD_FLAVOR}.")
 endif()
 foreach(dependency IN ITEMS freetype harfbuzz)
     cmake_path(IS_PREFIX CMAKE_PREFIX_PATH "${${dependency}_DIR}" NORMALIZE is_bundled)

@@ -2518,7 +2518,12 @@ def command_bundle_sdk_dependencies(args: argparse.Namespace) -> int:
     return 0
 
 
-WINDOWS_RUNTIME_SDK_PRESET = "windows-msvc-runtime-sdk"
+WINDOWS_RUNTIME_SDK_CONFIGURATIONS = {
+    "windows-msvc-runtime-sdk": "RelWithDebInfo",
+    "windows-msvc-runtime-sdk-debug": "Debug",
+    "windows-msvc-runtime-sdk-profile": "RelWithDebInfo",
+    "windows-msvc-runtime-sdk-release": "Release",
+}
 # The Windows runtime closure links only FreeType and HarfBuzz from Conan.
 WINDOWS_RUNTIME_SDK_DEPENDENCIES = ("freetype", "harfbuzz")
 
@@ -2562,18 +2567,22 @@ def install_windows_runtime_sdk(root: Path, preset: str, *, behavior: bool = Fal
 
     The Visual Studio solution installs the four-flavor Foundation/Input/Platform/RHI
     closure with ``cmake --install --config``; this path installs the wider
-    runtime closure (renderer, content, text, UI, static GameHost) for
-    Development. Conan dependencies come from ``LUDUS_WINDOWS_DEPENDENCIES``.
+    runtime closure (renderer, content, text, UI, static GameHost) in the selected
+    flavor. Conan dependencies come from ``LUDUS_WINDOWS_DEPENDENCIES``.
     """
-    if preset != WINDOWS_RUNTIME_SDK_PRESET:
-        raise EngineError(f"Windows install-sdk supports {WINDOWS_RUNTIME_SDK_PRESET}; install the Visual Studio "
+    configuration = WINDOWS_RUNTIME_SDK_CONFIGURATIONS.get(preset)
+    if configuration is None:
+        supported = ", ".join(WINDOWS_RUNTIME_SDK_CONFIGURATIONS)
+        raise EngineError(f"Windows install-sdk supports {supported}. Install the Visual Studio "
                           "closure with: cmake --install out/build/windows-msvc-visual-studio --config <flavor>")
     if os.name != "nt":
         raise EngineError(f"{preset} must be installed on a Windows host")
     dependencies_value = os.environ.get("LUDUS_WINDOWS_DEPENDENCIES", "")
     dependencies = Path(dependencies_value)
-    if dependencies_value == "" or (dependencies / "freetype-config.cmake").is_file() == False:
-        raise EngineError("Set LUDUS_WINDOWS_DEPENDENCIES to the RelWithDebInfo CMakeDeps folder containing "
+    configuration_data = (f"{dependency}-{configuration.lower()}-*-data.cmake"
+                          for dependency in WINDOWS_RUNTIME_SDK_DEPENDENCIES)
+    if not dependencies_value or any(not any(dependencies.glob(pattern)) for pattern in configuration_data):
+        raise EngineError(f"Set LUDUS_WINDOWS_DEPENDENCIES to the {configuration} CMakeDeps folder containing "
                           "FreeType and HarfBuzz (see docs/development/project-sdk-workflow.md)")
     from ludus_tools import bundle_deps
 

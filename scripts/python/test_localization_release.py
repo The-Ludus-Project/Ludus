@@ -160,7 +160,7 @@ class ReleaseCookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
             for directory in (one, two):
                 release.write_release(Path(directory), first, [])
-            names = sorted(str(p.relative_to(one)) for p in Path(one).rglob("*") if p.is_file())
+            names = sorted(p.relative_to(one).as_posix() for p in Path(one).rglob("*") if p.is_file())
             self.assertEqual(names, ["bindings/test/l1.hpp", "packages/test/l1/en-US.loc",
                                      "packages/test/l1/fr-CA.loc", "packages/test/l1/fr-FR.loc", "release.json",
                                      "source-map.json"])

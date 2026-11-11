@@ -42,8 +42,13 @@ def main():
                 if not (agility / filename).is_file():
                     raise RuntimeError(f"Missing Agility runtime file {agility / filename}. Rebuild the player.")
             output = run([*packed, "--frames", "3", "--follow-camera"])
-            if os.environ.get("LUDUS_TEST_REQUIRE_WARP") and "Direct3D 12 software adapter" not in output:
-                raise RuntimeError(f"The windowed test did not select WARP.\n{output}")
+            adapter = re.search(r"Direct3D 12 (software|hardware) adapter '[^\r\n]+'", output)
+            for variable, kind in (("LUDUS_TEST_REQUIRE_WARP", "software"),
+                                   ("LUDUS_TEST_REQUIRE_HARDWARE", "hardware")):
+                if os.environ.get(variable) and (adapter is None or adapter[1] != kind):
+                    raise RuntimeError(f"The windowed test did not select a {kind} adapter.\n{output}")
+            if adapter is not None:
+                print(adapter[0])
             if "Reference presented 3 frames" not in output:
                 raise RuntimeError(f"The packed room did not present three frames.\n{output}")
         pack.write_bytes(b"invalid pack")

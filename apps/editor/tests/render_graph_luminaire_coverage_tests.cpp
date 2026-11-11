@@ -1,3 +1,5 @@
+#include "render_graph_template_fixture.h"
+
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_luminaire_coverage.h"
 #include "internal/renderer_workspace.h"
@@ -176,6 +178,7 @@ TEST_CASE("The luminaire check follows the imported template only while it is on
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
+    tests::SetTemplateAuthoringProfiles(document);
     QString error;
     REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
                                                 QStringLiteral("Luminaire"),

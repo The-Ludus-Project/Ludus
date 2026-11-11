@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -13,21 +14,24 @@ using namespace ludus::editor;
 TEST_CASE("External code editor paths remain individual arguments", "[editor][source-editor]")
 {
     QTemporaryDir temporary;
+    REQUIRE(temporary.isValid() == true);
     const QString path = QDir(temporary.path()).filePath(QStringLiteral("shader $(literal) with spaces.slang"));
     QFile source(path);
     REQUIRE(source.open(QIODevice::WriteOnly) == true);
+    const QByteArray script = QByteArrayLiteral("import sys\nsys.exit(0 if len(sys.argv) == 1 else 1)\n");
+    REQUIRE(source.write(script) == script.size());
     source.close();
+    const QString program = QStringLiteral(LUDUS_EDITOR_TEST_PYTHON);
     ExternalCodeEditorCommand command;
-    REQUIRE(MakeExternalCodeEditorCommand(QStringLiteral("/usr/bin/true"), path, command) == true);
-    CHECK(command.Program == QStringLiteral("/usr/bin/true"));
+    REQUIRE(MakeExternalCodeEditorCommand(program, path, command) == true);
+    CHECK(command.Program == QFileInfo(program).absoluteFilePath());
     CHECK(command.Arguments == QStringList{QFileInfo(path).canonicalFilePath()});
     CHECK(QProcess::execute(command.Program, command.Arguments) == 0);
     const ExternalCodeEditorCommand original = command;
     CHECK(MakeExternalCodeEditorCommand(temporary.path(), path, command) == false);
     CHECK(command.Program == original.Program);
     CHECK(command.Arguments == original.Arguments);
-    CHECK(MakeExternalCodeEditorCommand(QStringLiteral("/usr/bin/true"), path + QStringLiteral("missing"), command) ==
-          false);
+    CHECK(MakeExternalCodeEditorCommand(program, path + QStringLiteral("missing"), command) == false);
     CHECK(command.Arguments == original.Arguments);
 }
 

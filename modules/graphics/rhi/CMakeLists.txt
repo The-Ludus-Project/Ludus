@@ -194,6 +194,22 @@ if(LUDUS_BUILD_TESTS AND WIN32)
     # Fullscreen pixel tests need DXIL from the pinned Slang and DXC
     # (python scripts/shader-probe bootstrap on the Windows host).
     if(LUDUS_SLANG_COMPILER AND LUDUS_DXC_DIRECTORY)
+        # Reuse the native ordered-graph workload for Windows device profiling.
+        # The common source/shader block below owns its fixtures and measurements.
+        add_executable(ludus_rhi_render_tests EXCLUDE_FROM_ALL)
+        target_include_directories(ludus_rhi_render_tests PRIVATE src)
+        ludus_configure_win32_target(ludus_rhi_render_tests)
+        target_compile_definitions(ludus_rhi_render_tests PRIVATE LUDUS_TEST_DXIL=1)
+        target_link_libraries(ludus_rhi_render_tests PRIVATE
+            Ludus::GraphicsRhi Ludus::FoundationLogging Ludus::FoundationThreading Ludus::FoundationTime
+            Catch2::Catch2WithMain)
+        ludus_apply_project_defaults(ludus_rhi_render_tests)
+        ludus_enable_test_exceptions(ludus_rhi_render_tests)
+        ludus_attach_d3d12_agility(ludus_rhi_render_tests "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+            "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+        add_test(NAME ludus_rhi_windows_profile_smoke COMMAND ludus_rhi_render_tests
+            "Portable indexed*" --section "R5 merged painter order matches unmerged complete image")
+        set_tests_properties(ludus_rhi_windows_profile_smoke PROPERTIES LABELS "rhi;gpu;windows" TIMEOUT 120)
         target_compile_definitions(ludus_rhi_d3d12_tests PRIVATE LUDUS_TEST_DXIL=1)
         target_sources(ludus_rhi_d3d12_tests PRIVATE tests/portable_raster_conformance_tests.cpp)
         ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME diagnostic

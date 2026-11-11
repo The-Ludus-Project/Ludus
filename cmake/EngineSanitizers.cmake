@@ -32,9 +32,16 @@ function(ludus_probe_sanitizer_runtime sanitizer_flags)
     set(executable "${directory}/probe${CMAKE_EXECUTABLE_SUFFIX}")
     file(WRITE "${source}" "int main() { delete[] new char[16]; return 0; }\n")
     file(REMOVE "${executable}")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        set(probe_compile_options /fsanitize=address)
+        set(probe_link_options /INCREMENTAL:NO)
+    else()
+        set(probe_compile_options -fsanitize=${sanitizer_flags} -fno-omit-frame-pointer)
+        set(probe_link_options -fsanitize=${sanitizer_flags})
+    endif()
     try_compile(compiled SOURCES "${source}"
-        COMPILE_DEFINITIONS -fsanitize=${sanitizer_flags} -fno-omit-frame-pointer
-        LINK_OPTIONS -fsanitize=${sanitizer_flags}
+        COMPILE_DEFINITIONS ${probe_compile_options}
+        LINK_OPTIONS ${probe_link_options}
         OUTPUT_VARIABLE build_output
         COPY_FILE "${executable}"
         NO_CACHE)
@@ -90,6 +97,25 @@ function(ludus_configure_project_sanitizers target_name)
 
     if(LUDUS_ENABLE_TSAN AND LUDUS_ENABLE_COVERAGE)
         message(FATAL_ERROR "LUDUS_ENABLE_TSAN and LUDUS_ENABLE_COVERAGE cannot be enabled together")
+    endif()
+
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        if(LUDUS_ENABLE_UBSAN OR LUDUS_ENABLE_TSAN)
+            message(FATAL_ERROR "MSVC supports LUDUS_ENABLE_ASAN only. Use the native Clang profiles for UBSan and TSan.")
+        endif()
+        if(LUDUS_ENABLE_ASAN)
+            ludus_probe_sanitizer_runtime("address")
+            target_compile_definitions(${target_name} INTERFACE LUDUS_BUILD_SANITIZED=1)
+            # Thanks to Microsoft, "AddressSanitizer known issues and limitations":
+            # uninstrumented Catch2 has no STL container annotations. Match that
+            # boundary while retaining heap/stack instrumentation in engine code.
+            # https://learn.microsoft.com/cpp/sanitizers/asan-known-issues
+            target_compile_definitions(${target_name} INTERFACE
+                _DISABLE_VECTOR_ANNOTATION _DISABLE_STRING_ANNOTATION)
+            target_compile_options(${target_name} INTERFACE /fsanitize=address)
+            target_link_options(${target_name} INTERFACE /INCREMENTAL:NO)
+        endif()
+        return()
     endif()
 
     set(enabled_sanitizers "")

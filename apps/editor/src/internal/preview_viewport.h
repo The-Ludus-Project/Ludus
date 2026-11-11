@@ -196,6 +196,7 @@ public:
     [[nodiscard]] static bool CanPresent() noexcept;
     /// Select the presentation path from the Qt version and platform plugin. Setting the
     /// environment variable LUDUS_EDITOR_VIEWPORT=offscreen forces the readback path on Linux.
+    /// LUDUS_EDITOR_VIEWPORT=disabled suppresses native presentation for widget and document tests.
     [[nodiscard]] static ViewportPresentation GetPresentation() noexcept;
 
 Q_SIGNALS:
