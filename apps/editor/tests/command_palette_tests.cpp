@@ -1,8 +1,10 @@
 // Command palette and the searchable shortcut list: fuzzy ranking, availability, running a command, and the
 // two shortcuts that open the palette.
 
+#include "internal/code_editor.h"
 #include "internal/command_palette.h"
 #include "internal/controller.h"
+#include "internal/editor_commands.h"
 #include "internal/main_window.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -10,12 +12,15 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolBar>
 #include <QTreeWidget>
 
 using namespace ludus::editor;
@@ -219,4 +224,124 @@ TEST_CASE("The F1 shortcut list is grouped by menu and searchable", "[editor][pa
     CHECK(findLeaf(QStringLiteral("Open Project...")) != nullptr);
     CHECK(tree->topLevelItemCount() < groups);
     list->close();
+}
+
+TEST_CASE("Fuzzy match positions mark the matched letters in order", "[editor][palette]")
+{
+    CHECK(FindFuzzyMatchPositions(QStringLiteral("bg"), QStringLiteral("Build Graph")) == QList<int>{0, 6});
+    CHECK(FindFuzzyMatchPositions(QStringLiteral("B G"), QStringLiteral("build graph")) == QList<int>{0, 6});
+    CHECK(FindFuzzyMatchPositions(QString(), QStringLiteral("Build Graph")).isEmpty() == true);
+    CHECK(FindFuzzyMatchPositions(QStringLiteral("gb"), QStringLiteral("Build Graph")).isEmpty() == true);
+    // A long label still matches: a match never scores below zero, which means no match.
+    const QString longLabel = QStringLiteral("a") + QString(QChar('z')).repeated(400);
+    CHECK(ScoreFuzzyMatch(QStringLiteral("a"), longLabel) >= 0);
+    CHECK(FindFuzzyMatchPositions(QStringLiteral("a"), longLabel) == QList<int>{0});
+}
+
+TEST_CASE("Commands only on a toolbar or the window are listed once, after the menus", "[editor][palette]")
+{
+    QMainWindow window;
+    QMenu* menu = window.menuBar()->addMenu(QStringLiteral("&Tools"));
+    QAction* inMenu = menu->addAction(QStringLiteral("&Alpha"));
+    QAction* palette = menu->addAction(QStringLiteral("&Command Palette..."));
+    palette->setObjectName(QStringLiteral("tools.commandPalette"));
+    QToolBar* toolbar = window.addToolBar(QStringLiteral("Game"));
+    toolbar->addAction(inMenu);
+    toolbar->addSeparator();
+    toolbar->addAction(QStringLiteral("Toolbar Only"));
+    QAction* windowOnly = new QAction(QStringLiteral("Window &Only"), &window);
+    windowOnly->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_J));
+    window.addAction(windowOnly);
+    window.addAction(inMenu);
+    const QList<PaletteEntry> entries = CollectWindowPaletteEntries(window);
+    REQUIRE(entries.size() == 3);
+    CHECK(entries.at(0).Label == QStringLiteral("Alpha"));
+    CHECK(entries.at(0).Group == QStringLiteral("Tools"));
+    CHECK(entries.at(1).Label == QStringLiteral("Toolbar Only"));
+    CHECK(entries.at(1).Group == QStringLiteral("Game"));
+    CHECK(entries.at(2).Label == QStringLiteral("Window Only"));
+    CHECK(entries.at(2).Group == QStringLiteral("Window"));
+    CHECK(entries.at(2).Shortcut == windowOnly->shortcut().toString(QKeySequence::NativeText));
+}
+
+TEST_CASE("Page keys move a page and stop at the ends; the search box names the chosen command",
+          "[editor][palette][keyboard]")
+{
+    constexpr int ENTRY_COUNT = 30;
+    constexpr int PAGE_ROWS = 10;
+    QWidget host;
+    QList<PaletteEntry> entries;
+    for (int index = 0; index < ENTRY_COUNT; ++index)
+    {
+        entries.append(MakeEntry(QStringLiteral("Command %1").arg(index), QStringLiteral("Tools"), true));
+    }
+    entries[0].Shortcut = QStringLiteral("F4");
+    CommandPalette* palette = new CommandPalette(entries, false, &host);
+    palette->show();
+    QLineEdit* search = palette->findChild<QLineEdit*>(QStringLiteral("commandPaletteSearch"));
+    QListWidget* list = palette->findChild<QListWidget*>(QStringLiteral("commandPaletteList"));
+    REQUIRE(search != nullptr);
+    REQUIRE(list != nullptr);
+    CHECK(list->currentRow() == 0);
+    CHECK(search->accessibleDescription() == QStringLiteral("Command 0, F4"));
+    QTest::keyClick(search, Qt::Key_PageDown);
+    CHECK(list->currentRow() == PAGE_ROWS);
+    QTest::keyClick(search, Qt::Key_PageDown);
+    QTest::keyClick(search, Qt::Key_PageDown);
+    CHECK(list->currentRow() == ENTRY_COUNT - 1);
+    QTest::keyClick(search, Qt::Key_PageUp);
+    CHECK(list->currentRow() == ENTRY_COUNT - 1 - PAGE_ROWS);
+    CHECK(search->accessibleDescription() == QStringLiteral("Command 19"));
+    QTest::keyClick(search, Qt::Key_PageUp);
+    QTest::keyClick(search, Qt::Key_PageUp);
+    CHECK(list->currentRow() == 0);
+    // The arrows wrap; the page keys do not.
+    QTest::keyClick(search, Qt::Key_Up);
+    CHECK(list->currentRow() == ENTRY_COUNT - 1);
+    // Focus never leaves the search box, and the hint says how to drive it.
+    CHECK(palette->focusWidget() == search);
+    CHECK(palette->findChild<QLabel*>(QStringLiteral("commandPaletteHint")) != nullptr);
+    palette->close();
+}
+
+TEST_CASE("The palette finds Tab Moves Focus by name, shows its shortcut and runs it with Enter",
+          "[editor][palette][keyboard][shell]")
+{
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    QApplication::processEvents();
+    QAction* tabMovesFocus = window.findChild<QAction*>(QStringLiteral("editor.tabMovesFocus"));
+    REQUIRE(tabMovesFocus != nullptr);
+    CHECK(tabMovesFocus->shortcut() == QKeySequence(QString::fromLatin1(TAB_MOVES_FOCUS_SHORTCUT)));
+    CHECK(tabMovesFocus->isChecked() == false);
+    CHECK(IsCodeEditorTabMovingFocus() == false);
+
+    // Every command the palette lists is a real QAction of the window: it reuses them rather than copying.
+    const QList<PaletteEntry> entries = CollectWindowPaletteEntries(window);
+    const QList<QAction*> actions = window.findChildren<QAction*>();
+    for (const PaletteEntry& entry : entries)
+    {
+        INFO(entry.Label.toStdString());
+        CHECK(actions.contains(entry.Action.data()) == true);
+    }
+
+    window.findChild<QAction*>(QStringLiteral("tools.commandPalette"))->trigger();
+    CommandPalette* palette = window.findChild<CommandPalette*>(QStringLiteral("commandPalette"));
+    REQUIRE(palette != nullptr);
+    QLineEdit* search = palette->findChild<QLineEdit*>(QStringLiteral("commandPaletteSearch"));
+    REQUIRE(search != nullptr);
+    QTest::keyClicks(search, QStringLiteral("tab moves"));
+    const QList<int> shown = palette->GetShownIndices();
+    REQUIRE(shown.isEmpty() == false);
+    const QList<PaletteEntry> paletteEntries = CollectWindowPaletteEntries(window);
+    CHECK(paletteEntries.at(shown.first()).Label == QStringLiteral("Tab Moves Focus"));
+    CHECK(paletteEntries.at(shown.first()).Shortcut.isEmpty() == false);
+    QTest::keyClick(search, Qt::Key_Return);
+    QTest::qWait(50);
+    CHECK(tabMovesFocus->isChecked() == true);
+    CHECK(IsCodeEditorTabMovingFocus() == true);
+    tabMovesFocus->trigger();
+    CHECK(IsCodeEditorTabMovingFocus() == false);
 }

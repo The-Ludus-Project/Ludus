@@ -16,6 +16,7 @@
 #include <QDockWidget>
 #include <QFontMetrics>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -96,6 +97,17 @@ bool IsDarkPalette(const QPalette& palette)
 bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* value)
 {
     return widgetOrNull != nullptr && widgetOrNull->property(name).toString() == QLatin1String(value);
+}
+
+/// True for the controls whose edge becomes the focus ring (see drawPrimitive and drawComplexControl).
+bool HasOwnFocusRing(const QWidget* widgetOrNull)
+{
+    return qobject_cast<const QPushButton*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QToolButton*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QComboBox*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QAbstractSpinBox*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QLineEdit*>(widgetOrNull) != nullptr ||
+           qobject_cast<const QTabBar*>(widgetOrNull) != nullptr;
 }
 
 struct ControlBodyColours final
@@ -415,13 +427,22 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             painter->restore();
             return;
         }
-        case PE_FrameFocusRect:
-            // Item views mark the current row by its selection, and the controls draw their own focus ring.
-            if (qobject_cast<const QAbstractItemView*>(widgetOrNull) != nullptr)
+        case PE_FrameFocusRect: {
+            // Buttons, fields, combo and spin boxes and tabs draw the ring on their own edge, so the platform's
+            // inner rectangle would be a second, differently coloured marker.
+            if (HasOwnFocusRing(widgetOrNull) == true)
             {
                 return;
             }
-            break;
+            // Everything else (check boxes, radio buttons, the current row of a focused list or tree, group box
+            // titles) gets the same accent ring, whether or not the row is also selected: selection is a tinted
+            // fill, keyboard focus an outline (docs/architecture/editor-art-direction.md).
+            if (isEnabled == true)
+            {
+                DrawControlBody(painter, option->rect, { .Fill = Qt::transparent, .Edge = mColours.Accent }, ringWidth);
+            }
+            return;
+        }
         case PE_PanelButtonTool: {
             // A switch that is on (visual role "toggle", such as Force raster) fills with the accent like a selected
             // segment, so its state reads at a glance. Disclosure buttons (Advanced, Details) keep the edge only:
@@ -733,6 +754,18 @@ void EditorStyle::drawComplexControl(ComplexControl control,
             }
             return;
         }
+    }
+    if (control == CC_Slider)
+    {
+        // The platform marks a focused slider with a faint highlight; draw the same accent ring as every other
+        // control around the handle, which is what the arrow keys move.
+        QProxyStyle::drawComplexControl(control, option, painter, widgetOrNull);
+        if (isRingShown == true)
+        {
+            const QRect handle = proxy()->subControlRect(CC_Slider, option, SC_SliderHandle, widgetOrNull);
+            DrawControlBody(painter, handle, { .Fill = Qt::transparent, .Edge = mColours.Accent }, GetFocusRingWidth());
+        }
+        return;
     }
     QProxyStyle::drawComplexControl(control, option, painter, widgetOrNull);
 }

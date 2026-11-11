@@ -27,6 +27,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSlider>
 #include <QStatusBar>
 #include <QStyle>
 #include <QStyleOptionComboBox>
@@ -37,6 +38,9 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <initializer_list>
 
 using namespace ludus::editor;
 
@@ -387,4 +391,93 @@ TEST_CASE("Tabs below their content draw the accent rule on the edge facing it",
     CHECK(image.pixelColor(centre, tab.bottom()) != accent);
     // The unselected tab carries no rule.
     CHECK(image.pixelColor(bar->tabRect(1).center().x(), bar->tabRect(1).top()) != accent);
+}
+
+namespace
+{
+/// Pixels of exactly colour inside rect of image (logical rect scaled to the image's pixels).
+int CountColourPixels(const QImage& image, const QRect& logicalRect, const QColor& colour)
+{
+    const qreal scale = image.devicePixelRatio();
+    const QRect rect(static_cast<int>(logicalRect.x() * scale),
+                     static_cast<int>(logicalRect.y() * scale),
+                     static_cast<int>(logicalRect.width() * scale),
+                     static_cast<int>(logicalRect.height() * scale));
+    int count = 0;
+    for (int y = std::max(0, rect.top()); y <= std::min(image.height() - 1, rect.bottom()); ++y)
+    {
+        for (int x = std::max(0, rect.left()); x <= std::min(image.width() - 1, rect.right()); ++x)
+        {
+            count += image.pixelColor(x, y).rgb() == colour.rgb() ? 1 : 0;
+        }
+    }
+    return count;
+}
+} // namespace
+
+TEST_CASE("Keyboard focus draws the same accent ring on check boxes, radio buttons and sliders",
+          "[editor][style][keyboard]")
+{
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    QVBoxLayout* layout = new QVBoxLayout(&root);
+    QCheckBox* check = new QCheckBox(QStringLiteral("Check box"), &root);
+    QRadioButton* radio = new QRadioButton(QStringLiteral("Radio"), &root);
+    QSlider* slider = new QSlider(Qt::Horizontal, &root);
+    layout->addWidget(check);
+    layout->addWidget(radio);
+    layout->addWidget(slider);
+    root.show();
+    QApplication::setActiveWindow(&root);
+    REQUIRE(QTest::qWaitForWindowActive(&root) == true);
+    const QColor accent = root.palette().color(QPalette::Link);
+    for (QWidget* control : std::initializer_list<QWidget*>{check, radio, slider})
+    {
+        INFO(control->metaObject()->className());
+        control->clearFocus();
+        QApplication::processEvents();
+        CHECK(CountColourPixels(control->grab().toImage(), control->rect(), accent) == 0);
+        control->setFocus(Qt::TabFocusReason);
+        QApplication::processEvents();
+        CHECK(CountColourPixels(control->grab().toImage(), control->rect(), accent) > 0);
+    }
+}
+
+TEST_CASE("A focused list rings its current row, selected or not; an unfocused list does not",
+          "[editor][style][keyboard]")
+{
+    constexpr int ROW_COUNT = 4;
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    QVBoxLayout* layout = new QVBoxLayout(&root);
+    QListWidget* list = new QListWidget(&root);
+    QLineEdit* elsewhere = new QLineEdit(&root);
+    for (int row = 0; row < ROW_COUNT; ++row)
+    {
+        list->addItem(QStringLiteral("Row %1").arg(row));
+    }
+    layout->addWidget(list);
+    layout->addWidget(elsewhere);
+    root.show();
+    QApplication::setActiveWindow(&root);
+    REQUIRE(QTest::qWaitForWindowActive(&root) == true);
+    const QColor accent = root.palette().color(QPalette::Link);
+    const auto ringPixels = [list, &accent](int row) {
+        const QRect rowRect = list->visualItemRect(list->item(row));
+        return CountColourPixels(list->viewport()->grab().toImage(), rowRect, accent);
+    };
+    // Current but not selected: the ring is the only marker of where the arrow keys are.
+    list->setCurrentRow(1, QItemSelectionModel::NoUpdate);
+    list->setFocus(Qt::TabFocusReason);
+    QApplication::processEvents();
+    CHECK(ringPixels(1) > 0);
+    CHECK(ringPixels(2) == 0);
+    // Selected and current: the selection fill and the ring both show.
+    list->setCurrentRow(2);
+    QApplication::processEvents();
+    CHECK(ringPixels(2) > 0);
+    CHECK(ringPixels(1) == 0);
+    elsewhere->setFocus(Qt::TabFocusReason);
+    QApplication::processEvents();
+    CHECK(ringPixels(2) == 0);
 }

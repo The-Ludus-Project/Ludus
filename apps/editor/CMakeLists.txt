@@ -1231,6 +1231,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/workspace_layout_tests.cpp
         tests/editor_shell_tests.cpp
         tests/command_palette_tests.cpp
+        tests/keyboard_navigation_tests.cpp
         tests/recent_projects_tests.cpp
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
