@@ -12,18 +12,17 @@ unrelated `SDKROOT` inherited by the GUI does not replace it. If no prepared SDK
 exists, init tests installed SDKs automatically. Running `./init.sh` yourself
 continues to honor an explicit shell `SDKROOT` override.
 
-> Scope. Native project tooling supports **Linux x64** (Ubuntu 24.04) and
-> **macOS** with pinned upstream Clang 23, single-config Ninja, and
-> Debug/Development/Release SDK identities. The installed macOS CLI has native
-> Apple silicon acceptance; Intel identity/architecture selection is covered by
-> unit tests and still needs native Intel acceptance. [Windows MSVC project setup](#windows-msvc-projects)
-> covers the installed Foundation, Input, Platform, and RHI SDK in four flavors and the
-> [runtime SDK](#windows-runtime-sdk), with
-> [VS Code and Visual Studio](#vs-code-and-visual-studio-on-windows) journeys. General scene authoring
-> requires separate acceptance. [Browser releases](editor-game-releases.md) and
-> [native live editing](project-live-reload.md) have their own implemented scope;
-> an embedded viewport remains future work.
-> Do not assume unsupported combinations work.
+> Native project tooling supports **Linux x64** and **macOS** with pinned
+> upstream Clang 23, single-config Ninja, and Debug/Development/Release SDK
+> identities. Ubuntu 24.04 is the Linux CI baseline. The installed macOS CLI
+> has native Apple silicon acceptance. Intel identity and architecture selection
+> have unit-test coverage, with native Intel acceptance pending.
+> [Windows MSVC project setup](#windows-msvc-projects) covers four SDK flavors,
+> the [runtime SDK](#windows-runtime-sdk), and
+> [VS Code and Visual Studio](#vs-code-and-visual-studio-on-windows) workflows.
+> See the guides for [World authoring](editor-workspace.md#world-renderer-and-camera-preview),
+> [native live editing](project-live-reload.md) and [browser releases](editor-game-releases.md)
+> for their setup and validation coverage.
 
 ## Prerequisites
 

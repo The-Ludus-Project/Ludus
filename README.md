@@ -1,8 +1,8 @@
 # Ludus
 
 Ludus is a C++23 engine and toolset in active development, with modular runtime
-systems, an installed SDK and CLI, and an optional Linux editor. A bounded editor
-preview also runs in the browser.
+systems, an installed SDK and CLI, and native desktop editor paths for Linux,
+macOS and Windows. A bounded editor preview also runs in the browser.
 
 [Read Ludus Wiki](https://the-ludus-project.github.io/Ludus/) or open
 [the same documentation locally](docs/README.md). The Markdown, local assets and
@@ -10,7 +10,7 @@ checked HTML are also available as an [offline bundle](docs/development/wiki.md#
 
 ## Build the engine
 
-The native reference host is Ubuntu 24.04 with Clang/LLVM 23 (from apt.llvm.org). From a clone:
+For the Linux x64 Clang build used in Ubuntu CI, run these commands from a clone:
 
 ```bash
 ./init.sh --cli linux-clang-development --preset-only --locked --with-tests
@@ -18,9 +18,9 @@ The native reference host is Ubuntu 24.04 with Clang/LLVM 23 (from apt.llvm.org)
 ./scripts/test linux-clang-development
 ```
 
-[Building Ludus](docs/development/building.md) owns setup flags, Linux/headless
-and container instructions, macOS support, presets, IDE setup and validation.
-Initial dependency setup needs internet; prepared builds use the local cache.
+[Building Ludus](docs/development/building.md) covers native setup, presets,
+IDE configuration and validation, including the Windows MSVC build path.
+Initial dependency setup needs internet. Prepared builds use the local cache.
 
 ## Choose a task
 

@@ -1,8 +1,21 @@
 # Install and launch
 
 Prepare the desktop editor once, then use it to open, build and run projects.
-The supported native editor host is **Ubuntu 24.04, Linux x64**. The engine uses
-C++23 with Clang/LLVM 23 and LLD; Qt stays outside the engine SDK.
+
+- **Linux x64:** use the steps below with `linux-clang-development` on a
+  Wayland desktop. The rendered editor uses Vulkan. Ubuntu 24.04 is the Linux
+  CI baseline and has automatic package setup.
+- **macOS:** use the same steps with `macos-clang-development`. Apple silicon
+  has native validation. The rendered editor uses Metal and requires macOS 15
+  or later. Prepare Xcode Command Line Tools and the
+  [macOS build prerequisites](../../development/building.md#macos-support).
+- **Windows x64:** use the [Windows editor build and launch instructions](../../development/editor-workspace.md#windows-authoring-viewport)
+  from an MSVC developer shell. That route uses the `windows-msvc-runtime`
+  preset, Qt Quick and Direct3D 12. See the
+  [Windows qualification record](../../architecture/windows-direct3d12.md#d7-qualify-the-windows-profiles)
+  for the hosted WARP results and outstanding physical desktop checks.
+
+Qt is a desktop editor dependency. Game projects use the engine SDK.
 
 ## 1. Get the source
 
@@ -12,8 +25,8 @@ cd Ludus
 ```
 
 Keep this engine checkout separate from game projects you create.
-For the rendering tutorial, use a Wayland desktop with a Vulkan-capable driver;
-see [Building Ludus](../../development/building.md) for system prerequisites.
+On Windows, continue with the linked Windows build and launch instructions
+after cloning. The initialization and launcher steps below are for Linux and macOS.
 
 ## 2. Use graphical initialization
 
@@ -24,13 +37,12 @@ From the checkout root, launch the setup window:
 ```
 
 1. Under **Workflow**, select **Application developer**.
-2. Keep **Build preset** set to `linux-clang-development` and
+2. Select the Development preset for your host and keep
    **Prepare only the selected preset** checked.
 3. Under **Targets**, check **Build Ludus editor** (the 3D preview is included by default).
 4. Choose **Initialize**. A progress window lists each setup step, shows
    *Step N of M*, a progress bar and the elapsed time, and can show the live
-   output. Leave the launching terminal open: a sudo password prompt appears
-   there, and the window tells you when it is waiting for one.
+   output. Leave the launching terminal open for any system package prompts.
 
 Initialization prepares pinned tools and dependencies, installs missing supported
 system prerequisites when needed, and builds the editor. First-time setup can
@@ -47,7 +59,10 @@ window's controls.
 For terminal-only initialization, the equivalent choice is:
 
 ```bash
-./init.sh --cli --persona application --with-editor --preset-only
+# Linux
+./init.sh --cli linux-clang-development --persona application --with-editor --preset-only
+# macOS
+./init.sh --cli macos-clang-development --persona application --with-editor --preset-only
 ```
 
 If you manage system packages yourself, install the required toolchain and Qt,
@@ -56,7 +71,10 @@ then add `--no-system-install` to that command.
 ## 3. Launch the editor
 
 ```bash
+# Linux
 ./scripts/editor --preset linux-clang-development
+# macOS
+./scripts/editor --preset macos-clang-development
 ```
 
 The launcher opens the already-built editor; it does not build or install it.
@@ -66,19 +84,18 @@ the editor rather than through a series of setup commands.
 
 ## 4. Choose your first walkthrough
 
-- [Your first rendered scene: Cornell box](../../examples/cornell-box.md): open a
-  working sample, run it, change materials and geometry, and experiment with light
-  and shadows. Includes runtime screenshots and expected results for each edit.
-- [Create your first project](first-project.md): generate a minimal native project
-  in a new folder and learn the project's build/run/reopen workflow.
+- [Create your first project](first-project.md) walks through the minimal native
+  template and its build/run/reopen workflow.
+- [Your first rendered scene: Cornell box](../../examples/cornell-box.md) covers
+  the Linux editor and Linux/macOS command-line routes for editing materials,
+  geometry and lights in a working sample.
 
 ## Engine contributors and other hosts
 
 Use [Building Ludus](../../development/building.md) for engine validation,
-headless and sandbox requirements, the development container, macOS and profile
-selection. The native editor is currently Linux-only; the Cornell box guide has
-an independent command-line route for macOS. See
-[contributing](../contribute/index.md) for review gates.
+headless and sandbox requirements, and profile selection. See
+[contributing](../contribute/index.md) for review gates or try the
+[browser editor](../guides/browser-editor.md) for an in-browser workspace.
 
 ## Detailed references
 

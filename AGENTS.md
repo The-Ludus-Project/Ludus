@@ -136,6 +136,11 @@ engine code. Discuss such cases in the PR before adding them.
 
 - Format all C/C++ with the project `.clang-format` before committing:
   `./scripts/check --format --fix` (or `--format` to verify only).
+- `--format` covers C/C++ under `modules/`, `apps/` and `tests/`; it does not
+  read Slang. Format changed Slang, and changed C++ in `examples/`, `tools/` and
+  `cmake/`, with `./scripts/check --format-changed --base origin/develop --fix`
+  (omit `--fix` to verify). It selects the same changed files and uses the same
+  formatter wrapper as CI's `source_policy.py --clang-format`.
 - Designated initializers may be compact (`value = { .A = 0, .B = 1 };`).
   Multiline initializers put the opening brace on its own line, with one member
   per line and a trailing comma. Never use `value = {` followed by multiline
@@ -199,11 +204,13 @@ Run the gates locally before a PR:
 
 ```bash
 ./scripts/check --format                     # format, N1 everywhere, N2-N4 in adopted scopes
+./scripts/check --format-changed --base origin/develop   # changed C++/Slang formatting, as CI
 python3 scripts/python/source_policy.py --base origin/develop   # changed lines
 ./scripts/check linux-clang-development --tidy-changed --base origin/develop  # needs a configured build
 ```
 
-The pull-request **Source formatting** job runs the first two; batch validation's
+The pull-request **Source formatting** job runs `--format` and
+`source_policy.py --clang-format`, whose formatting stage is `--format-changed`; batch validation's
 **Clang static analysis** job runs `--tidy-changed` (`config/clang-tidy-changed.yml`,
 or `clang-tidy-changed-tests.yml` without magic numbers for test sources).
 Existing code is migrated when touched; changed lines must comply everywhere.

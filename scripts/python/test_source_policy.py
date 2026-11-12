@@ -1,12 +1,20 @@
 """Regressions for changed-source review rules and literal safety."""
 
+import contextlib
+import io
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from source_policy import added_lines, check, violations
+import engine
+from formatting import format_source
+from source_policy import added_lines, check, check_formatting, violations
+
+ROOT = Path(__file__).resolve().parents[2]
+CLANG_FORMAT = shutil.which(engine.pinned_llvm_tool(ROOT, "clang-format"))
 
 
 class SourcePolicyTests(unittest.TestCase):
@@ -458,6 +466,98 @@ target_sources(example PRIVATE extra.cpp)
             self.assertFalse(check(root, base, head=head))
             # Head-specific checking still rejects actual PR violations.
             self.assertTrue(check(root, head, head=git("rev-parse", "HEAD")))
+
+
+@unittest.skipUnless(CLANG_FORMAT, f"requires pinned {engine.pinned_llvm_tool(ROOT, 'clang-format')}")
+class ChangedFormattingTests(unittest.TestCase):
+    """Local ``./scripts/check --format-changed`` must agree with CI's source policy."""
+
+    def test_local_changed_formatting_matches_ci_for_slang(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*arguments):
+                return subprocess.run(
+                    ["git", *arguments],
+                    cwd=root,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                ).stdout.strip()
+
+            def local_check(base, fix=False):
+                output = io.StringIO()
+                error = None
+                with contextlib.redirect_stdout(output):
+                    try:
+                        engine.run_format_changed_check(
+                            root, base, fix=fix, clang_format=CLANG_FORMAT
+                        )
+                    except engine.EngineError as caught:
+                        error = caught
+                return error, output.getvalue().splitlines()
+
+            def ci_formatting(base, head):
+                return [
+                    failure
+                    for failure in check(root, base, CLANG_FORMAT, head=head)
+                    if "source formatting differs" in failure
+                ]
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Policy test")
+            git("config", "user.email", "policy@example.invalid")
+            shutil.copy(ROOT / ".clang-format", root / ".clang-format")
+            (root / "modules/example").mkdir(parents=True)
+            shader = root / "modules/example/shader.slang"
+            shader.write_text(
+                format_source(
+                    "float Scale(float value) { return value; }\n", shader, CLANG_FORMAT
+                )
+            )
+            # Unchanged formatting debt stays outside the changed-file scope.
+            debt = root / "modules/example/debt.slang"
+            debt_text = "float  Debt( float value ){return value;}\n"
+            debt.write_text(debt_text)
+            git("add", ".")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+
+            shader.write_text("float Scale( float value ){ return value+value; }\n")
+            git("commit", "-qam", "misformatted shader")
+            head = git("rev-parse", "HEAD")
+            expected = [
+                "modules/example/shader.slang: source formatting differs;"
+                " use the pinned formatter and formatting.format_source"
+            ]
+            self.assertEqual(ci_formatting(base, head), expected)
+            self.assertEqual(check_formatting(root, base, CLANG_FORMAT), expected)
+            error, lines = local_check(base)
+            self.assertIsNotNone(error)
+            self.assertIn("--format-changed", str(error))
+            self.assertEqual(lines, expected)
+
+            error, lines = local_check(base, fix=True)
+            self.assertIsNone(error)
+            self.assertEqual(lines, ["Formatted modules/example/shader.slang"])
+            self.assertEqual(debt.read_text(), debt_text)
+            git("commit", "-qam", "format shader")
+            head = git("rev-parse", "HEAD")
+            self.assertEqual(check(root, base, CLANG_FORMAT, head=head), [])
+            error, lines = local_check(base)
+            self.assertIsNone(error)
+            self.assertEqual(len(lines), 1)
+
+    def test_check_command_routes_format_changed_with_base(self):
+        arguments = engine.make_parser().parse_args(
+            ["check", "--format-changed", "--base", "origin/main", "--fix"]
+        )
+        with patch.object(engine, "repo_root", return_value=ROOT), patch.object(
+            engine, "run_format_changed_check"
+        ) as format_changed, patch.object(engine, "run_format_check") as format_all:
+            self.assertEqual(engine.command_check(arguments), 0)
+        format_changed.assert_called_once_with(ROOT, "origin/main", fix=True)
+        format_all.assert_not_called()
 
 
 if __name__ == "__main__":

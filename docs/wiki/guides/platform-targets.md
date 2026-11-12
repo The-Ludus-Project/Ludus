@@ -81,11 +81,12 @@ and backend inputs belong to the build system, separately from detected facts.
 
 | Target or toolchain | Current scope |
 | --- | --- |
-| Ubuntu 24.04, Linux x64, Clang/LLVM 23 | Native engine reference environment |
-| Pinned Emscripten, wasm32 | Browser Foundation, Platform and RHI paths plus smoke samples; browser/device acceptance is separate |
-| Windows x64, pinned Clang/LLVM 23, MSVC ABI | Threading closure and the [Direct3D 12 bring-up](../../architecture/windows-direct3d12.md) build and run in CI; not an engine deployment |
-| macOS, Android and iOS; ARM64; Emscripten wasm64 | Recognized classifications, not validated engine deployments |
-| GCC and MSVC frontend dispatch | Synthetic dispatch tests, not native engine toolchain support |
+| Linux x64, Clang/LLVM 23 and LLD | Native SDK and Qt editor with Wayland/Vulkan. Ubuntu 24.04 is the [Linux build and CI baseline](../../development/building.md). |
+| macOS arm64 and x64, Clang/LLVM 23 and libc++ | [Cocoa/Metal builds](../../development/building.md#macos-support) for both architectures, with native runtime and editor validation on Apple silicon. Intel runtime and editor acceptance is pending. |
+| Windows x64, MSVC | Win32/Direct3D 12 runtime, installed SDK and native Qt editor. Hosted coverage uses WARP. See the [Windows qualification record](../../architecture/windows-direct3d12.md#d7-qualify-the-windows-profiles) for physical desktop and GPU gates. |
+| Pinned Emscripten, wasm32 | Browser Foundation, Platform and RHI paths plus smoke samples. Runtime and device coverage is tracked in the [browser evidence](../../development/webgpu-w6-evidence.md). |
+| Android, iOS and Emscripten wasm64 | Detected targets with port work tracked separately. The shipped Emscripten presets use wasm32. |
+| GCC frontend | Synthetic dispatch coverage. |
 
 Not every combination of a recognized OS and architecture is a supported target.
 The compiler matrix includes real Clang target triples, but Apple cases use a
