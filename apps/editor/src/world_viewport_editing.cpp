@@ -25,6 +25,7 @@
 #include <QSet>
 #include <QShortcut>
 #include <QString>
+#include <QTimer>
 #include <QTreeWidget>
 
 namespace ludus::editor
@@ -160,8 +161,19 @@ void WorldWorkspace::updateViewportInteraction()
     applyTerrainInteraction();
     const bool hasSelectedPlayer =
         mSelectedEntities.size() == 1 && HasWorldFirstPersonPlayer(Document_, Selected_) == true;
+    const bool isExploreShown = mExploreFirstPersonButton->isVisibleTo(this);
     mExploreFirstPersonButton->setVisible(hasSelectedPlayer);
     mExploreFirstPersonButton->setEnabled(canEdit == true && hasSelectedPlayer == true);
+    if (hasSelectedPlayer == true && isExploreShown == false && mEntities->currentItem() != nullptr)
+    {
+        // The button takes a row from the list above it once laid out; keep the player that was clicked in view.
+        QTimer::singleShot(0, mEntities, [list = mEntities]() {
+            if (list->currentItem() != nullptr)
+            {
+                list->scrollToItem(list->currentItem());
+            }
+        });
+    }
 }
 QStringList WorldWorkspace::getStaticColliderTargets() const
 {

@@ -1,7 +1,10 @@
 #include "internal/world_entity_search.h"
 
+#include "design_tokens.h"
+#include "internal/editor_icons.h"
 #include "internal/world_document.h"
 
+#include <QHBoxLayout>
 #include <QHash>
 #include <QItemSelectionModel>
 #include <QJsonArray>
@@ -13,12 +16,40 @@
 #include <QSignalBlocker>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
-#include <QVBoxLayout>
 
 namespace ludus::editor
 {
 namespace
 {
+/// The icon that says what an entity is, from the components it carries, so the list can be scanned by kind.
+EditorIcon GetEntityIcon(const QJsonObject& entity)
+{
+    const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    if (components.contains(QStringLiteral("camera")) == true)
+    {
+        return EditorIcon::Camera;
+    }
+    if (components.contains(QStringLiteral("firstPersonPlayer")) == true)
+    {
+        return EditorIcon::Player;
+    }
+    if (components.contains(QStringLiteral("atmosphere")) == true)
+    {
+        return EditorIcon::Atmosphere;
+    }
+    if (components.contains(QStringLiteral("light")) == true)
+    {
+        const QString kind =
+            components.value(QStringLiteral("light")).toObject().value(QStringLiteral("kind")).toString();
+        return kind == QStringLiteral("directional") ? EditorIcon::Sun : EditorIcon::Lighting;
+    }
+    if (components.contains(QStringLiteral("renderable")) == true || components.contains(QStringLiteral("terrain")))
+    {
+        return EditorIcon::Mesh;
+    }
+    return EditorIcon::Scene;
+}
+
 void ExpandAncestors(const QTreeWidgetItem& item)
 {
     for (QTreeWidgetItem* ancestorOrNull = item.parent(); ancestorOrNull != nullptr;
@@ -59,8 +90,10 @@ bool DeselectRow(QTreeWidget& inoutTree, QTreeWidgetItem& inoutItem)
 WorldEntitySearch::WorldEntitySearch(QTreeWidget& inoutEntities, QWidget* parentOrNull)
     : QWidget(parentOrNull), mEntities(inoutEntities), mSearch(new QLineEdit(this)), mCount(new QLabel(this))
 {
-    QVBoxLayout* layout = new QVBoxLayout(this);
+    // The count sits at the end of the search row in the quiet text colour ("37", "5 of 37"), so it costs no line.
+    QHBoxLayout* layout = new QHBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(design::SPACING_SMALL);
     mSearch->setObjectName(QStringLiteral("worldEntitySearch"));
     mSearch->setAccessibleName(QStringLiteral("Search World entities"));
     mSearch->setPlaceholderText(QStringLiteral("Search entities…"));
@@ -69,8 +102,8 @@ WorldEntitySearch::WorldEntitySearch(QTreeWidget& inoutEntities, QWidget* parent
     mSearch->setClearButtonEnabled(true);
     mCount->setObjectName(QStringLiteral("worldEntityCount"));
     mCount->setTextFormat(Qt::PlainText);
-    mCount->setWordWrap(true);
-    layout->addWidget(mSearch);
+    mCount->setProperty("visualRole", QStringLiteral("secondary"));
+    layout->addWidget(mSearch, 1);
     layout->addWidget(mCount);
     connect(mSearch, &QLineEdit::textChanged, this, [this]() { refresh(); });
     connect(&mEntities, &QTreeWidget::itemCollapsed, this, [this]() { deselectCollapsedRows(); });
@@ -102,6 +135,7 @@ void WorldEntitySearch::Rebuild(const WorldDocument& document, const QStringList
         QTreeWidgetItem* item = new QTreeWidgetItem(QStringList{entity.value(QStringLiteral("name")).toString()});
         item->setData(0, Qt::UserRole, key);
         item->setToolTip(0, label == key ? key : label + QLatin1Char('\n') + key);
+        item->setIcon(0, GetEditorIcon(GetEntityIcon(entity)));
         rows.insert(key, item);
     }
     // Allocate all rows first so authored order need not put a parent before its children.
@@ -214,11 +248,15 @@ void WorldEntitySearch::refresh()
             }
         }
     }
-    mCount->setText(query.isEmpty() == true ? QStringLiteral("%1 entities").arg(totalCount)
-                                            : QStringLiteral("%1 of %2 entities").arg(matches.size()).arg(totalCount));
+    mCount->setText(query.isEmpty() == true ? QString::number(totalCount)
+                                            : QStringLiteral("%1 of %2").arg(matches.size()).arg(totalCount));
+    const QString spoken = query.isEmpty() == true
+                               ? QStringLiteral("%1 entities").arg(totalCount)
+                               : QStringLiteral("%1 of %2 entities match").arg(matches.size()).arg(totalCount);
+    mCount->setAccessibleName(spoken);
     mCount->setToolTip(matches.isEmpty() == true && query.isEmpty() == false
                            ? QStringLiteral("No matching entities. Clear or change the search to show entities.")
-                           : QString());
+                           : spoken);
     if (hasSelectionChanged == true)
     {
         Q_EMIT SelectionChanged();
