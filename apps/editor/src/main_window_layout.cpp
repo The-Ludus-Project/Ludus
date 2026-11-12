@@ -93,9 +93,10 @@ constexpr foundation::int32 MIN_WINDOW_WIDTH_PIXELS = 1100;
 constexpr foundation::int32 MIN_WINDOW_HEIGHT_PIXELS = 760;
 // Default tool-window extents leave documents about three fifths of the window: the outliner is the
 // narrower side, Properties the wider one.
-// The explorer is wide enough for a document name and the search row's buttons.
+// The explorer grows with the window for longer document names; its minimum keeps a World document beside both
+// side tool windows usable when a window is made small after its layout was set.
 constexpr foundation::int32 EXPLORER_DOCK_PERCENT = 16;
-constexpr foundation::int32 MIN_EXPLORER_DOCK_PIXELS = 240;
+constexpr foundation::int32 MIN_EXPLORER_DOCK_PIXELS = 220;
 constexpr foundation::int32 MAX_EXPLORER_DOCK_PIXELS = 340;
 constexpr foundation::int32 PROPERTIES_DOCK_PERCENT = 20;
 constexpr foundation::int32 MIN_PROPERTIES_DOCK_PIXELS = 260;
