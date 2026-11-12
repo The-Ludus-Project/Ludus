@@ -19,6 +19,8 @@ namespace
 using foundation::StringStatus;
 namespace format = scene_format;
 
+constexpr std::string_view INTERFACE_MATERIAL = "interface";
+
 // ---------------------------------------------------------------------------
 // Directive arguments.
 
@@ -935,7 +937,7 @@ Status SceneReader::applyDirective(Directive& inoutDirective) noexcept
     }
     if (name == "Sampler" || name == "Integrator" || name == "PixelFilter" || name == "Accelerator" ||
         name == "ColorSpace" || name == "Option" || name == "Attribute" || name == "WorldEnd" ||
-        name == "TransformTimes" || name == "ActiveTransform" || name == "MediumInterface")
+        name == "TransformTimes" || name == "ActiveTransform")
     {
         inform(codes::DIRECTIVE_IGNORED, inoutDirective.Line, name);
         return Status::Ok;
@@ -943,6 +945,17 @@ Status SceneReader::applyDirective(Directive& inoutDirective) noexcept
     if (name == "MakeNamedMedium")
     {
         warn(codes::MEDIUM_SKIPPED, inoutDirective.Line, first);
+        return Status::Ok;
+    }
+    if (name == "MediumInterface")
+    {
+        if (first.empty() == false ||
+            (inoutDirective.Positional.GetSize() == 2 && inoutDirective.Positional[1].GetView().empty() == false))
+        {
+            warn(codes::MEDIUM_SKIPPED,
+                 inoutDirective.Line,
+                 "MediumInterface binding omitted. Render the source in PBRT to include the medium.");
+        }
         return Status::Ok;
     }
     if (name == "Include" || name == "Import")
@@ -975,7 +988,8 @@ Status SceneReader::applyDirective(Directive& inoutDirective) noexcept
     }
     else if (name == "Material")
     {
-        status = defineMaterial(inoutDirective, first, std::string_view());
+        const bool hasExplicitEmptyType = first.empty() == true && inoutDirective.Positional.IsEmpty() == false;
+        status = defineMaterial(inoutDirective, hasExplicitEmptyType == true ? INTERFACE_MATERIAL : first, {});
     }
     else if (name == "MakeNamedMaterial")
     {
@@ -983,6 +997,10 @@ Status SceneReader::applyDirective(Directive& inoutDirective) noexcept
         if (findString(inoutDirective, "type", type) == false)
         {
             warn(codes::MATERIAL_DEFAULTED, inoutDirective.Line, "named material without a type");
+        }
+        else if (type.empty() == true)
+        {
+            type = INTERFACE_MATERIAL;
         }
         status = defineMaterial(inoutDirective, type, first);
     }
@@ -1478,6 +1496,10 @@ void SceneReader::readCoating(Directive& inoutDirective, std::string_view label,
 
 Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view type, std::string_view name) noexcept
 {
+    if (type == "none")
+    {
+        type = INTERFACE_MATERIAL;
+    }
     IrMaterial material;
     material.SourceFile = mCurrentFile;
     material.Line = inoutDirective.Line;
@@ -1616,7 +1638,7 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
         }
         warn(codes::MIX_APPROXIMATED, inoutDirective.Line, isFound == true ? "first material used" : "default used");
     }
-    else
+    else if (type != INTERFACE_MATERIAL)
     {
         material.IsApproximated = true;
         warn(codes::MATERIAL_DEFAULTED, inoutDirective.Line, type.empty() == false ? type : "missing type");
@@ -2087,6 +2109,17 @@ Status SceneReader::readShapeAlpha(Directive& inoutDirective, uint32& inoutMater
 
 Status SceneReader::addShape(Directive& inoutDirective) noexcept
 {
+    uint32 materialIndex = mState.Material;
+    if (materialIndex != IR_NONE && mScene.Materials[materialIndex].SourceType.GetView() == INTERFACE_MATERIAL)
+    {
+        // Thanks to Julian Fong, Magnus Wrenninge, Christopher Kulla and Ralf Habel,
+        // Production Volume Rendering, SIGGRAPH 2017, sections 3.1–3.2
+        // (https://doi.org/10.1145/3084873.3084907), for separating medium boundaries from surface scattering.
+        // Follow pbrt-v4's interface material and omit its boundary from this surface-only import.
+        markAllUsed(inoutDirective);
+        warn(codes::SHAPE_SKIPPED, inoutDirective.Line, "PBRT interface-only boundary omitted");
+        return Status::Ok;
+    }
     const std::string_view type =
         inoutDirective.Positional.IsEmpty() == false ? inoutDirective.Positional[0].GetView() : std::string_view();
     if (findParameter(inoutDirective, "displacement") != nullptr)
@@ -2094,7 +2127,6 @@ Status SceneReader::addShape(Directive& inoutDirective) noexcept
         inform(codes::DISPLACEMENT_IGNORED, inoutDirective.Line, type);
     }
     (void)findParameter(inoutDirective, "edgelength");
-    uint32 materialIndex = mState.Material;
     const Status alphaStatus = readShapeAlpha(inoutDirective, materialIndex);
     if (alphaStatus != Status::Ok)
     {

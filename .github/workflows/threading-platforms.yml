@@ -13,6 +13,10 @@ on:
         description: Stable main commit captured with this candidate.
         required: true
         type: string
+      batch_platform:
+        description: Select windows or macos in a batch call. Empty runs both.
+        type: string
+        default: ''
   workflow_dispatch:
   # Targeted lanes for changes to the threading backends they alone execute;
   # every batch also runs them. Windows Conan profile and FoundationBase
@@ -25,7 +29,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: threading-platforms-${{ inputs.batch_sha || github.ref }}
+  group: threading-platforms-${{ inputs.batch_sha || github.ref }}-${{ inputs.batch_platform || 'all' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   CI: "true"
@@ -34,6 +38,7 @@ env:
   LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
 jobs:
   windows:
+    if: inputs.batch_platform != 'macos'
     name: Windows Clang threading
     runs-on: windows-2022
     timeout-minutes: 60
@@ -118,6 +123,7 @@ jobs:
           retention-days: 14
 
   macos-races:
+    if: inputs.batch_platform != 'windows'
     name: macOS threading race detection
     runs-on: macos-15
     timeout-minutes: 60

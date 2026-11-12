@@ -373,8 +373,8 @@ class RequiredGateTests(unittest.TestCase):
                 workflow = path.read_text()
                 triggers = workflow.split("\npermissions:", 1)[0]
                 self.assertNotIn("merge_group", workflow)
-                if path.name == "develop-cache.yml":
-                    # The cache warmer reacts to develop only and validates nothing.
+                if path.name in {"develop-cache.yml", "batch-wake.yml"}:
+                    # Only the cache warmer and dispatch-only wake react to develop pushes.
                     self.assertIn("\n  push:\n    branches: [develop]\n", triggers)
                     self.assertNotRegex(triggers, r"(?m)^  (pull_request|pull_request_target|merge_group|workflow_call):")
                     continue
@@ -403,10 +403,16 @@ class RequiredGateTests(unittest.TestCase):
                                  "${{ !cancelled() && needs.snapshot.outputs.should_run == 'true' }}")
         # Other platforms retain parallel qualification, and promotion still
         # requires every result, including a failed earlier ARM workflow.
-        for name in ("browser", "windows", "recovery", "wiki"):
+        for name in ("browser", "windows", "recovery", "wiki", "wiki-macos-intel", "threading-windows"):
             self.assertEqual(dependencies[name], "snapshot")
         self.assertEqual(dependencies["promote"],
-                         "[snapshot, native, sdk, wiki, wiki-macos, browser, threading, windows, recovery]")
+                         "[snapshot, native, sdk, wiki, wiki-macos, wiki-macos-intel, browser, "
+                         "threading, threading-windows, windows, recovery]")
+        self.assertIn("needs.threading-windows.result == 'success'", workflow)
+        self.assertRegex(workflow, r"(?m)^      batch_platform: macos\n\n  threading-windows:\n")
+        threading = (Path(__file__).resolve().parents[2] / ".github/workflows/threading-platforms.yml").read_text()
+        self.assertIn("  windows:\n    if: inputs.batch_platform != 'macos'\n", threading)
+        self.assertIn("  macos-races:\n    if: inputs.batch_platform != 'windows'\n", threading)
 
     def test_integration_prs_check_sources_compile_and_analyze(self):
         event = {"pull_request": {"base": {"ref": "develop"}, "labels": [{"name": "ci:full"}]}}
@@ -459,7 +465,7 @@ class RequiredGateTests(unittest.TestCase):
     def test_pull_requests_leave_macos_tooling_jobs_to_the_batch(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         wiki = root.joinpath("wiki.yml").read_text().split("\n  macos-documentation-tools:\n", 1)[1]
-        self.assertIn("    if: github.event_name != 'pull_request' && (inputs.batch_sha == '' || inputs.batch_macos_tools_only)\n",
+        self.assertIn("    if: github.event_name != 'pull_request' && (inputs.batch_sha == '' || inputs.batch_macos_tools_runner != '')\n",
                       wiki.split("\n    steps:", 1)[0])
         butler = root.joinpath("project-sdk.yml").read_text().split("\n  butler-install:\n", 1)[1]
         runners = re.search(r"runner: \$\{\{ fromJSON\(github.event_name == 'pull_request' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}",

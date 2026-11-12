@@ -410,11 +410,6 @@ void Collect() noexcept
 }
 RasterStatus Reserve(RasterKind kind, usize& slot) noexcept
 {
-    Collect();
-    if (GetStartup().State != StartupState::Ready)
-    {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
-    }
     auto& records = gRecords[static_cast<usize>(kind)];
     bool exhausted = false;
     const auto limit = static_cast<usize>(kind) < RASTER_KINDS ? usize{CurrentDeviceProfile().Raster.ResourcesPerKind}
@@ -467,6 +462,9 @@ RasterStatus Publish(RasterKind kind, T& output, Create create, uint64 storageBy
         return RasterStatus::InvalidState;
     }
     usize slot = 0;
+    // Thanks to Andre Weissflog for the resource pool discussion in "A Tour of sokol_gfx.h" (2017),
+    // "Under The Hood" (https://floooh.github.io/2017/07/29/sokol-gfx-tour.html#under-the-hood).
+    // Collect once before both byte and slot admission so eligible storage can be reclaimed.
     Collect();
     if (GetStartup().State != StartupState::Ready)
     {

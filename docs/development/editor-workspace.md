@@ -2201,9 +2201,9 @@ viewport status shows the reason.
 
 The World saves the opt-in. After the bake is ready, **Save World** also writes
 a `.ludus-lighting` file beside the World. Keep the two files together. Reopening
-uses the saved charts when they match the current geometry, placements,
-materials, and lights. Edits to those inputs return affected draws to realtime
-while the new bake prepares.
+uses the saved charts and any saved probe atlas when the bake inputs match.
+Edits to the geometry, placements, materials, lights or probe settings return
+affected draws to realtime while the new bake prepares.
 
 The native [Forward lit template](render-graph-authoring.md#use-the-forward-lit-template)
 can use these charts through its **Baked Lighting** connection. Its preview
@@ -2264,9 +2264,11 @@ enabled, the viewport uses realtime lighting while the bake for the latest edit
 runs. You can keep editing or undo the move during the bake.
 Outside the volume, or where no nearby probe has recorded visibility, receivers use
 realtime lighting and the authored environment. Save the World to keep the
-volume and receiver settings. The native editor generates the atlas in memory
-when the baked lighting inputs change. The prototype uses coarse directional
-visibility, so placement near thin or diagonal geometry can affect the result.
+volume and receiver settings. Save again after the bake is ready to retain the
+atlas alongside the charts. If an older cache contains only charts, the native
+editor prepares the missing atlas in the background. The prototype uses coarse
+directional visibility, so placement near thin or diagonal geometry can affect
+the result.
 
 ### Switching lights
 

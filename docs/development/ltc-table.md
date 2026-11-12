@@ -136,6 +136,64 @@ The fit is deterministic and does not depend on the worker count. A slice took
 about 4.3 minutes of one core in a release build on a loaded Apple M5, so the
 whole table took about 3.7 CPU-hours (2 h 20 min with nine workers).
 
+## Can the moments drive GGX energy compensation?
+
+The compensation proposed by Christopher Kulla and Alejandro Conty adds a
+reciprocal lobe for energy lost between microfacets. For unit Fresnel, let
+`d(μ) = 1 − E(μ)`, where `E` is the directional albedo of the single-scatter
+GGX lobe. The added BRDF is `d(μo) d(μi) / (π d̄)`, with
+`d̄ = 2 ∫₀¹ d(μ) μ dμ`. Its directional albedo is `d(μo)` when the
+numerator and normalization use the same deficit. Thanks to Kulla and Conty
+for the derivation and the furnace criterion.
+[*Revisiting Physically Based Shading at Imageworks*, SIGGRAPH 2017, slides 9–14](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf#page=12)
+
+An offline lossless furnace measured the effect of using the shipped LTC norm
+for `E`. It used the isotropic height-correlated Smith GGX lobe at unit
+Fresnel, including RT1's Smith denominator floor, and set a screening budget
+of 0.01 absolute error from unit radiance. At roughness 1 and normal
+incidence, independent integration gave `0.306853` for single scattering,
+matching `1 − ln(2)`. At roughness 0.06 and 89.75° from the normal, integration
+gave `0.891985` while the LTC interpolation gave `0.993039`. The LTC-based
+compensated result was `0.898945`, even with a consistently integrated
+normalization. The table's 1.43° angular spacing undersamples the change in
+directional albedo there.
+
+A second offline prototype stored 64 × 64 scalar albedos on the same roughness
+rows. For a view angle `θ` and `α = roughness²`, it used the inclination
+`θs = atan2(α sin θ, cos θ)` of the stretched view. The columns were uniform
+in `x = 1 − sqrt(1 − 2θs/π)` to further concentrate samples near grazing.
+It bilinearly interpolated the albedo, clamped it to [0, 1] before forming the
+deficit and linearly interpolated a 64-value table of `d̄`. The two tables
+would occupy 16.25 KiB in float32.
+
+| Furnace sweep | Cases | Largest absolute error using shipped LTC moments | Largest absolute error using the stretched grid |
+| --- | ---: | ---: | ---: |
+| Ten roughness values from 0.045 to 1, fifteen angles from 0° to 89.99° | 150 | 0.1011 | 0.0019 |
+| All 63 roughness cell midpoints and every third stretched grid column midpoint | 1,323 | 0.1001 | 0.0043 |
+
+The fixed sweep used roughness 0.045, 0.06, 0.1, 0.15, 0.25, 0.35, 0.5, 0.65,
+0.8 and 1 and view angles 0°, 20°, 45°, 60°, 75°, 80°, 85°, 87°, 88°, 88.5°,
+89°, 89.5°, 89.75°, 89.9° and 89.99°. The experiment generated grid values with
+192 × 192 midpoint samples in visible-normal sample space, counting
+below-horizon reflections as zero. Thanks to Eric Heitz for the
+[*Sampling the GGX Distribution of Visible Normals*, JCGT 7(4), 2018, §§3–4](https://jcgt.org/published/0007/04/01/).
+The furnace evaluated single scattering with 512 × 512 samples and repeated
+the largest-error cases at 2,048 × 2,048. This changed the radiance of those
+cases by less than 0.00002. The prototype integrated the clamped interpolant
+for `d̄` with 16-point Gauss–Legendre quadrature per angular cell, weighted by
+`2 cos θ sin θ`.
+
+Use a dedicated grazing-resolved grid for the
+[opt-in reference profile prototype](https://github.com/The-Ludus-Project/Ludus/issues/1360).
+The furnace measures total energy for lossless reflection. Absorbing metals
+also need angular comparisons against a higher-order Smith reference, using
+the corrected Fresnel multiplier with `Favg²` in the numerator from the
+[revised appendix](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf#page=138).
+A paired CPU/GPU profile needs matched sampling and PDFs for MIS. The
+[raster evaluation](https://github.com/The-Ludus-Project/Ludus/issues/1365)
+also needs separate punctual, polygonal and environment comparisons, since
+each integrates the added lobe under different illumination.
+
 ## Regenerate the table
 
 ```bash

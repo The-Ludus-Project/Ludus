@@ -9,6 +9,10 @@
 // Adapted from pbrt-v4 b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f; the same
 // non-scattering isotropic specialization as reference_coating.cpp. Philox domains
 // and normalized path weights are Ludus choices. License: third_party/pbrt/LICENSE.txt.
+// Thanks to Michał Drobot, "Practical Multilayered Materials in Call of Duty: Infinite Warfare",
+// SIGGRAPH 2017 Physically Based Shading course, slide 51, for skipping diffuse work on black albedo.
+// https://research.activision.com/publications/archives/practical-multilayered-materials-in-call-of-dutyinfinite-warfare
+// Here the runtime shortcut retains the interface proposal and its null transmission events.
 struct CoatingRandomContext
 {
     uint2 Key;
@@ -323,36 +327,47 @@ float GetCoatingMaximum(float3 value)
 }
 float EvaluateCoatingPdf(CoatingMaterial bsdf, float3 viewTangent, float3 lightTangent, CoatingRandomContext random)
 {
-    CoatingRandomStream stream = MakeCoatingRandomStream(random, COATING_PDF_DOMAIN);
     float alpha = bsdf.Alpha;
     float eta = bsdf.Eta;
     float sum = 0;
     (ComputeCoatingInterface(alpha, eta, viewTangent, lightTangent, true, COATING_REFLECTION, sum));
-    CoatingInterfaceSample entrance =
-        SampleCoatingInterface(alpha, eta, viewTangent, NextCoatingThree(stream), true, COATING_TRANSMISSION);
-    CoatingInterfaceSample exit =
-        SampleCoatingInterface(alpha, eta, lightTangent, NextCoatingThree(stream), false, COATING_TRANSMISSION);
-    if (entrance.HasSample == true && exit.HasSample == true && GetCoatingMaximum(bsdf.BaseColor) > 0)
+    if (GetCoatingMaximum(bsdf.BaseColor) > 0)
     {
-        float3 baseDirectionTangent = SampleCoatingBase(NextCoatingThree(stream));
-        float basePdf = baseDirectionTangent.z / PI;
-        float reverseBasePdf = abs(exit.DirectionTangent.z) / PI;
-        sum += ComputeCoatingPowerWeight(exit.Pdf, reverseBasePdf) * reverseBasePdf;
-        float exitPdf = 0;
-        (ComputeCoatingInterface(alpha, eta, -baseDirectionTangent, lightTangent, true, COATING_TRANSMISSION, exitPdf));
-        sum += ComputeCoatingPowerWeight(basePdf, exitPdf) * exitPdf;
+        CoatingRandomStream stream = MakeCoatingRandomStream(random, COATING_PDF_DOMAIN);
+        CoatingInterfaceSample entrance =
+            SampleCoatingInterface(alpha, eta, viewTangent, NextCoatingThree(stream), true, COATING_TRANSMISSION);
+        CoatingInterfaceSample exit =
+            SampleCoatingInterface(alpha, eta, lightTangent, NextCoatingThree(stream), false, COATING_TRANSMISSION);
+        if (entrance.HasSample == true && exit.HasSample == true)
+        {
+            float3 baseDirectionTangent = SampleCoatingBase(NextCoatingThree(stream));
+            float basePdf = baseDirectionTangent.z / PI;
+            float reverseBasePdf = abs(exit.DirectionTangent.z) / PI;
+            sum += ComputeCoatingPowerWeight(exit.Pdf, reverseBasePdf) * reverseBasePdf;
+            float exitPdf = 0;
+            (ComputeCoatingInterface(alpha,
+                                     eta,
+                                     -baseDirectionTangent,
+                                     lightTangent,
+                                     true,
+                                     COATING_TRANSMISSION,
+                                     exitPdf));
+            sum += ComputeCoatingPowerWeight(basePdf, exitPdf) * exitPdf;
+        }
     }
     return COATING_PDF_ESTIMATE_WEIGHT * sum + (1 - COATING_PDF_ESTIMATE_WEIGHT) / (COATING_REFLECTION_JACOBIAN * PI);
 }
 float3 EvaluateCoatingValue(CoatingMaterial bsdf, float3 viewTangent, float3 lightTangent, CoatingRandomContext random)
 {
-    CoatingRandomStream stream = MakeCoatingRandomStream(random, COATING_EVALUATION_DOMAIN);
     float alpha = bsdf.Alpha;
     float eta = bsdf.Eta;
     float thickness = bsdf.Thickness;
     float unusedPdf = 0;
     float reflection = ComputeCoatingInterface(alpha, eta, viewTangent, lightTangent, true, COATING_ALL, unusedPdf);
     float3 result = float3(reflection, reflection, reflection);
+    if (GetCoatingMaximum(bsdf.BaseColor) == 0)
+        return result;
+    CoatingRandomStream stream = MakeCoatingRandomStream(random, COATING_EVALUATION_DOMAIN);
     CoatingInterfaceSample entrance =
         SampleCoatingInterface(alpha, eta, viewTangent, NextCoatingThree(stream), true, COATING_TRANSMISSION);
     CoatingInterfaceSample exit =
@@ -477,10 +492,10 @@ CoatingSample SampleCoatedDiffuse(CoatingMaterial bsdf,
         result.Accepted = result.MisPdf > 0;
         return result;
     }
-    CoatingRandomStream stream = MakeCoatingRandomStream(random, COATING_SAMPLE_DOMAIN);
     CoatingInterfaceSample sampled = SampleCoatingInterface(alpha, eta, viewTangent, samples, true, COATING_ALL);
-    if (sampled.HasSample == false)
+    if (sampled.HasSample == false || (sampled.IsTransmission == true && GetCoatingMaximum(bsdf.BaseColor) == 0))
         return result;
+    CoatingRandomStream stream = MakeCoatingRandomStream(random, COATING_SAMPLE_DOMAIN);
     float entranceWeight = sampled.Value * abs(sampled.DirectionTangent.z) / sampled.Pdf;
     float3 weight = float3(entranceWeight);
     float3 directionTangent = sampled.DirectionTangent;

@@ -1,8 +1,8 @@
 name: Batched integration and promotion
 
 # Thanks to GitHub, "Reuse workflows" and "Events that trigger workflows":
-# the schedule runs trusted workflow definitions on main; reusable jobs check
-# out the frozen develop SHA. New develop pushes never cancel an active candidate.
+# dispatch and the fallback schedule run trusted workflow definitions on main.
+# Reusable jobs check out the frozen develop SHA. New pushes do not cancel it.
 # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
 on:
@@ -29,8 +29,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: batch-promotion
+    permissions:
+      contents: read
+      actions: read
     outputs:
       should_run: ${{ steps.capture.outputs.should_run }}
+      should_redispatch: ${{ steps.capture.outputs.should_redispatch }}
       base_sha: ${{ steps.capture.outputs.base_sha }}
       candidate_sha: ${{ steps.capture.outputs.candidate_sha }}
       recovery_required: ${{ steps.capture.outputs.recovery_required }}
@@ -55,6 +59,24 @@ jobs:
           arguments=()
           if [ "$SHOULD_RETRY" = true ]; then arguments+=(--retry); fi
           python3 scripts/python/batch_ci.py snapshot "${arguments[@]}"
+      - name: Report time to capture
+        if: steps.capture.outputs.should_run == 'true'
+        # Timing metadata must not invalidate a candidate already recorded as attempted.
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.capture.outputs.candidate_sha }}
+        run: |
+          captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          submitted_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
+          committed_at="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CANDIDATE_SHA" --jq .commit.committer.date)"
+          jq -nr --arg capture "$captured_at" --arg submitted "$submitted_at" --arg commit "$committed_at" '
+            ($capture | fromdateiso8601) as $end |
+            "Captured at \($capture) (UTC)",
+            "- Workflow created to capture: \($end - ($submitted | fromdateiso8601)) seconds",
+            "- Candidate committer date to capture: \($end - ($commit | fromdateiso8601)) seconds"
+          ' >> "$GITHUB_STEP_SUMMARY"
 
   native:
     needs: snapshot
@@ -103,7 +125,24 @@ jobs:
     with:
       batch_sha: ${{ needs.snapshot.outputs.candidate_sha }}
       batch_base_sha: ${{ needs.snapshot.outputs.base_sha }}
-      batch_macos_tools_only: true
+      batch_macos_tools_runner: macos-15
+
+  # Thanks to Blaine Whittle, "Under the Hood of Blizzard's Internal Build
+  # System" (GDC 2013, slides 49 and 65): admit tasks by their input and machine
+  # requirements. Only jobs that need scarce ARM runners wait for that chain.
+  # https://gdcvault.com/play/1018895/Under-the-Hood-of-Blizzard
+  wiki-macos-intel:
+    needs: snapshot
+    if: needs.snapshot.outputs.should_run == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/wiki.yml
+    with:
+      batch_sha: ${{ needs.snapshot.outputs.candidate_sha }}
+      batch_base_sha: ${{ needs.snapshot.outputs.base_sha }}
+      batch_macos_tools_runner: macos-15-intel
 
   browser:
     needs: snapshot
@@ -123,6 +162,16 @@ jobs:
     with:
       batch_sha: ${{ needs.snapshot.outputs.candidate_sha }}
       batch_base_sha: ${{ needs.snapshot.outputs.base_sha }}
+      batch_platform: macos
+
+  threading-windows:
+    needs: snapshot
+    if: needs.snapshot.outputs.should_run == 'true'
+    uses: ./.github/workflows/threading-platforms.yml
+    with:
+      batch_sha: ${{ needs.snapshot.outputs.candidate_sha }}
+      batch_base_sha: ${{ needs.snapshot.outputs.base_sha }}
+      batch_platform: windows
 
   windows:
     needs: snapshot
@@ -190,12 +239,13 @@ jobs:
 
   promote:
     name: Promote validated candidate
-    needs: [snapshot, native, sdk, wiki, wiki-macos, browser, threading, windows, recovery]
+    needs: [snapshot, native, sdk, wiki, wiki-macos, wiki-macos-intel, browser, threading, threading-windows, windows, recovery]
     if: >-
       always() && !cancelled() && needs.snapshot.outputs.should_run == 'true' &&
       needs.native.result == 'success' && needs.sdk.result == 'success' &&
       needs.wiki.result == 'success' && needs.wiki-macos.result == 'success' &&
-      needs.browser.result == 'success' &&
+      needs.wiki-macos-intel.result == 'success' && needs.browser.result == 'success' &&
+      needs.threading-windows.result == 'success' &&
       needs.threading.result == 'success' && needs.windows.result == 'success' &&
       (needs.recovery.result == 'success' || needs.recovery.result == 'skipped')
     runs-on: ubuntu-24.04
@@ -252,7 +302,7 @@ jobs:
     # outcome; promotion does not depend on this job.
     # Thanks to GitHub, "Dependency caching reference", usage limits and eviction policy:
     # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy
-    needs: [snapshot, native, sdk, wiki, wiki-macos, browser, threading, windows, recovery]
+    needs: [snapshot, native, sdk, wiki, wiki-macos, wiki-macos-intel, browser, threading, threading-windows, windows, recovery]
     if: always() && needs.snapshot.outputs.should_run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -283,6 +333,14 @@ jobs:
     permissions:
       actions: write
     steps:
+      - name: Wake the current main workflow after a stale request
+        if: needs.snapshot.outputs.should_redispatch == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHOULD_RETRY: ${{ inputs.retry || false }}
+        # The current run holds the concurrency slot. The new request becomes
+        # pending and resolves its workflow revision from main again.
+        run: gh workflow run batch-ci.yml --repo "$GITHUB_REPOSITORY" --ref main -f "retry=$SHOULD_RETRY"
       - name: Cancel this run because it validated nothing
         env:
           GH_TOKEN: ${{ github.token }}

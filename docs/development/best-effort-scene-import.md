@@ -138,6 +138,33 @@ glTF is right-handed with +Y up and metres, matching the engine's world
 convention, so nodes are not converted. glTF texture coordinates already have a
 top-left origin.
 
+### Export static 3D art for Ludus
+
+Prefer glTF 2.0 for static 3D art from a modelling tool. It carries the scene
+hierarchy, mesh data and metallic-roughness materials together under fixed
+axis and unit conventions. Ludus cooks those inputs into its LUSCN scene bundle.
+
+1. Export as **glTF Binary (.glb)** for a single-file handoff. In Blender, use
+   **File → Export → glTF 2.0** and choose that format. If you use **glTF Separate**
+   to inspect the JSON or edit images separately, keep the `.bin` and textures
+   with the `.gltf`, preserving their relative paths below the entry file's
+   directory. See the [Blender glTF export guide](https://docs.blender.org/manual/en/4.0/addons/import_export/scene_gltf2.html#file-format-variations).
+2. Export UVs and metallic-roughness materials with PNG or JPEG textures.
+   Disable Draco or meshopt compression for the handoff. If the asset depends
+   on a rig or morph target for its shape, bake the desired pose to a static
+   mesh before export.
+3. Select the file in World **Import scene…** and inspect the preview. From
+   the command line, run `ludus-cook gltf path/to/scene.glb --dry-run` to check
+   geometry and planned counts in the JSON report printed to standard output.
+   A full import is needed to check texture decoding. If the report contains
+   `EXTENSION_REQUIRED`, re-export with the named feature disabled or baked
+   into supported geometry or textures. Removing the name from the JSON alone
+   leaves the data that depends on the extension.
+
+This workflow applies the exchange-format argument in Juan Linietsky's
+[Why we should all support glTF 2.0 as THE standard asset exchange format for game engines](https://godotengine.org/article/we-should-all-use-gltf-20-export-3d-assets-game-engines/)
+(Godot Engine, August 2017) to Ludus's static import profile.
+
 ## Wavefront OBJ/MTL profile (`obj-best-effort-v1`)
 
 Following the Wavefront/Alias [OBJ](https://paulbourke.net/dataformats/obj/) and
@@ -297,13 +324,17 @@ and per-texel roughness. The IR already holds, and the cook reports dropping:
 | `coateddiffuse` | base colour and roughness from the coat. A rough, isotropic, non-scattering coat (GGX alpha at least 0.001, scalar `eta` of at least 1, zero `albedo`, default `maxdepth` 10) keeps the typed `CoatedDiffuse` layer with its alpha, `eta` and `thickness`, which the [reference tracers](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference) evaluate; `nsamples` only changes their variance. Other coats, including pbrt's default smooth one, keep the legacy GGX/Lambert terms with `MATERIAL_APPROXIMATED`; those ignore the layer's internal reflection and shade brighter |
 | `conductor`, `coatedconductor` | metallic, colour from the named eta/k table |
 | `dielectric`, `thindielectric` | typed smooth `Dielectric`/`ThinDielectric` with scalar `eta` (default 1.5; a named spectrum keeps 1.5 with `SPECTRUM_APPROXIMATED`); a rough one imports smooth with `ROUGH_TRANSMISSION_APPROXIMATED`. The [reference tracers](../architecture/renderer-systems.md#smooth-dielectric-reference) render the transmission; raster and render graphs shade the legacy fallback, a smooth reflector with base colour 0.04 |
+| `interface` | omits boundary-only shapes from the cooked scene and reports `SHAPE_SKIPPED`. This applies to inline and named materials, including PBRT's legacy `none` and explicit empty type. PBRT also ignores area-light assignments on these shapes |
 | `mix` | the first material |
 | other materials | named unsupported models keep their identity as an unresolved material. World shows them in purple and offers a [shared material mapping](editor-workspace.md#repair-an-unsupported-imported-material). Unsupported inline materials retain the grey default. Both report `MATERIAL_DEFAULTED` |
 | area lights | emissive material in pbrt-v4 photometric units (RGB keeps its magnitude), source sidedness and optional power; unequal resolved radiances stay separate |
 | point, spot, distant lights | transformed world position/direction, RGB candela or lux, optional power/illuminance and spot cone |
 | infinite light | authored constant or HDR environment, converted from PBRT equal-area mapping to engine equirectangular mapping |
 | unsupported light types | skipped and counted |
-| media | skipped |
+| media | `MakeNamedMedium` definitions and `MediumInterface` bindings that name a medium report `MEDIUM_SKIPPED`. Visible surfaces keep their surface materials |
+
+For an image that includes the authored medium, render the original scene in
+PBRT. See [PBRT's participating-media format](https://www.pbrt.org/fileformat-v4#participating-media-1).
 
 | glTF / OBJ | Ludus |
 | --- | --- |
