@@ -9,6 +9,11 @@
 #include <QLatin1StringView>
 #include <QStringView>
 
+namespace ludus::gameplay::world
+{
+struct EarthNightSkySample;
+}
+
 namespace ludus::editor
 {
 inline constexpr QLatin1StringView WORLD_CELESTIAL_ROLE{"celestialRole"};
@@ -50,9 +55,11 @@ void CopyWorldEarthObserver(const QJsonObject& source, QJsonObject& inoutLight);
 [[nodiscard]] bool TrySampleWorldEarthLight(const QJsonObject& light,
                                             gameplay::world::EarthCelestialLighting& outLighting);
 /// Sample the selected celestial rule. An authored or static light keeps its rotation.
-/// Failure preserves both outputs. A body at or below the horizon sets the horizon flag to false.
+/// Failure preserves the outputs. A body at or below the horizon sets the horizon flag to false.
 [[nodiscard]] bool TryResolveWorldCelestialRotation(const QJsonObject& light,
                                                     foundation::math::Quaternion& inoutRotation,
                                                     bool& outIsAboveHorizon,
                                                     gameplay::world::EarthCelestialLighting& outEarthLighting);
+/// Sample the Earth background from a dynamic Earth Sun or Earth Moon driver. Preserves outSky otherwise.
+[[nodiscard]] bool TrySampleWorldEarthNightSky(const QJsonObject& light, gameplay::world::EarthNightSkySample& outSky);
 } // namespace ludus::editor

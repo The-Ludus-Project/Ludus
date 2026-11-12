@@ -74,6 +74,8 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
+#include <QDateTimeEdit>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -4972,6 +4974,16 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     REQUIRE(deleteOrNull != nullptr);
     cubeOrNull->trigger();
     sunOrNull->trigger();
+    QComboBox* roleOrNull = world.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = world.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    QDateTimeEdit* dateTimeOrNull = world.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(dateTimeOrNull != nullptr);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-02T00:00:00Z"), Qt::ISODate));
+    REQUIRE(world.Apply() == true);
     world.ResumePreview();
 
     QWidget* viewportOrNull = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
@@ -5008,10 +5020,18 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     sunFieldOrNull->setCurrentIndex(1);
     REQUIRE(world.Apply() == true);
     REQUIRE(waitFor([&]() {
-                return world.GetRenderPreview().Scene().Atmosphere.IsEnabled == true &&
+                return world.GetRenderPreview().Scene().Atmosphere.Celestial.MilkyWayRadiance > 0 &&
                        graphViewOrNull->GetImage() != clear;
             }) == true);
-    const QImage sky = graphViewOrNull->GetImage();
+    const QImage nightSky = graphViewOrNull->GetImage();
+    starsFieldOrNull->setChecked(false);
+    REQUIRE(world.Apply() == true);
+    REQUIRE(waitFor([&]() {
+                return world.GetRenderPreview().Scene().Atmosphere.Celestial.MilkyWayRadiance == 0 &&
+                       graphViewOrNull->GetImage() != nightSky;
+            }) == true);
+    world.Undo();
+    REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage() == nightSky; }) == true);
     RenderGraphPreview* previewOrNull = rendererWorkspace.GetPreviewOrNull();
     REQUIRE(previewOrNull != nullptr);
     const uint64 skyRevision = previewOrNull->GetPresentedRevision();
@@ -5025,7 +5045,7 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     const QSize resizedExtent(1280, 720);
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().size() == resizedExtent; }) == true);
     const QImage resizedSky = graphViewOrNull->GetImage();
-    CHECK(resizedSky.size() != sky.size());
+    CHECK(resizedSky.size() != nightSky.size());
 
     REQUIRE(deleteOrNull->isEnabled() == true);
     QTimer::singleShot(0, &world, []() {

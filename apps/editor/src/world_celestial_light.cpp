@@ -21,6 +21,20 @@ constexpr QLatin1StringView ORBIT_INCLINATION{"celestialOrbitInclination"};
 constexpr QLatin1StringView ORBIT_ASCENDING_NODE{"celestialOrbitAscendingNode"};
 constexpr QLatin1StringView OBSERVER_RADIUS_RATIO{"celestialObserverRadiusRatio"};
 
+struct WorldEarthObserver final
+{
+    float64 DaysSinceJ2000;
+    float64 LatitudeDegrees;
+    float64 LongitudeDegrees;
+};
+
+WorldEarthObserver ReadWorldEarthObserver(const QJsonObject& light)
+{
+    return {light.value(WORLD_CELESTIAL_TIME).toDouble(),
+            light.value(WORLD_CELESTIAL_LATITUDE).toDouble(),
+            light.value(WORLD_CELESTIAL_LONGITUDE).toDouble()};
+}
+
 QJsonObject
 MakeChoiceProperty(QLatin1StringView id, const QString& label, const QString& help, const QJsonArray& choices)
 {
@@ -278,10 +292,11 @@ bool TrySampleWorldEarthLight(const QJsonObject& light, gameplay::world::EarthCe
     const EarthCelestialBody body = light.value(WORLD_CELESTIAL_DRIVER).toString() == WORLD_CELESTIAL_EARTH_SUN
                                         ? EarthCelestialBody::Sun
                                         : EarthCelestialBody::Moon;
+    const WorldEarthObserver observer = ReadWorldEarthObserver(light);
     return TrySampleEarthCelestialLighting(body,
-                                           light.value(WORLD_CELESTIAL_TIME).toDouble(),
-                                           light.value(WORLD_CELESTIAL_LATITUDE).toDouble(),
-                                           light.value(WORLD_CELESTIAL_LONGITUDE).toDouble(),
+                                           observer.DaysSinceJ2000,
+                                           observer.LatitudeDegrees,
+                                           observer.LongitudeDegrees,
                                            outLighting);
 }
 
@@ -318,5 +333,18 @@ bool TryResolveWorldCelestialRotation(const QJsonObject& light,
     outIsAboveHorizon = sample.IsAboveHorizon;
     outEarthLighting = earthLighting;
     return true;
+}
+
+bool TrySampleWorldEarthNightSky(const QJsonObject& light, gameplay::world::EarthNightSkySample& outSky)
+{
+    if (IsWorldEarthLight(light) == false)
+    {
+        return false;
+    }
+    const WorldEarthObserver observer = ReadWorldEarthObserver(light);
+    return gameplay::world::TrySampleEarthNightSky(observer.DaysSinceJ2000,
+                                                   observer.LatitudeDegrees,
+                                                   observer.LongitudeDegrees,
+                                                   outSky);
 }
 } // namespace ludus::editor

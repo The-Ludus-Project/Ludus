@@ -33,11 +33,11 @@
     },
     {
       "id": "stars",
-      "label": "Stars",
+      "label": "Night sky",
       "type": "boolean",
       "default": true,
       "unit": "",
-      "help": "Show a procedural star field beyond the atmosphere."
+      "help": "Show stars beyond the atmosphere. A linked Earth celestial driver adds the Milky Way and visible planets for its date and observer location."
     },
     {
       "id": "moon",
