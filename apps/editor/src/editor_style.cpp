@@ -2,6 +2,7 @@
 #include "design_tokens.h"
 #include "internal/editor_icons.h"
 #include "internal/path_text.h"
+#include "internal/theme_fonts.h"
 #include "internal/theme_preferences.h"
 
 #include <ludus/foundation/base/types.h>
@@ -15,6 +16,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFontMetrics>
+#include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
@@ -41,7 +43,9 @@ constexpr int HIGH_CONTRAST_FOCUS_RING_WIDTH = 3;
 /// Padding between a control's edge and its content, in logical pixels.
 constexpr int BUTTON_PADDING_VERTICAL = 5;
 constexpr int BUTTON_PADDING_HORIZONTAL = 12;
-constexpr int COMPACT_BUTTON_PADDING_VERTICAL = 2;
+/// Half the extra-small step above and below a compact button's label: with the edge, a compact button is the label
+/// height plus the extra-small step plus both edges, on every platform.
+constexpr int COMPACT_BUTTON_PADDING_VERTICAL = design::SPACING_EXTRA_SMALL / 2;
 constexpr int COMPACT_BUTTON_PADDING_HORIZONTAL = 8;
 constexpr int INPUT_PADDING = 4;
 constexpr int COMBO_ARROW_PADDING = 20;
@@ -72,6 +76,21 @@ constexpr int SEPARATOR_EXTENT = 4;
 constexpr qreal HALF = 0.5;
 /// Window lightness (of 255) below which the application palette counts as dark.
 constexpr int DARK_LIGHTNESS_LIMIT = 128;
+/// Gap between a check box and its label, in logical pixels.
+constexpr int CHECK_LABEL_SPACING = design::SPACING_SMALL;
+/// The tick of a checked box, as fractions of the box: the short stroke down from the left, then the long one up.
+constexpr qreal TICK_START_X = 0.27;
+constexpr qreal TICK_START_Y = 0.52;
+constexpr qreal TICK_CORNER_X = 0.43;
+constexpr qreal TICK_CORNER_Y = 0.68;
+constexpr qreal TICK_END_X = 0.74;
+constexpr qreal TICK_END_Y = 0.34;
+/// The bar of a partially checked box runs between these fractions of the box width.
+constexpr qreal PARTIAL_BAR_START = 0.28;
+constexpr qreal PARTIAL_BAR_END = 0.72;
+/// A group box is a flat section: a rule, then this space above its title and this space below it.
+constexpr int GROUP_TITLE_SPACE_ABOVE = design::SPACING_MEDIUM;
+constexpr int GROUP_TITLE_SPACE_BELOW = design::SPACING_SMALL;
 const char* const STYLE_OBJECT_NAME = "LudusEditorStyle";
 const char* const VISUAL_ROLE_PROPERTY = "visualRole";
 const char* const SEGMENT_POSITION_PROPERTY = "segmentPosition";
@@ -198,6 +217,56 @@ void DrawSegmentBody(QPainter* painter,
     }
     painter->restore();
 }
+
+/// Section titles use the Title type role of the group box's own font, so they follow the system text size.
+QFont MakeGroupTitleFont(const QWidget* widgetOrNull)
+{
+    return MakeTypeFont(widgetOrNull != nullptr ? widgetOrNull->font() : QApplication::font("QGroupBox"),
+                        TypeRole::Title);
+}
+
+/// Where a flat section puts its parts: a rule along the top edge, the title (after its check box, when it has one)
+/// below it, and the contents under the title, full width so a section lines up with the dock around it.
+struct GroupBoxLayout final
+{
+    QRect CheckBox;
+    QRect Label;
+    QRect Contents;
+    QSize Minimum;
+};
+
+GroupBoxLayout
+ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFont, int indicatorSize, int labelSpacing)
+{
+    const QRect& rect = groupBox.rect;
+    const bool isCheckable = groupBox.subControls.testFlag(QStyle::SC_GroupBoxCheckBox);
+    const int titleTop = rect.top() + CONTROL_EDGE_WIDTH + GROUP_TITLE_SPACE_ABOVE;
+    GroupBoxLayout layout;
+    if (groupBox.text.isEmpty() == true && isCheckable == false)
+    {
+        // An untitled section keeps only its rule, with the space a title would leave below it.
+        const int contentsTop = rect.top() + CONTROL_EDGE_WIDTH + GROUP_TITLE_SPACE_BELOW;
+        layout.Contents = QRect(rect.left(), contentsTop, rect.width(), std::max(0, rect.bottom() + 1 - contentsTop));
+        layout.Minimum = QSize(0, contentsTop - rect.top());
+        return layout;
+    }
+    const QFontMetrics metrics(titleFont);
+    const int titleHeight = std::max(metrics.height(), isCheckable == true ? indicatorSize : 0);
+    int labelLeft = rect.left();
+    if (isCheckable == true)
+    {
+        layout.CheckBox =
+            QRect(rect.left(), titleTop + (titleHeight - indicatorSize) / 2, indicatorSize, indicatorSize);
+        labelLeft += indicatorSize + labelSpacing;
+    }
+    const int textWidth = metrics.horizontalAdvance(groupBox.text);
+    layout.Label =
+        QRect(labelLeft, titleTop, std::max(0, std::min(textWidth, rect.right() + 1 - labelLeft)), titleHeight);
+    const int contentsTop = titleTop + titleHeight + GROUP_TITLE_SPACE_BELOW;
+    layout.Contents = QRect(rect.left(), contentsTop, rect.width(), std::max(0, rect.bottom() + 1 - contentsTop));
+    layout.Minimum = QSize(labelLeft - rect.left() + textWidth, contentsTop - rect.top());
+    return layout;
+}
 } // namespace
 
 QPalette MakeEditorPalette(const QPalette& platform, bool isDark, bool isHighContrast)
@@ -264,6 +333,7 @@ void EditorStyle::Refresh()
     mColours.Accent = Token(design::ThemeColour::AccentPrimary, isDark, isHighContrast);
     mColours.AccentText = Token(design::ThemeColour::AccentOnPrimary, isDark, isHighContrast);
     mColours.Selected = Token(design::ThemeColour::AccentSurface, isDark, isHighContrast);
+    mColours.Disabled = Token(design::ThemeColour::TextDisabled, isDark, isHighContrast);
 }
 
 int EditorStyle::GetEdgeWidth() const noexcept
@@ -341,10 +411,28 @@ int EditorStyle::pixelMetric(PixelMetric metric, const QStyleOption* optionOrNul
         case PM_ToolBarItemSpacing:
         case PM_ToolBarFrameWidth:
             return TOOL_BAR_SPACING;
+        case PM_IndicatorWidth:
+        case PM_IndicatorHeight:
+            return design::SIZE_CHECKBOX;
+        case PM_CheckBoxLabelSpacing:
+            return CHECK_LABEL_SPACING;
         default:
             break;
     }
     return QProxyStyle::pixelMetric(metric, optionOrNull, widgetOrNull);
+}
+
+int EditorStyle::styleHint(StyleHint hint,
+                           const QStyleOption* optionOrNull,
+                           const QWidget* widgetOrNull,
+                           QStyleHintReturn* outReturnDataOrNull) const
+{
+    // Tabs start at the leading edge like the document tabs, on every platform; macOS would centre them.
+    if (hint == SH_TabBar_Alignment)
+    {
+        return Qt::AlignLeft;
+    }
+    return QProxyStyle::styleHint(hint, optionOrNull, widgetOrNull, outReturnDataOrNull);
 }
 
 void EditorStyle::drawPrimitive(PrimitiveElement element,
@@ -498,6 +586,10 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             }
             return;
         }
+        case PE_IndicatorCheckBox:
+        case PE_IndicatorItemViewItemCheck:
+            DrawCheckIndicator(*option, *painter);
+            return;
         case PE_PanelStatusBar:
             painter->fillRect(option->rect, mColours.Workspace);
             painter->fillRect(QRect(option->rect.topLeft(), QSize(option->rect.width(), CONTROL_EDGE_WIDTH)),
@@ -580,12 +672,27 @@ void EditorStyle::drawControl(ControlElement element,
             QCommonStyle::drawControl(element, option, painter, widgetOrNull);
             return;
 #endif
+        case CE_PushButton:
+            // The common style lays a push button out from SE_PushButtonContents and draws it through the bevel and
+            // label below, which the platform style might otherwise do natively in one piece.
+            if (IsStyledPushButton(qstyleoption_cast<const QStyleOptionButton*>(option)) == false)
+            {
+                break;
+            }
+            QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+            return;
+        case CE_CheckBox:
+        case CE_CheckBoxLabel:
+            // A check box is the indicator drawn below and its label, laid out by the common style; macOS would draw
+            // a native box at its own size, a dark blob on the editor's panels.
+            QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+            return;
         case CE_PushButtonBevel: {
             // Some platform styles, macOS's among them, draw a push button's bevel natively and never ask for
             // PE_PanelButtonCommand, so the accent fill of a primary button was lost while its label still took the
             // text colour meant for the accent: dark text on a grey native bevel, which reads as a disabled button.
             // The common style paints the bevel through PE_PanelButtonCommand, so every platform gets the same
-            // body, focus ring and primary fill, inside the rectangle the platform style keeps for the bevel.
+            // body, focus ring and primary fill, over the whole button (see SE_PushButtonBevel in subElementRect).
             const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
             if (IsStyledPushButton(button) == false)
             {
@@ -626,7 +733,7 @@ void EditorStyle::drawControl(ControlElement element,
                 // The label of a switch that is on sits on the accent fill, so it takes the accent's text colour.
                 QStyleOptionToolButton onLabel = *tool;
                 onLabel.palette.setColor(QPalette::ButtonText, mColours.AccentText);
-                QProxyStyle::drawControl(element, &onLabel, painter, widgetOrNull);
+                QCommonStyle::drawControl(element, &onLabel, painter, widgetOrNull);
                 return;
             }
             const bool isInstantMenu = tool != nullptr &&
@@ -634,19 +741,23 @@ void EditorStyle::drawControl(ControlElement element,
                                        tool->features.testFlag(QStyleOptionToolButton::MenuButtonPopup) == false;
             if (isInstantMenu == false)
             {
-                break;
+                // The common label, in the palette's text colour and font; macOS would restyle a tool bar's labels.
+                QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+                return;
             }
             // Centre the label in what the chevron leaves, so a long label ends before the chevron starts.
             QStyleOptionToolButton label = *tool;
             label.rect.setRight(label.rect.right() - proxy()->pixelMetric(PM_MenuButtonIndicator, tool, widgetOrNull));
-            QProxyStyle::drawControl(element, &label, painter, widgetOrNull);
+            QCommonStyle::drawControl(element, &label, painter, widgetOrNull);
             return;
         }
         case CE_TabBarTabLabel: {
             const QStyleOptionTab* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
             if (tab == nullptr || tab->icon.isNull() == true || IsIconOnlyDockTabBar(widgetOrNull, *this) == false)
             {
-                break;
+                // The label in the palette's text colour; macOS would swap it for its own on the selected tab.
+                QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+                return;
             }
             const QIcon::Mode mode = isEnabled == true ? QIcon::Normal : QIcon::Disabled;
             const int iconSize = pixelMetric(PM_TabBarIconSize, tab, widgetOrNull);
@@ -759,20 +870,35 @@ void EditorStyle::drawComplexControl(ComplexControl control,
                                      QPainter* painter,
                                      const QWidget* widgetOrNull) const
 {
-#if defined(Q_OS_WIN)
-    if (control == CC_ToolButton)
-    {
-        // Thanks to the Qt Company, Qt 6.8.3 QCommonStyle::drawComplexControl
-        // and QWindowsVistaStyle::drawComplexControl (CC_ToolButton). The
-        // native style bypasses our panel primitive on regular tool buttons.
-        // Reuse Qt's common layout and our existing themed paint primitives.
-        // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/styles/qcommonstyle.cpp
-        QCommonStyle::drawComplexControl(control, option, painter, widgetOrNull);
-        return;
-    }
-#endif
     const bool isEnabled = option->state.testFlag(State_Enabled);
     const bool isRingShown = option->state.testFlag(State_HasFocus) == true && isEnabled == true;
+    if (control == CC_ToolButton)
+    {
+        // Thanks to the Qt Company, Qt 6.8.3 QCommonStyle::drawComplexControl, QWindowsVistaStyle and QMacStyle
+        // (CC_ToolButton). Both native styles paint regular tool buttons themselves and never ask for
+        // PE_PanelButtonTool, so a switch that is on (Force raster, Stats) showed only a faint native fill. The common
+        // layout paints through the panel primitive above on every platform.
+        // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/styles/qcommonstyle.cpp
+        QCommonStyle::drawComplexControl(control, option, painter, widgetOrNull);
+        // An auto-raise button at rest draws no panel at all, so ring keyboard focus here.
+        if (isRingShown == true)
+        {
+            DrawControlBody(painter,
+                            option->rect,
+                            { .Fill = Qt::transparent, .Edge = mColours.Accent },
+                            GetFocusRingWidth());
+        }
+        return;
+    }
+    if (control == CC_GroupBox)
+    {
+        const QStyleOptionGroupBox* groupBox = qstyleoption_cast<const QStyleOptionGroupBox*>(option);
+        if (groupBox != nullptr)
+        {
+            DrawGroupBox(*groupBox, *painter, widgetOrNull);
+            return;
+        }
+    }
     const auto drawBody = [&]() {
         DrawControlBody(painter,
                         option->rect,
@@ -851,6 +977,51 @@ namespace
 
 QRect EditorStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widgetOrNull) const
 {
+    switch (element)
+    {
+        case SE_PushButtonBevel:
+        case SE_PushButtonFocusRect:
+        case SE_PushButtonContents:
+            // macOS keeps a margin around the bevel for its shadow and focus glow, so the editor's body and label
+            // got a rectangle several pixels shorter than the height sizeFromContents budgets, and compact buttons
+            // (Solo, Apply Changes) clipped. The editor's body fills the button; the label sits inside its edge.
+            if (IsStyledPushButton(qstyleoption_cast<const QStyleOptionButton*>(option)) == true)
+            {
+                if (element == SE_PushButtonContents)
+                {
+                    const int edgeWidth = GetEdgeWidth();
+                    return option->rect.adjusted(edgeWidth, edgeWidth, -edgeWidth, -edgeWidth);
+                }
+                return option->rect;
+            }
+            break;
+        case SE_CheckBoxIndicator:
+        case SE_CheckBoxContents:
+        case SE_CheckBoxFocusRect:
+        case SE_CheckBoxClickRect:
+        case SE_TabBarTabText:
+        case SE_TabBarTabLeftButton:
+        case SE_TabBarTabRightButton:
+        case SE_TabWidgetTabBar:
+        case SE_TabWidgetTabPane:
+        case SE_TabWidgetTabContents:
+        case SE_TabWidgetLeftCorner:
+        case SE_TabWidgetRightCorner:
+            // The controls the editor draws itself keep the common geometry on every platform.
+            return QCommonStyle::subElementRect(element, option, widgetOrNull);
+        case SE_PushButtonLayoutItem:
+        case SE_ToolButtonLayoutItem:
+        case SE_CheckBoxLayoutItem:
+        case SE_ComboBoxLayoutItem:
+        case SE_SpinBoxLayoutItem:
+        case SE_GroupBoxLayoutItem:
+        case SE_TabWidgetLayoutItem:
+            // These controls are drawn edge to edge, so layouts must not overlap them by the platform's shadow
+            // margins (macOS) or neighbours would cover each other's edges.
+            return option->rect;
+        default:
+            break;
+    }
     QRect rect = QProxyStyle::subElementRect(element, option, widgetOrNull);
     const QWidget* viewOrNull = widgetOrNull != nullptr ? widgetOrNull->parentWidget() : nullptr;
     // Item views hand their viewport to the style, so the padding property lives on the view itself.
@@ -867,11 +1038,53 @@ QRect EditorStyle::subElementRect(SubElement element, const QStyleOption* option
     return rect;
 }
 
+QStyle::SubControl EditorStyle::hitTestComplexControl(ComplexControl control,
+                                                      const QStyleOptionComplex* option,
+                                                      const QPoint& position,
+                                                      const QWidget* widgetOrNull) const
+{
+    // Hit tests follow the parts as laid out in subControlRect, not as the platform style would place them.
+    if (control == CC_ToolButton || control == CC_GroupBox)
+    {
+        return QCommonStyle::hitTestComplexControl(control, option, position, widgetOrNull);
+    }
+    return QProxyStyle::hitTestComplexControl(control, option, position, widgetOrNull);
+}
+
 QRect EditorStyle::subControlRect(ComplexControl control,
                                   const QStyleOptionComplex* option,
                                   SubControl subControl,
                                   const QWidget* widgetOrNull) const
 {
+    if (control == CC_ToolButton)
+    {
+        return QCommonStyle::subControlRect(control, option, subControl, widgetOrNull);
+    }
+    if (control == CC_GroupBox)
+    {
+        const QStyleOptionGroupBox* groupBox = qstyleoption_cast<const QStyleOptionGroupBox*>(option);
+        if (groupBox != nullptr)
+        {
+            const GroupBoxLayout layout =
+                ComputeGroupBoxLayout(*groupBox,
+                                      MakeGroupTitleFont(widgetOrNull),
+                                      proxy()->pixelMetric(PM_IndicatorWidth, option, widgetOrNull),
+                                      proxy()->pixelMetric(PM_CheckBoxLabelSpacing, option, widgetOrNull));
+            switch (subControl)
+            {
+                case SC_GroupBoxCheckBox:
+                    return layout.CheckBox;
+                case SC_GroupBoxLabel:
+                    return layout.Label;
+                case SC_GroupBoxContents:
+                    return layout.Contents;
+                case SC_GroupBoxFrame:
+                    return groupBox->rect;
+                default:
+                    return {};
+            }
+        }
+    }
     const QStyleOptionComboBox* combo =
         control == CC_ComboBox ? qstyleoption_cast<const QStyleOptionComboBox*>(option) : nullptr;
     if (combo == nullptr ||
@@ -933,14 +1146,33 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
         case CT_SpinBox:
             return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull) +
                    QSize(0, 2 * INPUT_PADDING);
-        case CT_TabBarTab:
+        case CT_TabBarTab: {
+            // The tab bar already adds the padding of PM_TabBarTabHSpace and PM_TabBarTabVSpace; macOS would add
+            // its own on top.
+            const QSize base = QCommonStyle::sizeFromContents(type, option, contentsSize, widgetOrNull);
             if (IsIconOnlyDockTabBar(widgetOrNull, *this) == true)
             {
-                const QSize base = QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull);
                 return {pixelMetric(PM_TabBarIconSize, option, widgetOrNull) + 2 * ICON_ONLY_TAB_PADDING,
                         base.height()};
             }
-            break;
+            return base;
+        }
+        case CT_CheckBox:
+            return QCommonStyle::sizeFromContents(type, option, contentsSize, widgetOrNull);
+        case CT_GroupBox: {
+            const QStyleOptionGroupBox* groupBox = qstyleoption_cast<const QStyleOptionGroupBox*>(option);
+            if (groupBox == nullptr)
+            {
+                break;
+            }
+            // QGroupBox measures the title in its body font; the title is drawn larger, so measure it here.
+            const GroupBoxLayout layout =
+                ComputeGroupBoxLayout(*groupBox,
+                                      MakeGroupTitleFont(widgetOrNull),
+                                      proxy()->pixelMetric(PM_IndicatorWidth, option, widgetOrNull),
+                                      proxy()->pixelMetric(PM_CheckBoxLabelSpacing, option, widgetOrNull));
+            return layout.Minimum;
+        }
         case CT_ComboBox: {
             // Thanks to The Qt Company, Qt 6.8 QComboBoxPrivate::recomputeSizeHint:
             // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qcombobox.cpp
@@ -990,6 +1222,100 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
             break;
     }
     return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull);
+}
+
+void EditorStyle::DrawCheckIndicator(const QStyleOption& option, QPainter& painter) const
+{
+    // A box of the token size with a control edge on the panel, so an unchecked box is as visible as a checked one;
+    // checked and partly checked boxes fill with the accent and carry a tick or a bar in the accent's text colour.
+    const int size = std::min({static_cast<int>(design::SIZE_CHECKBOX), option.rect.width(), option.rect.height()});
+    QRect box(QPoint(0, 0), QSize(size, size));
+    box.moveCenter(option.rect.center());
+    const bool isEnabled = option.state.testFlag(State_Enabled);
+    const bool isOn = option.state.testFlag(State_On);
+    const bool isPartial = option.state.testFlag(State_NoChange);
+    const bool isHovered = option.state.testFlag(State_MouseOver) && isEnabled == true;
+    QColor fill = mColours.Panel;
+    QColor edge = isHovered == true ? mColours.Accent : mColours.Border;
+    QColor mark = mColours.AccentText;
+    if (isEnabled == false)
+    {
+        edge = mColours.Disabled;
+        mark = mColours.Disabled;
+    }
+    else if (isOn == true || isPartial == true)
+    {
+        fill = mColours.Accent;
+        edge = mColours.Accent;
+    }
+    DrawControlBody(&painter, box, { .Fill = fill, .Edge = edge }, GetEdgeWidth());
+    if (isOn == false && isPartial == false)
+    {
+        return;
+    }
+    const QRectF area(box);
+    const auto at = [&area](qreal x, qreal y) {
+        return QPointF(area.left() + area.width() * x, area.top() + area.height() * y);
+    };
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(mark, CHEVRON_STROKE, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    if (isOn == true)
+    {
+        const QPointF tick[CHEVRON_POINT_COUNT] = {at(TICK_START_X, TICK_START_Y),
+                                                   at(TICK_CORNER_X, TICK_CORNER_Y),
+                                                   at(TICK_END_X, TICK_END_Y)};
+        painter.drawPolyline(tick, CHEVRON_POINT_COUNT);
+    }
+    else
+    {
+        painter.drawLine(at(PARTIAL_BAR_START, HALF), at(PARTIAL_BAR_END, HALF));
+    }
+    painter.restore();
+}
+
+void EditorStyle::DrawGroupBox(const QStyleOptionGroupBox& groupBox,
+                               QPainter& painter,
+                               const QWidget* widgetOrNull) const
+{
+    // A flat section, as docs/architecture/editor-art-direction.md asks: a quiet rule and a clear title instead of
+    // the rounded card macOS draws around every group.
+    const QFont titleFont = MakeGroupTitleFont(widgetOrNull);
+    const GroupBoxLayout layout =
+        ComputeGroupBoxLayout(groupBox,
+                              titleFont,
+                              proxy()->pixelMetric(PM_IndicatorWidth, &groupBox, widgetOrNull),
+                              proxy()->pixelMetric(PM_CheckBoxLabelSpacing, &groupBox, widgetOrNull));
+    painter.fillRect(QRect(groupBox.rect.left(), groupBox.rect.top(), groupBox.rect.width(), CONTROL_EDGE_WIDTH),
+                     mColours.SubtleBorder);
+    const bool isEnabled = groupBox.state.testFlag(State_Enabled);
+    if (groupBox.subControls.testFlag(SC_GroupBoxCheckBox) == true)
+    {
+        QStyleOption check(groupBox);
+        check.rect = layout.CheckBox;
+        check.state.setFlag(State_HasFocus, false);
+        check.state.setFlag(State_MouseOver,
+                            groupBox.state.testFlag(State_MouseOver) == true &&
+                                (groupBox.activeSubControls & (SC_GroupBoxCheckBox | SC_GroupBoxLabel)) != 0);
+        proxy()->drawPrimitive(PE_IndicatorCheckBox, &check, &painter, widgetOrNull);
+    }
+    if (groupBox.text.isEmpty() == false)
+    {
+        painter.save();
+        painter.setFont(titleFont);
+        painter.setPen(isEnabled == true ? mColours.Text : mColours.Secondary);
+        const QString title = QFontMetrics(titleFont).elidedText(groupBox.text, Qt::ElideRight, layout.Label.width());
+        painter.drawText(layout.Label, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextShowMnemonic, title);
+        painter.restore();
+    }
+    if (groupBox.state.testFlag(State_HasFocus) == true && isEnabled == true)
+    {
+        QStyleOptionFocusRect focus;
+        focus.QStyleOption::operator=(groupBox);
+        focus.rect = layout.CheckBox.isNull() == true ? layout.Label : layout.CheckBox.united(layout.Label);
+        proxy()->drawPrimitive(PE_FrameFocusRect, &focus, &painter, widgetOrNull);
+    }
 }
 
 EditorStyle* GetEditorStyleOrNull()
