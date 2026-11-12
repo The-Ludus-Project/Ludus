@@ -38,6 +38,12 @@ bool IsGiProbeGridValid(const GiProbeGrid& grid) noexcept
            grid.OriginWorld.Z >= -internal::MAX_WORLD_COORDINATE && endWorld.X <= internal::MAX_WORLD_COORDINATE &&
            endWorld.Y <= internal::MAX_WORLD_COORDINATE && endWorld.Z <= internal::MAX_WORLD_COORDINATE;
 }
+
+bool HasGiProbeAtlasExtent(const GiProbeGrid& grid, uint32 width, uint32 height) noexcept
+{
+    return width == LUDUS_GI_PROBE_ATLAS_WIDTH && grid.Counts[0] != 0 && IsGiProbeGridValid(grid) == true &&
+           height == internal::ComputeGiProbeAtlasHeight(grid);
+}
 } // namespace ludus::graphics::renderer
 
 namespace ludus::graphics::renderer::internal
