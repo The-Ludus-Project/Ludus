@@ -86,9 +86,9 @@ def is_pch_entry(entry) -> bool:
 
 def get_ludus_target(entry):
     """Read the owning target from its object output, rather than include/definition text."""
-    arguments = entry.get("arguments") or shlex.split(entry["command"])
     output = entry.get("output")
     if output is None:
+        arguments = entry.get("arguments") or shlex.split(entry["command"])
         for index, argument in enumerate(arguments[:-1]):
             if argument == "-o":
                 output = arguments[index + 1]
@@ -112,6 +112,7 @@ def should_enable_test_exceptions(target, source):
 def main():
     entries = json.loads(Path(sys.argv[1]).read_text())
     checked = 0
+    exception_macros = {}
     for entry in entries:
         # Catch2 executables and their shared test-main objects opt in. Native
         # assertion child executables intentionally do not opt into exceptions.
@@ -129,11 +130,18 @@ def main():
         if entry.get("file", "").endswith((".c",)):
             continue
         expected = should_enable_test_exceptions(target, entry["file"])
-        result = subprocess.run(
-            compiler_options(entry) + ["-x", "objective-c++" if entry["file"].endswith(".mm") else "c++", "-dM", "-E", "-"],
-            input="", text=True, capture_output=True, cwd=entry["directory"], check=True,
-        )
-        actual = "#define __cpp_exceptions " in result.stdout
+        language = "objective-c++" if entry["file"].endswith(".mm") else "c++"
+        command = (*compiler_options(entry), "-x", language, "-dM", "-E", "-")
+        directory = entry["directory"]
+        probe = (directory, command)
+        # Reuse the empty-input macro result for identical compiler invocations.
+        # Every source still gets its own target-policy comparison below.
+        if probe not in exception_macros:
+            result = subprocess.run(
+                command, input="", text=True, capture_output=True, cwd=directory, check=True,
+            )
+            exception_macros[probe] = "#define __cpp_exceptions " in result.stdout
+        actual = exception_macros[probe]
         if actual != expected:
             repair = ("Apply ludus_enable_test_exceptions() to this Catch2 test target." if expected else
                       "Remove exception-enabling flags; only Catch2 test targets may opt in.")
@@ -141,7 +149,10 @@ def main():
         checked += 1
     if not checked:
         raise RuntimeError("No Ludus compilation commands checked")
-    print(f"Verified effective exception policy for {checked} compilation commands")
+    print(
+        f"Verified effective exception policy for {checked} compilation commands "
+        f"(compiler probes: {len(exception_macros)})"
+    )
 
 
 if __name__ == "__main__":
