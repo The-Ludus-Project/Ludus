@@ -1,0 +1,255 @@
+// Allocation injection for every TriangleMesh creation path, and proof that
+// queries never allocate. This executable replaces the global allocation
+// functions, which FoundationMemory's container domain reaches through the
+// aligned nothrow operator new; sanitizer builds use the ordinary suite
+// because sanitizer runtimes replace the same functions.
+
+#include "test_meshes.h"
+
+#include <ludus/foundation/base/core.h>
+
+#include <ludus/physics/collision/queries.h>
+#include <ludus/physics/collision/status.h>
+#include <ludus/physics/collision/triangle_mesh.h>
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstddef>
+#include <cstdlib>
+#include <new>
+
+namespace
+{
+struct AllocationCounters final
+{
+    long Allocations = 0;
+    long Frees = 0;
+};
+AllocationCounters gCounters;
+bool isTrackingAllocations = false;
+long gFailAfter = -1;
+
+void* AllocateAligned(std::size_t bytes, std::size_t alignment) noexcept
+{
+    if (isTrackingAllocations == true)
+    {
+        ++gCounters.Allocations;
+    }
+    if (gFailAfter == 0)
+    {
+        return nullptr;
+    }
+    if (gFailAfter > 0)
+    {
+        --gFailAfter;
+    }
+    if (alignment < alignof(std::max_align_t))
+    {
+        alignment = alignof(std::max_align_t);
+    }
+    std::size_t rounded = (bytes + alignment - 1) & ~(alignment - 1);
+    if (rounded == 0)
+    {
+        rounded = alignment;
+    }
+    return std::aligned_alloc(alignment, rounded);
+}
+
+void FreeAligned(void* pointerOrNull) noexcept
+{
+    if (pointerOrNull != nullptr && isTrackingAllocations == true)
+    {
+        ++gCounters.Frees;
+    }
+    std::free(pointerOrNull);
+}
+} // namespace
+
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
+void* operator new(std::size_t bytes)
+{
+    void* pointerOrNull = AllocateAligned(bytes, alignof(std::max_align_t));
+    if (pointerOrNull == nullptr)
+    {
+        throw std::bad_alloc{};
+    }
+    return pointerOrNull;
+}
+void* operator new(std::size_t bytes, std::align_val_t alignment)
+{
+    void* pointerOrNull = AllocateAligned(bytes, static_cast<std::size_t>(alignment));
+    if (pointerOrNull == nullptr)
+    {
+        throw std::bad_alloc{};
+    }
+    return pointerOrNull;
+}
+void* operator new(std::size_t bytes, const std::nothrow_t&) noexcept
+{
+    return AllocateAligned(bytes, alignof(std::max_align_t));
+}
+void* operator new(std::size_t bytes, std::align_val_t alignment, const std::nothrow_t&) noexcept
+{
+    return AllocateAligned(bytes, static_cast<std::size_t>(alignment));
+}
+void operator delete(void* pointerOrNull) noexcept
+{
+    FreeAligned(pointerOrNull);
+}
+void operator delete(void* pointerOrNull, std::size_t) noexcept
+{
+    FreeAligned(pointerOrNull);
+}
+void operator delete(void* pointerOrNull, std::align_val_t) noexcept
+{
+    FreeAligned(pointerOrNull);
+}
+void operator delete(void* pointerOrNull, std::size_t, std::align_val_t) noexcept
+{
+    FreeAligned(pointerOrNull);
+}
+void operator delete(void* pointerOrNull, const std::nothrow_t&) noexcept
+{
+    FreeAligned(pointerOrNull);
+}
+void operator delete(void* pointerOrNull, std::align_val_t, const std::nothrow_t&) noexcept
+{
+    FreeAligned(pointerOrNull);
+}
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
+
+using namespace ludus::physics::collision;
+using namespace ludus::physics::collision::test;
+
+namespace
+{
+RaycastInput MakeProbeRay()
+{
+    return { .OriginMesh = {0.25, 1.0, 0.75}, .DirectionMesh = {0.0, -1.0, 0.0}, .MaxDistanceMeters = 10.0 };
+}
+
+/// Cook `source` while failing each allocation in turn. Every failure must
+/// report AllocationFailure and leave `inoutMesh` exactly as it was; the first
+/// run with no failure must succeed. Returns the number of allocations cooking needs.
+long RequireEveryAllocationFailurePreservesMesh(const TriangleMeshSource& source,
+                                                const TriangleMeshCookSettings& settings,
+                                                TriangleMesh& inoutMesh)
+{
+    const bool wasCooked = inoutMesh.IsCooked();
+    const usize triangleCount = inoutMesh.GetTriangleCount();
+    const usize nodeCount = inoutMesh.GetNodeCount();
+    RaycastResult before;
+    const Status beforeStatus = inoutMesh.RaycastClosest(MakeProbeRay(), before);
+    for (long failedAllocation = 0;; ++failedAllocation)
+    {
+        gFailAfter = failedAllocation;
+        const TriangleMeshCookResult result = TriangleMesh::TryCook(source, settings, inoutMesh);
+        gFailAfter = -1;
+        if (result.Result == Status::Success)
+        {
+            // The first success is the first run whose injected failure lies past every allocation cooking makes.
+            return failedAllocation;
+        }
+        REQUIRE(result.Result == Status::AllocationFailure);
+        REQUIRE(result.TriangleIndex == INVALID_TRIANGLE_INDEX);
+        REQUIRE(inoutMesh.IsCooked() == wasCooked);
+        REQUIRE(inoutMesh.GetTriangleCount() == triangleCount);
+        REQUIRE(inoutMesh.GetNodeCount() == nodeCount);
+        RaycastResult after;
+        REQUIRE(inoutMesh.RaycastClosest(MakeProbeRay(), after) == beforeStatus);
+        REQUIRE(after.HasHit == before.HasHit);
+        REQUIRE(after.DistanceMeters == before.DistanceMeters);
+        REQUIRE(after.TriangleIndex == before.TriangleIndex);
+    }
+}
+} // namespace
+
+TEST_CASE("Every cook allocation failure preserves an empty or cooked mesh", "[collision][alloc]")
+{
+    MeshData floorData;
+    AddFloorQuad(floorData);
+    RandomStream heights;
+    REQUIRE(heights.TryReseed(11, 0) == true);
+    const MeshData terrainData = MakeGrid(16, &heights);
+    MeshData degenerateData;
+    degenerateData.AddTriangle({0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f});
+    AddFloorQuad(degenerateData);
+    const TriangleMeshCookSettings reject{};
+    const TriangleMeshCookSettings skip{ .DegeneratePolicy = DegenerateTrianglePolicy::Skip };
+
+    SECTION("into an empty mesh")
+    {
+        TriangleMesh mesh;
+        CHECK(RequireEveryAllocationFailurePreservesMesh(floorData.GetSource(), reject, mesh) > 0);
+        CHECK(mesh.GetTriangleCount() == 2);
+    }
+    SECTION("replacing a cooked mesh")
+    {
+        TriangleMesh mesh = CookOrFail(floorData);
+        CHECK(RequireEveryAllocationFailurePreservesMesh(terrainData.GetSource(), reject, mesh) > 0);
+        CHECK(mesh.GetTriangleCount() == static_cast<usize>(16) * 16 * 2);
+    }
+    SECTION("with skipped degenerate triangles")
+    {
+        TriangleMesh mesh = CookOrFail(terrainData);
+        CHECK(RequireEveryAllocationFailurePreservesMesh(degenerateData.GetSource(), skip, mesh) > 0);
+        CHECK(mesh.GetTriangleCount() == 2);
+        CHECK(mesh.GetSkippedTriangleCount() == 1);
+    }
+}
+
+TEST_CASE("Rejected sources allocate nothing", "[collision][alloc]")
+{
+    MeshData data;
+    AddFloorQuad(data);
+    data.Indices[0] = 99;
+    TriangleMesh mesh;
+    gCounters = {};
+    isTrackingAllocations = true;
+    const TriangleMeshCookResult result = TriangleMesh::TryCook(data.GetSource(), {}, mesh);
+    isTrackingAllocations = false;
+    CHECK(result.Result == Status::IndexOutOfRange);
+    CHECK(gCounters.Allocations == 0);
+}
+
+TEST_CASE("Queries allocate nothing", "[collision][alloc]")
+{
+    RandomStream heights;
+    REQUIRE(heights.TryReseed(12, 0) == true);
+    const MeshData data = MakeGrid(32, &heights);
+    const TriangleMesh mesh = CookOrFail(data);
+    RandomStream random;
+    REQUIRE(random.TryReseed(13, 0) == true);
+    gCounters = {};
+    isTrackingAllocations = true;
+    bool isEverySuccess = true;
+    constexpr uint32 QUERY_COUNT = 500;
+    for (uint32 query = 0; query < QUERY_COUNT; ++query)
+    {
+        const RaycastInput ray
+        {
+            .OriginMesh = {static_cast<float64>(NextInRange(random, 0.0f, 32.0f)),
+                           2.0,
+                           static_cast<float64>(NextInRange(random, 0.0f, 32.0f))},
+            .DirectionMesh = NextDirection(random),
+            .MaxDistanceMeters = 50.0,
+        };
+        RaycastResult rayResult;
+        isEverySuccess = isEverySuccess == true && mesh.RaycastClosest(ray, rayResult) == Status::Success;
+        const BoxCastInput box
+        {
+            .CenterMesh = ray.OriginMesh,
+            .HalfExtentsMesh = {0.3, 0.9, 0.3},
+            .TranslationMesh = ray.DirectionMesh * 4.0,
+            .Traversal = query % 2 == 0 ? QueryTraversal::Hierarchy : QueryTraversal::AllTriangles,
+        };
+        BoxCastResult boxResult;
+        isEverySuccess = isEverySuccess == true && mesh.CastBoxClosest(box, boxResult) == Status::Success;
+    }
+    isTrackingAllocations = false;
+    CHECK(isEverySuccess == true);
+    CHECK(gCounters.Allocations == 0);
+    CHECK(gCounters.Frees == 0);
+}
