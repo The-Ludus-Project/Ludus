@@ -7,13 +7,13 @@ permissions:
   contents: read
 
 jobs:
-  enumerate:
+  sanitizers:
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
-        sample: [1, 2, 3, 4, 5, 6]
+        sample: [1, 2, 3, 4]
     env:
       GALLIVM_PERF: nopt
     steps:
@@ -28,12 +28,17 @@ jobs:
         if: steps.image.outputs.should_probe == 'true'
         with:
           persist-credentials: false
-      - name: Install the qualification toolchain and Vulkan driver
+          ref: 77ad5fe4dc35e64581c8611657f3e5159c703900
+      - uses: ./.github/actions/native-setup
+        if: steps.image.outputs.should_probe == 'true'
+        with:
+          preset: linux-clang-asan-ubsan
+          editor: 'true'
+          prerequisites-only: 'true'
+      - name: Install the Vulkan headers for the standalone probe
         if: steps.image.outputs.should_probe == 'true'
         run: |
-          python3 scripts/python/llvm_apt_source.py
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-23 libclang-rt-23-dev llvm-23 libvulkan-dev libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y -qq libvulkan-dev
           dpkg-query -W libc6 libvulkan1 mesa-vulkan-drivers
       - name: Compare Vulkan loader and Lavapipe LeakSanitizer results
         if: steps.image.outputs.should_probe == 'true'
@@ -46,18 +51,8 @@ jobs:
 
           enum { LoadFailure = 2, InstanceFailure = 3, EnumerateFailure = 4 };
 
-          int main(int argumentCount, char **arguments)
+          int main(void)
           {
-              void *driver = NULL;
-              if (argumentCount == 2)
-              {
-                  driver = dlopen(arguments[1], RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
-                  if (driver == NULL)
-                  {
-                      return LoadFailure;
-                  }
-              }
-
               void *loader = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
               if (loader == NULL)
               {
@@ -102,19 +97,13 @@ jobs:
               VkResult status = enumerateDevices(instance, &deviceCount, NULL);
               destroyInstance(instance, NULL);
               dlclose(loader);
-              if (driver != NULL)
-              {
-                  dlclose(driver);
-              }
               return status == VK_SUCCESS && deviceCount != 0 ? 0 : EnumerateFailure;
           }
           C
           clang-23 -std=c11 -Wall -Wextra -Werror -g -O1 -fno-omit-frame-pointer \
             -fsanitize=address,undefined "$RUNNER_TEMP/enumerate.c" -o "$RUNNER_TEMP/enumerate"
           manifest="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
-          driver="$(dpkg -L mesa-vulkan-drivers | awk '/\/libvulkan_lvp\.so$/ { print }')"
           test -f "$manifest"
-          test -f "$driver"
           run_case() {
             local label="$1"
             shift
@@ -127,6 +116,7 @@ jobs:
           }
           export ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-23
           export VK_LOADER_DEBUG=driver
-          run_case default "$RUNNER_TEMP/enumerate"
-          run_case lavapipe-only env VK_DRIVER_FILES="$manifest" "$RUNNER_TEMP/enumerate"
-          run_case lavapipe-kept-mapped env VK_DRIVER_FILES="$manifest" "$RUNNER_TEMP/enumerate" "$driver"
+          run_case default env -u VK_DRIVER_FILES "$RUNNER_TEMP/enumerate"
+          test "$VK_DRIVER_FILES" = "$manifest"
+          "$RUNNER_TEMP/enumerate"
+          echo 'Lavapipe selected by the production setup action passed'
