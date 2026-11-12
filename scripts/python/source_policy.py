@@ -480,10 +480,15 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
     return found
 
 
-def check(
-    root: Path, base: str, clang_format: str | None = None, head: str | None = None
-) -> list[str]:
-    """Inspect a PR head tree, or local edits; never attribute synthetic-merge main changes to a PR."""
+FORMATTING_FAILURE = "source formatting differs; use the pinned formatter and formatting.format_source"
+
+
+def changed_sources(root: Path, base: str, head: str | None = None) -> tuple[str, list[str]]:
+    """Return the comparison base and the changed sources the gate inspects.
+
+    With ``head``, the base becomes its merge base and only that tree's changes
+    count; otherwise uncommitted and untracked work-tree changes are included.
+    """
     if head:
         base = subprocess.run(
             ["git", "merge-base", base, head],
@@ -508,35 +513,87 @@ def check(
             capture_output=True,
             check=True,
         ).stdout.splitlines()
-    failures = []
+    selected = []
     for name in sorted(set(names)):
         path = Path(name)
-        is_cmake = path.suffix == ".cmake" or path.name == "CMakeLists.txt"
         if (
             not path.parts
             or (path.parts[0] not in ROOTS and name != "CMakeLists.txt")
-            or (path.suffix not in CPP | {".slang"} and not is_cmake)
+            or (path.suffix not in CPP | {".slang"} and not is_cmake_source(name))
         ):
             continue
-        source = (
-            subprocess.run(
-                ["git", "show", f"{head}:{name}"],
-                cwd=root,
-                text=True,
-                capture_output=True,
-                check=True,
-            ).stdout
-            if head
-            else (root / path).read_text(encoding="utf-8")
+        selected.append(name)
+    return base, selected
+
+
+def is_cmake_source(name: str) -> bool:
+    path = Path(name)
+    return path.suffix == ".cmake" or path.name == "CMakeLists.txt"
+
+
+def read_source(root: Path, name: str, head: str | None = None) -> str:
+    """Read a changed source from the PR head tree, or from the work tree."""
+    if head:
+        return subprocess.run(
+            ["git", "show", f"{head}:{name}"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+    return (root / name).read_text(encoding="utf-8")
+
+
+def format_changed_source(root: Path, name: str, source: str, clang_format: str) -> str | None:
+    """Return the formatted text of a changed C++/Slang source, or None for CMake."""
+    if is_cmake_source(name):
+        return None
+    return format_source(source, (root / name).resolve(), clang_format)
+
+
+def check_formatting(
+    root: Path,
+    base: str,
+    clang_format: str,
+    head: str | None = None,
+    fix: bool = False,
+) -> list[str]:
+    """Report changed C++/Slang sources whose formatting differs, as ``check`` does.
+
+    The files and formatter wrapper are exactly those of ``check(..., clang_format)``.
+    With ``fix`` (work tree only), rewrite each differing file and report nothing
+    for it; unchanged files are never read or written.
+    """
+    if fix and head:
+        raise ValueError("formatting fixes apply to the work tree, not a PR head")
+    _, names = changed_sources(root, base, head)
+    failures = []
+    for name in names:
+        source = read_source(root, name, head)
+        formatted = format_changed_source(root, name, source, clang_format)
+        if formatted is None or formatted == source:
+            continue
+        if fix:
+            (root / name).write_text(formatted, encoding="utf-8")
+            print(f"Formatted {name}")
+        else:
+            failures.append(f"{name}: {FORMATTING_FAILURE}")
+    return failures
+
+
+def check(
+    root: Path, base: str, clang_format: str | None = None, head: str | None = None
+) -> list[str]:
+    """Inspect a PR head tree, or local edits; never attribute synthetic-merge main changes to a PR."""
+    base, names = changed_sources(root, base, head)
+    failures = []
+    for name in names:
+        source = read_source(root, name, head)
+        formatted = (
+            format_changed_source(root, name, source, clang_format) if clang_format else None
         )
-        if (
-            clang_format
-            and not is_cmake
-            and format_source(source, (root / path).resolve(), clang_format) != source
-        ):
-            failures.append(
-                f"{name}: source formatting differs; use the pinned formatter and formatting.format_source"
-            )
+        if formatted is not None and formatted != source:
+            failures.append(f"{name}: {FORMATTING_FAILURE}")
         previous = subprocess.run(
             ["git", "show", f"{base}:{name}"], cwd=root, text=True, capture_output=True
         )
