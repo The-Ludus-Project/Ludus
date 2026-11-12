@@ -297,13 +297,17 @@ and per-texel roughness. The IR already holds, and the cook reports dropping:
 | `coateddiffuse` | base colour and roughness from the coat. A rough, isotropic, non-scattering coat (GGX alpha at least 0.001, scalar `eta` of at least 1, zero `albedo`, default `maxdepth` 10) keeps the typed `CoatedDiffuse` layer with its alpha, `eta` and `thickness`, which the [reference tracers](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference) evaluate; `nsamples` only changes their variance. Other coats, including pbrt's default smooth one, keep the legacy GGX/Lambert terms with `MATERIAL_APPROXIMATED`; those ignore the layer's internal reflection and shade brighter |
 | `conductor`, `coatedconductor` | metallic, colour from the named eta/k table |
 | `dielectric`, `thindielectric` | typed smooth `Dielectric`/`ThinDielectric` with scalar `eta` (default 1.5; a named spectrum keeps 1.5 with `SPECTRUM_APPROXIMATED`); a rough one imports smooth with `ROUGH_TRANSMISSION_APPROXIMATED`. The [reference tracers](../architecture/renderer-systems.md#smooth-dielectric-reference) render the transmission; raster and render graphs shade the legacy fallback, a smooth reflector with base colour 0.04 |
+| `interface` | omits boundary-only shapes from the cooked scene and reports `SHAPE_SKIPPED`. This applies to inline and named materials, including PBRT's legacy `none` and explicit empty type. PBRT also ignores area-light assignments on these shapes |
 | `mix` | the first material |
 | other materials | named unsupported models keep their identity as an unresolved material. World shows them in purple and offers a [shared material mapping](editor-workspace.md#repair-an-unsupported-imported-material). Unsupported inline materials retain the grey default. Both report `MATERIAL_DEFAULTED` |
 | area lights | emissive material in pbrt-v4 photometric units (RGB keeps its magnitude), source sidedness and optional power; unequal resolved radiances stay separate |
 | point, spot, distant lights | transformed world position/direction, RGB candela or lux, optional power/illuminance and spot cone |
 | infinite light | authored constant or HDR environment, converted from PBRT equal-area mapping to engine equirectangular mapping |
 | unsupported light types | skipped and counted |
-| media | skipped |
+| media | `MakeNamedMedium` definitions and `MediumInterface` bindings that name a medium report `MEDIUM_SKIPPED`. Visible surfaces keep their surface materials |
+
+For an image that includes the authored medium, render the original scene in
+PBRT. See [PBRT's participating-media format](https://www.pbrt.org/fileformat-v4#participating-media-1).
 
 | glTF / OBJ | Ludus |
 | --- | --- |
