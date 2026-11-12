@@ -2775,6 +2775,51 @@ void WorldWorkspace::RenderInspector()
                 });
             }
         }
+        else
+        {
+            // Without a scene binding, x/y/z, rx/ry/rz and sx/sy/sz numbers still read as one Position, Rotation and
+            // Scale row each rather than nine separate rows.
+            struct AxisTriple final
+            {
+                QString Prefix;
+                QString Title;
+                QString StepUnit;
+            };
+            const QVector<AxisTriple> triples{{QString(), QStringLiteral("Position"), QStringLiteral("m")},
+                                              {QStringLiteral("r"), QStringLiteral("Rotation"), QStringLiteral("°")},
+                                              {QStringLiteral("s"), QStringLiteral("Scale"), QStringLiteral("×")}};
+            for (const AxisTriple& triple : triples)
+            {
+                const QStringList members{triple.Prefix + QStringLiteral("x"),
+                                          triple.Prefix + QStringLiteral("y"),
+                                          triple.Prefix + QStringLiteral("z")};
+                QString unit;
+                qsizetype found = 0;
+                for (const QJsonValue candidate : component.value(QStringLiteral("properties")).toArray())
+                {
+                    const QJsonObject property = candidate.toObject();
+                    if (members.contains(property.value(QStringLiteral("id")).toString()) == true &&
+                        property.value(QStringLiteral("type")).toString() == QStringLiteral("number"))
+                    {
+                        unit = property.value(QStringLiteral("unit")).toString();
+                        ++found;
+                    }
+                }
+                if (found != VECTOR_COMPONENT_COUNT)
+                {
+                    continue;
+                }
+                vectorGroups.append(
+                {
+                    .Title = triple.Title,
+                    .Unit = unit,
+                    .StepUnit = triple.StepUnit,
+                    .Members = members,
+                    .Components = {},
+                    .AxisNames = {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")},
+                });
+            }
+        }
         const QStringList colourMembers{QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")};
         bool hasColour = true;
         for (const QString& member : colourMembers)
@@ -2918,7 +2963,7 @@ void WorldWorkspace::RenderInspector()
                 const QJsonValue low = p.value(QStringLiteral("min"));
                 const QJsonValue high = p.value(QStringLiteral("max"));
                 if (textFieldOrNull != nullptr && isNumber == true && low.isDouble() == true &&
-                    high.isDouble() == true && HasSliderRange(low.toDouble(), high.toDouble()) == true)
+                    high.isDouble() == true && ShouldUseSlider(low.toDouble(), high.toDouble(), unit) == true)
                 {
                     const SliderMapping mapping = MakeSliderMapping(low.toDouble(),
                                                                     high.toDouble(),

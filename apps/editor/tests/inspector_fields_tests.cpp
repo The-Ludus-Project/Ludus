@@ -466,6 +466,9 @@ TEST_CASE("The world inspector gives bounded number fields a slider", "[editor][
     CHECK(sliderOrNull->GetMapping().Scale == SliderScale::Logarithmic);
     CHECK(sliderOrNull->GetMapping().Maximum > sliderOrNull->GetMapping().Minimum);
     CHECK(sliderOrNull->toolTip().contains(QStringLiteral("logarithmic")) == true);
+    // The slider fills the field column beside a number field sized to its value, not a stub beside a wide field.
+    CHECK(intensityOrNull->minimumWidth() == intensityOrNull->maximumWidth());
+    CHECK(sliderOrNull->width() > intensityOrNull->width());
 
     // The slider edits the draft through the same path as typing.
     const QString before = intensityOrNull->text();
@@ -477,4 +480,31 @@ TEST_CASE("The world inspector gives bounded number fields a slider", "[editor][
     QLineEdit* redOrNull = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:light/r"));
     REQUIRE(redOrNull != nullptr);
     CHECK(redOrNull->parentWidget()->findChild<BoundedSlider*>() == nullptr);
+
+    // Angles and distances are typed or scrubbed: a slider over their whole range moves in jumps.
+    qsizetype checkedCount = 0;
+    for (const QJsonValue component : view.Document().Schema().value(QStringLiteral("components")).toArray())
+    {
+        if (component.toObject().value(QStringLiteral("id")).toString() != QStringLiteral("light"))
+        {
+            continue;
+        }
+        for (const QJsonValue property : component.toObject().value(QStringLiteral("properties")).toArray())
+        {
+            const QString unit = property.toObject().value(QStringLiteral("unit")).toString();
+            const QLineEdit* fieldOrNull = view.window()->findChild<QLineEdit*>(
+                QStringLiteral("worldField:light/") + property.toObject().value(QStringLiteral("id")).toString());
+            if ((unit == QStringLiteral("°") || unit == QStringLiteral("m")) && fieldOrNull != nullptr)
+            {
+                INFO(fieldOrNull->objectName().toStdString());
+                CHECK(fieldOrNull->parentWidget()->findChild<BoundedSlider*>(QString(), Qt::FindDirectChildrenOnly) ==
+                      nullptr);
+                ++checkedCount;
+            }
+        }
+    }
+    CHECK(checkedCount > 0);
+    CHECK(ShouldUseSlider(0.0, 1.0, QString()) == true);
+    CHECK(ShouldUseSlider(0.0, 89.0, QStringLiteral("°")) == false);
+    CHECK(ShouldUseSlider(0.0, 1000.0, QStringLiteral("m")) == false);
 }
