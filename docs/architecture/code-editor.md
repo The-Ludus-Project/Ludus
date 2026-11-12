@@ -243,7 +243,7 @@ First languages:
 | Language | Grammar | Language server | Formatter | Debugger |
 | --- | --- | --- | --- | --- |
 | Slang (`.slang`, `.slangh`) | `tree-sitter-slang` | `slangd` from the project's Slang SDK | clang-format (existing profile) | — (GPU debugging stays in [graphics debugging](graphics-debugging.md)) |
-| LUSL (`.lusl`, `.luslh`) | Lexical today, from the LUSL compiler's keyword table; the Ludus-owned `tree-sitter-lusl` follows M3 ([ADR 0026 amendment](../decisions/0026-tree-sitter-syntax-dependency.md#amendment-the-lusl-grammar)) | `luslc lsp` from the project SDK | In-process `FormatSource` | — |
+| LUSL (`.lusl`, `.luslh`) | Ludus-owned `tree-sitter-lusl` with a lexical fallback from the compiler's keyword table ([ADR 0026 amendment](../decisions/0026-tree-sitter-syntax-dependency.md#amendment-the-lusl-grammar)) | `luslc lsp` from the project SDK | In-process `FormatSource` | — |
 | Luau (`.luau`) | `tree-sitter-luau` | `luau-lsp` with `contract.d.luau` | StyLua | Luau adapter over GameHost |
 | C and C++ | `tree-sitter-c`, `tree-sitter-cpp` | clangd from the pinned LLVM | clang-format | `lldb-dap` from the pinned LLVM |
 | JSON (`.json`, `.luscene.json`, manifests) | `tree-sitter-json` | In-process checks against Ludus schemas | Built-in, stable key order preserved | — |
@@ -257,8 +257,9 @@ forking the editor.
 ### Syntax service
 
 **Decision: tree-sitter for syntax structure.** Tree-sitter is an incremental
-parsing library written in C. It recovers from errors, does not use exceptions,
-builds for Wasm, and has maintained MIT grammars for every language above.
+parsing library written in C. It recovers from errors, does not use exceptions
+and builds for Wasm. Ludus maintains the LUSL grammar and uses MIT-licensed
+upstream grammars for the other parsed languages.
 Its queries give highlighting, folding, indentation, locals, outline and text
 objects from one tree. Neovim, Helix and Zed use it in production. The core
 library and the C and C++ grammars have ConanCenter recipes; the Slang, Luau,
