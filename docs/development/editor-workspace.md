@@ -651,14 +651,25 @@ guide diamond and no floating document windows. The
 records the libraries that would provide them.
 
 The World hierarchy flanks the viewport inside the World document; the entity
-inspector is the Properties tool window. Component actions stay below the
-scrollable inspector fields: the component choice beside **Add Component**, and
-**Apply Changes** beside **Reset Fields**. The inspector follows the tool window's
-width and never clips a field: X/Y/Z and colour fields share one line while their
-values fit and stack one per line when narrower, labels move above their fields
-when the label column would leave too little room, and texture, mesh and material
-references shorten in the middle (hover for the full text). Properties is never
-narrower than 224 pixels. Right-click the World viewport or
+inspector is the Properties tool window. **+ Add Component** sits under the
+entity's name and ID and opens a menu of the components the entity can take (with
+a search field once the list is long). Each component is a section with a thin
+rule above it: click its header to fold it away (Properties remembers which
+components you folded), and open its **⋯** menu for **Reset to Defaults**,
+**Copy Values** and **Remove Component**; a lock beside the title marks a
+component the project requires. Its help is one caption line with **More** for
+the rest. **Apply Changes** and **Reset Fields** appear in a footer under the
+fields only while there are unapplied edits, with how many fields changed.
+Every section shares one label column, so labels and fields line up down the
+whole dock; long labels shorten at their end (hover for the full label), check
+boxes sit in the field column on their label's row, and clicking the label
+toggles them. The inspector follows the tool window's width and never clips a
+field: X/Y/Z and colour fields share one line while their values fit and stack
+one per line when narrower, every section moves its labels above its fields
+together when the dock is too narrow for the widest field beside the column (a
+check box then carries its label), and texture, mesh and material references
+shorten in the middle (hover for the full text). Properties is never narrower
+than 224 pixels. Right-click the World viewport or
 entity list for **Add Entity**, **Duplicate**, and **Delete**. Right-click an
 entity to target it. Clicking a selected member of a group keeps the group
 selected, and clicking the background keeps the current selection. Right-drag
@@ -1165,8 +1176,9 @@ There are no separate Scene or 3D Levels authoring tabs.
 4. Use **Apply Changes** to validate all fields as one edit. Invalid text stays
    visible and the applied document stays intact. **Reset Fields** restores the
    last applied values. Selection and structural commands wait for Apply/Reset.
-5. Use **Add Entity**, **Duplicate**, or **Add Component**. Required components
-   arrive with defaults; optional components have **Remove Component**. Tags
+5. Use **Add Entity**, **Duplicate**, or **+ Add Component**. Required components
+   arrive with defaults and show a lock; optional components have **Remove
+   Component** in their **⋯** menu. Tags
    with no properties are supported. Entity names can repeat; stable IDs differ.
 6. **File → Save World** (the normal Save shortcut while World is selected)
    applies valid pending fields and writes only the world document. Undo/Redo
@@ -1324,7 +1336,7 @@ below the spawn eye. Rotation aims the view and scale leaves the box at its fixe
 size.
 
 To make a surface solid, select its Terrain, mesh preset, or imported mesh
-entity. In **Properties**, choose **Static Collider** and click **Add Component**.
+entity. In **Properties**, click **+ Add Component** and choose **Static Collider**.
 Select several meshes to attach the component to the eligible entities in one
 undoable edit. Existing Worlds, new renderable entities and scene imports use
 the same opt-in. Remove the component to let the player pass through the mesh.
