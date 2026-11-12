@@ -6,6 +6,7 @@
 #include "front_end_support.h"
 
 #include <ludus/content/scene_cook/limits.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/strings/string.hpp>
 
@@ -59,7 +60,7 @@ Status TextureDecodeQueue::Take(uint32 texture, TextureDecode& outDecode) noexce
 
 std::span<const TextureFileRead> TextureDecodeQueue::GetFileReads() const noexcept
 {
-    return mFileReads.AsSpan();
+    return foundation::MakeSpan(mFileReads);
 }
 
 Status TextureDecodeQueue::takeDecode(uint32 texture, TextureDecode& outDecode) noexcept
@@ -136,7 +137,7 @@ void TextureDecodeQueue::readSlot(uint32 texture, Slot& outSlot) const noexcept
     {
         // Embedded images are borrowed from the IR, which no job modifies.
         const IrEmbeddedImage& image = mScene.EmbeddedImages[source.EmbeddedImage];
-        outSlot.Bytes = image.Bytes.AsSpan();
+        outSlot.Bytes = foundation::MakeSpan(image.Bytes);
         outSlot.DecoderName = image.DecoderName.GetView();
         return;
     }
@@ -152,7 +153,7 @@ void TextureDecodeQueue::readSlot(uint32 texture, Slot& outSlot) const noexcept
         return;
     }
     outSlot.Decode.IsFileRead = true;
-    outSlot.Bytes = outSlot.Storage.AsSpan();
+    outSlot.Bytes = foundation::MakeSpan(outSlot.Storage);
     outSlot.DecoderName = source.File.GetView();
 }
 

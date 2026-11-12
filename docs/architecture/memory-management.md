@@ -489,7 +489,7 @@ Required future frame tests delay one worker or one GPU completion beyond multip
 
 ### 10.1 Preserve the current container model
 
-Use the authoritative Ludus names: `Array`, `StaticArray`, `GetSize`, `EnsureCapacity`, `Add`, `AddInPlace`, `Clear`, `TrimCapacity`, `Swap`, `FromRange`, and `AsSpan`. Lowercase range/view interoperability remains; do not introduce STL allocator traits, `std::pmr` container aliases, a `Vector` rename, or allocator template parameters on every container. The latest [container taxonomy amendment](containers.md#34-ludus-native-taxonomy-and-api-authoritative-naming) governs naming even where earlier paragraphs use old spellings. That amendment also restricts first-party `std::vector` to approved benchmark/vendor exceptions more specifically than the older ADR 0003 summary.
+Use the authoritative Ludus names: `Array`, `StaticArray`, `GetSize`, `EnsureCapacity`, `Add`, `AddInPlace`, `Clear`, `TrimCapacity`, `Swap`, `FromRange`, and `AsView` (a `BorrowedView`; containers no longer convert to `std::span`). Lowercase range interoperability remains; do not introduce STL allocator traits, `std::pmr` container aliases, a `Vector` rename, or allocator template parameters on every container. The latest [container taxonomy amendment](containers.md#34-ludus-native-taxonomy-and-api-authoritative-naming) governs naming even where earlier paragraphs use old spellings. That amendment also restricts first-party `std::vector` to approved benchmark/vendor exceptions more specifically than the older ADR 0003 summary.
 
 First, redirect the existing private `AllocateBytes`/`FreeBytes` seam to the default domain. This preserves `Array`'s current three-word layout and every consumer. Later, add:
 

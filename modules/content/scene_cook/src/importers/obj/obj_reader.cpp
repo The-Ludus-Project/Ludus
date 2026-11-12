@@ -5,7 +5,9 @@
 #include "../name_index.h"
 
 #include <ludus/foundation/base/parse_number.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -475,8 +477,9 @@ Status WavefrontReader::readVector(WordCursor& inoutWords, VertexPool pool, uint
         isUv == true ? static_cast<float32>(1.0 - values[1]) : static_cast<float32>(values[1]),
         static_cast<float32>(values[2]),
     };
-    return target.TryAddRange(std::span<const float32>(stored.GetData(), storedCount)) == true ? Status::Ok
-                                                                                               : Status::OutOfMemory;
+    return target.TryAddRange(foundation::BorrowedView<const float32>(stored.GetData(), storedCount)) == true
+               ? Status::Ok
+               : Status::OutOfMemory;
 }
 
 Status WavefrontReader::selectBuilder(uint32 lineNumber) noexcept
@@ -723,11 +726,11 @@ Status WavefrontReader::loadLibrary(std::string_view name, uint32 lineNumber) no
     }
     const uint32 previousFile = mCurrentFile;
     mCurrentFile = static_cast<uint32>(mScene.SourceFiles.GetSize());
-    if (AddSourceFile(mScene, resolved.Relative.GetView(), Hash(bytes.AsSpan())) == false)
+    if (AddSourceFile(mScene, resolved.Relative.GetView(), Hash(foundation::MakeSpan(bytes))) == false)
     {
         return Status::OutOfMemory;
     }
-    const Status status = readLibrary(bytes.AsSpan(), GetDirectoryPrefix(resolved.Relative.GetView()));
+    const Status status = readLibrary(foundation::MakeSpan(bytes), GetDirectoryPrefix(resolved.Relative.GetView()));
     mCurrentFile = previousFile;
     return status;
 }
@@ -1441,7 +1444,8 @@ Status WavefrontReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
         if (i == 0 || AreCornersEqual(corner, corners[order[i - 1]]) == false)
         {
             const float32* position = mPositions.GetData() + usize{corner.Position} * IR_VECTOR_COMPONENT_COUNT;
-            if (mesh.Positions.TryAddRange(std::span<const float32>(position, IR_VECTOR_COMPONENT_COUNT)) == false)
+            if (mesh.Positions.TryAddRange(
+                    foundation::BorrowedView<const float32>(position, IR_VECTOR_COMPONENT_COUNT)) == false)
             {
                 return Status::OutOfMemory;
             }
@@ -1449,12 +1453,12 @@ Status WavefrontReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
             {
                 const float32 missing[UV_COMPONENTS] = {0.0F, 0.0F};
                 const float32* uv = corner.Uv != IR_NONE ? mUvs.GetData() + usize{corner.Uv} * UV_COMPONENTS : missing;
-                if (mesh.Uvs.TryAddRange(std::span<const float32>(uv, UV_COMPONENTS)) == false)
+                if (mesh.Uvs.TryAddRange(foundation::BorrowedView<const float32>(uv, UV_COMPONENTS)) == false)
                 {
                     return Status::OutOfMemory;
                 }
             }
-            if (hasNormals == true && mesh.Normals.TryAddRange(std::span<const float32>(
+            if (hasNormals == true && mesh.Normals.TryAddRange(foundation::BorrowedView<const float32>(
                                           mNormals.GetData() + usize{corner.Normal} * IR_VECTOR_COMPONENT_COUNT,
                                           IR_VECTOR_COMPONENT_COUNT)) == false)
             {

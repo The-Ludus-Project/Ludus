@@ -8,17 +8,18 @@
 struct AtmosphereViewParameters
 {
     float4 ClipToEyeRows[4];
-    float4 RadialUpWorld;       // xyz: unit radial up, w: altitude in kilometres
-    float4 DirectionToSunWorld; // xyz: direction, w: solar zenith cosine
-    float4 SolarIlluminance;    // xyz: linear RGB perpendicular illuminance, w: disk chord radius
-    float4 CameraForwardWorld;  // xyz: orthographic ray, w: radiance per unit disk illuminance
-    float4 Lighting;            // x enables multiple scattering.
-    float4 MoonDirectionWorld;  // xyz: direction, w: sine of the angular radius.
-    float4 LunarRadiance;       // xyz: full-phase peak luminance, w: disk chord radius.
-    float4 Celestial;           // Observer altitude (km), star peak luminance, orbital flag, planet count.
-    float4 Output;              // xy: viewport dimensions, z: exposure multiplier, w: display curve
-    float4 GalacticNorthWorld;  // xyz: north galactic pole, w: Milky Way brightness.
-    float4 GalacticCenterWorld; // xyz: galactic center, orthogonal to GalacticNorthWorld.
+    float4 RadialUpWorld;             // xyz: unit radial up, w: altitude in kilometres
+    float4 DirectionToSunWorld;       // xyz: direction, w: solar zenith cosine
+    float4 SolarIlluminance;          // xyz: linear RGB perpendicular illuminance, w: disk chord radius
+    float4 CameraForwardWorld;        // xyz: orthographic ray, w: radiance per unit disk illuminance
+    float4 Lighting;                  // x enables multiple scattering.
+    float4 MoonDirectionWorld;        // xyz: direction, w: sine of the angular radius.
+    float4 LunarRadiance;             // xyz: luminance at unit lighting cosine, w: disk chord radius.
+    float4 DirectionToSunAtMoonWorld; // xyz: optional lunar lighting direction, w: presence flag.
+    float4 Celestial;                 // Observer altitude (km), star peak luminance, orbital flag, planet count.
+    float4 Output;                    // xy: viewport dimensions, z: exposure multiplier, w: display curve
+    float4 GalacticNorthWorld;        // xyz: north galactic pole, w: Milky Way brightness.
+    float4 GalacticCenterWorld;       // xyz: galactic center, orthogonal to GalacticNorthWorld.
     float4 PlanetDirectionsWorld[ATMOSPHERE_PLANET_CAPACITY];
     float4 PlanetIlluminance[ATMOSPHERE_PLANET_CAPACITY];
 };
@@ -231,7 +232,10 @@ float3 EvaluateNightSky(in float3 directionWorld, float angularFootprint)
     boundary += (1 - sunCoverage) * EvaluateNightSky(directionWorld, angularFootprint);
     if (atmosphereView.MoonDirectionWorld.w > 0 && moonCoverage > 0)
     {
-        float phase = EvaluateLunarPhase(directionWorld, moonWorld, sunWorld, atmosphereView.MoonDirectionWorld.w);
+        float3 moonToSunWorld =
+            atmosphereView.DirectionToSunAtMoonWorld.w > 0 ? atmosphereView.DirectionToSunAtMoonWorld.xyz : sunWorld;
+        float phase =
+            EvaluateLunarPhase(directionWorld, moonWorld, moonToSunWorld, atmosphereView.MoonDirectionWorld.w);
         boundary = lerp(boundary, phase * atmosphereView.LunarRadiance.xyz, moonCoverage);
     }
     AtmosphereBackgroundTransport transport = EvaluateAtmosphereBackground(directionWorld);

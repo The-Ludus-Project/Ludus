@@ -4,6 +4,8 @@
 #include "../transform_utilities.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/parsing/json.hpp>
@@ -862,7 +864,7 @@ Status GltfReader::loadBuffer(usize index, const LoadedBuffer*& outBufferOrNull)
             failAt("buffers", index, "data URI is malformed or too large");
             return Status::Ok;
         }
-        buffer.Bytes = buffer.Owned.AsSpan();
+        buffer.Bytes = foundation::MakeSpan(buffer.Owned);
     }
     else
     {
@@ -886,11 +888,11 @@ Status GltfReader::loadBuffer(usize index, const LoadedBuffer*& outBufferOrNull)
             warn(codes::DEPENDENCY_UNREADABLE, "cannot read an external buffer");
             return Status::Ok;
         }
-        if (AddDataFile(mScene, resolved.Relative.GetView(), Hash(buffer.Owned.AsSpan())) == false)
+        if (AddDataFile(mScene, resolved.Relative.GetView(), Hash(foundation::MakeSpan(buffer.Owned))) == false)
         {
             return Status::OutOfMemory;
         }
-        buffer.Bytes = buffer.Owned.AsSpan();
+        buffer.Bytes = foundation::MakeSpan(buffer.Owned);
     }
     if (buffer.Bytes.size() < byteLength)
     {
@@ -1199,7 +1201,7 @@ Status GltfReader::getImage(usize index, IrTexture& inoutTexture, bool& outIsUsa
             warn(codes::TEXTURE_UNREADABLE, "embedded image exceeds the size limit");
             return Status::Ok;
         }
-        if (embedded.Bytes.TryAddRange(bytes) == false)
+        if (embedded.Bytes.TryAddRange(foundation::MakeBorrowedView(bytes)) == false)
         {
             return Status::OutOfMemory;
         }
@@ -1637,9 +1639,9 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
         {
             warn(codes::GEOMETRY_REPAIRED, "triangle list length is not a multiple of three; tail ignored");
         }
-        if (mesh.Indices.TryAddRange(std::span<const uint32>(indices.GetData(),
-                                                             indices.GetSize() / IR_TRIANGLE_CORNER_COUNT *
-                                                                 IR_TRIANGLE_CORNER_COUNT)) == false)
+        if (mesh.Indices.TryAddRange(foundation::BorrowedView<const uint32>(
+                indices.GetData(),
+                indices.GetSize() / IR_TRIANGLE_CORNER_COUNT * IR_TRIANGLE_CORNER_COUNT)) == false)
         {
             return Status::OutOfMemory;
         }

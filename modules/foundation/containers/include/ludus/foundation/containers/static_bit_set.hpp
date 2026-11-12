@@ -20,9 +20,8 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
-
-#include <span>
 
 namespace ludus::foundation::core
 {
@@ -227,9 +226,9 @@ public:
     }
 
     /// Read-only words, least significant bit of word 0 first. Tail bits past BitCount are zero.
-    [[nodiscard]] constexpr std::span<const uint64> GetWords() const noexcept
+    [[nodiscard]] constexpr BorrowedView<const uint64> GetWords() const noexcept
     {
-        return mWords.AsSpan().first(WORD_COUNT);
+        return BorrowedView<const uint64>(mWords.GetData(), WORD_COUNT);
     }
 
     // --- Set operations -----------------------------------------------------

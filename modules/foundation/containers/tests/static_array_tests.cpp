@@ -2,15 +2,16 @@
 
 #include "lifetime_type.hpp"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <numeric>
-#include <span>
 #include <type_traits>
 
+using ludus::foundation::BorrowedView;
 using ludus::foundation::StaticArray;
 using ludus::foundation::usize;
 namespace tst = ludus::containers::testing;
@@ -63,8 +64,9 @@ TEST_CASE("StaticArray zero-size handling", "[static_array]")
     REQUIRE(a.GetSize() == 0);
     REQUIRE(a.IsEmpty());
     REQUIRE(a.begin() == a.end());
-    std::span<int> s = a;
-    REQUIRE(s.empty());
+    const BorrowedView<int> view = a;
+    REQUIRE(view.IsEmpty());
+    REQUIRE(view.IsValid());
     STATIC_REQUIRE(sizeof(StaticArray<int, 0>) >= 1); // empty class still has size >= 1
 }
 
@@ -79,20 +81,20 @@ TEST_CASE("StaticArray iterators and std algorithms", "[static_array][interop]")
     REQUIRE(std::find(a.begin(), a.end(), 4) != a.end());
 }
 
-TEST_CASE("StaticArray span interop and GetData", "[static_array][interop]")
+TEST_CASE("StaticArray borrowed views and GetData", "[static_array][interop]")
 {
     StaticArray<int, 3> a{7, 8, 9};
     int* d = a.GetData();
     REQUIRE(d == &a[0]);
-    std::span<int> ms = a.AsSpan();
-    REQUIRE(ms.size() == 3);
-    ms[0] = 70;
+    const BorrowedView<int> mutableView = a.AsView();
+    REQUIRE(mutableView.GetSize() == 3);
+    mutableView[0] = 70;
     REQUIRE(a[0] == 70);
 
     const StaticArray<int, 3>& cref = a;
-    std::span<const int> cs = cref;
-    REQUIRE(cs.size() == 3);
-    REQUIRE(cs[2] == 9);
+    const BorrowedView<const int> constView = cref;
+    REQUIRE(constView.GetSize() == 3);
+    REQUIRE(constView[2] == 9);
 }
 
 TEST_CASE("StaticArray Fill and Swap", "[static_array]")

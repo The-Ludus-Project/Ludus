@@ -4559,9 +4559,10 @@ struct RoutedCook final
     }
     inoutCook.Cooked.Bundle = std::move(imported.Bundle);
     inoutCook.Cooked.License = std::move(imported.License);
-    if (inoutCook.Cooked.License.IsEmpty() == true && inoutCook.Cooked.License.TryAddRange(std::span<const uint8>(
-                                                          reinterpret_cast<const uint8*>(MISSING_LICENSE_TEXT.data()),
-                                                          MISSING_LICENSE_TEXT.size())) == false)
+    if (inoutCook.Cooked.License.IsEmpty() == true &&
+        inoutCook.Cooked.License.TryAddRange(
+            foundation::BorrowedView<const uint8>(reinterpret_cast<const uint8*>(MISSING_LICENSE_TEXT.data()),
+                                                  MISSING_LICENSE_TEXT.size())) == false)
     {
         return inoutFailure.FailOutOfMemory();
     }

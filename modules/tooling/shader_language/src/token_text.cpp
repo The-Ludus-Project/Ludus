@@ -1,8 +1,7 @@
 #include "internal/token_text.hpp"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/tooling/shader_language/limits.hpp>
-
-#include <span>
 
 namespace ludus::tooling::shader_language::internal
 {
@@ -45,7 +44,7 @@ TextOutcome TokenText::TryAppend(std::string_view text, foundation::uint32& outO
     {
         return TextOutcome::Limit;
     }
-    if (mSynthesized.TryAddRange(std::span<const char>(text.data(), text.size())) == false)
+    if (mSynthesized.TryAddRange(foundation::BorrowedView<const char>(text.data(), text.size())) == false)
     {
         return TextOutcome::OutOfMemory;
     }

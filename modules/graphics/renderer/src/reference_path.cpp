@@ -54,7 +54,7 @@ void AddTransport(ReferencePath& path, math::Vector3 contribution, uint32 depth,
 }
 usize GetReferenceLightCount(const ReferenceJob& job) noexcept
 {
-    return job.Description.LightCount + job.Scene.Emitters.GetSize() +
+    return job.Description.LightCount - job.DirectionalLightCount + job.Scene.Emitters.GetSize() +
            ((job.EnvironmentOrNull != nullptr || Positive(job.Description.Environment)) ? 1U : 0U);
 }
 math::Vector3 Position(const ReferenceTriangle& triangle, float32 u, float32 v) noexcept
@@ -158,11 +158,12 @@ ReferenceLightChoice SelectReferenceLight(const ReferenceJob& job, const Referen
         return {ReferenceLightChoiceKind::Invalid};
     }
     const float32 uniformPmf = 1 / static_cast<float32>(lightCount);
-    if (selected < job.Description.LightCount)
+    const usize remainingAnalyticLights = job.Description.LightCount - job.DirectionalLightCount;
+    if (selected < remainingAnalyticLights)
     {
-        return {ReferenceLightChoiceKind::Analytic, selected, uniformPmf};
+        return {ReferenceLightChoiceKind::Analytic, selected + job.DirectionalLightCount, uniformPmf};
     }
-    if (usize(selected) - job.Description.LightCount >= job.Scene.Emitters.GetSize())
+    if (usize(selected) - remainingAnalyticLights >= job.Scene.Emitters.GetSize())
     {
         return {ReferenceLightChoiceKind::Environment, 0, uniformPmf};
     }
@@ -319,7 +320,7 @@ ReferenceIncidentLight SampleReferenceIncidentLight(const ReferenceJob& job,
     switch (choice.Kind)
     {
         case ReferenceLightChoiceKind::Analytic:
-            return EvaluateAnalyticIncidentLight(job, job.Lights[choice.Index], receiverWorld);
+            return EvaluateAnalyticIncidentLight(job, GetOrderedReferenceLight(job, choice.Index), receiverWorld);
         case ReferenceLightChoiceKind::Triangle:
             return SampleTriangleIncidentLight(job, path, choice.Index, receiverWorld);
         case ReferenceLightChoiceKind::Environment:
@@ -438,6 +439,68 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
     ++path.ShadowCount;
     path.DirectDepth = path.Depth;
     return rhi::RasterStatus::Ready;
+}
+struct ReferenceDirectReceiver final
+{
+    math::Vector3 PositionWorld;
+    math::Vector3 ScatteringNormalWorld;
+    math::Vector3 ShadingNormalWorld;
+    math::Vector3 ViewDirectionWorld;
+};
+rhi::RasterStatus QueueDirectContribution(const ReferenceJob& job,
+                                          ReferenceCaptureInfo& inoutInfo,
+                                          ReferencePath& inoutPath,
+                                          const ReferenceTriangle& triangle,
+                                          const ReferenceBsdf& bsdf,
+                                          const ReferenceDirectReceiver& receiver,
+                                          const ReferenceIncidentLight& proposal,
+                                          float32 lightProbability) noexcept
+{
+    const float32 cosine = math::Dot(receiver.ShadingNormalWorld, proposal.DirectionWorld);
+    if ((lightProbability > 0 && Positive(proposal.Radiance) == true && cosine > 0 &&
+         math::Dot(receiver.ScatteringNormalWorld, proposal.DirectionWorld) > 0) == false)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    ReferenceBsdfEvaluation evaluation;
+    if (EvaluateReferenceBsdf(bsdf,
+                              receiver.ShadingNormalWorld,
+                              receiver.ViewDirectionWorld,
+                              proposal.DirectionWorld,
+                              evaluation,
+                              MakeMaterialRandomContext(job, inoutPath)) != rhi::RasterStatus::Ready)
+    {
+        return FailReferencePath(inoutInfo, inoutPath, ReferenceFailure::InvalidBsdfEvaluation);
+    }
+    const float32 weight = proposal.IsDelta == true || job.Description.OpticalWavelengthWorld > 0
+                               ? 1
+                               : ReferencePowerWeight(lightProbability, evaluation.Pdf);
+    const math::Vector3 contribution =
+        math::Hadamard(inoutPath.Throughput, math::Hadamard(evaluation.Value, proposal.Radiance)) *
+        (cosine * weight / lightProbability);
+    if (ValidContribution(contribution) == false)
+    {
+        return FailReferencePath(inoutInfo, inoutPath, ReferenceFailure::InvalidDirectContribution);
+    }
+    return Positive(contribution) == true
+               ? QueueShadow(job, inoutInfo, inoutPath, triangle, receiver.PositionWorld, proposal, contribution)
+               : rhi::RasterStatus::Ready;
+}
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th ed.,
+// §§12.3 and 12.6, https://pbr-book.org/4ed/Light_Sources/Distant_Lights and
+// https://pbr-book.org/4ed/Light_Sources/Light_Sampling. Connect to a distant light along its
+// fixed incident direction. Estimate directional and remaining sources as disjoint sums.
+ReferenceLightChoice SelectDirectionalLight(const ReferenceJob& job, const ReferencePath& path) noexcept
+{
+    uint32 selected = 0;
+    const uint16 dimension = static_cast<uint16>(LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + path.Depth);
+    if (job.DirectionalLightCount > 1 &&
+        math::TrySampleBounded(job.Key, {path.Pixel, path.Sample, dimension}, job.DirectionalLightCount, selected) !=
+            math::MathStatus::Success)
+    {
+        return {ReferenceLightChoiceKind::Invalid};
+    }
+    return {ReferenceLightChoiceKind::Analytic, selected, 1 / static_cast<float32>(job.DirectionalLightCount)};
 }
 // ResampledProjectedSolidAngle: the emissive branch of the light draw at `point`. Each technique's sample that the
 // BSDF and the receiver's geometric side admit queues one shadow ray.
@@ -702,38 +765,40 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             return sampled;
         }
     }
-    const float32 cosine = math::Dot(normal, proposal.DirectionWorld);
-    if (lightProbability > 0 && Positive(proposal.Radiance) && cosine > 0 &&
-        math::Dot(scatteringNormal, proposal.DirectionWorld) > 0)
+    const ReferenceDirectReceiver receiver
     {
-        ReferenceBsdfEvaluation evaluation;
-        if (EvaluateReferenceBsdf(bsdf,
-                                  normal,
-                                  view,
-                                  proposal.DirectionWorld,
-                                  evaluation,
-                                  MakeMaterialRandomContext(job, path)) != rhi::RasterStatus::Ready)
+        .PositionWorld = point,
+        .ScatteringNormalWorld = scatteringNormal,
+        .ShadingNormalWorld = normal,
+        .ViewDirectionWorld = view,
+    };
+    if (isSpecular == false && job.DirectionalLightCount != 0)
+    {
+        const ReferenceLightChoice directionalChoice = SelectDirectionalLight(job, path);
+        const ReferenceIncidentLight directional = SampleReferenceIncidentLight(job, path, directionalChoice, point);
+        if (directionalChoice.Kind == ReferenceLightChoiceKind::Invalid ||
+            ValidContribution(directional.Radiance) == false)
         {
-            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfEvaluation);
+            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidLightSample);
         }
-        const float32 weight = proposal.IsDelta == true || job.Description.OpticalWavelengthWorld > 0
-                                   ? 1
-                                   : ReferencePowerWeight(lightProbability, evaluation.Pdf);
-        const math::Vector3 contribution =
-            math::Hadamard(path.Throughput, math::Hadamard(evaluation.Value, proposal.Radiance)) *
-            (cosine * weight / lightProbability);
-        if (ValidContribution(contribution) == false)
+        const rhi::RasterStatus queued = QueueDirectContribution(job,
+                                                                 inoutInfo,
+                                                                 path,
+                                                                 triangle,
+                                                                 bsdf,
+                                                                 receiver,
+                                                                 directional,
+                                                                 directionalChoice.SelectionPmf);
+        if (queued != rhi::RasterStatus::Ready)
         {
-            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidDirectContribution);
+            return queued;
         }
-        if (Positive(contribution))
-        {
-            const rhi::RasterStatus queued = QueueShadow(job, inoutInfo, path, triangle, point, proposal, contribution);
-            if (queued != rhi::RasterStatus::Ready)
-            {
-                return queued;
-            }
-        }
+    }
+    const rhi::RasterStatus queued =
+        QueueDirectContribution(job, inoutInfo, path, triangle, bsdf, receiver, proposal, lightProbability);
+    if (queued != rhi::RasterStatus::Ready)
+    {
+        return queued;
     }
     ReferenceBsdfSample sample;
     if (SampleReferenceBsdf(bsdf,

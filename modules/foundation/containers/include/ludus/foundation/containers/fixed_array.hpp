@@ -13,10 +13,10 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/detail/contiguous_storage.hpp>
 #include <ludus/foundation/containers/detail/inline_slots.hpp>
 
-#include <span>
 #include <type_traits>
 
 namespace ludus::foundation::core
@@ -291,11 +291,16 @@ public:
     /// @brief Append copies of every element of `items`, or none of them.
     ///
     /// @pre `items` does not overlap this array's storage (asserted).
-    /// @return False when the elements do not all fit; the array is unchanged.
+    /// @return False when `items` is invalid (null with a nonzero extent) or the elements do not all fit;
+    /// the array is unchanged.
     [[nodiscard]] bool
-    TryAddRange(std::span<const ElementType> items) noexcept(std::is_nothrow_copy_constructible_v<ElementType>)
+    TryAddRange(BorrowedView<const ElementType> items) noexcept(std::is_nothrow_copy_constructible_v<ElementType>)
     {
-        const usize count = items.size();
+        if (items.IsValid() == false)
+        {
+            return false;
+        }
+        const usize count = items.GetSize();
         if (count > Count - mSize)
         {
             return false;
@@ -304,8 +309,9 @@ public:
         {
             return true;
         }
-        LUDUS_ASSERT(items.data() + count <= GetData() || items.data() >= GetData() + Count);
-        internal::UninitializedCopy(GetData() + mSize, items.data(), count);
+        const ElementType* source = items.GetDataOrNull();
+        LUDUS_ASSERT(source + count <= GetData() || source >= GetData() + Count);
+        internal::UninitializedCopy(GetData() + mSize, source, count);
         mSize += count;
         return true;
     }
@@ -408,26 +414,26 @@ public:
         mSize = 0;
     }
 
-    // --- std::span interop --------------------------------------------------
-    /// Borrow the live elements as a mutable span; invalidated with element borrows.
-    [[nodiscard]] operator std::span<ElementType>() noexcept
+    // --- Borrowed views -----------------------------------------------------
+    /// Borrow the live elements as a mutable view; invalidated with element borrows.
+    [[nodiscard]] operator BorrowedView<ElementType>() noexcept
     {
-        return std::span<ElementType>(GetData(), mSize);
+        return BorrowedView<ElementType>(GetData(), mSize);
     }
-    /// Borrow the live elements as a read-only span; invalidated with element borrows.
-    [[nodiscard]] operator std::span<const ElementType>() const noexcept
+    /// Borrow the live elements as a read-only view; invalidated with element borrows.
+    [[nodiscard]] operator BorrowedView<const ElementType>() const noexcept
     {
-        return std::span<const ElementType>(GetData(), mSize);
+        return BorrowedView<const ElementType>(GetData(), mSize);
     }
-    /// Mutable span over the live elements.
-    [[nodiscard]] std::span<ElementType> AsSpan() noexcept
+    /// Mutable view over the live elements; invalidated with element borrows.
+    [[nodiscard]] BorrowedView<ElementType> AsView() noexcept
     {
-        return std::span<ElementType>(GetData(), mSize);
+        return BorrowedView<ElementType>(GetData(), mSize);
     }
-    /// Read-only span over the live elements.
-    [[nodiscard]] std::span<const ElementType> AsSpan() const noexcept
+    /// Read-only view over the live elements; invalidated with element borrows.
+    [[nodiscard]] BorrowedView<const ElementType> AsView() const noexcept
     {
-        return std::span<const ElementType>(GetData(), mSize);
+        return BorrowedView<const ElementType>(GetData(), mSize);
     }
 
     // --- Comparison ---------------------------------------------------------

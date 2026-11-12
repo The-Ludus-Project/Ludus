@@ -23,6 +23,14 @@ public:
     constexpr BorrowedView(ElementType (&inoutElements)[Count]) noexcept : mDataOrNull(inoutElements), mSize(Count)
     {
     }
+    /// Borrow the same elements read-only. A mutable view converts implicitly to a const view of
+    /// the same pointer and extent, including an invalid pair; lifetime remains the caller's.
+    template <typename MutableElementType>
+        requires(std::is_const_v<MutableElementType> == false && std::is_same_v<const MutableElementType, ElementType>)
+    constexpr BorrowedView(const BorrowedView<MutableElementType>& other) noexcept
+        : mDataOrNull(other.GetDataOrNull()), mSize(other.GetSize())
+    {
+    }
     /// Whether the pointer/extent pair permits access; does not prove storage lifetime.
     [[nodiscard]] constexpr bool IsValid() const noexcept
     {

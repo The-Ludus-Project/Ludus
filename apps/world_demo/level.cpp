@@ -3,8 +3,8 @@
 #include <charconv>
 #include <cmath>
 #include <ludus/foundation/base/parse_number.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/scalar.hpp>
-#include <span>
 namespace ludus::world_demo
 {
 namespace
@@ -863,7 +863,7 @@ public:
     bool Valid = true;
     void Text(std::string_view text) noexcept
     {
-        Valid = Valid && Data.TryAddRange(std::span<const char>(text.data(), text.size()));
+        Valid = Valid && Data.TryAddRange(foundation::BorrowedView<const char>(text.data(), text.size()));
     }
     void NameValue(const Name& name) noexcept
     {

@@ -677,7 +677,9 @@ struct Renderer::State final
         rhi::BindingLayoutHandle Layout{};
         rhi::TextureHandle White{};
         rhi::RasterPipelineHandle ShadowPipeline{};
-        rhi::RasterPipelineHandle DepthPipeline{};
+        /// Conventional (Less) and reverse-Z (Greater) depth prepass pipelines, indexed like GBufferPipelines.
+        static constexpr usize DEPTH_PIPELINE_COUNT = 2;
+        StaticArray<rhi::RasterPipelineHandle, DEPTH_PIPELINE_COUNT> DepthPipelines{};
         bool Lit = false;
         bool Hdr = false;
         bool Clustered = false;
@@ -685,7 +687,8 @@ struct Renderer::State final
         bool HasAuthoredProfile = false;
         bool IsBakeBindingOmitted = false;
         uint32 VariantCount = 6;
-        static constexpr usize REQUEST_CAPACITY = PROGRAM_VARIANT_COUNT + 2 + 2 * GBUFFER_PIPELINE_COUNT;
+        static constexpr usize REQUEST_CAPACITY =
+            PROGRAM_VARIANT_COUNT + 1 + DEPTH_PIPELINE_COUNT + 2 * GBUFFER_PIPELINE_COUNT;
         StaticArray<rhi::PipelineRequest, REQUEST_CAPACITY> Requests{};
         bool HasDepthPrepass = false;
         /// Colour variants and the depth prepass; shadow and G-buffer pipelines always fill.
@@ -1890,7 +1893,7 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
             return Status::Unsupported;
         }
     }
-    if (isDepthOnly == true && (isSurface == true || isHdr == true || view.Depth != DepthConvention::Conventional))
+    if (isDepthOnly == true && (isSurface == true || isHdr == true))
     {
         return Status::Unsupported;
     }
@@ -2022,7 +2025,7 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
                                                                                  : 0)];
                 if (isDepthOnly == true)
                 {
-                    pipeline = program.DepthPipeline;
+                    pipeline = program.DepthPipelines[view.Depth == DepthConvention::ReverseZ ? 1 : 0];
                 }
                 if (isGBuffer == true)
                 {
@@ -2794,12 +2797,16 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
         attributes[13] = {13, 0, LUDUS_AUTHORED_UV1_OFFSET, rhi::RasterVertexFormat::Float2};
     }
     constexpr uint32 GBUFFER_PIPELINE_COUNT = static_cast<uint32>(State::ProgramRecord::GBUFFER_PIPELINE_COUNT);
-    const uint32 total = p->VariantCount + (p->Lit == true ? 1U : 0U) + (p->HasDepthPrepass == true ? 1U : 0U) +
-                         (p->HasGBuffer == true ? GBUFFER_PIPELINE_COUNT : 0U) +
-                         (p->HasOpaqueGBuffer == true ? GBUFFER_PIPELINE_COUNT : 0U);
-    // G-buffer requests follow the depth prepass: the alpha-tested fragment's conventional and reverse-Z pipelines,
-    // then the opaque fragment's.
+    const uint32 gBufferPhaseCount = (p->HasGBuffer == true ? GBUFFER_PIPELINE_COUNT : 0U) +
+                                     (p->HasOpaqueGBuffer == true ? GBUFFER_PIPELINE_COUNT : 0U);
+    const uint32 total =
+        p->VariantCount + (p->Lit == true ? 1U : 0U) +
+        (p->HasDepthPrepass == true ? static_cast<uint32>(State::ProgramRecord::DEPTH_PIPELINE_COUNT) : 0U) +
+        gBufferPhaseCount;
+    // G-buffer requests follow the conventional depth prepass: the alpha-tested fragment's conventional and reverse-Z
+    // pipelines, then the opaque fragment's. The reverse-Z prepass comes last, so earlier phases keep their indices.
     const uint32 firstGBufferPhase = p->VariantCount + 2;
+    const uint32 reverseDepthPhase = firstGBufferPhase + gBufferPhaseCount;
     const auto getGBufferPipeline = [p](uint32 gBufferIndex) noexcept -> rhi::RasterPipelineHandle& {
         return gBufferIndex < GBUFFER_PIPELINE_COUNT ? p->GBufferPipelines[gBufferIndex]
                                                      : p->OpaqueGBufferPipelines[gBufferIndex - GBUFFER_PIPELINE_COUNT];
@@ -2820,10 +2827,11 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             const Status acquired = rhi::GetRequestedPipeline(
                 s.Device,
                 p->Requests[p->Phase - 1],
-                p->Phase <= p->VariantCount       ? p->Pipelines[p->Phase - 1]
-                : p->Phase == p->VariantCount + 1 ? p->ShadowPipeline
-                : p->Phase == p->VariantCount + 2 ? p->DepthPipeline
-                                                  : getGBufferPipeline(p->Phase - 1 - firstGBufferPhase));
+                p->Phase <= p->VariantCount         ? p->Pipelines[p->Phase - 1]
+                : p->Phase == p->VariantCount + 1   ? p->ShadowPipeline
+                : p->Phase == p->VariantCount + 2   ? p->DepthPipelines[0]
+                : p->Phase == reverseDepthPhase + 1 ? p->DepthPipelines[1]
+                                                    : getGBufferPipeline(p->Phase - 1 - firstGBufferPhase));
             if (acquired != Status::Ready)
             {
                 return p->Setup = acquired;
@@ -2846,9 +2854,14 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
         description.DepthWrite = variant != 2;
         description.DepthCompare = variant == 1 ? rhi::RasterDepthCompare::Greater : rhi::RasterDepthCompare::Less;
         description.FillMode = p->FillMode;
+        // After a prepass the colour draw meets its own depth: the comparison must admit equality in both conventions.
         if (p->HasDepthPrepass == true && variant == 0)
         {
             description.DepthCompare = rhi::RasterDepthCompare::LessEqual;
+        }
+        if (p->HasDepthPrepass == true && variant == 1)
+        {
+            description.DepthCompare = rhi::RasterDepthCompare::GreaterEqual;
         }
         if (p->Lit && p->Phase == p->VariantCount)
         {
@@ -2859,7 +2872,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             description.Blend = false;
             description.DepthCompare = rhi::RasterDepthCompare::Less;
         }
-        if (p->HasDepthPrepass == true && p->Phase == p->VariantCount + 1)
+        if (p->HasDepthPrepass == true && (p->Phase == p->VariantCount + 1 || p->Phase == reverseDepthPhase))
         {
             const Status ready = rhi::GetStatus(s.Device, p->DepthFragment);
             if (ready != Status::Ready)
@@ -2872,9 +2885,10 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             description.Depth = true;
             description.DepthWrite = true;
             description.Blend = false;
-            description.DepthCompare = rhi::RasterDepthCompare::Less;
+            description.DepthCompare =
+                p->Phase == reverseDepthPhase ? rhi::RasterDepthCompare::Greater : rhi::RasterDepthCompare::Less;
         }
-        if (p->HasGBuffer == true && p->Phase >= firstGBufferPhase)
+        if (p->HasGBuffer == true && p->Phase >= firstGBufferPhase && p->Phase < reverseDepthPhase)
         {
             const uint32 gBufferIndex = p->Phase - firstGBufferPhase;
             const rhi::RasterShaderHandle fragment =

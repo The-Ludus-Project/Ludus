@@ -524,6 +524,7 @@ struct RenderGraphPreview::State final
     RenderGraphExtraction Extraction;
     bool HasExtraction = false;
     uint64 UpdatedRevision = 0;
+    rhi::RasterStatus ExtractionUpdateStatus = rhi::RasterStatus::NotReady;
     uint64 MaterialStatusRevision = 0;
     QString MaterialStatus;
     uint64 OpenSubmissionGeneration = 0;
@@ -1129,6 +1130,11 @@ void RenderGraphPreview::SetDirectPresentation(bool shouldPresentDirectly) noexc
 {
     mState->ShouldPresentDirectly = shouldPresentDirectly;
 }
+bool RenderGraphPreview::WasExtractionRejected(uint64 revision) const noexcept
+{
+    const State& state = *mState;
+    return revision != 0 && state.UpdatedRevision == revision && IsAccepted(state.ExtractionUpdateStatus) == false;
+}
 bool RenderGraphPreview::HasOpenSubmission() const noexcept
 {
     return mState->HasOpenSubmission;
@@ -1587,6 +1593,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         if (updated != rhi::RasterStatus::NotReady)
         {
             state.UpdatedRevision = state.Extraction.Revision;
+            state.ExtractionUpdateStatus = updated;
             if (IsAccepted(updated) == false)
             {
                 const QString modelFailure = DescribeLightTransformerPreparationFailure(graphReport.Model);

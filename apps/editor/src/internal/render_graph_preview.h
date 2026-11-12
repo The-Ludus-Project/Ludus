@@ -72,8 +72,8 @@ struct RenderGraphExtraction final
 /// A cooked scene (imported or merged World, Definition set) keeps its geometry only in the
 /// decoded definition; its meshes are borrowed from there without copying. Otherwise the
 /// authored PreviewMesh arrays are borrowed.
-/// @param view Must use the conventional depth convention the runtime admits; see
-/// RenderPreview::DescribeConventionalView.
+/// @param view Must use a finite projection, as the runtime admits; see
+/// RenderPreview::DescribeGraphView.
 /// @return False with outError when the scene exceeds the runtime format bounds, is empty or
 /// its definition does not parallel its mesh table; outExtraction is unchanged on failure.
 [[nodiscard]] bool MakeRenderGraphExtraction(const RenderScene& scene,
@@ -164,6 +164,8 @@ public:
     [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
     void SetExtraction(const RenderGraphExtraction& extraction);
+    /// Whether the graph rejected this extraction revision during preparation.
+    [[nodiscard]] bool WasExtractionRejected(foundation::uint64 revision) const noexcept;
     /// Replace only the camera and publication revision of the retained extraction.
     void SetCamera(const graphics::renderer::ViewDescription& view, foundation::uint64 revision);
     /// Queue the owning viewport's drawable size (physical pixels before rendering scale).

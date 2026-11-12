@@ -130,6 +130,7 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
         uniform.Sampling[2] |= LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG;
     }
     uniform.Options.Y = inoutJob.Description.OpticalWavelengthWorld;
+    uniform.Tile[0] = inoutJob.DirectionalLightCount;
     const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
     const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
     usize zeroBytes = 0;
@@ -196,6 +197,7 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
         return Status::InvalidDescription;
     }
     if (d.LightSampling != ReferenceLightSampling::UniformArea &&
+        d.LightSampling != ReferenceLightSampling::SeparateDirectional &&
         internal::IsReferenceResampled(d.LightSampling) == false)
     {
         return Status::InvalidDescription;
@@ -802,6 +804,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     {
         return Status::Unsupported;
     }
+    if (description.LightSampling == ReferenceLightSampling::SeparateDirectional &&
+        (gpuSetup == true || Reference->Options.Traversal == ReferenceTraversal::NativeQueries))
+    {
+        return Status::Unsupported;
+    }
     const auto& snapshot = SnapshotRecords[snapshotSlot];
     usize triangles = 0;
     usize instances = 0;
@@ -960,6 +967,26 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     for (usize i = 0; i < lights.Count; ++i)
     {
         job->Lights[i] = lights.Lights[i];
+    }
+    if (description.LightSampling == ReferenceLightSampling::SeparateDirectional)
+    {
+        // Keep identity/replay comparisons in normalized SourceId order. The
+        // renderer and its GPU packer use this directional-first index order.
+        for (uint32 light = 0; light < lights.Count; ++light)
+        {
+            if (lights.Lights[light].Kind == LightKind::Directional)
+            {
+                job->LightOrder[job->DirectionalLightCount++] = light;
+            }
+        }
+        uint32 remainingLight = job->DirectionalLightCount;
+        for (uint32 light = 0; light < lights.Count; ++light)
+        {
+            if (lights.Lights[light].Kind != LightKind::Directional)
+            {
+                job->LightOrder[remainingLight++] = light;
+            }
+        }
     }
     if (math::TryMakeRandomKey(description.Seed, internal::REFERENCE_RANDOM_DOMAIN, job->Key) !=
         math::MathStatus::Success)
