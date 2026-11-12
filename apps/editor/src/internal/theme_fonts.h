@@ -28,6 +28,30 @@ enum class TypeRole : unsigned char
 /// Qt older than 6.7 cannot set the feature and returns base unchanged.
 [[nodiscard]] QFont MakeTabularFont(const QFont& base);
 
-/// Give every spin box tabular figures. Call once after the application font is known.
+/// The widget classes a platform theme may give their own font (Qt's per-class font table), which ApplyThemeFonts sets
+/// back to the body font.
+inline constexpr const char* BODY_FONT_CLASS_NAMES[] = {
+    "QAbstractItemView",
+    "QCheckBox",
+    "QComboBox",
+    "QComboLineEdit",
+    "QComboMenuItem",
+    "QDockWidgetTitle",
+    "QGroupBox",
+    "QHeaderView",
+    "QLabel",
+    "QLineEdit",
+    "QListView",
+    "QMenu",
+    "QMenuBar",
+    "QPushButton",
+    "QRadioButton",
+    "QStatusBar",
+    "QTabBar",
+    "QToolButton",
+};
+
+/// Give every widget class the body font, so a platform theme's smaller per-class fonts do not apply, and every spin
+/// box tabular figures. Call once after the application font is known.
 void ApplyThemeFonts();
 } // namespace ludus::editor

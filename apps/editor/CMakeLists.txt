@@ -843,6 +843,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/material_inspection.cpp
     src/internal/inspector_fields.h
     src/inspector_fields.cpp
+    src/internal/inspector_section.h
+    src/inspector_section.cpp
     src/internal/world_entity_search.h
     src/world_entity_search.cpp
     src/world_workspace.cpp
@@ -1280,6 +1282,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/orientation_widget_tests.cpp
         tests/design_token_tests.cpp
         tests/editor_style_tests.cpp
+        tests/editor_style_platform_tests.cpp
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/viewport_toolbar_layout_tests.cpp

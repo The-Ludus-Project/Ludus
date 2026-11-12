@@ -3,9 +3,11 @@
 #include "internal/builtin_world.h"
 #include "internal/import_report.h"
 #include "internal/inspector_fields.h"
+#include "internal/inspector_section.h"
 #include "internal/item_selection.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
+#include "internal/theme_fonts.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_earth_location.h"
 #include "internal/world_earth_time_field.h"
@@ -43,10 +45,11 @@
 #include <QDir>
 #include <QFile>
 
+#include <QClipboard>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
-#include <QGroupBox>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QItemSelectionModel>
@@ -55,6 +58,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
+#include <QLocale>
 #include <QLockFile>
 #include <QMap>
 #include <QMenu>
@@ -77,6 +81,7 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QVector>
+#include <QWidgetAction>
 
 namespace ludus::editor
 {
@@ -129,6 +134,63 @@ QString FieldKey(const QString& component, const QString& property)
     return component + QLatin1Char('/') + property;
 }
 constexpr foundation::int32 WORLD_PROPERTY_LAYOUT_WIDTH = 360;
+/// Entries above which the Add Component menu offers a search field.
+constexpr foundation::int32 COMPONENT_MENU_SEARCH_THRESHOLD = 8;
+/// The icon a component's Properties section leads with, from what the component is about.
+EditorIcon GetComponentIcon(const QString& component)
+{
+    const QString name = component.toLower();
+    if (name.contains(QStringLiteral("light")) == true || name.contains(QStringLiteral("probe")) == true ||
+        name.contains(QStringLiteral("atmosphere")) == true || name.contains(QStringLiteral("sky")) == true)
+    {
+        return EditorIcon::Lighting;
+    }
+    if (name.contains(QStringLiteral("render")) == true || name.contains(QStringLiteral("mesh")) == true)
+    {
+        return EditorIcon::Mesh;
+    }
+    if (name.contains(QStringLiteral("material")) == true)
+    {
+        return EditorIcon::Material;
+    }
+    if (name.contains(QStringLiteral("transform")) == true || name.contains(QStringLiteral("collider")) == true ||
+        name.contains(QStringLiteral("terrain")) == true)
+    {
+        return EditorIcon::Geometry;
+    }
+    if (name.contains(QStringLiteral("audio")) == true || name.contains(QStringLiteral("sound")) == true)
+    {
+        return EditorIcon::AudioSource;
+    }
+    if (name.contains(QStringLiteral("camera")) == true || name.contains(QStringLiteral("aperture")) == true)
+    {
+        return EditorIcon::Preview;
+    }
+    return EditorIcon::Configuration;
+}
+/// Puts a schema default into a component field, as Reset to defaults does; text is the value as a text field
+/// shows it.
+void SetFieldToValue(QWidget& inoutField, const QJsonValue& value, const QString& text)
+{
+    if (QCheckBox* checkOrNull = qobject_cast<QCheckBox*>(&inoutField); checkOrNull != nullptr)
+    {
+        checkOrNull->setChecked(value.toBool());
+        return;
+    }
+    if (QComboBox* choicesOrNull = qobject_cast<QComboBox*>(&inoutField); choicesOrNull != nullptr)
+    {
+        const int index = choicesOrNull->findData(value.toString());
+        if (index >= 0)
+        {
+            choicesOrNull->setCurrentIndex(index);
+        }
+        return;
+    }
+    if (QLineEdit* textOrNull = qobject_cast<QLineEdit*>(&inoutField); textOrNull != nullptr)
+    {
+        textOrNull->setText(text);
+    }
+}
 /// A vector row under its caption and unit ("Position (m)"), so the three fields share the panel's full width
 /// instead of what is left beside a label column. The block takes the row's place under its parent.
 QWidget* MakeVectorBlock(const QString& title, const QString& unit, QWidget& inoutRow)
@@ -171,7 +233,7 @@ bool TryParseEarthCoordinate(const QLineEdit& field, foundation::float64& outCoo
     return true;
 }
 
-void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
+void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
 {
     const QString component = QStringLiteral("light");
     QComboBox* kindOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("kind"))));
@@ -776,33 +838,60 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     split->setStretchFactor(2, 3);
     split->setStretchFactor(3, 1);
     split->setSizes({240, 520, 520, 300});
-    QVBoxLayout* edits = new QVBoxLayout;
-    Components_ = new QComboBox(this);
-    Components_->setObjectName(QStringLiteral("worldComponentChoice"));
-    Components_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    Components_->setMinimumContentsLength(12);
-    Components_->setAccessibleName(QStringLiteral("Available components"));
-    Attach_ = new QPushButton(QStringLiteral("Add Component"), this);
+    // Every form in the inspector shares one label column, so Transform, Light and Material line up.
+    mLabelColumn = new InspectorLabelColumn(*fields);
+    mLabelColumn->SetViewport(*scroll->viewport());
+    Inspector_->setSpacing(0);
+    inspectorLayout->setContentsMargins(design::SPACING_SMALL,
+                                        design::SPACING_SMALL,
+                                        design::SPACING_SMALL,
+                                        design::SPACING_SMALL);
+    // Add Component sits under the entity's name and identifier; RenderInspector places it there.
+    mAttachRow = new QWidget(fields);
+    mAttachRow->setObjectName(QStringLiteral("worldAttachRow"));
+    QHBoxLayout* attachLayout = new QHBoxLayout(mAttachRow);
+    attachLayout->setContentsMargins(0, design::SPACING_SMALL, 0, design::SPACING_SMALL);
+    Attach_ = new QPushButton(GetEditorIcon(EditorIcon::Add), QStringLiteral("Add Component"), mAttachRow);
     Attach_->setObjectName(QStringLiteral("worldAttach"));
-    Apply_ = new QPushButton(QStringLiteral("Apply Changes"), this);
-    Apply_->setObjectName(QStringLiteral("worldApply"));
-    Reset_ = new QPushButton(QStringLiteral("Reset Fields"), this);
+    Attach_->setToolTip(QStringLiteral("Add a component to the selected entity"));
+    mComponentMenu = new QMenu(Attach_);
+    mComponentMenu->setObjectName(QStringLiteral("worldComponentMenu"));
+    Attach_->setMenu(mComponentMenu);
+    attachLayout->addWidget(Attach_);
+    attachLayout->addStretch(1);
+    mAttachRow->hide();
+    // Apply and Reset stay out of the way until there is something to apply: a footer under the scrolling fields
+    // appears with the first edit, says how many fields changed, and gives its room back once applied or reset.
+    mCommitFooter = new QWidget(inspectorPanel);
+    mCommitFooter->setObjectName(QStringLiteral("worldCommitFooter"));
+    WrappingRowLayout* footerLayout = new WrappingRowLayout(mCommitFooter, design::SPACING_SMALL);
+    footerLayout->setContentsMargins(design::SPACING_SMALL,
+                                     design::SPACING_SMALL,
+                                     design::SPACING_SMALL,
+                                     design::SPACING_SMALL);
+    mPendingSummary = new QLabel(mCommitFooter);
+    mPendingSummary->setObjectName(QStringLiteral("worldPendingSummary"));
+    mPendingSummary->setFont(MakeTypeFont(mPendingSummary->font(), TypeRole::Caption));
+    mPendingSummary->setForegroundRole(QPalette::PlaceholderText);
+    QWidget* commitButtons = new QWidget(mCommitFooter);
+    WrappingRowLayout* commit = new WrappingRowLayout(commitButtons, design::SPACING_SMALL);
+    Reset_ = new QPushButton(QStringLiteral("Reset Fields"), commitButtons);
     Reset_->setObjectName(QStringLiteral("worldReset"));
-    // The component choice sits beside Add Component; Apply and Reset share the row below,
-    // so the narrow Properties column keeps its fields in view. Too narrow for a pair, they stack.
-    WrappingRowLayout* attach = new WrappingRowLayout(nullptr, design::SPACING_SMALL);
-    attach->AddWidget(*Components_, 1);
-    attach->AddWidget(*Attach_, 0);
-    WrappingRowLayout* commit = new WrappingRowLayout(nullptr, design::SPACING_SMALL);
-    commit->AddWidget(*Apply_, 1);
+    Reset_->setToolTip(QStringLiteral("Return the fields to the last applied edit"));
+    Apply_ = new QPushButton(QStringLiteral("Apply Changes"), commitButtons);
+    Apply_->setObjectName(QStringLiteral("worldApply"));
+    Apply_->setProperty("visualRole", QStringLiteral("primary"));
+    Apply_->setToolTip(QStringLiteral("Validate the edited fields together and apply them as one undo step"));
     commit->AddWidget(*Reset_, 1);
+    commit->AddWidget(*Apply_, 1);
     for (QPushButton* button : {Attach_, Apply_, Reset_})
     {
         button->setProperty("density", QStringLiteral("compact"));
     }
-    edits->addLayout(attach);
-    edits->addLayout(commit);
-    inspectorPanelLayout->addLayout(edits);
+    footerLayout->AddWidget(*mPendingSummary, 1);
+    footerLayout->AddWidget(*commitButtons, 0);
+    mCommitFooter->hide();
+    inspectorPanelLayout->addWidget(mCommitFooter);
     Status_ = new QLabel(this);
     Status_->setObjectName(QStringLiteral("worldStatus"));
     Status_->setTextFormat(Qt::PlainText);
@@ -955,9 +1044,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         Snapshot();
         Changed(QStringLiteral("Selected entities deleted. Undo is available."));
     });
-    connect(Attach_, &QPushButton::clicked, this, [this]() {
+    connect(mComponentMenu, &QMenu::triggered, this, [this](QAction* action) {
         QString error;
-        const QString component = Components_->currentData().toString();
+        const QString component = action->data().toString();
+        if (component.isEmpty() == true)
+        {
+            return;
+        }
         const bool isMultipleSelection = mSelectedEntities.size() > 1;
         const QStringList targets = isMultipleSelection == true ? getStaticColliderTargets() : QStringList{Selected_};
         if (Document_.AttachToEntities(targets, error, component) == false)
@@ -1716,8 +1809,10 @@ void WorldWorkspace::selectLight(const WorldLightRow& row)
 }
 void WorldWorkspace::addLightGroup(const WorldLightRow& row)
 {
-    QGroupBox* group = new QGroupBox(QStringLiteral("Light"));
-    group->setObjectName(QStringLiteral("worldLight"));
+    InspectorSection* section = new InspectorSection(QStringLiteral("Light"), QStringLiteral("importedLight"), nullptr);
+    section->setObjectName(QStringLiteral("worldLight"));
+    section->SetIcon(EditorIcon::Lighting);
+    QWidget* group = &section->GetFields();
     QFormLayout* rows = new QFormLayout(group);
     ConfigureInspectorForm(*rows);
     const QString origin = row.Origin == WorldLightOrigin::Missing
@@ -1729,13 +1824,13 @@ void WorldWorkspace::addLightGroup(const WorldLightRow& row)
     help->setTextFormat(Qt::PlainText);
     help->setWordWrap(true);
     rows->addRow(help);
-    rows->addRow(QStringLiteral("Name"), new QLabel(row.Label, group));
+    AddInspectorRow(*rows, QStringLiteral("Name"), *new QLabel(row.Label, group));
     QString state = row.IsEnabled == true ? QStringLiteral("On") : QStringLiteral("Off");
     if (row.Origin == WorldLightOrigin::Missing)
     {
         state = QStringLiteral("Off (missing from the scene)");
     }
-    rows->addRow(QStringLiteral("Switch"), new QLabel(state, group));
+    AddInspectorRow(*rows, QStringLiteral("Switch"), *new QLabel(state, group));
     for (const WorldLightProperty& property : row.Properties)
     {
         QLabel* value = new QLabel(property.Value, group);
@@ -1743,9 +1838,9 @@ void WorldWorkspace::addLightGroup(const WorldLightRow& row)
         value->setTextFormat(Qt::PlainText);
         value->setWordWrap(true);
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        rows->addRow(property.Label, value);
+        AddInspectorRow(*rows, property.Label, *value);
     }
-    Inspector_->addWidget(group);
+    Inspector_->addWidget(section);
 }
 void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
 {
@@ -1759,8 +1854,10 @@ void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
 }
 void WorldWorkspace::addMaterialGroup()
 {
-    QGroupBox* group = new QGroupBox(QStringLiteral("Material"));
-    group->setObjectName(QStringLiteral("worldMaterial"));
+    InspectorSection* section = new InspectorSection(QStringLiteral("Material"), QStringLiteral("material"), nullptr);
+    section->setObjectName(QStringLiteral("worldMaterial"));
+    section->SetIcon(EditorIcon::Material);
+    QWidget* group = &section->GetFields();
     QFormLayout* rows = new QFormLayout(group);
     ConfigureInspectorForm(*rows);
     const RenderScene& presented = Scene_->PreviewScene();
@@ -1803,7 +1900,7 @@ void WorldWorkspace::addMaterialGroup()
         }
         if (property.Swatch.isValid() == false && property.Thumbnail.isNull() == true)
         {
-            rows->addRow(property.Label, value);
+            AddInspectorRow(*rows, property.Label, *value);
             continue;
         }
         // A colour or texture row leads with what it looks like, then its numbers.
@@ -1823,7 +1920,7 @@ void WorldWorkspace::addMaterialGroup()
             rowLayout->addWidget(thumbnail);
         }
         rowLayout->addWidget(value, 1);
-        rows->addRow(property.Label, row);
+        AddInspectorRow(*rows, property.Label, *row);
     }
     if (materialOrNull != nullptr &&
         materialOrNull->Scattering.Model == content::scene_format::MaterialModel::Unresolved)
@@ -1864,7 +1961,7 @@ void WorldWorkspace::addMaterialGroup()
             field->setObjectName(QStringLiteral("worldField:") + fieldKey);
             Fields_.insert(fieldKey, field);
             connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
-            rows->addRow(QString::fromLatin1(property.Label), field);
+            AddInspectorRow(*rows, QString::fromLatin1(property.Label), *field);
         }
         if (localCoating.isEmpty() == true)
         {
@@ -1883,7 +1980,7 @@ void WorldWorkspace::addMaterialGroup()
         rows->addRow(restore);
     }
     addProjectBrdfControls(*rows, materialOrNull, scene);
-    Inspector_->addWidget(group);
+    Inspector_->addWidget(section);
 }
 
 void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
@@ -1909,7 +2006,7 @@ void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
         field->setProperty("initialRoughnessText", text);
         Fields_.insert(key, field);
         connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
-        inoutRows.addRow(QStringLiteral("Project BRDF roughness"), field);
+        AddInspectorRow(inoutRows, QStringLiteral("Project BRDF roughness"), *field);
     }
     if (binding.isEmpty() == false)
     {
@@ -1963,7 +2060,7 @@ void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
     }
     if (choices->count() > 0)
     {
-        inoutRows.addRow(QStringLiteral("Project BRDF"), choices);
+        AddInspectorRow(inoutRows, QStringLiteral("Project BRDF"), *choices);
         QPushButton* assign = new QPushButton(QStringLiteral("Assign Project BRDF"), group);
         assign->setObjectName(QStringLiteral("worldAssignProjectBrdf"));
         connect(assign, &QPushButton::clicked, this, [this, choices]() {
@@ -2075,7 +2172,7 @@ void WorldWorkspace::addMaterialRepair(QFormLayout& inoutRows)
         replacements->addItem(QStringLiteral("Import a supported material to map this slot."));
         replacements->setEnabled(false);
     }
-    inoutRows.addRow(QStringLiteral("Replacement"), replacements);
+    AddInspectorRow(inoutRows, QStringLiteral("Replacement"), *replacements);
     QPushButton* map = new QPushButton(QStringLiteral("Map to existing material"), group);
     map->setObjectName(QStringLiteral("worldMapMaterial"));
     map->setEnabled(replacements->isEnabled() == true && Pending_ == false && SceneBusy() == false);
@@ -2415,10 +2512,15 @@ void WorldWorkspace::RenderInspector()
     Name_ = nullptr;
     while (auto* item = Inspector_->takeAt(0))
     {
-        delete item->widget();
+        // The Add Component row lives as long as the workspace; only the rows built for this entity go.
+        if (item->widget() != mAttachRow)
+        {
+            delete item->widget();
+        }
         delete item;
     }
-    Components_->clear();
+    mAttachRow->hide();
+    mComponentMenu->clear();
     if (mSelectedEntities.size() > 1)
     {
         const QStringList colliderTargets = getStaticColliderTargets();
@@ -2427,13 +2529,19 @@ void WorldWorkspace::RenderInspector()
         if (colliderTargets.isEmpty() == false)
         {
             const QString component = GetStaticColliderComponentId();
-            Components_->addItem(Document_.Component(component).value(QStringLiteral("label")).toString(), component);
+            addComponentChoice(Document_.Component(component).value(QStringLiteral("label")).toString(), component);
             summaryText += QStringLiteral(" Add Component can add Static Collider to %1 selected mesh entities.")
                                .arg(colliderTargets.size());
         }
         QLabel* summary = new QLabel(summaryText + QStringLiteral(" Select one entity to edit its properties."));
         summary->setWordWrap(true);
         Inspector_->addWidget(summary);
+        if (colliderTargets.isEmpty() == false)
+        {
+            Inspector_->addWidget(mAttachRow);
+            mAttachRow->show();
+        }
+        finishComponentMenu();
         Inspector_->addStretch();
         return;
     }
@@ -2473,7 +2581,7 @@ void WorldWorkspace::RenderInspector()
     Name_ = new QLineEdit(entity.value(QStringLiteral("name")).toString(), form);
     Name_->setObjectName(QStringLiteral("worldEntityName"));
     Name_->setAccessibleName(QStringLiteral("Entity name"));
-    nameLayout->addRow(QStringLiteral("Name"), Name_);
+    AddInspectorRow(*nameLayout, QStringLiteral("Name"), *Name_);
     Inspector_->addWidget(form);
     connect(Name_, &QLineEdit::textEdited, this, [this]() { markInspectorPending(); });
     if (Document_.HasUuidRecords() == true)
@@ -2491,21 +2599,24 @@ void WorldWorkspace::RenderInspector()
     identifierForm->setContentsMargins(0, 0, 0, 0);
     IdentifierRow* identifier = new IdentifierRow(Selected_, nullptr);
     identifier->setObjectName(QStringLiteral("worldEntityIdentifier"));
-    identifierForm->addRow(Document_.HasUuidRecords() == true ? QStringLiteral("UUID") : QStringLiteral("Stable ID"),
-                           identifier);
+    AddInspectorRow(*identifierForm,
+                    Document_.HasUuidRecords() == true ? QStringLiteral("UUID") : QStringLiteral("Stable ID"),
+                    *identifier);
     Inspector_->addWidget(identifierBlock);
+    Inspector_->addWidget(mAttachRow);
+    mAttachRow->show();
     if (entity.value(QStringLiteral("scene")).isObject())
     {
-        auto* group = new QGroupBox(QStringLiteral("Scene instance"));
+        InspectorSection* section =
+            new InspectorSection(QStringLiteral("Scene instance"), QStringLiteral("scene"), nullptr);
+        section->setObjectName(QStringLiteral("worldSceneInstance"));
+        section->SetIcon(EditorIcon::Scene);
+        QWidget* group = &section->GetFields();
         auto* rows = new QFormLayout(group);
         ConfigureInspectorForm(*rows);
         const auto scene = entity.value(QStringLiteral("scene")).toObject();
-        auto* help =
-            new QLabel(QStringLiteral("Position is local to the parent. Rotation (X, Y, Z) and scale adjust the "
-                                      "imported basis; zero rotation and unit scale preserve the source geometry."),
-                       group);
-        help->setWordWrap(true);
-        rows->addRow(help);
+        section->SetHelp(QStringLiteral("Position is local to the parent. Rotation (X, Y, Z) and scale adjust the "
+                                        "imported basis; zero rotation and unit scale preserve the source geometry."));
         if (Document_.Schema().contains(QStringLiteral("scene_transform")) == false)
         {
             struct SceneVector final
@@ -2563,13 +2674,15 @@ void WorldWorkspace::RenderInspector()
                 rows->addRow(MakeVectorBlock(vector.Title, vector.Unit, *vectorRow));
             }
         }
-        rows->addRow(QStringLiteral("Mesh"), new IdentifierRow(scene.value(QStringLiteral("mesh")).toString(), group));
+        AddInspectorRow(*rows,
+                        QStringLiteral("Mesh"),
+                        *new IdentifierRow(scene.value(QStringLiteral("mesh")).toString(), group));
         const QString material = Document_.GetMaterialResourceId(scene);
-        rows->addRow(QStringLiteral("Material resource"), new IdentifierRow(material, group));
+        AddInspectorRow(*rows, QStringLiteral("Material resource"), *new IdentifierRow(material, group));
         const QString sourceMaterial = scene.value(QStringLiteral("material")).toString();
         if (material != sourceMaterial)
         {
-            rows->addRow(QStringLiteral("Source material"), new IdentifierRow(sourceMaterial, group));
+            AddInspectorRow(*rows, QStringLiteral("Source material"), *new IdentifierRow(sourceMaterial, group));
         }
         QPushButton* showMaterial = new QPushButton(QStringLiteral("Show in Materials"), group);
         showMaterial->setObjectName(QStringLiteral("worldRevealMaterial"));
@@ -2578,7 +2691,7 @@ void WorldWorkspace::RenderInspector()
             mMaterialsPanel->RevealResource(material);
         });
         rows->addRow(showMaterial);
-        Inspector_->addWidget(group);
+        Inspector_->addWidget(section);
         addMaterialGroup();
     }
     const auto attached = entity.value(QStringLiteral("components")).toObject();
@@ -2591,15 +2704,19 @@ void WorldWorkspace::RenderInspector()
         {
             if (attached.contains(cid) == true)
             {
-                QGroupBox* group = new QGroupBox(label);
+                InspectorSection* section = new InspectorSection(label, cid, nullptr);
+                section->setObjectName(QStringLiteral("worldComponent:") + cid);
+                section->SetIcon(GetComponentIcon(cid));
+                QWidget* group = &section->GetFields();
                 QVBoxLayout* layout = new QVBoxLayout(group);
+                layout->setContentsMargins(0, 0, 0, 0);
                 QPushButton* editGeneration = new QPushButton(QStringLiteral("Edit Terrain…"), group);
                 editGeneration->setObjectName(QStringLiteral("worldEditTerrainGeneration"));
                 layout->addWidget(editGeneration);
                 connect(editGeneration, &QPushButton::clicked, this, [this, key = Selected_]() {
                     showTerrainAuthoring(key);
                 });
-                Inspector_->addWidget(group);
+                Inspector_->addWidget(section);
             }
             continue;
         }
@@ -2608,23 +2725,17 @@ void WorldWorkspace::RenderInspector()
             if (Document_.HasBuiltInSchema() == false || cid != GetStaticColliderComponentId() ||
                 CanAttachWorldStaticCollider(entity) == true)
             {
-                Components_->addItem(label, cid);
+                addComponentChoice(label, cid);
             }
             continue;
         }
-        auto* group = new QGroupBox(label);
+        InspectorSection* section = new InspectorSection(label, cid, nullptr);
+        section->setObjectName(QStringLiteral("worldComponent:") + cid);
+        section->SetIcon(GetComponentIcon(cid));
+        section->SetHelp(component.value(QStringLiteral("help")).toString());
+        QWidget* group = &section->GetFields();
         auto* rows = new QFormLayout(group);
         ConfigureInspectorForm(*rows);
-        const auto help = component.value(QStringLiteral("help")).toString();
-        auto* hint = new QLabel(help, group);
-        hint->setTextFormat(Qt::PlainText);
-        hint->setWordWrap(true);
-        const auto height = hint->heightForWidth(360);
-        if (height > 0)
-        {
-            hint->setMinimumHeight(height);
-        }
-        rows->addRow(hint);
         const auto values = attached.value(cid).toObject();
         // Three numbers that belong together (a transform's position, rotation or scale, or a colour's red,
         // green and blue) share one compact row; their fields keep the names and signals they always had.
@@ -2815,7 +2926,7 @@ void WorldWorkspace::RenderInspector()
                                                                     type == QStringLiteral("integer"));
                     rowField = MakeSliderRow(*textFieldOrNull, mapping, group);
                 }
-                rows->addRow(title, rowField);
+                AddInspectorRow(*rows, title, *rowField);
                 continue;
             }
             const foundation::float64 minimum = p.value(QStringLiteral("min")).toDouble();
@@ -2924,32 +3035,7 @@ void WorldWorkspace::RenderInspector()
             }
             configureProbeVolumeFields(*group, *rows, cid, attached);
         }
-        if (component.value(QStringLiteral("required")).toBool())
-        {
-            rows->addRow(new QLabel(QStringLiteral("Required by this project"), group));
-        }
-        else
-        {
-            auto* remove = new QPushButton(QStringLiteral("Remove Component"), group);
-            remove->setObjectName(QStringLiteral("worldDetach:") + cid);
-            connect(remove, &QPushButton::clicked, this, [this, cid]() {
-                if (Pending_)
-                {
-                    Changed(QStringLiteral("Apply or reset fields before removing a component."));
-                    return;
-                }
-                QString error;
-                if (Document_.Detach(Selected_, error, cid) == false)
-                {
-                    Changed(error);
-                    return;
-                }
-                Render();
-                Snapshot();
-                Changed(QStringLiteral("Component removed. Undo is available."));
-            });
-            rows->addRow(remove);
-        }
+        addComponentActions(*section, component);
         if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
         {
             ConfigureCelestialLightFields(*group, *rows, Fields_);
@@ -2958,10 +3044,170 @@ void WorldWorkspace::RenderInspector()
         {
             group->setMinimumHeight(rows->totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
         }
-        group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-        Inspector_->addWidget(group);
+        Inspector_->addWidget(section);
     }
+    finishComponentMenu();
     Inspector_->addStretch();
+    recordAppliedFields();
+    mLabelColumn->Update();
+}
+void WorldWorkspace::addComponentChoice(const QString& label, const QString& component)
+{
+    QAction* action = mComponentMenu->addAction(GetEditorIcon(GetComponentIcon(component)), label);
+    action->setObjectName(QStringLiteral("worldAttach:") + component);
+    action->setData(component);
+}
+void WorldWorkspace::finishComponentMenu()
+{
+    const QList<QAction*> choices = mComponentMenu->actions();
+    if (choices.isEmpty() == true)
+    {
+        Attach_->setToolTip(QStringLiteral("Every component this project offers is already on the entity"));
+    }
+    else
+    {
+        Attach_->setToolTip(QStringLiteral("Add a component to the selected entity"));
+    }
+    if (choices.size() <= COMPONENT_MENU_SEARCH_THRESHOLD)
+    {
+        return;
+    }
+    // A long list gets a search field on top: typing narrows the components by name.
+    QLineEdit* search = new QLineEdit(mComponentMenu);
+    search->setObjectName(QStringLiteral("worldComponentSearch"));
+    search->setPlaceholderText(QStringLiteral("Search components"));
+    search->setAccessibleName(QStringLiteral("Search components"));
+    search->setClearButtonEnabled(true);
+    QWidgetAction* searchAction = new QWidgetAction(mComponentMenu);
+    searchAction->setDefaultWidget(search);
+    mComponentMenu->insertAction(choices.first(), searchAction);
+    mComponentMenu->insertSeparator(choices.first());
+    connect(search, &QLineEdit::textChanged, mComponentMenu, [choices](const QString& text) {
+        for (QAction* choice : choices)
+        {
+            choice->setVisible(choice->text().contains(text, Qt::CaseInsensitive) == true);
+        }
+    });
+    connect(mComponentMenu, &QMenu::aboutToShow, search, [search]() {
+        search->clear();
+        search->setFocus();
+    });
+}
+void WorldWorkspace::addComponentActions(InspectorSection& inoutSection, const QJsonObject& component)
+{
+    const QString cid = component.value(QStringLiteral("id")).toString();
+    QAction& reset =
+        inoutSection.AddMenuAction(QStringLiteral("Reset to Defaults"), QStringLiteral("worldResetComponent:") + cid);
+    connect(&reset, &QAction::triggered, this, [this, component, cid]() {
+        bool hasReset = false;
+        for (const QJsonValue value : component.value(QStringLiteral("properties")).toArray())
+        {
+            const QJsonObject property = value.toObject();
+            const QJsonValue fallback = property.value(QStringLiteral("default"));
+            QWidget* fieldOrNull = Fields_.value(FieldKey(cid, property.value(QStringLiteral("id")).toString()));
+            if (fieldOrNull != nullptr && fallback.isUndefined() == false)
+            {
+                SetFieldToValue(*fieldOrNull, fallback, Display(fallback));
+                hasReset = true;
+            }
+        }
+        if (hasReset == true)
+        {
+            markInspectorPending();
+            Changed(QStringLiteral("Fields set to the project defaults. Apply Changes keeps them; Reset Fields "
+                                   "returns to the last applied edit."));
+        }
+    });
+    QAction& copy =
+        inoutSection.AddMenuAction(QStringLiteral("Copy Values"), QStringLiteral("worldCopyComponent:") + cid);
+    connect(&copy, &QAction::triggered, this, [this, cid]() {
+        const QJsonObject values =
+            Document_.Entity(Selected_).value(QStringLiteral("components")).toObject().value(cid).toObject();
+        QGuiApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(values).toJson(QJsonDocument::Indented)));
+        Changed(QStringLiteral("Applied values copied as JSON."));
+    });
+    if (component.value(QStringLiteral("required")).toBool() == true)
+    {
+        inoutSection.SetRequired(QStringLiteral("Required by this project, so it cannot be removed"));
+        return;
+    }
+    QAction& remove =
+        inoutSection.AddMenuAction(QStringLiteral("Remove Component"), QStringLiteral("worldDetach:") + cid);
+    connect(&remove, &QAction::triggered, this, [this, cid]() {
+        if (Pending_)
+        {
+            Changed(QStringLiteral("Apply or reset fields before removing a component."));
+            return;
+        }
+        QString error;
+        if (Document_.Detach(Selected_, error, cid) == false)
+        {
+            Changed(error);
+            return;
+        }
+        Render();
+        Snapshot();
+        Changed(QStringLiteral("Component removed. Undo is available."));
+    });
+}
+QString WorldWorkspace::readFieldState(const QWidget& field)
+{
+    if (const QCheckBox* checkOrNull = qobject_cast<const QCheckBox*>(&field); checkOrNull != nullptr)
+    {
+        return checkOrNull->isChecked() == true ? QStringLiteral("true") : QStringLiteral("false");
+    }
+    if (const QComboBox* choicesOrNull = qobject_cast<const QComboBox*>(&field); choicesOrNull != nullptr)
+    {
+        return QString::number(choicesOrNull->currentIndex());
+    }
+    if (const QLineEdit* textOrNull = qobject_cast<const QLineEdit*>(&field); textOrNull != nullptr)
+    {
+        return textOrNull->text();
+    }
+    if (const WorldEarthTimeField* timeOrNull = qobject_cast<const WorldEarthTimeField*>(&field); timeOrNull != nullptr)
+    {
+        return QString::number(timeOrNull->GetDaysSinceEpoch(), 'g', QLocale::FloatingPointShortest);
+    }
+    return {};
+}
+void WorldWorkspace::recordAppliedFields()
+{
+    mAppliedFields.clear();
+    for (const QString& key : Fields_.keys())
+    {
+        mAppliedFields.insert(key, readFieldState(*Fields_.value(key)));
+    }
+    if (Name_ != nullptr)
+    {
+        mAppliedFields.insert(QStringLiteral("name"), Name_->text());
+    }
+}
+foundation::int32 WorldWorkspace::countUnappliedFields() const
+{
+    foundation::int32 count = 0;
+    for (const QString& key : Fields_.keys())
+    {
+        const bool hasChanged =
+            mAppliedFields.contains(key) == true && mAppliedFields.value(key) != readFieldState(*Fields_.value(key));
+        count += hasChanged == true ? 1 : 0;
+    }
+    const bool hasNameChanged = Name_ != nullptr && mAppliedFields.contains(QStringLiteral("name")) == true &&
+                                mAppliedFields.value(QStringLiteral("name")) != Name_->text();
+    count += hasNameChanged == true ? 1 : 0;
+    return count;
+}
+void WorldWorkspace::updateCommitFooter()
+{
+    if (Pending_ == false)
+    {
+        mCommitFooter->hide();
+        return;
+    }
+    const foundation::int32 count = countUnappliedFields();
+    mPendingSummary->setText(count == 1  ? QStringLiteral("1 unapplied change")
+                             : count > 1 ? QStringLiteral("%1 unapplied changes").arg(count)
+                                         : QStringLiteral("Unapplied changes"));
+    mCommitFooter->show();
 }
 void WorldWorkspace::PickTint(const QString& id, const QJsonObject& binding)
 {
@@ -3083,11 +3329,11 @@ void WorldWorkspace::Changed(const QString& message)
                                    entityCount + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
                                    isBusy == false);
     mDeleteEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
-    Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false && Components_->count() > 0 &&
-                        isBusy == false);
-    Components_->setEnabled(Pending_ == false && isBusy == false);
+    Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false &&
+                        mComponentMenu->actions().isEmpty() == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);
     Reset_->setEnabled(Pending_ && isBusy == false);
+    updateCommitFooter();
     QPushButton* mapOrNull = findChild<QPushButton*>(QStringLiteral("worldMapMaterial"));
     const QComboBox* replacementsOrNull = findChild<QComboBox*>(QStringLiteral("worldMaterialReplacement"));
     if (mapOrNull != nullptr && replacementsOrNull != nullptr)
@@ -3182,7 +3428,7 @@ bool WorldWorkspace::readCoatingFields(QJsonObject& inoutScene, QString& outErro
     return true;
 }
 
-void WorldWorkspace::configureProbeVolumeFields(QGroupBox& inoutGroup,
+void WorldWorkspace::configureProbeVolumeFields(QWidget& inoutGroup,
                                                 QFormLayout& inoutRows,
                                                 const QString& cid,
                                                 const QJsonObject& components)

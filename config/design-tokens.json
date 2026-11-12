@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Single source of Ludus colour and spacing tokens. Read by the Qt editor (generated header at configure time), the init window (scripts/python/init_theme.py) and the browser editor (generated block in apps/editor/browser/editor.css; refresh it with scripts/python/design_tokens.py --write). Every pair in `contrast` is checked in both appearances by the editor tests and scripts/python/test_design_tokens.py. The `highContrast` colours replace the listed tokens when the system asks for more contrast (or LUDUS_HIGH_CONTRAST=1); each pair also holds its `highContrastMinimum` there. Every colour is in at least one pair or names why it is exempt in `contrastExempt` (decorative or inactive only); scripts/python/design_tokens.py rejects the file otherwise. `type` holds font-size multipliers of the system font.",
+  "description": "Single source of Ludus colour and spacing tokens. Read by the Qt editor (generated header at configure time), the init window (scripts/python/init_theme.py) and the browser editor (generated block in apps/editor/browser/editor.css; refresh it with scripts/python/design_tokens.py --write). Every pair in `contrast` is checked in both appearances by the editor tests and scripts/python/test_design_tokens.py. The `highContrast` colours replace the listed tokens when the system asks for more contrast (or LUDUS_HIGH_CONTRAST=1); each pair also holds its `highContrastMinimum` there. Every colour is in at least one pair or names why it is exempt in `contrastExempt` (decorative or inactive only); scripts/python/design_tokens.py rejects the file otherwise. `size` holds fixed control sizes in logical pixels. `type` holds font-size multipliers of the system font.",
   "colours": {
     "surface.workspace": {
       "dark": "#18232c",
@@ -222,6 +222,9 @@
     "control": 4,
     "group": 6,
     "card": 8
+  },
+  "size": {
+    "checkbox": 14
   },
   "type": {
     "caption": 0.9,
