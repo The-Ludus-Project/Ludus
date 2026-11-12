@@ -13,7 +13,8 @@ struct AtmosphereViewParameters
     float4 CameraForwardWorld;  // xyz: orthographic ray, w: radiance per unit disk illuminance
     float4 Lighting;            // x enables multiple scattering.
     float4 MoonDirectionWorld;  // xyz: direction, w: sine of the angular radius.
-    float4 LunarRadiance;       // xyz: full-phase peak luminance, w: disk chord radius.
+    float4 LunarRadiance;       // xyz: luminance at unit lighting cosine, w: disk chord radius.
+    float4 DirectionToSunAtMoonWorld; // xyz: optional lunar lighting direction, w: presence flag.
     float4 Celestial;           // x: actual observer altitude in kilometres, y: star peak luminance, z: orbital flag.
     float4 Output;              // xy: viewport dimensions, z: exposure multiplier, w: display curve
 };
@@ -197,7 +198,10 @@ AtmosphereBackgroundTransport EvaluateAtmosphereBackground(in float3 directionWo
     }
     if (atmosphereView.MoonDirectionWorld.w > 0 && moonCoverage > 0)
     {
-        float phase = EvaluateLunarPhase(directionWorld, moonWorld, sunWorld, atmosphereView.MoonDirectionWorld.w);
+        float3 moonToSunWorld = atmosphereView.DirectionToSunAtMoonWorld.w > 0
+                                    ? atmosphereView.DirectionToSunAtMoonWorld.xyz
+                                    : sunWorld;
+        float phase = EvaluateLunarPhase(directionWorld, moonWorld, moonToSunWorld, atmosphereView.MoonDirectionWorld.w);
         boundary = lerp(boundary, phase * atmosphereView.LunarRadiance.xyz, moonCoverage);
     }
     AtmosphereBackgroundTransport transport = EvaluateAtmosphereBackground(directionWorld);

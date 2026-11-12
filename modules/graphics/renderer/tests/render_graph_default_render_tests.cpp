@@ -2123,6 +2123,10 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
     camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
     render();
     CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+    camera.Atmosphere.Celestial.DirectionToSunAtMoonWorld = {0, -1, 0};
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == zenith);
+    camera.Atmosphere.Celestial.DirectionToSunAtMoonWorld = {};
     pointAtMoon({1, 0, 0});
     render();
     CHECK(fixture.Pixels[center + BLUE_CHANNEL] < zenith);

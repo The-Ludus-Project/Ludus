@@ -247,6 +247,45 @@ TEST_CASE("Earth sky rules provide time-dependent rotations and horizon state", 
     CHECK(moon.IsAboveHorizon == last.IsAboveHorizon);
 }
 
+TEST_CASE("Earth preset photometry follows daylight, the horizon and lunar phase", "[world][celestial]")
+{
+    using namespace ludus::gameplay::world;
+    EarthCelestialLighting sun;
+    REQUIRE(TrySampleEarthCelestialLighting(EarthCelestialBody::Sun, 0, 0, 0, sun) == true);
+    CHECK(sun.Transform.IsAboveHorizon == true);
+    CHECK(sun.GroundIlluminance.X > 100'000);
+    CHECK(sun.GroundIlluminance.X < sun.BoundaryIlluminance.X);
+    CHECK(sun.AngularRadiusRadians > 0.004F);
+    CHECK(sun.AngularRadiusRadians < 0.005F);
+    EarthCelestialLighting lowSun;
+    REQUIRE(TrySampleEarthCelestialLighting(EarthCelestialBody::Sun, 0, 0, 85, lowSun) == true);
+    CHECK(lowSun.GroundIlluminance.X > 0);
+    CHECK(lowSun.GroundIlluminance.X < sun.GroundIlluminance.X * 0.5F);
+    CHECK(lowSun.GroundIlluminance.Z / lowSun.GroundIlluminance.X < sun.GroundIlluminance.Z / sun.GroundIlluminance.X);
+    EarthCelestialLighting night;
+    REQUIRE(TrySampleEarthCelestialLighting(EarthCelestialBody::Sun, 0.5, 0, 0, night) == true);
+    CHECK(night.Transform.IsAboveHorizon == false);
+    CHECK(night.GroundIlluminance == math::Vector3{});
+    CHECK(night.BoundaryIlluminance.X > 100'000);
+
+    // Thanks to the U.S. Naval Observatory, "Phases of the Moon 2000–2049", p. 5,
+    // https://aa.usno.navy.mil/downloads/Circular_169_coverupdate.pdf, for the January 6 new Moon
+    // and February 19 full Moon epochs.
+    EarthCelestialLighting newMoon;
+    EarthCelestialLighting fullMoon;
+    REQUIRE(TrySampleEarthCelestialLighting(EarthCelestialBody::Moon, 5.26, 0, 0, newMoon) == true);
+    REQUIRE(TrySampleEarthCelestialLighting(EarthCelestialBody::Moon, 49.185, 0, 0, fullMoon) == true);
+    CHECK(fullMoon.BoundaryIlluminance.X > 0.20F);
+    CHECK(fullMoon.BoundaryIlluminance.X < 0.45F);
+    CHECK(newMoon.BoundaryIlluminance.X < fullMoon.BoundaryIlluminance.X * 0.01F);
+    CHECK(fullMoon.LunarPeakRadiance.X > 0);
+    CHECK(fullMoon.AngularRadiusRadians > 0.004F);
+    CHECK(fullMoon.AngularRadiusRadians < 0.005F);
+    CHECK(fullMoon.AngularRadiusRadians != newMoon.AngularRadiusRadians);
+    CHECK(TrySampleEarthCelestialLighting(EarthCelestialBody::Moon, 0, 91, 0, fullMoon) == false);
+    CHECK(fullMoon.BoundaryIlluminance.X > 0.20F);
+}
+
 TEST_CASE("Custom orbit sky motion separates world spin from the source path", "[world][celestial]")
 {
     constexpr math::Vector3 LIGHT_FORWARD{0, 0, -1};

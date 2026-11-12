@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/quaternion.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 namespace ludus::gameplay::world
 {
@@ -43,6 +44,23 @@ struct CelestialTransform final
 
 /// Result of the Earth sky sampler, in the same frame as a custom orbit sample.
 using EarthCelestialTransform = CelestialTransform;
+
+/// Approximate Earth daylight or moonlight in linear RGB at a sampled observer and time.
+struct EarthCelestialLighting final
+{
+    /// Local rotation and geometric horizon visibility.
+    EarthCelestialTransform Transform{};
+    /// Direct RGB illuminance in lux on a plane normal to the light at sea level. Zero below the horizon.
+    foundation::math::Vector3 GroundIlluminance{};
+    /// Direct RGB illuminance in lux on a plane normal to the light above the atmosphere.
+    foundation::math::Vector3 BoundaryIlluminance{};
+    /// Apparent disk radius in radians at the observer.
+    foundation::float32 AngularRadiusRadians = 0;
+    /// Direction from the Moon toward the Sun in observer world axes. Zero for a Sun sample.
+    foundation::math::Vector3 DirectionToSunAtMoonWorld{};
+    /// Linear RGB lunar disk luminance in nits before atmospheric attenuation, at unit lighting cosine.
+    foundation::math::Vector3 LunarPeakRadiance{};
+};
 
 /// An observer on a spherical world with a fixed spin axis. Zero longitude uses the reference meridian at time zero.
 struct CelestialObserver final
@@ -95,4 +113,18 @@ struct CelestialOrbit final
                                                     foundation::float64 latitudeDegrees,
                                                     foundation::float64 longitudeDegrees,
                                                     EarthCelestialTransform& outTransform) noexcept;
+
+/// Sample the Earth light's transform, normal illuminance and disk using a clear-sky approximation.
+/// @param body Sun or Moon.
+/// @param daysSinceJ2000 Fractional UTC days since 2000-01-01 12:00 UTC, within MAX_EARTH_CELESTIAL_DAYS.
+/// @param latitudeDegrees Observer latitude in degrees, north positive.
+/// @param longitudeDegrees Observer longitude in degrees, east positive.
+/// @param outLighting Replaced on success. Invalid inputs preserve it.
+/// @return True on success. False for an unknown body, a nonfinite value or an input outside the documented range.
+/// @note Allocation-free, with no thread affinity. Excludes weather, eclipses, refraction and earthshine.
+[[nodiscard]] bool TrySampleEarthCelestialLighting(EarthCelestialBody body,
+                                                   foundation::float64 daysSinceJ2000,
+                                                   foundation::float64 latitudeDegrees,
+                                                   foundation::float64 longitudeDegrees,
+                                                   EarthCelestialLighting& outLighting) noexcept;
 } // namespace ludus::gameplay::world

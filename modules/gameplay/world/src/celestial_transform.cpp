@@ -23,16 +23,21 @@ float64 ComputeSineDegrees(float64 degrees) noexcept
 }
 
 // Thanks to the U.S. Naval Observatory, "Computing Approximate Solar Coordinates"
-// (https://aa.usno.navy.mil/faq/sun_approx), for the ecliptic longitude approximation and mean obliquity.
-EclipticCoordinates ComputeSolarCoordinates(float64 days) noexcept
+// (https://aa.usno.navy.mil/faq/sun_approx), for mean anomaly, ecliptic longitude, distance and apparent size.
+float64 ComputeSolarAnomalyDegrees(float64 days) noexcept
 {
     constexpr float64 ANOMALY_AT_EPOCH_DEGREES = 357.529;
     constexpr float64 ANOMALY_DEGREES_PER_DAY = 0.98560028;
+    return ANOMALY_AT_EPOCH_DEGREES + ANOMALY_DEGREES_PER_DAY * days;
+}
+
+EclipticCoordinates ComputeSolarCoordinates(float64 days) noexcept
+{
     constexpr float64 LONGITUDE_AT_EPOCH_DEGREES = 280.459;
     constexpr float64 LONGITUDE_DEGREES_PER_DAY = 0.98564736;
     constexpr float64 FIRST_HARMONIC_DEGREES = 1.915;
     constexpr float64 SECOND_HARMONIC_DEGREES = 0.020;
-    const float64 anomalyDegrees = ANOMALY_AT_EPOCH_DEGREES + ANOMALY_DEGREES_PER_DAY * days;
+    const float64 anomalyDegrees = ComputeSolarAnomalyDegrees(days);
     const float64 longitudeDegrees = LONGITUDE_AT_EPOCH_DEGREES + LONGITUDE_DEGREES_PER_DAY * days +
                                      FIRST_HARMONIC_DEGREES * ComputeSineDegrees(anomalyDegrees) +
                                      SECOND_HARMONIC_DEGREES * ComputeSineDegrees(2 * anomalyDegrees);
@@ -148,9 +153,7 @@ struct HorizonObserver
     float64 RadiusRatio = 0;
 };
 
-bool TryProjectCelestialTransform(math::Vector3d directionEquatorial,
-                                  const HorizonObserver& observer,
-                                  CelestialTransform& outTransform) noexcept
+math::Vector3d ProjectCelestialDirection(math::Vector3d directionEquatorial, const HorizonObserver& observer) noexcept
 {
     const float64 cosMeridian = math::Cos(observer.MeridianRadians);
     const float64 sinMeridian = math::Sin(observer.MeridianRadians);
@@ -161,9 +164,14 @@ bool TryProjectCelestialTransform(math::Vector3d directionEquatorial,
     const float64 north = directionEquatorial.Z * cosLatitude - equatorialMeridian * sinLatitude;
     // The body direction has unit length. Subtract the observer's radius in body-distance units.
     const float64 up = equatorialMeridian * cosLatitude + directionEquatorial.Z * sinLatitude - observer.RadiusRatio;
-    const math::Vector3 incomingWorld{-static_cast<float32>(east),
-                                      -static_cast<float32>(up),
-                                      static_cast<float32>(north)};
+    return {east, up, -north};
+}
+
+bool TryMakeCelestialTransform(math::Vector3d directionToBodyWorld, CelestialTransform& outTransform) noexcept
+{
+    const math::Vector3 incomingWorld{-static_cast<float32>(directionToBodyWorld.X),
+                                      -static_cast<float32>(directionToBodyWorld.Y),
+                                      -static_cast<float32>(directionToBodyWorld.Z)};
     CelestialTransform transform;
     if (math::TryRotationBetween({0, 0, -1}, incomingWorld, transform.Rotation) != math::MathStatus::Success)
     {
@@ -171,7 +179,7 @@ bool TryProjectCelestialTransform(math::Vector3d directionEquatorial,
     }
     // Dimensionless roundoff allowance in the vertical direction component at the exact horizon.
     constexpr float64 HORIZON_COMPONENT_TOLERANCE = 1e-12;
-    transform.IsAboveHorizon = up > HORIZON_COMPONENT_TOLERANCE;
+    transform.IsAboveHorizon = directionToBodyWorld.Y > HORIZON_COMPONENT_TOLERANCE;
     outTransform = transform;
     return true;
 }
@@ -221,29 +229,28 @@ bool TrySampleCelestialOrbitTransform(const CelestialOrbit& orbit,
         .LatitudeRadians = math::DegreesToRadians(observer.LatitudeDegrees),
         .RadiusRatio = orbit.ObserverRadiusRatio,
     };
-    return TryProjectCelestialTransform(directionEquatorial, horizon, outTransform);
+    return TryMakeCelestialTransform(ProjectCelestialDirection(directionEquatorial, horizon), outTransform);
 }
 
-bool TrySampleEarthCelestialTransform(EarthCelestialBody body,
-                                      float64 daysSinceJ2000,
-                                      float64 latitudeDegrees,
-                                      float64 longitudeDegrees,
-                                      EarthCelestialTransform& outTransform) noexcept
+namespace
 {
-    if ((body != EarthCelestialBody::Sun && body != EarthCelestialBody::Moon) ||
-        math::IsFinite(daysSinceJ2000) == false || math::Abs(daysSinceJ2000) > MAX_EARTH_CELESTIAL_DAYS ||
-        math::IsFinite(latitudeDegrees) == false || math::Abs(latitudeDegrees) > MAX_EARTH_LATITUDE_DEGREES ||
-        math::IsFinite(longitudeDegrees) == false || math::Abs(longitudeDegrees) > MAX_EARTH_LONGITUDE_DEGREES)
-    {
-        return false;
-    }
+bool IsEarthSampleValid(EarthCelestialBody body, float64 days, float64 latitude, float64 longitude) noexcept
+{
+    return (body == EarthCelestialBody::Sun || body == EarthCelestialBody::Moon) &&
+           IsWithinCelestialRange(days, MAX_EARTH_CELESTIAL_DAYS) == true &&
+           IsWithinCelestialRange(latitude, MAX_EARTH_LATITUDE_DEGREES) == true &&
+           IsWithinCelestialRange(longitude, MAX_EARTH_LONGITUDE_DEGREES) == true;
+}
 
-    constexpr float64 DAYS_PER_JULIAN_CENTURY = 36525;
+constexpr float64 DAYS_PER_JULIAN_CENTURY = 36525;
+
+math::Vector3d ProjectEarthDirection(const EclipticCoordinates& coordinates,
+                                     float64 daysSinceJ2000,
+                                     float64 latitudeDegrees,
+                                     float64 longitudeDegrees) noexcept
+{
     constexpr float64 OBLIQUITY_AT_EPOCH_DEGREES = 23.439;
     constexpr float64 OBLIQUITY_DEGREES_PER_DAY = -0.00000036;
-    const EclipticCoordinates coordinates = body == EarthCelestialBody::Sun
-                                                ? ComputeSolarCoordinates(daysSinceJ2000)
-                                                : ComputeLunarCoordinates(daysSinceJ2000 / DAYS_PER_JULIAN_CENTURY);
     const float64 obliquityRadians =
         math::DegreesToRadians(OBLIQUITY_AT_EPOCH_DEGREES + OBLIQUITY_DEGREES_PER_DAY * daysSinceJ2000);
     const float64 eclipticHorizontal = math::Cos(coordinates.LatitudeRadians);
@@ -269,6 +276,159 @@ bool TrySampleEarthCelestialTransform(EarthCelestialBody body,
         .LatitudeRadians = math::DegreesToRadians(latitudeDegrees),
         .RadiusRatio = math::Sin(coordinates.ParallaxRadians),
     };
-    return TryProjectCelestialTransform({xEcliptic, yEquatorial, zEquatorial}, horizon, outTransform);
+    return ProjectCelestialDirection({xEcliptic, yEquatorial, zEquatorial}, horizon);
+}
+
+// Thanks to Kasten and Young, "Revised optical air mass tables and approximation formula",
+// Applied Optics 28 (1989), eq. 4, https://doi.org/10.1364/AO.28.004735.
+// Use geometric elevation and a representative clear-sky RGB optical depth for the direct beam.
+math::Vector3 ComputeGroundIlluminance(math::Vector3 boundary, math::Vector3d directionToBodyWorld) noexcept
+{
+    constexpr float64 AIR_MASS_COEFFICIENT = 0.50572;
+    constexpr float64 AIR_MASS_OFFSET_DEGREES = 6.07995;
+    constexpr float64 AIR_MASS_EXPONENT = -1.6364;
+    constexpr math::Vector3d ZENITH_OPTICAL_DEPTH{0.10, 0.15, 0.24};
+    const float64 elevationDegrees = math::RadiansToDegrees(math::Atan2(
+        directionToBodyWorld.Y,
+        math::Sqrt(directionToBodyWorld.X * directionToBodyWorld.X + directionToBodyWorld.Z * directionToBodyWorld.Z)));
+    const float64 airMass =
+        1 / (directionToBodyWorld.Y +
+             AIR_MASS_COEFFICIENT * math::Pow(elevationDegrees + AIR_MASS_OFFSET_DEGREES, AIR_MASS_EXPONENT));
+    return {boundary.X * static_cast<float32>(math::Exp(-airMass * ZENITH_OPTICAL_DEPTH.X)),
+            boundary.Y * static_cast<float32>(math::Exp(-airMass * ZENITH_OPTICAL_DEPTH.Y)),
+            boundary.Z * static_cast<float32>(math::Exp(-airMass * ZENITH_OPTICAL_DEPTH.Z))};
+}
+
+float64 ComputeSolarDistanceAu(float64 days) noexcept
+{
+    constexpr float64 DISTANCE_AT_EPOCH_AU = 1.00014; // USNO approximate solar coordinates, mean term.
+    constexpr float64 FIRST_DISTANCE_HARMONIC_AU = 0.01671;
+    constexpr float64 SECOND_DISTANCE_HARMONIC_AU = 0.00014;
+    const float64 anomalyRadians = math::DegreesToRadians(ComputeSolarAnomalyDegrees(days));
+    return DISTANCE_AT_EPOCH_AU - FIRST_DISTANCE_HARMONIC_AU * math::Cos(anomalyRadians) -
+           SECOND_DISTANCE_HARMONIC_AU * math::Cos(2 * anomalyRadians);
+}
+
+void SampleLunarPhotometry(math::Vector3d moonWorld,
+                           math::Vector3d sunWorld,
+                           float64 moonRadiusRatio,
+                           float64 sunDistanceAu,
+                           EarthCelestialLighting& outLighting) noexcept
+{
+    constexpr float64 EARTH_RADIUS_METRES = 6'371'000;
+    constexpr float64 ASTRONOMICAL_UNIT_METRES = 149'597'870'700;
+    constexpr float64 LUNAR_RADIUS_METRES = 1'737'400;
+    constexpr float64 REFERENCE_LUNAR_DISTANCE_METRES = 384'400'000;
+    const float64 relativeMoonDistance = math::Length(moonWorld);
+    const float64 moonDistanceMetres = relativeMoonDistance * EARTH_RADIUS_METRES / moonRadiusRatio;
+    const math::Vector3d directionToMoonWorld = moonWorld * (1 / relativeMoonDistance);
+    const math::Vector3d moonToSunWorld =
+        sunWorld - directionToMoonWorld * (moonDistanceMetres / (sunDistanceAu * ASTRONOMICAL_UNIT_METRES));
+    const math::Vector3d directionToSunAtMoonWorld = moonToSunWorld * (1 / math::Length(moonToSunWorld));
+    const float64 phaseCosine = math::Clamp(-math::Dot(directionToMoonWorld, directionToSunAtMoonWorld), -1.0, 1.0);
+    const float64 phaseSine = math::Length(math::Cross(directionToMoonWorld, directionToSunAtMoonWorld));
+    const float64 phaseRadians = math::Atan2(phaseSine, phaseCosine);
+    const float64 phaseDegrees = math::RadiansToDegrees(phaseRadians);
+
+    // Thanks to Krisciunas and Schaefer, "A model of the brightness of moonlight", PASP 103 (1991),
+    // eqs. 8–9, https://doi.org/10.1086/132921. Use their relative visual phase curve and full-Moon scale.
+    // Normalize the lit Lambertian disk to that curve. At a very thin crescent the geometric disk
+    // integral tends to zero, so cap the gain and let the direct beam tend to zero with the disk.
+    constexpr float64 FULL_MOON_LUX = 0.32;
+    constexpr float64 LINEAR_MAGNITUDE_PER_DEGREE = 0.026;
+    constexpr float64 QUARTIC_MAGNITUDE_PER_DEGREE = 4e-9;
+    constexpr float64 LOG10_FLUX_PER_MAGNITUDE = -0.4;
+    constexpr float64 MAXIMUM_DISK_GAIN = 1;
+    const float64 phaseDegreesSquared = phaseDegrees * phaseDegrees;
+    const float64 relativeMagnitude = LINEAR_MAGNITUDE_PER_DEGREE * phaseDegrees +
+                                      QUARTIC_MAGNITUDE_PER_DEGREE * phaseDegreesSquared * phaseDegreesSquared;
+    constexpr float64 MAGNITUDE_BASE = 10;
+    const float64 phaseFlux = math::Pow(MAGNITUDE_BASE, LOG10_FLUX_PER_MAGNITUDE * relativeMagnitude);
+    const float64 diskPhase = math::Max((phaseSine + (math::kPi - phaseRadians) * phaseCosine) / math::kPi, 0.0);
+    const float64 diskGain = diskPhase > phaseFlux ? phaseFlux / diskPhase : MAXIMUM_DISK_GAIN;
+    const float64 distanceScale = REFERENCE_LUNAR_DISTANCE_METRES / (moonDistanceMetres * sunDistanceAu);
+    const float64 fullPhaseLux = FULL_MOON_LUX * distanceScale * distanceScale;
+    const float64 sineRadius = LUNAR_RADIUS_METRES / moonDistanceMetres;
+    constexpr float64 LAMBERTIAN_FULL_PHASE_SCALE = 1.5; // The mean cosine over a projected full disk is two thirds.
+    const float32 peak = static_cast<float32>(fullPhaseLux * LAMBERTIAN_FULL_PHASE_SCALE * diskGain /
+                                              (math::kPi * sineRadius * sineRadius));
+    const float32 illuminance = static_cast<float32>(fullPhaseLux * math::Min(phaseFlux, diskPhase));
+    outLighting.BoundaryIlluminance = {illuminance, illuminance, illuminance};
+    outLighting.LunarPeakRadiance = {peak, peak, peak};
+    outLighting.AngularRadiusRadians =
+        static_cast<float32>(math::Atan2(sineRadius, math::Sqrt(1 - sineRadius * sineRadius)));
+    outLighting.DirectionToSunAtMoonWorld = {static_cast<float32>(directionToSunAtMoonWorld.X),
+                                             static_cast<float32>(directionToSunAtMoonWorld.Y),
+                                             static_cast<float32>(directionToSunAtMoonWorld.Z)};
+}
+} // namespace
+
+bool TrySampleEarthCelestialTransform(EarthCelestialBody body,
+                                      float64 daysSinceJ2000,
+                                      float64 latitudeDegrees,
+                                      float64 longitudeDegrees,
+                                      EarthCelestialTransform& outTransform) noexcept
+{
+    if (IsEarthSampleValid(body, daysSinceJ2000, latitudeDegrees, longitudeDegrees) == false)
+    {
+        return false;
+    }
+    const EclipticCoordinates coordinates = body == EarthCelestialBody::Sun
+                                                ? ComputeSolarCoordinates(daysSinceJ2000)
+                                                : ComputeLunarCoordinates(daysSinceJ2000 / DAYS_PER_JULIAN_CENTURY);
+    return TryMakeCelestialTransform(
+        ProjectEarthDirection(coordinates, daysSinceJ2000, latitudeDegrees, longitudeDegrees),
+        outTransform);
+}
+
+bool TrySampleEarthCelestialLighting(EarthCelestialBody body,
+                                     float64 daysSinceJ2000,
+                                     float64 latitudeDegrees,
+                                     float64 longitudeDegrees,
+                                     EarthCelestialLighting& outLighting) noexcept
+{
+    if (IsEarthSampleValid(body, daysSinceJ2000, latitudeDegrees, longitudeDegrees) == false)
+    {
+        return false;
+    }
+
+    const EclipticCoordinates solarCoordinates = ComputeSolarCoordinates(daysSinceJ2000);
+    const math::Vector3d sunWorld =
+        ProjectEarthDirection(solarCoordinates, daysSinceJ2000, latitudeDegrees, longitudeDegrees);
+    const float64 sunDistanceAu = ComputeSolarDistanceAu(daysSinceJ2000);
+    EarthCelestialLighting lighting;
+    math::Vector3d directionToBodyWorld = sunWorld;
+    if (body == EarthCelestialBody::Sun)
+    {
+        // Thanks to Darula, Kittler and Gueymard, "Reference luminous solar constant and solar luminance
+        // for illuminance calculations", Solar Energy 79 (2005), https://doi.org/10.1016/j.solener.2005.01.004.
+        constexpr float64 MEAN_SOLAR_LUX = 133'800;
+        constexpr float64 SOLAR_SEMIDIAMETER_DEGREES_AT_ONE_AU = 0.2666; // USNO apparent solar coordinates.
+        const float32 illuminance = static_cast<float32>(MEAN_SOLAR_LUX / (sunDistanceAu * sunDistanceAu));
+        lighting.BoundaryIlluminance = {illuminance, illuminance, illuminance};
+        lighting.AngularRadiusRadians =
+            static_cast<float32>(math::DegreesToRadians(SOLAR_SEMIDIAMETER_DEGREES_AT_ONE_AU / sunDistanceAu));
+    }
+    else
+    {
+        const EclipticCoordinates lunarCoordinates = ComputeLunarCoordinates(daysSinceJ2000 / DAYS_PER_JULIAN_CENTURY);
+        const math::Vector3d moonWorld =
+            ProjectEarthDirection(lunarCoordinates, daysSinceJ2000, latitudeDegrees, longitudeDegrees);
+        const float64 moonRadiusRatio = math::Sin(lunarCoordinates.ParallaxRadians);
+        SampleLunarPhotometry(moonWorld, sunWorld, moonRadiusRatio, sunDistanceAu, lighting);
+        directionToBodyWorld = moonWorld;
+    }
+    if (TryMakeCelestialTransform(directionToBodyWorld, lighting.Transform) == false)
+    {
+        return false;
+    }
+    if (lighting.Transform.IsAboveHorizon == true)
+    {
+        lighting.GroundIlluminance =
+            ComputeGroundIlluminance(lighting.BoundaryIlluminance,
+                                     directionToBodyWorld * (1 / math::Length(directionToBodyWorld)));
+    }
+    outLighting = lighting;
+    return true;
 }
 } // namespace ludus::gameplay::world

@@ -2063,10 +2063,11 @@ Select a directional light and set **Light → Celestial Role** in **Properties*
 rotation. **None** is the default for ordinary directional lights and older
 Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
 
-Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
+Set **Dynamic Celestial → Celestial Preset** to **Transform** to use the entity's
 rotation, including rotation supplied by a game. Choose **Earth Sun** or
-**Earth Moon** to sample an approximate sky direction at **Date & Time (UTC)**
-and the observer's coordinates. Open the calendar to pick a date or type into
+**Earth Moon** to sample direction, colour, illuminance and apparent disk size
+from **Date & Time (UTC)** and the observer's coordinates. Earth Moon also
+samples lunar phase using the Sun at that time. Open the calendar to pick a date or type into
 the date and time field. **Use Now** copies the current instant into the draft.
 The World stores fractional UTC days since January 1, 2000 at 12:00 UTC, so
 existing Earth Time values open at the same instant. The supported dates span
@@ -2081,16 +2082,22 @@ a secure browser context and location access. Choose **Use Coordinates** to
 copy the selected result into the inspector, then **Apply Changes** to apply
 the draft. Saved Worlds store the coordinates. Manual entry works offline and
 when device location is unavailable. North latitude and east longitude are
-positive. Use the same date, time, and coordinates on both lights to preview
-the sky at a single place and moment. The World frame is +X east, +Y up, and
-−Z north.
+positive. Applying an Earth time or location edit updates all active Earth
+presets in one undoable change. A newly activated preset inherits the existing
+Earth observer unless the same edit supplies new observer values. Previously
+saved Earth lights can have different observers until the first time or location
+edit. The World frame is +X east, +Y up, and −Z north.
 
-The editor samples the authored time and preserves the entity's saved
-Transform rotation as a fallback. A sampled body at or below the geometric
-horizon contributes zero direct light. Intensity and colour come from the
-authored light. The rules model direction and horizon visibility. Lunar phase
-and atmospheric effects are outside their scope. Games can pass
-their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+Properties shows the calculated sea-level direct illuminance in lux, linear RGB
+colour and apparent diameter. The clear-sky model dims and warms direct light
+near the horizon, and a body at or below the geometric horizon contributes zero
+direct light. Enable **Override Earth Colour and Intensity** to use the light's
+authored values with the same celestial motion and disk geometry. Previously
+saved colour and intensity remain available through this override. Static lights,
+**Transform** and **Custom Orbit** use authored colour and intensity. The
+Earth model approximates clear skies without weather, refraction, earthshine or
+eclipses. Games can pass their own simulation time to the
+[GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
 
 During a supported hosted Play session, choose **Fast-forward (4×)** in the
 **Play** menu or Game toolbar to advance the game by four fixed ticks per
@@ -2131,11 +2138,13 @@ pick a directional light in Properties.
 **Stars** controls the procedural night sky. To show the Moon, choose a
 different directional light in **Atmosphere → Moon**. Set that light's role
 to **Static Moon** for an authored direction or use the **Earth Moon**
-celestial driver. Its direction sets the disk position, its color and
-intensity set the full-phase brightness, and the Sun direction determines
-which part of the disk is lit. Atmospheric extinction dims the stars and Moon
-toward the horizon. Turning the linked Moon off in the light controls hides
-the disk.
+celestial preset. Earth Moon uses its sampled disk size and lunar lighting
+direction, and its brightness follows the same phase model as the direct beam.
+For an authored Moon, colour and intensity set the full-phase brightness, and
+the linked Sun direction determines which part of the disk is lit. Atmospheric
+extinction dims the stars and Moon toward the horizon. Turning the linked Moon
+off in the light controls hides the disk. The presets' angular sizes drive the
+sky disks. Direct lights use the renderer's existing directional shadow path.
 
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or
