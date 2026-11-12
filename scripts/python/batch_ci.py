@@ -17,7 +17,8 @@ import urllib.request
 
 
 ATTEMPT_BRANCH = "ci/last-batch-attempt"
-VALIDATION_JOBS = ("native", "sdk", "wiki", "wiki-macos", "browser", "threading", "windows")
+VALIDATION_JOBS = ("native", "sdk", "wiki", "wiki-macos", "wiki-macos-intel",
+                   "browser", "threading", "threading-windows", "windows")
 # Batch job names are "<caller id> / <reusable job name>".
 SUITE_JOBS = (*VALIDATION_JOBS, "recovery")
 # A failed suite job rejects the candidate. Once one has failed, the jobs still
@@ -127,17 +128,19 @@ def git(root: Path, arguments: list[str], token: str = "") -> str:
 
 
 def snapshot(client: GitHub, root: Path, expected_main: str, *, retry: bool = False) -> dict:
+    validate_sha(expected_main)
     base = client.head("main")
     candidate = client.head("develop")
-    if base != validate_sha(expected_main):
-        return {"should_run": "false", "reason": "main advanced before this scheduler started; next tick will retry."}
     if base == candidate:
         return {"should_run": "false", "reason": "develop has no unpromoted changes."}
-    if not client.is_ancestor(base, candidate):
+    if base == expected_main and not client.is_ancestor(base, candidate):
         raise BatchError("develop must descend from main; reconcile the branches before validating a batch.")
     previous = client.head(ATTEMPT_BRANCH)
     if previous == candidate and not retry:
         return {"should_run": "false", "reason": f"develop {candidate} was already attempted; fix develop or dispatch with retry."}
+    if base != expected_main:
+        return {"should_run": "false", "should_redispatch": "true",
+                "reason": "main advanced before this request started. Request a new run from current main."}
     remote = f"https://github.com/{client.repository}.git"
     git(root, ["fetch", "--no-tags", remote, base, candidate], client.token)
     paths = git(root, ["diff", "--name-only", "--no-renames", "-z", f"{base}..{candidate}", "--"]).split("\0")

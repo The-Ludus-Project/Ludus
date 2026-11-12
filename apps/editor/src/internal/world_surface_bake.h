@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 
 #include <QByteArray>
 #include <QSharedPointer>
@@ -24,7 +25,7 @@ struct WorldSurfaceChart final
     foundation::uint32 Height = 0;
 };
 
-/// CPU probe payload for the matching extraction. It is regenerated on open.
+/// CPU probe payload for the matching extraction, optionally retained beside the World.
 struct WorldProbeAtlas final
 {
     QByteArray Pixels;
@@ -50,8 +51,8 @@ public:
     ~WorldSurfaceBakeState() noexcept;
     void SetWorldPath(const QString& path);
     void SetScene(const RenderScene& scene);
-    /// Invalidate the previous grid. The next poll queues a bake for the current scene and grid.
-    void InvalidateProbeGrid() noexcept;
+    /// Invalidate the previous grid. The next poll resolves a bake for the current scene and grid.
+    void SetProbeGrid(const graphics::renderer::GiProbeGrid& grid) noexcept;
     void Poll(const RenderScene& scene);
     [[nodiscard]] bool Save();
     [[nodiscard]] QSharedPointer<const WorldSurfaceBake> GetReady() const;
@@ -83,6 +84,7 @@ private:
     QString mPath;
     QString mFailure;
     QByteArray mLightingKey;
+    graphics::renderer::GiProbeGrid mProbeGrid{};
     QSharedPointer<const WorldSurfaceBake> mReady;
     QSharedPointer<const WorldSurfaceBake> mSaved;
 };

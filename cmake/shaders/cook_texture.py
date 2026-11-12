@@ -53,17 +53,38 @@ def validate_bake(document):
     if type(gutter) is not int or not 1 <= gutter <= 16 or width < 2 * gutter + 2 or height < 2 * gutter + 2:
         raise ValueError('Bake chart needs a nonempty interior and 1..16 replicated gutter texels')
     pixels = document['pixels']
+    # Thanks to Marco Tarini, Cem Yuksel and Sylvain Lefebvre, "Rethinking Texture
+    # Mapping", SIGGRAPH '17 Courses, section 4.3 (https://doi.org/10.1145/3084873.3084911),
+    # for treating chart borders as part of the filtering footprint. This cooker
+    # checks nearest-edge replication for one chart at mip zero.
+    texel_bytes = 4
+    row_bytes = width * texel_bytes
+    gutter_bytes = gutter * texel_bytes
+    right_interior_end = row_bytes - gutter_bytes
+    gutter_error = 'Bake gutters must replicate the nearest chart-interior texel'
     for y in range(height):
-        for x in range(width):
-            sx, sy = min(max(x, gutter), width - gutter - 1), min(max(y, gutter), height - gutter - 1)
-            if pixels[(y * width + x) * 4:(y * width + x + 1) * 4] != pixels[(sy * width + sx) * 4:(sy * width + sx + 1) * 4]:
-                raise ValueError('Bake gutters must replicate the nearest chart-interior texel')
+        row = y * row_bytes
+        interior_row = min(max(y, gutter), height - gutter - 1) * row_bytes
+        left_texel = interior_row + gutter_bytes
+        right_end = interior_row + right_interior_end
+        if (
+            pixels[row:row + gutter_bytes] != pixels[left_texel:left_texel + texel_bytes] * gutter
+            or pixels[row + right_interior_end:row + row_bytes] != pixels[right_end - texel_bytes:right_end] * gutter
+        ):
+            raise ValueError(gutter_error)
+        if row != interior_row and pixels[row + gutter_bytes:row + right_interior_end] != pixels[left_texel:right_end]:
+            raise ValueError(gutter_error)
     return dict(bake, direct_light_id=direct, gutter=gutter,
                 uv_transform=[(width - 2 * gutter - 1) / width, (height - 2 * gutter - 1) / height,
                               (gutter + 0.5) / width, (gutter + 0.5) / height])
 
 
 def cook(document):
+    blob, levels, _ = _cook(document)
+    return blob, levels
+
+
+def _cook(document):
     formats = {'R8Unorm': 1, 'Rg8Unorm': 2, 'Rgba8Unorm': 4, 'Rgba8Srgb': 4}
     width, height, fmt = document.get('width'), document.get('height'), document.get('format')
     semantic, pixels = document.get('semantic'), document.get('pixels')
@@ -94,7 +115,7 @@ def cook(document):
         raise ValueError('sRGB is color only; color/normal require RGBA8')
     if not isinstance(pixels, list) or len(pixels) != width * height * channels or any(type(v) is not int or not 0 <= v <= 255 for v in pixels):
         raise ValueError('Source must contain complete tightly packed byte texels')
-    validate_bake(document)
+    bake = validate_bake(document)
     cutoff = document.get('cutoff')
     if cutoff is not None and (semantic != 'mask' or channels not in (1, 4) or type(cutoff) not in (int, float) or not math.isfinite(cutoff) or not 0 < cutoff <= 1):
         raise ValueError('Coverage cutoff requires R8/RGBA8 mask and finite (0,1] threshold')
@@ -152,7 +173,7 @@ def cook(document):
                 reduced[i] = quantize(reduced[i] * scale)
             level['next_coverage_error'] = score(scale)[0]
         width, height, pixels = next_width, next_height, reduced
-    return bytes(blob), levels
+    return bytes(blob), levels, bake
 
 
 def main():
@@ -168,10 +189,9 @@ def main():
         raise ValueError('Source JSON exceeds bounded cooker profile')
     source = source_path.read_bytes()
     document = json.loads(source)
-    blob, levels = cook(document)
+    blob, levels, bake = _cook(document)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    bake = validate_bake(document)
     prefix = '#pragma once\n#include <ludus/graphics/rhi/raster.h>\n'
     if bake is not None: prefix += '#include <ludus/graphics/renderer/lighting.hpp>\n'
     prefix += f'namespace ludus::textures::{args.name} {{\n'

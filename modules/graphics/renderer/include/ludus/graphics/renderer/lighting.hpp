@@ -228,6 +228,12 @@ struct GiProbeGrid final
 /// Accepts a disabled grid or an enabled grid with representable bounds and supported counts and spacing.
 [[nodiscard]] bool IsGiProbeGridValid(const GiProbeGrid& grid) noexcept;
 
+/// Check that a saved or uploaded atlas has the exact width and height in texels for an enabled grid.
+/// Invalid or disabled grids have no atlas and always return false.
+[[nodiscard]] bool HasGiProbeAtlasExtent(const GiProbeGrid& grid,
+                                         ludus::foundation::uint32 width,
+                                         ludus::foundation::uint32 height) noexcept;
+
 /// Ready sampled volume for authored lit materials without a chart.
 struct BakedGiProbeVolume final
 {

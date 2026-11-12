@@ -30,18 +30,20 @@ BATCH_WORKFLOWS = {
     "sdk": "project-sdk.yml",
     "wiki": "wiki.yml",
     "wiki-macos": "wiki.yml",
+    "wiki-macos-intel": "wiki.yml",
     "browser": "webgpu-probe.yml",
     "threading": "threading-platforms.yml",
+    "threading-windows": "threading-platforms.yml",
     "windows": "windows-direct3d12.yml",
     "recovery": "filesystem-recovery.yml",
 }
 # A documentation-only change can still break these suites.
-DOCUMENTATION_SUITES = frozenset({"wiki", "wiki-macos"})
+DOCUMENTATION_SUITES = frozenset({"wiki", "wiki-macos", "wiki-macos-intel"})
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "startup_failure"})
 DECLARATION = re.compile(r"^[ \t]*Batch-Fix:[ \t]*(\S[^\r\n]*?)[ \t]*\r?$", re.MULTILINE)
 MAX_DECLARATIONS = 32
 MAX_METADATA_BYTES = 2 * 1024 * 1024
-# Scheduler ticks every 30 minutes; 120 completed runs cover about 60 hours of idle ticks.
+# Includes fallback ticks and develop-triggered requests that validated nothing.
 MAX_SCANNED_BATCH_RUNS = 120
 BATCH_RUNS_PAGE_SIZE = 40
 MAX_JOB_PAGES = 5
