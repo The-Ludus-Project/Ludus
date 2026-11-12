@@ -1031,10 +1031,21 @@ regressions to the owning check rather than relying on an isolated PR comment.
 Run the changed-source gate with an explicit comparison:
 
 ```sh
-python3 scripts/python/source_policy.py --base origin/develop --clang-format clang-format-23
+./scripts/check --format-changed --base origin/develop
+python3 scripts/python/source_policy.py --base origin/develop
 PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_check_naming test_changed_tidy -v
 ./scripts/check linux-clang-development --tidy-changed --base origin/develop
 ```
+
+`./scripts/check --format` formats C/C++ under `modules/`, `apps/` and `tests/`
+only, and the staged pre-commit hook does the same. CI's **Source formatting**
+job also formats every changed C++ and Slang source the gate selects (including
+`examples/`, `tools/` and `cmake/` sources) by passing `--clang-format` to
+`source_policy.py`. `--format-changed` runs that formatting stage locally with
+the pinned clang-format found by `./scripts/doctor` and the same
+`formatting.format_source` wrapper; add `--fix` to rewrite the files it reports.
+Unchanged files are neither reported nor rewritten. Passing
+`--clang-format <pinned clang-format>` to `source_policy.py` is equivalent.
 
 CI uses the PR's actual base commit and includes standalone examples, tests and
 shader includes. It reads the exact PR head tree rather than attributing newer

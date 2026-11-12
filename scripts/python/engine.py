@@ -2094,6 +2094,34 @@ def run_format_check(root: Path, *, fix: bool) -> None:
         raise EngineError("formatting failed; run ./scripts/check --format --fix")
 
 
+def run_format_changed_check(
+    root: Path, base: str, *, fix: bool, clang_format: str | None = None
+) -> None:
+    """Format-check the sources changed since ``base`` exactly as CI's source policy does.
+
+    Covers the changed C++ and Slang files that ``source_policy.py --clang-format``
+    selects (including untracked files), with the same ``format_source`` wrapper.
+    ``--format`` remains the repository-wide C++ check.
+    """
+    from source_policy import check_formatting
+
+    formatter = clang_format or find_system_tool(root, "clang-format", load_tool_versions(root))
+    try:
+        failures = check_formatting(root, base, formatter, fix=fix)
+    except subprocess.CalledProcessError as exc:
+        raise EngineError(exc.stderr or str(exc)) from exc
+    except FormattingError as exc:
+        raise EngineError(str(exc)) from exc
+    for failure in failures:
+        print(failure)
+    if failures:
+        raise EngineError(
+            f"changed-source formatting failed; run ./scripts/check --format-changed --base {base} --fix"
+        )
+    if fix is False:
+        print(f"Changed-source formatting: sources changed since {base} are formatted.")
+
+
 def compile_database_files(build_dir: Path) -> set[Path]:
     try:
         return {Path(entry["file"]) for entry in compilation_entries(build_dir)}
@@ -2354,12 +2382,15 @@ def command_check(args: argparse.Namespace) -> int:
     inventory_only = getattr(args, "inventory", False)
     tidy_changed = getattr(args, "tidy_changed", False)
     tidy_sources = getattr(args, "tidy_sources", None) or []
+    format_changed = getattr(args, "format_changed", False)
     explicit = (args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only
-                or tidy_changed or bool(tidy_sources))
+                or tidy_changed or format_changed or bool(tidy_sources))
     run_all = args.all or not explicit
 
     if args.format or run_all:
         run_format_check(root, fix=args.fix)
+    if format_changed:
+        run_format_changed_check(root, getattr(args, "base", None) or "origin/develop", fix=args.fix)
     # Foundational include-boundary gate runs on format-or-all: it is cheap and
     # needs no configured build.
     if args.format or run_all:
@@ -3217,7 +3248,15 @@ def make_parser() -> argparse.ArgumentParser:
         dest="tidy_changed",
         help="run naming, magic-number and implicit-bool clang-tidy rules on lines changed since --base",
     )
-    check_parser.add_argument("--base", help="comparison ref for --tidy-changed (default: origin/develop)")
+    check_parser.add_argument(
+        "--format-changed",
+        action="store_true",
+        dest="format_changed",
+        help="format-check C++/Slang sources changed since --base, as CI's source policy does",
+    )
+    check_parser.add_argument(
+        "--base", help="comparison ref for --tidy-changed and --format-changed (default: origin/develop)"
+    )
     check_parser.add_argument("--analyzer", action="store_true", help="run advisory stable LLVM analyzer rules on the complete configured inventory")
     check_parser.add_argument("--tooling", action="store_true", help="check Python and workflows with prepared pinned Ruff/actionlint")
     check_parser.add_argument("--inventory", action="store_true", help="validate complete configured source inventory without running analyzers")
