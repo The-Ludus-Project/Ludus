@@ -1434,7 +1434,9 @@ QString ReferenceCaptureWindow::GetStatusText() const
 
 void ReferenceCaptureWindow::updateStatus()
 {
-    const QString profile = isRasterRendering() == true ? QString{} : describeCaptureProfile();
+    const QString profile = isRasterRendering() == true || mCapture.GetPhase() == ViewportReferencePhase::Failed
+                                ? QString{}
+                                : describeCaptureProfile();
     mStatus->setText(profile.isEmpty() == true ? GetStatusText()
                                                : QStringLiteral("%1\n%2").arg(GetStatusText(), profile));
     const QString comparison = describeRaster();

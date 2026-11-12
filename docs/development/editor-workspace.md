@@ -2655,6 +2655,12 @@ geometry. They have no area to hit or emit from.
 | GPU compute | Default when supported by the editor build and device. Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
 
+CPU oracle and GPU compute automatically give enabled directional lights such
+as a Sun or Moon a separate direct-light sample. A lone directional light gets
+a shadow ray from each surface hit that can receive its light. Bulbs and the
+environment keep their own proposal. The capture records the
+[`SeparateDirectional` sampler](../architecture/renderer-systems.md#light-sampling-modes).
+
 **Trace pixel centres** sends every camera ray through its pixel's centre instead
 of a random point in the pixel. A render graph's camera rays do the same, so turn
 it on when you compare a graph with the reference: edges then alias in both

@@ -63,11 +63,13 @@ def decode(data, *, keep_pixels=True):
         raise ValueError('Not a LUHDR01 capture')
     schema, profile, sampler, header, width, height, target, depth, roulette, flags = struct.unpack_from('<10I', data, 8)
     # Sampler 1 is UniformArea light sampling; flag 128 marks the resampled samplers, 2 for
-    # ResampledProjectedSolidAngle and 3 for ResampledFormFactor.
+    # ResampledProjectedSolidAngle and 3 for ResampledFormFactor. Sampler 4 separates directional lights.
     if (schema, header) != (1, HEADER_BYTES) or profile not in (1, 2, 3, 4, 5, 6, 7, 8) or not width or not height or flags & ~511 or (flags & 1 and flags & 64):
         raise ValueError('Unsupported capture profile/header')
-    if (sampler, bool(flags & 128)) not in ((1, False), (2, True), (3, True)):
+    if (sampler, bool(flags & 128)) not in ((1, False), (2, True), (3, True), (4, False)):
         raise ValueError('Unsupported sampler version or light-sampling flag')
+    if sampler == 4 and not flags & (1 | 64):
+        raise ValueError('Separate directional sampling requires CPU oracle or GPU compute')
     if len(data) != HEADER_BYTES + width * height * PIXEL.size or not 1 <= target <= 16777215 or not 1 <= depth <= 64 or not 1 <= roulette <= 64:
         raise ValueError('Invalid capture extent or sampling limits')
     optical_wavelength = struct.unpack_from('<f', data, 92)[0]
@@ -84,7 +86,8 @@ def decode(data, *, keep_pixels=True):
                     target_samples=target, max_depth=depth, roulette_depth=roulette, flags=flags,
                     seed=seed, revision=revision, scene_fingerprint=f'{high:016x}{low:016x}',
                     traversal='cpu_oracle' if flags & 1 else 'gpu_compute' if flags & 64 else 'native_queries',
-                    light_sampling={1: 'uniform_area', 2: 'resampled_projected_solid_angle', 3: 'resampled_form_factor'}[sampler],
+                    light_sampling={1: 'uniform_area', 2: 'resampled_projected_solid_angle',
+                                    3: 'resampled_form_factor', 4: 'separate_directional'}[sampler],
                     center_rays=bool(flags & 2), partial=bool(flags & 32), minimum_samples=minimum, maximum_samples=maximum,
                     secondary_distance=struct.unpack_from('<f', data, 80)[0], texture_mip=struct.unpack_from('<I', data, 84)[0],
                     light_count=struct.unpack_from('<I', data, 88)[0], world_to_clip=list(struct.unpack_from('<16f', data, 96)),

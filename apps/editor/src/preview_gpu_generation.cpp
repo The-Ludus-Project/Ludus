@@ -55,6 +55,31 @@ bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
 }
+QString DescribeUploadFailure(rhi::DeviceHandle device, const QString& asset, rhi::RasterStatus status)
+{
+    if (status == rhi::RasterStatus::CapacityExceeded)
+    {
+        rhi::StorageUsage usage;
+        rhi::DeviceInfo info;
+        if (rhi::GetStorageUsage(device, usage) == rhi::RasterStatus::Ready &&
+            rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready)
+        {
+            constexpr uint64 BYTES_PER_MEBIBYTE = uint64{1024} * 1024;
+            return QStringLiteral("GPU upload exceeded a capacity limit while preparing %1. The device is using "
+                                  "%2 of %3 MiB of host storage and %4 of %5 MiB of GPU resource storage. "
+                                  "Close other captures and retry.")
+                .arg(asset)
+                .arg(usage.HostBytes / BYTES_PER_MEBIBYTE)
+                .arg(info.Description.Storage.HostBytes / BYTES_PER_MEBIBYTE)
+                .arg(usage.ResourceBytes / BYTES_PER_MEBIBYTE)
+                .arg(info.Description.Storage.ResourceBytes / BYTES_PER_MEBIBYTE);
+        }
+    }
+    return QStringLiteral("Could not upload %1 to the GPU (status %2). Reopen the World and retry.")
+        .arg(asset)
+        .arg(static_cast<uint32>(status));
+}
+
 struct BakeMeshVertices final
 {
     Array<math::Vector3> PositionsMesh;
@@ -532,8 +557,13 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
                     description.Normals = derivedNormals.constData();
                 }
             }
-            if (IsAccepted(Renderer.CreateMesh(description, mMeshes[i])) == false)
+            const rhi::RasterStatus meshStatus = Renderer.CreateMesh(description, mMeshes[i]);
+            if (IsAccepted(meshStatus) == false)
             {
+                outError = DescribeUploadFailure(
+                    Device,
+                    QStringLiteral("mesh %1 (%2 vertices)").arg(i + 1).arg(description.VertexCount),
+                    meshStatus);
                 return false;
             }
         }
@@ -543,19 +573,25 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
             // Surface maps are linear data; colour textures decode sRGB.
             const rhi::RasterFormat format =
                 Source.Textures[i].IsLinear == true ? rhi::RasterFormat::Rgba8Unorm : rhi::RasterFormat::Rgba8Srgb;
-            if (IsAccepted(rhi::CreateTexture(Device,
-                                              {
-                                                  .Width = static_cast<uint32>(image.width()),
-                                                  .Height = static_cast<uint32>(image.height()),
-                                                  .Format = format,
-                                                  .RetainCpuContent = IsReference,
-                                              },
-                                              {
-                                                  .Bytes = {image.constBits(), static_cast<usize>(image.sizeInBytes())},
-                                                  .RowPitch = static_cast<usize>(image.bytesPerLine()),
-                                              },
-                                              Textures[i])) == false)
+            const rhi::RasterStatus textureStatus =
+                rhi::CreateTexture(Device,
+                                   {
+                                       .Width = static_cast<uint32>(image.width()),
+                                       .Height = static_cast<uint32>(image.height()),
+                                       .Format = format,
+                                       .RetainCpuContent = IsReference,
+                                   },
+                                   {
+                                       .Bytes = {image.constBits(), static_cast<usize>(image.sizeInBytes())},
+                                       .RowPitch = static_cast<usize>(image.bytesPerLine()),
+                                   },
+                                   Textures[i]);
+            if (IsAccepted(textureStatus) == false)
             {
+                outError = DescribeUploadFailure(
+                    Device,
+                    QStringLiteral("texture %1 (%2 × %3)").arg(i + 1).arg(image.width()).arg(image.height()),
+                    textureStatus);
                 return false;
             }
         }
