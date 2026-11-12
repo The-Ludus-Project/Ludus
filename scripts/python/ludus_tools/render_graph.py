@@ -799,6 +799,18 @@ class _Value:
     scene_data: int = scene_bundle.ALL_DATA
 
 
+def _operation_resources(operation):
+    """Yield the logical resources referenced by a lowered pass record."""
+    for field in ('attachments', 'buffers'):
+        for use in operation.get(field, {}).values():
+            yield use['resource']
+    for use in operation.get('persistent_buffers', ()):
+        yield use['resource']
+    for field in ('visibility', 'visibility_depth', 'source_color'):
+        if field in operation:
+            yield operation[field]['resource']
+
+
 class _Compiler:
     def __init__(self, library):
         self.library = library
@@ -1208,11 +1220,7 @@ class _Compiler:
                  repair='Enable a disabled Export node, or add and connect an Export node.')
         # A target consulted only for sizing supplies metadata, not a GPU allocation.
         used_resources = {root['resource'] for root in self.roots}
-        used_resources.update(attachment['resource'] for operation in self.passes
-                              for attachment in (*operation.get('attachments', {}).values(),
-                                                 *(operation[key] for key in ('visibility', 'visibility_depth', 'source_color') if key in operation)))
-        used_resources.update(use['resource'] for operation in self.passes for use in operation.get('persistent_buffers', []))
-        used_resources.update(use['resource'] for operation in self.passes for use in operation.get('buffers', {}).values())
+        used_resources.update(resource for operation in self.passes for resource in _operation_resources(operation))
         self.resources = {identity: resource for identity, resource in self.resources.items() if identity in used_resources}
 
 
@@ -1300,6 +1308,35 @@ def compile_graph(path, *, configuration=None, root=None):
             "checks_pending": ["ShaderBuild", "DeviceCapabilities", "SceneCoverage", "GpuExecution"]}
 
 
+# Thanks to Yuriy O'Donnell, "FrameGraph: Extensible Rendering Architecture in
+# Frostbite", GDC 2017, PDF pp. 17-18 and 26-27, for reporting first and last
+# uses from ordered passes, and to Zhenglong Zhou and Huabin Ling, "Render Graph,
+# a Data Oriented Approach", GDC 2023, slides 15-19, for deriving a dependency
+# view from rendering data. The report describes offline logical uses. RHI owns
+# physical allocation and retirement.
+# https://www.gdcvault.com/play/1024045/FrameGraph-Extensible-Rendering-Architecture-in
+# https://forum.cocos.org/uploads/short-url/sw7bwJFORQLAJ2p5ezFZQJwOgs3.pdf
+def _dump_resource_uses(plan):
+    first_use = {}
+    last_use = {}
+    for ordinal, operation in enumerate(plan['passes']):
+        for resource in _operation_resources(operation):
+            first_use.setdefault(resource, ordinal)
+            last_use[resource] = ordinal
+
+    roots = {}
+    for root in plan['roots']:
+        roots.setdefault(root['resource'], []).append(f"{root['kind']} {root['id']} reads @{root['version']}")
+
+    yield "Logical resource uses (serial operation numbers):"
+    for resource, description in sorted(plan['resources'].items()):
+        span = f"{first_use[resource]:03}..{last_use[resource]:03}" if resource in first_use else "no pass use"
+        use = f"    {resource} [{description['type']}] {span}"
+        if resource in roots:
+            use += " | " + ", ".join(roots[resource])
+        yield use
+
+
 def dump_plan(plan):
     """Format the validated plan as readable text; includes source/instance IDs."""
     lines = [f"RG0 serial plan {plan['asset']}#{plan['configuration']} (contract only)"]
@@ -1333,6 +1370,7 @@ def dump_plan(plan):
             lines.append("    after: " + ", ".join(entry["dependencies"]))
     for root in plan["roots"]:
         lines.append(f"Root {root['id']}: {root['kind']} {root['resource']}@{root['version']}")
+    lines.extend(_dump_resource_uses(plan))
     lines.append("Authored techniques: " + ", ".join(plan["techniques"]))
     lines.append("Pending: " + ", ".join(plan["checks_pending"]))
     return "\n".join(lines)

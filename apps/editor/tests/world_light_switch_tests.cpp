@@ -530,6 +530,43 @@ TEST_CASE("Selecting a light shows its properties", "[editor][world][lighting][l
     workspace.StopPreview();
 }
 
+TEST_CASE("Applying an entity rename updates the selected light's name", "[editor][world][lighting][light-switches]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("celestial.world.json"))) == true);
+
+    QAction* addSunOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(addSunOrNull != nullptr);
+    addSunOrNull->trigger();
+    REQUIRE(
+        QTest::qWaitFor([&workspace]() { return workspace.GetRenderPreview().Scene().LightBinding.isEmpty() == false; },
+                        SETTLE_TIMEOUT_MILLISECONDS) == true);
+    addSunOrNull->trigger();
+
+    WorldLightsPanel* panelOrNull = workspace.findChild<WorldLightsPanel*>();
+    REQUIRE(panelOrNull != nullptr);
+    QTreeWidget* treeOrNull = panelOrNull->findChild<QTreeWidget*>(QStringLiteral("worldLights"));
+    REQUIRE(treeOrNull != nullptr);
+    REQUIRE(treeOrNull->topLevelItemCount() == 2);
+    REQUIRE(treeOrNull->currentItem() == treeOrNull->topLevelItem(1));
+    REQUIRE(treeOrNull->currentItem()->text(0) == QStringLiteral("Sun"));
+
+    QLineEdit* nameOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
+    REQUIRE(nameOrNull != nullptr);
+    nameOrNull->selectAll();
+    QTest::keyClicks(nameOrNull, QStringLiteral("Moon"));
+    REQUIRE(workspace.Apply() == true);
+
+    REQUIRE(treeOrNull->currentItem() == treeOrNull->topLevelItem(1));
+    CHECK(treeOrNull->currentItem()->text(0) == QStringLiteral("Moon"));
+    CHECK(treeOrNull->topLevelItem(0)->text(0) == QStringLiteral("Sun"));
+    workspace.StopPreview();
+}
+
 TEST_CASE("World light switch lists are validated before they are admitted",
           "[editor][world][lighting][light-switches]")
 {

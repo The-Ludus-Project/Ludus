@@ -1,5 +1,6 @@
 #include <ludus/graphics/renderer/views.hpp>
 
+#include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
@@ -215,7 +216,7 @@ Status BuildViewDescription(const ProjectionDescription& projection,
         return Status::InvalidDescription;
     }
     const float32 aspect = mapping.Screen.Width / mapping.Screen.Height;
-    math::Matrix4 clipProjection;
+    math::Matrix4 viewToLogicalClip;
     auto status = math::MathStatus::InvalidArgument;
     switch (projection.Kind)
     {
@@ -232,7 +233,7 @@ Status BuildViewDescription(const ProjectionDescription& projection,
                                                    halfHeight,
                                                    projection.Near,
                                                    projection.Far,
-                                                   clipProjection);
+                                                   viewToLogicalClip);
             break;
         }
         case ProjectionKind::Perspective:
@@ -240,13 +241,13 @@ Status BuildViewDescription(const ProjectionDescription& projection,
                                                   aspect,
                                                   projection.Near,
                                                   projection.Far,
-                                                  clipProjection);
+                                                  viewToLogicalClip);
             break;
         case ProjectionKind::PerspectiveInfinite:
             status = math::TryPerspectiveReverseZInfinite(projection.VerticalFovRadians,
                                                           aspect,
                                                           projection.Near,
-                                                          clipProjection);
+                                                          viewToLogicalClip);
             break;
         default:
             return Status::InvalidDescription;
@@ -256,12 +257,15 @@ Status BuildViewDescription(const ProjectionDescription& projection,
         return Status::InvalidDescription;
     }
     ViewDescription result;
-    const auto crop = space == ProjectionSpace::OutputRegion ? mapping.ClipTransform : math::Matrix4::Identity();
-    result.WorldToClip = crop * clipProjection * projection.WorldToView;
+    const math::Matrix4 logicalClipToTargetClip =
+        space == ProjectionSpace::OutputRegion ? mapping.ClipTransform : math::Matrix4::Identity();
+    // Thanks to Tom Forsyth (Matrix maths and names) and Sebastian Sylvan (Naming Convention for Matrix Math).
+    // Apply their space-matching check right to left with Ludus's source-first names (ADR 0010).
+    result.WorldToClip = logicalClipToTargetClip * viewToLogicalClip * projection.WorldToView;
     result.Depth = DepthConvention::ReverseZ;
     result.InfiniteFar = projection.Kind == ProjectionKind::PerspectiveInfinite;
     // Direct drawing crops geometry and overlays together; composition crops the sampled image.
-    result.OverlayToClip = crop;
+    result.OverlayToClip = logicalClipToTargetClip;
     if (math::IsFinite(result.WorldToClip) == false)
     {
         return Status::InvalidDescription;

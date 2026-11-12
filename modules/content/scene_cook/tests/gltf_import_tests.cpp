@@ -9,6 +9,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/strings/string.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "importers/gltf/gltf_reader.h"
@@ -77,19 +78,19 @@ TEST_CASE("Explicit glTF environment retains latitude longitude HDR energy and p
           "[scene_cook][gltf][environment]")
 {
     ScratchDirectory scratch;
-    WriteFile(scratch.Path / "scene.gltf", MakeTriangle());
+    WriteFile(scratch.GetPath("scene.gltf"), MakeTriangle());
     // PFM rows are bottom-up. Distinct poles and longitudes catch accidental PBRT
     // equal-area reprojection, orientation changes and display tone mapping.
     constexpr usize SAMPLE_COUNT = 12;
     const ludus::foundation::StaticArray<float32, SAMPLE_COUNT> samples{{2, 3, 4, 5, 6, 7, 125952, 16, 32, 8, 9, 10}};
     std::string image = "PF\n2 2\n-1\n";
     image.append(reinterpret_cast<const char*>(samples.GetData()), samples.GetSize() * sizeof(samples[0]));
-    WriteFile(scratch.Path / "sky.pfm", image);
+    WriteFile(scratch.GetPath("sky.pfm"), image);
     BestEffortOptions options;
     options.EnvironmentFile = "sky.pfm";
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    REQUIRE(ImportGltfBestEffort(scratch.GetPath("scene.gltf"), options, result, error) == true);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);
@@ -115,14 +116,14 @@ TEST_CASE("Explicit glTF environment retains latitude longitude HDR energy and p
         }
     }
     options.IsDryRun = true;
-    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    REQUIRE(ImportGltfBestEffort(scratch.GetPath("scene.gltf"), options, result, error) == true);
     CHECK(result.Bundle.IsEmpty() == true);
     CHECK(result.Inputs.GetSize() == 2);
     CHECK(result.InputDigests[1] == expected);
     options.EnvironmentFile = "../outside.pfm";
-    CHECK(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == false);
+    CHECK(ImportGltfBestEffort(scratch.GetPath("scene.gltf"), options, result, error) == false);
     options.EnvironmentFile = "missing.pfm";
-    CHECK(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == false);
+    CHECK(ImportGltfBestEffort(scratch.GetPath("scene.gltf"), options, result, error) == false);
 }
 
 TEST_CASE("glTF lights of zero intensity are kept disabled and reported", "[scene_cook][gltf][lights]")
@@ -144,11 +145,11 @@ TEST_CASE("glTF lights of zero intensity are kept disabled and reported", "[scen
     REQUIRE(rootsAt != std::string::npos);
     withLights.replace(rootsAt, roots.size(), R"("nodes":[0,1,2])");
     ScratchDirectory scratch;
-    WriteFile(scratch.Path / "scene.gltf", withLights);
+    WriteFile(scratch.GetPath("scene.gltf"), withLights);
     BestEffortOptions options;
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    REQUIRE(ImportGltfBestEffort(scratch.GetPath("scene.gltf"), options, result, error) == true);
     std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
     INFO(report);
     // One folded warning counts both lights and names the remedies, since nothing else lights the scene.
@@ -170,9 +171,9 @@ TEST_CASE("glTF lights of zero intensity are kept disabled and reported", "[scen
     const ludus::foundation::StaticArray<float32, SAMPLE_COUNT> samples{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}};
     std::string image = "PF\n2 2\n-1\n";
     image.append(reinterpret_cast<const char*>(samples.GetData()), samples.GetSize() * sizeof(samples[0]));
-    WriteFile(scratch.Path / "sky.pfm", image);
+    WriteFile(scratch.GetPath("sky.pfm"), image);
     options.EnvironmentFile = "sky.pfm";
-    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    REQUIRE(ImportGltfBestEffort(scratch.GetPath("scene.gltf"), options, result, error) == true);
     report = std::string_view(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
     CHECK(report.find("\"code\": \"LIGHT_DISABLED\"") != std::string_view::npos);
     CHECK(report.find("choose an environment") == std::string_view::npos);
@@ -188,10 +189,10 @@ TEST_CASE("glTF base colour factors apply once to sampled and constant textures"
     {
         const std::string extra = material + (hasTexture == true ? R"(,"baseColorTexture":{"index":0})" : "") + "}}]" +
                                   (hasTexture == true ? image : "");
-        WriteFile(scratch.Path / "scene.gltf", MakeTriangle(extra, {}, ",\"material\":0"));
+        WriteFile(scratch.GetPath("scene.gltf"), MakeTriangle(extra, {}, ",\"material\":0"));
         BestEffortResult result;
         CookError error;
-        REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), {}, result, error) == true);
+        REQUIRE(ImportGltfBestEffort(scratch.GetPath("scene.gltf"), {}, result, error) == true);
         ludus::resources::SceneDefinition decoded;
         REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
                 ludus::resources::Status::Ok);
@@ -222,7 +223,7 @@ TEST_CASE("glTF alphaMode MASK cooks a LUSCN v5 mask; BLEND stays opaque", "[sce
     constexpr usize ALPHA = 3;
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/cutout/scene.gltf").string(), {}, result, error) == true);
+    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/cutout/scene.gltf"), {}, result, error) == true);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);
@@ -256,7 +257,7 @@ TEST_CASE("glTF normal, roughness and emissive maps cook into LUSCN v6 maps with
     namespace format = ludus::content::scene_format;
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/maps/scene.gltf").string(), {}, result, error) == true);
+    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/maps/scene.gltf"), {}, result, error) == true);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);
@@ -293,11 +294,10 @@ TEST_CASE("glTF normal, roughness and emissive maps cook into LUSCN v6 maps with
 
 TEST_CASE("glTF fixture keeps hierarchy, instancing, cameras and punctual lights", "[scene_cook][gltf]")
 {
-    const fs::path root = fs::canonical(GetFixture("gltf/instanced"));
     // The resolver borrows its root, spelled like a resolved cooker path ('/' separators).
-    const std::string rootText = root.generic_string();
+    const std::string rootText = GetCanonicalPath(GetFixture("gltf/instanced"));
     NativeSourceResolver resolver(rootText);
-    const std::string text = ReadFileText(root / "scene.gltf");
+    const std::string text = ReadFileText(JoinPath(rootText, "scene.gltf"));
     SceneIr scene;
     DiagnosticLog log;
     REQUIRE(gltf::ReadScene(AsBytes(text), "scene.gltf", resolver, scene, log) == Status::Ok);
@@ -407,9 +407,9 @@ TEST_CASE("glTF JSON with external files and the equivalent GLB cook identical b
     BestEffortResult embedded;
     BestEffortResult detected;
     CookError error;
-    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/instanced/scene.gltf").string(), {}, separate, error) == true);
-    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/embedded/scene.glb").string(), {}, embedded, error) == true);
-    REQUIRE(ImportSceneBestEffort(GetFixture("gltf/embedded/scene.glb").string(), {}, detected, error) == true);
+    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/instanced/scene.gltf"), {}, separate, error) == true);
+    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/embedded/scene.glb"), {}, embedded, error) == true);
+    REQUIRE(ImportSceneBestEffort(GetFixture("gltf/embedded/scene.glb"), {}, detected, error) == true);
     CHECK(detected.Format == SceneSourceFormat::Gltf);
     REQUIRE(separate.Bundle.GetSize() == embedded.Bundle.GetSize());
     CHECK(std::memcmp(separate.Bundle.GetData(), embedded.Bundle.GetData(), separate.Bundle.GetSize()) == 0);
@@ -450,7 +450,7 @@ TEST_CASE("glTF JSON with external files and the equivalent GLB cook identical b
     CHECK(report.find("TANGENTS_GENERATED") != std::string_view::npos);
     // The data-URI JPEG decodes to its 8x8 texture.
     BestEffortResult jpeg;
-    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/data-uri/scene.gltf").string(), {}, jpeg, error) == true);
+    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/data-uri/scene.gltf"), {}, jpeg, error) == true);
     const std::string_view jpegReport(reinterpret_cast<const char*>(jpeg.Report.GetData()), jpeg.Report.GetSize());
     CHECK(jpegReport.find("\"texture\": \"scene.gltf#images[0]\"") != std::string_view::npos);
     CHECK(jpegReport.find("\"texture_width\": 8") != std::string_view::npos);
@@ -625,23 +625,47 @@ TEST_CASE("local smoke test: licensed glTF/GLB and OBJ collections import or exp
     bool hasCollection = false;
     for (const char* variable : {"LUDUS_GLTF_SCENES_DIR", "LUDUS_OBJ_SCENES_DIR"})
     {
-        const char* directory = std::getenv(variable);
-        if (directory == nullptr || fs::is_directory(directory) == false)
+        const char* directoryOrNull = std::getenv(variable);
+        if (directoryOrNull == nullptr || IsDirectory(directoryOrNull) == false)
         {
             continue;
         }
         hasCollection = true;
-        for (const fs::directory_entry& file : fs::recursive_directory_iterator(directory))
+        // The visitor is noexcept: it records allocation failure instead of throwing.
+        struct SceneFiles final
         {
-            const std::string extension = file.path().extension().string();
-            if (file.is_regular_file() == false || (extension != ".gltf" && extension != ".glb" && extension != ".obj"))
-            {
-                continue;
-            }
-            INFO(file.path().string());
+            ludus::foundation::Array<ludus::foundation::String> Paths;
+            bool HasFailed = false;
+        };
+        SceneFiles sceneFiles;
+        const ludus::test_support::DirectoryEntryVisitor collectEntry =
+            [](const ludus::test_support::DirectoryEntry& entry, void* context) noexcept {
+                const bool isScene = entry.Name.ends_with(".gltf") == true || entry.Name.ends_with(".glb") == true ||
+                                     entry.Name.ends_with(".obj") == true;
+                if (entry.IsRegularFile == false || isScene == false)
+                {
+                    return;
+                }
+                SceneFiles& files = *static_cast<SceneFiles*>(context);
+                ludus::foundation::String path;
+                if (path.TryAssign(entry.Path) != ludus::foundation::StringStatus::Ok ||
+                    files.Paths.TryAdd(ludus::foundation::Move(path)) == false)
+                {
+                    files.HasFailed = true;
+                }
+            };
+        REQUIRE(ludus::test_support::VisitDirectory(directoryOrNull,
+                                                    ludus::test_support::DirectoryWalk::Recursive,
+                                                    collectEntry,
+                                                    &sceneFiles) == true);
+        REQUIRE(sceneFiles.HasFailed == false);
+        for (const ludus::foundation::String& path : sceneFiles.Paths)
+        {
+            const std::string file(path.GetView());
+            INFO(file);
             BestEffortResult result;
             CookError error;
-            const bool isImported = ImportSceneBestEffort(file.path().string(), {}, result, error);
+            const bool isImported = ImportSceneBestEffort(file, {}, result, error);
             // A failure must come with a report that says why (or be an I/O problem).
             CHECK((isImported == true || result.Report.IsEmpty() == false || error.Result == Status::IoError));
             if (isImported == true)
@@ -700,7 +724,7 @@ TEST_CASE("glTF preserves complete geometry beyond both former count ceilings", 
         }
     }
     ScratchDirectory scratch;
-    WriteFile(scratch.Path / "mesh.bin", {reinterpret_cast<const char*>(bytes.GetData()), bytes.GetSize()});
+    WriteFile(scratch.GetPath("mesh.bin"), {reinterpret_cast<const char*>(bytes.GetData()), bytes.GetSize()});
     const std::string document =
         R"({"asset":{"version":"2.0"},"nodes":[{"mesh":0}],)"
         R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2}]}],)"
@@ -713,11 +737,11 @@ TEST_CASE("glTF preserves complete geometry beyond both former count ceilings", 
         R"(,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":)" + std::to_string(VERTEX_COUNT) +
         R"(,"type":"VEC3"},{"bufferView":2,"componentType":5125,"count":)" + std::to_string(INDEX_COUNT) +
         R"(,"type":"SCALAR"}]})";
-    const fs::path entry = scratch.Path / "scene.gltf";
+    const std::string entry = scratch.GetPath("scene.gltf");
     WriteFile(entry, document);
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportGltfBestEffort(entry.string(), {}, result, error) == true);
+    REQUIRE(ImportGltfBestEffort(entry, {}, result, error) == true);
     CHECK(result.Summary.DroppedPlacements == 0);
     CHECK(result.Summary.CookedVertices == VERTEX_COUNT);
     ludus::resources::SceneDefinition decoded;

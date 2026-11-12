@@ -64,7 +64,7 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     input.PositionWorld = positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
     // The world position is a rational function of the stored depth, so its derivative says how far one
     // rounding of that depth moves it. Conventional depth near one with a small near plane moves it by
-    // centimetres tens of metres away; the shadow comparison allows for that distance.
+    // centimetres tens of metres away; the directional and mesh-light shadow comparisons allow for that distance.
     float4 depthColumn = float4(deferredView.ClipToWorldRows[0].z,
                                 deferredView.ClipToWorldRows[1].z,
                                 deferredView.ClipToWorldRows[2].z,
@@ -91,6 +91,7 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     output.Color = ShadeMaterial(surface, input);
     output.Color.rgb += EvaluateRasterMeshLights(surface,
                                                  input.PositionWorld,
+                                                 input.PositionUncertaintyWorld,
                                                  uint(deferredView.TargetSizePixel.z),
                                                  uint(deferredView.TargetSizePixel.w));
 #ifdef LUDUS_ATMOSPHERE_SURFACE

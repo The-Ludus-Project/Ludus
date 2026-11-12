@@ -154,11 +154,18 @@ TEST_CASE("Fill projection distinguishes uncropped source from direct output and
     REQUIRE(rr::ResolveViewMapping({100, 50, rr::ScreenFit::Fill}, {0, 0, 100, 100}, 100, 100, mapping) ==
             rhi::RasterStatus::Ready);
     rr::ProjectionDescription lens;
-    rr::ViewDescription source, direct;
+    lens.Kind = rr::ProjectionKind::Orthographic;
+    lens.OrthographicHeight = 2;
+    lens.WorldToView.Columns[3].X = -1;
+    rr::ViewDescription source;
+    rr::ViewDescription direct;
     REQUIRE(rr::BuildViewDescription(lens, mapping, source) == rhi::RasterStatus::Ready);
     REQUIRE(rr::BuildViewDescription(lens, mapping, direct, rr::ProjectionSpace::OutputRegion) ==
             rhi::RasterStatus::Ready);
-    CHECK(direct.WorldToClip.At(0, 0) == 2 * source.WorldToClip.At(0, 0));
+    // World x=2 maps to view x=1, then to logical clip x=0.5. Fill doubles logical clip x for direct output.
+    const math::Vector4 positionWorld{2, 0, -1, 1};
+    CHECK((source.WorldToClip * positionWorld).X == 0.5F);
+    CHECK((direct.WorldToClip * positionWorld).X == 1);
     CHECK(source.OverlayToClip.At(0, 0) == 1);
     CHECK(direct.OverlayToClip.At(0, 0) == 2);
     direct.CullMargin = 123;

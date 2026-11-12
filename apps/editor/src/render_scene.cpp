@@ -24,6 +24,8 @@
 #include <ludus/foundation/memory/owned_object.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/foundation/parsing/json.hpp>
+#include <ludus/gameplay/world/celestial_transform.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/raster.h>
@@ -682,6 +684,31 @@ struct AtmosphereLight final
     math::Vector3 Illuminance{};
 };
 
+QJsonObject GetAtmosphereLightValues(const QJsonObject& entity)
+{
+    return entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+}
+
+bool TrySetEarthNightSky(const QJsonObject& entity, rr::CelestialBackgroundDescription& inoutCelestial)
+{
+    gameplay::world::EarthNightSkySample sky;
+    if (inoutCelestial.StarRadiance == 0 || TrySampleWorldEarthNightSky(GetAtmosphereLightValues(entity), sky) == false)
+    {
+        return false;
+    }
+    constexpr float32 MILKY_WAY_RADIANCE = 0.045F; // Scene-linear nits for the editor's procedural dark-sky band.
+    inoutCelestial.MilkyWayRadiance = MILKY_WAY_RADIANCE;
+    inoutCelestial.GalacticNorthWorld = sky.GalacticNorthWorld;
+    inoutCelestial.GalacticCenterWorld = sky.GalacticCenterWorld;
+    static_assert(gameplay::world::EARTH_VISIBLE_PLANET_COUNT <= rr::ATMOSPHERE_PLANET_CAPACITY);
+    for (usize i = 0; i < sky.Planets.GetSize(); ++i)
+    {
+        const gameplay::world::EarthPlanetSample& planet = sky.Planets[i];
+        inoutCelestial.Planets[i] = { .DirectionWorld = planet.DirectionWorld, .Illuminance = planet.Illuminance };
+    }
+    return true;
+}
+
 bool ReadAtmosphereLight(const QJsonObject& entity,
                          const QJsonObject& transformBinding,
                          AtmosphereLight& outLight,
@@ -697,8 +724,7 @@ bool ReadAtmosphereLight(const QJsonObject& entity,
     {
         return false;
     }
-    const QJsonObject light =
-        entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+    const QJsonObject light = GetAtmosphereLightValues(entity);
     bool isAboveHorizon = true;
     if (TryResolveWorldCelestialRotation(light, transform.Rotation, isAboveHorizon) == false)
     {
@@ -755,7 +781,8 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         return;
     }
     AtmosphereLight sun;
-    if (ReadAtmosphereLight(world.Entity(sunId), transformBinding, sun, error) == false)
+    const QJsonObject sunEntity = world.Entity(sunId);
+    if (ReadAtmosphereLight(sunEntity, transformBinding, sun, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Sun. %1").arg(error);
         return;
@@ -776,6 +803,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     rr::CelestialBackgroundDescription& celestial = inoutScene.Atmosphere.Celestial;
     celestial.IsEnabled = true;
     celestial.StarRadiance = properties.value(QStringLiteral("stars")).toBool(true) == true ? 1.0F : 0.0F;
+    const bool hasEarthSky = TrySetEarthNightSky(sunEntity, celestial);
     const QString moonId = properties.value(QStringLiteral("moon")).toString();
     if (moonId.isEmpty() == true)
     {
@@ -787,10 +815,15 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         return;
     }
     AtmosphereLight moon;
-    if (ReadAtmosphereLight(world.Entity(moonId), transformBinding, moon, error) == false)
+    const QJsonObject moonEntity = world.Entity(moonId);
+    if (ReadAtmosphereLight(moonEntity, transformBinding, moon, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Moon. %1").arg(error);
         return;
+    }
+    if (hasEarthSky == false)
+    {
+        static_cast<void>(TrySetEarthNightSky(moonEntity, celestial));
     }
     celestial.DirectionToMoonWorld = moon.DirectionWorld;
     if (math::LengthSquared(moon.Illuminance) == 0)

@@ -60,11 +60,11 @@ Array<std::string> WriteFiles(const ScratchDirectory& scratch, const Array<usize
     Array<std::string> paths;
     for (usize i = 0; i < sizes.GetSize(); ++i)
     {
-        const fs::path path = scratch.Path / ("input-" + std::to_string(i) + ".bin");
+        const std::string path = scratch.GetPath("input-" + std::to_string(i) + ".bin");
         std::string content(sizes[i], '\0');
         FillContent(static_cast<uint32>(i), content);
         WriteFile(path, content);
-        paths.Add(path.string());
+        paths.Add(path);
     }
     return paths;
 }
@@ -192,7 +192,7 @@ TEST_CASE("File digests stop at the first file the serial path cannot hash", "[s
     ScratchDirectory scratch;
     const Array<usize> sizes{3000, 5 * MEBIBYTE, 10, 2 * MEBIBYTE, 77, 4 * MEBIBYTE};
     const Array<std::string> paths = WriteFiles(scratch, sizes);
-    const std::string missingPath = (scratch.Path / "missing.bin").string();
+    const std::string missingPath = scratch.GetPath("missing.bin");
 
     // A missing file after a file that spans batches: earlier digests are kept.
     const Array<std::string> missing = InsertPath(2, missingPath, paths);
@@ -202,7 +202,7 @@ TEST_CASE("File digests stop at the first file the serial path cannot hash", "[s
     RequireSerialOutcome(missing, notFound);
 
     // A directory opens but cannot be read: the read failure is that file's.
-    const Array<std::string> unreadable = InsertPath(4, scratch.Path.string(), paths);
+    const Array<std::string> unreadable = InsertPath(4, scratch.Path, paths);
     const HashOutcome readFailure = HashOneByOne(unreadable);
     REQUIRE(readFailure.Result == Status::IoError);
     REQUIRE(readFailure.HashedCount == 4);

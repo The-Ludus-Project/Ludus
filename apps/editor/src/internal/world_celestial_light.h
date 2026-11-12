@@ -9,6 +9,11 @@
 #include <QLatin1StringView>
 #include <QStringView>
 
+namespace ludus::gameplay::world
+{
+struct EarthNightSkySample;
+}
+
 namespace ludus::editor
 {
 inline constexpr QLatin1StringView WORLD_CELESTIAL_ROLE{"celestialRole"};
@@ -42,4 +47,6 @@ enum class WorldCelestialFieldGroup : foundation::uint8
 [[nodiscard]] bool TryResolveWorldCelestialRotation(const QJsonObject& light,
                                                     foundation::math::Quaternion& inoutRotation,
                                                     bool& outIsAboveHorizon);
+/// Sample the Earth background from a dynamic Earth Sun or Earth Moon driver. Preserves outSky otherwise.
+[[nodiscard]] bool TrySampleWorldEarthNightSky(const QJsonObject& light, gameplay::world::EarthNightSkySample& outSky);
 } // namespace ludus::editor

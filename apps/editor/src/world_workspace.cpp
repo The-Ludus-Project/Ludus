@@ -3758,6 +3758,7 @@ bool WorldWorkspace::Apply()
     }
     // Update labels in place so Save preserves the focused field's text buffer.
     mEntitySearch->UpdateLabels(Document_);
+    renderLights();
     for (auto* field : Fields_)
     {
         auto* choice = qobject_cast<QComboBox*>(field);

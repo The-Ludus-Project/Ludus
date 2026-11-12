@@ -6154,15 +6154,44 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.ShouldLightScene == true);
     CHECK(scene.Atmosphere.Celestial.IsEnabled == true);
     CHECK(scene.Atmosphere.Celestial.StarRadiance > 0);
+    CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance == 0);
     CHECK(scene.Atmosphere.Celestial.LunarAngularRadiusRadians == 0);
 
     QString moonId;
     REQUIRE(CreateWorldSun(reopened, entropy, placement, moonId, error) == true);
     values.insert(QStringLiteral("moon"), moonId);
+    components.insert(atmosphereComponent, values);
+    REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
+            true);
+    const QJsonObject moon = reopened.Entity(moonId);
+    QJsonObject moonComponents = moon.value(QStringLiteral("components")).toObject();
+    const QString lightComponent = QStringLiteral("light");
+    const QJsonObject staticMoon = moonComponents.value(lightComponent).toObject();
+    QJsonObject earthMoon = staticMoon;
+    earthMoon.insert(QString(WORLD_CELESTIAL_ROLE), QString(WORLD_CELESTIAL_DYNAMIC));
+    earthMoon.insert(QString(WORLD_CELESTIAL_DRIVER), QStringLiteral("Earth Moon"));
+    earthMoon.insert(QString(WORLD_CELESTIAL_TIME), 0.5);
+    moonComponents.insert(lightComponent, earthMoon);
+    const QString moonName = moon.value(QStringLiteral("name")).toString();
+    REQUIRE(reopened.Edit(moonId, moonComponents, moonName, error) == true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance > 0);
+    CHECK(scene.Atmosphere.Celestial.Planets[0].Illuminance.X > 0);
+    const math::Vector3 midnightCenterWorld = scene.Atmosphere.Celestial.GalacticCenterWorld;
+    earthMoon.insert(QString(WORLD_CELESTIAL_TIME), 0);
+    moonComponents.insert(lightComponent, earthMoon);
+    REQUIRE(reopened.Edit(moonId, moonComponents, moonName, error) == true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.Celestial.GalacticCenterWorld != midnightCenterWorld);
     values.insert(QStringLiteral("stars"), false);
     components.insert(atmosphereComponent, values);
     REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
             true);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance == 0);
+    CHECK(scene.Atmosphere.Celestial.Planets[0].Illuminance.X == 0);
+    moonComponents.insert(lightComponent, staticMoon);
+    REQUIRE(reopened.Edit(moonId, moonComponents, moonName, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.AtmosphereMoonSourceId == ComputeEntitySourceId(moonId));
     CHECK(scene.Atmosphere.Celestial.DirectionToMoonWorld.Y == Catch::Approx(1));

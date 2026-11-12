@@ -1103,11 +1103,12 @@ or surface cannot trigger an undocumented backend switch.
 
 ## Materials, shaders and pipeline control
 
-The proposed [render graph authoring architecture](render-graph-authoring.md)
-owns reusable graph/function/resource nodes, camera output routes, scene coverage,
+The [render graph architecture](render-graph-authoring.md) owns reusable
+graph/function/resource nodes, camera output routes, scene coverage,
 author-declared compilation configurations, shared schemas, incremental builds
-and editor/reload integration. It is an authoring layer over these Renderer and
-RHI contracts, not a claim that the current material graph editor is implemented.
+and editor/reload integration. See its
+[execution boundary](render-graph-authoring.md#logical-resource-uses-and-submitted-work)
+for the relationship between the offline plan, cooked profiles and RHI.
 Users can consume selected graph outputs; this never synthesizes shader variants.
 Depth-only rendering requires an authored technique preserving geometry/coverage.
 
@@ -1757,11 +1758,25 @@ as the material resolve. The sky draw preserves depth. The material resolve
 then overwrites covered samples and leaves the sky elsewhere. This placement
 requires no new graph shader bindings or HDR color edge. Evaluate the solar disk at
 pixel resolution with edge coverage and analytic ground occlusion, then
-attenuate it by view transmittance. A uniform disk of angular radius `a`
-uses radiance `E / (pi * sin(a)^2)` for perpendicular illuminance `E` at the
-top of the atmosphere. The scattering term uses a directional Sun
+attenuate it by view transmittance. The disk-average radiance for angular
+radius `a` and top-of-atmosphere perpendicular illuminance `E` is
+`E / (pi * sin(a)^2)`. A resolved disk multiplies this by
+`(1 + p/2) * mu^p` per RGB channel, with `mu` the cosine between the viewing
+ray toward the observer and the visible solar surface normal. The factor
+has unit mean over projected disk area, so the profile preserves `E` in each
+channel. As the pixel footprint approaches the disk radius, blend toward the
+disk-average radiance. The scattering term uses a directional Sun
 approximation. Keep the disk out of the sky-view texture and apply exposure
 once to the result.
+
+Thanks to Sébastien Hillaire for presenting solar limb darkening in
+*Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite*, SIGGRAPH
+2016 course notes, §4.1.3 and Appendix B. The three-channel approximation uses
+power-law fits from Daniel Hestroffer and Christian Magnan, *Wavelength
+dependency of the Solar limb darkening*, §2 and Table 2. Ludus normalizes the
+fit to its authored perpendicular illuminance.
+[Frostbite course notes](https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/s2016-pbs-frostbite-sky-clouds-new.pdf) ·
+[Solar measurements](https://ui.adsabs.harvard.edu/abs/1998A%26A...333..338H)
 
 ### Opaque raster lighting
 
@@ -1795,8 +1810,9 @@ camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
 ### Celestial background and orbital views
 
 The Atmosphere entity's celestial provider supplies distant scene-linear radiance.
-It evaluates a deterministic procedural star field and an optional Lambertian
-Moon. The Moon uses the linked directional light's world direction and color.
+It evaluates a deterministic procedural star field, an optional Milky Way,
+unresolved planet points and an optional Lambertian Moon. The Moon uses the
+linked directional light's world direction and color.
 Its phase comes from the visible disk normals and the direction toward the Sun.
 The lunar disk masks background sources behind it. The renderer applies view
 transmittance and planet occlusion to the celestial boundary before it adds
@@ -1814,9 +1830,22 @@ support observer altitudes up to one billion metres. Orthographic views use
 the in-shell range and the observer's common ray direction. The graph uses
 its ordinary clear outside the supported range.
 
-The provider models a distant disk with a nominal apparent radius and a
-procedural star field. An ephemeris catalog, lunar parallax, cast eclipse
-shadows, and lunar atmospheric illumination are separate extensions.
+The built-in World samples Mercury, Venus, Mars, Jupiter and Saturn from the
+linked Earth celestial driver's date and observer location. It prefers the
+Sun link, then uses the Moon link if it has the Earth driver. Directions
+use the JPL approximate orbital elements, the Earth–Moon barycenter and
+mean sidereal time. The sampler uses the existing Earth driver's date
+range and omits light time, precession and nutation. The apparent illuminance
+uses full-phase magnitudes, a Lambertian phase law and inverse-square distance
+to both the Sun and the observer. The raster shader spreads each point over
+its pixel footprint. A procedural band with dust lanes uses the Hipparcos
+galactic axes and shares that rotating frame with the procedural stars.
+The galactic texture, tints and star locations are illustrative. Cast eclipse
+shadows and lunar atmospheric illumination remain separate extensions.
+[JPL approximate planetary positions](https://ssd.jpl.nasa.gov/planets/approx_pos.html) ·
+[NASA planetary fact sheets](https://nssdc.gsfc.nasa.gov/planetary/planetfact.html) ·
+[Gaia galactic coordinate convention](https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu3ast/sec_cu3ast_intro/ssec_cu3ast_intro_transforms.html)
+
 NASA Science describes the lit-sphere geometry and the Moon's nominal apparent size.
 [Moon phases](https://science.nasa.gov/moon/moon-phases/) · [Hubble glossary](https://science.nasa.gov/mission/hubble/multimedia/hubble-glossary/)
 
