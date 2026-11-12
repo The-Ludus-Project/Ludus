@@ -2,6 +2,7 @@
 
 #include "design_tokens.h"
 #include "internal/editor_icons.h"
+#include "internal/inspector_section.h"
 #include "internal/theme_colour.h"
 
 #include <ludus/foundation/math/scalar.hpp>
@@ -366,6 +367,11 @@ int32 ComputeLineEditWidth(const QLineEdit& field, const QString& text)
     return field.style()->sizeFromContents(QStyle::CT_LineEdit, &option, contents, &field).width();
 }
 
+int32 GetReadableFieldWidth(const QFontMetrics& metrics)
+{
+    return metrics.horizontalAdvance(NUMBER_FIELD_SAMPLE.toString()) + design::SPACING_PAGE;
+}
+
 void SetNumberFieldMinimumWidth(QLineEdit& inoutField)
 {
     const auto fit = [&inoutField]() {
@@ -406,6 +412,11 @@ public:
 private:
     void update(const QWidget& owner)
     {
+        // Inside the Properties dock one shared label column lays out every form instead.
+        if (InspectorLabelColumn::FindOrNull(owner) != nullptr)
+        {
+            return;
+        }
         int32 widestLabel = 0;
         for (int32 row = 0; row < mForm.rowCount(); ++row)
         {
@@ -418,8 +429,7 @@ private:
         const QMargins margins = mForm.contentsMargins();
         const int32 width = owner.contentsRect().width() - margins.left() - margins.right();
         const int32 fieldColumn = width - widestLabel - std::max(mForm.horizontalSpacing(), 0);
-        const int32 readableField =
-            owner.fontMetrics().horizontalAdvance(NUMBER_FIELD_SAMPLE.toString()) + design::SPACING_PAGE;
+        const int32 readableField = GetReadableFieldWidth(owner.fontMetrics());
         const bool shouldWrapAll = widestLabel > 0 && fieldColumn < readableField;
         const QFormLayout::RowWrapPolicy policy =
             shouldWrapAll == true ? QFormLayout::WrapAllRows : QFormLayout::WrapLongRows;
@@ -446,6 +456,7 @@ private:
 
 void ConfigureInspectorForm(QFormLayout& inoutForm)
 {
+    inoutForm.setProperty("isInspectorForm", true);
     inoutForm.setRowWrapPolicy(QFormLayout::WrapLongRows);
     inoutForm.setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     QWidget* ownerOrNull = inoutForm.parentWidget();

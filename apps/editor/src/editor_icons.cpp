@@ -96,6 +96,8 @@ constexpr IconDescriptor ICON_DESCRIPTORS[EDITOR_ICON_COUNT] = {
     {"file-question-mark", false},
     {"plus", false},
     {"refresh-cw", false},
+    {"ellipsis", false},
+    {"lock", false},
 };
 
 /// Cursor over SVG path data.

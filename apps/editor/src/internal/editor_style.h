@@ -21,6 +21,11 @@ inline constexpr int RECENT_PROJECT_ITEM_PADDING = 8;
 /// A widget opts into a variant with the "visualRole" dynamic property: "primary" (the accent action), "secondary"
 /// (a quieter label), "segment" (one button of a segmented control) or "toggle" (a checkable tool button that switches
 /// a mode, such as a viewport's Force raster: when on it fills with the accent, unlike a disclosure button).
+///
+/// The controls the editor draws itself (push and tool buttons, check boxes, group boxes and the tabs of a tab widget)
+/// take their geometry from the common style, not the platform one, so they look and measure the same everywhere. On
+/// macOS the platform style would otherwise draw them natively: inset bevels that clip compact buttons, grey toggles,
+/// rounded group cards and centred, small tabs.
 class EditorStyle final : public QProxyStyle
 {
 public:
@@ -46,6 +51,10 @@ public:
                             const QStyleOptionComplex* option,
                             QPainter* painter,
                             const QWidget* widgetOrNull) const override;
+    [[nodiscard]] SubControl hitTestComplexControl(ComplexControl control,
+                                                   const QStyleOptionComplex* option,
+                                                   const QPoint& position,
+                                                   const QWidget* widgetOrNull) const override;
     [[nodiscard]] QRect subControlRect(ComplexControl control,
                                        const QStyleOptionComplex* option,
                                        SubControl subControl,
@@ -58,6 +67,10 @@ public:
                                          const QWidget* widgetOrNull) const override;
     [[nodiscard]] int
     pixelMetric(PixelMetric metric, const QStyleOption* optionOrNull, const QWidget* widgetOrNull) const override;
+    [[nodiscard]] int styleHint(StyleHint hint,
+                                const QStyleOption* optionOrNull,
+                                const QWidget* widgetOrNull,
+                                QStyleHintReturn* outReturnDataOrNull) const override;
 
     /// Width of a control edge in logical pixels; high contrast thickens it.
     [[nodiscard]] int GetEdgeWidth() const noexcept;
@@ -77,6 +90,7 @@ private:
         QColor Accent;
         QColor AccentText;
         QColor Selected;
+        QColor Disabled;
     };
     Colours mColours;
     bool mIsHighContrast = false;

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
@@ -306,12 +307,9 @@ TEST_CASE("The world inspector shows a swatch beside colour channels", "[editor]
     QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(listOrNull != nullptr);
     listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
-    QComboBox* choices = view.window()->findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
-    REQUIRE(choices != nullptr);
-    const int light = choices->findData(QStringLiteral("light"));
-    REQUIRE(light >= 0);
-    choices->setCurrentIndex(light);
-    view.window()->findChild<QPushButton*>(QStringLiteral("worldAttach"))->click();
+    QAction* lightOrNull = view.window()->findChild<QAction*>(QStringLiteral("worldAttach:light"));
+    REQUIRE(lightOrNull != nullptr);
+    lightOrNull->trigger();
     QTest::qWait(SETTLE_MILLISECONDS);
     ColourSwatch* swatchOrNull = view.window()->findChild<ColourSwatch*>(QStringLiteral("inspectorColourSwatch"));
     REQUIRE(swatchOrNull != nullptr);
@@ -465,12 +463,9 @@ TEST_CASE("The world inspector gives bounded number fields a slider", "[editor][
     QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(listOrNull != nullptr);
     listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
-    QComboBox* choices = view.window()->findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
-    REQUIRE(choices != nullptr);
-    const int light = choices->findData(QStringLiteral("light"));
-    REQUIRE(light >= 0);
-    choices->setCurrentIndex(light);
-    view.window()->findChild<QPushButton*>(QStringLiteral("worldAttach"))->click();
+    QAction* lightOrNull = view.window()->findChild<QAction*>(QStringLiteral("worldAttach:light"));
+    REQUIRE(lightOrNull != nullptr);
+    lightOrNull->trigger();
     QTest::qWait(SETTLE_MILLISECONDS);
 
     QLineEdit* intensityOrNull = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:light/intensity"));

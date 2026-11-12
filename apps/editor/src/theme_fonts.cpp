@@ -48,6 +48,14 @@ QFont MakeTabularFont(const QFont& base)
 
 void ApplyThemeFonts()
 {
-    QApplication::setFont(MakeTabularFont(QApplication::font("QAbstractSpinBox")), "QAbstractSpinBox");
+    // macOS gives several widget classes a smaller font than the system one (group box titles, tabs, headers, the
+    // status bar, tool buttons and check boxes among them), so the editor's text came out in mixed, mostly small
+    // sizes. Every class takes the body font instead; type roles (MakeTypeFont) vary it on purpose where needed.
+    const QFont body = QApplication::font();
+    for (const char* className : BODY_FONT_CLASS_NAMES)
+    {
+        QApplication::setFont(body, className);
+    }
+    QApplication::setFont(MakeTabularFont(body), "QAbstractSpinBox");
 }
 } // namespace ludus::editor
