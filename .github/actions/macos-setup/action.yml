@@ -10,6 +10,9 @@ inputs:
   editor:
     description: Prepare optional editor dependencies and configuration
     default: 'true'
+  build-editor:
+    description: Build the editor during setup when no later build owns it
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -34,6 +37,11 @@ runs:
       with:
         path: out/conan/home
         key: conan-macos-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-variant }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/*/conanfile.py', 'tests/support/prepare_catch_headers.py', 'tests/support/catch_stream.*', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
+        # The locked install validates recipe and package IDs. If this lane has
+        # no snapshot yet, start from packages built by the other macOS lane.
+        restore-keys: |
+          conan-macos-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-variant }}-
+          conan-macos-v1-${{ runner.os }}-${{ runner.arch }}-
     - name: Restore macOS compiler outputs
       id: compiler
       uses: actions/cache/restore@v4
@@ -60,17 +68,24 @@ runs:
       env:
         PRESET: ${{ inputs.preset }}
         WITH_EDITOR: ${{ inputs.editor }}
+        BUILD_EDITOR: ${{ inputs.build-editor }}
       run: |
         arguments=(--cli --preset "$PRESET" --preset-only --locked --with-tests --no-system-install)
-        if [[ "$WITH_EDITOR" == true ]]; then arguments+=(--with-editor); fi
+        if [[ "$WITH_EDITOR" == true ]]; then
+          arguments+=(--with-editor)
+          if [[ "$BUILD_EDITOR" == false ]]; then arguments+=(--configure-editor-only); fi
+        fi
         ./init.sh "${arguments[@]}"
         git diff --exit-code -- conan.lock
-    - name: Prepare pinned Metal shader compiler and Behavior tools
+    - name: Prepare pinned Metal shader compiler for engine-only setup
+      if: inputs.editor != 'true'
+      shell: bash
+      run: out/host-tools/venv/bin/python scripts/shader-probe bootstrap
+    - name: Prepare pinned Behavior tools and acceptance data
       shell: bash
       run: |
-        ./scripts/shader-probe bootstrap
-        ./scripts/script-provider bootstrap
-        ./scripts/script-provider cook
+        out/host-tools/venv/bin/python scripts/script-provider bootstrap
+        out/host-tools/venv/bin/python scripts/script-provider cook
 outputs:
   dependency-cache-key:
     description: Locked dependency snapshot key to save after all profiles are prepared

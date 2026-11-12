@@ -121,6 +121,8 @@ def validate_options(args: argparse.Namespace, engine) -> None:
         raise engine.EngineError("--all-presets and --preset-only describe conflicting initialization scopes")
     if (args.validate or args.ci or args.run_tests) and not args.with_tests:
         raise engine.EngineError("Running tests or full validation requires --with-tests; remove --no-tests")
+    if args.configure_editor_only and (not args.with_editor or args.validate or args.ci or args.run_tests):
+        raise engine.EngineError("--configure-editor-only requires --with-editor and setup without --validate, --ci or --run-tests")
     if args.preset.startswith("web-emscripten-"):
         if args.with_shader_probe:
             raise engine.EngineError("The shader probe is a native-only target")
@@ -148,6 +150,7 @@ STORE_TRUE_OPTIONS = (
     ("no_system_install", "--no-system-install"),
     ("with_rad_debugger", "--with-rad-debugger"),
     ("skip_engine_refresh", "--no-engine-refresh"),
+    ("configure_editor_only", "--configure-editor-only"),
     ("run_tests", "--run-tests"),
     ("all_presets", "--all-presets"),
     ("preset_only", "--preset-only"),
