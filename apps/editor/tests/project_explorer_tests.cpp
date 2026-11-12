@@ -237,6 +237,11 @@ TEST_CASE("Explorer rows show document names, tell shared names apart by folder 
         }
     }
     CHECK(sponzaQualifiers.size() == 2);
+    // Rows are ordered by the shown name, so the two sponza rows sit together.
+    REQUIRE(worlds->childCount() == 3);
+    CHECK(worlds->child(0)->text(0) == QStringLiteral("cornell-box"));
+    CHECK(worlds->child(1)->text(0) == QStringLiteral("sponza"));
+    CHECK(worlds->child(2)->text(0) == QStringLiteral("sponza"));
     CHECK(sponzaQualifiers.contains(QStringLiteral("assets")) == true);
     CHECK(sponzaQualifiers.contains(QStringLiteral("project folder")) == true);
     // Graph packages are told apart by their own folder name, not the whole path.

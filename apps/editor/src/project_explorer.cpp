@@ -23,6 +23,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <utility>
 
 namespace ludus::editor
@@ -98,6 +99,17 @@ struct PendingFolder final
 {
     const QString folder = QFileInfo(relativePath).path();
     return folder == QLatin1StringView(".") ? QString() : folder;
+}
+
+/// Order group's rows by their shown name, so rows that share a name sit together; rows with equal names keep
+/// their scan order.
+void SortRowsByName(QTreeWidgetItem& inoutGroup)
+{
+    QList<QTreeWidgetItem*> rows = inoutGroup.takeChildren();
+    std::stable_sort(rows.begin(), rows.end(), [](const QTreeWidgetItem* left, const QTreeWidgetItem* right) {
+        return QString::compare(left->text(0), right->text(0), Qt::CaseInsensitive) < 0;
+    });
+    inoutGroup.addChildren(rows);
 }
 
 /// Give every row of group whose name another row shares the folder that tells them apart: the folder's own name
@@ -371,6 +383,7 @@ void ProjectExplorer::scan(const ScanFolders& folders)
     }
     for (QTreeWidgetItem* group : {folders.Worlds, folders.RenderGraphs, folders.Shaders, folders.Scripts})
     {
+        SortRowsByName(*group);
         QualifySharedNames(*group);
     }
     if (isTruncated == true)

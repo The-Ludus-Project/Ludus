@@ -3389,7 +3389,7 @@ Text that does not fit is cut where it costs the least, and never silently:
 - **Document names** (Project Explorer) leave out the suffix their group already
   names: a world is "sponza", not "sponza.world.json", and the same goes for
   `.lurender.json` and `.lushader.json`. Slang sources and scripts keep their
-  extensions. When two rows in a group share a name, each is followed by a dimmed
+  extensions. Rows are sorted by that name. When two rows in a group share it, each is followed by a dimmed
   folder ("sponza · assets"): the folder's own name when that tells them apart,
   else its path. The folder is cut first; a name that is still too wide is elided
   from the middle, so its head and tail stay ("SliceSampl…Coupled"). The tooltip
