@@ -417,7 +417,7 @@ void RenderPreview::SetProbeGrid(const rr::GiProbeGrid& grid) noexcept
     if (preview_lighting::AreProbeGridsEqual(Scene_.ProbeGrid, grid) == false)
     {
         Scene_.ProbeGrid = grid;
-        mSurfaceBake.InvalidateProbeGrid();
+        mSurfaceBake.SetProbeGrid(grid);
         mFramePump.Wake();
     }
 }
