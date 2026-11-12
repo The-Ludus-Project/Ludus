@@ -3,8 +3,6 @@
 #include <QPalette>
 #include <QProxyStyle>
 
-class QStyleOptionGroupBox;
-
 namespace ludus::editor
 {
 /// Dynamic property naming the padding, in logical pixels, an item view adds around each row.
@@ -94,9 +92,6 @@ private:
         QColor Selected;
         QColor Disabled;
     };
-
-    void DrawCheckIndicator(const QStyleOption& option, QPainter& painter) const;
-    void DrawGroupBox(const QStyleOptionGroupBox& groupBox, QPainter& painter, const QWidget* widgetOrNull) const;
     Colours mColours;
     bool mIsHighContrast = false;
 };

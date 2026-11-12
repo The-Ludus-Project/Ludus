@@ -267,6 +267,124 @@ ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFo
     layout.Minimum = QSize(labelLeft - rect.left() + textWidth, contentsTop - rect.top());
     return layout;
 }
+
+/// Colours of a check box indicator.
+struct CheckIndicatorColours final
+{
+    QColor Panel;
+    QColor Border;
+    QColor Accent;
+    QColor Mark;
+    QColor Disabled;
+};
+
+void DrawCheckIndicator(const QStyleOption& option,
+                        const CheckIndicatorColours& colours,
+                        int edgeWidth,
+                        QPainter& inoutPainter)
+{
+    // A box of the token size with a control edge on the panel, so an unchecked box is as visible as a checked one;
+    // checked and partly checked boxes fill with the accent and carry a tick or a bar in the accent's text colour.
+    const int size = std::min({static_cast<int>(design::SIZE_CHECKBOX), option.rect.width(), option.rect.height()});
+    QRect box(QPoint(0, 0), QSize(size, size));
+    box.moveCenter(option.rect.center());
+    const bool isEnabled = option.state.testFlag(QStyle::State_Enabled);
+    const bool isOn = option.state.testFlag(QStyle::State_On);
+    const bool isPartial = option.state.testFlag(QStyle::State_NoChange);
+    const bool isHovered = option.state.testFlag(QStyle::State_MouseOver) && isEnabled == true;
+    QColor fill = colours.Panel;
+    QColor edge = isHovered == true ? colours.Accent : colours.Border;
+    QColor mark = colours.Mark;
+    if (isEnabled == false)
+    {
+        edge = colours.Disabled;
+        mark = colours.Disabled;
+    }
+    else if (isOn == true || isPartial == true)
+    {
+        fill = colours.Accent;
+        edge = colours.Accent;
+    }
+    DrawControlBody(&inoutPainter, box, { .Fill = fill, .Edge = edge }, edgeWidth);
+    if (isOn == false && isPartial == false)
+    {
+        return;
+    }
+    const QRectF area(box);
+    const auto at = [&area](qreal x, qreal y) {
+        return QPointF(area.left() + area.width() * x, area.top() + area.height() * y);
+    };
+    inoutPainter.save();
+    inoutPainter.setRenderHint(QPainter::Antialiasing);
+    inoutPainter.setPen(QPen(mark, CHEVRON_STROKE, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    inoutPainter.setBrush(Qt::NoBrush);
+    if (isOn == true)
+    {
+        const QPointF tick[CHEVRON_POINT_COUNT] = {at(TICK_START_X, TICK_START_Y),
+                                                   at(TICK_CORNER_X, TICK_CORNER_Y),
+                                                   at(TICK_END_X, TICK_END_Y)};
+        inoutPainter.drawPolyline(tick, CHEVRON_POINT_COUNT);
+    }
+    else
+    {
+        inoutPainter.drawLine(at(PARTIAL_BAR_START, HALF), at(PARTIAL_BAR_END, HALF));
+    }
+    inoutPainter.restore();
+}
+
+/// Colours of a flat section.
+struct SectionColours final
+{
+    QColor Rule;
+    QColor Title;
+    QColor DisabledTitle;
+};
+
+void DrawGroupBox(const QStyle& style,
+                  const QStyleOptionGroupBox& groupBox,
+                  const SectionColours& colours,
+                  QPainter& inoutPainter,
+                  const QWidget* widgetOrNull)
+{
+    // A flat section, as docs/architecture/editor-art-direction.md asks: a quiet rule and a clear title instead of
+    // the rounded card macOS draws around every group.
+    const QFont titleFont = MakeGroupTitleFont(widgetOrNull);
+    const GroupBoxLayout layout =
+        ComputeGroupBoxLayout(groupBox,
+                              titleFont,
+                              style.pixelMetric(QStyle::PM_IndicatorWidth, &groupBox, widgetOrNull),
+                              style.pixelMetric(QStyle::PM_CheckBoxLabelSpacing, &groupBox, widgetOrNull));
+    inoutPainter.fillRect(QRect(groupBox.rect.left(), groupBox.rect.top(), groupBox.rect.width(), CONTROL_EDGE_WIDTH),
+                          colours.Rule);
+    const bool isEnabled = groupBox.state.testFlag(QStyle::State_Enabled);
+    if (groupBox.subControls.testFlag(QStyle::SC_GroupBoxCheckBox) == true)
+    {
+        QStyleOption check(groupBox);
+        check.rect = layout.CheckBox;
+        check.state.setFlag(QStyle::State_HasFocus, false);
+        check.state.setFlag(
+            QStyle::State_MouseOver,
+            groupBox.state.testFlag(QStyle::State_MouseOver) == true &&
+                (groupBox.activeSubControls & (QStyle::SC_GroupBoxCheckBox | QStyle::SC_GroupBoxLabel)) != 0);
+        style.drawPrimitive(QStyle::PE_IndicatorCheckBox, &check, &inoutPainter, widgetOrNull);
+    }
+    if (groupBox.text.isEmpty() == false)
+    {
+        inoutPainter.save();
+        inoutPainter.setFont(titleFont);
+        inoutPainter.setPen(isEnabled == true ? colours.Title : colours.DisabledTitle);
+        const QString title = QFontMetrics(titleFont).elidedText(groupBox.text, Qt::ElideRight, layout.Label.width());
+        inoutPainter.drawText(layout.Label, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextShowMnemonic, title);
+        inoutPainter.restore();
+    }
+    if (groupBox.state.testFlag(QStyle::State_HasFocus) == true && isEnabled == true)
+    {
+        QStyleOptionFocusRect focus;
+        focus.QStyleOption::operator=(groupBox);
+        focus.rect = layout.CheckBox.isNull() == true ? layout.Label : layout.CheckBox.united(layout.Label);
+        style.drawPrimitive(QStyle::PE_FrameFocusRect, &focus, &inoutPainter, widgetOrNull);
+    }
+}
 } // namespace
 
 QPalette MakeEditorPalette(const QPalette& platform, bool isDark, bool isHighContrast)
@@ -588,7 +706,16 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
         }
         case PE_IndicatorCheckBox:
         case PE_IndicatorItemViewItemCheck:
-            DrawCheckIndicator(*option, *painter);
+            DrawCheckIndicator(*option,
+                               {
+                                   .Panel = mColours.Panel,
+                                   .Border = mColours.Border,
+                                   .Accent = mColours.Accent,
+                                   .Mark = mColours.AccentText,
+                                   .Disabled = mColours.Disabled,
+                               },
+                               edgeWidth,
+                               *painter);
             return;
         case PE_PanelStatusBar:
             painter->fillRect(option->rect, mColours.Workspace);
@@ -895,7 +1022,11 @@ void EditorStyle::drawComplexControl(ComplexControl control,
         const QStyleOptionGroupBox* groupBox = qstyleoption_cast<const QStyleOptionGroupBox*>(option);
         if (groupBox != nullptr)
         {
-            DrawGroupBox(*groupBox, *painter, widgetOrNull);
+            DrawGroupBox(*proxy(),
+                         *groupBox,
+                         { .Rule = mColours.SubtleBorder, .Title = mColours.Text, .DisabledTitle = mColours.Secondary },
+                         *painter,
+                         widgetOrNull);
             return;
         }
     }
@@ -1222,100 +1353,6 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
             break;
     }
     return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull);
-}
-
-void EditorStyle::DrawCheckIndicator(const QStyleOption& option, QPainter& painter) const
-{
-    // A box of the token size with a control edge on the panel, so an unchecked box is as visible as a checked one;
-    // checked and partly checked boxes fill with the accent and carry a tick or a bar in the accent's text colour.
-    const int size = std::min({static_cast<int>(design::SIZE_CHECKBOX), option.rect.width(), option.rect.height()});
-    QRect box(QPoint(0, 0), QSize(size, size));
-    box.moveCenter(option.rect.center());
-    const bool isEnabled = option.state.testFlag(State_Enabled);
-    const bool isOn = option.state.testFlag(State_On);
-    const bool isPartial = option.state.testFlag(State_NoChange);
-    const bool isHovered = option.state.testFlag(State_MouseOver) && isEnabled == true;
-    QColor fill = mColours.Panel;
-    QColor edge = isHovered == true ? mColours.Accent : mColours.Border;
-    QColor mark = mColours.AccentText;
-    if (isEnabled == false)
-    {
-        edge = mColours.Disabled;
-        mark = mColours.Disabled;
-    }
-    else if (isOn == true || isPartial == true)
-    {
-        fill = mColours.Accent;
-        edge = mColours.Accent;
-    }
-    DrawControlBody(&painter, box, { .Fill = fill, .Edge = edge }, GetEdgeWidth());
-    if (isOn == false && isPartial == false)
-    {
-        return;
-    }
-    const QRectF area(box);
-    const auto at = [&area](qreal x, qreal y) {
-        return QPointF(area.left() + area.width() * x, area.top() + area.height() * y);
-    };
-    painter.save();
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(mark, CHEVRON_STROKE, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    painter.setBrush(Qt::NoBrush);
-    if (isOn == true)
-    {
-        const QPointF tick[CHEVRON_POINT_COUNT] = {at(TICK_START_X, TICK_START_Y),
-                                                   at(TICK_CORNER_X, TICK_CORNER_Y),
-                                                   at(TICK_END_X, TICK_END_Y)};
-        painter.drawPolyline(tick, CHEVRON_POINT_COUNT);
-    }
-    else
-    {
-        painter.drawLine(at(PARTIAL_BAR_START, HALF), at(PARTIAL_BAR_END, HALF));
-    }
-    painter.restore();
-}
-
-void EditorStyle::DrawGroupBox(const QStyleOptionGroupBox& groupBox,
-                               QPainter& painter,
-                               const QWidget* widgetOrNull) const
-{
-    // A flat section, as docs/architecture/editor-art-direction.md asks: a quiet rule and a clear title instead of
-    // the rounded card macOS draws around every group.
-    const QFont titleFont = MakeGroupTitleFont(widgetOrNull);
-    const GroupBoxLayout layout =
-        ComputeGroupBoxLayout(groupBox,
-                              titleFont,
-                              proxy()->pixelMetric(PM_IndicatorWidth, &groupBox, widgetOrNull),
-                              proxy()->pixelMetric(PM_CheckBoxLabelSpacing, &groupBox, widgetOrNull));
-    painter.fillRect(QRect(groupBox.rect.left(), groupBox.rect.top(), groupBox.rect.width(), CONTROL_EDGE_WIDTH),
-                     mColours.SubtleBorder);
-    const bool isEnabled = groupBox.state.testFlag(State_Enabled);
-    if (groupBox.subControls.testFlag(SC_GroupBoxCheckBox) == true)
-    {
-        QStyleOption check(groupBox);
-        check.rect = layout.CheckBox;
-        check.state.setFlag(State_HasFocus, false);
-        check.state.setFlag(State_MouseOver,
-                            groupBox.state.testFlag(State_MouseOver) == true &&
-                                (groupBox.activeSubControls & (SC_GroupBoxCheckBox | SC_GroupBoxLabel)) != 0);
-        proxy()->drawPrimitive(PE_IndicatorCheckBox, &check, &painter, widgetOrNull);
-    }
-    if (groupBox.text.isEmpty() == false)
-    {
-        painter.save();
-        painter.setFont(titleFont);
-        painter.setPen(isEnabled == true ? mColours.Text : mColours.Secondary);
-        const QString title = QFontMetrics(titleFont).elidedText(groupBox.text, Qt::ElideRight, layout.Label.width());
-        painter.drawText(layout.Label, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextShowMnemonic, title);
-        painter.restore();
-    }
-    if (groupBox.state.testFlag(State_HasFocus) == true && isEnabled == true)
-    {
-        QStyleOptionFocusRect focus;
-        focus.QStyleOption::operator=(groupBox);
-        focus.rect = layout.CheckBox.isNull() == true ? layout.Label : layout.CheckBox.united(layout.Label);
-        proxy()->drawPrimitive(PE_FrameFocusRect, &focus, &painter, widgetOrNull);
-    }
 }
 
 EditorStyle* GetEditorStyleOrNull()
