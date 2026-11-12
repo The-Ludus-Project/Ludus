@@ -224,27 +224,55 @@ RasterStatus PacketStatus(const RasterPacket& packet) noexcept
     }
     return RasterStatus::Ready;
 }
-bool SamePipeline(const RasterPipelineInfo& a, const RasterPipelineInfo& b) noexcept
+bool AreStencilFacesEqual(const RasterStencilFace& left, const RasterStencilFace& right) noexcept
 {
-    if (a.Vertex != b.Vertex || a.Fragment != b.Fragment || a.Layout != b.Layout || a.Depth != b.Depth ||
-        a.Blend != b.Blend || a.Target != b.Target || a.DepthWrite != b.DepthWrite ||
-        a.ShouldWriteColor != b.ShouldWriteColor || a.FillMode != b.FillMode || a.DepthCompare != b.DepthCompare ||
-        a.StreamCount != b.StreamCount || a.AttributeCount != b.AttributeCount)
+    return left.Compare == right.Compare && left.Fail == right.Fail && left.DepthFail == right.DepthFail &&
+           left.Pass == right.Pass;
+}
+// Thanks to JMC47 and MayImilae, “Ubershaders: A Ridiculous Solution to an Impossible Problem”
+// (Dolphin Emulator, “Shader Variant Generation”), for documenting fixed-state pipeline variants.
+// https://dolphin-emu.org/blog/2017/07/30/ubershaders/
+// A shared Ludus request requires matching attachment and enabled stencil state as well as matching shaders.
+bool ArePipelinesEqual(const RasterPipelineInfo& left, const RasterPipelineInfo& right) noexcept
+{
+    if (left.Vertex != right.Vertex || left.Fragment != right.Fragment || left.Layout != right.Layout ||
+        left.Depth != right.Depth || left.Blend != right.Blend || left.Target != right.Target ||
+        left.DepthWrite != right.DepthWrite || left.ShouldWriteColor != right.ShouldWriteColor ||
+        left.FillMode != right.FillMode || left.DepthCompare != right.DepthCompare ||
+        left.StreamCount != right.StreamCount || left.AttributeCount != right.AttributeCount ||
+        left.ColorCount != right.ColorCount || left.SampleCount != right.SampleCount || left.Stencil != right.Stencil)
     {
         return false;
     }
-    for (usize i = 0; i < a.StreamCount; ++i)
+    if (left.Stencil == true &&
+        (left.StencilReadMask != right.StencilReadMask || left.StencilWriteMask != right.StencilWriteMask ||
+         left.StencilReference != right.StencilReference ||
+         AreStencilFacesEqual(left.StencilFront, right.StencilFront) == false ||
+         AreStencilFacesEqual(left.StencilBack, right.StencilBack) == false))
     {
-        if (a.Streams[i].Stride != b.Streams[i].Stride || a.Streams[i].PerInstance != b.Streams[i].PerInstance)
+        return false;
+    }
+    for (usize i = 0; i < left.ColorCount; ++i)
+    {
+        if (left.ColorFormats[i] != right.ColorFormats[i])
         {
             return false;
         }
     }
-    for (usize i = 0; i < a.AttributeCount; ++i)
+    for (usize i = 0; i < left.StreamCount; ++i)
     {
-        const auto& x = a.Attributes[i];
-        const auto& y = b.Attributes[i];
-        if (x.Location != y.Location || x.Stream != y.Stream || x.Offset != y.Offset || x.Format != y.Format)
+        if (left.Streams[i].Stride != right.Streams[i].Stride ||
+            left.Streams[i].PerInstance != right.Streams[i].PerInstance)
+        {
+            return false;
+        }
+    }
+    for (usize i = 0; i < left.AttributeCount; ++i)
+    {
+        const RasterVertexAttribute& leftAttribute = left.Attributes[i];
+        const RasterVertexAttribute& rightAttribute = right.Attributes[i];
+        if (leftAttribute.Location != rightAttribute.Location || leftAttribute.Stream != rightAttribute.Stream ||
+            leftAttribute.Offset != rightAttribute.Offset || leftAttribute.Format != rightAttribute.Format)
         {
             return false;
         }
@@ -701,8 +729,8 @@ RequestPipeline(DeviceHandle device, const RasterPipelineDescription& descriptio
     for (usize i = 0; i < gRecords[static_cast<usize>(RasterKind::Pipeline)].GetSize(); ++i)
     {
         const auto& record = At(RasterKind::Pipeline, i);
-        if (record.Owner == DeviceOwner() && record.Published && record.ServiceOwned &&
-            SamePipeline(record.Pipeline, info))
+        if (record.Owner == DeviceOwner() && record.Published == true && record.ServiceOwned == true &&
+            ArePipelinesEqual(record.Pipeline, info) == true)
         {
             pipelineSlot = i;
             Retain(RasterKind::Pipeline, i);

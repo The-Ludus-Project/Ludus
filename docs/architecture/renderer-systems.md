@@ -1171,12 +1171,11 @@ load/store operations and the declared uses remain part of the
   values such as camera constants, attachment handles, and an extent-only
   resize stay with the invocation unless a recipe explicitly specializes on
   one of them.
-- The current RHI raster request comparison omits the explicit color format
-  sequence, sample count and stencil state carried by the raster description.
-  Qualify complete equality in RHI before using shared requests for those
-  descriptions. The initial migration uses the existing single-sample
-  portable raster contract. Sharing for compute and ray pipelines requires
-  their own RHI qualification.
+- RHI raster requests compare the explicit color format sequence, sample count
+  and stencil enablement. When stencil is enabled, both faces, both masks and
+  the reference participate in equality. The initial graph migration uses the
+  existing single-sample portable raster contract. Sharing for compute and ray
+  pipelines requires their own RHI qualification.
 
 #### Acquisition, activation and release
 
@@ -1209,6 +1208,27 @@ pipeline. The final release removes its shared request entry, with physical
 retirement governed by RHI. Measure reuse before retaining an idle working
 set. Any future persistent driver cache is a device/driver-qualified
 accelerator. Its absence or rejection falls back to ordinary preparation.
+
+#### First-use fallback decision
+
+Thanks to JMC47 and MayImilae for documenting Dolphin's hybrid mode in
+[*Ubershaders: A Ridiculous Solution to an Impossible Problem*](https://dolphin-emu.org/blog/2017/07/30/ubershaders/)
+(Dolphin Emulator, July 2017, “Hybrid Mode Ubershaders” and “Shader Variant
+Generation”). Dolphin discovers guest GPU state at draw time. Its already
+compiled interpreter renders that state while a specialized shader prepares.
+The article reports higher GPU cost for the interpreter and driver stalls when
+fixed blend or depth state still requires a new native pipeline.
+
+Ludus can enumerate required recipes from the selected cooked configuration.
+Prewarm those recipes and retain the active graph through replacement. The
+[native reload pixel regression](../development/render-graph-authoring.md#benchmark-and-acceptance)
+exercises drawing while replacement preparation is pending. The first drawable
+graph still depends on its own required pipelines. Defer a hybrid shader until a
+representative cold run attributes a first-draw or frame-time spike to a required
+native pipeline. Measure request-to-ready latency and owner-thread frame-time
+tails separately on the affected backend. Any prototype needs a ready pipeline
+for the full attachment and fixed-state contract, equivalent pixels and pass
+side effects, and a measured GPU cost while the specialization prepares.
 
 #### First migration and acceptance
 
