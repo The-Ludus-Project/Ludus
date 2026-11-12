@@ -247,6 +247,19 @@ can convert `FrameInput::ElapsedSeconds` to days for the Earth templates or
 hours for a custom orbit and add the authored epoch. This makes the sky follow
 Pause, Step, and the [host's debug fast-forward](../development/project-live-reload.md#recover-and-debug).
 The sampler uses approximate solar and lunar positions and a spherical, airless Earth.
+Use `TrySampleEarthCelestialLighting` with the same inputs to obtain clear-sky
+direct lighting and apparent disk radius. The result carries RGB normal
+illuminance at sea level for direct lights and above the atmosphere for the
+boundary, plus the Moon's Sun direction and disk luminance. Keeping both
+illuminances lets the renderer apply its atmospheric transmittance once.
+The sunlight scale and annual distance use
+[Darula, Kittler and Gueymard](https://doi.org/10.1016/j.solener.2005.01.004) and the
+[U.S. Naval Observatory solar approximation](https://aa.usno.navy.mil/faq/sun_approx).
+The Moon uses the visual phase curve from
+[Krisciunas and Schaefer, equations 8–9](https://doi.org/10.1086/132921), with
+a Lambertian disk scaled to match the beam. The sea-level beam uses
+[Kasten and Young's optical air mass](https://doi.org/10.1364/AO.28.004735) and
+representative clear-sky RGB extinction.
 See [celestial directional lights](../development/editor-workspace.md#celestial-directional-lights)
 for the World editor controls.
 
