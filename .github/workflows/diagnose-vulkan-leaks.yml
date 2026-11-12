@@ -10,19 +10,33 @@ jobs:
   enumerate:
     runs-on: ubuntu-24.04
     timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [1, 2, 3, 4, 5, 6]
     env:
       GALLIVM_PERF: nopt
     steps:
+      - name: Identify the runner image
+        id: image
+        run: |
+          echo "ImageVersion=$ImageVersion"
+          if [[ "$ImageVersion" != 20261101.360.1 ]]; then
+            echo 'should_probe=true' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.image.outputs.should_probe == 'true'
         with:
           persist-credentials: false
       - name: Install the qualification toolchain and Vulkan driver
+        if: steps.image.outputs.should_probe == 'true'
         run: |
           python3 scripts/python/llvm_apt_source.py
           sudo apt-get update -qq
           sudo apt-get install -y -qq clang-23 libclang-rt-23-dev llvm-23 libvulkan-dev libvulkan1 mesa-vulkan-drivers
           dpkg-query -W libc6 libvulkan1 mesa-vulkan-drivers
       - name: Compare Vulkan loader and Lavapipe LeakSanitizer results
+        if: steps.image.outputs.should_probe == 'true'
         shell: bash
         run: |
           cat > "$RUNNER_TEMP/enumerate.c" <<'C'
