@@ -1564,6 +1564,71 @@ lobes, sampled directions, energy, and raw CPU/GPU reference results.
    Expand physical layering and subsurface transport with raw linear CPU/GPU
    parity and explicit profile coverage.
 
+### Hair and skin rendering
+
+Start with a static character bust shared by the renderer, World editor and
+installed SDK consumer. Use the same authored assets and lighting when
+comparing techniques. The first milestone uses the existing triangle scene
+and typed materials, with no dependency on skeletal deformation or native
+curve traversal.
+
+- **Raster hair.** Render a hairstyle as two-sided, alpha-masked cards with an
+  authored strand direction for directional highlights. Reuse mesh slots,
+  textures and existing colour, depth and shadow passes. Verify matching
+  coverage across those passes and supported ray hit and shadow queries.
+  Compare GPU time and overdraw against the same cards with ordinary masked
+  shading. [Hair cards #1371](https://github.com/The-Ludus-Project/Ludus/issues/1371)
+- **Raster skin.** Adapt the two separable convolutions in Jorge Jimenez et
+  al., *Separable Subsurface Scattering* (Computer Graphics Forum, 2015),
+  to the deferred lighting path. Filter diffuse lighting only, with depth and
+  skin profile boundaries, and preserve specular detail. Expose base colour,
+  roughness and RGB scattering distances in world units. Compare against
+  ordinary PBR on the bust and measure GPU time and transient memory.
+  [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
+  [Real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)
+- **Reference skin.** Use the normalized diffusion profile in Per H.
+  Christensen and Brent Burley, *Approximate Reflectance Profiles for
+  Efficient Subsurface Scattering* (Pixar Technical Memo 15-04, 2015).
+  Reuse the authored skin inputs, triangle queries and light sampling. Add a
+  surface-to-surface transport operation with a same-region query, area PDF
+  and explicit continuation weight. Implement it in the CPU oracle and GPU
+  compute tracer together and compare matched raw scene-linear outputs under
+  the [reference acceptance contract](#cpu-and-gpu-reference-implementation-requirement).
+  A lit slab and adjacent surfaces test the diffusion profile and region
+  isolation. Use the backlit ear to decide whether to add thin-feature
+  transmission. [Technical memo](https://www.seanet.com/~myandper/abstract/memo1504.htm) ·
+  [Reference skin #1373](https://github.com/The-Ludus-Project/Ludus/issues/1373)
+
+Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
+An artist must be able to import the bust, assign and edit hair and skin
+materials, undo and redo, save and reopen, and reimport with slot mappings
+and overrides preserved. A rejected edit reports an actionable repair at the
+point of edit and preserves the last drawable view. For game delivery, cook
+and package that saved World in an
+[independent project built against the installed SDK](../development/project-sdk-workflow.md).
+Verify retained material assignments, textures and shader dependencies, and
+compare the clean package's rendered output with the editor on a declared
+target and raster profile. The standalone qualification depends on both
+raster features. [Installed SDK #1400](https://github.com/The-Ludus-Project/Ludus/issues/1400)
+
+Defer strand production work until a named static groom and memory budget
+justify a paired CPU and GPU prototype. The candidate is Matt Jen-Yuan Chiang,
+Benedikt Bitterli, Chuck Tappan and Brent Burley, *A Practical and
+Controllable Hair and Fur Model for Production Path Tracing* (Computer
+Graphics Forum, 2016). Its near-field model needs the tangent and signed
+offset at the fiber hit. Try bounded triangle proxies using
+[FoundationMath cubic evaluation](curves-surfaces.md#implemented-kernel-g1), then
+measure cook expansion, build cost, peak memory and tracing cost before
+considering native procedural traversal. Revisit real-time strands and groom
+authoring when those measurements are available and a game or editor workflow
+needs them. Animated raster integration follows the skinned character
+renderer. Live deformed ray scenes follow RT3.
+[Strand prototype #1374](https://github.com/The-Ludus-Project/Ludus/issues/1374) ·
+[Chiang et al.](https://media.disneyanimation.com/uploads/production/publication_asset/152/asset/eurographics2016Fur_Smaller.pdf) ·
+[Procedural traversal #1246](https://github.com/The-Ludus-Project/Ludus/issues/1246) ·
+[Animation #1181](https://github.com/The-Ludus-Project/Ludus/issues/1181) ·
+[RT3 #1249](https://github.com/The-Ludus-Project/Ludus/issues/1249)
+
 ## Lighting and the default pass sequence
 
 Use a conventional forward baseline with bounded CPU-selected per-object lights.
