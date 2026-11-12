@@ -1117,8 +1117,22 @@ void ReferenceCaptureWindow::service()
         return;
     }
 #endif
+    const ViewportReferencePhase phase = mCapture.Service(REFERENCE_SERVICE_BUDGET_NANOSECONDS);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    const bool wasRasterRendering = isRasterRendering();
+    if (phase == ViewportReferencePhase::Failed && isRasterRendering() == true)
+    {
+        // An unfinished comparison must not keep the window locked after RT1 fails.
+        if (mRasterCapture.GetPhase() == ViewportRasterPhase::Rendering)
+        {
+            mRasterCapture.Release();
+        }
+        if (mGraphCapture.IsRunning() == true)
+        {
+            mGraphCapture.Release();
+        }
+        mComparisonError = QStringLiteral("the reference capture failed before the comparison finished");
+    }
+    const bool wasRasterRendering = mRasterCapture.GetPhase() == ViewportRasterPhase::Rendering;
     const ViewportRasterPhase rasterPhase = mRasterCapture.Service();
     const bool hasRasterFinished = wasRasterRendering == true && rasterPhase != ViewportRasterPhase::Rendering;
     if (hasRasterFinished == true && rasterPhase == ViewportRasterPhase::Complete)
@@ -1143,7 +1157,6 @@ void ReferenceCaptureWindow::service()
 #else
     const bool hasRasterFinished = false;
 #endif
-    const ViewportReferencePhase phase = mCapture.Service(REFERENCE_SERVICE_BUDGET_NANOSECONDS);
     const bool isReferenceFinished =
         phase != ViewportReferencePhase::Preparing && phase != ViewportReferencePhase::Tracing;
     const bool isFinished = isReferenceFinished == true && isRasterRendering() == false;
