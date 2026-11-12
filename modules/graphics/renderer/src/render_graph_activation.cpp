@@ -4,6 +4,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/graphics/rhi/compute.h>
@@ -871,7 +872,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     {
         candidate->Bytes[i] = source[i];
     }
-    ByteReader reader{candidate->Bytes.AsSpan()};
+    ByteReader reader{foundation::MakeSpan(candidate->Bytes)};
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||

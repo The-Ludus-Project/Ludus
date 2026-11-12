@@ -6,6 +6,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <string_view>
@@ -23,7 +24,7 @@ bool ProcessConnection(compiler::Compiler& inoutCompiler, Stream& inoutStream, u
     StaticArray<uint8, FRAME_BYTES> header{};
     uint32 size = 0;
     if (inoutStream.Transfer(header.GetData(), FRAME_BYTES, false) == false ||
-        TryReadLittleEndian<uint32>(header.AsSpan(), size) == false || size == 0 || size > compiler::MAX_MESSAGE_BYTES)
+        TryReadLittleEndian<uint32>(MakeSpan(header), size) == false || size == 0 || size > compiler::MAX_MESSAGE_BYTES)
     {
         return false;
     }
@@ -38,7 +39,7 @@ bool ProcessConnection(compiler::Compiler& inoutCompiler, Stream& inoutStream, u
     {
         return false;
     }
-    static_cast<void>(TryWriteLittleEndian<uint32>(static_cast<uint32>(response.GetSize()), header.AsSpan()));
+    static_cast<void>(TryWriteLittleEndian<uint32>(static_cast<uint32>(response.GetSize()), MakeSpan(header)));
     return inoutStream.Transfer(header.GetData(), FRAME_BYTES, true) == true &&
            inoutStream.Transfer(response.GetData(), response.GetSize(), true) == true;
 }

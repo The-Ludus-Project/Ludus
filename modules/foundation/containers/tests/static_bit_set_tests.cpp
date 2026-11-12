@@ -186,7 +186,7 @@ TEST_CASE("StaticBitSet single-bit operations", "[containers][bit-set]")
     REQUIRE(bits.IsSet(3) == false);
     bits.Reset(64);
     REQUIRE(bits.IsNoneSet());
-    REQUIRE(bits.GetWords().size() == 2);
+    REQUIRE(bits.GetWords().GetSize() == 2);
 }
 
 TEST_CASE("StaticBitSet set operations combine word by word", "[containers][bit-set]")

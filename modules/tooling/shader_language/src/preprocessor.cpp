@@ -1,5 +1,6 @@
 #include <ludus/tooling/shader_language/preprocessor.hpp>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 #include <ludus/tooling/shader_language/limits.hpp>
 
@@ -11,8 +12,6 @@
 #include "internal/macro_expander.hpp"
 #include "internal/macro_table.hpp"
 #include "internal/token_text.hpp"
-
-#include <span>
 
 namespace ludus::tooling::shader_language
 {
@@ -1146,7 +1145,8 @@ private:
                 isOk = mPathScratch.TryAdd(' ');
             }
             const std::string_view spelling = mText.Spell(token);
-            isOk = isOk == true && mPathScratch.TryAddRange(std::span<const char>(spelling.data(), spelling.size()));
+            isOk = isOk == true &&
+                   mPathScratch.TryAddRange(foundation::BorrowedView<const char>(spelling.data(), spelling.size()));
         }
         if (isOk == false)
         {

@@ -3,6 +3,7 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -47,7 +48,7 @@ void LoadPackage(bool isJumpRestoreOnly, renderer::RenderGraphPackage& outPackag
                 .Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-    const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+    const filesystem::ReadResult read = file.ReadAt(0, MakeSpan(bytes));
     REQUIRE(read.Outcome.Succeeded() == true);
     REQUIRE(read.BytesRead == bytes.GetSize());
     REQUIRE(outPackage.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);

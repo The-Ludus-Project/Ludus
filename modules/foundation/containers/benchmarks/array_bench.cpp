@@ -8,6 +8,7 @@
 // the best (min) time to reduce noise.
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/time/time.hpp>
 
@@ -20,6 +21,7 @@
 #include <vector>
 
 using ludus::foundation::Array;
+using ludus::foundation::BorrowedView;
 using ludus::foundation::int32;
 using ludus::foundation::isize;
 using ludus::foundation::uint32;
@@ -272,7 +274,7 @@ int main()
         Row("random access N uint32", {ludus, stdv});
     }
 
-    // --- bulk append (span) ---
+    // --- bulk append (borrowed view) ---
     {
         std::vector<std::uint32_t> src(N);
         for (long i = 0; i < N; ++i)
@@ -282,7 +284,7 @@ int main()
         auto ludus = BestNs(
             [&] {
                 Array<std::uint32_t> v;
-                v.AddRange(std::span<const std::uint32_t>(src.data(), src.size()));
+                v.AddRange(BorrowedView<const std::uint32_t>(src.data(), src.size()));
                 DoNotOptimize(v.GetData());
             },
             kReps,

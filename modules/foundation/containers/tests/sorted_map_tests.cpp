@@ -10,6 +10,7 @@
 #include <utility>
 
 using ludus::foundation::Array;
+using ludus::foundation::BorrowedView;
 using ludus::foundation::int32;
 using ludus::foundation::SortedMap;
 using ludus::foundation::StaticArray;
@@ -87,8 +88,8 @@ TEST_CASE("SortedMap lookup, replacement and sorted iteration", "[containers][so
     REQUIRE_FALSE(readOnly.Contains(15));
     STATIC_REQUIRE(std::is_same_v<decltype(readOnly.Find(20)), const int32*>);
     STATIC_REQUIRE(std::is_const_v<std::remove_reference_t<decltype(*map.begin())>>);
-    const auto entries = readOnly.AsSpan();
-    REQUIRE(entries.size() == 3);
+    const BorrowedView<const SortedMap<uint64, int32>::Entry> entries = readOnly.AsView();
+    REQUIRE(entries.GetSize() == 3);
     REQUIRE(entries[0].Key == 10);
     REQUIRE(entries[1].Key == 20);
     REQUIRE(entries[2].Key == 30);
@@ -111,7 +112,7 @@ TEST_CASE("SortedMap comparator defines both ordering and equivalence", "[contai
     descending.AddInPlace(3, 30);
     descending.AddInPlace(8, 80);
     descending.AddInPlace(1, 10);
-    REQUIRE(descending.AsSpan()[0].Key == 8);
+    REQUIRE(descending.AsView()[0].Key == 8);
     REQUIRE(*descending.Find(3) == 30);
     REQUIRE(descending.Find(9) == nullptr);
     REQUIRE(descending.Find(0) == nullptr);
@@ -121,7 +122,7 @@ TEST_CASE("SortedMap comparator defines both ordering and equivalence", "[contai
     auto result = equivalent.TryAddInPlace(19, 9);
     REQUIRE_FALSE(result.Inserted);
     REQUIRE(*result.Value == 1);
-    REQUIRE(equivalent.AsSpan()[0].Key == 11);
+    REQUIRE(equivalent.AsView()[0].Key == 11);
     REQUIRE(equivalent.Remove(15));
     REQUIRE(equivalent.IsEmpty());
 }
@@ -237,8 +238,8 @@ TEST_CASE("SortedMap seeded operations match an independent direct-index model",
             REQUIRE(map.Contains(expected) == present[expected]);
             if (present[expected])
             {
-                REQUIRE(map.AsSpan()[index].Key == expected);
-                REQUIRE(map.AsSpan()[index].Value == values[expected]);
+                REQUIRE(map.AsView()[index].Key == expected);
+                REQUIRE(map.AsView()[index].Value == values[expected]);
                 ++index;
             }
         }

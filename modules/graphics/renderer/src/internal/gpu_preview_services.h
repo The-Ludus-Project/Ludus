@@ -492,7 +492,7 @@ Status PackGpuScene(const ReferenceJob& job,
     }
     for (usize i = 0; i < job.Description.LightCount; ++i)
     {
-        const DirectLight& light = job.Lights[i];
+        const DirectLight& light = internal::GetOrderedReferenceLight(job, i);
         math::Vector4* outLight = data.GetData() + static_cast<usize>(lightsWide) + i * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
         outLight[0] = GpuVector(light.Color * light.Intensity, static_cast<float32>(light.Kind));
         outLight[1] = GpuVector(light.Position, light.Range);

@@ -3,6 +3,7 @@
 // combining marks, deterministic normalized coverage, and preserved shaped
 // offsets. These exercise the real pinned FreeType + HarfBuzz, not mocks.
 
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/text/font_system.h>
 
 #include "fixture_support.h"
@@ -105,7 +106,8 @@ TEST_CASE("Rasterization is deterministic and size-stable", "[text][audit][raste
     GlyphBitmap first;
     REQUIRE(IsOk(RasterizeGlyph(guard.System, font, 48, glyph, &first)));
     const ludus::foundation::Array<ludus::foundation::uint8> firstCopy =
-        ludus::foundation::Array<ludus::foundation::uint8>::FromRange(first.Coverage);
+        ludus::foundation::Array<ludus::foundation::uint8>::FromRange(
+            ludus::foundation::MakeBorrowedView(first.Coverage));
     const ludus::foundation::uint32 w = first.Width;
     const ludus::foundation::uint32 h = first.Height;
 
@@ -118,7 +120,8 @@ TEST_CASE("Rasterization is deterministic and size-stable", "[text][audit][raste
     REQUIRE(again.Width == w);
     REQUIRE(again.Height == h);
     const ludus::foundation::Array<ludus::foundation::uint8> againCopy =
-        ludus::foundation::Array<ludus::foundation::uint8>::FromRange(again.Coverage);
+        ludus::foundation::Array<ludus::foundation::uint8>::FromRange(
+            ludus::foundation::MakeBorrowedView(again.Coverage));
     CHECK(againCopy == firstCopy); // byte-identical after the size round trip
 }
 

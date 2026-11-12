@@ -57,6 +57,13 @@ closed argument set and an implementation-only parser.
 
 - `<string_view>` and `<span>` are existing compatibility interfaces. Maintain
   them where required by an existing API; new view APIs should be Ludus-owned.
+- FoundationContainers' `Array`, `StaticArray`, `FixedArray`, `RingBuffer`,
+  `SortedMap` and `StaticBitSet` convert to `BorrowedView` and no longer
+  include `<span>` or convert to `std::span`. The opt-in
+  `span_compatibility.hpp` (`MakeSpan`, `MakeBorrowedView`) is the only container
+  header that includes `<span>`; include it only where code calls an existing
+  `std::span` API. It is a migration adapter, not a precedent for new span APIs.
+  See [container views](../architecture/container-systems.md#borrowed-contiguous-views).
 - GraphicsRhi's raster, fullscreen shader and uniform inputs use
   FoundationContainers' `BorrowedView`. The former R1 `std::span` compatibility
   exception is retired. Private legacy adapters may still construct spans from

@@ -6,6 +6,8 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include "internal/dxil_container.h"
@@ -124,7 +126,7 @@ Array<uint8> MakeValidationPart(const ContainerShape& shape)
         strings.Add(0);
     }
     AppendUint32(part, static_cast<uint32>(strings.GetSize()));
-    part.AddRange(std::span<const uint8>{strings.GetData(), strings.GetSize()});
+    part.AddRange(ludus::foundation::BorrowedView<const uint8>{strings.GetData(), strings.GetSize()});
     return part;
 }
 
@@ -151,7 +153,7 @@ Array<uint8> MakeContainer(const ContainerShape& shape)
         WriteUint32(bytes, offsets + index * sizeof(uint32), static_cast<uint32>(bytes.GetSize()));
         AppendCode(bytes, code);
         AppendUint32(bytes, static_cast<uint32>(content.GetSize()));
-        bytes.AddRange(std::span<const uint8>{content.GetData(), content.GetSize()});
+        bytes.AddRange(ludus::foundation::BorrowedView<const uint8>{content.GetData(), content.GetSize()});
     };
     appendPart(0, "DXIL", program);
     appendPart(1, "PSV0", validation);
@@ -240,7 +242,7 @@ TEST_CASE("DXIL scalar raster bindings match the complete PSV table", "[rhi][dxi
     layout.Entries[0] = { .Binding = 3, .Kind = rhi::RasterBindingKind::UniformBuffer, .MinSize = 16 };
     const auto matches = [&](const ContainerShape& candidate) {
         const Array<uint8> bytes = MakeContainer(candidate);
-        return rhi::internal::HasDxilBindings(bytes.AsSpan(), layout);
+        return rhi::internal::HasDxilBindings(ludus::foundation::MakeSpan(bytes), layout);
     };
     CHECK(matches(shape) == true);
     // D6c: the owned deferred/clustered ABIs bind slots a stage does not read.
@@ -303,9 +305,9 @@ TEST_CASE("DXIL PSV resource kinds distinguish sampled dimensions and samplers",
         layout.Count = 1;
         layout.DescriptorCount = 1;
         layout.Entries[0].Kind = kinds[index];
-        CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == true);
+        CHECK(rhi::internal::HasDxilBindings(ludus::foundation::MakeSpan(bytes), layout) == true);
         layout.Entries[0].Kind = rhi::RasterBindingKind::StorageRead;
-        CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == false);
+        CHECK(rhi::internal::HasDxilBindings(ludus::foundation::MakeSpan(bytes), layout) == false);
     }
 }
 
@@ -320,11 +322,13 @@ TEST_CASE("DXIL PSV validates compute workgroups and structured access", "[rhi][
     shape.ResourceType = 8;
     shape.ResourceKind = 12;
     Array<uint8> bytes = MakeContainer(shape);
-    CHECK(HasDxilEntry(bytes.AsSpan(), ShaderStage::Compute, "ComputeMain") == true);
-    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), shape.Threads.AsSpan()) == true);
+    CHECK(HasDxilEntry(ludus::foundation::MakeSpan(bytes), ShaderStage::Compute, "ComputeMain") == true);
+    CHECK(rhi::internal::HasDxilWorkgroupSize(ludus::foundation::MakeSpan(bytes),
+                                              ludus::foundation::MakeSpan(shape.Threads)) == true);
     const WorkgroupSize wrongThreads{4, 8, 2};
-    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), wrongThreads.AsSpan()) == false);
-    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), {}) == false);
+    CHECK(rhi::internal::HasDxilWorkgroupSize(ludus::foundation::MakeSpan(bytes),
+                                              ludus::foundation::MakeSpan(wrongThreads)) == false);
+    CHECK(rhi::internal::HasDxilWorkgroupSize(ludus::foundation::MakeSpan(bytes), {}) == false);
 
     rhi::internal::RasterLayout layout;
     layout.Count = 1;
@@ -335,15 +339,16 @@ TEST_CASE("DXIL PSV validates compute workgroups and structured access", "[rhi][
         .Visibility = rhi::RasterVisibility::Compute,
         .MinSize = sizeof(uint32),
     };
-    CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == true);
+    CHECK(rhi::internal::HasDxilBindings(ludus::foundation::MakeSpan(bytes), layout) == true);
     layout.Entries[0].Kind = rhi::RasterBindingKind::StorageRead;
-    CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == false);
+    CHECK(rhi::internal::HasDxilBindings(ludus::foundation::MakeSpan(bytes), layout) == false);
     shape.ResourceType = 5;
     bytes = MakeContainer(shape);
-    CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == true);
+    CHECK(rhi::internal::HasDxilBindings(ludus::foundation::MakeSpan(bytes), layout) == true);
     shape.ValidationKind = VERTEX_KIND;
     bytes = MakeContainer(shape);
-    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), shape.Threads.AsSpan()) == false);
+    CHECK(rhi::internal::HasDxilWorkgroupSize(ludus::foundation::MakeSpan(bytes),
+                                              ludus::foundation::MakeSpan(shape.Threads)) == false);
 }
 
 TEST_CASE("DXIL vertex input semantics are bounded and preserve failed outputs", "[rhi][dxil]")

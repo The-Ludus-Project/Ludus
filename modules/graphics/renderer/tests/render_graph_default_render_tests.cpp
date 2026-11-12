@@ -14,6 +14,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/projection.hpp>
@@ -215,7 +216,7 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
             const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
             REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
-            REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+            REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
         };
         for (usize lightingCase = 0; lightingCase < LIGHTING_CASE_COUNT; ++lightingCase)
         {
@@ -455,7 +456,7 @@ TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene 
         REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
         const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
         REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
-        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     };
     render();
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
@@ -566,7 +567,7 @@ TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges",
     REQUIRE(upscale.Draw({}) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
     REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     // Independent CPU reference: pixel centers map to source texel coordinates u*2-0.5,
     // with edge clamping. The four source colors make red/green/blue orientation observable.
     for (uint32 y = 0; y < HEIGHT; ++y)
@@ -721,7 +722,7 @@ TEST_CASE("MetalFX preserves constant RGB through its private output and surface
     REQUIRE(pass.Draw() == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
     REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     for (usize pixel = 0; pixel < PIXEL_BYTES; pixel += TEXEL_BYTES)
     {
         for (usize channel = 0; channel < TEXEL_BYTES - 1; ++channel)
@@ -785,7 +786,7 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
             REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
             const rhi::RasterStatus status = fixture.Graph.ConfirmSubmission(completion);
             REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
-            REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+            REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
         };
         const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
         const StaticArray<uint32, INDEX_COUNT> reversed{{0, 2, 1}};
@@ -1126,7 +1127,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
         const rhi::RasterStatus status = fixture.Graph.ConfirmSubmission(completion);
         REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
-        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     };
     // The receiver and the downward emitter of the CPU-checked test, plus a vertical wall at x = 0.15 between the
     // receiver's centre and the whole emitter. The orthographic camera looks straight down, so it sees the wall
@@ -1944,7 +1945,7 @@ TEST_CASE("default deferred samples minified material textures at their mean", "
         REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
         const rhi::RasterStatus status = fixture.Graph.ConfirmSubmission(completion);
         REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
-        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     };
 
     const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{
@@ -2515,6 +2516,10 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
     camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
     render();
     CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+    camera.Atmosphere.Celestial.DirectionToSunAtMoonWorld = {0, -1, 0};
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == zenith);
+    camera.Atmosphere.Celestial.DirectionToSunAtMoonWorld = {};
     pointAtMoon({1, 0, 0});
     render();
     CHECK(fixture.Pixels[center + BLUE_CHANNEL] < zenith);

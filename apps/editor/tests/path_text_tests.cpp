@@ -74,3 +74,55 @@ TEST_CASE("A path label asks for little width and shows its full text as a toolt
     QApplication::processEvents();
     CHECK(label.width() <= label.sizeHint().width());
 }
+
+TEST_CASE("A document name leaves out the suffix its group already names", "[editor][path-text]")
+{
+    CHECK(RemoveKnownSuffix(QStringLiteral("sponza.world.json"), u".world.json") == QStringLiteral("sponza"));
+    CHECK(RemoveKnownSuffix(QStringLiteral("Main.LURENDER.json"), u".lurender.json") == QStringLiteral("Main"));
+    // Nothing would be left, a different suffix, or no suffix: the file name stays as it is.
+    CHECK(RemoveKnownSuffix(QStringLiteral(".world.json"), u".world.json") == QStringLiteral(".world.json"));
+    CHECK(RemoveKnownSuffix(QStringLiteral("door.luau"), u".world.json") == QStringLiteral("door.luau"));
+    CHECK(RemoveKnownSuffix(QStringLiteral("door.luau"), {}) == QStringLiteral("door.luau"));
+}
+
+TEST_CASE("A document name drops its qualifier before it elides, and keeps its head and tail", "[editor][path-text]")
+{
+    const QFontMetrics metrics{QFont()};
+    const QString name = QStringLiteral("SliceSamplingCoupled");
+    const QString qualifier = QStringLiteral("render_graphs/slice");
+    const QString full = name + GetDocumentQualifierSeparator() + qualifier;
+    QString shownName;
+    QString shownQualifier;
+
+    ElideDocumentName(name, qualifier, metrics, metrics.horizontalAdvance(full), shownName, shownQualifier);
+    CHECK(shownName == name);
+    CHECK(shownQualifier == GetDocumentQualifierSeparator() + qualifier);
+
+    // Short of the whole qualifier: it is cut from the middle, the name stays whole.
+    const int partWidth = metrics.horizontalAdvance(name + GetDocumentQualifierSeparator() + qualifier.left(8));
+    ElideDocumentName(name, qualifier, metrics, partWidth, shownName, shownQualifier);
+    CHECK(shownName == name);
+    CHECK(shownQualifier.startsWith(GetDocumentQualifierSeparator()) == true);
+    CHECK(shownQualifier.contains(QStringLiteral("\u2026")) == true);
+    CHECK(metrics.horizontalAdvance(shownName + shownQualifier) <= partWidth);
+
+    // Only the name fits: no qualifier at all rather than a stub.
+    ElideDocumentName(name, qualifier, metrics, metrics.horizontalAdvance(name), shownName, shownQualifier);
+    CHECK(shownName == name);
+    CHECK(shownQualifier.isEmpty() == true);
+
+    // Narrower than the name: it keeps its head and its tail, which is where similar names differ.
+    const int narrow = metrics.horizontalAdvance(name) * 2 / 3;
+    ElideDocumentName(name, qualifier, metrics, narrow, shownName, shownQualifier);
+    CHECK(shownName.startsWith(QStringLiteral("Slice")) == true);
+    CHECK(shownName.endsWith(QStringLiteral("led")) == true);
+    CHECK(shownName.contains(QStringLiteral("\u2026")) == true);
+    CHECK(shownQualifier.isEmpty() == true);
+    CHECK(metrics.horizontalAdvance(shownName) <= narrow);
+
+    // A name with dots is a name, not a file name with an extension to keep.
+    const QString dotted = QStringLiteral("sponza.lighting.review.final");
+    const int dottedWidth = metrics.horizontalAdvance(dotted) / 2;
+    ElideDocumentName(dotted, {}, metrics, dottedWidth, shownName, shownQualifier);
+    CHECK(shownName == metrics.elidedText(dotted, Qt::ElideMiddle, dottedWidth));
+}

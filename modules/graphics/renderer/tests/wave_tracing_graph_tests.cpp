@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -48,7 +49,7 @@ void LoadPackage(renderer::RenderGraphPackage& outPackage)
     REQUIRE(directory.OpenRead("wave_graph.lurgrt", file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-    REQUIRE(file.ReadAt(0, bytes.AsSpan()).BytesRead == bytes.GetSize());
+    REQUIRE(file.ReadAt(0, MakeSpan(bytes)).BytesRead == bytes.GetSize());
     REQUIRE(outPackage.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
 }
 } // namespace
