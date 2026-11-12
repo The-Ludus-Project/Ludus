@@ -1373,14 +1373,20 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
             // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qcombobox.cpp
             // Qt budgets glyph ink bounds, which can omit trailing advance. Preserve its icon/size-policy
             // budget and add the largest advance deficit before reserving our field and arrow padding.
+            // A combo sized to a minimum character count budgets that count, not its text, and cuts longer
+            // choices. Its size must not follow the current choice: QComboBox caches its hints without asking
+            // its layout to update when the choice changes, and a toolbar then lays it out narrower than the
+            // later hint.
             const QStyleOptionComboBox* comboOptionOrNull = qstyleoption_cast<const QStyleOptionComboBox*>(option);
+            const QComboBox* comboWidgetOrNull = qobject_cast<const QComboBox*>(widgetOrNull);
+            const bool isCharacterBudget =
+                comboWidgetOrNull != nullptr &&
+                comboWidgetOrNull->sizeAdjustPolicy() == QComboBox::AdjustToMinimumContentsLengthWithIcon;
             foundation::int32 advancePaddingPixels =
-                comboOptionOrNull != nullptr
+                comboOptionOrNull != nullptr && isCharacterBudget == false
                     ? ComputeTextAdvancePaddingPixels(comboOptionOrNull->fontMetrics, comboOptionOrNull->currentText)
                     : 0;
-            const QComboBox* comboWidgetOrNull = qobject_cast<const QComboBox*>(widgetOrNull);
-            if (comboWidgetOrNull != nullptr &&
-                comboWidgetOrNull->sizeAdjustPolicy() != QComboBox::AdjustToMinimumContentsLengthWithIcon)
+            if (comboWidgetOrNull != nullptr && isCharacterBudget == false)
             {
                 const QFontMetrics fontMetrics = comboWidgetOrNull->fontMetrics();
                 const foundation::int32 itemCount = comboWidgetOrNull->count();
