@@ -16,6 +16,36 @@ are authoritative. Read them before editing code. In particular:
 - Credit actually consulted technical sources near the affected implementation.
 - Build warning-clean and run appropriate unit, sanitizer, formatting and tidy gates.
 
+## Prioritize roadmap work
+
+Use [Ludus Kanban](https://github.com/orgs/The-Ludus-Project/projects/1) to
+compare work across engine milestones. When adding a backlog item, look for an
+existing issue, link the owning roadmap and acceptance criteria, and use
+GitHub's **Blocked by** relationship for actual prerequisites.
+
+Set the card's **Priority** and a one-sentence **Priority rationale** when
+adding it. State the evidence that drives the decision, such as a failed
+integration job, a committed milestone, or the work that can start once this
+issue closes. Apply the same rule to new issues and reused cards.
+
+| Priority | Use when |
+| --- | --- |
+| P0 | A verified failure blocks integration, promotion, or a committed release. Link the failing gate or regression. |
+| P1 | Work is on the next milestone's critical path, unblocks multiple active workstreams, or closes a high-impact correctness or qualification gap. Name the affected milestone, consumers, or check. |
+| P2 | A scoped roadmap deliverable has acceptance criteria and can wait for its milestone or prerequisites. |
+| P3 | Work is conditional on a measured benefit, named consumer, or platform capability. Record the condition for reconsideration. |
+
+Compare work within a priority by the next committed outcome, the open tasks
+that can start immediately after it closes, and rough effort when known. Count
+distinct downstream issues once. Indirect dependencies help show the size of a
+chain. Keep using **Status** for execution state, including **In Validation**
+while required evidence is pending.
+
+If the evidence is incomplete, record the missing input in the rationale and
+leave **Priority** empty so the card appears in **Priority triage**. Resolve
+triage before moving it to **Ready**. Reassess priority when release goals,
+blockers, or validation results change.
+
 ## Turn a reference or tip into a Ludus change
 
 Start with a link, PDF, paper, book excerpt, slides, talk, practical tip, coding
