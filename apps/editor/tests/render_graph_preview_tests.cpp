@@ -30,6 +30,7 @@
 #include "internal/texture_viewer.h"
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_graph_capture.h"
+#include "internal/viewport_raster_capture.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
 #include "internal/world_workspace.h"
@@ -2753,6 +2754,34 @@ TEST_CASE("RT1 failure unlocks the window before its raster comparison finishes"
     CHECK(stopOrNull->isEnabled() == false);
     CHECK(compareOrNull->isEnabled() == true);
     CHECK(preview.HasActiveGpuCapture() == false);
+}
+
+TEST_CASE("A rejected raster comparison scene reaches a terminal failure",
+          "[editor][render-graph][world-graph][reference-capture]")
+{
+    DeviceFixture device(MakeViewportDeviceDescription().Storage);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No offscreen viewport GPU adapter");
+    }
+    ViewportRasterSource source;
+    source.PackagePath = GetDefaultRenderGraphRuntime();
+    ViewportRasterCapture capture;
+    QSize extent;
+    QString error;
+    REQUIRE(capture.Load(device.Device, device.Surface, source, QSize(WIDTH, HEIGHT), extent, error) == true);
+    renderer::ViewDescription view;
+    view.Depth = renderer::DepthConvention::ReverseZ;
+    REQUIRE(capture.Begin(MakeCookedScene(), view, error) == true);
+    ViewportRasterPhase phase = capture.GetPhase();
+    for (usize attempt = 0; attempt < ATTEMPTS && phase == ViewportRasterPhase::Rendering; ++attempt)
+    {
+        phase = capture.Service();
+        QThread::usleep(200);
+    }
+    INFO(capture.GetError().toStdString());
+    CHECK(phase == ViewportRasterPhase::Failed);
+    CHECK(capture.GetError().contains(QStringLiteral("failed to prepare for capture")) == true);
 }
 
 TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",

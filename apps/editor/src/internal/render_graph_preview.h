@@ -164,6 +164,8 @@ public:
     [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
     void SetExtraction(const RenderGraphExtraction& extraction);
+    /// Whether the graph rejected this extraction revision during preparation.
+    [[nodiscard]] bool WasExtractionRejected(foundation::uint64 revision) const noexcept;
     /// Replace only the camera and publication revision of the retained extraction.
     void SetCamera(const graphics::renderer::ViewDescription& view, foundation::uint64 revision);
     /// Queue the owning viewport's drawable size (physical pixels before rendering scale).
