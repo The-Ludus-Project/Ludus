@@ -4,6 +4,8 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 
+#include <QStringList>
+
 namespace ludus::editor
 {
 namespace
@@ -16,10 +18,11 @@ constexpr usize PERCENTILE_NUMERATOR = 95;
 constexpr usize PERCENTILE_DENOMINATOR = 100;
 /// Characters of a pass name shown; longer names keep both ends so "Viewport/Scene" stays readable.
 constexpr int32 PASS_NAME_COLUMNS = 22;
-/// Characters of the right-aligned millisecond value.
-constexpr int32 PASS_VALUE_COLUMNS = 6;
 constexpr int32 PASS_NAME_HEAD_COLUMNS = (PASS_NAME_COLUMNS - 1) / 2;
 constexpr int32 PASS_NAME_TAIL_COLUMNS = PASS_NAME_COLUMNS - 1 - PASS_NAME_HEAD_COLUMNS;
+/// The slowest pass is drawn as a warning only when it takes more than this share of the passes' time (percent).
+constexpr float64 SLOWEST_PASS_WARNING_PERCENT = 50;
+constexpr float64 PERCENT = 100;
 struct PassRow final
 {
     usize Index = 0;
@@ -50,14 +53,19 @@ QString FormatPassName(const QString& name)
 {
     if (name.size() <= PASS_NAME_COLUMNS)
     {
-        return name.leftJustified(PASS_NAME_COLUMNS);
+        return name;
     }
     return name.left(PASS_NAME_HEAD_COLUMNS) + QStringLiteral("…") + name.right(PASS_NAME_TAIL_COLUMNS);
 }
 QString FormatPassRow(const QString& label, float64 milliseconds)
 {
-    return QStringLiteral("%1 %2 ms")
-        .arg(label, QString::number(milliseconds, 'f', MILLISECOND_DECIMALS).rightJustified(PASS_VALUE_COLUMNS));
+    return label + VIEWPORT_STATISTICS_VALUE_SEPARATOR + QString::number(milliseconds, 'f', MILLISECOND_DECIMALS) +
+           QStringLiteral(" ms");
+}
+/// One "label: value" row of the overlay grid.
+QString FormatRow(const QString& label, const QString& value)
+{
+    return label + VIEWPORT_STATISTICS_VALUE_SEPARATOR + value;
 }
 QString FormatMilliseconds(const RollingAverage& average)
 {
@@ -345,31 +353,42 @@ QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
     const QString gpu = deviceStatistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
                             : FormatTimingSummary(deviceStatistics.GpuMilliseconds);
-    const QString frameText = QStringLiteral("FPS (updates): %1\nCPU: %2\nGPU: %3\nOutput readback: %4")
-                                  .arg(statistics.GetFramesPerSecond(nowNanoseconds), 0, 'f', FPS_DECIMALS)
-                                  .arg(FormatTimingSummary(statistics.GetCpuMilliseconds()),
-                                       gpu,
-                                       FormatMilliseconds(statistics.GetReadbackMilliseconds()));
-    const QString passes = FormatViewportPassLines(deviceStatistics);
-    const QString passText = passes.isEmpty() == true ? QString() : QLatin1Char('\n') + passes;
-    if (statistics.IsInspectionEnabled() == false)
+    // An on-demand viewport renders only when something changes, so a rate of zero means idle, not broken.
+    const float64 framesPerSecond = statistics.GetFramesPerSecond(nowNanoseconds);
+    QStringList rows{
+        FormatRow(QStringLiteral("Updates"),
+                  framesPerSecond > 0 ? QStringLiteral("%1 fps").arg(framesPerSecond, 0, 'f', FPS_DECIMALS)
+                                      : QStringLiteral("idle, renders on change")),
+        FormatRow(VIEWPORT_EDITOR_CPU_LABEL, FormatTimingSummary(statistics.GetCpuMilliseconds())),
+        FormatRow(QStringLiteral("GPU"), gpu),
+    };
+    // Measurements that have not happened (no readback, inspection paused or idle) take no row.
+    const auto addMeasuredRow = [&rows](const QString& label, const RollingAverage& average) {
+        if (average.GetCount() != 0 && average.GetMaximum() > 0)
+        {
+            rows.append(FormatRow(label, FormatMilliseconds(average)));
+        }
+    };
+    addMeasuredRow(QStringLiteral("Output readback"), statistics.GetReadbackMilliseconds());
+    if (statistics.IsInspectionEnabled() == true)
     {
-        return frameText + QStringLiteral("\nInspection: paused") + passText;
+        addMeasuredRow(QStringLiteral("Inspection CPU"), statistics.GetInspectionCpuMilliseconds());
+        addMeasuredRow(QStringLiteral("Inspection readback"), statistics.GetInspectionReadbackMilliseconds());
+        addMeasuredRow(QStringLiteral("Conversion worker"), statistics.GetConversionWorkMilliseconds());
+        addMeasuredRow(QStringLiteral("Conversion elapsed"), statistics.GetConversionElapsedMilliseconds());
     }
-    return frameText +
-           QStringLiteral(
-               "\nInspection CPU: %1\nInspection readback: %2\nConversion worker: %3\nConversion elapsed: %4")
-               .arg(FormatMilliseconds(statistics.GetInspectionCpuMilliseconds()),
-                    FormatMilliseconds(statistics.GetInspectionReadbackMilliseconds()),
-                    FormatMilliseconds(statistics.GetConversionWorkMilliseconds()),
-                    FormatMilliseconds(statistics.GetConversionElapsedMilliseconds())) +
-           passText;
+    const QString passes = FormatViewportPassLines(deviceStatistics);
+    if (passes.isEmpty() == false)
+    {
+        rows.append(passes);
+    }
+    return rows.join(QLatin1Char('\n'));
 }
 QString FormatViewportPassLines(const ViewportStatistics& statistics)
 {
     if (statistics.PassState == ViewportPassTimeState::Unavailable)
     {
-        return QStringLiteral("Passes: n/a");
+        return FormatRow(QStringLiteral("Passes"), QStringLiteral("n/a"));
     }
     StaticArray<PassRow, MAX_VIEWPORT_PASS_SERIES> rows;
     const usize count = RankPasses(statistics.Passes, rows);
@@ -382,7 +401,8 @@ QString FormatViewportPassLines(const ViewportStatistics& statistics)
     {
         total += rows[index].Milliseconds;
     }
-    QString text = QStringLiteral("Passes: %1 ms").arg(total, 0, 'f', MILLISECOND_DECIMALS);
+    QString text =
+        FormatRow(QStringLiteral("Passes"), QStringLiteral("%1 ms").arg(total, 0, 'f', MILLISECOND_DECIMALS));
     const usize shown = math::Min(count, MAX_VIEWPORT_PASS_ROWS);
     for (usize index = 0; index < shown; ++index)
     {
@@ -396,9 +416,7 @@ QString FormatViewportPassLines(const ViewportStatistics& statistics)
         {
             remainder += rows[index].Milliseconds;
         }
-        text +=
-            QLatin1Char('\n') +
-            FormatPassRow(QStringLiteral("+%1 more").arg(count - shown).leftJustified(PASS_NAME_COLUMNS), remainder);
+        text += QLatin1Char('\n') + FormatPassRow(QStringLiteral("+%1 more").arg(count - shown), remainder);
     }
     return text;
 }
@@ -414,11 +432,18 @@ ViewportPassBars MakeViewportPassBars(const ViewportStatistics& statistics)
     bars.RowCount = math::Min(count, MAX_VIEWPORT_PASS_ROWS);
     bars.TrailingLines = count > bars.RowCount ? 1 : 0;
     const float64 slowest = rows[0].Milliseconds;
+    float64 total = 0;
+    for (usize index = 0; index < count; ++index)
+    {
+        total += rows[index].Milliseconds;
+    }
     for (usize index = 0; index < bars.RowCount; ++index)
     {
         bars.Fractions[index] = slowest > 0 ? static_cast<float32>(rows[index].Milliseconds / slowest) : 0.0F;
     }
     bars.SlowestRow = 0;
+    // A lone pass is always the slowest; it is a warning only when it dominates others.
+    bars.IsSlowestWarning = count > 1 && total > 0 && slowest * PERCENT > total * SLOWEST_PASS_WARNING_PERCENT;
     return bars;
 }
 QString FormatViewportStatistics(const ViewportStatistics& statistics)
@@ -426,14 +451,19 @@ QString FormatViewportStatistics(const ViewportStatistics& statistics)
     const QString gpu = statistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
                             : FormatTimingSummary(statistics.GpuMilliseconds);
-    const QString text = QStringLiteral("GPU: %1\nCPU: %2\n%3×%4 · draws %5")
-                             .arg(gpu, FormatTimingSummary(statistics.CpuMilliseconds))
-                             .arg(statistics.Width)
-                             .arg(statistics.Height)
-                             .arg(statistics.Draws);
+    const QString text = FormatRow(QStringLiteral("GPU"), gpu) + QLatin1Char('\n') +
+                         FormatRow(VIEWPORT_EDITOR_CPU_LABEL, FormatTimingSummary(statistics.CpuMilliseconds)) +
+                         QLatin1Char('\n') +
+                         FormatRow(QStringLiteral("Image"),
+                                   QStringLiteral("%1×%2 · %3 %4")
+                                       .arg(statistics.Width)
+                                       .arg(statistics.Height)
+                                       .arg(statistics.Draws)
+                                       .arg(statistics.Draws == 1 ? QStringLiteral("draw") : QStringLiteral("draws")));
     const QString passes = FormatViewportPassLines(statistics);
-    const QString api =
-        statistics.Api.isEmpty() == true ? QString() : QStringLiteral("API: ") + statistics.Api + QLatin1Char('\n');
+    const QString api = statistics.Api.isEmpty() == true
+                            ? QString()
+                            : FormatRow(QStringLiteral("API"), statistics.Api) + QLatin1Char('\n');
     return api + (passes.isEmpty() == true ? text : text + QLatin1Char('\n') + passes);
 }
 } // namespace ludus::editor

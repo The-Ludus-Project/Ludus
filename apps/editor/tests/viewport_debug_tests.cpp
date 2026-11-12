@@ -5,6 +5,7 @@
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/software_viewport.h"
+#include "internal/viewport_hud_text.h"
 #include "internal/viewport_pass_bars.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
@@ -20,6 +21,8 @@
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/rhi.h>
 
+#include <QFont>
+#include <QFontMetricsF>
 #include <QImage>
 #include <QObject>
 #include <QPainter>
@@ -33,6 +36,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 
@@ -368,14 +373,16 @@ TEST_CASE("Viewport statistics average a fixed window and format the overlay", "
     statistics.Width = 1280;
     statistics.Height = 720;
     statistics.Draws = 42;
-    CHECK(FormatViewportStatistics(statistics) == QStringLiteral("GPU: …\nCPU: …\n1280×720 · draws 42"));
+    CHECK(FormatViewportStatistics(statistics) ==
+          QStringLiteral("GPU: …\nEditor CPU per frame: …\nImage: 1280×720 · 42 draws"));
     statistics.CpuMilliseconds.Add(1.5);
     statistics.CpuMilliseconds.Add(2.5);
     statistics.GpuState = ViewportGpuTimeState::Available;
     statistics.GpuMilliseconds.Add(0.25);
     CHECK(FormatViewportStatistics(statistics) ==
-          QStringLiteral(
-              "GPU: 0.25 ms (p95 0.25, max 0.25 ms)\nCPU: 2.00 ms (p95 2.50, max 2.50 ms)\n1280×720 · draws 42"));
+          QStringLiteral("GPU: 0.25 ms (p95 0.25, max 0.25 ms)\nEditor CPU per frame: 2.00 ms (p95 2.50, max 2.50 "
+                         "ms)\nImage: 1280×720 · "
+                         "42 draws"));
 }
 
 TEST_CASE("Viewport statistics show GPU n/a when timestamps are unavailable", "[editor][viewport][statistics]")
@@ -389,7 +396,7 @@ TEST_CASE("Viewport statistics show GPU n/a when timestamps are unavailable", "[
     statistics.Height = 32;
     statistics.Draws = 1;
     CHECK(FormatViewportStatistics(statistics) ==
-          QStringLiteral("GPU: n/a\nCPU: 4.00 ms (p95 4.00, max 4.00 ms)\n64×32 · draws 1"));
+          QStringLiteral("GPU: n/a\nEditor CPU per frame: 4.00 ms (p95 4.00, max 4.00 ms)\nImage: 64×32 · 1 draw"));
 }
 
 TEST_CASE("Pass statistics sum a scope's passes and average completed batches",
@@ -462,9 +469,9 @@ TEST_CASE("Pass lines list the slowest scopes with bars scaled to the slowest",
     statistics.Passes.AddSample(3, QStringLiteral("Viewport/Composite"), 1.0);
     statistics.Passes.CommitBatch();
     CHECK(FormatViewportPassLines(statistics) == QStringLiteral("Passes: 3.50 ms\n"
-                                                                "Viewport/Scene           2.00 ms\n"
-                                                                "Viewport/Composite       1.00 ms\n"
-                                                                "Viewport/Overlay         0.50 ms"));
+                                                                "Viewport/Scene: 2.00 ms\n"
+                                                                "Viewport/Composite: 1.00 ms\n"
+                                                                "Viewport/Overlay: 0.50 ms"));
     const ViewportPassBars bars = MakeViewportPassBars(statistics);
     REQUIRE(bars.RowCount == 3);
     CHECK(bars.TrailingLines == 0);
@@ -472,7 +479,10 @@ TEST_CASE("Pass lines list the slowest scopes with bars scaled to the slowest",
     CHECK(bars.Fractions[0] == Catch::Approx(1.0F));
     CHECK(bars.Fractions[1] == Catch::Approx(0.5F));
     CHECK(bars.Fractions[2] == Catch::Approx(0.25F));
-    CHECK(FormatViewportStatistics(statistics).startsWith(QStringLiteral("GPU: …\nCPU: …\n64×32 · draws 1\nPasses: ")));
+    // The slowest pass takes 2.0 of 3.5 ms, more than half, so its bar is a warning.
+    CHECK(bars.IsSlowestWarning == true);
+    CHECK(FormatViewportStatistics(statistics)
+              .startsWith(QStringLiteral("GPU: …\nEditor CPU per frame: …\nImage: 64×32 · 1 draw\nPasses: ")));
 }
 
 TEST_CASE("Pass lines keep the slowest rows, sum the rest and shorten long names",
@@ -499,6 +509,28 @@ TEST_CASE("Pass lines keep the slowest rows, sum the rest and shorten long names
     CHECK(bars.Fractions[1] == Catch::Approx(0.1F));
 }
 
+TEST_CASE("The slowest pass is a warning only when it takes more than half of the passes' time",
+          "[editor][viewport][statistics][passes]")
+{
+    ViewportStatistics statistics;
+    statistics.PassState = ViewportPassTimeState::Available;
+    statistics.Passes.AddSample(1, QStringLiteral("Only"), 4.0);
+    statistics.Passes.CommitBatch();
+    // A lone pass is always the slowest, which says nothing about where time goes.
+    CHECK(MakeViewportPassBars(statistics).IsSlowestWarning == false);
+    statistics.Passes.Reset();
+    statistics.Passes.AddSample(1, QStringLiteral("Scene"), 2.0);
+    statistics.Passes.AddSample(2, QStringLiteral("Composite"), 2.0);
+    statistics.Passes.CommitBatch();
+    // An even split is exactly half: not a warning.
+    CHECK(MakeViewportPassBars(statistics).IsSlowestWarning == false);
+    statistics.Passes.Reset();
+    statistics.Passes.AddSample(1, QStringLiteral("Scene"), 3.0);
+    statistics.Passes.AddSample(2, QStringLiteral("Composite"), 1.0);
+    statistics.Passes.CommitBatch();
+    CHECK(MakeViewportPassBars(statistics).IsSlowestWarning == true);
+}
+
 TEST_CASE("Pass bars paint the slowest row in the warning token and the rest in the accent token",
           "[editor][viewport][statistics][passes]")
 {
@@ -515,6 +547,7 @@ TEST_CASE("Pass bars paint the slowest row in the warning token and the rest in 
     bars.Fractions[0] = 1.0F;
     bars.Fractions[1] = 0.5F;
     bars.SlowestRow = 0;
+    bars.IsSlowestWarning = true;
     {
         QPainter painter(&image);
         // Lines 0 and 1 are barred; line 2 is the unbarred "+N more" row.
@@ -542,6 +575,15 @@ TEST_CASE("Pass bars paint the slowest row in the warning token and the rest in 
         PaintViewportPassBars(painter, QRectF(10, 0, 180, ROW_HEIGHT), ROW_HEIGHT, -1, bars);
     }
     CHECK(untouched.pixel(100, ROW_HEIGHT / 2) == qRgb(0, 0, 0));
+    // Without a dominant pass, the slowest bar keeps the accent colour.
+    bars.IsSlowestWarning = false;
+    QImage even(WIDTH, ROW_HEIGHT, QImage::Format_ARGB32_Premultiplied);
+    even.fill(qRgb(0, 0, 0));
+    {
+        QPainter painter(&even);
+        PaintViewportPassBars(painter, QRectF(10, 0, 180, ROW_HEIGHT), ROW_HEIGHT, 0, bars);
+    }
+    CHECK(isNear(even.pixel(100, ROW_HEIGHT / 2), accent) == true);
 }
 
 TEST_CASE("Pass timing reads n/a when the backend has no per-pass queries", "[editor][viewport][statistics][passes]")
@@ -567,8 +609,7 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     GraphViewportStatistics statistics;
     ViewportStatistics device;
     CHECK(FormatGraphViewportStatistics(statistics, device, 0) ==
-          QStringLiteral("FPS (updates): 0.0\nCPU: …\nGPU: …\nOutput readback: …\nInspection CPU: …\nInspection "
-                         "readback: …\nConversion worker: …\nConversion elapsed: …"));
+          QStringLiteral("Updates: idle, renders on change\nEditor CPU per frame: …\nGPU: …"));
     statistics.AddCpuWork(1.5);
     statistics.AddCpuWork(2.5);
     statistics.AddCpuWork(-1);
@@ -583,9 +624,8 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     device.GpuMilliseconds.Add(0.25);
     device.GpuState = ViewportGpuTimeState::Available;
     CHECK(FormatGraphViewportStatistics(statistics, device, 50'000'000) ==
-          QStringLiteral("FPS (updates): 20.0\nCPU: 3.00 ms (p95 4.00, max 4.00 ms)\nGPU: 0.25 ms (p95 0.25, max 0.25 "
-                         "ms)\nOutput readback: 25.00 ms\nInspection CPU: "
-                         "…\nInspection readback: …\nConversion worker: …\nConversion elapsed: …"));
+          QStringLiteral("Updates: 20.0 fps\nEditor CPU per frame: 3.00 ms (p95 4.00, max 4.00 ms)\nGPU: 0.25 ms "
+                         "(p95 0.25, max 0.25 ms)\nOutput readback: 25.00 ms"));
     // GPU output delivery must not replace the separately measured diagnostic readback with zero.
     statistics.AddInspection(6, 40);
     statistics.AddInspectionConversion(12, 45);
@@ -600,9 +640,9 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     CHECK(FormatGraphViewportStatistics(statistics, device, 100'000'000)
               .contains(QStringLiteral("Inspection CPU: 6.00 ms\nInspection readback: 40.00 ms")) == true);
     statistics.SetInspectionEnabled(false);
-    CHECK(
-        FormatGraphViewportStatistics(statistics, device, 100'000'000).contains(QStringLiteral("Inspection: paused")) ==
-        true);
+    // Paused inspection takes no rows rather than a "paused" line.
+    CHECK(FormatGraphViewportStatistics(statistics, device, 100'000'000).contains(QStringLiteral("Inspection")) ==
+          false);
     CHECK(FormatGraphViewportStatistics(statistics, device, 100'000'000).contains(QStringLiteral("Inspection CPU:")) ==
           false);
     CHECK(statistics.GetInspectionCpuMilliseconds().GetAverage() == 6);
@@ -845,4 +885,52 @@ TEST_CASE("Software wireframe draws only triangle edges in the shared colour", "
     CheckWireframeHue(brightest);
     CHECK(qBlue(brightest) >=
           static_cast<int32>(renderer::MATERIAL_DEBUG_WIREFRAME_BLUE) - SOFTWARE_WIREFRAME_TOLERANCE);
+}
+
+TEST_CASE("Viewport HUD text lays label: value lines out as a two-column grid", "[editor][viewport][statistics][hud]")
+{
+    const QFont font = GetViewportHudFont();
+    const QFontMetricsF metrics(font);
+    CHECK(MeasureViewportHudGrid(QString(), font).isEmpty() == true);
+    const QString text = QStringLiteral("GPU: 1.00 ms\nEditor CPU per frame: 2.00 ms\nA line without a value");
+    const QSizeF grid = MeasureViewportHudGrid(text, font);
+    // Every row is one line spacing tall, so pass bars line up with rows by index.
+    CHECK(grid.height() == Catch::Approx(metrics.lineSpacing() * 3));
+    const qreal columns = metrics.horizontalAdvance(QStringLiteral("Editor CPU per frame")) +
+                          GetViewportHudColumnGap() + metrics.horizontalAdvance(QStringLiteral("2.00 ms"));
+    const qreal spanning = metrics.horizontalAdvance(QStringLiteral("A line without a value"));
+    CHECK(grid.width() == Catch::Approx(std::max(columns, spanning)));
+
+    // Labels are drawn on the left in the label colour; values are right-aligned in the value colour.
+    constexpr int WIDTH = 400;
+    const QRgb label = qRgb(255, 0, 0);
+    const QRgb value = qRgb(0, 0, 255);
+    const int height = static_cast<int>(std::ceil(metrics.lineSpacing()));
+    QImage image(WIDTH, height, QImage::Format_ARGB32_Premultiplied);
+    image.fill(qRgb(0, 0, 0));
+    {
+        QPainter painter(&image);
+        PaintViewportHudGrid(painter, QRectF(0, 0, WIDTH, height), QStringLiteral("GPU: 8.88 ms"), font, label, value);
+    }
+    const qreal labelWidth = metrics.horizontalAdvance(QStringLiteral("GPU"));
+    const qreal valueWidth = metrics.horizontalAdvance(QStringLiteral("8.88 ms"));
+    bool hasLabel = false;
+    bool hasValue = false;
+    bool hasMiddle = false;
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < WIDTH; ++x)
+        {
+            const QRgb pixel = image.pixel(x, y);
+            const bool isLabelInk = qRed(pixel) > 0 && qBlue(pixel) == 0;
+            const bool isValueInk = qBlue(pixel) > 0 && qRed(pixel) == 0;
+            hasLabel = hasLabel == true || (isLabelInk == true && x < labelWidth + 1);
+            hasValue = hasValue == true || (isValueInk == true && x >= WIDTH - valueWidth - 1);
+            hasMiddle =
+                hasMiddle == true || (x > labelWidth + 1 && x < WIDTH - valueWidth - 1 && pixel != qRgb(0, 0, 0));
+        }
+    }
+    CHECK(hasLabel == true);
+    CHECK(hasValue == true);
+    CHECK(hasMiddle == false);
 }
