@@ -8,17 +8,23 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLatin1StringView>
 #include <QLineEdit>
 #include <QList>
 #include <QMenu>
+#include <QSet>
+#include <QSize>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <utility>
 
 namespace ludus::editor
 {
@@ -26,6 +32,12 @@ namespace
 {
 constexpr foundation::int32 KIND_ROLE = Qt::UserRole;
 constexpr foundation::int32 PATH_ROLE = Qt::UserRole + 1;
+/// The file's path relative to the project root, as the search matches and the tooltip shows it.
+constexpr foundation::int32 RELATIVE_PATH_ROLE = Qt::UserRole + 2;
+/// Side of the icon-only Add and Refresh buttons beside the search field, in pixels.
+constexpr int TOP_ROW_BUTTON_PIXELS = design::SPACING_EXTRA_LARGE;
+/// Side of the icons on those buttons, in pixels.
+constexpr int TOP_ROW_ICON_PIXELS = design::SPACING_LARGE;
 constexpr QLatin1StringView WORLD_SUFFIX{".world.json"};
 constexpr QLatin1StringView RENDER_GRAPH_SUFFIX{".lurender.json"};
 constexpr QLatin1StringView SHADER_MANIFEST_SUFFIX{".lushader.json"};
@@ -68,6 +80,70 @@ struct PendingFolder final
     QString Path;
     foundation::int32 Depth;
 };
+
+/// What a file's group already says about it, so its row can leave it out.
+[[nodiscard]] QLatin1StringView GetKnownSuffix(const QString& fileName)
+{
+    for (const QLatin1StringView suffix : {WORLD_SUFFIX, RENDER_GRAPH_SUFFIX, SHADER_MANIFEST_SUFFIX})
+    {
+        if (fileName.endsWith(suffix) == true)
+        {
+            return suffix;
+        }
+    }
+    return {};
+}
+
+/// The folder a relative path sits in, or empty for the project folder itself.
+[[nodiscard]] QString GetRelativeFolder(const QString& relativePath)
+{
+    const QString folder = QFileInfo(relativePath).path();
+    return folder == QLatin1StringView(".") ? QString() : folder;
+}
+
+/// Order group's rows by their shown name, so rows that share a name sit together; rows with equal names keep
+/// their scan order.
+void SortRowsByName(QTreeWidgetItem& inoutGroup)
+{
+    QList<QTreeWidgetItem*> rows = inoutGroup.takeChildren();
+    std::stable_sort(rows.begin(), rows.end(), [](const QTreeWidgetItem* left, const QTreeWidgetItem* right) {
+        return QString::compare(left->text(0), right->text(0), Qt::CaseInsensitive) < 0;
+    });
+    inoutGroup.addChildren(rows);
+}
+
+/// Give every row of group whose name another row shares the folder that tells them apart: the folder's own name
+/// when that is enough, else its whole path from the project folder.
+void QualifySharedNames(QTreeWidgetItem& inoutGroup)
+{
+    QHash<QString, QList<QTreeWidgetItem*>> rowsByName;
+    for (foundation::int32 index = 0; index < inoutGroup.childCount(); ++index)
+    {
+        QTreeWidgetItem* row = inoutGroup.child(index);
+        rowsByName[row->text(0).toCaseFolded()].append(row);
+    }
+    for (const QList<QTreeWidgetItem*>& rows : std::as_const(rowsByName))
+    {
+        if (rows.size() < 2)
+        {
+            continue;
+        }
+        QStringList folderNames;
+        for (const QTreeWidgetItem* row : rows)
+        {
+            folderNames.append(QFileInfo(GetRelativeFolder(row->data(0, RELATIVE_PATH_ROLE).toString())).fileName());
+        }
+        const bool isFolderNameEnough = QSet<QString>(folderNames.cbegin(), folderNames.cend()).size() == rows.size();
+        for (qsizetype index = 0; index < rows.size(); ++index)
+        {
+            const QString folder = GetRelativeFolder(rows.at(index)->data(0, RELATIVE_PATH_ROLE).toString());
+            const QString qualifier = folder.isEmpty() == true     ? QStringLiteral("project folder")
+                                      : isFolderNameEnough == true ? folderNames.at(index)
+                                                                   : QDir::toNativeSeparators(folder);
+            rows.at(index)->setData(0, DOCUMENT_QUALIFIER_ROLE, qualifier);
+        }
+    }
+}
 } // namespace
 
 ProjectExplorer::ProjectExplorer(QWidget* parentOrNull)
@@ -81,18 +157,23 @@ ProjectExplorer::ProjectExplorer(QWidget* parentOrNull)
                                design::SPACING_EXTRA_SMALL);
     QHBoxLayout* top = new QHBoxLayout;
     mFilter->setObjectName(QStringLiteral("projectExplorerFilter"));
-    mFilter->setPlaceholderText(QStringLiteral("Search Project Explorer"));
+    // The dock title already names what is searched.
+    mFilter->setPlaceholderText(QStringLiteral("Search"));
     mFilter->setClearButtonEnabled(true);
     mFilter->setAccessibleName(QStringLiteral("Search Project Explorer"));
     QToolButton* refresh = new QToolButton(this);
     refresh->setObjectName(QStringLiteral("projectExplorerRefresh"));
     refresh->setText(QStringLiteral("Refresh"));
-    refresh->setToolTip(QStringLiteral("Rescan the project folder."));
+    refresh->setAccessibleName(QStringLiteral("Refresh"));
+    refresh->setToolTip(QStringLiteral("Refresh: rescan the project folder."));
+    refresh->setIcon(GetEditorIcon(EditorIcon::Refresh));
     top->addWidget(mFilter, 1);
     QToolButton* add = new QToolButton(this);
     add->setObjectName(QStringLiteral("projectExplorerAdd"));
     add->setText(QStringLiteral("Add"));
     add->setAccessibleName(QStringLiteral("Add project item"));
+    add->setToolTip(QStringLiteral("Add a world, render graph, shader, script, sound or content."));
+    add->setIcon(GetEditorIcon(EditorIcon::Add));
     add->setPopupMode(QToolButton::InstantPopup);
     QMenu* addMenu = new QMenu(add);
     add->setMenu(addMenu);
@@ -100,8 +181,15 @@ ProjectExplorer::ProjectExplorer(QWidget* parentOrNull)
         addMenu->clear();
         populateAddMenu(addMenu, ProjectItemKind::Folder);
     });
-    top->addWidget(add);
-    top->addWidget(refresh);
+    for (QToolButton* button : {add, refresh})
+    {
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setIconSize(QSize(TOP_ROW_ICON_PIXELS, TOP_ROW_ICON_PIXELS));
+        button->setAutoRaise(true);
+        button->setMinimumSize(TOP_ROW_BUTTON_PIXELS, TOP_ROW_BUTTON_PIXELS);
+        top->addWidget(button);
+    }
+    top->setSpacing(design::SPACING_EXTRA_SMALL);
     layout->addLayout(top);
     mTree->setObjectName(QStringLiteral("projectExplorerTree"));
     mTree->setAccessibleName(QStringLiteral("Project documents"));
@@ -283,8 +371,20 @@ void ProjectExplorer::scan(const ScanFolders& folders)
                 break;
             }
             ++files;
-            static_cast<void>(addItem(parentOrNull, root.relativeFilePath(entry.filePath()), kind, entry.filePath()));
+            // The group and the icon already say what kind of file it is, so the row shows only its name.
+            const QString relativePath = root.relativeFilePath(entry.filePath());
+            QTreeWidgetItem* item =
+                addItem(parentOrNull, RemoveKnownSuffix(name, QString(GetKnownSuffix(name))), kind, entry.filePath());
+            item->setData(0, RELATIVE_PATH_ROLE, relativePath);
+            item->setData(0, DOCUMENT_QUALIFIER_ROLE, QString());
+            item->setToolTip(0, QDir::toNativeSeparators(relativePath));
+            item->setData(0, Qt::AccessibleDescriptionRole, QDir::toNativeSeparators(relativePath));
         }
+    }
+    for (QTreeWidgetItem* group : {folders.Worlds, folders.RenderGraphs, folders.Shaders, folders.Scripts})
+    {
+        SortRowsByName(*group);
+        QualifySharedNames(*group);
     }
     if (isTruncated == true)
     {
@@ -300,8 +400,10 @@ void ProjectExplorer::applyFilter()
     {
         QTreeWidgetItem* item = *iterator;
         const bool isFile = item->data(0, PATH_ROLE).toString().isEmpty() == false;
-        item->setHidden(isFile == true && filter.isEmpty() == false &&
-                        item->text(0).contains(filter, Qt::CaseInsensitive) == false);
+        // The search matches the whole file name and folder, not only the shown name.
+        const bool isMatch = item->text(0).contains(filter, Qt::CaseInsensitive) == true ||
+                             item->data(0, RELATIVE_PATH_ROLE).toString().contains(filter, Qt::CaseInsensitive) == true;
+        item->setHidden(isFile == true && filter.isEmpty() == false && isMatch == false);
     }
 }
 

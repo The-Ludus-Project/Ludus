@@ -72,7 +72,8 @@ class Output final
 public:
     void Append(std::string_view text) noexcept
     {
-        mHasFailed = mHasFailed == true || mText.TryAddRange(std::span<const char>(text.data(), text.size())) == false;
+        mHasFailed =
+            mHasFailed == true || mText.TryAddRange(BorrowedView<const char>(text.data(), text.size())) == false;
     }
 
     void AppendUnsigned(uint64 value) noexcept

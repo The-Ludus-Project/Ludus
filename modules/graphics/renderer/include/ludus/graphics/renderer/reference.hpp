@@ -130,10 +130,9 @@ enum class ReferenceTraversal : ludus::foundation::uint8
     /// not native ray queries. Committed sums are read back only for copy/export.
     GpuCompute,
 };
-/// Next-event estimator for emissive triangles, recorded in capture metadata. Both modes
-/// estimate the same truncated integral, so their means agree statistically, never per
-/// pixel. Analytic lights, the environment and the uniform category draw are shared. See
-/// docs/architecture/many-area-light-sampling-reference-review.md for the estimator.
+/// Direct-light next-event estimator, recorded in capture metadata. The modes estimate
+/// the same truncated integral with different proposals and variance.
+/// See "Light-sampling modes" in docs/architecture/renderer-systems.md.
 enum class ReferenceLightSampling : ludus::foundation::uint8
 {
     /// Sampler version 1: one power-CDF emitter triangle, one uniform area sample and its
@@ -154,6 +153,12 @@ enum class ReferenceLightSampling : ludus::foundation::uint8
     /// densities and MIS weights are those of ResampledProjectedSolidAngle. Same LTC table
     /// requirement and random layout.
     ResampledFormFactor,
+    /// Sampler version 4: independently sample one directional light and one remaining
+    /// source per eligible surface vertex. A lone directional light is always selected.
+    /// Non-directional lights, emissive triangles and environment retain the UniformArea
+    /// proposal within the remaining sources. Uses up to two shadow rays per vertex.
+    /// CPU oracle and GPU compute only. Estimates the same geometric integral.
+    SeparateDirectional,
 };
 /// Opt-in retained CPU geometry and native query setup; call before creating meshes.
 /// Buffers are admitted against explicit budgets, rather than silently truncating
@@ -234,7 +239,7 @@ struct ReferenceCaptureDescription final
     /// Disable pixel jitter for primary-ray AOV/raster parity experiments. Recorded
     /// in the integral key; this estimates center rays rather than pixel footprints.
     bool CenterRays = false;
-    /// Emissive-triangle next-event estimator. Recorded in the integral key: changing it
+    /// Direct-light next-event estimator. Recorded in the integral key: changing it
     /// replaces the job and resets accumulation. Values outside the enumeration are rejected.
     ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
@@ -325,9 +330,10 @@ struct ReferenceCaptureInfo final
     ludus::foundation::uint32 ProfileVersion = LIGHTING_PROFILE_VERSION;
     /// Frozen Philox address and dimension convention version: 1 for UniformArea (8
     /// dimensions per bounce), 2 for ResampledProjectedSolidAngle and 3 for
-    /// ResampledFormFactor (128 per bounce).
+    /// ResampledFormFactor (128 per bounce), and 4 for SeparateDirectional (UniformArea
+    /// addresses plus one independent directional draw per bounce).
     ludus::foundation::uint32 SamplerVersion = 1;
-    /// The capture's emissive-triangle next-event estimator.
+    /// The capture's direct-light next-event estimator.
     ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;
     /// Original capture seed.
     ludus::foundation::uint64 Seed = 0;

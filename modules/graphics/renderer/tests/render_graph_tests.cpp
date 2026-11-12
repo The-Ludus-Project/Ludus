@@ -8,6 +8,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
+#include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -212,6 +213,38 @@ TEST_CASE("RG2 renders a retained extraction without creating shaders or pipelin
     rhi::reference::Completed = rhi::reference::Submitted;
     REQUIRE(fixture.Graph.GetExport(0, output, aspect) == rhi::RasterStatus::Ready);
     CHECK(aspect == rhi::TextureAspect::Color);
+}
+TEST_CASE("RG2 raster graphs keep finite reverse-Z cameras and reject infinite ones", "[render-graph]")
+{
+    GraphFixture fixture;
+    CHECK(fixture.Graph.CanUseReverseDepth() == false);
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.CanUseReverseDepth() == true);
+    renderer::ProjectionDescription projection;
+    projection.Kind = renderer::ProjectionKind::Perspective;
+    projection.Near = .01F;
+    projection.Far = 10;
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({96, 64, renderer::ScreenFit::Stretch}, {0, 0, 96, 64}, 96, 64, mapping) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(renderer::BuildViewDescription(projection, mapping, fixture.Cameras[0]) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Cameras[0].Depth == renderer::DepthConvention::ReverseZ);
+    // The camera looks down -Z from the origin; place the fixture triangle in front of it.
+    fixture.Items[0].MeshToWorld.Translation.Z = -1;
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::reference::Draws == 1);
+    CHECK(rhi::reference::Pass.Description.ClearDepth == 0);
+    CHECK(rhi::reference::Pipelines[rhi::reference::Packet.Pipeline].DepthCompare == rhi::RasterDepthCompare::Greater);
+
+    // The conventional rewrite would need a far plane, and graph overlays bound a finite frustum.
+    projection.Kind = renderer::ProjectionKind::PerspectiveInfinite;
+    REQUIRE(renderer::BuildViewDescription(projection, mapping, fixture.Cameras[0]) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Update(report, renderer::RenderGraphCoveragePolicy::RejectIncomplete, 2) ==
+          rhi::RasterStatus::Unsupported);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 1);
 }
 TEST_CASE("RG2 diagnostic allocation access admits transient depth after producer completion", "[render-graph]")
 {

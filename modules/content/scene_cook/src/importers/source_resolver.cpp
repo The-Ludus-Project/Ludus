@@ -2,6 +2,7 @@
 
 #include "../native_files.h"
 
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 namespace ludus::content::scene_cook::importers
@@ -158,7 +159,7 @@ Status MemorySourceResolver::Read(const ResolvedSource& source, usize maximumByt
             return Status::Limit;
         }
         Array<uint8> bytes;
-        if (bytes.TryAddRange(file.Bytes) == false)
+        if (bytes.TryAddRange(foundation::MakeBorrowedView(file.Bytes)) == false)
         {
             return Status::OutOfMemory;
         }

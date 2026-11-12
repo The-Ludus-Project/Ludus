@@ -3,8 +3,8 @@
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
-#include <span>
 #include <type_traits>
 
 namespace ludus::foundation::core
@@ -41,7 +41,7 @@ class SortedMap
 public:
     /// @brief One stored key/value pair, kept in ascending key order.
     ///
-    /// Public access is read-only through AsSpan()/begin(); mutate values through Find().
+    /// Public access is read-only through AsView()/begin(); mutate values through Find().
     struct Entry
     {
         /// Immutable through the map's public access; changing it would break the ordering.
@@ -201,9 +201,9 @@ public:
     }
 
     /// Entries in ascending key order. Read-only so keys cannot be changed; invalidated by any mutation.
-    [[nodiscard]] std::span<const Entry> AsSpan() const noexcept
+    [[nodiscard]] BorrowedView<const Entry> AsView() const noexcept
     {
-        return mEntries.AsSpan();
+        return mEntries.AsView();
     }
     /// Range-for: first entry in ascending key order (null when no storage is owned).
     [[nodiscard]] const Entry* begin() const noexcept

@@ -15,6 +15,7 @@
 
 #include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/ring_buffer.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_bit_set.hpp>
 #include <ludus/input/actions.h>
 #include <ludus/input/input_debug.h>
@@ -310,7 +311,7 @@ public:
         // Commit: copy bindings and action kinds into owned storage. The size
         // check above guarantees the copy fits.
         mBindings.Clear();
-        const bool isCopied = mBindings.TryAddRange(bindings);
+        const bool isCopied = mBindings.TryAddRange(foundation::MakeBorrowedView(bindings));
         LUDUS_ASSERT(isCopied);
         (void)isCopied;
         for (usize id = 0; id < ActionCap; ++id)

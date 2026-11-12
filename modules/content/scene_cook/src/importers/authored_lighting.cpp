@@ -6,6 +6,7 @@
 
 #include <ludus/content/content.h>
 #include <ludus/content/scene_cook/limits.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
@@ -178,7 +179,7 @@ struct TexelCoordinate final
     {
         return read;
     }
-    inoutLighting.EnvironmentSourceDigest = content::Hash(bytes.AsSpan());
+    inoutLighting.EnvironmentSourceDigest = content::Hash(foundation::MakeSpan(bytes));
     inoutLighting.HasEnvironmentSourceDigest = true;
     DecodedLightingImage image;
     std::string_view message;

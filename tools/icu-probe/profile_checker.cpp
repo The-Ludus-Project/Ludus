@@ -15,6 +15,8 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
 #include <ludus/foundation/hash/hash.hpp>
@@ -372,19 +374,19 @@ public:
     {
         uint8 encoded[sizeof(uint32)] = {};
         return foundation::TryWriteLittleEndian(value, std::span<uint8>(encoded)) == true &&
-               mBytes.TryAddRange(std::span<const uint8>(encoded)) == true;
+               mBytes.TryAddRange(BorrowedView<const uint8>(encoded)) == true;
     }
 
     [[nodiscard]] bool WriteBytes(std::string_view text) noexcept
     {
         return text.size() <= 0xffffffffU && WriteWord(static_cast<uint32>(text.size())) == true &&
-               mBytes.TryAddRange(std::span<const uint8>(reinterpret_cast<const uint8*>(text.data()), text.size())) ==
-                   true;
+               mBytes.TryAddRange(
+                   BorrowedView<const uint8>(reinterpret_cast<const uint8*>(text.data()), text.size())) == true;
     }
 
     [[nodiscard]] std::span<const uint8> GetBytes() const noexcept
     {
-        return mBytes.AsSpan();
+        return foundation::MakeSpan(mBytes);
     }
 
 private:
@@ -528,7 +530,7 @@ bool ReadFile(std::string_view directory, std::string_view name, Array<uint8>& o
     {
         return false;
     }
-    const foundation::filesystem::ReadResult read = file.ReadAt(0, outBytes.AsSpan());
+    const foundation::filesystem::ReadResult read = file.ReadAt(0, foundation::MakeSpan(outBytes));
     return read.Outcome.Succeeded() == true && read.BytesRead == outBytes.GetSize();
 }
 
@@ -544,7 +546,8 @@ int32 Run(std::string_view directory, std::string_view requestName, std::string_
         Array<uint8> bytes;
         Request request;
         ResponseWriter response;
-        if (ReadFile(directory, requestName, bytes) == false || ReadRequest(bytes.AsSpan(), request) == false)
+        if (ReadFile(directory, requestName, bytes) == false ||
+            ReadRequest(foundation::MakeSpan(bytes), request) == false)
         {
             LUDUS_LOG_ERROR(LOG_PROFILE, "Malformed or unreadable profile request {}", requestName);
             result = 2;

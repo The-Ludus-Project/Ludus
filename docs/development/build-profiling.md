@@ -693,6 +693,79 @@ such as FoundationContainers' `StaticArray` interoperability. Those container
 interfaces, and the `std::span` parameters left in other modules' public
 headers, are the next candidates for the same change.
 
+## Borrowed views in the container headers
+
+After PR 1141 the `std::span<$>` set still cost 1638 instantiations, 21.9 s
+normalized, in
+[run 42957466370](https://github.com/The-Ludus-Project/Ludus/actions/runs/42957466370)'s
+**Build-time budget**. Its ClangBuildAnalyzer capture also shows the `<span>`
+header itself parsed in 500 of 664 translation units, 28.7 s raw (21.0 s
+normalized, factor 259.0 / 354.6). FoundationContainers' `array.hpp` and
+`static_array.hpp` were the first includer in 298 of them.
+
+Attribution, measured before the change. Each `std::span` instantiation event in
+the capture is assigned to its innermost source file. Container headers trigger
+few of them: about 0.7 s raw through `StaticArray`, `Array`, `RingBuffer` and
+`StaticBitSet` together. Most come from `content.h` (3.9 s), `byte_order.hpp`
+(3.5 s), libstdc++'s `<format>` (2.4 s), the audio headers (3.2 s) and
+translation units' own code (9.8 s). The container cost is the `<span>` parse
+in translation units that reach it only through a container. The local include
+graph of every compilation in `macos-clang-debug` at `9fee583de` (preprocessor
+`-M` output) gives each unit's set of `<span>` includers. Combined with the
+capture's per-unit timings:
+
+| Headers made span-free | CI units no longer reaching `<span>` | `<span>` parse | `std::span` instantiations | Normalized |
+| --- | ---: | ---: | ---: | ---: |
+| FoundationContainers | 152 | 8.4 s | 147, 2.7 s | 8.1 s |
+| + `log_format.hpp`, `byte_order.hpp`, `string.hpp`, `component_pool.hpp` | 164 | 9.0 s | 168, 3.1 s | 8.8 s |
+| + `scene_format/material_program.h` | 217 | 12.2 s | 291, 5.5 s | 12.9 s |
+| + `content.h`, `hash.hpp`, `filesystem.hpp` | 245 | 14.0 s | 405, 7.5 s | 15.7 s |
+
+The containers carry most of the gain on their own. Logging, `byte_order` and
+strings rarely remain the only includer, so they add little. The next lever is
+`material_program.h`, which needs `byte_order.hpp`'s span API first. The
+estimate ignores libstdc++ headers that include `<span>` (`<format>`), so it is
+an upper bound for the units that include them.
+
+The change converts `Array`, `StaticArray`, `FixedArray`, `RingBuffer`,
+`SortedMap` and `StaticBitSet` to `BorrowedView` and drops their `<span>`
+includes. `ComponentPool` follows, so `gameplay/world`'s public headers no
+longer include `<span>` through it. Callers of other modules' remaining
+`std::span` APIs include the opt-in `span_compatibility.hpp` (`MakeSpan`,
+`MakeBorrowedView`); see the
+[container architecture](../architecture/container-systems.md#borrowed-contiguous-views)
+and [ADR 0003](../decisions/0003-standard-library-usage-policy.md).
+
+Frontend time on a 10-core Apple M5 (pinned Clang 23, libc++,
+`macos-clang-debug` flags, `-ftime-trace` "Total Frontend", minimum of three
+serial runs, before and after compilations interleaved). The source trees are
+`9fee583de` and the change's commit; none of these sources changes, so they
+measure the headers alone. `renderer.cpp` and `world_grid.cpp` still reach
+`<span>` through other headers and serve as controls. The host's load average
+stayed between 5.1 and 5.3:
+
+| Translation unit | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `modules/foundation/geometry/src/path.cpp` | 44 ms | 35 ms | -22% |
+| `modules/gameplay/world/src/entity_registry.cpp` | 39 ms | 30 ms | -24% |
+| `modules/foundation/threading/src/worker_queue.cpp` | 37 ms | 28 ms | -24% |
+| `modules/tooling/shader_language/src/parser.cpp` | 75 ms | 74 ms | -2% |
+| `modules/platform/src/window.cpp` | 85 ms | 82 ms | -3% |
+| `modules/graphics/rhi/src/device.cpp` | 97 ms | 96 ms | -1% |
+| `modules/graphics/renderer/src/visibility_buffer.cpp` | 98 ms | 96 ms | -1% |
+| `modules/graphics/renderer/src/render_graph_storage.cpp` | 94 ms | 92 ms | -2% |
+| `modules/graphics/renderer/src/renderer.cpp` (control) | 336 ms | 337 ms | +0% |
+| `modules/graphics/renderer/src/world_grid.cpp` (control) | 116 ms | 116 ms | +0% |
+| Sum | 1022 ms | 987 ms | -3% |
+
+With `-ftime-trace-granularity=0`, `device.cpp` and `path.cpp` no longer parse
+`<span>` or instantiate `std::span`. `renderer.cpp` still parses it, but its
+`std::span` instantiations fall from 16 to 5. libc++'s `<span>` is cheap when its
+dependencies are already loaded, so on macOS the saving concentrates in small
+units, about 9 ms each. On the Linux libstdc++ budget job, `<span>` averages
+57 ms per unit because it includes `<array>`. The first batch **Build-time
+budget** after the merge is the measurement of record for the estimate above.
+
 ## Build graph check
 
 Header parse budgets miss work that the build graph itself repeats: a source

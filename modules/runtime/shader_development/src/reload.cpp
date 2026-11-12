@@ -2,6 +2,7 @@
 
 #include <ludus/content/render_graph_format/runtime_package.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/filesystem/async.hpp>
 #include <ludus/foundation/filesystem/namespace.hpp>
 #include <ludus/foundation/filesystem/watch.hpp>
@@ -191,7 +192,8 @@ ReloadReport ReloadSession::Service(uint64 nowNanoseconds) noexcept
         }
         filesystem::ReadOptions options;
         options.Tag = state.Report.Request;
-        if (state.Reader.Submit(file, 0, state.Bytes.AsSpan(), state.Read, options) == filesystem::AsyncStatus::Ok)
+        if (state.Reader.Submit(file, 0, foundation::MakeSpan(state.Bytes), state.Read, options) ==
+            filesystem::AsyncStatus::Ok)
         {
             state.Report.Failure = ReloadFailure::None;
             state.HasRead = true;

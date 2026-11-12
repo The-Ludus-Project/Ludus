@@ -162,7 +162,7 @@ ViewportRasterPhase ViewportRasterCapture::Service() noexcept
     }
     RenderGraphPreview& graph = *mGraph;
     graph.Tick();
-    if (HasFailedPermanently(graph) == true)
+    if (graph.WasExtractionRejected(mRevision) == true || HasFailedPermanently(graph) == true)
     {
         fail(QStringLiteral("The viewport's render graph failed to prepare for capture: %1")
                  .arg(graph.GetDisplayStatus()));

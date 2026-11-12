@@ -37,11 +37,11 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/detail/contiguous_storage.hpp>
 #include <ludus/foundation/containers/relocation.hpp>
 
 #include <initializer_list>
-#include <span>
 #include <type_traits>
 #include <utility>
 
@@ -518,9 +518,10 @@ public:
     }
 
     /// Append a contiguous range to the end; allocation failure is fatal.
-    /// @pre Input must not overlap this array's storage.
-    void AddRange(std::span<const ElementType> items)
+    /// @pre `items` is valid (BorrowedView::IsValid) and does not overlap this array's storage.
+    void AddRange(BorrowedView<const ElementType> items)
     {
+        LUDUS_ASSERT(items.IsValid() == true);
         if (TryAddRange(items) == false)
         {
             detail::OnAllocationFailure();
@@ -530,17 +531,23 @@ public:
     /// @brief Fallible append of copies of `items`, with at most one allocation.
     ///
     /// @pre `items` does not overlap this array's storage (asserted).
-    /// @return False on allocation failure or overflow, leaving the array unchanged.
-    [[nodiscard]] bool TryAddRange(std::span<const ElementType> items)
+    /// @return False when `items` is invalid (null with a nonzero extent), or on allocation failure or
+    /// overflow; the array is unchanged.
+    [[nodiscard]] bool TryAddRange(BorrowedView<const ElementType> items)
     {
-        const usize count = items.size();
+        if (items.IsValid() == false)
+        {
+            return false;
+        }
+        const usize count = items.GetSize();
         if (count == 0)
         {
             return true;
         }
+        const ElementType* source = items.GetDataOrNull();
         // Guard aliasing: appending a view into our own storage would be
         // invalidated by a reallocation. Callers must not do that; assert it.
-        LUDUS_ASSERT(items.data() < mData || items.data() >= mData + mCapacity);
+        LUDUS_ASSERT(source < mData || source >= mData + mCapacity);
         if (mSize + count < mSize) // usize overflow
         {
             return false;
@@ -555,7 +562,7 @@ public:
                 return false;
             }
         }
-        internal::UninitializedCopy(mData + mSize, items.data(), count);
+        internal::UninitializedCopy(mData + mSize, source, count);
         mSize += count;
         return true;
     }
@@ -725,35 +732,38 @@ public:
         other.mCapacity = c;
     }
 
-    // --- std::span interop --------------------------------------------------
-    /// Borrow the live elements as a mutable span; invalidated with element borrows.
-    [[nodiscard]] operator std::span<ElementType>() noexcept
+    // --- Borrowed views -----------------------------------------------------
+    /// Borrow the live elements as a mutable view; invalidated with element borrows.
+    /// An empty array without storage yields a valid empty view with a null pointer.
+    [[nodiscard]] operator BorrowedView<ElementType>() noexcept
     {
-        return std::span<ElementType>(mData, mSize);
+        return BorrowedView<ElementType>(mData, mSize);
     }
-    /// Borrow the live elements as a read-only span; invalidated with element borrows.
-    [[nodiscard]] operator std::span<const ElementType>() const noexcept
+    /// Borrow the live elements as a read-only view; invalidated with element borrows.
+    [[nodiscard]] operator BorrowedView<const ElementType>() const noexcept
     {
-        return std::span<const ElementType>(mData, mSize);
+        return BorrowedView<const ElementType>(mData, mSize);
     }
-    /// Mutable span over the live elements; invalidated with element borrows.
-    [[nodiscard]] std::span<ElementType> AsSpan() noexcept
+    /// Mutable view over the live elements; invalidated with element borrows.
+    [[nodiscard]] BorrowedView<ElementType> AsView() noexcept
     {
-        return std::span<ElementType>(mData, mSize);
+        return BorrowedView<ElementType>(mData, mSize);
     }
-    /// Read-only span over the live elements; invalidated with element borrows.
-    [[nodiscard]] std::span<const ElementType> AsSpan() const noexcept
+    /// Read-only view over the live elements; invalidated with element borrows.
+    [[nodiscard]] BorrowedView<const ElementType> AsView() const noexcept
     {
-        return std::span<const ElementType>(mData, mSize);
+        return BorrowedView<const ElementType>(mData, mSize);
     }
 
-    /// Build an Array by copying a contiguous view (explicit range factory).
-    [[nodiscard]] static Array FromRange(std::span<const ElementType> items)
+    /// Build an Array by copying a contiguous view (explicit range factory); allocation failure is fatal.
+    /// @pre `items` is valid (BorrowedView::IsValid).
+    [[nodiscard]] static Array FromRange(BorrowedView<const ElementType> items)
     {
+        LUDUS_ASSERT(items.IsValid() == true);
         Array result;
-        result.EnsureCapacity(items.size());
-        internal::UninitializedCopy(result.mData, items.data(), items.size());
-        result.mSize = items.size();
+        result.EnsureCapacity(items.GetSize());
+        internal::UninitializedCopy(result.mData, items.GetDataOrNull(), items.GetSize());
+        result.mSize = items.GetSize();
         return result;
     }
 

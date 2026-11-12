@@ -1279,15 +1279,76 @@ bool WorldDocument::commit(const QJsonObject& candidate, QString& outError, cons
     Draft_ = candidate;
     return true;
 }
+namespace
+{
+QJsonObject GetWorldEntityLight(const QJsonObject& entity)
+{
+    return entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+}
+
+void CopyEarthObserverToEntity(const QJsonObject& observer, QJsonObject& inoutEntity)
+{
+    QJsonObject components = inoutEntity.value(QStringLiteral("components")).toObject();
+    QJsonObject light = components.value(QStringLiteral("light")).toObject();
+    CopyWorldEarthObserver(observer, light);
+    components.insert(QStringLiteral("light"), light);
+    inoutEntity.insert(QStringLiteral("components"), components);
+}
+
+void SynchronizeWorldEarthObserver(const QJsonObject& previous, qsizetype editedIndex, QJsonArray& inoutEntities)
+{
+    QJsonObject edited = inoutEntities[editedIndex].toObject();
+    const QJsonObject light = GetWorldEntityLight(edited);
+    if (IsWorldEarthLight(light) == false)
+    {
+        return;
+    }
+    const QJsonObject previousLight = GetWorldEntityLight(previous);
+    if (AreWorldEarthObserversEqual(light, previousLight) == true)
+    {
+        if (IsWorldEarthLight(previousLight) == true)
+        {
+            return;
+        }
+        // A newly activated preset inherits the existing Earth observer unless the same edit specifies one.
+        for (qsizetype i = 0; i < inoutEntities.size(); ++i)
+        {
+            const QJsonObject other = GetWorldEntityLight(inoutEntities[i].toObject());
+            if (i != editedIndex && IsWorldEarthLight(other) == true)
+            {
+                CopyEarthObserverToEntity(other, edited);
+                inoutEntities[editedIndex] = edited;
+                return;
+            }
+        }
+        return;
+    }
+    for (qsizetype i = 0; i < inoutEntities.size(); ++i)
+    {
+        QJsonObject other = inoutEntities[i].toObject();
+        if (i != editedIndex && IsWorldEarthLight(GetWorldEntityLight(other)) == true)
+        {
+            CopyEarthObserverToEntity(light, other);
+            inoutEntities[i] = other;
+        }
+    }
+}
+} // namespace
+
 bool WorldDocument::replaceEntity(const QJsonObject& entity, QString& outError, const char* name)
 {
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();
     for (foundation::int32 i = 0; i < entities.size(); ++i)
     {
-        if (GetEntityKey(entities[i].toObject()) == GetEntityKey(entity))
+        const QJsonObject previous = entities[i].toObject();
+        if (GetEntityKey(previous) == GetEntityKey(entity))
         {
             entities[i] = entity;
-            auto candidate = Draft_;
+            if (HasBuiltInSchema() == true)
+            {
+                SynchronizeWorldEarthObserver(previous, i, entities);
+            }
+            QJsonObject candidate = Draft_;
             candidate.insert(QStringLiteral("entities"), entities);
             return commit(candidate, outError, name);
         }

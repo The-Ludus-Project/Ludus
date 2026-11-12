@@ -445,6 +445,7 @@ struct ReferenceRawAovCase final
     float32 OpticalWavelengthWorld = 0;
     bool IsFarConventional = false;
     rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
+    bool HasSecondDirectionalLight = false;
 };
 
 void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
@@ -560,6 +561,11 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     lights[3].Direction = {0, 1, 0};
     lights[3].Range = 4;
     lights[3].Intensity = .2F;
+    if (test.HasSecondDirectionalLight == true)
+    {
+        lights[3].Kind = rr::LightKind::Directional;
+        lights[3].Direction = {0, 0, 1};
+    }
 
     rr::ReferenceCaptureDescription capture;
     capture.Width = CAPTURE_WIDTH_PIXELS;
@@ -700,6 +706,23 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: single bounce", "[renderer
         .HasEnvironmentMap = false,
         .OpticalWavelengthWorld = 0,
         .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: independent directional proposals",
+          "[renderer][gpu][reference-compute]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "two directional lights, finite lights, emitter and environment",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 2,
+        .Seed = 31,
+        .LightCount = 4,
+        .HasEnvironmentMap = true,
+        .LightSampling = rr::ReferenceLightSampling::SeparateDirectional,
+        .HasSecondDirectionalLight = true,
     });
 }
 
@@ -977,6 +1000,74 @@ TEST_CASE("GPU-compute reference continues targets and exports its traversal", "
     CHECK((flags & GPU_COMPUTE_FLAG) != 0);
     CHECK((flags & 1) == 0);
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
+}
+
+TEST_CASE("RT1 directional shadow rays respect occlusion alongside emissive and sky samples",
+          "[renderer][gpu][reference-compute]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription deviceDescription;
+    deviceDescription.Required.PortableRaster = true;
+    deviceDescription.Required.Compute = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, deviceDescription, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No offscreen compute adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = 4;
+    capture.Height = 1;
+    capture.TargetSamples = 4;
+    capture.MaxDepth = 1;
+    capture.RouletteDepth = 1;
+    capture.CenterRays = true;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 0.5F;
+    capture.WorldToClip.Columns[3].Z = 0.7F;
+    capture.CameraPosition.Z = -0.7F;
+    capture.Environment = {0, 0, 0.2F};
+    capture.LightSampling = rr::ReferenceLightSampling::SeparateDirectional;
+    rr::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = rr::LightKind::Directional;
+    light.Direction = {-0.70710677F, 0, 0.70710677F};
+    light.Color = {1, 0, 0};
+    capture.Lights = &light;
+    capture.LightCount = 1;
+    for (const rr::ReferenceTraversal traversal :
+         {rr::ReferenceTraversal::CpuOracle, rr::ReferenceTraversal::GpuCompute})
+    {
+        CAPTURE(static_cast<uint32>(traversal));
+        Session session;
+        REQUIRE(Prepare(device, traversal, session) == S::Ready);
+        Array<rr::ReferencePixel> dark;
+        Array<rr::ReferencePixel> lit;
+        rr::ReferenceCaptureInfo info;
+        light.Intensity = 0;
+        Capture(session, capture, surface, dark, info);
+        light.Intensity = 1;
+        Capture(session, capture, surface, lit, info);
+        CHECK(info.SamplerVersion == 4);
+        CHECK(info.LightSampling == rr::ReferenceLightSampling::SeparateDirectional);
+        // The -1.5 receiver clears the end of the L6 wall; the +0.5 receiver is behind it.
+        constexpr usize UNBLOCKED_PIXEL = 0;
+        constexpr usize BLOCKED_PIXEL = 2;
+        CHECK(lit[UNBLOCKED_PIXEL].Direct.X - dark[UNBLOCKED_PIXEL].Direct.X > 0.1F);
+        CHECK(math::Distance(lit[BLOCKED_PIXEL].Direct, dark[BLOCKED_PIXEL].Direct) < 1e-5F);
+        CHECK(lit[UNBLOCKED_PIXEL].Direct.Z == dark[UNBLOCKED_PIXEL].Direct.Z);
+    }
 }
 
 TEST_CASE("GPU-compute reference preserves bounded white sRGB textures and vertex colors",
@@ -1813,7 +1904,8 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     capture.Seed = 3;
     capture.Environment = {.3F, .4F, .5F};
     rr::ReferenceCaptureDescription invalid = capture;
-    invalid.LightSampling = static_cast<rr::ReferenceLightSampling>(3);
+    constexpr uint8 INVALID_LIGHT_SAMPLING = 255;
+    invalid.LightSampling = static_cast<rr::ReferenceLightSampling>(INVALID_LIGHT_SAMPLING);
     rr::ReferenceCapture rejected;
     CHECK(gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, invalid, rejected) == S::InvalidDescription);
     rr::ReferenceCapture handle;

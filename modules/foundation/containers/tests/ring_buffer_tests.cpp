@@ -1,15 +1,16 @@
 #include "lifetime_type.hpp"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/ring_buffer.hpp>
 
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <span>
 #include <type_traits>
 #include <utility>
 
+using ludus::foundation::BorrowedView;
 using ludus::foundation::int32;
 using ludus::foundation::RingBuffer;
 using ludus::foundation::uint32;
@@ -47,26 +48,26 @@ static_assert(std::is_copy_constructible_v<RingBuffer<tst::MoveOnly, SMALL_CAPAC
 static_assert(std::is_nothrow_move_constructible_v<RingBuffer<tst::MoveOnly, SMALL_CAPACITY>>);
 static_assert(RingBuffer<uint32, SMALL_CAPACITY>::GetCapacity() == SMALL_CAPACITY);
 
-// Collect the two spans in FIFO order.
+// Collect the two views in FIFO order.
 template <usize Count>
-[[nodiscard]] bool SpansEqual(const RingBuffer<int32, Count>& ring, std::span<const int32> expected)
+[[nodiscard]] bool ViewsEqual(const RingBuffer<int32, Count>& ring, BorrowedView<const int32> expected)
 {
-    const std::span<const int32> leading = ring.GetLeadingSpan();
-    const std::span<const int32> trailing = ring.GetTrailingSpan();
-    if (leading.size() + trailing.size() != expected.size())
+    const BorrowedView<const int32> leading = ring.GetLeadingView();
+    const BorrowedView<const int32> trailing = ring.GetTrailingView();
+    if (leading.GetSize() + trailing.GetSize() != expected.GetSize())
     {
         return false;
     }
-    for (usize i = 0; i < leading.size(); ++i)
+    for (usize i = 0; i < leading.GetSize(); ++i)
     {
         if (leading[i] != expected[i])
         {
             return false;
         }
     }
-    for (usize i = 0; i < trailing.size(); ++i)
+    for (usize i = 0; i < trailing.GetSize(); ++i)
     {
-        if (trailing[i] != expected[leading.size() + i])
+        if (trailing[i] != expected[leading.GetSize() + i])
         {
             return false;
         }
@@ -101,21 +102,21 @@ TEST_CASE("RingBuffer is first in, first out and reports full as a status", "[co
     }
     ring.Clear();
     REQUIRE(ring.IsEmpty());
-    REQUIRE(ring.GetLeadingSpan().empty());
-    REQUIRE(ring.GetTrailingSpan().empty());
+    REQUIRE(ring.GetLeadingView().IsEmpty());
+    REQUIRE(ring.GetTrailingView().IsEmpty());
 }
 
-TEST_CASE("RingBuffer exposes wrapped storage as two contiguous spans", "[containers][ring-buffer]")
+TEST_CASE("RingBuffer exposes wrapped storage as two contiguous views", "[containers][ring-buffer]")
 {
     RingBuffer<int32, SMALL_CAPACITY> ring;
     const int32 none[] = {0};
-    REQUIRE(SpansEqual(ring, std::span<const int32>(none, 0)));
+    REQUIRE(ViewsEqual(ring, BorrowedView<const int32>(none, 0)));
     REQUIRE(ring.TryAdd(1));
     REQUIRE(ring.TryAdd(2));
     REQUIRE(ring.TryAdd(3));
     const int32 unwrapped[] = {1, 2, 3};
-    REQUIRE(ring.GetTrailingSpan().empty());
-    REQUIRE(SpansEqual(ring, unwrapped));
+    REQUIRE(ring.GetTrailingView().IsEmpty());
+    REQUIRE(ViewsEqual(ring, unwrapped));
 
     ring.RemoveFirst();
     ring.RemoveFirst();
@@ -124,9 +125,9 @@ TEST_CASE("RingBuffer exposes wrapped storage as two contiguous spans", "[contai
     REQUIRE(ring.TryAdd(6));
     const int32 wrapped[] = {3, 4, 5, 6};
     REQUIRE(ring.IsFull());
-    REQUIRE(ring.GetLeadingSpan().size() == 2);
-    REQUIRE(ring.GetTrailingSpan().size() == 2);
-    REQUIRE(SpansEqual(ring, wrapped));
+    REQUIRE(ring.GetLeadingView().GetSize() == 2);
+    REQUIRE(ring.GetTrailingView().GetSize() == 2);
+    REQUIRE(ViewsEqual(ring, wrapped));
 
     // Draining restarts at the first slot, so the next run is contiguous again.
     while (ring.IsEmpty() == false)
@@ -134,8 +135,8 @@ TEST_CASE("RingBuffer exposes wrapped storage as two contiguous spans", "[contai
         ring.RemoveFirst();
     }
     REQUIRE(ring.TryAdd(7));
-    REQUIRE(ring.GetLeadingSpan().data() == &ring.GetFirst());
-    REQUIRE(ring.GetTrailingSpan().empty());
+    REQUIRE(ring.GetLeadingView().GetDataOrNull() == &ring.GetFirst());
+    REQUIRE(ring.GetTrailingView().IsEmpty());
 }
 
 TEST_CASE("RingBuffer with zero capacity is empty and always full", "[containers][ring-buffer]")
@@ -144,8 +145,8 @@ TEST_CASE("RingBuffer with zero capacity is empty and always full", "[containers
     REQUIRE(ring.IsEmpty());
     REQUIRE(ring.IsFull());
     REQUIRE(ring.GetCapacity() == 0);
-    REQUIRE(ring.GetLeadingSpan().empty());
-    REQUIRE(ring.GetTrailingSpan().empty());
+    REQUIRE(ring.GetLeadingView().IsEmpty());
+    REQUIRE(ring.GetTrailingView().IsEmpty());
     tst::LifetimeLedger ledger;
     {
         tst::Tracked candidate(&ledger, 1);
@@ -239,11 +240,11 @@ TEST_CASE("RingBuffer copy and move of wrapped contents keep lifetimes balanced"
         source.RemoveFirst();
         source.RemoveFirst();
         REQUIRE(source.TryAddInPlace(&ledger, 4) != nullptr); // contents 2 3 4, wrapped
-        REQUIRE(source.GetTrailingSpan().size() == 1);
+        REQUIRE(source.GetTrailingView().GetSize() == 1);
 
         RingBuffer<tst::Tracked, SMALL_CAPACITY> copy(source);
         REQUIRE(copy == source);
-        REQUIRE(copy.GetTrailingSpan().empty()); // copies start at the first slot
+        REQUIRE(copy.GetTrailingView().IsEmpty()); // copies start at the first slot
 
         RingBuffer<tst::Tracked, SMALL_CAPACITY> assigned;
         REQUIRE(assigned.TryAddInPlace(&ledger, 9) != nullptr);
@@ -323,20 +324,20 @@ TEST_CASE("RingBuffer seeded operations match an independent model", "[container
             REQUIRE(ring.GetSize() == modelSize);
             REQUIRE(ring.IsFull() == (modelSize == MODEL_CAPACITY));
             REQUIRE(ledger.Live() == static_cast<long>(modelSize));
-            REQUIRE(ring.GetLeadingSpan().size() + ring.GetTrailingSpan().size() == modelSize);
+            REQUIRE(ring.GetLeadingView().GetSize() + ring.GetTrailingView().GetSize() == modelSize);
             for (usize i = 0; i < modelSize; ++i)
             {
                 REQUIRE(ring[i].Value() == model[i]);
             }
-            const std::span<const tst::Tracked> leading = std::as_const(ring).GetLeadingSpan();
-            const std::span<const tst::Tracked> trailing = std::as_const(ring).GetTrailingSpan();
-            for (usize i = 0; i < leading.size(); ++i)
+            const BorrowedView<const tst::Tracked> leading = std::as_const(ring).GetLeadingView();
+            const BorrowedView<const tst::Tracked> trailing = std::as_const(ring).GetTrailingView();
+            for (usize i = 0; i < leading.GetSize(); ++i)
             {
                 REQUIRE(leading[i].Value() == model[i]);
             }
-            for (usize i = 0; i < trailing.size(); ++i)
+            for (usize i = 0; i < trailing.GetSize(); ++i)
             {
-                REQUIRE(trailing[i].Value() == model[leading.size() + i]);
+                REQUIRE(trailing[i].Value() == model[leading.GetSize() + i]);
             }
         }
     }

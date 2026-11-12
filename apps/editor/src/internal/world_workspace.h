@@ -330,7 +330,8 @@ private:
     [[nodiscard]] bool readDraft(WorldDocument& inoutDocument,
                                  QString& outError,
                                  QWidget*& outInvalidOrNull,
-                                 bool shouldReadMaterial = true);
+                                 bool shouldReadMaterial = true,
+                                 bool* outHasInheritedEarthObserverOrNull = nullptr);
     [[nodiscard]] bool readCoatingFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
     [[nodiscard]] bool openMaterialDocument(const QString& entityId, QString& outError);
     [[nodiscard]] bool setSlotCoating(const QString& entityId, const QJsonObject& coating, QString& outError);
