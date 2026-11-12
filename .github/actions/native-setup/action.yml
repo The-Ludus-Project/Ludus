@@ -16,6 +16,9 @@ inputs:
   compiler-cache-writer:
     description: Save compiler outputs (one writer per variant)
     default: 'true'
+  prerequisites-only:
+    description: Install system packages for a test runner restoring a prepared build.
+    default: 'false'
   editor:
     description: Install and build the optional editor
     default: 'false'
@@ -58,6 +61,7 @@ runs:
         timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq
         timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq "${packages[@]}"
     - name: Cache pip downloads
+      if: inputs.prerequisites-only != 'true'
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
@@ -69,13 +73,13 @@ runs:
     # Catch2 recipe exports. Vendored FetchContent or source trees under third_party
     # would give develop pull requests a key that the batch on main never saves.
     - name: Cache selected Conan packages
-      if: inputs.conan-cache-writer == 'true'
+      if: inputs.prerequisites-only != 'true' && inputs.conan-cache-writer == 'true'
       uses: actions/cache@v4
       with:
         path: out/conan/home
         key: conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-${{ hashFiles('conanfile.py', 'conan.lock', 'third_party/*/conanfile.py', 'tests/support/prepare_catch_headers.py', 'tests/support/catch_stream.*', 'config/conan/**', 'config/tool_versions.json', 'CMakePresets.json') }}
     - name: Restore selected Conan packages without saving
-      if: inputs.conan-cache-writer != 'true'
+      if: inputs.prerequisites-only != 'true' && inputs.conan-cache-writer != 'true'
       uses: actions/cache/restore@v4
       with:
         path: out/conan/home
@@ -85,7 +89,7 @@ runs:
         restore-keys: |
           conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-
     - name: Cache compiler outputs
-      if: inputs.compiler-cache == 'true' && inputs.compiler-cache-writer == 'true'
+      if: inputs.prerequisites-only != 'true' && inputs.compiler-cache == 'true' && inputs.compiler-cache-writer == 'true'
       uses: actions/cache@v4
       with:
         path: ~/.cache/ccache
@@ -93,7 +97,7 @@ runs:
         restore-keys: |
           ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-${{ inputs.cache-variant }}-${{ hashFiles('config/tool_versions.json', 'config/conan/**') }}-
     - name: Restore compiler outputs without saving
-      if: inputs.compiler-cache == 'true' && inputs.compiler-cache-writer != 'true'
+      if: inputs.prerequisites-only != 'true' && inputs.compiler-cache == 'true' && inputs.compiler-cache-writer != 'true'
       uses: actions/cache/restore@v4
       with:
         path: ~/.cache/ccache
@@ -101,6 +105,7 @@ runs:
         restore-keys: |
           ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-${{ inputs.cache-variant }}-${{ hashFiles('config/tool_versions.json', 'config/conan/**') }}-
     - name: Configure compiler caching
+      if: inputs.prerequisites-only != 'true'
       shell: bash
       env:
         COMPILER_CACHE: ${{ inputs.compiler-cache }}
@@ -112,6 +117,7 @@ runs:
           echo 'LUDUS_ENABLE_CCACHE=0' >> "$GITHUB_ENV"
         fi
     - name: Prepare selected locked preset
+      if: inputs.prerequisites-only != 'true'
       shell: bash
       env:
         PRESET: ${{ inputs.preset }}

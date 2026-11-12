@@ -1,5 +1,6 @@
 #pragma once
 
+#include "depth_barrier_vulkan.h"
 #include "resources.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -2222,60 +2223,44 @@ void RasterEndPass() noexcept
 }
 void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
 {
-    auto& texture = gRasterTextures[slot];
-    const bool color = use == RasterTextureUse::ColorAttachment;
+    RasterVulkanTexture& texture = gRasterTextures[slot];
+    const bool isAttachmentUse = use == RasterTextureUse::ColorAttachment;
     if (texture.Depth != VK_NULL_HANDLE)
     {
-        const auto depthLayout =
-            color ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        const VkPipelineStageFlags tests =
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        const VkPipelineStageFlags shaders = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-        VkImageMemoryBarrier depth{};
-        depth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        depth.image = texture.Depth;
-        depth.oldLayout = texture.DepthLayout;
-        depth.newLayout = depthLayout;
-        depth.srcQueueFamilyIndex = depth.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        depth.srcAccessMask =
-            texture.DepthLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0U
-            : texture.DepthLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                ? VK_ACCESS_SHADER_READ_BIT
-                : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        depth.dstAccessMask =
-            color ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-                  : VK_ACCESS_SHADER_READ_BIT;
-        depth.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | (texture.Info.Stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0U),
-                                  0,
-                                  texture.Info.MipLevels,
-                                  0,
-                                  texture.Info.DepthOrLayers};
+        const VkImageSubresourceRange subresources{
+            VK_IMAGE_ASPECT_DEPTH_BIT | (texture.Info.Stencil == true ? VK_IMAGE_ASPECT_STENCIL_BIT : 0U),
+            0,
+            texture.Info.MipLevels,
+            0,
+            texture.Info.DepthOrLayers,
+        };
+        const VulkanDepthBarrier depth =
+            MakeVulkanDepthBarrier(texture.Depth, subresources, texture.DepthLayout, isAttachmentUse, gQueueCompute);
         vkCmdPipelineBarrier(gFrames[gFrame].Command,
-                             texture.DepthLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                                                              : tests | shaders,
-                             color ? tests : shaders,
+                             depth.SourceStages,
+                             depth.DestinationStages,
                              0,
                              0,
                              nullptr,
                              0,
                              nullptr,
                              1,
-                             &depth);
-        texture.DepthLayout = depthLayout;
+                             &depth.Image);
+        texture.DepthLayout = depth.Image.newLayout;
     }
     const VkPipelineStageFlags stage =
-        color                                     ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        isAttachmentUse == true                   ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
         : use == RasterTextureUse::SampledCompute ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
         : use == RasterTextureUse::SampledVertex  ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
         : use == RasterTextureUse::SampledFragment
             ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
             : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    const auto access =
-        color ? VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_SHADER_READ_BIT;
-    const auto layout = color ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (texture.ColorLayout == layout && (texture.SampleVisibility & stage) == stage && color == false)
+    const VkAccessFlags access = isAttachmentUse == true
+                                     ? VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                                     : VK_ACCESS_SHADER_READ_BIT;
+    const VkImageLayout layout =
+        isAttachmentUse == true ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (texture.ColorLayout == layout && (texture.SampleVisibility & stage) == stage && isAttachmentUse == false)
     {
         texture.ColorStage |= stage;
         return;
@@ -2304,9 +2289,9 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
                          1,
                          &barrier);
     texture.ColorLayout = layout;
-    texture.ColorStage = color ? stage : texture.ColorStage | stage;
+    texture.ColorStage = isAttachmentUse == true ? stage : texture.ColorStage | stage;
     texture.ColorAccess = access;
-    if (color == false)
+    if (isAttachmentUse == false)
     {
         texture.SampleVisibility |= stage;
     }
@@ -2363,34 +2348,6 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     if (surface == false)
     {
         RasterTextureBarrier(info.Texture, RasterTextureUse::ColorAttachment);
-        auto& texture = gRasterTextures[info.Texture];
-        VkImageMemoryBarrier depth{};
-        depth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        depth.oldLayout = texture.DepthLayout;
-        depth.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depth.srcQueueFamilyIndex = depth.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        depth.srcAccessMask =
-            texture.DepthLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0U : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        depth.dstAccessMask =
-            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        depth.image = texture.Depth;
-        depth.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | (texture.Info.Stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0U),
-                                  0,
-                                  texture.Info.MipLevels,
-                                  0,
-                                  texture.Info.DepthOrLayers};
-        const auto stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        vkCmdPipelineBarrier(gFrames[gFrame].Command,
-                             texture.DepthLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                                                              : stages,
-                             stages,
-                             0,
-                             0,
-                             nullptr,
-                             0,
-                             nullptr,
-                             1,
-                             &depth);
     }
     VkClearValue clear[2]{};
     for (usize i = 0; i < 4; ++i)

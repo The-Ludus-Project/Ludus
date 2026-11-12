@@ -10,6 +10,7 @@
 #include "renderer_shadow.h"
 #include <catch2/generators/catch_generators.hpp>
 
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/projection.hpp>
@@ -958,12 +959,20 @@ TEST_CASE("GPU-compute reference continues targets and exports its traversal", "
     constexpr usize HEADER_BYTES = 256;
     constexpr usize PIXEL_BYTES = 16;
     constexpr usize FLAGS_OFFSET = 44;
+    constexpr usize SCENE_FINGERPRINT_OFFSET = 64;
     constexpr uint32 GPU_COMPUTE_FLAG = 64;
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(HEADER_BYTES + first.GetSize() * PIXEL_BYTES) == true);
     usize written = 0;
     REQUIRE(gpu.Renderer.EncodeReferenceHdr(handle, bytes.GetData(), bytes.GetSize(), written) == S::Ready);
     CHECK(written == bytes.GetSize());
+    uint64 fingerprintLow = 0;
+    uint64 fingerprintHigh = 0;
+    const uint8* fingerprint = bytes.GetData() + SCENE_FINGERPRINT_OFFSET;
+    REQUIRE(TryReadLittleEndian({fingerprint, sizeof(uint64)}, fingerprintLow) == true);
+    REQUIRE(TryReadLittleEndian({fingerprint + sizeof(uint64), sizeof(uint64)}, fingerprintHigh) == true);
+    CHECK(fingerprintLow == info.SceneFingerprintLow);
+    CHECK(fingerprintHigh == info.SceneFingerprintHigh);
     const uint32 flags = uint32(bytes[FLAGS_OFFSET]) | (uint32(bytes[FLAGS_OFFSET + 1]) << 8);
     CHECK((flags & GPU_COMPUTE_FLAG) != 0);
     CHECK((flags & 1) == 0);

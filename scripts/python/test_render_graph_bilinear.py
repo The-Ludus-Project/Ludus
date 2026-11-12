@@ -56,6 +56,7 @@ class BilinearTests(unittest.TestCase):
         self.assertEqual('Main/destination', plan['roots'][0]['resource'])
         self.assertEqual(['Main/camera'], plan['roots'][0]['cameras'])
         self.assertEqual('Main/color', plan['passes'][1]['source_color']['resource'])
+        self.assertIn("    Main/color [ColorTexture] 000..001", graph.dump_plan(plan).splitlines())
 
     def test_invalid_alias_undefined_input_and_multisample_reject(self):
         for mutation in ('alias', 'undefined', 'samples'):

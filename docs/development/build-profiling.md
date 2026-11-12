@@ -566,8 +566,132 @@ These are libc++ numbers from one host, not the budget's metric. No Linux host
 was available, so the effect on libstdc++, where the two headers also bring
 `<format>`, is not measured here: the profile above bounds it at the 16.4 s the
 two headers cost, and the next **Build-time budget** summary is the measurement. The aggregate budget is unchanged. `<filesystem>` in test
-fixtures (12.4 s) is the next candidate and needs a test-support library that
-keeps `<filesystem>` behind one `.cpp`.
+fixtures (12.4 s) was the next candidate; see
+[Filesystem in test fixtures](#filesystem-in-test-fixtures).
+
+## Filesystem in test fixtures
+
+In the same profile `<filesystem>` cost 12.4 s over 29 inclusions, mostly
+through three shared test fixtures that every including test source parsed:
+
+| Fixture | Average per include |
+| --- | ---: |
+| `modules/content/scene_cook/tests/import_test_support.h` | 817 ms |
+| `modules/content/scene_cook/tests/scratch_directory.h` | 710 ms |
+| `modules/foundation/filesystem/tests/persistence_fixture.hpp` | 641 ms |
+
+They needed `<filesystem>` (and `<fstream>`, `<random>`) only for scratch
+directories, whole-file reads and writes, copies and directory listings.
+`ludus_test_files` (`tests/support/test_files.hpp`, defined in
+`cmake/EngineTestFiles.cmake`) now provides exactly those operations:
+`CreateScratchDirectory`, `CreateDirectories`, `RemoveTree`, `CopyTree`,
+`CopyRegularFile`, `RemoveFile`, `ReadFile`, `WriteFile`, `IsExistingPath`,
+`IsDirectory`, `GetFileSize`, `GetCanonicalPath` and `VisitDirectory`. Paths
+are UTF-8 `std::string_view` inputs, results are `bool` with
+`ludus::foundation::String` outputs, and `<filesystem>` is parsed only in
+`test_files.cpp`. The library is a static library linked only by test
+targets, is never installed, and compiles without exceptions like engine code
+(every call uses the `std::error_code` overloads). Production code uses
+FoundationFilesystem instead.
+
+The three fixtures no longer include `<filesystem>`; their paths are
+`std::string` values joined with `/`. Test sources that use `std::filesystem`
+for their own setup (symbolic links, renames, many directory operations) keep
+including it directly: `scene_assets_tests.cpp`, `best_effort_import_tests.cpp`,
+`reference_emitter_tests.cpp`, `scene_cook_tests.cpp`, `persistence_tests.cpp`,
+`persistence_fault_tests.cpp` and `watch_tests.cpp`.
+
+Frontend time of eight test sources on a 10-core Apple M5 (pinned Clang 23,
+libc++, `macos-clang-debug` flags from `compile_commands.json`). Each side
+compiles the source and its fixture headers as they are on `origin/develop`
+(before) or on this branch (after), interleaved. "Trace" is `-ftime-trace`
+"Total Frontend", the minimum of five runs (nine for the glTF source); "CPU" is
+the minimum user plus system time of a `-fsyntax-only` compile over the same
+runs. Other work loaded the host to a load average of 20 to 60 throughout, so
+the trace column, which is wall time, is noisy; the CPU column is the steadier
+comparison.
+
+| Translation unit | Trace before | Trace after | CPU before | CPU after | CPU change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `modules/content/scene_cook/tests/image_decoder_tests.cpp` | 2285 ms | 676 ms | 867 ms | 555 ms | -36% |
+| `modules/content/scene_cook/tests/file_digest_tests.cpp` | 1178 ms | 598 ms | 833 ms | 492 ms | -41% |
+| `modules/content/scene_cook/tests/obj_import_tests.cpp` | 1570 ms | 980 ms | 1053 ms | 682 ms | -35% |
+| `modules/content/scene_cook/tests/gltf_import_tests.cpp` | 1147 ms | 814 ms | 939 ms | 745 ms | -21% |
+| `modules/content/scene_cook/tests/texture_decode_tests.cpp` | 1946 ms | 1074 ms | 1021 ms | 683 ms | -33% |
+| `modules/content/scene_cook/tests/ludus_scene_import_tests.cpp` | 1324 ms | 1431 ms | 960 ms | 674 ms | -30% |
+| `modules/foundation/filesystem/tests/watch_fault_tests.cpp` | 1339 ms | 1083 ms | 845 ms | 576 ms | -32% |
+| `modules/foundation/filesystem/tests/persistence_tests.cpp` | 1059 ms | 756 ms | 898 ms | 666 ms | -26% |
+| Sum | 11848 ms | 7412 ms | 7416 ms | 5073 ms | -32% |
+
+`persistence_tests.cpp` still includes `<filesystem>` itself; it gains from the
+fixture's `<fstream>` and `<iterator>`. These are libc++ numbers from one
+loaded host, not the budget's metric; the next **Build-time budget** summary
+measures libstdc++ on the reference runner. The repository-root
+`ClangBuildAnalyzer.ini` (`header = 50`, see the profiling section above) lists
+enough headers for the per-header budget to inspect such fixtures. Budgets are
+unchanged.
+
+## Borrowed views in the RHI headers
+
+The same 2026-11-08 profile ranked the `std::span<$>` template set as the most
+expensive instantiation: 49 s over 3490 instantiations. `rhi/raster.h` declared
+eleven `std::span<const X>` members and parameters, `render.h` three and
+`device.h` one, each instantiated in every translation unit that reaches them.
+[PR 1141](https://github.com/The-Ludus-Project/Ludus/pull/1141) replaced them
+with FoundationContainers' `BorrowedView` (range-for iteration, no `<span>`
+include) and retired the R1 `std::span` exception in
+[ADR 0003](../decisions/0003-standard-library-usage-policy.md). The migration
+guide for callers is in
+[fullscreen rendering](fullscreen-rendering.md).
+
+The two batch **Build-time budget** jobs around the merge show the effect.
+[Run 42925791682](https://github.com/The-Ludus-Project/Ludus/actions/runs/42925791682)
+validated `4674a7faf` (before PR 1141) and
+[run 42957466370](https://github.com/The-Ludus-Project/Ludus/actions/runs/42957466370)
+validated `62ec4d11e` (after it). Seconds are converted with each run's own
+normalization factor (305.1 / 620.6 and 259.0 / 354.6):
+
+| Analyzer entry | Before | After |
+| --- | ---: | ---: |
+| `std::span<$>` | 3535 instantiations, 46.9 s | 1638 instantiations, 21.9 s |
+| Nine `std::span<const rhi::Raster…>` / `TextureMipUpload` entries | 178 each, 20.8 s | not listed |
+| `std::span<const unsigned int>` | 202, 3.1 s | not listed |
+| Frontend parsing, normalized | 305.1 s | 259.0 s |
+
+The 46 s aggregate difference also includes the other pull requests merged
+between the two candidates, notably
+[PR 1139](https://github.com/The-Ludus-Project/Ludus/pull/1139), which shares
+renderer and RHI test compilations. The disappearance of the per-type RHI
+entries is attributable to PR 1141; the 25 s reduction of the `std::span<$>`
+set is an upper bound for it.
+
+Frontend time of eight RHI and renderer translation units on a 10-core Apple M5
+(pinned Clang 23, libc++, `macos-clang-development` flags, `-ftime-trace`
+"Total Frontend", minimum of three serial runs, before and after compilations
+interleaved). The source trees are `26dbd63d8^1` and `26dbd63d8`, the merge of
+PR 1141, so only its changes differ. `world_grid.cpp` and
+`gpu_preview_camera.cpp` are unchanged by it and measure the headers alone.
+Other builds kept the host's load average between 10 and 15:
+
+| Translation unit | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `modules/graphics/rhi/src/device.cpp` | 134 ms | 103 ms | -23% |
+| `modules/graphics/rhi/src/rhi_metal.mm` | 508 ms | 495 ms | -2% |
+| `modules/graphics/renderer/src/renderer.cpp` | 415 ms | 341 ms | -18% |
+| `modules/graphics/renderer/src/render_graph.cpp` | 262 ms | 241 ms | -8% |
+| `modules/graphics/renderer/src/render_graph_forward.cpp` | 180 ms | 145 ms | -20% |
+| `modules/graphics/renderer/src/render_graph_ray.cpp` | 179 ms | 146 ms | -19% |
+| `modules/graphics/renderer/src/world_grid.cpp` | 167 ms | 143 ms | -14% |
+| `modules/graphics/renderer/src/gpu_preview_camera.cpp` | 203 ms | 172 ms | -15% |
+| Sum | 2048 ms | 1787 ms | -13% |
+
+`rhi_metal.mm` is dominated by the Metal framework headers. With
+`-ftime-trace-granularity=0`, `world_grid.cpp` instantiates 26 `std::span`
+classes before and 6 after; the remaining six are `std::byte` and
+`unsigned char` spans reached through headers that still include `<span>`,
+such as FoundationContainers' `StaticArray` interoperability. Those container
+interfaces, and the `std::span` parameters left in other modules' public
+headers, are the next candidates for the same change.
 
 ## Build graph check
 

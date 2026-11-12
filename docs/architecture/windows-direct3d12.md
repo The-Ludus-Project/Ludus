@@ -1073,6 +1073,15 @@ SDK built the relocated scripted game but stopped on a stale configuration
 name in its test driver. The driver correction is included in
 [Windows run 42957077450](https://github.com/The-Ludus-Project/Ludus/actions/runs/42957077450).
 
+Candidate `2aece68e0a64d6d3d1578f9b639b4ab6064d6e3f` passed all ten hosted
+jobs in [Windows run 43108245034](https://github.com/The-Ludus-Project/Ludus/actions/runs/43108245034).
+The run recorded 65 source runtime CTests, 77 runtime AddressSanitizer CTests,
+and 19 CTests in each editor lane, including hosted Play. Both editor ownership
+preflights passed, along with Clang/WARP, MSBuild, the installed shader worker
+and all four relocated SDK flavors. The runtime artifact records Windows Server
+2022 Datacenter `10.0.20348.5773`, MSVC `19.44.35229.0`, Windows SDK
+`10.0.26100.0` and CMake `3.31.10`.
+
 #### Candidate hardware requirements
 
 The baseline raster profile requires an x64 Direct3D 12 device at feature level
@@ -1187,7 +1196,7 @@ PR from the subsystem table.
 
 | Evidence still required | Owning boundary | What to record |
 | --- | --- | --- |
-| Complete hosted matrix | Windows CI, runtime SDK and editor | All required jobs on the same commit, including the ordinary editor and editor AddressSanitizer |
+| Hosted matrix on the final qualification candidate | Windows CI, runtime SDK and editor | Repeat the [passing hosted matrix](#hosted-evidence) on the commit used for physical qualification |
 | Physical runtime and minimum OS | Win32, Direct3D 12, World and SDK | Successful run per declared adapter/driver and minimum OS, with exact runtime and dependency versions |
 | Desktop authoring and hosted Play | D6d editor and GameHost | Selected World and camera, edit/resize and pending/failure recovery, DPI/display transitions, focus, dialogs, cross-process frame delivery and cleanup |
 | Resource and performance budgets | Renderer and runtime | Repeatable workload, declared frame time and memory limits, measured CPU/GPU time and allocation peaks per device |
@@ -1261,7 +1270,7 @@ these rows remain pending.
 | Embedded/external shader/script authoring | D6c | Named-pipe DXIL worker and producer-to-renderer reload verified | Embedded editors with D6d | [PR #1018](https://github.com/The-Ludus-Project/Ludus/pull/1018) | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
 | Editor / hosted viewport | D6d, D7 | native Direct3D 12 authoring and hosted Play passed on WARP | Complete both broad editor lanes and record physical desktop evidence | [PR #1135](https://github.com/The-Ludus-Project/Ludus/pull/1135), [PR #1136](https://github.com/The-Ludus-Project/Ludus/pull/1136) | `9d78c1745`, [Windows editor run](https://github.com/The-Ludus-Project/Ludus/actions/runs/42946350689) |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
-| Qualification / CI / documentation | D7 | in progress | Collect the [same-candidate qualification record](#qualification-record) | [PR #1136](https://github.com/The-Ludus-Project/Ludus/pull/1136) | [Hosted evidence](#hosted-evidence); physical results pending |
+| Qualification / CI / documentation | D7 | Complete hosted matrix passed | Collect the [same-candidate qualification record](#qualification-record) | [PR #1136](https://github.com/The-Ludus-Project/Ludus/pull/1136), [PR #1163](https://github.com/The-Ludus-Project/Ludus/pull/1163) | [Hosted evidence](#hosted-evidence); physical results pending |
 | Packaging / distribution | D8 | Portable Release tooling and candidate CI implemented | D7, clean-machine/Editor journeys and public signing acceptance pending | pending | Archive/PDB regressions; Windows Release distribution workflow |
 
 ## References

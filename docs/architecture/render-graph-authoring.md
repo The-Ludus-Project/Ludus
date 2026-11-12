@@ -16,6 +16,10 @@ Generic compute execution and broader stage/state support remain capability-gate
 profiles listed below retain their documented limits.
 This defines the renderer authoring/compiler contract; it does not claim
 unrestricted shader composition or new RHI capability.
+The November 2026 reference review proposes a
+[build cost report](#attribute-variant-cost-before-optimizing-proposed) as the
+first delivery step and a [shader extension contract](#typed-shader-extension-points-proposed)
+to qualify on an existing coverage fixture.
 Baseline design: `5c44d19`. See [usage and source formats](../development/render-graph-authoring.md).
 The existing [Renderer](renderer-systems.md), [RHI/GDI](rhi-gdi.md),
 [editor](editor-architecture.md) and [game reload](project-live-reload.md) retain
@@ -541,6 +545,60 @@ with measured cost, not a compiler-created permutation or a promise that every
 pipeline can cheaply remain resident. Detailed [source findings](renderer-systems-gems-review.md#render-graph-and-shader-authoring-follow-up)
 record the departures.
 
+### Typed shader extension points (proposed)
+
+A graph connection supplies a resource or orders invocations. A shader
+extension point substitutes code **inside** an authored program. Keep these
+two operations separate in the manifest and the editor. Ludus already has
+typed graph options, explicit program assignments and
+[LUSL interfaces and templates](shading-language.md#interfaces-concepts-and-templates).
+The proposal uses those pieces rather than adding a second component language
+or a shader expression canvas.
+
+| What an author wants to change | Where the choice belongs |
+| --- | --- |
+| Tint, roughness, cutoff or a texture using an existing binding | Typed material or graph setting data. A value edit reuses the program, layout and pipeline. |
+| Algorithm behind an existing stage interface | A named implementation selected by an explicit legal technique tuple. Specialize offline with the concrete implementation. |
+| Stage IO, resource layout, attachment/coverage contract or required backend capability | A separately authored technique and pipeline recipe with its own validation. |
+
+The program or technique that exposes a slot owns its stable name, shader
+stage, typed signature (including coordinate space where applicable), required
+and optional bindings, allowed resource uses and effects, and compatible
+profiles. The package lists concrete implementations and maps each legal
+tuple to one implementation per required slot. Resolve this mapping in host tooling before compilation;
+report the graph node, technique, slot and implementation on a mismatch.
+Conformance checks the callable interface. Target reflection checks the
+emitted bindings and stage IO. Neither proves semantic equivalence: fixtures
+must check effects such as clip, depth and sample coverage. A substitution may
+use fewer inputs internally but cannot change the slot's declared external
+contract. The runtime receives resolved artifacts and recipes with no slot
+lookup or shader linking during drawing.
+
+Use the masked color and masked depth fixtures for the first experiment.
+They already test byte-identical depth, matching color coverage and a per-draw
+cutoff. They duplicate the coverage source across two package roots. Stage one
+authored helper inside each fixture's captured root, with explicit wrappers and
+existing schemas. A helper edit must rebuild the dependent stages in each
+package; a cutoff edit must change coverage without compiling or requesting a
+new pipeline. An incompatible signature or binding must fail the cook with
+a source location and preserve the active package; an effect mismatch must
+fail the existing pixel comparison. Qualify all profiles admitted by the
+fixtures in the source build and cover the same helper in the installed SDK
+consumer. Add a manifest slot only when a second concrete implementation
+needs to be selectable under the same contract. Cross-stage interpolation,
+stage placement and effect inference remain outside this slice.
+
+Thanks to Simon Taylor, [“Flexible and Extensible Shader Authoring in Frostbite
+with Serac”](https://advances.realtimerendering.com/s2024/index.html#serac),
+SIGGRAPH Advances 2024, slides 29–39, 44, 47–48 and 55, for typed component
+replacement and explicit domains. Ludus keeps stages, bindings and interpolation
+under the existing authoring and RHI contracts; it does not adopt Serac's
+automatic domain placement or interpolation. Thanks to Navjot Garg,
+[“Appearance Editor in Dragon Age”](https://static.graphicsprogrammingconference.com/public/2025/talks/appearance-editor-in-dragon-age/Garg-appearance-editor-in-dragon-age.pdf),
+GPC 2025, slides 12, 17 and 36–40, for keeping appearance overrides in shader
+parameter data. Ludus starts with its existing typed values; layered character
+appearance blocks are outside this proposal.
+
 ## Shared schemas and CPU/GPU layout
 
 The [shared scene, material and lighting shader contract](shared-scene-shader-contract.md)
@@ -598,11 +656,10 @@ Saved source snapshot: graph + dependencies + schemas + shader functions
 Reuse [the existing pinned shader toolchain](../decisions/0010-shader-toolchain-feasibility.md)
 and [GLSL ES lowering](../decisions/0013-browser-glsl-es-shader-toolchain.md).
 Extend the current offline helper at its owning boundary; do not replace it with
-a second editor compiler. A persistent Slang worker/module cache can later reduce
-front-end repetition if measurements justify it and the pinned API is qualified.
-Module/link-time specialization must still use the authored configuration list.
-Do not assume current documentation or a newer compiler establishes support on
-the project's pinned version.
+a second editor compiler. The [native worker](#persistent-native-compilation-boundary)
+already reuses an unchanged source snapshot. Independently cached Slang modules
+across edits would be a separate optimization with its own qualification gate.
+Module/link-time specialization still uses the authored configuration list.
 
 Build keys include canonical semantic graph/configuration data, transitive source
 and import hashes, schema/layout policy, entry functions, emitted binding maps,
@@ -652,6 +709,53 @@ configuration switching selects a cooked/prewarmed entry or waits outside drawin
 for a newly admitted generation. Observed use can prioritize prewarm work, but
 observations alone cannot prove the completeness of all runtime choices.
 
+### Attribute variant cost before optimizing (proposed)
+
+Today the graph build report records aggregate cache hits/misses, elapsed time,
+counts and LUSL lowering details. The authored budget counts bound admission
+before cooking; they do not say which root choice caused a costly emitted stage,
+or how much device pipeline preparation costs. Keep the distinction visible.
+
+Extend the existing host-tool report with an inventory that links a root
+configuration and qualified graph node instance to its effective technique,
+stage program, target artifact key and recipe key. Include manifest techniques cooked without a root
+route and registered programs that emit nothing. Report distinct authored
+choices, resolved stage/target requests, unique compiled keys and recipe keys
+separately. Distinguish a cache hit from reuse of a stage already requested in
+the same build. Attribute each artifact's bytes once and record compile
+duration only for work performed in this build. Keep timing, hit/miss data and
+host paths out of package identity. Retain the current admission limits; this
+inventory does not introduce a new authored budget.
+
+Report device prewarm duration, first-use misses and resident pipeline count
+separately at the Renderer/RHI boundary, keyed by recipe and qualified device.
+Report driver memory only when it can be measured; package or shader binary
+size is not a proxy for device residency. When a choice adds too many artifacts
+or recipes, point to the responsible tuple and show which keys are shared.
+A repair can reuse a compatible program, move a value into an existing
+parameter, or split an explicitly chosen technique. Dropping a profile or
+silently selecting a different technique is never a repair.
+
+Start with the existing build-report and graph-build tests. Check a cold build,
+an unchanged warm build, a shared-include edit, an isolated stage edit and a
+pass-order change that leaves the selected stages unchanged. Use one fixture
+with two configurations sharing a stage and check that both routes remain
+visible while the stage is charged once. Check
+that a runtime value change does not request another compile or device
+pipeline. Then record cook duration, artifact bytes and first-use/prewarm
+evidence for the same fixtures plus a representative project on the same
+host, device, toolchain, and profiles. Keep local artifact cache state separate
+from driver cache state. Use those results to select work; this proposal sets
+no performance threshold without a baseline.
+
+Thanks to Lukas Feller,
+[“Lessons Learned from Shipping a GPU Particle System”](https://static.graphicsprogrammingconference.com/public/2025/talks/lessons-learned-from-shipping-a-gpu-particle-system/Feller-lessons-learned-from-shipping-a-gpu-particle-system.pdf),
+GPC 2025, slides 38–51, for separating compile cost, binary size and pipeline
+memory. Enshrouded's numbers are workload- and device-specific. Its attempt to
+combine all expressions also produced oversized, unstable shaders. Compare a
+data-driven version and a bounded specialized version when the choice affects
+GPU work; neither a larger shared shader nor more variants wins by default.
+
 ## Pipeline readiness and execution
 
 Separate shader configurations from pipeline recipes and device pipeline objects.
@@ -687,11 +791,9 @@ and imports remain source errors even outside the execution selection.
 
 Lower the selected dependency graph to a deterministic author-visible serial order first:
 dependencies constrain order, explicit order edges express semantic order, stable
-authored ordinals break remaining ties. Supply that ordered plan to existing
-RHI/GDI graph validation. It owns hazard lowering and accepted-submission state;
-the authoring compiler never commits speculative GPU state. Reflection and
-declared uses must agree; widen conservative ranges instead of guessing safety.
-Keep streaming outside the frame graph with explicit imported readiness.
+authored ordinals break remaining ties. Reflection and declared uses must agree.
+Widen conservative ranges when exact uses are unavailable. Keep streaming
+outside the frame graph with explicit imported readiness.
 
 Cache plans by topology/configuration/profile/resource compatibility. Bind fresh
 scene/view data and imported resources each frame, retaining exact versions.
@@ -734,6 +836,48 @@ camera coverage, so no cooked graph has a transient backing today. Pooling is
 therefore qualified on generations rewritten with unexported scratch backings, and
 is idle for every cooked fixture. See
 [RG4 usage, evidence and limits](../development/render-graph-authoring.md#pool-transient-attachments-rg4).
+
+### Logical resource uses and submitted work
+
+The authoring compiler and the [RHI ordered graph](rhi-gdi.md#pass-declarations-and-deterministic-compilation)
+answer different questions at different points in a frame's preparation.
+
+| Boundary | Records and authority |
+| --- | --- |
+| Validated authoring plan | Expanded instance IDs, selected operations, logical resource versions, declared uses and output roots. The compiler owns source validation, initialization and camera-route checks. |
+| Cooked plan | Bounded numeric records, pipelines and source labels. Profile lowering owns compatibility, including the mapping of logical color and depth to a shared attachment backing. |
+| Prepared frame and RHI | Renderer supplies ready pipelines, scene/view data, physical bindings and leases. RHI validates supported commands and uses, owns backend synchronization and tracks accepted submissions through completion. |
+
+The text plan dump derives the first and last serial operation that touches
+each logical resource from the same records that keep resources in the plan.
+It lists Export and Present roots separately, with the versions they observe.
+An initialized import may go directly to a root without a pass. A texture used
+only to compute an extent supplies metadata and has no GPU use in the plan.
+The intervals are inclusive operation numbers for the selected configuration.
+Logical color and depth can share backing, and histories, exported views and
+presentation can remain in use beyond the last listed operation. Use actual
+physical bindings, consumer leases and completion to establish retirement.
+See [the plan dump](../development/render-graph-authoring.md#initialization-versions-and-order).
+
+Execution is currently profile-specific. The authored ray sequence already
+builds an `OrderedGraph` through `BuildGpuGraphSequence`, including a visibility
+raster producer when required. `RenderGraph::State::EncodePasses` also issues
+standalone raster and upscale commands through their own renderer paths. The
+offline plan therefore covers more than any single runtime `GraphReport`.
+
+**Next execution slice (proposed).** Try one cooked static opaque offscreen
+ColorAndDepth pass with an Export using the existing RHI ordered graph.
+Build retained draw packets from the prepared Renderer view and declare the
+uses of the actual bound resources. Keep the mapping from expanded pass ID and
+cooked index to the RHI pass ordinal in Renderer. Account for RHI packet and use
+limits before encoding, and retain the direct path for comparison. Qualify the
+same extraction and pipelines with color/depth readback parity, deterministic
+source-mapped reporting, and rejection before any command is recorded. Exercise
+same-frame and delayed export consumers, frames in flight, resize, and a failed
+candidate with the last drawable view still available. Measure CPU preparation
+and recording cost before widening to more profiles. Use the existing RHI
+state and completion ledger across both paths. Native aliasing still requires
+physical lifetime and memory evidence under the RHI contract.
 
 ## Editor interaction, diagnostics and hot reload
 
@@ -870,6 +1014,26 @@ ApplyToDevice path; see the [review](renderer-systems-gems-review.md#render-grap
 These are focused documentation checks, not proof that another engine's complete
 architecture fits Ludus or that current features exist on our pinned tools.
 
+- Thanks to Yuriy O'Donnell, **FrameGraph: Extensible Rendering Architecture in
+  Frostbite**, GDC 2017, PDF pp. 17–18 and 26–27. The pass/resource visualization
+  and first/last-use scan motivate the logical use report. Frostbite computes
+  its intervals from a per-frame setup. Ludus derives the offline spans from
+  a saved configuration and checks physical uses at execution.
+  [GDC session](https://www.gdcvault.com/play/1024045/FrameGraph-Extensible-Rendering-Architecture-in)
+- Thanks to Zhenglong Zhou and Huabin Ling, **Render Graph, a Data Oriented
+  Approach**, GDC 2023, slides 15–19, 22 and 27–29. The command/dependency
+  layers and debug-copy example show how an inspectable description can support
+  tooling independent of command encoding. Ludus derives a read-only report
+  from its existing plan and uses profile lowering to bind execution. A capture
+  that needs a new consumer must declare it in a checked candidate so its lifetime
+  reaches RHI. Consider broader graph abstractions or layout changes after
+  measuring pressure on the current bounded records.
+  [Cocos presentation](https://forum.cocos.org/uploads/short-url/sw7bwJFORQLAJ2p5ezFZQJwOgs3.pdf)
+- Thanks to Arseny Kapoulkine, **Writing an Efficient Vulkan Renderer**,
+  *GPU Zen 2*, §4.6. Declared dependencies in a predictable order and readiness
+  imports from streaming fit the existing serial baseline. Backend-specific
+  barrier placement remains with RHI.
+  [Author's edition](https://zeux.io/2020/02/27/writing-an-efficient-vulkan-renderer/#frame-graphs)
 - Thanks to Epic Games, [Render Dependency Graph](https://dev.epicgames.com/documentation/unreal-engine/render-dependency-graph-in-unreal-engine),
   especially Debugging and Validation: declared resource dependencies, lifetime
   visualization and individual optimization controls inform our compiled-plan
@@ -1130,6 +1294,40 @@ only if its captured semantic source/configuration identity is current. Existing
 CPU-interface mismatch continues to mean RestartRequired. Portable shader
 compilation does not guarantee device pipeline readiness or remove driver work.
 See [native worker setup, limits, workflow and measurements](../development/render-graph-authoring.md#native-shader-worker-and-live-development-builds).
+
+### Module reuse across edits (experiment only)
+
+Thanks to Shannon Woods,
+[“Getting to Know Slang”](https://static.graphicsprogrammingconference.com/public/2025/slides/getting-to-know-slang/Woods-getting-to-know-slang.pdf),
+GPC 2025, slides 5–13 and 17–21, for using module boundaries to limit repeated
+front-end work and interfaces to make specialization explicit. The graph cooker
+currently rejects authored module imports and captures literal local includes.
+The compiler's normal worker path compiles a translation unit per request.
+Its source records that the pinned Slang 2026.1.2 `loadModule` route hung on
+graph wrappers. The talk establishes a candidate optimization, not support on
+that pin or a reason to relax the source closure.
+
+Use the [cost report](#attribute-variant-cost-before-optimizing-proposed) to
+locate repeated expensive cooks, then profile them to separate front-end work
+from code generation and validation. Try module reuse only if repeated front-end
+work accounts for a material share. Start with one leaf helper shared by two
+wrappers. Resolve it from the captured package or installed SDK
+snapshot; reject unresolved, ambiguous or uncaptured inputs. A module identity
+must cover its resolved transitive source, compiler/backend inventory and
+options that affect module compilation. Link/stage identity also includes the
+wrapper, entry, concrete specialization, schema and target code generation.
+Keep module entries bounded by count and bytes. An edit invalidates all
+dependent module and stage entries. Reuse must preserve target reflection,
+source mapping, stale-build rejection and package publication.
+
+Compare the existing translation-unit path and the experimental path under a
+deadline on the pin. Require equivalent target layouts and behavior, deterministic
+artifacts within each path, the expected hit/miss pattern after leaf and wrapper
+edits, and a measured improvement on the affected build workload. Run the
+source and installed SDK paths. If either route hangs or reflection/coverage
+changes, keep the current compiler path and record the reproducer. This gate
+does not authorize a toolchain upgrade, a shared compiler service, or a
+distributed cache.
 
 ## Ordered ray sequences and persistent storage
 

@@ -195,17 +195,16 @@ TEST_CASE("Watch roots remain pinned after trusted-root pathname moves")
 {
     Fixture fixture;
     Watcher watcher;
-    const auto alias = fixture.Path("trusted-root");
+    const std::string alias = fixture.Path("trusted-root");
     std::filesystem::create_directory_symlink(fixture.Root, alias);
-    REQUIRE(watcher.Init(alias.string(), {1, 1, 0}).Succeeded());
+    REQUIRE(watcher.Init(alias, {1, 1, 0}).Succeeded());
     WatchHandle handle;
     REQUIRE(watcher.Add("nested/data", 9, handle).Succeeded());
     const auto moved = std::string(fixture.Root) + "-moved";
     std::filesystem::rename(fixture.Root, moved);
-    std::ofstream stream(std::filesystem::path(moved) / "nested/data");
-    stream << "complete";
-    stream.close();
-    REQUIRE(stream.good());
+    constexpr std::string_view COMPLETE = "complete";
+    REQUIRE(ludus::test_support::WriteFile(moved + "/nested/data",
+                                           {reinterpret_cast<const uint8*>(COMPLETE.data()), COMPLETE.size()}) == true);
     REQUIRE(watcher.Advance(1, 1).Succeeded());
     WatchHint hint;
     REQUIRE(watcher.Poll(hint).Available);

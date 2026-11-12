@@ -1,4 +1,5 @@
 name: ci
+run-name: ${{ (inputs.sanitizer_experiment == 'rebuild' || inputs.sanitizer_experiment == 'shared') && format('Linux sanitizer experiment ({0})', inputs.sanitizer_experiment) || '' }}
 
 on:
   # The batch coordinator owns periodic full validation. Promotion does not
@@ -23,6 +24,14 @@ on:
         description: Run only the CPU/Mesa Vulkan MH and Jump Restore parity and capture checks.
         type: boolean
         default: false
+      sanitizer_experiment:
+        description: Run only the four Linux ASan/UBSan shards with independent or shared builds.
+        type: choice
+        default: 'off'
+        options:
+          - 'off'
+          - rebuild
+          - shared
       validation_tier:
         description: Match promotion qualification or include advisory nightly analysis.
         type: choice
@@ -42,7 +51,7 @@ permissions:
 # cancels. A cancelled duplicate would otherwise leave a cancelled or failed
 # required check on the head commit and block the PR.
 concurrency:
-  group: ci-${{ inputs.batch_sha || github.ref }}${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && format('-head-{0}', github.event.pull_request.head.sha) || '' }}
+  group: ci-${{ inputs.batch_sha || github.ref }}${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && format('-head-{0}', github.event.pull_request.head.sha) || '' }}${{ (inputs.sanitizer_experiment == 'shared' || inputs.sanitizer_experiment == 'rebuild') && format('-sanitizers-{0}', inputs.sanitizer_experiment) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 env:
@@ -57,7 +66,7 @@ env:
 
 jobs:
   changes:
-    if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true
+    if: github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared')
     name: Classify changes
     runs-on: ubuntu-24.04
     # Reading this workflow's runs finds an earlier run that already validates an
@@ -103,7 +112,7 @@ jobs:
         run: python3 scripts/python/develop_health.py gate
 
   mcmc-vulkan-parity:
-    if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true
+    if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'
     name: MH and Jump Restore Vulkan parity
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -1059,9 +1068,61 @@ jobs:
         if: always()
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
+  sanitizer-build:
+    if: github.event_name == 'workflow_dispatch' && inputs.sanitizer_experiment == 'shared'
+    name: Build the shared Linux sanitizer preset
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact: ${{ steps.bundle.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/native-setup
+        with:
+          preset: linux-clang-asan-ubsan
+          editor: 'true'
+      - name: Build with sanitizers
+        run: ./scripts/build linux-clang-asan-ubsan
+      - name: Archive the sanitizer build and its test inputs
+        id: bundle
+        shell: bash
+        # CTest, CMake, Ninja and the host venv contain absolute paths. The
+        # restore verifies the workspace and preserves source mtimes so that
+        # shard 1's targeted SDK and probe builds can reuse the compiled tree.
+        # Thanks to GitHub Actions upload-artifact's permission guidance:
+        # package in a tar before upload to preserve permissions and symlinks.
+        # https://github.com/actions/upload-artifact#permission-loss
+        run: |
+          test "$(git rev-parse HEAD)" = "$LUDUS_CI_COMMIT_SHA"
+          git diff --exit-code
+          printf '%s\n%s\n' "$LUDUS_CI_COMMIT_SHA" "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/sanitizer-build-origin"
+          {
+            git ls-files -z
+            printf '%s\0' out
+            if [[ -f CMakeUserPresets.json ]]; then printf '%s\0' CMakeUserPresets.json; fi
+          } | tar --format=posix --null --files-from=- -cf - \
+            | zstd -T0 -o "$RUNNER_TEMP/sanitizer-build.tar.zst"
+          du -h "$RUNNER_TEMP/sanitizer-build.tar.zst"
+          echo "artifact=sanitizer-build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload the shared sanitizer build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/sanitizer-build.tar.zst
+            ${{ runner.temp }}/sanitizer-build-origin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+      - name: Report compiler cache
+        if: always()
+        run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
+
   sanitizers:
-    needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    needs: [changes, sanitizer-build]
+    if: ${{ !cancelled() && ((inputs.sanitizer_experiment == 'shared' && needs.sanitizer-build.result == 'success') || inputs.sanitizer_experiment == 'rebuild' || (needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration')) }}
     # One serial suite took 95-100 min of a 2 h job, 83% of it in render-graph,
     # renderer and wave-graph cases on lavapipe. Split it round-robin across
     # runners instead of running cases concurrently on one: each case keeps a
@@ -1083,6 +1144,7 @@ jobs:
           ref: ${{ inputs.batch_sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/native-setup
+        if: inputs.sanitizer_experiment != 'shared'
         with:
           preset: linux-clang-asan-ubsan
           editor: 'true'
@@ -1090,7 +1152,32 @@ jobs:
           conan-cache-writer: ${{ matrix.shard == 1 && 'true' || 'false' }}
           compiler-cache-writer: ${{ matrix.shard == 1 && 'true' || 'false' }}
       - name: Build with sanitizers
+        if: inputs.sanitizer_experiment != 'shared'
         run: ./scripts/build linux-clang-asan-ubsan
+      - uses: ./.github/actions/native-setup
+        if: inputs.sanitizer_experiment == 'shared'
+        with:
+          preset: linux-clang-asan-ubsan
+          editor: 'true'
+          prerequisites-only: 'true'
+      - name: Download the shared sanitizer build
+        if: inputs.sanitizer_experiment == 'shared'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.sanitizer-build.outputs.artifact }}
+          path: ${{ runner.temp }}
+      - name: Restore the sanitizer build and verify its identity
+        if: inputs.sanitizer_experiment == 'shared'
+        run: |
+          archive="$RUNNER_TEMP/sanitizer-build.tar.zst"
+          expected="$(printf '%s\n%s' "$LUDUS_CI_COMMIT_SHA" "$GITHUB_WORKSPACE")"
+          if [[ "$(cat "$RUNNER_TEMP/sanitizer-build-origin")" != "$expected" ]]; then
+            echo "::error::The sanitizer build was produced for another commit or workspace."
+            exit 1
+          fi
+          tar --zstd -xf "$archive"
+          rm "$archive"
+          git diff --exit-code
       - name: Prove ASan detection and fatal UBSan before acceptance
         run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --label-regex sanitizer-control --output-on-failure --no-tests=error
       - name: Preserve sanitizer control diagnostics
@@ -1578,9 +1665,9 @@ jobs:
     # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang' }}
+    name: ${{ (inputs.sanitizer_experiment == 'rebuild' || inputs.sanitizer_experiment == 'shared') && 'Sanitizer experiment dispatch' || github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang' }}
     needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true)
+    if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read

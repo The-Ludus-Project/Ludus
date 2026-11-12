@@ -6265,8 +6265,20 @@ five taps for occluders and, when it finds any, filters nine taps over a penumbr
 the caster radius times (receiver distance - blocker distance) / blocker distance,
 clamped to the gutter. Each tap compares the stored depth with the depth the
 receiver's tangent plane has along that texel's ray, so a flat receiver never shadows
-itself at grazing angles. The grid lists a caster's records together, so one lookup
-serves a run of them. The penumbra is an estimate from one point per caster: a large
+itself at grazing angles. The receiver is rebuilt from the depth buffer, so, as for
+[directional shadows](#directional-shadows), its position is uncertain along the view
+ray by four units in the last place of the stored depth: micrometres in the World
+viewport's reverse-Z depth, but centimetres tens of metres from a conventional-depth
+camera with a centimetre near plane. The cube faces store the receiver's own
+surface, so a rebuilt position behind it would shadow the receiver in a pattern that
+changes with every pixel and camera pose. Each tap therefore moves the tangent plane
+toward the caster by the normal component of that uncertainty, which widens the
+comparison by the depth the displacement spans along the texel's ray. Distant
+receivers shadow slightly later, and occluders that close to them cast no shadow.
+The `[mesh-light-shadows]` regression sweeps sub-pixel poses of an oblique camera 50
+and 120 m from an area-lit floor and bounds every pixel by the CPU integral of the
+unshadowed emitter. The grid lists a caster's records together, so one lookup serves
+a run of them. The penumbra is an estimate from one point per caster: a large
 emitter's contact shadows are approximate, and occluders nearer than a caster's near
 distance (at least a hundredth of its range, and its radius when it encloses its
 members) are ignored. Geometry such as window glass that the scene draws as opaque
@@ -6480,6 +6492,15 @@ breaks ties. Imported nodes expand at that position through their own determinis
 order. Within-frame cycles and recursive imports are errors. The dump preserves
 nested instance paths, source asset/configuration, scene/view identity, technique,
 attachment versions and initialization, dependencies and observable roots.
+
+The text dump's **Logical resource uses** section gives the inclusive first and
+last serial operation numbers for each logical texture or buffer. For example,
+`000..001` on an upscale source means operation 000 writes it and operation 001
+samples it. Export and Present roots appear alongside the resource with the
+version they read. An initialized import passed directly to Export can show
+`no pass use`. The range describes the selected plan's declared operations.
+For physical memory and completion, see
+[logical resource uses and submitted work](../architecture/render-graph-authoring.md#logical-resource-uses-and-submitted-work).
 
 Two cameras contributing to one target need explicit ordering and preservation.
 A later full Clear removes the earlier camera's contribution and its final route

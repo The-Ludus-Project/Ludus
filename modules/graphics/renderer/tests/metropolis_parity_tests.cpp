@@ -20,6 +20,7 @@ using namespace ludus::foundation;
 namespace internal = ludus::graphics::renderer::internal;
 namespace rhi = ludus::graphics::rhi;
 namespace threading = ludus::foundation::threading;
+using ludus::content::scene_format::MaterialModel;
 using AdvanceChainFunction = decltype(&internal::AdvanceMetropolisChain);
 using rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
@@ -195,23 +196,54 @@ bool IsAccepted(RasterStatus status) noexcept
     return status == RasterStatus::Ready || status == RasterStatus::Pending;
 }
 
-/// Run the estimator kernel once and read back every record. Returns false without a native GPU adapter.
-bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool isJumpRestore, Array<uint8>& outBytes)
+struct EstimatorKernel final
 {
-    rhi::DeviceHandle device;
-    rhi::SurfaceHandle surface;
-    static_assert((LUDUS_MH_PARITY_CHAIN_WORDS + LUDUS_MH_PARITY_FILM_WORDS) * sizeof(math::Vector4) ==
-                  static_cast<usize>(LUDUS_MH_PIXEL_BYTES));
+    rhi::DeviceHandle Device;
+    rhi::SurfaceHandle Surface;
+    rhi::BindingLayoutHandle Layout;
+    rhi::ComputePipelineHandle Pipeline;
+};
+
+/// Prepare the shared shader once. Returns false without a native GPU adapter.
+bool CreateEstimatorKernel(EstimatorKernel& outKernel)
+{
     rhi::DeviceDescription description;
     description.Required.Compute = true;
     description.RequiredProfile.Raster.MinBufferSize = RESULT_BYTES;
     description.RequiredProfile.Compute.MinStorageRange = RESULT_BYTES;
-    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
+    constexpr uint32 INITIAL_SURFACE_EXTENT = 8;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({},
+                          { .Width = INITIAL_SURFACE_EXTENT, .Height = INITIAL_SURFACE_EXTENT },
+                          description,
+                          outKernel.Device,
+                          outKernel.Surface);
     if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
     {
         return false;
     }
     REQUIRE(started == rhi::DeviceStatus::Ready);
+    const rhi::RasterShaderDescription shader = ludus::shaders::metropolis_parity::Compute();
+    rhi::RasterShaderHandle shaderHandle;
+    const rhi::DeviceHandle device = outKernel.Device;
+    REQUIRE(IsAccepted(rhi::CreateRasterShader(device, shader, shaderHandle)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBindingLayout(device, shader.Bindings, outKernel.Layout)) == true);
+    WaitReady(device, shaderHandle, "compute shader", COLD_KERNEL_TIMEOUT_NANOSECONDS);
+    WaitReady(device, outKernel.Layout, "binding layout");
+    const RasterStatus pipelineStatus =
+        rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = outKernel.Layout }, outKernel.Pipeline);
+    CAPTURE(pipelineStatus);
+    REQUIRE(IsAccepted(pipelineStatus) == true);
+    WaitReady(device, outKernel.Pipeline, "compute pipeline", COLD_KERNEL_TIMEOUT_NANOSECONDS);
+    return true;
+}
+
+/// Start with fresh chain and film buffers for each scenario and read back every record.
+void RunEstimatorKernel(const EstimatorKernel& kernel, MaterialModel model, bool isJumpRestore, Array<uint8>& outBytes)
+{
+    const rhi::DeviceHandle device = kernel.Device;
+    static_assert((LUDUS_MH_PARITY_CHAIN_WORDS + LUDUS_MH_PARITY_FILM_WORDS) * sizeof(math::Vector4) ==
+                  static_cast<usize>(LUDUS_MH_PIXEL_BYTES));
     REQUIRE(outBytes.TryResize(RESULT_BYTES, uint8{0}) == true);
     internal::ReferenceSceneData cpuScene;
     StaticArray<internal::ReferenceSurfaceData, SURFACE_COUNT> surfaces;
@@ -268,14 +300,7 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
                                          { .Role = rhi::BufferRole::Storage, .Size = RESULT_BYTES },
                                          {outBytes.GetData(), outBytes.GetSize()},
                                          results)) == true);
-    const rhi::RasterShaderDescription shader = ludus::shaders::metropolis_parity::Compute();
-    rhi::RasterShaderHandle shaderHandle;
-    rhi::BindingLayoutHandle layout;
-    REQUIRE(IsAccepted(rhi::CreateRasterShader(device, shader, shaderHandle)) == true);
-    REQUIRE(IsAccepted(rhi::CreateBindingLayout(device, shader.Bindings, layout)) == true);
     WaitReady(device, results, "result buffer");
-    WaitReady(device, shaderHandle, "compute shader", COLD_KERNEL_TIMEOUT_NANOSECONDS);
-    WaitReady(device, layout, "binding layout");
     constexpr usize BINDING_COUNT = 6;
     const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{{
         { .Binding = 0, .Buffer = uniformBuffer, .Size = sizeof(uniform) },
@@ -286,12 +311,9 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
         { .Binding = 8, .Buffer = results, .Size = RESULT_BYTES },
     }};
     rhi::BindingSetHandle set;
-    rhi::ComputePipelineHandle pipeline;
-    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, {resources.GetData(), resources.GetSize()}, set)) == true);
-    REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
+    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, kernel.Layout, {resources.GetData(), resources.GetSize()}, set)) ==
             true);
     WaitReady(device, set, "binding set");
-    WaitReady(device, pipeline, "compute pipeline", COLD_KERNEL_TIMEOUT_NANOSECONDS);
     rhi::OrderedGraph graph;
     REQUIRE(rhi::CreateOrderedGraph(device, graph) == RasterStatus::Ready);
     rhi::GraphVersion original;
@@ -322,12 +344,12 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
     }};
     const rhi::ComputeDispatch dispatch
     {
-        .Pipeline = pipeline,
+        .Pipeline = kernel.Pipeline,
         .Bindings = set,
         .Groups = {static_cast<uint32>(GROUP_COUNT), 1, 1},
     };
     rhi::GraphPassDescription pass;
-    pass.Name = "slice sampling luminaire estimators";
+    pass.Name = "Metropolis parity estimators";
     pass.Uses = uses.GetData();
     pass.UseCount = static_cast<uint32>(uses.GetSize());
     pass.SideEffect = true;
@@ -335,14 +357,16 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
     REQUIRE(rhi::AddGraphPass(device, graph, pass) == RasterStatus::Ready);
     rhi::GraphReport graphReport;
     REQUIRE(rhi::CompileOrderedGraph(device, graph, graphReport) == RasterStatus::Ready);
-    REQUIRE(rhi::SetFrameTarget(device, surface, {16, 16, 0, 0, 0, 1}) == rhi::DeviceStatus::Ready);
+    constexpr uint32 FRAME_EXTENT = 16;
+    REQUIRE(rhi::SetFrameTarget(device, kernel.Surface, {FRAME_EXTENT, FRAME_EXTENT, 0, 0, 0, 1}) ==
+            rhi::DeviceStatus::Ready);
     rhi::SubmissionToken completion;
-    RasterStatus executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
+    RasterStatus executed = rhi::ExecuteOrderedGraph(device, kernel.Surface, graph, completion);
     const uint64 beginning = time::NowTicks();
     while (executed == RasterStatus::NotReady && time::NowTicks() - beginning < TIMEOUT_NANOSECONDS)
     {
         threading::SleepFor(COMPLETION_POLL_INTERVAL);
-        executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
+        executed = rhi::ExecuteOrderedGraph(device, kernel.Surface, graph, completion);
     }
     REQUIRE(executed == RasterStatus::Ready);
     WaitReady(device, completion, "first submission", COLD_KERNEL_TIMEOUT_NANOSECONDS);
@@ -362,57 +386,22 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
         REQUIRE(rhi::CopyReadback(device, ticket, outBytes.GetData() + offset, size) == RasterStatus::Ready);
         REQUIRE(rhi::Release(device, ticket) == RasterStatus::Ready);
     }
-    return true;
+    REQUIRE(rhi::Destroy(device, set) == RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, results) == RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, filmBuffer) == RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, texelBuffer) == RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, chainBuffer) == RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, sceneBuffer) == RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, uniformBuffer) == RasterStatus::Ready);
 }
 
-} // namespace
-
-TEST_CASE("Template MH transport and all weighted estimators match an independent CPU chain",
-          "[renderer][gpu][metropolis]")
+void CheckEstimatorParity(const EstimatorKernel& kernel, MaterialModel model, bool isJumpRestore)
 {
-    using ludus::content::scene_format::MaterialModel;
-    MaterialModel model = MaterialModel::Diffuse;
-    bool isJumpRestore = false;
-    SECTION("MH diffuse") {}
-    SECTION("Jump Restore diffuse")
-    {
-        isJumpRestore = true;
-    }
-    SECTION("Jump Restore conductor")
-    {
-        isJumpRestore = true;
-        model = MaterialModel::Conductor;
-    }
-    SECTION("Jump Restore legacy")
-    {
-        isJumpRestore = true;
-        model = MaterialModel::MetallicRoughness;
-    }
+    CAPTURE(static_cast<uint32>(model), isJumpRestore);
     const AdvanceChainFunction advance =
         isJumpRestore == true ? internal::AdvanceJumpRestoreChain : internal::AdvanceMetropolisChain;
-    SECTION("typed conductor")
-    {
-        model = MaterialModel::Conductor;
-    }
-    SECTION("legacy metallic roughness")
-    {
-        model = MaterialModel::MetallicRoughness;
-    }
-    CAPTURE(static_cast<uint32>(model), isJumpRestore);
-    rhi::Shutdown();
-    struct RhiLifetime final
-    {
-        LUDUS_INLINE ~RhiLifetime() noexcept
-        {
-            rhi::Shutdown();
-        }
-    };
-    const RhiLifetime lifetime;
     Array<uint8> bytes;
-    if (RunEstimatorKernel(model, isJumpRestore, bytes) == false)
-    {
-        SKIP("No native compute adapter");
-    }
+    RunEstimatorKernel(kernel, model, isJumpRestore, bytes);
     internal::ReferenceSceneData scene;
     StaticArray<internal::ReferenceSurfaceData, SURFACE_COUNT> surfaces;
     Array<math::Vector4> packed;
@@ -498,5 +487,35 @@ TEST_CASE("Template MH transport and all weighted estimators match an independen
         CHECK(lifecycle.Y == 1.75F);
         CHECK(lifecycle.Z == 0);
         CHECK(lifecycle.W == 0);
+    }
+}
+
+} // namespace
+
+TEST_CASE("Template MH transport and all weighted estimators match an independent CPU chain",
+          "[renderer][gpu][metropolis]")
+{
+    rhi::Shutdown();
+    struct RhiLifetime final
+    {
+        LUDUS_INLINE ~RhiLifetime() noexcept
+        {
+            rhi::Shutdown();
+        }
+    };
+    const RhiLifetime lifetime;
+    EstimatorKernel kernel;
+    if (CreateEstimatorKernel(kernel) == false)
+    {
+        SKIP("No native compute adapter");
+    }
+
+    constexpr usize MATERIAL_MODEL_COUNT = 3;
+    constexpr StaticArray<MaterialModel, MATERIAL_MODEL_COUNT> MATERIAL_MODELS{
+        {MaterialModel::Diffuse, MaterialModel::Conductor, MaterialModel::MetallicRoughness}};
+    for (const MaterialModel model : MATERIAL_MODELS)
+    {
+        CheckEstimatorParity(kernel, model, false);
+        CheckEstimatorParity(kernel, model, true);
     }
 }

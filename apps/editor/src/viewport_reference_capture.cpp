@@ -394,6 +394,10 @@ ViewportReferencePhase ViewportReferenceCapture::Service(uint64 budgetNanosecond
                 fail(QStringLiteral("Reference tracing failed%1: %2.").arg(location, DescribeStatus(status))));
         }
     }
+    if (mPhase == ViewportReferencePhase::Failed && mHasCapture == false)
+    {
+        mGeneration.Reset();
+    }
 #else
     static_cast<void>(budgetNanoseconds);
 #endif

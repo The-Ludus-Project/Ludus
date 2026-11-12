@@ -29,13 +29,14 @@ BATCH_WORKFLOWS = {
     "native": "ci.yml",
     "sdk": "project-sdk.yml",
     "wiki": "wiki.yml",
+    "wiki-macos": "wiki.yml",
     "browser": "webgpu-probe.yml",
     "threading": "threading-platforms.yml",
     "windows": "windows-direct3d12.yml",
     "recovery": "filesystem-recovery.yml",
 }
 # A documentation-only change can still break these suites.
-DOCUMENTATION_SUITES = frozenset({"wiki"})
+DOCUMENTATION_SUITES = frozenset({"wiki", "wiki-macos"})
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "startup_failure"})
 DECLARATION = re.compile(r"^[ \t]*Batch-Fix:[ \t]*(\S[^\r\n]*?)[ \t]*\r?$", re.MULTILINE)
 MAX_DECLARATIONS = 32

@@ -831,6 +831,14 @@ Style rules follow a style setting:
 
 ## Determinism and build identity
 
+A LUSL interface or template describes valid shader code. The
+[graph shader extension contract](render-graph-authoring.md#typed-shader-extension-points-proposed)
+owns which concrete implementations and technique tuples a package can select.
+Translation-unit specialization limits and package artifact/recipe limits
+measure different work; a generic that lowers once can still be linked into
+several target programs. Editing ordinary parameter values does not select a
+new type or technique.
+
 - **Byte-identical output.** The same snapshot, configuration values and
   compiler version produce the same Slang and source map, on every host.
 - **Stable derived names.** Specialization and helper names come from

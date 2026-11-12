@@ -50,7 +50,7 @@ std::string_view GetView(const ludus::foundation::Array<ludus::foundation::core:
 
 void CopyTexture(const ScratchDirectory& scratch, std::string_view fixture, std::string_view name)
 {
-    std::filesystem::copy_file(GetFixture(fixture), scratch.Path / "textures" / name);
+    CopyRegularFile(GetFixture(fixture), JoinPath(scratch.GetPath("textures"), name));
 }
 
 /// Append one material and a triangle that uses it.
@@ -159,7 +159,7 @@ ludus::foundation::core::uint8 GetTgaTexel(uint32 x, uint32 y, usize channel)
 }
 
 /// Write an uncompressed, top-down 32-bit TGA of GetTgaTexel texels.
-void WriteTga(const std::filesystem::path& path, uint32 width, uint32 height)
+void WriteTga(std::string_view path, uint32 width, uint32 height)
 {
     constexpr usize HEADER_BYTES = 18;
     std::string bytes(HEADER_BYTES, '\0');
@@ -370,11 +370,11 @@ void RequireSameDecode(const TextureDecode& expected, const TextureDecode& actua
 /// Scene IR with file, embedded, missing and undecodable texture images below root.
 void MakeQueueScene(const ScratchDirectory& scratch, SceneIr& outScene)
 {
-    std::filesystem::create_directories(scratch.Path / "textures");
+    CreateDirectories(scratch.GetPath("textures"));
     CopyTexture(scratch, "obj/room/textures/checker.png", "checker.png");
     CopyTexture(scratch, "obj/room/textures/normal.png", "normal.png");
     CopyTexture(scratch, "obj/cutout/textures/leaf.png", "leaf.png");
-    WriteFile(scratch.Path / "textures/broken.png", BROKEN_PNG);
+    WriteFile(scratch.GetPath("textures/broken.png"), BROKEN_PNG);
     for (const std::string_view file :
          {"textures/checker.png", "textures/normal.png", "textures/missing.png", "textures/broken.png", ""})
     {
@@ -386,7 +386,7 @@ void MakeQueueScene(const ScratchDirectory& scratch, SceneIr& outScene)
     IrEmbeddedImage* embeddedOrNull = outScene.EmbeddedImages.TryAddInPlace();
     REQUIRE(embeddedOrNull != nullptr);
     REQUIRE(embeddedOrNull->DecoderName.TryAssign("embedded.png") == ludus::foundation::StringStatus::Ok);
-    const std::string leaf = ReadFileText(scratch.Path / "textures/leaf.png");
+    const std::string leaf = ReadFileText(scratch.GetPath("textures/leaf.png"));
     REQUIRE(embeddedOrNull->Bytes.TryAddRange(AsBytes(leaf)) == true);
     outScene.Textures[outScene.Textures.GetSize() - 1].EmbeddedImage = 0;
 }
@@ -395,13 +395,13 @@ void MakeQueueScene(const ScratchDirectory& scratch, SceneIr& outScene)
 TEST_CASE("Texture decoding cooks identical outputs for every worker count", "[scene_cook][obj][threading]")
 {
     ScratchDirectory scratch;
-    std::filesystem::create_directories(scratch.Path / "textures");
+    CreateDirectories(scratch.GetPath("textures"));
     CopyTexture(scratch, "obj/room/textures/checker.png", "checker.png");
     CopyTexture(scratch, "obj/room/textures/normal.png", "normal.png");
     CopyTexture(scratch, "obj/room/textures/rough.png", "rough.png");
     CopyTexture(scratch, "obj/cutout/textures/leaf.png", "leaf.png");
     CopyTexture(scratch, "obj/cutout/textures/leaf_mask.png", "leaf_mask.png");
-    WriteFile(scratch.Path / "textures/broken.png", BROKEN_PNG);
+    WriteFile(scratch.GetPath("textures/broken.png"), BROKEN_PNG);
     // Every map kind, shared images, unreadable and undecodable images, repeated so the
     // plan spans several batches for every budget.
     constexpr usize MATERIAL_KIND_COUNT = 10;
@@ -429,10 +429,10 @@ TEST_CASE("Texture decoding cooks identical outputs for every worker count", "[s
             AddMaterial(wavefront, mtl, index++, kind);
         }
     }
-    WriteFile(scratch.Path / "scene.obj", wavefront);
-    WriteFile(scratch.Path / "m.mtl", mtl);
+    WriteFile(scratch.GetPath("scene.obj"), wavefront);
+    WriteFile(scratch.GetPath("m.mtl"), mtl);
     BestEffortResult serial;
-    RequireWorkerCountIndependence((scratch.Path / "scene.obj").string(), serial);
+    RequireWorkerCountIndependence(scratch.GetPath("scene.obj"), serial);
     CHECK(HasReportCode(serial, codes::TEXTURE_UNREADABLE) == true);
     // Shared swatches/maps can make the image count smaller than the material count;
     // verify that both detail-map roles survived instead of assuming one image per slot.
@@ -460,26 +460,26 @@ TEST_CASE("Texture decoding stays serial-identical where decode failures shift t
     constexpr int32 MATERIAL_COUNT = static_cast<int32>(format::IMPORT_LIMITS.Textures) - 3;
     constexpr int32 FAILING_SLOTS = 2;
     ScratchDirectory scratch;
-    std::filesystem::create_directories(scratch.Path / "textures");
+    CreateDirectories(scratch.GetPath("textures"));
     CopyTexture(scratch, "obj/room/textures/normal.png", "normal.png");
     CopyTexture(scratch, "obj/room/textures/rough.png", "rough.png");
-    WriteFile(scratch.Path / "textures/broken.png", BROKEN_PNG);
+    WriteFile(scratch.GetPath("textures/broken.png"), BROKEN_PNG);
     std::string wavefront = "mtllib m.mtl\n";
     std::string mtl;
     for (int32 i = 0; i < MATERIAL_COUNT; ++i)
     {
         const std::string normalName = "normal" + std::to_string(i) + ".png";
-        std::filesystem::copy_file(scratch.Path / "textures/normal.png", scratch.Path / "textures" / normalName);
+        CopyRegularFile(scratch.GetPath("textures/normal.png"), JoinPath(scratch.GetPath("textures"), normalName));
         const std::string terms =
             i < FAILING_SLOTS ? "Kd 0.5 0.5 0.5\nmap_Kd textures/rough.png\nnorm textures/broken.png\n"
                               : "Kd 0.5 0.5 0.5\nmap_Kd textures/rough.png\nnorm textures/" + normalName +
                                     "\nPr 0.5\nmap_Pr -imfchan g textures/rough.png\nPm 1\nmap_Pm textures/rough.png\n";
         AddMaterial(wavefront, mtl, i, terms);
     }
-    WriteFile(scratch.Path / "scene.obj", wavefront);
-    WriteFile(scratch.Path / "m.mtl", mtl);
+    WriteFile(scratch.GetPath("scene.obj"), wavefront);
+    WriteFile(scratch.GetPath("m.mtl"), mtl);
     BestEffortResult serial;
-    RequireWorkerCountIndependence((scratch.Path / "scene.obj").string(), serial);
+    RequireWorkerCountIndependence(scratch.GetPath("scene.obj"), serial);
     CHECK(serial.Summary.CookedTextures == format::IMPORT_LIMITS.Textures);
     CHECK(HasReportCode(serial, codes::TEXTURE_APPROXIMATED) == true);
     CHECK(HasReportCode(serial, codes::NORMALMAP_DROPPED) == true);
@@ -490,16 +490,16 @@ TEST_CASE("Texture halving and surface repacking cook identical outputs for ever
 {
     namespace format = ludus::content::scene_format;
     ScratchDirectory scratch;
-    std::filesystem::create_directories(scratch.Path / "textures");
+    CreateDirectories(scratch.GetPath("textures"));
     // Odd sizes beyond the per-texture limits (dimension, and bytes for the square map)
     // need one or more halvings each, with clamped edges; the small odd data maps are
     // sampled nearest at the large normal map's resolution in row bands.
-    WriteTga(scratch.Path / "textures/wide.tga", format::MAX_TEXTURE_DIMENSION * 2 + 3, 5);
-    WriteTga(scratch.Path / "textures/tall.tga", 3, format::MAX_TEXTURE_DIMENSION + 7);
-    WriteTga(scratch.Path / "textures/square.tga", 2049, 2051);
-    WriteTga(scratch.Path / "textures/normal.tga", format::MAX_TEXTURE_DIMENSION + 5, 33);
-    WriteTga(scratch.Path / "textures/rough.tga", 17, 41);
-    WriteTga(scratch.Path / "textures/metal.tga", 29, 7);
+    WriteTga(scratch.GetPath("textures/wide.tga"), format::MAX_TEXTURE_DIMENSION * 2 + 3, 5);
+    WriteTga(scratch.GetPath("textures/tall.tga"), 3, format::MAX_TEXTURE_DIMENSION + 7);
+    WriteTga(scratch.GetPath("textures/square.tga"), 2049, 2051);
+    WriteTga(scratch.GetPath("textures/normal.tga"), format::MAX_TEXTURE_DIMENSION + 5, 33);
+    WriteTga(scratch.GetPath("textures/rough.tga"), 17, 41);
+    WriteTga(scratch.GetPath("textures/metal.tga"), 29, 7);
     constexpr usize MATERIAL_KIND_COUNT = 5;
     const ludus::foundation::StaticArray<std::string_view, MATERIAL_KIND_COUNT> kinds{
         "Kd 1 1 1\nmap_Kd textures/wide.tga\n",
@@ -517,10 +517,10 @@ TEST_CASE("Texture halving and surface repacking cook identical outputs for ever
     {
         AddMaterial(wavefront, mtl, index++, kind);
     }
-    WriteFile(scratch.Path / "scene.obj", wavefront);
-    WriteFile(scratch.Path / "m.mtl", mtl);
+    WriteFile(scratch.GetPath("scene.obj"), wavefront);
+    WriteFile(scratch.GetPath("m.mtl"), mtl);
     BestEffortResult serial;
-    RequireWorkerCountIndependence((scratch.Path / "scene.obj").string(), serial);
+    RequireWorkerCountIndependence(scratch.GetPath("scene.obj"), serial);
     CHECK(HasReportCode(serial, codes::TEXTURE_DOWNSCALED) == true);
 
     // The serial textures against references built texel by texel: halvings with
@@ -583,11 +583,11 @@ TEST_CASE("Texture halving and surface repacking cook identical outputs for ever
 TEST_CASE("PBRT normal maps and shape masks are identical across worker counts", "[scene_cook][pbrt][threading]")
 {
     ScratchDirectory scratch;
-    std::filesystem::create_directories(scratch.Path / "textures");
+    CreateDirectories(scratch.GetPath("textures"));
     CopyTexture(scratch, "obj/room/textures/normal.png", "normal.png");
     CopyTexture(scratch, "obj/cutout/textures/leaf.png", "base.png");
     CopyTexture(scratch, "obj/cutout/textures/leaf_mask.png", "mask.png");
-    WriteFile(scratch.Path / "scene.pbrt", R"(WorldBegin
+    WriteFile(scratch.GetPath("scene.pbrt"), R"(WorldBegin
 Texture "base" "spectrum" "imagemap" "string filename" "textures/base.png"
 Texture "coverage" "float" "imagemap" "string filename" "textures/mask.png" "string encoding" "linear"
 MakeNamedMaterial "leaf" "string type" "diffuse" "texture reflectance" "base" "string normalmap" "textures/normal.png"
@@ -598,7 +598,7 @@ AreaLightSource "diffuse" "rgb L" [1 1 1]
 Shape "trianglemesh" "point3 P" [4 0 0 5 0 0 4 1 0] "point2 uv" [0 0 1 0 0 1] "integer indices" [0 1 2] "texture alpha" "coverage"
 )");
     BestEffortResult serial;
-    RequireWorkerCountIndependence((scratch.Path / "scene.pbrt").string(), serial);
+    RequireWorkerCountIndependence(scratch.GetPath("scene.pbrt"), serial);
     CHECK(serial.Summary.CookedTextures == 4);
     CHECK(HasReportCode(serial, codes::NORMALMAP_DROPPED) == false);
     CHECK(HasReportCode(serial, codes::TEXTURE_UNREADABLE) == false);
@@ -607,7 +607,7 @@ Shape "trianglemesh" "point3 P" [4 0 0 5 0 0 4 1 0] "point2 uv" [0 0 1 0 0 1] "i
 TEST_CASE("A shared roughness and metallic texture is reported for each term", "[scene_cook][gltf][threading]")
 {
     ScratchDirectory scratch;
-    std::filesystem::create_directories(scratch.Path / "textures");
+    CreateDirectories(scratch.GetPath("textures"));
     CopyTexture(scratch, "obj/room/textures/normal.png", "normal.png");
     // One metallicRoughness image for both terms, missing in the first material.
     const std::string gltf =
@@ -624,9 +624,9 @@ TEST_CASE("A shared roughness and metallic texture is reported for each term", "
         R"("bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":24}],)"
         R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},)"
         R"({"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"}]})";
-    WriteFile(scratch.Path / "scene.gltf", gltf);
+    WriteFile(scratch.GetPath("scene.gltf"), gltf);
     BestEffortResult serial;
-    RequireWorkerCountIndependence((scratch.Path / "scene.gltf").string(), serial);
+    RequireWorkerCountIndependence(scratch.GetPath("scene.gltf"), serial);
     // Both terms of the unreadable image are reported, as when each decoded its own copy.
     const std::string_view unreadable = GetReportDiagnostic(serial, codes::TEXTURE_UNREADABLE);
     CHECK(unreadable.find(R"("file": "textures/missing.png")") != std::string_view::npos);
@@ -639,7 +639,7 @@ TEST_CASE("Texture decode queue matches inline decoding in and out of planned or
     ScratchDirectory scratch;
     SceneIr scene;
     MakeQueueScene(scratch, scene);
-    const std::string root = scratch.Path.string();
+    const std::string root = scratch.Path;
     const uint32 textureCount = static_cast<uint32>(scene.Textures.GetSize());
     for (const uint32 workers : WORKER_BUDGETS)
     {
@@ -677,10 +677,10 @@ TEST_CASE("Texture decode queue matches inline decoding in and out of planned or
     const TextureDecode checker = DecodeSerially(scene, root, 0);
     CHECK(checker.IsFileRead == true);
     CHECK(checker.Decoded == ImageResult::Ok);
-    CHECK(checker.ReadDigest == ludus::content::Hash(AsBytes(ReadFileText(scratch.Path / "textures/checker.png"))));
+    CHECK(checker.ReadDigest == ludus::content::Hash(AsBytes(ReadFileText(scratch.GetPath("textures/checker.png")))));
     // An undecodable file is still hashed: its bytes were read.
     CHECK(DecodeSerially(scene, root, 3).ReadDigest ==
-          ludus::content::Hash(AsBytes(ReadFileText(scratch.Path / "textures/broken.png"))));
+          ludus::content::Hash(AsBytes(ReadFileText(scratch.GetPath("textures/broken.png")))));
     const TextureDecode missing = DecodeSerially(scene, root, 2);
     CHECK(missing.Read == Status::NotFound);
     CHECK(missing.Message == "cannot read the image file");
@@ -700,7 +700,7 @@ TEST_CASE("Texture decode queue read-ahead matches inline decoding across many b
     ScratchDirectory scratch;
     SceneIr scene;
     MakeQueueScene(scratch, scene);
-    const std::string root = scratch.Path.string();
+    const std::string root = scratch.Path;
     const uint32 textureCount = static_cast<uint32>(scene.Textures.GetSize());
     // Build a long take order that revisits textures so many batches are filled, with a
     // forward skip (3 after 1, bypassing 2) that leaves the batch window and a backward
@@ -754,7 +754,7 @@ TEST_CASE("Texture decode queue decodes inline when the job system is busy", "[s
     ScratchDirectory scratch;
     SceneIr scene;
     MakeQueueScene(scratch, scene);
-    const std::string root = scratch.Path.string();
+    const std::string root = scratch.Path;
     threading::JobSystem system;
     REQUIRE(system.Initialize({ .WorkerCount = 2 }) == threading::JobStatus::Ok);
     // Another graph stays admitted until its Wait, so the queue's Submit is refused.
@@ -787,7 +787,7 @@ TEST_CASE("Texture decoding honours cancellation before reading images", "[scene
     ScratchDirectory scratch;
     SceneIr scene;
     MakeQueueScene(scratch, scene);
-    const std::string root = scratch.Path.string();
+    const std::string root = scratch.Path;
     threading::JobSystem system;
     REQUIRE(system.Initialize({ .WorkerCount = 1 }) == threading::JobStatus::Ok);
     for (threading::JobSystem* jobsOrNull : {static_cast<threading::JobSystem*>(nullptr), &system})
@@ -804,14 +804,14 @@ TEST_CASE("Texture decoding honours cancellation before reading images", "[scene
     }
 
     // The importer polls once more per texture image, and reports a cancellation there.
-    WriteFile(scratch.Path / "scene.obj", "mtllib m.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl M\nf 1 2 3\n");
-    const std::string entry = (scratch.Path / "scene.obj").string();
+    WriteFile(scratch.GetPath("scene.obj"), "mtllib m.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl M\nf 1 2 3\n");
+    const std::string entry = scratch.GetPath("scene.obj");
     for (threading::JobSystem* jobsOrNull : {static_cast<threading::JobSystem*>(nullptr), &system})
     {
         BestEffortOptions options;
         options.JobsOrNull = jobsOrNull;
         const auto countPolls = [&](std::string_view mtl) {
-            WriteFile(scratch.Path / "m.mtl", mtl);
+            WriteFile(scratch.GetPath("m.mtl"), mtl);
             constexpr int32 POLL_ALLOWANCE = 1000000;
             CountdownCancel counter;
             counter.Remaining = POLL_ALLOWANCE;

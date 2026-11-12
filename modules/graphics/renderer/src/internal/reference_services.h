@@ -102,6 +102,7 @@ constexpr uint32 HDR_GPU_COMPUTE_FLAG = 64;
 /// ResampledFormFactor (sampler version 3), which the sampler field distinguishes.
 constexpr uint32 HDR_RESAMPLED_LIGHT_FLAG = 128;
 constexpr uint32 HDR_OPTICAL_FLAG = 256;
+constexpr usize HDR_SCENE_FINGERPRINT_OFFSET = 64;
 constexpr usize HDR_OPTICAL_WAVELENGTH_OFFSET = 92;
 
 usize GetReferenceGpuBytes(const ReferenceJob& job) noexcept
@@ -1157,15 +1158,16 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     job->Info.MaxDepth = description.MaxDepth;
     job->Info.SceneFingerprintLow = job->Scene.FingerprintLow;
     job->Info.SceneFingerprintHigh = job->Scene.FingerprintHigh;
+    const usize sceneCpuBytes = job->Scene.Instances.GetCapacity() * sizeof(internal::ReferenceInstance) +
+                                job->Scene.Triangles.GetCapacity() * sizeof(ReferenceTriangle) +
+                                job->Scene.Order.GetCapacity() * sizeof(uint32) +
+                                job->Scene.Emitters.GetCapacity() * sizeof(uint32) +
+                                job->Scene.EmitterCdf.GetCapacity() * sizeof(uint32) +
+                                job->Scene.Nodes.GetCapacity() * sizeof(internal::ReferenceBvhNode);
     job->Info.CpuBytes =
-        sizeof(ReferenceJob) + job->Scene.Instances.GetCapacity() * sizeof(internal::ReferenceInstance) +
-        job->Pixels.GetCapacity() * sizeof(internal::ReferenceAccumulator) +
+        sizeof(ReferenceJob) + sceneCpuBytes + job->Pixels.GetCapacity() * sizeof(internal::ReferenceAccumulator) +
         job->Paths.GetCapacity() * sizeof(internal::ReferencePath) + job->Rays.GetCapacity() * sizeof(rhi::RayInput) +
-        job->Hits.GetCapacity() * sizeof(rhi::RayResult) +
-        job->Scene.Triangles.GetCapacity() * sizeof(ReferenceTriangle) +
-        job->Scene.Order.GetCapacity() * sizeof(uint32) + job->Scene.Emitters.GetCapacity() * sizeof(uint32) +
-        job->Scene.EmitterCdf.GetCapacity() * sizeof(uint32) +
-        job->Scene.Nodes.GetCapacity() * sizeof(internal::ReferenceBvhNode);
+        job->Hits.GetCapacity() * sizeof(rhi::RayResult);
     if (job->Info.CpuBytes > remaining || transient > remaining - job->Info.CpuBytes)
     {
         return Status::CapacityExceeded;
@@ -1180,6 +1182,10 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         {
             return status;
         }
+        // Buffer creation has consumed the packed data. Only the CPU traversal modes
+        // use the expanded triangles, BVH and borrowed texture views after setup.
+        job->Scene = {};
+        job->Info.CpuBytes -= sceneCpuBytes;
     }
     if (isOracle == false && instances != 0)
     {
@@ -1865,8 +1871,8 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);
-    Put64(output + 64, job.Scene.FingerprintLow);
-    Put64(output + 72, job.Scene.FingerprintHigh);
+    Put64(output + HDR_SCENE_FINGERPRINT_OFFSET, job.Info.SceneFingerprintLow);
+    Put64(output + HDR_SCENE_FINGERPRINT_OFFSET + sizeof(uint64), job.Info.SceneFingerprintHigh);
     PutFloat(output + HDR_OPTICAL_WAVELENGTH_OFFSET, job.Description.OpticalWavelengthWorld);
     PutFloat(output + 80, job.Description.SecondaryDistance);
     Put32(output + 84, job.Description.TextureMip);

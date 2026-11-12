@@ -590,9 +590,10 @@ def cmd_render_graph(args) -> int:
     else:
         plan = render_graph.compile_graph(Path(args.graph), configuration=args.configuration, root=args.root)
         payload = {"plan": plan}
-        human = render_graph.dump_plan(plan) if args.graph_action == "dump" else (
-            f"Validated {plan['asset']}#{plan['configuration']}: {len(plan['passes'])} serial operations; "
-            f"{len(plan['techniques'])} authored techniques. RG0 contract only.")
+        if not args.json:
+            human = render_graph.dump_plan(plan) if args.graph_action == "dump" else (
+                f"Validated {plan['asset']}#{plan['configuration']}: {len(plan['passes'])} serial operations; "
+                f"{len(plan['techniques'])} authored techniques. RG0 contract only.")
     _emit(args, payload)
     if not args.json:
         print(human)

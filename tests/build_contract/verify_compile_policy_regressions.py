@@ -40,7 +40,29 @@ def main():
                                    f"{result.stdout}{result.stderr}")
             if not should_pass and "Wrong exception policy" not in result.stderr:
                 raise RuntimeError(f"Policy case {index} rejected for the wrong reason: {result.stderr}")
-    print(f"Verified {len(cases)} exception-policy compiler regressions")
+        shared_arguments = [compiler, "-std=c++23", "-fexceptions"]
+        entries = [
+            {
+                "directory": str(root),
+                "file": str(root / f"tests/{name}.cpp"),
+                "arguments": [*shared_arguments, "-o", f"CMakeFiles/ludus_policy_tests.dir/{name}.cpp.o",
+                              "-c", f"tests/{name}.cpp"],
+            }
+            for name in ("first", "second")
+        ]
+        database.write_text(json.dumps(entries))
+        result = subprocess.run([sys.executable, str(verifier), str(database)],
+                                text=True, capture_output=True, check=True)
+        if "2 compilation commands (compiler probes: 1)" not in result.stdout:
+            raise RuntimeError(f"Identical commands did not share a compiler probe: {result.stdout}")
+
+        entries[1]["output"] = "CMakeFiles/ludus_engine.dir/second.cpp.o"
+        database.write_text(json.dumps(entries))
+        result = subprocess.run([sys.executable, str(verifier), str(database)],
+                                text=True, capture_output=True, check=False)
+        if result.returncode == 0 or f"Wrong exception policy: {entries[1]['file']}" not in result.stderr:
+            raise RuntimeError(f"Shared compiler probe skipped a source policy check: {result.stderr}")
+    print(f"Verified {len(cases) + 2} exception-policy compiler regressions")
 
 
 if __name__ == "__main__":
