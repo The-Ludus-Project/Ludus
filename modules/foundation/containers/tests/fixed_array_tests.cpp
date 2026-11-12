@@ -1,15 +1,16 @@
 #include "lifetime_type.hpp"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/fixed_array.hpp>
 
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <span>
 #include <type_traits>
 #include <utility>
 
+using ludus::foundation::BorrowedView;
 using ludus::foundation::FixedArray;
 using ludus::foundation::int32;
 using ludus::foundation::uint32;
@@ -89,7 +90,7 @@ TEST_CASE("FixedArray with zero capacity is empty and always full", "[containers
     REQUIRE(values.IsFull());
     REQUIRE(values.GetData() == nullptr);
     REQUIRE(values.begin() == values.end());
-    REQUIRE(values.AsSpan().empty());
+    REQUIRE(values.AsView().IsEmpty());
     tst::LifetimeLedger ledger;
     {
         tst::Tracked candidate(&ledger, 1);
@@ -99,7 +100,7 @@ TEST_CASE("FixedArray with zero capacity is empty and always full", "[containers
         // NOLINTNEXTLINE(bugprone-use-after-move): a rejected add must not consume the argument.
         REQUIRE(candidate.Value() == 1);
         // NOLINTNEXTLINE(bugprone-use-after-move): the unconsumed argument is still readable.
-        REQUIRE(values.TryAddRange(std::span<const tst::Tracked>(&candidate, 1)) == false);
+        REQUIRE(values.TryAddRange(BorrowedView<const tst::Tracked>(&candidate, 1)) == false);
         REQUIRE(values.TryAddRange({}));
     }
     REQUIRE(ledger.Constructions() == 1);
@@ -219,9 +220,18 @@ TEST_CASE("FixedArray range append is all or nothing", "[containers][fixed-array
     REQUIRE(values.TryAddRange(one));
     REQUIRE(values.IsFull());
     REQUIRE(values.TryAddRange({}));
-    const std::span<const uint32> view = values;
-    REQUIRE(view.size() == SMALL_CAPACITY);
+    const BorrowedView<const uint32> view = values;
+    REQUIRE(view.GetSize() == SMALL_CAPACITY);
     REQUIRE(view[3] == 4U);
+}
+
+TEST_CASE("FixedArray rejects an invalid borrowed view without changing", "[containers][fixed-array]")
+{
+    FixedArray<uint32, SMALL_CAPACITY> values;
+    REQUIRE(values.TryAdd(7U));
+    REQUIRE(values.TryAddRange(BorrowedView<const uint32>(nullptr, 1)) == false);
+    REQUIRE(values.GetSize() == 1);
+    REQUIRE(values[0] == 7U);
 }
 
 TEST_CASE("FixedArray copy and move keep lifetimes balanced", "[containers][fixed-array][lifetime]")

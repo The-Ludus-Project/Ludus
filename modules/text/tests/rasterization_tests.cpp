@@ -2,6 +2,7 @@
 // tightly-packed normalization, zero-area glyphs with valid metrics, negative
 // bearings, and borrowed-scratch lifetime.
 
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/text/font_system.h>
 
 #include "fixture_support.h"
@@ -115,7 +116,8 @@ TEST_CASE("Scratch is only valid until the next raster call", "[text][raster]")
     REQUIRE(IsOk(RasterizeGlyph(guard.System, font, 48, a, &first)));
     // Copy immediately, as the contract requires.
     const ludus::foundation::Array<ludus::foundation::uint8> copy =
-        ludus::foundation::Array<ludus::foundation::uint8>::FromRange(first.Coverage);
+        ludus::foundation::Array<ludus::foundation::uint8>::FromRange(
+            ludus::foundation::MakeBorrowedView(first.Coverage));
 
     GlyphBitmap second;
     REQUIRE(IsOk(RasterizeGlyph(guard.System, font, 48, b, &second)));

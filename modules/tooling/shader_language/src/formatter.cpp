@@ -3,6 +3,7 @@
 
 #include <ludus/tooling/shader_language/formatter.hpp>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 #include <ludus/tooling/shader_compiler/compiler.hpp>
 #include <ludus/tooling/shader_language/limits.hpp>
@@ -10,8 +11,6 @@
 #include "internal/diagnostic_sink.hpp"
 #include "internal/keywords.hpp"
 #include "internal/lexer.hpp"
-
-#include <span>
 
 namespace ludus::tooling::shader_language
 {
@@ -103,7 +102,7 @@ public:
         {
             return finish(mSink.HasOutOfMemory() == true ? Status::OutOfMemory : Status::Failed);
         }
-        if (mResult.Text.TryAddRange(mOutput.AsSpan()) == false)
+        if (mResult.Text.TryAddRange(mOutput.AsView()) == false)
         {
             return finish(Status::OutOfMemory);
         }
@@ -286,7 +285,7 @@ private:
             mHasFailed = true;
             return false;
         }
-        if (mOutput.TryAddRange(std::span<const char>(text.data(), text.size())) == false)
+        if (mOutput.TryAddRange(foundation::BorrowedView<const char>(text.data(), text.size())) == false)
         {
             mSink.ReportOutOfMemory();
             mHasFailed = true;
@@ -659,8 +658,8 @@ private:
         const std::string_view left = spell(mPreviousToken);
         const std::string_view right = spell(index);
         mJoinScratch.Clear();
-        if (mJoinScratch.TryAddRange(std::span<const char>(left.data(), left.size())) == false ||
-            mJoinScratch.TryAddRange(std::span<const char>(right.data(), right.size())) == false)
+        if (mJoinScratch.TryAddRange(foundation::BorrowedView<const char>(left.data(), left.size())) == false ||
+            mJoinScratch.TryAddRange(foundation::BorrowedView<const char>(right.data(), right.size())) == false)
         {
             // Keeping the space is always safe.
             return false;

@@ -7,6 +7,7 @@
 
 #include "language_server.hpp"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/parsing/json.hpp>
 #include <ludus/tooling/shader_language/formatter.hpp>
 #include <ludus/tooling/shader_language/preprocessor.hpp>
@@ -99,7 +100,7 @@ constexpr uint32 MAX_COMPONENTS = 4;
 
 [[nodiscard]] bool AppendText(std::string_view text, Array<char>& inoutText) noexcept
 {
-    return inoutText.TryAddRange(std::span<const char>(text.data(), text.size())) == true;
+    return inoutText.TryAddRange(foundation::BorrowedView<const char>(text.data(), text.size())) == true;
 }
 
 [[nodiscard]] std::string_view GetView(const Array<char>& text) noexcept
@@ -305,7 +306,8 @@ private:
             {
                 return false;
             }
-            return mInput.TryAddRange(std::span<const char>(chunk.GetData(), static_cast<usize>(count))) == true;
+            return mInput.TryAddRange(
+                       foundation::BorrowedView<const char>(chunk.GetData(), static_cast<usize>(count))) == true;
         }
     }
 
@@ -351,14 +353,15 @@ private:
             }
         }
         outBody.Clear();
-        if (hasDigit == false || outBody.TryAddRange(std::span<const char>(mInput.GetData() + start, length)) == false)
+        if (hasDigit == false ||
+            outBody.TryAddRange(foundation::BorrowedView<const char>(mInput.GetData() + start, length)) == false)
         {
             return false;
         }
         // Keep the bytes of the next message.
         Array<char> rest;
-        if (rest.TryAddRange(
-                std::span<const char>(mInput.GetData() + start + length, mInput.GetSize() - start - length)) == false)
+        if (rest.TryAddRange(foundation::BorrowedView<const char>(mInput.GetData() + start + length,
+                                                                  mInput.GetSize() - start - length)) == false)
         {
             return false;
         }

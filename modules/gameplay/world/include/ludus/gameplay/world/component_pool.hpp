@@ -1,16 +1,17 @@
 #pragma once
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/gameplay/world/entity_registry.h>
 
-#include <span>
 #include <type_traits>
 #include <utility>
 namespace ludus::gameplay::world
 {
 /// @brief Plain owned state only: construction/move/destruction must not allocate or invoke gameplay.
 ///
-/// Owner/value spans have identical lengths and are phase-local.
+/// Owner/value views have identical lengths and are phase-local; GetOwners() and GetValues() borrow
+/// pool storage until the next add or remove.
 template <typename T>
 class ComponentPool final
 {
@@ -122,17 +123,23 @@ public:
         mSparse[entity.Slot] = MissingIndex();
         return Status::Success;
     }
-    [[nodiscard]] std::span<const EntityId> GetOwners() const noexcept
+    /// Owning entities in dense order; element i owns GetValues()[i].
+    /// @return A view borrowing pool storage; invalidated by the next insert or remove.
+    [[nodiscard]] foundation::BorrowedView<const EntityId> GetOwners() const noexcept
     {
-        return mOwners.AsSpan();
+        return mOwners.AsView();
     }
-    [[nodiscard]] std::span<const T> GetValues() const noexcept
+    /// Read-only component values in the same dense order as GetOwners().
+    /// @return A view borrowing pool storage; invalidated by the next insert or remove.
+    [[nodiscard]] foundation::BorrowedView<const T> GetValues() const noexcept
     {
-        return mValues.AsSpan();
+        return mValues.AsView();
     }
-    [[nodiscard]] std::span<T> GetValues() noexcept
+    /// Mutable component values in the same dense order as GetOwners(); values may be edited in place.
+    /// @return A view borrowing pool storage; invalidated by the next insert or remove.
+    [[nodiscard]] foundation::BorrowedView<T> GetValues() noexcept
     {
-        return mValues.AsSpan();
+        return mValues.AsView();
     }
 
 private:

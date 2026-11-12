@@ -244,7 +244,7 @@ struct Options final
 
 [[nodiscard]] bool AppendText(std::string_view text, Array<char>& inoutText) noexcept
 {
-    return inoutText.TryAddRange(std::span<const char>(text.data(), text.size())) == true;
+    return inoutText.TryAddRange(ludus::foundation::BorrowedView<const char>(text.data(), text.size())) == true;
 }
 
 /// Append `path:line` of `location`, or `<configuration>:line`.

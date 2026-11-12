@@ -223,7 +223,7 @@ public:
             return false;
         }
         const usize offset = mText.GetSize();
-        if (mText.TryAddRange(std::span<const char>(text.data(), text.size())) == false)
+        if (mText.TryAddRange(BorrowedView<const char>(text.data(), text.size())) == false)
         {
             reportFile(path, "cannot be stored: out of memory");
             return false;

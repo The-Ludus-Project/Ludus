@@ -7,6 +7,7 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/config.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/parsing/json.hpp>
@@ -632,7 +633,7 @@ private:
         const std::string_view text = textOrNull == nullptr ? std::string_view{} : std::string_view(textOrNull);
         outText.Offset = static_cast<uint32>(mResult.Text.GetSize());
         outText.Size = static_cast<uint32>(text.size());
-        return mResult.Text.TryAddRange(std::span<const char>(text.data(), text.size())) == true;
+        return mResult.Text.TryAddRange(foundation::BorrowedView<const char>(text.data(), text.size())) == true;
     }
 
     [[nodiscard]] static bool mapScalar(slang::TypeReflection::ScalarType scalar, ReflectedScalar& outScalar) noexcept
@@ -842,7 +843,7 @@ Status Compiler::ReflectDeclarations(const Request& request, DeclarationResult& 
     }
     // Slang reads the module text from a terminated copy; the snapshot holds the same bytes.
     Array<char> source;
-    if (source.TryAddRange(std::span<const char>(sourceText.data(), sourceText.size())) == false ||
+    if (source.TryAddRange(foundation::BorrowedView<const char>(sourceText.data(), sourceText.size())) == false ||
         source.TryAdd('\0') == false)
     {
         outResult.Outcome = Status::OutOfMemory;

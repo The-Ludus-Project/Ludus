@@ -11,6 +11,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -372,7 +373,7 @@ Status LoadFont(FontSystem* system, std::span<const uint8> bytes, uint32 faceInd
     // them (never store a raw caller pointer).
     // Allocation failure leaves the system, slot and output untouched.
     foundation::Array<uint8> owned;
-    if (owned.TryAddRange(bytes) == false)
+    if (owned.TryAddRange(foundation::MakeBorrowedView(bytes)) == false)
     {
         return Status::OutOfMemory;
     }
@@ -741,7 +742,7 @@ Status GetLayout(FontSystem* system, LayoutId layout, LayoutView* outView) noexc
     outView->Font = slot->Font;
     outView->PixelHeight = slot->PixelHeight;
     outView->TextDirection = slot->TextDirection;
-    outView->Glyphs = slot->Glyphs.AsSpan();
+    outView->Glyphs = foundation::MakeSpan(slot->Glyphs);
     outView->SourceUtf8 = std::string_view(slot->Source.data(), slot->Source.size());
     outView->Metrics = slot->Metrics;
     return Status::Ok;
@@ -892,7 +893,7 @@ Status RasterizeGlyph(FontSystem* system,
     outBitmap->BearingTop = gs->bitmap_top;
     outBitmap->Width = width;
     outBitmap->Height = height;
-    outBitmap->Coverage = system->RasterScratch.AsSpan();
+    outBitmap->Coverage = foundation::MakeSpan(system->RasterScratch);
     return Status::Ok;
 }
 

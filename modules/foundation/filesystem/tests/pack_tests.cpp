@@ -1,5 +1,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
 
 #include "internal/pack_codec.hpp"
@@ -33,7 +35,7 @@ ProviderHandle Pack(std::span<const uint8> bytes = pack_fixture::kPack)
 template <typename T>
 void Set(Array<uint8>& bytes, usize at, T value)
 {
-    REQUIRE(TryWriteLittleEndian(value, bytes.AsSpan().subspan(at)));
+    REQUIRE(TryWriteLittleEndian(value, MakeSpan(bytes).subspan(at)));
 }
 uint64 Get64(std::span<const uint8> bytes, usize at)
 {
@@ -50,9 +52,9 @@ uint32 Get32(std::span<const uint8> bytes, usize at)
 void Seal(Array<uint8>& bytes)
 {
     const auto length = static_cast<usize>(Get64(bytes, 40));
-    Set(bytes, 64, internal::Crc32(bytes.AsSpan().subspan(80, length)));
+    Set(bytes, 64, internal::Crc32(MakeSpan(bytes).subspan(80, length)));
     Set(bytes, 68, uint32{0});
-    Set(bytes, 68, internal::Crc32(bytes.AsSpan().first(80)));
+    Set(bytes, 68, internal::Crc32(MakeSpan(bytes).first(80)));
 }
 usize BlockTable(std::span<const uint8> bytes)
 {
@@ -132,10 +134,10 @@ TEST_CASE("Packs built by the Python tool resolve raw compressed and empty revis
 
 TEST_CASE("Pack admission rejects malformed headers features indexes lengths and ownership before publication")
 {
-    const Array<uint8> good = Array<uint8>::FromRange(std::span<const uint8>(pack_fixture::kPack));
+    const Array<uint8> good = Array<uint8>::FromRange(BorrowedView<const uint8>(pack_fixture::kPack));
     for (usize end = 0; end < good.GetSize(); end += 19)
     {
-        Rejected(good.AsSpan().first(end));
+        Rejected(MakeSpan(good).first(end));
     }
     auto corrupt = good;
     corrupt[0] ^= 1;
@@ -270,7 +272,7 @@ TEST_CASE("Configured pack budgets reject storage index files blocks and decoded
 
 TEST_CASE("Payload corruption is visible with only previously verified progress and never falls back")
 {
-    const Array<uint8> good = Array<uint8>::FromRange(std::span<const uint8>(pack_fixture::kPack));
+    const Array<uint8> good = Array<uint8>::FromRange(BorrowedView<const uint8>(pack_fixture::kPack));
     const usize table = BlockTable(good);
     auto corrupt = good;
     corrupt[static_cast<usize>(Get64(good, table + 24))] ^= 1; // Second compressed block.
@@ -329,7 +331,7 @@ TEST_CASE("Independent CRC and LZ4 golden vectors enforce bounded lengths offset
     {
         REQUIRE_FALSE(internal::DecodeLz4(std::span(repeated).first(count), output));
     }
-    Array<uint8> damaged = Array<uint8>::FromRange(std::span<const uint8>(repeated));
+    Array<uint8> damaged = Array<uint8>::FromRange(BorrowedView<const uint8>(repeated));
     damaged[2] = 0;
     REQUIRE_FALSE(internal::DecodeLz4(damaged, output));
     damaged[2] = 2;
