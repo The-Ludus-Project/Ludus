@@ -30,6 +30,14 @@ inline constexpr uint32 Z_AXIS = 2;
 /// be widened by their rounding error; Ludus uses a looser, scale-aware bound.
 inline constexpr float64 TRAVERSAL_RELATIVE_ALLOWANCE = 0x1p-40;
 
+/// The three corners of one triangle in mesh space, in winding order.
+struct TriangleCorners final
+{
+    math::Vector3 FirstMesh;
+    math::Vector3 SecondMesh;
+    math::Vector3 ThirdMesh;
+};
+
 [[nodiscard]] LUDUS_INLINE math::Vector3d Widen(math::Vector3 value) noexcept
 {
     return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};

@@ -130,21 +130,28 @@ struct SweepInterval final
     math::Vector3d NormalMesh{};
 };
 
+/// Triangle corners relative to the box's starting center.
+struct RelativeTriangle final
+{
+    math::Vector3d FirstMesh;
+    math::Vector3d SecondMesh;
+    math::Vector3d ThirdMesh;
+};
+
 bool ClipAxis(math::Vector3d axisMesh,
-              math::Vector3d firstMesh,
-              math::Vector3d secondMesh,
-              math::Vector3d thirdMesh,
-              math::Vector3d halfExtentsMesh,
-              math::Vector3d movementMesh,
+              const RelativeTriangle& triangle,
+              const BoxCastContext& cast,
               SweepInterval& inoutInterval) noexcept
 {
     if (math::LengthSquared(axisMesh) == 0)
     {
         return true;
     }
-    const float64 first = math::Dot(axisMesh, firstMesh);
-    const float64 second = math::Dot(axisMesh, secondMesh);
-    const float64 third = math::Dot(axisMesh, thirdMesh);
+    const math::Vector3d halfExtentsMesh = cast.HalfExtentsMesh;
+    const math::Vector3d movementMesh = cast.TranslationMesh;
+    const float64 first = math::Dot(axisMesh, triangle.FirstMesh);
+    const float64 second = math::Dot(axisMesh, triangle.SecondMesh);
+    const float64 third = math::Dot(axisMesh, triangle.ThirdMesh);
     const float64 minimum = math::Min(first, math::Min(second, third));
     const float64 maximum = math::Max(first, math::Max(second, third));
     const float64 radius = math::Abs(axisMesh.X) * halfExtentsMesh.X + math::Abs(axisMesh.Y) * halfExtentsMesh.Y +
@@ -170,45 +177,33 @@ bool ClipAxis(math::Vector3d axisMesh,
 /// One triangle over the whole translation. The arithmetic never depends on
 /// the current best hit, so hierarchy and brute-force traversal agree.
 bool CastTriangle(const BoxCastContext& cast,
-                  math::Vector3 firstCornerMesh,
-                  math::Vector3 secondCornerMesh,
-                  math::Vector3 thirdCornerMesh,
+                  const internal::TriangleCorners& corners,
                   BoxCandidate& outCandidate) noexcept
 {
-    const math::Vector3d firstMesh = Widen(firstCornerMesh) - cast.CenterMesh;
-    const math::Vector3d secondMesh = Widen(secondCornerMesh) - cast.CenterMesh;
-    const math::Vector3d thirdMesh = Widen(thirdCornerMesh) - cast.CenterMesh;
-    const StaticArray<math::Vector3d, TRIANGLE_EDGE_COUNT> edgesMesh{secondMesh - firstMesh,
-                                                                     thirdMesh - secondMesh,
-                                                                     firstMesh - thirdMesh};
+    const RelativeTriangle triangle
+    {
+        .FirstMesh = Widen(corners.FirstMesh) - cast.CenterMesh,
+        .SecondMesh = Widen(corners.SecondMesh) - cast.CenterMesh,
+        .ThirdMesh = Widen(corners.ThirdMesh) - cast.CenterMesh,
+    };
+    const StaticArray<math::Vector3d, TRIANGLE_EDGE_COUNT> edgesMesh{triangle.SecondMesh - triangle.FirstMesh,
+                                                                     triangle.ThirdMesh - triangle.SecondMesh,
+                                                                     triangle.FirstMesh - triangle.ThirdMesh};
     const math::Vector3d faceMesh = math::Cross(edgesMesh[0], edgesMesh[1]);
     SweepInterval interval;
-    if (ClipAxis(faceMesh, firstMesh, secondMesh, thirdMesh, cast.HalfExtentsMesh, cast.TranslationMesh, interval) ==
-        false)
+    if (ClipAxis(faceMesh, triangle, cast, interval) == false)
     {
         return false;
     }
     for (const math::Vector3d axisMesh : MESH_AXES)
     {
-        if (ClipAxis(axisMesh,
-                     firstMesh,
-                     secondMesh,
-                     thirdMesh,
-                     cast.HalfExtentsMesh,
-                     cast.TranslationMesh,
-                     interval) == false)
+        if (ClipAxis(axisMesh, triangle, cast, interval) == false)
         {
             return false;
         }
         for (const math::Vector3d edgeMesh : edgesMesh)
         {
-            if (ClipAxis(math::Cross(axisMesh, edgeMesh),
-                         firstMesh,
-                         secondMesh,
-                         thirdMesh,
-                         cast.HalfExtentsMesh,
-                         cast.TranslationMesh,
-                         interval) == false)
+            if (ClipAxis(math::Cross(axisMesh, edgeMesh), triangle, cast, interval) == false)
             {
                 return false;
             }
@@ -249,7 +244,13 @@ TriangleMeshBoxCaster::Visit TriangleMeshBoxCaster::testTriangle(const BoxCastCo
                                                                  BoxCandidate& inoutBest) noexcept
 {
     BoxCandidate candidate{ .TriangleIndex = triangle.SourceIndex };
-    if (CastTriangle(cast, triangle.FirstMesh, triangle.SecondMesh, triangle.ThirdMesh, candidate) == false)
+    const internal::TriangleCorners corners
+    {
+        .FirstMesh = triangle.FirstMesh,
+        .SecondMesh = triangle.SecondMesh,
+        .ThirdMesh = triangle.ThirdMesh,
+    };
+    if (CastTriangle(cast, corners, candidate) == false)
     {
         return Visit::Continue;
     }

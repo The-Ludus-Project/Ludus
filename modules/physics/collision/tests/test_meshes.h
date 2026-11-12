@@ -119,8 +119,19 @@ inline Vector3 NextPoint(RandomStream& inoutRandom, float32 extent)
 }
 
 /// Seeded soup of possibly intersecting triangles of varied size inside [-extent, extent]^3.
-inline MeshData MakeTriangleSoup(uint64 seed, uint32 count, float32 extent)
+/// Parameters of a seeded random triangle soup.
+struct SoupSettings final
 {
+    uint64 Seed = 1;
+    uint32 TriangleCount = 0;
+    float32 ExtentMeters = 1.0f;
+};
+
+inline MeshData MakeTriangleSoup(const SoupSettings& settings)
+{
+    const uint64 seed = settings.Seed;
+    const uint32 count = settings.TriangleCount;
+    const float32 extent = settings.ExtentMeters;
     RandomStream random;
     (void)random.TryReseed(seed, 0);
     MeshData mesh;

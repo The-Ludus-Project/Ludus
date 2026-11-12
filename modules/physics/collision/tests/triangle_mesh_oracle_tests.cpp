@@ -143,7 +143,12 @@ TEST_CASE("Hierarchy raycasts match the all-triangles oracle on random soups", "
 {
     for (uint32 seed = 1; seed <= SCENE_SEED_COUNT; ++seed)
     {
-        const MeshData data = MakeTriangleSoup(seed, SOUP_TRIANGLE_COUNT, SOUP_EXTENT_METERS);
+        const MeshData data = MakeTriangleSoup(
+        {
+            .Seed = seed,
+            .TriangleCount = SOUP_TRIANGLE_COUNT,
+            .ExtentMeters = SOUP_EXTENT_METERS,
+        });
         const TriangleMesh mesh = CookOrFail(data);
         REQUIRE(mesh.GetHierarchyDepth() > 1);
         RandomStream random;
@@ -162,7 +167,12 @@ TEST_CASE("Hierarchy box casts match the all-triangles oracle on random soups", 
 {
     for (uint32 seed = 1; seed <= SCENE_SEED_COUNT; ++seed)
     {
-        const MeshData data = MakeTriangleSoup(seed, SOUP_TRIANGLE_COUNT, SOUP_EXTENT_METERS);
+        const MeshData data = MakeTriangleSoup(
+        {
+            .Seed = seed,
+            .TriangleCount = SOUP_TRIANGLE_COUNT,
+            .ExtentMeters = SOUP_EXTENT_METERS,
+        });
         const TriangleMesh mesh = CookOrFail(data);
         RandomStream random;
         REQUIRE(random.TryReseed(seed, 2) == true);
@@ -228,7 +238,8 @@ TEST_CASE("Hierarchy queries match the oracle on terrain with shared edges", "[c
 TEST_CASE("Duplicated geometry ties identically in both traversals", "[collision][oracle][ordering]")
 {
     // Every triangle appears twice at different source indices; ties must resolve to the lower index.
-    const MeshData soup = MakeTriangleSoup(9, SOUP_TRIANGLE_COUNT / 2, SOUP_EXTENT_METERS);
+    const MeshData soup =
+        MakeTriangleSoup({ .Seed = 9, .TriangleCount = SOUP_TRIANGLE_COUNT / 2, .ExtentMeters = SOUP_EXTENT_METERS });
     MeshData doubled;
     const usize triangleCount = soup.Indices.GetSize() / 3;
     for (usize copy = 0; copy < 2; ++copy)

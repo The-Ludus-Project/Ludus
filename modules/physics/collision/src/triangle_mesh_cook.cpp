@@ -53,11 +53,11 @@ Status CheckPosition(math::Vector3 positionMesh) noexcept
 
 /// Twice the area against the longest edge squared; scale free, so the same
 /// shape is degenerate or not at any admitted size.
-bool IsDegenerate(math::Vector3 firstMesh, math::Vector3 secondMesh, math::Vector3 thirdMesh) noexcept
+bool IsDegenerate(const internal::TriangleCorners& corners) noexcept
 {
-    const math::Vector3d firstEdgeMesh = Widen(secondMesh) - Widen(firstMesh);
-    const math::Vector3d secondEdgeMesh = Widen(thirdMesh) - Widen(firstMesh);
-    const math::Vector3d thirdEdgeMesh = Widen(thirdMesh) - Widen(secondMesh);
+    const math::Vector3d firstEdgeMesh = Widen(corners.SecondMesh) - Widen(corners.FirstMesh);
+    const math::Vector3d secondEdgeMesh = Widen(corners.ThirdMesh) - Widen(corners.FirstMesh);
+    const math::Vector3d thirdEdgeMesh = Widen(corners.ThirdMesh) - Widen(corners.SecondMesh);
     const float64 longestEdgeSquared =
         math::Max(math::LengthSquared(firstEdgeMesh),
                   math::Max(math::LengthSquared(secondEdgeMesh), math::LengthSquared(thirdEdgeMesh)));
@@ -118,7 +118,12 @@ TriangleCheck TriangleMeshBuilder::checkTriangle(const TriangleMeshSource& sourc
             return TriangleCheck::Failed;
         }
     }
-    if (IsDegenerate(cornersMesh[0], cornersMesh[1], cornersMesh[2]) == false)
+    if (IsDegenerate(
+    {
+        .FirstMesh = cornersMesh[0],
+        .SecondMesh = cornersMesh[1],
+        .ThirdMesh = cornersMesh[2],
+    }) == false)
     {
         return TriangleCheck::Admitted;
     }
@@ -185,7 +190,8 @@ bool TriangleMeshBuilder::copyTriangles(const TriangleMeshSource& source, Triang
             .ThirdMesh = source.PositionsMesh[source.Indices[base + 2]],
             .SourceIndex = static_cast<uint32>(triangle),
         };
-        if (IsDegenerate(copy.FirstMesh, copy.SecondMesh, copy.ThirdMesh) == true)
+        if (IsDegenerate({ .FirstMesh = copy.FirstMesh, .SecondMesh = copy.SecondMesh, .ThirdMesh = copy.ThirdMesh }) ==
+            true)
         {
             ++inoutMesh.mSkippedTriangleCount;
             continue;

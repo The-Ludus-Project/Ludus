@@ -160,15 +160,11 @@ bool IntersectsBounds(const RayContext& ray, const math::Aabb3& boundsMesh, floa
 
 /// One triangle against the full distance limit. The arithmetic never depends
 /// on the current best hit, so hierarchy and brute-force traversal agree.
-bool IntersectTriangle(const RayContext& ray,
-                       math::Vector3 firstMesh,
-                       math::Vector3 secondMesh,
-                       math::Vector3 thirdMesh,
-                       float64& outDistance) noexcept
+bool IntersectTriangle(const RayContext& ray, const internal::TriangleCorners& corners, float64& outDistance) noexcept
 {
-    const math::Vector3d first = Widen(firstMesh) - ray.OriginMesh;
-    const math::Vector3d second = Widen(secondMesh) - ray.OriginMesh;
-    const math::Vector3d third = Widen(thirdMesh) - ray.OriginMesh;
+    const math::Vector3d first = Widen(corners.FirstMesh) - ray.OriginMesh;
+    const math::Vector3d second = Widen(corners.SecondMesh) - ray.OriginMesh;
+    const math::Vector3d third = Widen(corners.ThirdMesh) - ray.OriginMesh;
     const float64 firstZ = GetComponent(first, ray.AxisZ);
     const float64 secondZ = GetComponent(second, ray.AxisZ);
     const float64 thirdZ = GetComponent(third, ray.AxisZ);
@@ -207,10 +203,10 @@ bool IntersectTriangle(const RayContext& ray,
     return true;
 }
 
-math::Vector3d ComputeWindingNormal(math::Vector3 firstMesh, math::Vector3 secondMesh, math::Vector3 thirdMesh) noexcept
+math::Vector3d ComputeWindingNormal(const internal::TriangleCorners& corners) noexcept
 {
-    const math::Vector3d normal =
-        math::Cross(Widen(secondMesh) - Widen(firstMesh), Widen(thirdMesh) - Widen(firstMesh));
+    const math::Vector3d normal = math::Cross(Widen(corners.SecondMesh) - Widen(corners.FirstMesh),
+                                              Widen(corners.ThirdMesh) - Widen(corners.FirstMesh));
     math::Vector3d unit{};
     // Cooking rejects or skips degenerate triangles, so the normal is nonzero.
     const bool isNormalized = internal::TryNormalize(normal, unit);
@@ -263,16 +259,20 @@ void TriangleMeshRaycaster::testTriangle(const TriangleMesh& mesh,
                                          RayCandidate& inoutBest) noexcept
 {
     const TriangleMesh::Triangle& triangle = mesh.mTriangles[stored];
+    const internal::TriangleCorners corners
+    {
+        .FirstMesh = triangle.FirstMesh,
+        .SecondMesh = triangle.SecondMesh,
+        .ThirdMesh = triangle.ThirdMesh,
+    };
     RayCandidate candidate{ .TriangleIndex = triangle.SourceIndex, .StoredIndex = stored, .HasHit = true };
-    if (IntersectTriangle(ray, triangle.FirstMesh, triangle.SecondMesh, triangle.ThirdMesh, candidate.Distance) ==
-            false ||
-        IsBetter(candidate, inoutBest) == false)
+    if (IntersectTriangle(ray, corners, candidate.Distance) == false || IsBetter(candidate, inoutBest) == false)
     {
         return;
     }
     if (ray.FacePolicy != TriangleFacePolicy::TwoSided)
     {
-        const math::Vector3d normal = ComputeWindingNormal(triangle.FirstMesh, triangle.SecondMesh, triangle.ThirdMesh);
+        const math::Vector3d normal = ComputeWindingNormal(corners);
         if (IsFaceAdmitted(ray.FacePolicy, math::Dot(ray.DirectionMesh, normal)) == false)
         {
             return;
@@ -350,7 +350,8 @@ TriangleMeshRaycaster::makeResult(const TriangleMesh& mesh, const RayContext& ra
     }
     const TriangleMesh::Triangle& triangle = mesh.mTriangles[best.StoredIndex];
     RaycastResult result;
-    result.NormalMesh = ComputeWindingNormal(triangle.FirstMesh, triangle.SecondMesh, triangle.ThirdMesh);
+    result.NormalMesh = ComputeWindingNormal(
+        { .FirstMesh = triangle.FirstMesh, .SecondMesh = triangle.SecondMesh, .ThirdMesh = triangle.ThirdMesh });
     result.HasHit = true;
     result.DistanceMeters = best.Distance;
     result.PositionMesh = ray.OriginMesh + ray.DirectionMesh * best.Distance;
