@@ -71,10 +71,12 @@ enum class EditorIcon : foundation::uint8
     UnknownAsset,
     Add,
     Refresh,
+    More,
+    Locked,
 };
 
 /// Number of icons in EditorIcon.
-inline constexpr foundation::usize EDITOR_ICON_COUNT = 48;
+inline constexpr foundation::usize EDITOR_ICON_COUNT = 50;
 
 /// Side of the grid every icon is drawn on, in SVG units.
 inline constexpr qreal EDITOR_ICON_GRID = 24.0;
