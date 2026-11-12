@@ -92,9 +92,9 @@ TEST_CASE("Write capabilities pin roots reject unsafe paths and retain ownership
     WriteDirectory writer;
     REQUIRE_FALSE(writer.IsOpen());
     REQUIRE(Publish(writer, "data", "x").Outcome.Code == Status::InvalidArgument);
-    const auto alias = fixture.Path("trusted");
+    const std::string alias = fixture.Path("trusted");
     std::filesystem::create_directory_symlink(fixture.Root, alias);
-    REQUIRE(writer.Open(alias.string()).Succeeded());
+    REQUIRE(writer.Open(alias).Succeeded());
     REQUIRE(writer.Open("/ludus-missing-f5").Code == Status::NotFound);
     REQUIRE(writer.Open("").Code == Status::InvalidArgument);
     REQUIRE(writer.Open(std::string_view("x\0y", 3)).Code == Status::InvalidArgument);

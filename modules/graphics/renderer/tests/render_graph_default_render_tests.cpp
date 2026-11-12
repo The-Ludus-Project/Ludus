@@ -57,6 +57,39 @@ void RequireTextureReady(rhi::DeviceHandle device, rhi::TextureHandle texture, r
     }
     REQUIRE(status == rhi::RasterStatus::Ready);
 }
+/// Projection of the far oblique cameras: the World viewport's centimetre near plane and a narrow field of view.
+constexpr float32 EDITOR_NEAR_PLANE_METERS = .01F;
+constexpr float32 EDITOR_FAR_PLANE_METERS = 400;
+constexpr float32 EDITOR_VERTICAL_FOV_RADIANS = .2F;
+/// The World viewport's perspective camera at eyeWorld looking at targetWorld: its finite reverse-Z projection
+/// rewritten to conventional depth (clip z becomes w - z), as the editor draws with a centimetre near plane.
+void BuildConventionalEditorCamera(math::Vector3 eyeWorld,
+                                   math::Vector3 targetWorld,
+                                   renderer::ViewDescription& outCamera)
+{
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::ProjectionDescription projection;
+    projection.Kind = renderer::ProjectionKind::Perspective;
+    REQUIRE(math::TryLookAt(eyeWorld, targetWorld, {0, 0, 1}, projection.WorldToView) == math::MathStatus::Success);
+    projection.VerticalFovRadians = EDITOR_VERTICAL_FOV_RADIANS;
+    projection.Near = EDITOR_NEAR_PLANE_METERS;
+    projection.Far = EDITOR_FAR_PLANE_METERS;
+    REQUIRE(renderer::BuildViewDescription(projection, mapping, outCamera) == rhi::RasterStatus::Ready);
+    for (math::Vector4& column : outCamera.WorldToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    outCamera.Depth = renderer::DepthConvention::Conventional;
+    outCamera.InfiniteFar = false;
+    outCamera.OrthographicCamera = false;
+    outCamera.CameraPosition = eyeWorld;
+    REQUIRE(math::TryNormalize(targetWorld - eyeWorld, outCamera.CameraForward) == math::MathStatus::Success);
+}
 } // namespace
 TEST_CASE("default clustered deferred matches forward material shading and preserves optional prepass pixels",
           "[render-graph][clustered-deferred][gpu]")
@@ -1401,21 +1434,12 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         inputs.Lights = {lights.GetData(), lights.GetSize()};
 
         const float32 eyeDistanceMeters = GENERATE(50.0F, 120.0F);
-        constexpr float32 NEAR_PLANE_METERS = .01F;
-        constexpr float32 FAR_PLANE_METERS = 400;
-        constexpr float32 VERTICAL_FOV_RADIANS = .2F;
         constexpr int32 POSE_COUNT = 8;
         // A few millimetres between poses: far below a pixel, enough to change every rounding in the view.
         constexpr float32 POSE_STEP_METERS = .0037F;
         constexpr uint32 PROBE_HALF_WIDTH_PIXELS = 24;
         constexpr uint32 PROBE_HALF_HEIGHT_PIXELS = 16;
         constexpr float32 MAX_CHANNEL_DIFFERENCE = 2;
-        renderer::ViewMapping cameraMapping;
-        REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
-                                             {0, 0, WIDTH, HEIGHT},
-                                             WIDTH,
-                                             HEIGHT,
-                                             cameraMapping) == rhi::RasterStatus::Ready);
         float32 maximumDifference = 0;
         uint32 darkenedPixels = 0;
         for (int32 pose = 0; pose < POSE_COUNT; ++pose)
@@ -1426,27 +1450,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
             const math::Vector3 eyeWorld{static_cast<float32>(pose) * POSE_STEP_METERS,
                                          -offset,
                                          RECEIVER_HEIGHT_METERS + offset};
-            renderer::ProjectionDescription projection;
-            projection.Kind = renderer::ProjectionKind::Perspective;
-            REQUIRE(math::TryLookAt(eyeWorld, targetWorld, {0, 0, 1}, projection.WorldToView) ==
-                    math::MathStatus::Success);
-            projection.VerticalFovRadians = VERTICAL_FOV_RADIANS;
-            projection.Near = NEAR_PLANE_METERS;
-            projection.Far = FAR_PLANE_METERS;
-            renderer::ViewDescription& obliqueCamera = fixture.Cameras[0];
-            REQUIRE(renderer::BuildViewDescription(projection, cameraMapping, obliqueCamera) ==
-                    rhi::RasterStatus::Ready);
-            // The same finite reverse-Z to conventional rewrite the editor viewport applies: clip z becomes w - z.
-            for (math::Vector4& column : obliqueCamera.WorldToClip.Columns)
-            {
-                column.Z = column.W - column.Z;
-            }
-            obliqueCamera.Depth = renderer::DepthConvention::Conventional;
-            obliqueCamera.InfiniteFar = false;
-            obliqueCamera.OrthographicCamera = false;
-            obliqueCamera.CameraPosition = eyeWorld;
-            REQUIRE(math::TryNormalize(targetWorld - eyeWorld, obliqueCamera.CameraForward) ==
-                    math::MathStatus::Success);
+            BuildConventionalEditorCamera(eyeWorld, targetWorld, fixture.Cameras[0]);
 
             REQUIRE(update(1) == rhi::RasterStatus::Ready);
             render();
@@ -1466,6 +1470,206 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         }
         CAPTURE(eyeDistanceMeters, darkenedPixels);
         CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
+    }
+    SECTION("oblique far cameras keep an area-lit receiver free of reconstruction acne")
+    {
+        // The mesh-light cube faces store the receiver itself, and the resolve compares them with the receiver
+        // rebuilt from conventional depth. Tens of metres from the camera that position lies centimetres off the
+        // surface, differently at every pixel and camera pose, so a comparison that ignores it dithers false
+        // shadows over the floor under an area light. Check each pixel against the CPU integral of the unshadowed
+        // emitter where its ray meets the receiver, over sub-pixel poses.
+        constexpr float32 RECEIVER_HALF_EXTENT_METERS = 40;
+        constexpr float32 RECEIVER_HEIGHT_METERS = .5F;
+        constexpr float32 EMITTER_HALF_EXTENT_METERS = 1;
+        constexpr float32 EMITTER_HEIGHT_METERS = RECEIVER_HEIGHT_METERS + 3;
+        // Bright enough that the floor under the emitter reaches most of the eight-bit range.
+        constexpr float32 EMITTER_RADIANCE = 13;
+        constexpr usize QUAD_VERTEX_COUNT = 4;
+        constexpr usize QUAD_INDEX_COUNT = 6;
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{
+            {{-RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {-RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS}}};
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+        const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+        meshes[0].Geometry = {quadPositions.GetData(),
+                              quadPositions.GetSize(),
+                              quadIndices.GetData(),
+                              quadIndices.GetSize()};
+        meshes[0].Geometry.Normals = quadNormals.GetData();
+        // A square emitter facing down at the floor's centre.
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> emitterPositions{
+            {{-EMITTER_HALF_EXTENT_METERS, -EMITTER_HALF_EXTENT_METERS, EMITTER_HEIGHT_METERS},
+             {-EMITTER_HALF_EXTENT_METERS, EMITTER_HALF_EXTENT_METERS, EMITTER_HEIGHT_METERS},
+             {EMITTER_HALF_EXTENT_METERS, EMITTER_HALF_EXTENT_METERS, EMITTER_HEIGHT_METERS},
+             {EMITTER_HALF_EXTENT_METERS, -EMITTER_HALF_EXTENT_METERS, EMITTER_HEIGHT_METERS}}};
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> emitterNormals{
+            {{0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1}}};
+        meshes[1].Geometry = {emitterPositions.GetData(),
+                              emitterPositions.GetSize(),
+                              quadIndices.GetData(),
+                              quadIndices.GetSize()};
+        meshes[1].Geometry.Normals = emitterNormals.GetData();
+        items[1].MeshToWorld.Translation = {};
+        materials[1].Emission = {EMITTER_RADIANCE, 0, 0};
+        Array<math::Vector4> words;
+        uint32 recordCount = 0;
+        REQUIRE(renderer::internal::AppendRasterMeshLights(meshes[1].Geometry,
+                                                           items[1].MeshToWorld,
+                                                           materials[1],
+                                                           words,
+                                                           recordCount) == rhi::RasterStatus::Ready);
+        // The coplanar square merges into one polygon record, which the CPU check integrates whole.
+        REQUIRE(recordCount == 1);
+        const renderer::SceneShaderMaterial& receiver = materials[0];
+
+        const float32 eyeDistanceMeters = GENERATE(50.0F, 120.0F);
+        constexpr int32 POSE_COUNT = 8;
+        // A few millimetres between poses: far below a pixel, enough to change every rounding in the view.
+        constexpr float32 POSE_STEP_METERS = .0037F;
+        // Pixels whose ray passes this close to the emitter may show it instead of the floor.
+        constexpr float32 EMITTER_MARGIN_METERS = .5F;
+        // Checked pixels: well lit by the emitter and clear of eight-bit saturation.
+        constexpr float32 MIN_CHECKED_CODE = 24;
+        constexpr float32 MAX_CHECKED_CODE = 240;
+        constexpr float32 CODE_SCALE = 255;
+        // The resolve's float evaluation and eight-bit output differ from the CPU integral by a couple of codes;
+        // one shadowed filter tap of nine already darkens a checked pixel by more.
+        constexpr float32 MAX_DIFFERENCE_CODES = 3;
+        constexpr uint32 MIN_CHECKED_PIXELS = 64;
+        // Agreement of the CPU pixel rays with the camera's projection, in normalized device coordinates.
+        constexpr float32 MAX_RAY_ERROR_NDC = 1e-3F;
+        // The resolve's allowance for a rebuilt receiver: four units in the last place of the stored depth.
+        constexpr float32 DEPTH_RELATIVE_UNCERTAINTY = 2.384185791015625e-07F;
+        const auto evaluateCode = [&](math::Vector3 positionWorld) {
+            math::Vector3 viewWorld;
+            REQUIRE(math::TryNormalize(fixture.Cameras[0].CameraPosition - positionWorld, viewWorld) ==
+                    math::MathStatus::Success);
+            math::Vector3 radiance;
+            if (renderer::internal::TryEvaluateRasterMeshLightFar({words.GetData(), words.GetSize()},
+                                                                  positionWorld,
+                                                                  {0, 0, 1},
+                                                                  viewWorld,
+                                                                  receiver.BaseColor,
+                                                                  receiver.Metallic,
+                                                                  receiver.Roughness,
+                                                                  radiance) == false)
+            {
+                radiance = renderer::internal::EvaluateRasterMeshLight({words.GetData(), words.GetSize()},
+                                                                       positionWorld,
+                                                                       {0, 0, 1},
+                                                                       viewWorld,
+                                                                       receiver.BaseColor,
+                                                                       receiver.Metallic,
+                                                                       receiver.Roughness);
+            }
+            return radiance.X * CODE_SCALE;
+        };
+        constexpr usize LATERAL_BOUND_COUNT = 5;
+        const float32 tangentY = std::tan(EDITOR_VERTICAL_FOV_RADIANS / 2);
+        const float32 tangentX = tangentY * static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT);
+        float32 maximumDarkening = 0;
+        // The unshadowed CPU integral bounds the image from above too, which shows the check itself is sound.
+        float32 maximumBrightening = 0;
+        float32 maximumRayError = 0;
+        uint32 darkenedPixels = 0;
+        uint32 checkedPixels = 0;
+        for (int32 pose = 0; pose < POSE_COUNT; ++pose)
+        {
+            // Forty-five degrees above the receiver, so depth varies from pixel to pixel.
+            const float32 offset = eyeDistanceMeters * math::Sqrt(0.5F);
+            const math::Vector3 targetWorld{0, 0, RECEIVER_HEIGHT_METERS};
+            const math::Vector3 eyeWorld{static_cast<float32>(pose) * POSE_STEP_METERS,
+                                         -offset,
+                                         RECEIVER_HEIGHT_METERS + offset};
+            renderer::ViewDescription& obliqueCamera = fixture.Cameras[0];
+            BuildConventionalEditorCamera(eyeWorld, targetWorld, obliqueCamera);
+            // The view basis of math::TryLookAt, for the ray through each pixel centre.
+            const math::Vector3 forwardWorld = obliqueCamera.CameraForward;
+            math::Vector3 rightWorld;
+            REQUIRE(math::TryNormalize(math::Cross(forwardWorld, {0, 0, 1}), rightWorld) == math::MathStatus::Success);
+            const math::Vector3 upWorld = math::Cross(rightWorld, forwardWorld);
+            const auto intersectReceiver = [&](math::Vector3 directionWorld) {
+                return eyeWorld + directionWorld * ((RECEIVER_HEIGHT_METERS - eyeWorld.Z) / directionWorld.Z);
+            };
+
+            REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+            render();
+            REQUIRE(fixture.Graph.GetReport().Resources.MeshLightShadowCasters == 1);
+            REQUIRE(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 0);
+            for (uint32 y = 0; y < HEIGHT; ++y)
+            {
+                for (uint32 x = 0; x < WIDTH; ++x)
+                {
+                    const float32 ndcX = (static_cast<float32>(x) + 0.5F) / static_cast<float32>(WIDTH) * 2 - 1;
+                    const float32 ndcY = 1 - (static_cast<float32>(y) + 0.5F) / static_cast<float32>(HEIGHT) * 2;
+                    const math::Vector3 directionWorld =
+                        forwardWorld + rightWorld * (ndcX * tangentX) + upWorld * (ndcY * tangentY);
+                    if (directionWorld.Z >= 0)
+                    {
+                        continue;
+                    }
+                    const math::Vector3 emitterHitWorld =
+                        eyeWorld + directionWorld * ((EMITTER_HEIGHT_METERS - eyeWorld.Z) / directionWorld.Z);
+                    if (math::Abs(emitterHitWorld.X) < EMITTER_HALF_EXTENT_METERS + EMITTER_MARGIN_METERS &&
+                        math::Abs(emitterHitWorld.Y) < EMITTER_HALF_EXTENT_METERS + EMITTER_MARGIN_METERS)
+                    {
+                        continue;
+                    }
+                    const math::Vector3 positionWorld = intersectReceiver(directionWorld);
+                    const math::Vector4 positionClip =
+                        obliqueCamera.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+                    maximumRayError = math::Max(maximumRayError,
+                                                math::Max(math::Abs(positionClip.X / positionClip.W - ndcX),
+                                                          math::Abs(positionClip.Y / positionClip.W - ndcY)));
+                    const float32 expectedCode = evaluateCode(positionWorld);
+                    if (expectedCode < MIN_CHECKED_CODE || expectedCode > MAX_CHECKED_CODE)
+                    {
+                        continue;
+                    }
+                    // The resolve shades a receiver rebuilt from depth, which lies within the depth allowance along
+                    // the ray and, tens of metres away, a fraction of a pixel to its side. The unshadowed radiance
+                    // over half a pixel around the centre and that allowance bounds the pixel. One unit of view
+                    // depth moves the position by directionWorld.
+                    const float32 viewDepthMeters = math::Dot(positionWorld - eyeWorld, forwardWorld);
+                    const float32 depth = EDITOR_FAR_PLANE_METERS * (viewDepthMeters - EDITOR_NEAR_PLANE_METERS) /
+                                          (viewDepthMeters * (EDITOR_FAR_PLANE_METERS - EDITOR_NEAR_PLANE_METERS));
+                    const float32 viewDepthPerDepth = viewDepthMeters * viewDepthMeters *
+                                                      (EDITOR_FAR_PLANE_METERS - EDITOR_NEAR_PLANE_METERS) /
+                                                      (EDITOR_FAR_PLANE_METERS * EDITOR_NEAR_PLANE_METERS);
+                    const math::Vector3 uncertaintyWorld =
+                        directionWorld * (viewDepthPerDepth * depth * DEPTH_RELATIVE_UNCERTAINTY);
+                    const math::Vector3 halfPixelRightWorld = rightWorld * (tangentX / static_cast<float32>(WIDTH));
+                    const math::Vector3 halfPixelUpWorld = upWorld * (tangentY / static_cast<float32>(HEIGHT));
+                    const StaticArray<math::Vector3, LATERAL_BOUND_COUNT> lateralWorld{
+                        {{}, -halfPixelRightWorld, halfPixelRightWorld, -halfPixelUpWorld, halfPixelUpWorld}};
+                    float32 lowerCode = expectedCode;
+                    float32 upperCode = expectedCode;
+                    for (const math::Vector3& sideWorld : lateralWorld)
+                    {
+                        const math::Vector3 sidePositionWorld = intersectReceiver(directionWorld + sideWorld);
+                        for (const float32 along : {-1.0F, 0.0F, 1.0F})
+                        {
+                            const float32 boundCode = evaluateCode(sidePositionWorld + uncertaintyWorld * along);
+                            lowerCode = math::Min(lowerCode, boundCode);
+                            upperCode = math::Max(upperCode, boundCode);
+                        }
+                    }
+                    ++checkedPixels;
+                    const float32 code = float32(fixture.Pixels[GetPixel(x, y)]);
+                    const float32 darkening = lowerCode - code;
+                    maximumDarkening = math::Max(maximumDarkening, darkening);
+                    maximumBrightening = math::Max(maximumBrightening, code - upperCode);
+                    darkenedPixels += darkening > MAX_DIFFERENCE_CODES ? 1 : 0;
+                }
+            }
+        }
+        CAPTURE(eyeDistanceMeters, checkedPixels, darkenedPixels, maximumDarkening, maximumBrightening);
+        REQUIRE(maximumRayError <= MAX_RAY_ERROR_NDC);
+        REQUIRE(checkedPixels >= MIN_CHECKED_PIXELS * POSE_COUNT);
+        CHECK(maximumBrightening <= MAX_DIFFERENCE_CODES);
+        CHECK(maximumDarkening <= MAX_DIFFERENCE_CODES);
     }
     SECTION("front-facing geometry stays lit at the shading-normal horizon")
     {
@@ -1937,6 +2141,7 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         constexpr float32 DISK_RADIUS = 0.15F;
         constexpr float64 TOP_KILOMETRES = 100;
         constexpr usize STEPS = 4096;
+        constexpr StaticArray<float64, CHANNEL_COUNT> LIMB_EXPONENT{{0.397, 0.503, 0.652}};
         camera.CameraForward = {0, 1, 0};
         camera.Atmosphere.SolarIlluminance = {DISK_ILLUMINANCE, DISK_ILLUMINANCE, DISK_ILLUMINANCE};
         camera.Atmosphere.SolarAngularRadiusRadians = DISK_RADIUS;
@@ -1959,9 +2164,10 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
             {
                 depth += ComputeEarthExtinction((static_cast<float64>(sample) + 0.5) * step, channel) * step;
             }
+            const float64 peakRadiance = (1 + 0.5 * LIMB_EXPONENT[channel]) / (math::kPi * diskSine * diskSine);
             const float64 expected =
-                static_cast<float64>(DISK_ILLUMINANCE) * (std::exp(-depth) / (math::kPi * diskSine * diskSine) +
-                                                          IntegrateEarthSky(0, {0, 1, 0}, {0, 1, 0}, channel).Radiance);
+                static_cast<float64>(DISK_ILLUMINANCE) *
+                (std::exp(-depth) * peakRadiance + IntegrateEarthSky(0, {0, 1, 0}, {0, 1, 0}, channel).Radiance);
             const float64 actual = static_cast<float64>(fixture.Pixels[sky + channel]) / 255;
             CHECK(math::Abs(actual - expected) <= 2.0 / 255);
         }
@@ -2209,4 +2415,111 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
     CHECK(stars != starless);
     render();
     CHECK(fixture.Pixels == stars);
+}
+
+TEST_CASE("The resolved solar disk darkens toward its limb and preserves authored illuminance",
+          "[render-graph][atmosphere][gpu][reference-compute]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+
+    constexpr float32 ORBIT_HEIGHT_METRES = 500000;
+    constexpr float32 NEAR_METRES = 1000;
+    constexpr float32 FAR_METRES = 2000000;
+    constexpr float64 AVERAGE_RADIANCE = 0.4;
+    constexpr float64 WIDE_ANGULAR_RADIUS = 0.5;
+    const float64 radius =
+        GENERATE_COPY(static_cast<float64>(renderer::AtmosphereDescription::DEFAULT_SOLAR_RADIUS_RADIANS),
+                      WIDE_ANGULAR_RADIUS);
+    const float64 diskSine = std::sin(radius);
+    const float64 authoredIlluminance = AVERAGE_RADIANCE * math::kPi * diskSine * diskSine;
+    const float32 illuminance = static_cast<float32>(authoredIlluminance);
+    // Point away from the planet. Every ray sees the solar boundary in vacuum.
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.CameraPosition = {0, ORBIT_HEIGHT_METRES, 0};
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.Celestial.IsEnabled = true;
+    camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    camera.Atmosphere.SolarIlluminance = {illuminance, illuminance, illuminance};
+    camera.Atmosphere.SolarAngularRadiusRadians = static_cast<float32>(radius);
+    camera.OrthographicCamera = false;
+    const float64 halfHeight = 2 * std::tan(radius);
+    math::Matrix4 worldToView;
+    math::Matrix4 viewToClip;
+    REQUIRE(math::TryLookAt(camera.CameraPosition,
+                            camera.CameraPosition + math::Vector3{0, 1, 0},
+                            {0, 0, 1},
+                            worldToView) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(static_cast<float32>(2 * std::atan(halfHeight)),
+                                         static_cast<float32>(WIDTH) / HEIGHT,
+                                         NEAR_METRES,
+                                         FAR_METRES,
+                                         viewToClip) == math::MathStatus::Success);
+    for (math::Vector4& column : viewToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    camera.WorldToClip = viewToClip * worldToView;
+    const renderer::SceneShaderInputs inputs;
+    renderer::RenderGraphReport report;
+    REQUIRE(PollAtmosphereGraph(fixture,
+                                fixture.Graph.Update({},
+                                                     {},
+                                                     {&camera, 1},
+                                                     1,
+                                                     renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                     report,
+                                                     &inputs)) == rhi::RasterStatus::Ready);
+    ReadAtmosphereFrame(fixture);
+
+    constexpr usize CHANNEL_COUNT = 3;
+    constexpr usize NEAR_LIMB_OFFSET_PIXELS = 13;
+    constexpr float64 UNORM_SCALE = 255;
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const usize nearLimb = GetPixel(WIDTH / 2 + NEAR_LIMB_OFFSET_PIXELS, HEIGHT / 2);
+    const usize outside = GetPixel(WIDTH - 1, HEIGHT / 2);
+    constexpr StaticArray<float64, CHANNEL_COUNT> LIMB_EXPONENT{{0.397, 0.503, 0.652}};
+    const float64 pixelWidth = 2 * halfHeight / HEIGHT;
+    const float64 limbX = (static_cast<float64>(NEAR_LIMB_OFFSET_PIXELS) + 0.5) * pixelWidth;
+    const float64 limbY = 0.5 * pixelWidth;
+    const float64 limbTangentSquared = limbX * limbX + limbY * limbY;
+    const float64 limbSineSquared = limbTangentSquared / (1 + limbTangentSquared);
+    const float64 limbMu = std::sqrt(1 - limbSineSquared / (diskSine * diskSine));
+    for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+    {
+        INFO("radius " << radius << " channel " << channel);
+        CHECK(fixture.Pixels[center + channel] > fixture.Pixels[nearLimb + channel]);
+        CHECK(fixture.Pixels[outside + channel] == 0);
+        const float64 centerRadiance = fixture.Pixels[center + channel] / UNORM_SCALE;
+        const float64 expectedCenter = AVERAGE_RADIANCE * (1 + 0.5 * LIMB_EXPONENT[channel]);
+        CHECK(math::Abs(centerRadiance - expectedCenter) <= 1 / UNORM_SCALE);
+        const float64 limbRadiance = fixture.Pixels[nearLimb + channel] / UNORM_SCALE;
+        const float64 expectedLimb = expectedCenter * std::pow(limbMu, LIMB_EXPONENT[channel]);
+        CHECK(math::Abs(limbRadiance - expectedLimb) <= 1 / UNORM_SCALE);
+
+        // Integrate the readback over the projection plane. Each pixel's
+        // solid angle times its cosine to the Sun gives the projected measure.
+        float64 measuredIlluminance = 0;
+        for (usize row = 0; row < HEIGHT; ++row)
+        {
+            const float64 y = (static_cast<float64>(row) + 0.5 - HEIGHT * 0.5) * pixelWidth;
+            for (usize column = 0; column < WIDTH; ++column)
+            {
+                const float64 x = (static_cast<float64>(column) + 0.5 - WIDTH * 0.5) * pixelWidth;
+                const float64 distanceSquared = 1 + x * x + y * y;
+                const float64 radiance = fixture.Pixels[GetPixel(column, row) + channel] / UNORM_SCALE;
+                measuredIlluminance += radiance * pixelWidth * pixelWidth / (distanceSquared * distanceSquared);
+            }
+        }
+        // Allow discretization at the filtered limb and RGBA8 rounding.
+        constexpr float64 ILLUMINANCE_RELATIVE_TOLERANCE = 0.025;
+        CHECK(math::Abs(measuredIlluminance / authoredIlluminance - 1) <= ILLUMINANCE_RELATIVE_TOLERANCE);
+    }
 }

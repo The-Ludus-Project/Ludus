@@ -477,6 +477,10 @@ class TiledVbufferNeeTemplateTests(unittest.TestCase):
         self.assertEqual(buffers[0]['bytes_per_pixel'], 32)
         self.assertEqual(buffers[0]['extent'], [640 * 480 * 32, 1])
         self.assertEqual(buffers[0]['view_scale'], [1, 1])
+        report = graph.dump_plan(plan).splitlines()
+        self.assertIn("    Main/lighting/visibility [ColorTexture] 000..003 | Export Main/visibilityOutput reads @1", report)
+        self.assertIn("    Main/lighting/depth [DepthTexture] 000..003 | Export Main/depthOutput reads @1", report)
+        self.assertIn("    Main/lighting/table [Buffer] 001..003", report)
         final = rays[-1]
         self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
         self.assertEqual(1, final['tone_mapping']['exposure'])

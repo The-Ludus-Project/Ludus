@@ -279,12 +279,13 @@ rejects the explicit `== true`/`== false` style.
   owner, and each language's enum names it. The changed-source gate checks enum
   spelling and width and rejects new uses of the scene interface v1 aliases;
   choosing an enum over constants remains review-only.
-- Name coordinate-bearing values with their space: `PositionWorld`,
-  `positionMesh`, `normalTangent`, `WorldToClip`, `positionPixel`, etc. Matrices
-  name source and destination. For shader interfaces and local arithmetic use
-  space suffixes; introduce distinct host types when crossing a public math
-  boundary can otherwise mix spaces. A suffix checker cannot prove correctness;
-  review the actual transformations and units.
+- Name coordinate-bearing values with their space, as in `PositionWorld`,
+  `positionMesh`, `normalTangent` and `positionPixel`. Use the
+  [FoundationMath `SourceToDestination` convention](docs/decisions/0010-foundation-math-module.md#name-and-compose-coordinate-transforms)
+  for matrices such as `WorldToClip`. Use space suffixes for shader interfaces
+  and local arithmetic. Introduce distinct host types when a public math
+  boundary can otherwise mix spaces. Review the actual transformations and
+  units as well as the names.
 - Share GPU math/random primitives in FoundationMath's shader sources and GPU
   interface annotations in the RHI shader boundary. Slang's `vk` slot/location
   annotation is translated for all targets; it is not a Vulkan-only algorithm.

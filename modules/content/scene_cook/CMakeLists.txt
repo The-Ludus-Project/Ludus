@@ -52,7 +52,7 @@ if(LUDUS_BUILD_TESTS)
     target_compile_definitions(ludus_scene_cook_tests PRIVATE
         LUDUS_SCENE_GOLDENS_DIR="${PROJECT_SOURCE_DIR}/tests/goldens/scene_pipeline")
     target_link_libraries(ludus_scene_cook_tests PRIVATE Ludus::FoundationTime
-        Ludus::SceneCook Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationStrings Catch2::Catch2WithMain)
+        Ludus::SceneCook Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationStrings ludus_test_files Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_scene_cook_tests)
     ludus_enable_test_exceptions(ludus_scene_cook_tests)
     add_test(NAME ludus_scene_cook_tests COMMAND ludus_scene_cook_tests)
@@ -65,7 +65,7 @@ if(LUDUS_BUILD_TESTS)
         LUDUS_SCENE_IMPORT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     target_link_libraries(ludus_scene_assets_tests PRIVATE
         Ludus::SceneCook Ludus::Resources Ludus::FoundationParsingJson Ludus::FoundationStrings
-        Ludus::FoundationThreading Catch2::Catch2WithMain)
+        Ludus::FoundationThreading ludus_test_files Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_scene_assets_tests)
     ludus_enable_test_exceptions(ludus_scene_assets_tests)
     add_test(NAME ludus_scene_assets_tests COMMAND ludus_scene_assets_tests)
@@ -77,7 +77,7 @@ if(LUDUS_BUILD_TESTS)
     target_include_directories(ludus_best_effort_import_tests PRIVATE src)
     target_link_libraries(ludus_best_effort_import_tests PRIVATE
         Ludus::SceneCook Ludus::SceneFormat Ludus::Resources Ludus::FoundationMath Ludus::FoundationStrings
-        Catch2::Catch2WithMain)
+        ludus_test_files Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_best_effort_import_tests)
     ludus_enable_test_exceptions(ludus_best_effort_import_tests)
     add_test(NAME ludus_best_effort_import_tests COMMAND ludus_best_effort_import_tests)
@@ -94,7 +94,7 @@ if(LUDUS_BUILD_TESTS)
         LUDUS_TEST_SCENES_DIR="${PROJECT_SOURCE_DIR}/tests/scenes")
     target_link_libraries(ludus_scene_import_tests PRIVATE
         Ludus::SceneCook Ludus::SceneFormat Ludus::Resources Ludus::FoundationMath Ludus::FoundationStrings
-        Ludus::FoundationThreading Catch2::Catch2WithMain)
+        Ludus::FoundationThreading ludus_test_files Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_scene_import_tests)
     ludus_enable_test_exceptions(ludus_scene_import_tests)
     add_test(NAME ludus_scene_import_tests COMMAND ludus_scene_import_tests)
