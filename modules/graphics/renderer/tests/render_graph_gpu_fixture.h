@@ -16,10 +16,12 @@
 #include <ludus/graphics/rhi/device.h>
 
 #include "internal/readback.h"
+#include "rg2_depth_bits.h"
 #include "rg2_depth_display.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <bit>
 #include <new>
 #include <string_view>
 
@@ -114,7 +116,8 @@ inline core::UniquePtr<RenderGraphPackage> LoadPackage(const PackageLocation& lo
     REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == RenderGraphPackageStatus::Ready);
     return package;
 }
-/// Draw a sampled depth aspect into the surface with the depth display recipe and read it back.
+/// Draw a sampled depth aspect into the surface with the depth display recipe and read it back. The
+/// rg2_depth_bits recipe writes each texel's IEEE bits instead; decode them with ReadDepthBits.
 struct DepthDisplay final
 {
     rhi::DeviceHandle Device{};
@@ -122,10 +125,11 @@ struct DepthDisplay final
     rhi::RasterPipelineHandle Pipeline{};
     rhi::BufferHandle Vertices{};
     rhi::BufferHandle Indices{};
-    explicit DepthDisplay(rhi::DeviceHandle device) : Device(device)
+    explicit DepthDisplay(rhi::DeviceHandle device,
+                          const rhi::RasterShaderDescription& vertex = shaders::rg2_depth_display::Vertex(),
+                          const rhi::RasterShaderDescription& fragment = shaders::rg2_depth_display::Fragment())
+        : Device(device)
     {
-        const rhi::RasterShaderDescription vertex = shaders::rg2_depth_display::Vertex();
-        const rhi::RasterShaderDescription fragment = shaders::rg2_depth_display::Fragment();
         rhi::RasterShaderHandle vertexHandle;
         rhi::RasterShaderHandle fragmentHandle;
         REQUIRE(rhi::CreateRasterShader(Device, vertex, vertexHandle) == rhi::RasterStatus::Ready);
@@ -183,5 +187,17 @@ inline constexpr usize ROW_PIXELS = WIDTH;
 constexpr usize GetPixel(usize column, usize row)
 {
     return (row * ROW_PIXELS + column) * 4;
+}
+/// The stored depth of one pixel of an rg2_depth_bits readback: its four bytes, least significant first.
+inline float32 ReadDepthBits(const StaticArray<uint8, PIXEL_BYTES>& pixels, usize column, usize row)
+{
+    constexpr uint32 BITS_PER_BYTE = 8;
+    const usize pixel = GetPixel(column, row);
+    uint32 bits = 0;
+    for (usize byte = 0; byte < TEXEL_BYTES; ++byte)
+    {
+        bits |= static_cast<uint32>(pixels[pixel + byte]) << (BITS_PER_BYTE * byte);
+    }
+    return std::bit_cast<float32>(bits);
 }
 } // namespace ludus::graphics::renderer::testing

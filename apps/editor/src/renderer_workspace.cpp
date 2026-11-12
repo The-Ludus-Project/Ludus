@@ -5603,8 +5603,9 @@ void RendererWorkspace::ServicePreview()
         mArePreviewInputsDirty == true)
     {
         // The World viewport's current camera or orbit, at the graph's exported extent. The
-        // runtime profile admits only conventional depth, so request a finite conventional
-        // projection of the same camera instead of the viewport's infinite reverse-Z one.
+        // runtime profile admits only finite projections, so request a finite reverse-Z
+        // projection of the same camera; the graph converts it only for passes that need
+        // conventional depth.
         graphics::renderer::ViewDescription view;
         QString error;
         const RenderScene& scene = mPreviewSourceOrNull->Scene();
@@ -5622,10 +5623,10 @@ void RendererWorkspace::ServicePreview()
         }
         else
         {
-            const bool hasView = mPreviewSourceOrNull->DescribeConventionalView(static_cast<uint32>(target.width()),
-                                                                                static_cast<uint32>(target.height()),
-                                                                                view,
-                                                                                error);
+            const bool hasView = mPreviewSourceOrNull->DescribeGraphView(static_cast<uint32>(target.width()),
+                                                                         static_cast<uint32>(target.height()),
+                                                                         view,
+                                                                         error);
             if (hasView == false && scene.Identity != mPreviewSceneIdentity)
             {
                 mPreviewStatus->setText(error);

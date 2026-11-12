@@ -23,6 +23,8 @@ static const LightingLayoutValue FORWARD_HEADER_WORDS = 9;
 static const LightingLayoutValue BAKE_TEXTURE_BINDING = 3;
 /// Maximum selected direct lights in the portable forward profile.
 static const LightingLayoutValue FORWARD_LIGHT_COUNT = 8;
+/// Maximum distant planet points in the atmosphere display uniform.
+static const LightingLayoutValue ATMOSPHERE_PLANET_CAPACITY = 8;
 /// Float4 words encoding one direct light.
 static const LightingLayoutValue FORWARD_LIGHT_WORDS = 4;
 /// Byte offset of the shadow projections after selected direct lights.

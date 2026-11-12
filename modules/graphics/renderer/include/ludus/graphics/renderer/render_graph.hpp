@@ -667,7 +667,11 @@ public:
     /// Source storage need only survive this call. Revision must be nonzero.
     /// @param meshes Borrowed static geometry table, copied during a full extraction.
     /// @param items Borrowed instances, transforms, material bindings and per-draw values.
-    /// @param cameras Complete generation-local camera table; consumed before return.
+    /// @param cameras Complete generation-local camera table; consumed before return. Each camera uses
+    /// a finite projection in either depth convention. A reverse-Z camera keeps reverse-Z depth in a
+    /// graph that CanUseReverseDepth; any other graph receives the exactly equivalent conventional
+    /// camera (clip z rewritten as w - z), so its depth targets and captures are conventional.
+    /// An infinite far plane returns Unsupported.
     /// @param sceneRevision Nonzero identity for the requested drawable scene/view publication.
     /// @param policy Whether unsupported coverage rejects or receives diagnostic color.
     /// @param outReport Latest candidate diagnostics, independent of the retained drawable output.
@@ -692,6 +696,13 @@ public:
                                            const SceneShaderInputs* sceneInputsOrNull = nullptr,
                                            foundation::uint64 contentRevision = 0,
                                            const RenderGraphSceneRevisions& revisions = {}) noexcept;
+    /// Whether the initialized graph keeps reverse-Z cameras in reverse-Z depth. Every pass must be a
+    /// raster scene pass outside the visibility codec, or an image operation: ray tracing passes and
+    /// visibility-buffer consumers rebuild positions with conventional depth, so a graph containing
+    /// one converts reverse-Z cameras instead. Reverse-Z float32 depth keeps rebuilt positions
+    /// within micrometres at tens of metres, where conventional depth with a centimetre near plane
+    /// loses centimetres. False before Initialize. Owner-thread query; no allocation.
+    [[nodiscard]] bool CanUseReverseDepth() const noexcept;
     /// Borrow latest candidate coverage records until the next Update/Reset; no allocation.
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCoverageRecord> GetCoverage() const noexcept;
     /// Copy the latest candidate report, independent of the drawable extraction.

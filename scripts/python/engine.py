@@ -1928,13 +1928,18 @@ def print_init_summary(args: argparse.Namespace, root: Path, preset: str, preset
         outcome = "Ludus initialization and validation complete."
     elif getattr(args, "run_tests", False):
         outcome = "Ludus initialization complete. Opted-in tests were built and executed."
+    elif getattr(args, "configure_editor_only", False):
+        outcome = "Ludus initialization complete. The editor build is configured."
     elif getattr(args, "with_editor", False):
         outcome = "Ludus initialization complete. The optional editor and its dependencies were built."
     else:
         outcome = "Ludus initialization complete. No engine targets were built."
     print(init_terminal.success(outcome, painter))
     if getattr(args, "with_editor", False) and not run_validation:
-        print(f"Launch the editor: ./scripts/editor --preset {preset}")
+        if getattr(args, "configure_editor_only", False):
+            print(f"Build the editor: ./scripts/build {preset} --target ludus_editor")
+        else:
+            print(f"Launch the editor: ./scripts/editor --preset {preset}")
     print("Prepared presets: " + ", ".join(presets))
     print("OIDN denoiser: " + ("on" if getattr(args, "with_denoiser", False) else "off"))
     elapsed = init_progress.elapsed()
@@ -3130,6 +3135,8 @@ def make_parser() -> argparse.ArgumentParser:
     editor.add_argument("--no-editor", dest="with_editor", action="store_false",
                         help="skip optional editor setup (default)")
     init_parser.set_defaults(with_editor=False)
+    init_parser.add_argument("--configure-editor-only", action="store_true",
+                             help="with --with-editor, prepare dependencies and configure without building the editor")
     preview = init_parser.add_mutually_exclusive_group()
     preview.add_argument("--with-editor-preview", dest="with_editor_preview", action="store_true",
                          help="include native editor 3D preview and prepare pinned shader tools (default)")

@@ -1810,8 +1810,9 @@ camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
 ### Celestial background and orbital views
 
 The Atmosphere entity's celestial provider supplies distant scene-linear radiance.
-It evaluates a deterministic procedural star field and an optional Lambertian
-Moon. The Moon uses the linked directional light's world direction and color.
+It evaluates a deterministic procedural star field, an optional Milky Way,
+unresolved planet points and an optional Lambertian Moon. The Moon uses the
+linked directional light's world direction and color.
 Its phase comes from the visible disk normals and the direction toward the Sun.
 The lunar disk masks background sources behind it. The renderer applies view
 transmittance and planet occlusion to the celestial boundary before it adds
@@ -1829,9 +1830,22 @@ support observer altitudes up to one billion metres. Orthographic views use
 the in-shell range and the observer's common ray direction. The graph uses
 its ordinary clear outside the supported range.
 
-The provider models a distant disk with a nominal apparent radius and a
-procedural star field. An ephemeris catalog, lunar parallax, cast eclipse
-shadows, and lunar atmospheric illumination are separate extensions.
+The built-in World samples Mercury, Venus, Mars, Jupiter and Saturn from the
+linked Earth celestial driver's date and observer location. It prefers the
+Sun link, then uses the Moon link if it has the Earth driver. Directions
+use the JPL approximate orbital elements, the Earth–Moon barycenter and
+mean sidereal time. The sampler uses the existing Earth driver's date
+range and omits light time, precession and nutation. The apparent illuminance
+uses full-phase magnitudes, a Lambertian phase law and inverse-square distance
+to both the Sun and the observer. The raster shader spreads each point over
+its pixel footprint. A procedural band with dust lanes uses the Hipparcos
+galactic axes and shares that rotating frame with the procedural stars.
+The galactic texture, tints and star locations are illustrative. Cast eclipse
+shadows and lunar atmospheric illumination remain separate extensions.
+[JPL approximate planetary positions](https://ssd.jpl.nasa.gov/planets/approx_pos.html) ·
+[NASA planetary fact sheets](https://nssdc.gsfc.nasa.gov/planetary/planetfact.html) ·
+[Gaia galactic coordinate convention](https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu3ast/sec_cu3ast_intro/ssec_cu3ast_intro_transforms.html)
+
 NASA Science describes the lit-sphere geometry and the Moon's nominal apparent size.
 [Moon phases](https://science.nasa.gov/moon/moon-phases/) · [Hubble glossary](https://science.nasa.gov/mission/hubble/multimedia/hubble-glossary/)
 
