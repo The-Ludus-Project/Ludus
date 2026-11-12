@@ -119,7 +119,7 @@ install(TARGETS ludus_graphics_rhi
 
 if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_graphics_rhi_tests tests/rhi_tests.cpp)
+    add_executable(ludus_graphics_rhi_tests tests/rhi_tests.cpp tests/depth_barrier_vulkan_tests.cpp)
     target_include_directories(ludus_graphics_rhi_tests PRIVATE src)
     target_link_libraries(ludus_graphics_rhi_tests PRIVATE
         Ludus::GraphicsRhi Ludus::FoundationLogging volk::volk_headers Catch2::Catch2WithMain)
