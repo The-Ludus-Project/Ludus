@@ -3836,6 +3836,14 @@ limit and compensated roulette after event three. It does not consume scene path
 depth or trace scene intersections. This finite limit is part of the declared
 profile, not a claim of an infinite-depth layer solution.
 
+For a coating with IOR contrast and an exactly black resolved base color, both
+reference paths evaluate only interface reflection and its existing MIS density.
+Continuation still samples the dielectric interface. A transmission proposal
+terminates with zero weight before the internal walk. This preserves the
+probability of absorption. The shortcut adapts the black-albedo specialization in
+Michał Drobot's [*Practical Multilayered Materials in Call of Duty: Infinite Warfare*](https://research.activision.com/publications/archives/practical-multilayered-materials-in-call-of-dutyinfinite-warfare),
+SIGGRAPH 2017 Physically Based Shading course, slide 51.
+
 The sampler returns a complete continuation `Weight` and a separate directional
 `MisPdf`. A layered sample's proportional `Evaluation` retains a valid `f*cos/pdf`
 ratio but its PDF must not drive external MIS. Direct-light evaluation estimates
