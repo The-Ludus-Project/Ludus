@@ -322,7 +322,7 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
         // Thanks to the Qt contributors for QScrollArea::event's layout-request handling:
         // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qscrollarea.cpp#L252-L267
         CHECK(QTest::qWaitFor(
-                  [&dock, scrollOrNull, width]() {
+                  [&dock, panelOrNull, scrollOrNull, width]() {
                       if (dock.width() != width || scrollOrNull->widget()->width() > scrollOrNull->viewport()->width())
                       {
                           return false;
@@ -331,6 +331,16 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
                       {
                           if (group->isVisible() == true && group->hasHeightForWidth() == true &&
                               group->height() < group->heightForWidth(group->width()))
+                          {
+                              return false;
+                          }
+                      }
+                      // A section shows its "More" button from its resize, once the new width shortens the help.
+                      // The button's row lays it out on the next posted layout request, so wait for that pass too.
+                      for (const QAbstractButton* button : panelOrNull->findChildren<QAbstractButton*>())
+                      {
+                          if (button->isVisible() == true && IsInternal(*button, *panelOrNull) == false &&
+                              button->width() < button->minimumSizeHint().width())
                           {
                               return false;
                           }

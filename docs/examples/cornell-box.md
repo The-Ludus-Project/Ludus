@@ -410,7 +410,10 @@ ctest --test-dir out/sanitized --output-on-failure --no-tests=error
 ```
 
 The SDK in this command stays the selected matching SDK; instrumentation covers
-the sample translation unit. Engine sanitizer validation remains in Ludus's
+the sample translation unit. On Linux the sanitized render tests keep Vulkan
+drivers loaded until exit (`VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1`), so
+LeakSanitizer scans driver globals instead of reporting one-time driver
+allocations from unloaded modules. Engine sanitizer validation remains in Ludus's
 existing sanitizer jobs. Clang 18 ASan cannot start on the macOS 26.6 development
 host; the macOS 14 CI job supplies that runtime validation.
 

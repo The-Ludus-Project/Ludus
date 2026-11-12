@@ -248,6 +248,11 @@ GroupBoxLayout
 ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFont, int indicatorSize, int labelSpacing)
 {
     const QRect& rect = groupBox.rect;
+    // The contents always end at the box's bottom edge, even while the box is shorter than its title: QGroupBox
+    // turns this rectangle into its contents margins once, possibly at its default height, and keeps them after
+    // later resizes. A height clamped to zero would leave a negative bottom margin; Qt's common style does not clamp.
+    // Thanks to The Qt Company, Qt 6.8 QGroupBoxPrivate::calculateFrame and QCommonStyle SC_GroupBoxContents:
+    // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qgroupbox.cpp
     const bool isCheckable = groupBox.subControls.testFlag(QStyle::SC_GroupBoxCheckBox);
     const int titleTop = rect.top() + CONTROL_EDGE_WIDTH + GROUP_TITLE_SPACE_ABOVE;
     GroupBoxLayout layout;
@@ -255,7 +260,7 @@ ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFo
     {
         // An untitled section keeps only its rule, with the space a title would leave below it.
         const int contentsTop = rect.top() + CONTROL_EDGE_WIDTH + GROUP_TITLE_SPACE_BELOW;
-        layout.Contents = QRect(rect.left(), contentsTop, rect.width(), std::max(0, rect.bottom() + 1 - contentsTop));
+        layout.Contents = QRect(rect.left(), contentsTop, rect.width(), rect.bottom() + 1 - contentsTop);
         layout.Minimum = QSize(0, contentsTop - rect.top());
         return layout;
     }
@@ -272,7 +277,7 @@ ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFo
     layout.Label =
         QRect(labelLeft, titleTop, std::max(0, std::min(textWidth, rect.right() + 1 - labelLeft)), titleHeight);
     const int contentsTop = titleTop + titleHeight + GROUP_TITLE_SPACE_BELOW;
-    layout.Contents = QRect(rect.left(), contentsTop, rect.width(), std::max(0, rect.bottom() + 1 - contentsTop));
+    layout.Contents = QRect(rect.left(), contentsTop, rect.width(), rect.bottom() + 1 - contentsTop);
     layout.Minimum = QSize(labelLeft - rect.left() + textWidth, contentsTop - rect.top());
     return layout;
 }
