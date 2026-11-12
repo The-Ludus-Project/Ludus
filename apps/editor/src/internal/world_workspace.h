@@ -10,6 +10,7 @@
 #include "internal/world_document.h"
 #include "internal/world_lighting_coverage.h"
 
+#include <QHash>
 #include <QJsonArray>
 #include <QMap>
 #include <QPointer>
@@ -23,7 +24,6 @@ class QMenu;
 class QPoint;
 class QComboBox;
 class QFormLayout;
-class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QTreeWidget;
@@ -47,6 +47,8 @@ class RenderPanel;
 class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
+class InspectorLabelColumn;
+class InspectorSection;
 class WorldLightsPanel;
 class WorldMaterialDocument;
 class WorldMaterialsPanel;
@@ -278,6 +280,19 @@ private:
     /// presented viewport scene; a placeholder until that scene has loaded.
     void addMaterialGroup();
     void addMaterialRepair(QFormLayout& inoutRows);
+    /// Offer component in the Add Component menu.
+    void addComponentChoice(const QString& label, const QString& component);
+    /// Give a long Add Component menu its search field, once every choice is in.
+    void finishComponentMenu();
+    /// Fill a component section's "⋯" menu: Reset to Defaults, Copy Values and, unless the project requires the
+    /// component, Remove Component.
+    void addComponentActions(InspectorSection& inoutSection, const QJsonObject& component);
+    /// A field's value as text, for telling whether it changed since the inspector was built.
+    [[nodiscard]] static QString readFieldState(const QWidget& field);
+    void recordAppliedFields();
+    [[nodiscard]] foundation::int32 countUnappliedFields() const;
+    /// Show the Apply and Reset footer, with how many fields changed, only while there are unapplied edits.
+    void updateCommitFooter();
     void addProjectBrdfControls(QFormLayout& inoutRows,
                                 const resources::SceneMaterial* materialOrNull,
                                 const QJsonObject& placement);
@@ -301,7 +316,7 @@ private:
     void coverProbeVolume(foundation::float64 spacingMetres);
     /// Show the GI Probe Volume's layout-dependent rows: counts for the counts layout, the derived grid and a
     /// spacing repair for the volume layout.
-    void configureProbeVolumeFields(QGroupBox& inoutGroup,
+    void configureProbeVolumeFields(QWidget& inoutGroup,
                                     QFormLayout& inoutRows,
                                     const QString& cid,
                                     const QJsonObject& components);
@@ -410,8 +425,14 @@ private:
     QLabel* Status_;
     QLabel* PathLabel_;
     QLineEdit* Name_ = nullptr;
-    QComboBox* Components_;
     QPushButton* Attach_;
+    QMenu* mComponentMenu;
+    QWidget* mAttachRow;
+    QWidget* mCommitFooter;
+    QLabel* mPendingSummary;
+    InspectorLabelColumn* mLabelColumn;
+    /// Each inspector field's value when the inspector was built, by field key.
+    QHash<QString, QString> mAppliedFields;
     QMenu* mEntityMenu;
     QAction* mAddEntity;
     QAction* mDuplicateEntities;

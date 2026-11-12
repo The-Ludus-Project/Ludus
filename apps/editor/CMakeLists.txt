@@ -841,6 +841,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/material_inspection.cpp
     src/internal/inspector_fields.h
     src/inspector_fields.cpp
+    src/internal/inspector_section.h
+    src/inspector_section.cpp
     src/internal/world_entity_search.h
     src/world_entity_search.cpp
     src/world_workspace.cpp

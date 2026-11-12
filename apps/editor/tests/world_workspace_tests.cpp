@@ -6,6 +6,7 @@
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/editor_identity.h"
+#include "internal/inspector_section.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/material_inspection.h"
@@ -697,18 +698,15 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK(isSameRow("worldNew", "worldOpen") == true);
     CHECK(isSameRow("worldNew", "worldImportScene") == true);
     CHECK(isSameRow("worldNew", "worldPath") == true);
-    CHECK(isSameRow("worldApply", "worldReset") == true);
-    // The component choice sits beside Add Component when both fit; this compact column is narrower than the pair,
-    // so the choice stacks directly above the button at the column's full width instead of clipping it.
-    const QWidget* choiceOrNull = view.findChild<QWidget*>(QStringLiteral("worldComponentChoice"));
+    // Apply and Reset stay out of the way until there is an unapplied edit.
+    const QWidget* footerOrNull = view.findChild<QWidget*>(QStringLiteral("worldCommitFooter"));
+    REQUIRE(footerOrNull != nullptr);
+    CHECK(footerOrNull->isVisible() == false);
+    // Add Component is one menu button; with no entity selected it is not shown at all.
+    CHECK(view.findChild<QWidget*>(QStringLiteral("worldComponentChoice")) == nullptr);
     const QWidget* attachOrNull = view.findChild<QWidget*>(QStringLiteral("worldAttach"));
-    REQUIRE(choiceOrNull != nullptr);
     REQUIRE(attachOrNull != nullptr);
-    const QRect choiceRect(choiceOrNull->mapTo(&view, QPoint(0, 0)), choiceOrNull->size());
-    const QRect attachRect(attachOrNull->mapTo(&view, QPoint(0, 0)), attachOrNull->size());
-    CHECK((isSameRow("worldAttach", "worldComponentChoice") == true ||
-           (choiceRect.bottom() < attachRect.top() && choiceRect.left() == attachRect.left())) == true);
-    CHECK(attachOrNull->width() >= attachOrNull->sizeHint().width());
+    CHECK(attachOrNull->isVisible() == false);
     CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
     QLabel* pathLabel = view.findChild<QLabel*>(QStringLiteral("worldPath"));
     REQUIRE(pathLabel != nullptr);
@@ -1288,7 +1286,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
     CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldField:scene/position0")) == nullptr);
     // The selected instance shows the decoded material the viewport renders, read-only.
-    REQUIRE(workspace.findChild<QGroupBox*>(QStringLiteral("worldMaterial")) != nullptr);
+    REQUIRE(workspace.findChild<InspectorSection*>(QStringLiteral("worldMaterial")) != nullptr);
     const QLabel* modelOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Model"));
     REQUIRE(modelOrNull != nullptr);
     CHECK(modelOrNull->text().isEmpty() == false);
@@ -1296,10 +1294,9 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     Type(Field(workspace, QStringLiteral("transform/x")), QStringLiteral("0.25"));
     REQUIRE(workspace.Apply());
     drain();
-    auto* choices = workspace.findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
-    REQUIRE(choices != nullptr);
-    choices->setCurrentIndex(choices->findData(QStringLiteral("behavior")));
-    workspace.findChild<QPushButton*>(QStringLiteral("worldAttach"))->click();
+    QAction* behaviorOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAttach:behavior"));
+    REQUIRE(behaviorOrNull != nullptr);
+    behaviorOrNull->trigger();
     drain();
     Type(Field(workspace, QStringLiteral("behavior/priority")), QStringLiteral("7"));
     REQUIRE(workspace.Apply());
@@ -2951,18 +2948,17 @@ TEST_CASE("World Properties attaches Static Collider to selected meshes in one e
     planeOrNull->trigger();
     playerOrNull->trigger();
     QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
-    QComboBox* choicesOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
     QPushButton* attachOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAttach"));
     REQUIRE(entitiesOrNull != nullptr);
-    REQUIRE(choicesOrNull != nullptr);
     REQUIRE(attachOrNull != nullptr);
     const QString component = GetStaticColliderComponentId();
-    CHECK(choicesOrNull->findData(component) == -1);
+    CHECK(workspace.findChild<QAction*>(QStringLiteral("worldAttach:") + component) == nullptr);
     const QJsonObject before = workspace.Document().Draft();
     entitiesOrNull->selectAll();
-    REQUIRE(choicesOrNull->currentData().toString() == component);
+    QAction* colliderOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAttach:") + component);
+    REQUIRE(colliderOrNull != nullptr);
     REQUIRE(attachOrNull->isEnabled() == true);
-    attachOrNull->click();
+    colliderOrNull->trigger();
     for (const QJsonValue value : workspace.Document().Draft().value(QStringLiteral("entities")).toArray())
     {
         const QJsonObject components = value.toObject().value(QStringLiteral("components")).toObject();

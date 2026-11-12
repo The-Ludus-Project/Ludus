@@ -14,6 +14,7 @@
 #include <functional>
 
 QT_BEGIN_NAMESPACE
+class QFontMetrics;
 class QFormLayout;
 class QLineEdit;
 class QToolButton;
@@ -122,6 +123,9 @@ private:
 /// Width, in device-independent pixels, field needs to show text whole: the text in the field's font plus its
 /// text margins, cursor and style frame. GUI thread only.
 [[nodiscard]] foundation::int32 ComputeLineEditWidth(const QLineEdit& field, const QString& text);
+
+/// Narrowest field column that still shows a typical number whole ("-0.000" and room around it).
+[[nodiscard]] foundation::int32 GetReadableFieldWidth(const QFontMetrics& metrics);
 
 /// Keeps a number field at least as wide as its current value (and never narrower than a short value such as
 /// "-0.000"), following edits, so a value such as 0.818579 never shows clipped as "818579" however narrow the panel
