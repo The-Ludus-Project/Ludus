@@ -43,8 +43,12 @@ struct ScrubSettings final
 GetScrubStep(const QString& unit, foundation::float64 minimum, foundation::float64 maximum);
 
 /// The shortest text that reads back as exactly value, so 0.003 shows as "0.003" rather than its 17-digit
-/// expansion "0.0030000000000000001".
+/// expansion "0.0030000000000000001". A value that is exactly a float32, as most stored World numbers are, shows its
+/// shortest float32 text: 43.46527099609375 reads "43.465271".
 [[nodiscard]] QString FormatInspectorNumber(foundation::float64 value);
+
+/// The shortest double text of value, every stored digit included, for a tooltip beside FormatInspectorNumber.
+[[nodiscard]] QString FormatStoredNumber(foundation::float64 value);
 
 /// How a bounded slider spreads its positions over a number's range.
 enum class SliderScale : foundation::uint8
@@ -308,6 +312,9 @@ private:
 
 /// An identifier shown shortened, with a button that copies the full text. The full text is the tooltip. In a narrow
 /// panel the shortened text is shortened further in the middle.
+/// Draws value as a read-only value rather than a field: secondary text, no edge or hover, selectable with an I-beam.
+void MarkReadOnlyValue(QLabel& inoutValue);
+
 class IdentifierRow final : public QWidget
 {
     Q_OBJECT

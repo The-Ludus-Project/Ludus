@@ -1,6 +1,7 @@
 #include "internal/inspector_fields.h"
 
 #include "design_tokens.h"
+#include "internal/editor_icons.h"
 #include "internal/theme_colour.h"
 
 #include <ludus/foundation/math/scalar.hpp>
@@ -24,6 +25,8 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cmath>
 
 namespace ludus::editor
@@ -35,6 +38,8 @@ constexpr float64 FINE_FACTOR = 0.1;
 constexpr float64 COARSE_FACTOR = 10;
 /// Decimals kept after a drag, so repeated dragging never accumulates floating-point noise.
 constexpr int32 SCRUB_DECIMALS = 6;
+/// Room for the longest shortest-float32 text, such as "-1.17549435e-38", with headroom.
+constexpr usize FLOAT32_TEXT_CAPACITY = 32;
 constexpr float64 DEGREE_STEP = 1;
 constexpr float64 DISTANCE_STEP = 0.01;
 constexpr float64 UNIT_RANGE_STEP = 0.005;
@@ -131,6 +136,23 @@ float64 ComputeSliderFraction(float64 value, const SliderMapping& mapping)
 } // namespace
 
 QString FormatInspectorNumber(float64 value)
+{
+    const float32 narrowed = static_cast<float32>(value);
+    if (math::IsFinite(value) == true && static_cast<float64>(narrowed) == value)
+    {
+        // Most stored numbers are float32 round trips. Their shortest float32 text reads "43.465271" where the
+        // shortest double text spells out every binary digit ("43.46527099609375"), and reads back as the same float.
+        std::array<char, FLOAT32_TEXT_CAPACITY> text{};
+        const std::to_chars_result result = std::to_chars(text.data(), text.data() + text.size(), narrowed);
+        if (result.ec == std::errc())
+        {
+            return QString::fromLatin1(text.data(), static_cast<qsizetype>(result.ptr - text.data()));
+        }
+    }
+    return QString::number(value, 'g', QLocale::FloatingPointShortest);
+}
+
+QString FormatStoredNumber(float64 value)
 {
     return QString::number(value, 'g', QLocale::FloatingPointShortest);
 }
@@ -939,8 +961,13 @@ IdentifierRow::IdentifierRow(const QString& identifier, QWidget* parentOrNull)
     mText->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     mText->setToolTip(identifier);
     mCopy->setObjectName(QStringLiteral("inspectorIdentifierCopy"));
+    // An icon rather than the word "Copy", so the identifier keeps the row's width; the text stays for accessibility
+    // and shows beside the icon as "Copied" for a moment after a copy.
+    mCopy->setIcon(GetEditorIcon(EditorIcon::Copy));
+    mCopy->setIconSize(QSize(design::SPACING_LARGE, design::SPACING_LARGE));
+    mCopy->setToolButtonStyle(Qt::ToolButtonIconOnly);
     mCopy->setText(QStringLiteral("Copy"));
-    mCopy->setToolTip(QStringLiteral("Copy the full identifier"));
+    mCopy->setToolTip(QStringLiteral("Copy full ID"));
     mCopy->setAccessibleName(QStringLiteral("Copy identifier"));
     mCopy->setAutoRaise(true);
     layout->addWidget(mText, 1);
@@ -952,6 +979,19 @@ void IdentifierRow::Copy()
 {
     QApplication::clipboard()->setText(mIdentifier);
     mCopy->setText(QStringLiteral("Copied"));
-    QTimer::singleShot(COPIED_FEEDBACK_MILLISECONDS, this, [this]() { mCopy->setText(QStringLiteral("Copy")); });
+    mCopy->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    QTimer::singleShot(COPIED_FEEDBACK_MILLISECONDS, this, [this]() {
+        mCopy->setText(QStringLiteral("Copy"));
+        mCopy->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    });
+}
+
+void MarkReadOnlyValue(QLabel& inoutValue)
+{
+    // A value, not a field: secondary text with no edge or hover, still selectable with an I-beam so it can be copied.
+    inoutValue.setForegroundRole(QPalette::PlaceholderText);
+    inoutValue.setTextInteractionFlags(Qt::TextSelectableByMouse);
+    inoutValue.setCursor(Qt::IBeamCursor);
+    inoutValue.setProperty("isReadOnlyValue", true);
 }
 } // namespace ludus::editor

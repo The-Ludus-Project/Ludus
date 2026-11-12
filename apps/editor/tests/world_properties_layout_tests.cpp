@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QGroupBox>
 #include <QImage>
 #include <QJsonArray>
@@ -39,6 +40,8 @@ constexpr int32 DOCK_HEIGHT = 2000;
 /// Dock widths from the narrowest the editor allows to a roomy one.
 constexpr int32 NARROW_DOCK_WIDTH = 260;
 constexpr int32 MEDIUM_DOCK_WIDTH = 320;
+/// A light range typed in the round-trip test, in metres.
+constexpr float64 EDITED_RANGE_METRES = 12;
 constexpr int32 WIDE_DOCK_WIDTH = 480;
 
 void WriteFixtureFile(const QString& path, const QByteArray& bytes)
@@ -275,7 +278,7 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     REQUIRE(QTest::qWaitFor(
                 [&dock]() {
                     const QWidget* thumbnailOrNull =
-                        dock.findChild<QWidget*>(QStringLiteral("worldMaterialThumbnail:Base color map"));
+                        dock.findChild<QWidget*>(QStringLiteral("worldMaterialThumbnail:Base colour map"));
                     return thumbnailOrNull != nullptr && thumbnailOrNull->isVisible() == true;
                 },
                 SETTLE_TIMEOUT_MILLISECONDS) == true);
@@ -325,5 +328,126 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
                         shots.filePath(QStringLiteral("properties-%1.png").arg(width))) == true);
         }
     }
+    workspace.StopPreview();
+}
+
+namespace
+{
+/// The text of the label beside field in its inspector form, or empty when it has none.
+QString GetFormLabelText(QWidget& field)
+{
+    for (QWidget* rowOrNull = &field; rowOrNull != nullptr; rowOrNull = rowOrNull->parentWidget())
+    {
+        QWidget* parentOrNull = rowOrNull->parentWidget();
+        QFormLayout* formOrNull =
+            parentOrNull == nullptr ? nullptr : qobject_cast<QFormLayout*>(parentOrNull->layout());
+        if (formOrNull != nullptr && formOrNull->indexOf(rowOrNull) >= 0)
+        {
+            const QLabel* labelOrNull = qobject_cast<QLabel*>(formOrNull->labelForField(rowOrNull));
+            return labelOrNull == nullptr ? QString() : labelOrNull->text();
+        }
+    }
+    return {};
+}
+
+/// The light component of entity as the World draft holds it.
+QJsonObject GetDraftLight(const WorldWorkspace& workspace, const QString& entity)
+{
+    return workspace.Document()
+        .Entity(entity)
+        .value(QStringLiteral("components"))
+        .toObject()
+        .value(QStringLiteral("light"))
+        .toObject();
+}
+
+/// Clicks Apply Changes once the World is ready for it.
+void ApplyChanges(QWidget& inoutProperties, WorldWorkspace& inoutWorkspace)
+{
+    QPushButton* applyOrNull = inoutProperties.findChild<QPushButton*>(QStringLiteral("worldApply"));
+    REQUIRE(applyOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([applyOrNull]() { return applyOrNull->isEnabled() == true; },
+                            SETTLE_TIMEOUT_MILLISECONDS) == true);
+    applyOrNull->click();
+    WaitForWorld(inoutWorkspace);
+}
+} // namespace
+
+TEST_CASE("Light fields follow the light's kind, and an untouched number keeps every stored digit",
+          "[editor][world][inspector]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString projectPath = QDir(directory.path()).filePath(QStringLiteral("project"));
+    REQUIRE(QDir().mkpath(projectPath) == true);
+    const QString root = QFileInfo(projectPath).canonicalFilePath();
+    const QString source = directory.filePath(QStringLiteral("source/textured.pbrt"));
+    WriteTexturedSource(source);
+    const QString path = QDir(root).filePath(QStringLiteral("textured.world.json"));
+    CreateImportedWorld(root, path, source);
+
+    WorldWorkspace workspace(MakeSceneTools(), nullptr);
+    workspace.SetProject(root, 1);
+    QWidget dock;
+    QVBoxLayout* dockLayout = new QVBoxLayout(&dock);
+    QWidget* panelOrNull = workspace.TakePropertiesPanel(&dock);
+    REQUIRE(panelOrNull != nullptr);
+    dockLayout->addWidget(panelOrNull);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForWorld(workspace);
+    QString floor;
+    for (const QJsonValue value : workspace.Document().Draft().value(QStringLiteral("entities")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("scene")).isObject() == true && floor.isEmpty() == true)
+        {
+            floor = workspace.Document().GetEntityKey(value.toObject());
+        }
+    }
+    REQUIRE(floor.isEmpty() == false);
+    REQUIRE(workspace.SelectEntity(floor) == true);
+    dock.resize(WIDE_DOCK_WIDTH, DOCK_HEIGHT);
+    dock.show();
+    AttachComponent(dock, QStringLiteral("light"));
+    WaitForWorld(workspace);
+
+    // A directional light has no range or cone, and its intensity reads in lux; a spot light shows both in candela.
+    const auto find = [&dock](const char* key) {
+        QWidget* fieldOrNull = dock.findChild<QWidget*>(QStringLiteral("worldField:light/") + QString::fromLatin1(key));
+        REQUIRE(fieldOrNull != nullptr);
+        return fieldOrNull;
+    };
+    QComboBox* kindOrNull = qobject_cast<QComboBox*>(find("kind"));
+    REQUIRE(kindOrNull != nullptr);
+    kindOrNull->setCurrentIndex(kindOrNull->findData(QStringLiteral("directional")));
+    CHECK(find("range")->isVisibleTo(&dock) == false);
+    CHECK(find("innerAngle")->isVisibleTo(&dock) == false);
+    CHECK(find("outerAngle")->isVisibleTo(&dock) == false);
+    CHECK(GetFormLabelText(*find("intensity")) == QStringLiteral("Intensity (lx)"));
+    kindOrNull->setCurrentIndex(kindOrNull->findData(QStringLiteral("spot")));
+    CHECK(find("range")->isVisibleTo(&dock) == true);
+    CHECK(find("outerAngle")->isVisibleTo(&dock) == true);
+    CHECK(GetFormLabelText(*find("intensity")) == QStringLiteral("Intensity (cd)"));
+    kindOrNull->setCurrentIndex(kindOrNull->findData(QStringLiteral("point")));
+    CHECK(find("range")->isVisibleTo(&dock) == true);
+    CHECK(find("outerAngle")->isVisibleTo(&dock) == false);
+
+    // A float32 intensity shows its short text, keeps every digit in the tooltip, and an unrelated Apply leaves
+    // the stored number exactly as it was.
+    QLineEdit* intensityOrNull = qobject_cast<QLineEdit*>(find("intensity"));
+    REQUIRE(intensityOrNull != nullptr);
+    intensityOrNull->setText(QStringLiteral("43.46527099609375"));
+    ApplyChanges(dock, workspace);
+    const QJsonValue stored = GetDraftLight(workspace, floor).value(QStringLiteral("intensity"));
+    REQUIRE(stored.isDouble() == true);
+    intensityOrNull = qobject_cast<QLineEdit*>(find("intensity"));
+    REQUIRE(intensityOrNull != nullptr);
+    CHECK(intensityOrNull->text() == QStringLiteral("43.46527"));
+    CHECK(intensityOrNull->toolTip().contains(FormatStoredNumber(stored.toDouble())) == true);
+    QLineEdit* rangeOrNull = qobject_cast<QLineEdit*>(find("range"));
+    REQUIRE(rangeOrNull != nullptr);
+    rangeOrNull->setText(FormatInspectorNumber(EDITED_RANGE_METRES));
+    ApplyChanges(dock, workspace);
+    CHECK(GetDraftLight(workspace, floor).value(QStringLiteral("intensity")) == stored);
+    CHECK(GetDraftLight(workspace, floor).value(QStringLiteral("range")).toDouble() == EDITED_RANGE_METRES);
     workspace.StopPreview();
 }
