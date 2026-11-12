@@ -1103,11 +1103,12 @@ or surface cannot trigger an undocumented backend switch.
 
 ## Materials, shaders and pipeline control
 
-The proposed [render graph authoring architecture](render-graph-authoring.md)
-owns reusable graph/function/resource nodes, camera output routes, scene coverage,
+The [render graph architecture](render-graph-authoring.md) owns reusable
+graph/function/resource nodes, camera output routes, scene coverage,
 author-declared compilation configurations, shared schemas, incremental builds
-and editor/reload integration. It is an authoring layer over these Renderer and
-RHI contracts, not a claim that the current material graph editor is implemented.
+and editor/reload integration. See its
+[execution boundary](render-graph-authoring.md#logical-resource-uses-and-submitted-work)
+for the relationship between the offline plan, cooked profiles and RHI.
 Users can consume selected graph outputs; this never synthesizes shader variants.
 Depth-only rendering requires an authored technique preserving geometry/coverage.
 

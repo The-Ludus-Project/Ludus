@@ -6479,6 +6479,15 @@ order. Within-frame cycles and recursive imports are errors. The dump preserves
 nested instance paths, source asset/configuration, scene/view identity, technique,
 attachment versions and initialization, dependencies and observable roots.
 
+The text dump's **Logical resource uses** section gives the inclusive first and
+last serial operation numbers for each logical texture or buffer. For example,
+`000..001` on an upscale source means operation 000 writes it and operation 001
+samples it. Export and Present roots appear alongside the resource with the
+version they read. An initialized import passed directly to Export can show
+`no pass use`. The range describes the selected plan's declared operations.
+For physical memory and completion, see
+[logical resource uses and submitted work](../architecture/render-graph-authoring.md#logical-resource-uses-and-submitted-work).
+
 Two cameras contributing to one target need explicit ordering and preservation.
 A later full Clear removes the earlier camera's contribution and its final route
 fails. An explicitly authored Load technique receiving the previous version can
