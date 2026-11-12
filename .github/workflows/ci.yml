@@ -1087,6 +1087,7 @@ jobs:
         run: ./scripts/build linux-clang-asan-ubsan
       - name: Archive the sanitizer build and its test inputs
         id: bundle
+        shell: bash
         # CTest, CMake, Ninja and the host venv contain absolute paths. The
         # restore verifies the workspace and preserves source mtimes so that
         # shard 1's targeted SDK and probe builds can reuse the compiled tree.
