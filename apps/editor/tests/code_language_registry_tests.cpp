@@ -18,7 +18,7 @@ TEST_CASE("the registry describes every CodeLanguage in enum order", "[editor][c
 {
     const CodeLanguageRegistry& registry = CodeLanguageRegistry::Get();
     const BorrowedView<const CodeLanguageDescriptor> descriptors = registry.GetDescriptors();
-    REQUIRE(descriptors.GetSize() == 3);
+    REQUIRE(descriptors.GetSize() == static_cast<usize>(CodeLanguage::Count));
     REQUIRE(descriptors[0].Language == CodeLanguage::PlainText);
     REQUIRE(descriptors[1].Language == CodeLanguage::Slang);
     REQUIRE(descriptors[2].Language == CodeLanguage::Lusl);
@@ -85,7 +85,10 @@ TEST_CASE("file classification preserves the .slang mapping", "[editor][code-edi
     REQUIRE(registry.ClassifyFileName(View(textPath, sizeof(textPath) - 1)) == CodeLanguage::PlainText);
 
     const char cmakePath[] = "CMakeLists.txt";
-    REQUIRE(registry.ClassifyFileName(View(cmakePath, sizeof(cmakePath) - 1)) == CodeLanguage::PlainText);
+    REQUIRE(registry.ClassifyFileName(View(cmakePath, sizeof(cmakePath) - 1)) == CodeLanguage::CMake);
+    const char prefixedCMakePath[] = "project/notCMakeLists.txt";
+    REQUIRE(registry.ClassifyFileName(View(prefixedCMakePath, sizeof(prefixedCMakePath) - 1)) ==
+            CodeLanguage::PlainText);
 
     const char empty[] = "";
     REQUIRE(registry.ClassifyFileName(View(empty, 0)) == CodeLanguage::PlainText);

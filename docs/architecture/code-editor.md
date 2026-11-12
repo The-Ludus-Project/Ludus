@@ -268,34 +268,26 @@ Adding the dependency needs an ADR under `docs/decisions/`, following the
 review model, before code lands. See the
 [alternatives](#decisions-and-alternatives) for what was rejected.
 
-**Threading.** One worker thread runs every parser. For each document it keeps
-the tree and the last snapshot revision. When an `EditSet` arrives, the UI
-thread records a `TSInputEdit` per replacement, which costs almost nothing. At
-the debounce it copies the snapshot and posts it. The worker edits the old tree,
-reparses, asks `ts_tree_get_changed_ranges` what moved, runs the queries over
-those ranges plus the visible range, and returns compact results tagged with the
-revision.
+**Threading.** The native editor runs syntax jobs on a single-thread pool.
+Each projection owns its parser and last tree. After a debounce, the view posts
+a copied UTF-16 snapshot and revision. The worker computes a coalesced edit
+between consecutive snapshots, edits the old tree, and reparses. The browser
+uses the parser progress callback to yield between slices on the event loop.
+A newer edit cancels obsolete jobs. Publication checks the revision again
+before applying results.
 
-**Tokens.** A line's tokens are packed as pairs of 32-bit values (start column
-in UTF-16 units, token role), following VS Code's binary token arrays. Between
-a keystroke and the next result, existing tokens are moved by the edit delta.
-The edited line is colored at once by the existing single-line lexer, so typing
-never shows uncolored text.
+**Tokens.** The worker walks grammar symbols to produce ordered, disjoint
+UTF-16 spans. The highlighter uses the lexical fallback when it has no result
+for the current revision. Qt keeps formatting attached to unchanged blocks.
+On publication the highlighter refreshes the visible blocks first and
+reapplies the rest in timer slices. Large-file mode colors visible lines and
+computes indentation folds without running tree-sitter.
 
-**Applying tokens.** Keep `QSyntaxHighlighter` only as the token applier. Its
-`highlightBlock` uses cached tree-sitter tokens when the block's revision
-matches, and otherwise falls back to the lexer. When results arrive, re-run
-`rehighlightBlock` for visible blocks first and the rest in slices of at most
-2 ms per event-loop turn. For documents above the large-file threshold, do not
-let Qt rehighlight the whole document on attach; color blocks as they become
-visible. Measure both paths ([performance](#threading-and-performance)).
-
-**Structure.** The same worker produces fold ranges, the document outline,
-breadcrumb scopes, sticky-scroll headers, bracket pairs that understand strings
-and comments, and expand/shrink selection ranges, all from the same tree and all
-revision-tagged. Region markers from the language record add named fold ranges,
-and indentation-based folding is the fallback for languages without a grammar
-([Folding](#folding)).
+**Structure.** The worker returns source ranges for folds, outline and
+selection. The view uses enclosing outline entries for breadcrumbs and sticky
+scroll. Fold state belongs to each view and live text anchors track the
+opening and closing lines between results. A restored tab matches the hash of
+the opening line before collapsing it.
 
 **Semantic tokens** from a language server are layered over syntax tokens when
 the server provides them. Syntax tokens stay the base layer, so the colors don't

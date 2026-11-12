@@ -97,6 +97,7 @@ private:
     foundation::usize mLastStartBytes = 0;
     foundation::usize mLastInsertedBytes = 0;
     bool mHasPending = false;
+    foundation::int32 mProjectionRevision = 0;
     bool mIsSynchronizing = false;
     bool mHasTextGroup = false;
     bool mHasCrLf = false;

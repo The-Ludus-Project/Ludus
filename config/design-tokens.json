@@ -158,6 +158,106 @@
       "dark": "#5b8ee6",
       "light": "#5b8ee6",
       "use": "Z axis, always with the letter Z"
+    },
+    "syntax.keyword": {
+      "dark": "#c5a5e8",
+      "light": "#7041a0",
+      "use": "Code editor keyword text"
+    },
+    "syntax.control": {
+      "dark": "#e2a7da",
+      "light": "#872968",
+      "use": "Code editor control text"
+    },
+    "syntax.type": {
+      "dark": "#78ccd5",
+      "light": "#006b78",
+      "use": "Code editor type text"
+    },
+    "syntax.function": {
+      "dark": "#dcdcaa",
+      "light": "#6b6200",
+      "use": "Code editor function text"
+    },
+    "syntax.method": {
+      "dark": "#e8d39b",
+      "light": "#705516",
+      "use": "Code editor method text"
+    },
+    "syntax.variable": {
+      "dark": "#e9f2f1",
+      "light": "#18232c",
+      "use": "Code editor variable text"
+    },
+    "syntax.parameter": {
+      "dark": "#b3cedf",
+      "light": "#3b5f74",
+      "use": "Code editor parameter text"
+    },
+    "syntax.property": {
+      "dark": "#99d3ea",
+      "light": "#285c70",
+      "use": "Code editor property text"
+    },
+    "syntax.constant": {
+      "dark": "#f29cb8",
+      "light": "#a3195b",
+      "use": "Code editor constant text"
+    },
+    "syntax.number": {
+      "dark": "#94bfef",
+      "light": "#265c9b",
+      "use": "Code editor number text"
+    },
+    "syntax.string": {
+      "dark": "#e4b284",
+      "light": "#965019",
+      "use": "Code editor string text"
+    },
+    "syntax.escape": {
+      "dark": "#f3d187",
+      "light": "#794b00",
+      "use": "Code editor escape text"
+    },
+    "syntax.comment": {
+      "dark": "#a0b79a",
+      "light": "#526650",
+      "use": "Code editor comment text"
+    },
+    "syntax.documentation": {
+      "dark": "#a9cb9d",
+      "light": "#42643d",
+      "use": "Code editor documentation text"
+    },
+    "syntax.preprocessor": {
+      "dark": "#c5a5e8",
+      "light": "#7041a0",
+      "use": "Code editor preprocessor text"
+    },
+    "syntax.macro": {
+      "dark": "#f2b2bf",
+      "light": "#943444",
+      "use": "Code editor macro text"
+    },
+    "syntax.namespace": {
+      "dark": "#b4bee7",
+      "light": "#4a5686",
+      "use": "Code editor namespace text"
+    },
+    "syntax.operator": {
+      "dark": "#c6dce4",
+      "light": "#42575f",
+      "use": "Code editor operator text"
+    },
+    "syntax.punctuation": {
+      "dark": "#b5c5c9",
+      "light": "#4c6267",
+      "use": "Code editor punctuation text"
+    },
+    "syntax.invalid": {
+      "dark": "#ff9ca9",
+      "light": "#9f2945",
+      "use": "Code editor invalid text"
     }
   },
   "highContrast": {
@@ -183,7 +283,27 @@
       "status.danger": "#ffb3aa",
       "status.successSurface": "#0b2a18",
       "status.warningSurface": "#2e2400",
-      "status.dangerSurface": "#3a0f14"
+      "status.dangerSurface": "#3a0f14",
+      "syntax.keyword": "#c5a5e8",
+      "syntax.control": "#e2a7da",
+      "syntax.type": "#78ccd5",
+      "syntax.function": "#dcdcaa",
+      "syntax.method": "#e8d39b",
+      "syntax.variable": "#e9f2f1",
+      "syntax.parameter": "#b3cedf",
+      "syntax.property": "#99d3ea",
+      "syntax.constant": "#f29cb8",
+      "syntax.number": "#94bfef",
+      "syntax.string": "#e4b284",
+      "syntax.escape": "#f3d187",
+      "syntax.comment": "#a0b79a",
+      "syntax.documentation": "#a9cb9d",
+      "syntax.preprocessor": "#c5a5e8",
+      "syntax.macro": "#f2b2bf",
+      "syntax.namespace": "#b4bee7",
+      "syntax.operator": "#c6dce4",
+      "syntax.punctuation": "#b5c5c9",
+      "syntax.invalid": "#ff9ca9"
     },
     "light": {
       "surface.workspace": "#ffffff",
@@ -207,7 +327,27 @@
       "status.danger": "#85170e",
       "status.successSurface": "#d8f0df",
       "status.warningSurface": "#f8e8bd",
-      "status.dangerSurface": "#f8d9d5"
+      "status.dangerSurface": "#f8d9d5",
+      "syntax.keyword": "#7041a0",
+      "syntax.control": "#872968",
+      "syntax.type": "#00616d",
+      "syntax.function": "#615900",
+      "syntax.method": "#6f5416",
+      "syntax.variable": "#18232c",
+      "syntax.parameter": "#395c71",
+      "syntax.property": "#285c70",
+      "syntax.constant": "#a3195b",
+      "syntax.number": "#255996",
+      "syntax.string": "#864716",
+      "syntax.escape": "#794b00",
+      "syntax.comment": "#4a5c48",
+      "syntax.documentation": "#3f603b",
+      "syntax.preprocessor": "#7041a0",
+      "syntax.macro": "#943444",
+      "syntax.namespace": "#495585",
+      "syntax.operator": "#42575f",
+      "syntax.punctuation": "#475b60",
+      "syntax.invalid": "#9f2945"
     }
   },
   "spacing": {
@@ -540,6 +680,26 @@
       "background": "surface.viewport",
       "minimum": 2.2,
       "highContrastMinimum": 2.2
-    }
+    },
+    {"foreground": "syntax.keyword", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor keyword"},
+    {"foreground": "syntax.control", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor control"},
+    {"foreground": "syntax.type", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor type"},
+    {"foreground": "syntax.function", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor function"},
+    {"foreground": "syntax.method", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor method"},
+    {"foreground": "syntax.variable", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor variable"},
+    {"foreground": "syntax.parameter", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor parameter"},
+    {"foreground": "syntax.property", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor property"},
+    {"foreground": "syntax.constant", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor constant"},
+    {"foreground": "syntax.number", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor number"},
+    {"foreground": "syntax.string", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor string"},
+    {"foreground": "syntax.escape", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor escape"},
+    {"foreground": "syntax.comment", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor comment"},
+    {"foreground": "syntax.documentation", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor documentation"},
+    {"foreground": "syntax.preprocessor", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor preprocessor"},
+    {"foreground": "syntax.macro", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor macro"},
+    {"foreground": "syntax.namespace", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor namespace"},
+    {"foreground": "syntax.operator", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor operator"},
+    {"foreground": "syntax.punctuation", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor punctuation"},
+    {"foreground": "syntax.invalid", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor invalid"}
   ]
 }

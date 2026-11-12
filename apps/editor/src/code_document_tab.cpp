@@ -3,6 +3,7 @@
 #include "internal/code_conflict_banner.h"
 #include "internal/code_file_document.h"
 #include "internal/code_language_registry.h"
+#include "internal/code_structure_view.h"
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
@@ -90,6 +91,7 @@ CodeDocumentTab::~CodeDocumentTab()
 void CodeDocumentTab::bindHost()
 {
     mEditor->SetDocumentHistory(mHostOrNull != nullptr);
+    mEditor->SetLargeFileMode(mHostOrNull != nullptr && mHostOrNull->GetProfile().SizeMode != CodeFileSizeMode::Normal);
     mController->Bind(mHostOrNull);
     if (mHostOrNull != nullptr)
     {
@@ -134,6 +136,7 @@ void CodeDocumentTab::RefreshFromHost()
     if (mHostOrNull != nullptr)
     {
         mEditor->setReadOnly(mHostOrNull->IsReadOnly());
+        mEditor->SetLargeFileMode(mHostOrNull->GetProfile().SizeMode != CodeFileSizeMode::Normal);
         mBanner->ShowExplanation(mHostOrNull->GetExplanation());
     }
     MirrorFromHost();
@@ -170,6 +173,7 @@ QJsonObject CodeDocumentTab::SaveViewState() const
     state.insert(QLatin1String(VIEW_STATE_ANCHOR), cursor.anchor());
     state.insert(QLatin1String(VIEW_STATE_CARET), cursor.position());
     state.insert(QLatin1String(VIEW_STATE_SCROLL), mEditor->verticalScrollBar()->value());
+    state.insert(QStringLiteral("folds"), mEditor->GetStructure().SaveFolds());
     return state;
 }
 
@@ -182,6 +186,7 @@ void CodeDocumentTab::RestoreViewState(const QJsonObject& state)
     cursor.setPosition(qBound(0, anchor, documentEnd));
     cursor.setPosition(qBound(0, caret, documentEnd), QTextCursor::KeepAnchor);
     mEditor->setTextCursor(cursor);
+    mEditor->GetStructure().RestoreFolds(state.value(QStringLiteral("folds")).toArray());
     mEditor->verticalScrollBar()->setValue(state.value(QLatin1String(VIEW_STATE_SCROLL)).toInt(0));
     if (state.value(QLatin1String(VIEW_STATE_PREVIEW)).toBool(false) == false)
     {

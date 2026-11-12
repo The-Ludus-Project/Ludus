@@ -4,9 +4,15 @@
 
 #include <ludus/tooling/shader_language/syntax.hpp>
 
+#include "design_tokens.h"
+#include "internal/code_file_limits.h"
+#include "internal/code_language_registry.h"
+
 #include <QColor>
+#include <QElapsedTimer>
 #include <QPalette>
 #include <QStringView>
+#include <QTextDocument>
 
 // Thanks to The Qt Company, "QSyntaxHighlighter", Qt GUI documentation,
 // highlightBlock/previousBlockState: incremental multiline lexical state.
@@ -24,20 +30,16 @@ using namespace foundation;
 constexpr int32 NORMAL_STATE = 0;
 constexpr int32 BLOCK_COMMENT_STATE = 1;
 constexpr int32 LIGHT_PALETTE_THRESHOLD = 128;
-constexpr uint32 LIGHT_KEYWORD = 0x7041A0;
-constexpr uint32 DARK_KEYWORD = 0xC5A5E8;
-constexpr uint32 LIGHT_TYPE = 0x006B78;
-constexpr uint32 DARK_TYPE = 0x78CCD5;
-constexpr uint32 LIGHT_COMMENT = 0x526650;
-constexpr uint32 DARK_COMMENT = 0xA0B79A;
-constexpr uint32 LIGHT_STRING = 0x965019;
-constexpr uint32 DARK_STRING = 0xE4B284;
-constexpr uint32 LIGHT_NUMBER = 0x265C9B;
-constexpr uint32 DARK_NUMBER = 0x94BFEF;
-constexpr uint32 LIGHT_FUNCTION = 0x6B6200;
-constexpr uint32 DARK_FUNCTION = 0xDCDCAA;
-constexpr uint32 LIGHT_CONSTANT = 0xA3195B;
-constexpr uint32 DARK_CONSTANT = 0xF29CB8;
+using design::ThemeColour;
+constexpr foundation::StaticArray<ThemeColour, static_cast<usize>(CodeSyntaxRole::Count)> ROLE_COLOURS{
+    ThemeColour::TextPrimary,        ThemeColour::SyntaxKeyword,     ThemeColour::SyntaxControl,
+    ThemeColour::SyntaxType,         ThemeColour::SyntaxFunction,    ThemeColour::SyntaxMethod,
+    ThemeColour::SyntaxVariable,     ThemeColour::SyntaxParameter,   ThemeColour::SyntaxProperty,
+    ThemeColour::SyntaxConstant,     ThemeColour::SyntaxNumber,      ThemeColour::SyntaxString,
+    ThemeColour::SyntaxEscape,       ThemeColour::SyntaxComment,     ThemeColour::SyntaxDocumentation,
+    ThemeColour::SyntaxPreprocessor, ThemeColour::SyntaxMacro,       ThemeColour::SyntaxNamespace,
+    ThemeColour::SyntaxOperator,     ThemeColour::SyntaxPunctuation, ThemeColour::SyntaxInvalid,
+};
 constexpr QStringView KEYWORDS =
     u"break case continue default discard do else for if return switch while const static uniform in out inout "
     u"struct class interface enum namespace typedef typealias import export public private internal let var "
@@ -190,9 +192,12 @@ bool IsSlangKeyword(QStringView word)
     return ContainsWord(KEYWORDS, word);
 }
 
-CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document) : QSyntaxHighlighter(document)
+CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document, const CodeSyntaxService& syntax)
+    : QSyntaxHighlighter(document), mSyntax(syntax)
 {
     LUDUS_ASSERT(document != nullptr);
+    mReapply.setSingleShot(true);
+    connect(&mReapply, &QTimer::timeout, this, &CodeSyntaxHighlighter::reapplySlice);
 }
 
 void CodeSyntaxHighlighter::SetLanguage(CodeLanguage language)
@@ -200,26 +205,149 @@ void CodeSyntaxHighlighter::SetLanguage(CodeLanguage language)
     if (mLanguage != language)
     {
         mLanguage = language;
-        rehighlight();
+        ScheduleReapply();
     }
 }
 
 void CodeSyntaxHighlighter::SetPalette(const QPalette& palette)
 {
-    const bool isLight = IsLightCodePalette(palette);
-    mKeywordFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_KEYWORD : DARK_KEYWORD));
-    mTypeFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_TYPE : DARK_TYPE));
-    mCommentFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_COMMENT : DARK_COMMENT));
-    mStringFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_STRING : DARK_STRING));
-    mNumberFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_NUMBER : DARK_NUMBER));
-    mFunctionFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_FUNCTION : DARK_FUNCTION));
-    mConstantFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_CONSTANT : DARK_CONSTANT));
-    mDirectiveFormat = mKeywordFormat;
-    rehighlight();
+    const bool isDark = IsLightCodePalette(palette) == false;
+    const QColor normalPanel = QColor::fromRgb(design::GetThemeArgb(ThemeColour::SurfacePanel, isDark, false));
+    const QColor contrastPanel = QColor::fromRgb(design::GetThemeArgb(ThemeColour::SurfacePanel, isDark, true));
+    const QColor contrastText = QColor::fromRgb(design::GetThemeArgb(ThemeColour::TextPrimary, isDark, true));
+    const bool isHighContrast = palette.color(QPalette::Base) == contrastPanel &&
+                                (contrastPanel != normalPanel || palette.color(QPalette::Text) == contrastText);
+    for (usize role = 0; role < ROLE_COLOURS.GetSize(); ++role)
+    {
+        mRoleFormats[role].setForeground(
+            QColor::fromRgb(design::GetThemeArgb(ROLE_COLOURS[role], isDark, isHighContrast)));
+    }
+    mKeywordFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::Keyword)];
+    mTypeFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::Type)];
+    mCommentFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::Comment)];
+    mStringFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::String)];
+    mNumberFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::Number)];
+    mFunctionFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::Function)];
+    mConstantFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::Constant)];
+    mDirectiveFormat = mRoleFormats[static_cast<usize>(CodeSyntaxRole::Preprocessor)];
+    ScheduleReapply();
+}
+
+void CodeSyntaxHighlighter::SetLargeFileMode(bool isLarge)
+{
+    if (mIsLargeFile != isLarge)
+    {
+        mIsLargeFile = isLarge;
+        ScheduleReapply();
+    }
+}
+
+bool CodeSyntaxHighlighter::IsLargeDocument() const
+{
+    return mIsLargeFile == true || static_cast<usize>(document()->blockCount()) > CODE_FILE_NORMAL_LIMIT_LINES ||
+           static_cast<usize>(document()->characterCount()) > CODE_FILE_NORMAL_LIMIT_BYTES;
+}
+
+bool CodeSyntaxHighlighter::UsesVisibleFallback() const
+{
+    constexpr int32 EAGER_LEXER_LINE_LIMIT = 4096;
+    return IsLargeDocument() == true || document()->blockCount() > EAGER_LEXER_LINE_LIMIT;
+}
+
+void CodeSyntaxHighlighter::ApplyVisibleBlocks(QTextBlock first, int32 lastLine)
+{
+    mFirstVisibleLine = first.blockNumber();
+    mLastVisibleLine = lastLine;
+    mIsApplyingExplicitly = true;
+    for (QTextBlock block = first; block.isValid() == true && block.blockNumber() <= lastLine; block = block.next())
+    {
+        if (block.isVisible() == true)
+        {
+            rehighlightBlock(block);
+        }
+    }
+    mIsApplyingExplicitly = false;
+}
+
+void CodeSyntaxHighlighter::ScheduleReapply()
+{
+    mNextBlock = document()->begin();
+    mReapply.start(0);
+}
+
+void CodeSyntaxHighlighter::reapplySlice()
+{
+    if (IsLargeDocument() == true)
+    {
+        return;
+    }
+    constexpr int32 SLICE_MILLISECONDS = 2;
+    QElapsedTimer clock;
+    clock.start();
+    mIsApplyingExplicitly = true;
+    while (mNextBlock.isValid() == true && clock.elapsed() < SLICE_MILLISECONDS)
+    {
+        rehighlightBlock(mNextBlock);
+        mNextBlock = mNextBlock.next();
+    }
+    mIsApplyingExplicitly = false;
+    if (mNextBlock.isValid() == true)
+    {
+        mReapply.start(0);
+    }
+}
+
+void CodeSyntaxHighlighter::applySyntaxTokens()
+{
+    const CodeSyntaxResult* resultOrNull = mSyntax.GetCurrentResultOrNull();
+    if (resultOrNull == nullptr)
+    {
+        return;
+    }
+    const QTextBlock block = currentBlock();
+    const int32 start = block.position();
+    const int32 end = start + block.length() - 1;
+    qsizetype first = 0;
+    qsizetype last = resultOrNull->Tokens.size();
+    while (first < last)
+    {
+        const qsizetype middle = first + (last - first) / 2;
+        if (resultOrNull->Tokens.at(middle).Range.End <= start)
+        {
+            first = middle + 1;
+        }
+        else
+        {
+            last = middle;
+        }
+    }
+    for (qsizetype index = first; index < resultOrNull->Tokens.size(); ++index)
+    {
+        const CodeSyntaxToken& token = resultOrNull->Tokens.at(index);
+        if (token.Range.Start >= end)
+        {
+            break;
+        }
+        const int32 clippedStart = qMax(start, token.Range.Start);
+        const int32 clippedEnd = qMin(end, token.Range.End);
+        setFormat(clippedStart - start, clippedEnd - clippedStart, mRoleFormats[static_cast<usize>(token.Role)]);
+    }
 }
 
 void CodeSyntaxHighlighter::highlightBlock(const QString& text)
 {
+    if (mLanguage == CodeLanguage::PlainText || static_cast<usize>(text.size()) > CODE_LONG_LINE_UTF16_UNITS)
+    {
+        return;
+    }
+    if (mIsApplyingExplicitly == false && UsesVisibleFallback() == true)
+    {
+        const int32 line = currentBlock().blockNumber();
+        if (line < mFirstVisibleLine || line > mLastVisibleLine)
+        {
+            return;
+        }
+    }
     CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(currentBlockUserData());
     if (dataOrNull == nullptr)
     {
@@ -229,11 +357,10 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
     dataOrNull->Brackets.clear();
     dataOrNull->ExcludedRanges.clear();
     setCurrentBlockState(NORMAL_STATE);
-    if (mLanguage == CodeLanguage::PlainText)
-    {
-        return;
-    }
     const QStringView view(text);
+    const BorrowedView<const char> lineComment = CodeLanguageRegistry::Get().Describe(mLanguage).LineComment;
+    const QLatin1StringView comment(lineComment.GetDataOrNull(), static_cast<qsizetype>(lineComment.GetSize()));
+    const bool hasCComments = comment == QLatin1StringView("//");
     const bool isLusl = mLanguage == CodeLanguage::Lusl;
     const auto isKeyword = [isLusl](QStringView word) { // ludus-style: inferred-type: lambda closure
         return isLusl == true ? IsLuslKeyword(word) : ContainsWord(KEYWORDS, word);
@@ -255,7 +382,7 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
         const isize start = position;
         const QChar character = text.at(position);
         const QChar next = position + 1 < text.size() ? text.at(position + 1) : QChar();
-        if (isBlockComment == true || (character == QLatin1Char('/') && next == QLatin1Char('*')))
+        if (hasCComments == true && (isBlockComment == true || (character == u'/' && next == u'*')))
         {
             const isize end = text.indexOf(QStringLiteral("*/"), position + (isBlockComment == true ? 0 : 2));
             isBlockComment = end < 0;
@@ -265,7 +392,8 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
             setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mCommentFormat);
             continue;
         }
-        if (character == QLatin1Char('/') && next == QLatin1Char('/'))
+        if (comment.isEmpty() == false && comment != QLatin1StringView("#") &&
+            view.sliced(position).startsWith(comment) == true)
         {
             dataOrNull->ExcludedRanges.append({static_cast<int32>(start), static_cast<int32>(text.size()), true});
             setFormat(static_cast<int32>(position), static_cast<int32>(text.size() - position), mCommentFormat);
@@ -293,8 +421,14 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
             setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mStringFormat);
             continue;
         }
-        if (character == QLatin1Char('#'))
+        if (character == QLatin1Char('#') && (hasCComments == true || mLanguage == CodeLanguage::CMake))
         {
+            if (mLanguage == CodeLanguage::CMake)
+            {
+                dataOrNull->ExcludedRanges.append({static_cast<int32>(start), static_cast<int32>(text.size()), true});
+                setFormat(static_cast<int32>(start), static_cast<int32>(text.size() - start), mCommentFormat);
+                break;
+            }
             ++position;
             while (position < text.size() && text.at(position).isLetter() == true)
             {
@@ -382,5 +516,6 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
         ++position;
     }
     setCurrentBlockState(isBlockComment == true ? BLOCK_COMMENT_STATE : NORMAL_STATE);
+    applySyntaxTokens();
 }
 } // namespace ludus::editor

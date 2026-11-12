@@ -48,6 +48,7 @@ QByteArray CopyCodeText(BorrowedView<const char> bytes)
 CodeDocumentController::CodeDocumentController(CodeEditor& inoutEditor, QObject* parentOrNull)
     : QObject(parentOrNull), mEditor(inoutEditor)
 {
+    mProjectionRevision = mEditor.document()->revision();
     connect(&mEditor, &QObject::destroyed, this, [this]() { mIsEditorAlive = false; });
     connect(&mEditor, &CodeEditor::EditStarted, this, &CodeDocumentController::beginOperation);
     connect(&mEditor, &CodeEditor::EditFinished, this, &CodeDocumentController::endOperation);
@@ -334,6 +335,13 @@ void CodeDocumentController::endOperation()
 
 void CodeDocumentController::captureChange(int32 position, int32 removed, int32 added)
 {
+    // Syntax formats and folding invalidate the layout without changing its text revision.
+    const int32 revision = mEditor.document()->revision();
+    if (revision == mProjectionRevision)
+    {
+        return;
+    }
+    mProjectionRevision = revision;
     if (mIsSynchronizing == true || IsBound() == false)
     {
         return;

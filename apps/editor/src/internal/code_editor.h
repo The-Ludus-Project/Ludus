@@ -16,6 +16,7 @@
 #include <QTimer>
 
 QT_BEGIN_NAMESPACE
+class QTextBlock;
 class QKeyEvent;
 class QMouseEvent;
 class QPoint;
@@ -35,15 +36,24 @@ namespace ludus::editor
 {
 class CodeEditorGutter;
 class CodeSyntaxHighlighter;
+class CodeSyntaxService;
+class CodeStructureView;
 class CodeNavigation;
 
-/// Lexical profile only; semantic intelligence belongs to a language service.
+/// Stable identities for lexical, syntax and semantic language profiles.
 enum class CodeLanguage : foundation::uint8
 {
     PlainText,
     Slang,
     /// The Ludus Shading Language (`.lusl`, `.luslh`); docs/modules/tooling/shader-language.md.
     Lusl,
+    Luau,
+    C,
+    Cpp,
+    Json,
+    CMake,
+    Markdown,
+    Count,
 };
 
 enum class CodeEditKind : foundation::uint8
@@ -85,6 +95,10 @@ public:
     explicit CodeEditor(QWidget* parentOrNull = nullptr);
     /// Select coloring/comment syntax without changing text or undo history.
     void SetLanguage(CodeLanguage language);
+    void SetLargeFileMode(bool isLarge);
+    /// Reveal collapsed ranges containing either endpoint before programmatic navigation.
+    void setTextCursor(const QTextCursor& cursor);
+    [[nodiscard]] CodeStructureView& GetStructure() const noexcept;
     /// Clamp and persist text size in points without changing text or history. GUI thread only.
     void SetFontPointSize(foundation::int32 points);
     /// Persist visual wrapping without inserting newlines or changing history. GUI thread only.
@@ -207,9 +221,12 @@ private:
     QListWidget* mCompletionList;
     QLabel* mSignature;
     friend class CodeEditorGutter;
+    friend class CodeStructureView;
     void resizeEvent(QResizeEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void paintIndentGuides(const QPaintEvent* event);
+    void paintFoldPlaceholders(const QPaintEvent* event);
+    [[nodiscard]] QRect getFoldPlaceholderRect(const QTextBlock& block) const;
     void paintDiagnosticCallout();
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
@@ -248,6 +265,9 @@ private:
     [[nodiscard]] foundation::int32 getGutterWidth() const;
     void updateGutterWidth();
     void paintGutter(QPaintEvent* event);
+    void refreshVisibleSyntax();
+    void updateFoldPresentation();
+    [[nodiscard]] bool toggleGutterFold(const QPoint& position);
     [[nodiscard]] bool showGutterToolTip(const QHelpEvent& help);
     void updateSelections();
     void appendDiagnosticSelections(QList<QTextEdit::ExtraSelection>& inoutSelections) const;
@@ -265,9 +285,12 @@ private:
         bool IsLineOnly = false;
     };
     CodeEditorGutter* mGutter;
+    CodeSyntaxService* mSyntax;
     CodeSyntaxHighlighter* mHighlighter;
+    CodeStructureView* mStructure;
     CodeLanguage mLanguage = CodeLanguage::PlainText;
     QTimer mSelectionUpdate;
+    QTimer mVisibleSyntaxUpdate;
     QList<DiagnosticMarker> mDiagnostics;
     QString mDiagnosticText;
     bool mAreDiagnosticsCurrent = true;

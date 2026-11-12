@@ -114,6 +114,7 @@ ScriptWorkspace::ScriptWorkspace(EditorController* controller, QWidget* parent)
     layout->addLayout(actions);
     Text_ = new CodeEditor(this);
     Text_->setObjectName(QStringLiteral("scriptText"));
+    Text_->SetLanguage(CodeLanguage::Luau);
     SourceController_ = new CodeDocumentController(*Text_, this);
     layout->addWidget(Text_);
     Nodes_ = new QTableWidget(this);

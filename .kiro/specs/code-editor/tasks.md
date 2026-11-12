@@ -249,13 +249,23 @@ Requirements: CE08, CE19 (syntax roles), CE22, CE26. Prerequisite: M0 ADR accept
   state restored with the tab; the fold commands with their bindings in both
   profiles; announcements. Add the randomized invariant tests and measure Fold
   All and Unfold All on the 100,000-line corpus.
-- [ ] Add outline, breadcrumbs, sticky scroll and expand/shrink selection.
+- [x] Add outline, breadcrumbs, sticky scroll and expand/shrink selection.
 - [ ] Measure open, scroll and reparse budgets, and the large-file behavior.
 
 Gate: highlighting is correct on the corpus; a stale result never lands at a
 wrong offset under randomized edit tests; the CE26 tests pass and no
 randomized edit leaves a hidden line without a visible control; the budgets
 are recorded.
+
+macOS debug, Clang 23, offscreen Qt, 2026-11-12. The editor suite passed
+164 cases with the pinned Slang server enabled. The syntax cases exercise
+the seven upstream language profiles, malformed and superseded revisions,
+folded line commands, outline and sticky-scroll navigation, and the
+large-file indentation fallback. In one 100,001-line run, open and first
+paint took 499 ms, syntax publication took 972 ms including the debounce,
+and Fold All and Unfold All took 23 ms and 6 ms. Fold toggling met the 50 ms
+budget. The open budget, scroll and reparse measurements, the extended fold
+command set, the Ludus-owned LUSL grammar, and Wasm verification remain open.
 
 ## M4 - Generic language client
 
