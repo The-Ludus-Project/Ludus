@@ -2112,9 +2112,10 @@ selection probability is exact and nonzero. Emitter hits look up the same
 probability for MIS by binary search over the ascending emitter list. Many small,
 bright emitters therefore no longer crowd out large, dim panels (for example the
 candle flames and ceiling light of the pbrt-v4 staircase). Analytic lights and the
-environment keep their uniform share; a power-weighted choice across categories is
-future work. This is the default `ReferenceLightSampling::UniformArea` estimator;
-[Light-sampling modes](#light-sampling-modes) describes the resampled alternative. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
+environment keep their uniform share in this proposal. This is the default SDK
+`ReferenceLightSampling::UniformArea` estimator. The
+[light-sampling modes](#light-sampling-modes) also cover separate directional
+sampling and emissive resampling. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
 and the 1e-4 square-meter near-light attenuation floor. Version 1 used a different
 spot interpolation and unbounded nonzero-distance attenuation; old captures retain
 that profile identity and cannot be compared as the same integral. Emission is two-sided; reflection is restricted to the geometric and
@@ -2157,23 +2158,35 @@ work and retires accepted native uses through completion.
 
 #### Light-sampling modes
 
-`ReferenceCaptureDescription::LightSampling` selects the next-event estimator for
-emissive triangles. All modes estimate the same truncated integral under the same
+`ReferenceCaptureDescription::LightSampling` selects the direct-light
+next-event estimator. All modes estimate the same truncated integral under the same
 `ProfileVersion`, so their means agree statistically, never per pixel. The mode joins
 the integral key: changing it replaces the job and restarts accumulation.
 `ReferenceCaptureInfo` records it with its sampler version.
 
-| Mode | Sampler | Emissive next-event estimation |
+| Mode | Sampler | Next-event estimation |
 | --- | --- | --- |
 | `UniformArea` (default) | 1, 8 dimensions per bounce | One power-CDF triangle, one uniform area sample, one shadow ray. Existing captures stay bit-identical. |
 | `ResampledProjectedSolidAngle` | 2, 128 dimensions per bounce | Resampled importance sampling of one triangle from 32 power-CDF candidates with an unshadowed LTC target, then one projected-solid-angle and one LTC sample of it, so up to two shadow rays per vertex. |
 | `ResampledFormFactor` | 3, 128 dimensions per bounce | The same estimator with a cheaper target: Hill and Heitz's approximate horizon-clipped form factors instead of clipped polygon integrals, kept positive wherever the triangle is above the horizon, and its own frozen candidate counts. The selected triangle's samples and MIS weights are unchanged. |
+| `SeparateDirectional` | 4, version-1 addresses plus one separate dimension per bounce | CPU oracle and GPU compute sample one directional light independently, plus one proposal over the remaining sources. |
+
+`SeparateDirectional` sums two disjoint estimates. It always selects a lone
+directional light, or picks uniformly among several and weights the sample by
+their count. It traces a shadow ray only when the surface can receive that
+contribution. The remaining proposal keeps the version-1 area sampling and
+updates the emitter and environment MIS probabilities to exclude directional
+lights. The dedicated draw uses one Philox dimension per bounce after the
+version-2/3 bounce range. Both paths use the same addresses and can trace up to
+two shadow rays per vertex. Purely specular vertices still skip direct-light
+sampling. See Pharr, Jakob and Humphreys, [Distant Lights](https://www.pbr-book.org/4ed/Light_Sources/Distant_Lights)
+and [Light Sampling](https://www.pbr-book.org/4ed/Light_Sources/Light_Sampling).
 
 The resampled estimator, its random slots and its BSDF-hit MIS are the
 [many-area-light resampling review](many-area-light-sampling-reference-review.md).
 The category draw at slot 0, analytic lights and the environment are unchanged.
 
-The CPU oracle and GPU reference select a typed source and retain its selection
+The first three samplers select a typed source and retain its selection
 mass before evaluating the incident sample. The category draw still uses slot
 0, and the power-CDF triangle draw still uses slot 7 in the uniform-area
 proposal. A triangle point or environment direction uses slots 1 and 2.
@@ -2415,8 +2428,9 @@ column-major world-to-clip floats at 96–159, eye at 160–171 and environment 
 remaining header bytes are reserved zero. Flags encode CPU (1), center
 rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
 GPU compute (64), resampled light sampling (128) and scalar optical connections (256); neither
-traversal bit marks native queries. The sampler field is 1 for `UniformArea` and 2
-with flag 128; `scripts/reference-hdr` rejects any other pairing and records
+traversal bit marks native queries. The sampler field is 1 for `UniformArea`,
+2 and 3 for the resampled modes with flag 128, and 4 for
+`SeparateDirectional` without that flag. `scripts/reference-hdr` rejects other pairings and records
 `light_sampling` in its manifest, with `center_rays` for flag 2.
 The scalar optical connection profile and its CPU/GPU contract are described in
 [render-graph authoring](../development/render-graph-authoring.md#trace-scene-optical-connections).

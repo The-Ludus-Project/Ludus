@@ -44,7 +44,7 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_PARAMETERS_BINDING) cbuffer Parameters
     float4 BoundsMinimumWorld;
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic light offset, profile version, environment offset + 1
-    uint4 Tile;          // shared preview layout only; the reference kernel always covers Dimensions.xy
+    uint4 Tile;          // x: directional prefix length; the reference kernel covers Dimensions.xy
 };
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_SCENE_BINDING) StructuredBuffer<uint4> sceneWords;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_ACCUMULATION_BINDING) RWStructuredBuffer<float4> accumulation;
@@ -467,7 +467,7 @@ float PowerWeight(float pdf, float other)
 }
 uint GetLightCount()
 {
-    return Counts.w + Counts.z + ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u);
+    return Counts.w - Tile.x + Counts.z + ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u);
 }
 // EvaluateTriangleLightPdf (CPU oracle): combine the PMF and area conversion in the frozen operation order.
 float EvaluateTriangleLightPdf(uint triangle, float3 fromPositionWorld, float3 toPositionWorld, float selectionPmf)
@@ -919,9 +919,10 @@ ReferenceLightChoice SelectReferenceLight(uint pixel, uint sample, uint depth, u
             selected) == false)
         return MakeReferenceLightChoice(ReferenceLightChoiceKind::Invalid, 0, 0);
     float uniformPmf = 1 / float(lightCount);
-    if (selected < Counts.w)
-        return MakeReferenceLightChoice(ReferenceLightChoiceKind::Analytic, selected, uniformPmf);
-    if (selected - Counts.w >= Counts.z)
+    uint remainingAnalyticLights = Counts.w - Tile.x;
+    if (selected < remainingAnalyticLights)
+        return MakeReferenceLightChoice(ReferenceLightChoiceKind::Analytic, selected + Tile.x, uniformPmf);
+    if (selected - remainingAnalyticLights >= Counts.z)
         return MakeReferenceLightChoice(ReferenceLightChoiceKind::Environment, 0, uniformPmf);
     if (IsResampled() == true)
         return MakeReferenceLightChoice(ReferenceLightChoiceKind::ResampledTriangles,
@@ -1161,6 +1162,106 @@ bool TraceProposal(inout PathSample inoutPath,
     return true;
 }
 // --- Resampled emitter light (reference_light_sampling.cpp) ----------------------
+bool EvaluateDirectProposal(inout PathSample inoutPath,
+                            LightProposal proposal,
+                            Bsdf bsdf,
+                            float3 throughput,
+                            float3 scatteringNormalWorld,
+                            float3 normalWorld,
+                            float3 viewWorld,
+                            uint pixel,
+                            uint sample,
+                            uint depth,
+                            out float3 outContribution)
+{
+    outContribution = 0;
+    float cosine = dot(normalWorld, proposal.DirectionWorld);
+    if ((proposal.Pdf > 0 && HasPositiveComponent(proposal.Radiance) == true && cosine > 0 &&
+         dot(scatteringNormalWorld, proposal.DirectionWorld) > 0) == false)
+        return true;
+    if (IsValidBsdf(bsdf) == false || IsUnit(normalWorld) == false || IsUnit(viewWorld) == false ||
+        IsUnit(proposal.DirectionWorld) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
+        return false;
+    }
+    float4 evaluation = EvaluateBsdf(bsdf,
+                                     normalWorld,
+                                     viewWorld,
+                                     proposal.DirectionWorld,
+                                     MakeMaterialRandomContext(pixel, sample, depth));
+    if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w < 0)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
+        return false;
+    }
+    float weight = proposal.IsDelta == true || Options.y > 0 ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
+    outContribution = throughput * evaluation.xyz * proposal.Radiance * (cosine * weight / proposal.Pdf);
+    if (IsValidContribution(outContribution) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
+        return false;
+    }
+    return true;
+}
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th ed.,
+// §§12.3 and 12.6, https://pbr-book.org/4ed/Light_Sources/Distant_Lights and
+// https://pbr-book.org/4ed/Light_Sources/Light_Sampling. The directional estimate uses its
+// own draw and visibility ray, independent of the finite and environment proposals.
+[noinline] bool TraceDirectionalLight(inout PathSample inoutPath,
+                                      uint pixel,
+                                      uint sample,
+                                      uint depth,
+                                      uint triangle,
+                                      float3 positionWorld,
+                                      Bsdf bsdf,
+                                      float3 throughput,
+                                      float3 scatteringNormalWorld,
+                                      float3 normalWorld,
+                                      float3 viewWorld)
+{
+    uint selected = 0;
+    if (Tile.x > 1 &&
+        TrySampleRandomBounded(Sampling.xy,
+                               PixelRandomAddress(pixel, sample, LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + depth),
+                               Tile.x,
+                               selected) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+        return false;
+    }
+    ReferenceIncidentLight incident = EvaluateAnalyticIncidentLight(selected, positionWorld);
+    if (incident.HasFailed == true || IsValidContribution(incident.Radiance) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+        return false;
+    }
+    LightProposal proposal = (LightProposal)0;
+    proposal.DirectionWorld = incident.DirectionWorld;
+    proposal.Radiance = incident.Radiance;
+    proposal.DistanceWorld = incident.DistanceWorld;
+    proposal.IsDelta = true;
+    proposal.Pdf = 1 / float(Tile.x);
+    float3 contribution;
+    if (EvaluateDirectProposal(inoutPath, proposal, bsdf, throughput, scatteringNormalWorld, normalWorld, viewWorld,
+                               pixel, sample, depth, contribution) == false)
+        return false;
+    if (HasPositiveComponent(contribution) == false)
+        return true;
+    float transmission;
+    if (TraceProposal(inoutPath, proposal, triangle, positionWorld, depth, transmission) == false)
+    {
+        MarkInvalid(inoutPath,
+                    depth,
+                    (inoutPath.Status & LUDUS_REFERENCE_CAPACITY_FLAG) != 0
+                        ? LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED
+                        : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
+        return false;
+    }
+    if (transmission > 0)
+        AddTransport(inoutPath, contribution * transmission, depth, false);
+    return true;
+}
 // The resampled ReferenceLightSampling modes replace the power-CDF emitter draw of the emissive category: RIS over the
 // power CDF with the LTC target (exact, or approximate for ResampledFormFactor), then one projected-solid-angle and
 // one LTC sample of the selected triangle under clamped optimal MIS, each with its own shadow ray. The
@@ -1807,38 +1908,16 @@ PathSample TracePath(uint pixel, uint sample)
                                                                           emissiveCategoryProbability,
                                                                           targetTotal) == false)
             return path;
-        bool hasShadow = false;
-        float3 pendingDirect = 0;
+        float3 pendingDirect;
         uint directDepth = depth;
-        float cosine = dot(normalWorld, proposal.DirectionWorld);
-        if (proposal.Pdf > 0 && HasPositiveComponent(proposal.Radiance) == true && cosine > 0 &&
-            dot(scatteringNormalWorld, proposal.DirectionWorld) > 0)
-        {
-            if (IsValidBsdf(bsdf) == false || IsUnit(normalWorld) == false || IsUnit(viewWorld) == false ||
-                IsUnit(proposal.DirectionWorld) == false)
-            {
-                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
-                return path;
-            }
-            float4 evaluation = EvaluateBsdf(bsdf,
-                                             normalWorld,
-                                             viewWorld,
-                                             proposal.DirectionWorld,
-                                             MakeMaterialRandomContext(pixel, sample, depth));
-            if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w < 0)
-            {
-                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
-                return path;
-            }
-            float weight = proposal.IsDelta == true || Options.y > 0 ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
-            pendingDirect = throughput * evaluation.xyz * proposal.Radiance * (cosine * weight / proposal.Pdf);
-            if (IsValidContribution(pendingDirect) == false)
-            {
-                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
-                return path;
-            }
-            hasShadow = HasPositiveComponent(pendingDirect);
-        }
+        if (EvaluateDirectProposal(path, proposal, bsdf, throughput, scatteringNormalWorld, normalWorld, viewWorld,
+                                   pixel, sample, depth, pendingDirect) == false)
+            return path;
+        bool hasShadow = HasPositiveComponent(pendingDirect);
+        if (isSpecular == false && Tile.x != 0 &&
+            TraceDirectionalLight(path, pixel, sample, depth, triangle, positionWorld, bsdf, throughput,
+                                  scatteringNormalWorld, normalWorld, viewWorld) == false)
+            return path;
         float3 samples = float3(RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_LOBE_SLOT)),
                                 RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_FIRST_SLOT)),
                                 RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_SECOND_SLOT)));
