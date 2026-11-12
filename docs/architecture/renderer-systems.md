@@ -2607,6 +2607,44 @@ adaptive sampling and reduced resolution need independent quality/cost evidence.
 Fix sampling variance and AS build/traversal costs before adding a general GPU
 work scheduler. No vendor denoiser or resampling SDK is a mandatory dependency.
 
+### Qualify wavefront hit shading
+
+Mark Lee, Brian Green, Feng Xie and Eric Tabellion's
+[Vectorized Production Path Tracing](https://doi.org/10.1145/3105762.3105768)
+(HPG 2017, §§5–8, Table 2 and Figure 8) grouped MoonRay hits by shader
+instance, then ordered them within those groups for light-set and texture
+locality. On four production scenes, its AVX2 CPU path ran 1.28–2.31× as fast
+as the scalar path. Queuing, sorting and layout conversion took 6.86–18.99% of
+vectorized render time. The large secondary-ray sorting experiment lost overall
+once the authors included sorting cost and intermediate ray state memory.
+
+Defer a Ludus scheduler change until profiling identifies hit shading as a
+substantial cost and shows a plausible gain from grouping work. The
+[GPU-compute reference](#gpu-compute-reference) runs closest-hit traversal,
+material evaluation, shadow queries and accumulation in one transport dispatch.
+Its existing benchmark reports aggregate transport device time, capture wall
+time and query counts. The Staircase2 measurements above found that per-sample
+submission, wait and readback dominated wall time after the BVH improvement.
+Use a backend profiler or a separate diagnostic run to attribute traversal and
+shading costs and inspect active lanes or register pressure where the device
+exposes those counters. Start with Staircase2, a single-material Cornell
+control and Cornell variants that rearrange the same material assignments
+while holding geometry and lighting fixed. Use a release-optimized build on
+the target GPU and verify timestamp coverage before using the reported sum.
+
+If profiling supports an experiment, first compare the existing loop with a
+bounded hit-shading queue in input order. Then compare that queue with hits
+bucketed by material execution path to isolate the effect of grouping. Keep
+the same traversal, scene, camera, depth, seed and sample addresses across
+variants. Time all dispatches, including queue construction and draining, and
+report first-sample and total capture latency, peak queue bytes and high-water
+entry counts. Advance the variant only if repeated paired runs show a gain
+after those costs and the single-material control stays within its timing noise.
+Check raw emission, direct, indirect and total radiance against the
+[CPU oracle contract](#cpu-and-gpu-reference-implementation-requirement).
+Exercise partially filled queues and capacity exhaustion, and verify that
+every admitted sample is committed exactly once on successful completion.
+
 ### Ray milestones and evidence
 
 These optional milestones depend on explicit compute/material/attachment and RHI
@@ -2618,7 +2656,7 @@ extensions; they do not claim any existing R1 backend already traces rays.
 | RT1: progressive reference | CPU oracle and GPU reference implementations of the same frozen RGB surface profile, light/environment/BSDF sampling, MIS, raw accumulation and HDR export | Matched raw CPU/GPU emission/direct/indirect/total comparisons; furnace/Cornell/emissive fixtures, sampling/PDF normalization, multiple seeds/depths, no double lighting; unsupported content and overflow are visible |
 | RT2: hybrid effects | Bounded shadows, reflections and then indirect diffuse with reconstruction/fallbacks | Raw and reconstructed images compared to RT1; moving/disoccluded/reloaded scenes, per-view history, build/ray/filter median and tail times |
 | RT3: dynamic scene scaling | Skinned/morphed BLAS, measured refit/rebuild, optional compaction and scheduling | Pose parity, changing topology/opacity, extreme/mirrored transforms, thin geometry, streaming/rebase/loss and peak overlap memory |
-| RT4: high-end real-time PT | Reviewed resampling, reconstruction and optional wavefront/ray-pipeline variants | Scene suite at fixed resolution/quality budget; temporal artifacts and error versus RT1; measured target-GPU benefit and disabled-mode support |
+| RT4: high-end real-time PT | Reviewed resampling, reconstruction and optional wavefront/ray-pipeline variants | Scene suite at fixed resolution/quality budget; temporal artifacts and error versus RT1; measured target-GPU benefit and disabled-mode support. See [wavefront hit-shading qualification](#qualify-wavefront-hit-shading). |
 
 Track AS resident/scratch/pending bytes, build/refit/compaction costs, traced
 ray classes, path-depth distribution, opacity candidates, NaN/invalid-PDF counts,
