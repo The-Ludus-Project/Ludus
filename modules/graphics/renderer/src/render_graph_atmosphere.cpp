@@ -124,6 +124,7 @@ struct AtmosphereViewUniform final
     math::Vector4 Lighting{};
     math::Vector4 MoonDirectionWorld{};
     math::Vector4 LunarRadiance{};
+    math::Vector4 DirectionToSunAtMoonWorld{};
     math::Vector4 Celestial{};
     math::Vector4 Output{};
     math::Vector4 GalacticNorthWorld{};
@@ -219,6 +220,19 @@ bool TryPackCelestial(const CelestialBackgroundDescription& celestial, Atmospher
         math::IsFinite(radiance) == false || radiance.X < 0 || radiance.Y < 0 || radiance.Z < 0 || sine <= 0)
     {
         return false;
+    }
+    if (celestial.DirectionToSunAtMoonWorld != math::Vector3{})
+    {
+        math::Vector3 directionToSunAtMoonWorld;
+        if (math::TryNormalize(celestial.DirectionToSunAtMoonWorld, directionToSunAtMoonWorld) !=
+            math::MathStatus::Success)
+        {
+            return false;
+        }
+        inoutUniform.DirectionToSunAtMoonWorld = {directionToSunAtMoonWorld.X,
+                                                  directionToSunAtMoonWorld.Y,
+                                                  directionToSunAtMoonWorld.Z,
+                                                  1};
     }
     inoutUniform.MoonDirectionWorld = {directionWorld.X, directionWorld.Y, directionWorld.Z, sine};
     inoutUniform.LunarRadiance = {radiance.X, radiance.Y, radiance.Z, 2 * math::Sin(moonRadius * 0.5F)};

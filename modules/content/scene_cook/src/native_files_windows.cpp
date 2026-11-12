@@ -1,6 +1,7 @@
 #include "native_files.h"
 
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/strings/static_string.hpp>
 
@@ -644,7 +645,7 @@ Status ReadFileBounded(std::string_view path, usize maximum, foundation::Array<u
         {
             return Status::Limit;
         }
-        if (outData.TryAddRange(std::span<const uint8>(buffer.GetData(), count)) == false)
+        if (outData.TryAddRange(foundation::BorrowedView<const uint8>(buffer.GetData(), count)) == false)
         {
             return Status::OutOfMemory;
         }

@@ -60,7 +60,7 @@ flowchart BT
 
 Each container owns storage and element lifetimes. It does not own scheduling,
 resource residency, serialization, locks, or subsystem policy. Keep views as
-`std::span`/`std::string_view`; keep algorithms separate. Do not add containers
+`BorrowedView`/`std::string_view`; keep algorithms separate. Do not add containers
 to `core.h`. New public headers opt in to the facilities they use, and export
 through FoundationContainers' CMake header file set.
 
@@ -70,7 +70,7 @@ through FoundationContainers' CMake header file set.
 | Growable contiguous sequence | `Array<T>` | Implemented; reserve/reuse; pointers move on growth |
 | Small or read-mostly ordered dictionary | `SortedMap<K, V, Compare>` | First increment; binary search, contiguous iteration, O(n) insert/remove |
 | Runtime size within a hard bound | `FixedArray<T, N>` | Implemented (M3); live prefix, no heap, full is a status |
-| FIFO with hard capacity | `RingBuffer<T, N>` | Implemented (M4); inline storage, single owner, two spans for wrapped storage |
+| FIFO with hard capacity | `RingBuffer<T, N>` | Implemented (M4); inline storage, single owner, two borrowed views for wrapped storage |
 | Dense index membership/flags | `StaticBitSet<N>`; `BitSet` | `StaticBitSet` implemented (M5); dynamic `BitSet` deferred for lack of a consumer |
 | Larger mutable dictionary | `HashMap<K, V, Hash, Equal>` | Deferred (M8); no consumer and no measured workload yet |
 | Uniqueness without mapped values | `SortedSet<K>` / `HashSet<K>` | Deferred (M7/M8); no consumer; shares the corresponding lookup policy |
@@ -134,8 +134,8 @@ The default uses `<`; NaNs or mutable external ordering state do not satisfy the
 contract. Heterogeneous lookup and stateful comparators can be added when a
 consumer requires them, without charging every empty dictionary now.
 
-The API intentionally exposes const entry spans for iteration, and `Find` returns
-a mutable/const pointer to the mapped value. A writable entry span would let a
+The API intentionally exposes const entry views for iteration, and `Find` returns
+a mutable/const pointer to the mapped value. A writable entry view would let a
 caller change keys and silently break lookup. There is no `operator[]`: reading
 must not insert or require a default-constructible value. Insert returns
 `{Value, Inserted}`: an existing pointer with false for duplicate, a new pointer
@@ -165,7 +165,7 @@ consume-before-allocation behavior for an aliased rvalue on OOM.
 
 Entry references can still refer to external memory whose contents change; key
 owners must prevent such mutation. Value-semantic keys such as integer IDs are
-the normal choice. A span is a borrow and must not outlive the owning map.
+the normal choice. A view is a borrow and must not outlive the owning map.
 
 ## FixedArray contract
 
@@ -207,7 +207,7 @@ ring rejects `TryAdd`/`TryAddInPlace` with no element changed and no argument
 consumed. Appending never moves a live element, so arguments may alias the
 ring, and a borrow stays valid until its element is removed. `RemoveFirst` is
 O(1); a drained ring restarts at the first slot so the next run is contiguous.
-Index 0 is always the oldest element. `GetLeadingSpan()` then `GetTrailingSpan()`
+Index 0 is always the oldest element. `GetLeadingView()` then `GetTrailingView()`
 visit the live elements in FIFO order without pretending wrapped storage is
 contiguous. Copies and moves preserve FIFO order and restart at the first slot.
 A moved-from ring is empty. `N == 0` is always full.
@@ -607,9 +607,21 @@ allocation fails.
 `FoundationContainers` exports `BorrowedView<T>` in
 `ludus/foundation/containers/borrowed_view.hpp`. It carries an address and element
 count, allocates nothing, and neither owns storage nor extends its lifetime.
-Built-in arrays preserve their extent on construction. For dynamic storage,
-construct with `{array.GetData(), array.GetSize()}`. `BorrowedView<const T>`
-prevents element writes through that view.
+Built-in arrays preserve their extent on construction. `Array`, `StaticArray`
+and `FixedArray` convert to a view of their live elements implicitly or through
+`AsView()`; `SortedMap::AsView()` and `RingBuffer`'s leading and trailing views
+do the same, and `StaticBitSet::GetWords()` returns one. For other storage,
+construct with `{data, count}`. `BorrowedView<const T>` prevents element writes
+through that view, and a `BorrowedView<T>` converts to it implicitly.
+
+The container headers do not include `<span>`. Range operations
+(`Array::TryAddRange`, `AddRange`, `FromRange`, `FixedArray::TryAddRange`) take
+`BorrowedView<const T>` and reject an invalid view. Code that must call an
+existing `std::span` API includes `span_compatibility.hpp`, whose `MakeSpan` and
+`MakeBorrowedView` adapt in each direction; that header is the only container
+header that includes `<span>`. Removing the conversions keeps `<span>` and its
+per-type instantiations out of every translation unit that reaches it only
+through a container ([measurement](../development/build-profiling.md#borrowed-views-in-the-container-headers)).
 
 An empty view means absence. A null pointer with a nonzero count is invalid;
 consumers check `IsValid()` and their required extent before indexing. This

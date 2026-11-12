@@ -5,6 +5,7 @@
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
@@ -175,7 +176,7 @@ TEST_CASE("The Windows shader worker reloads a running Direct3D 12 graph", "[.na
         rhi::SubmissionToken completion;
         REQUIRE(activation.GetActiveOrNull()->Render(fixture.Surface, WIDTH, HEIGHT, completion) ==
                 rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     };
     const usize centerPixel = (usize{32} * WIDTH + 48) * 4;
     awaitDelivery(ReloadState::Staged);

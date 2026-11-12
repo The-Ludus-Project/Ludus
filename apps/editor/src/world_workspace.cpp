@@ -29,7 +29,9 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include <QCheckBox>
@@ -253,6 +255,19 @@ void ConfigureConditionalFields(QFormLayout& inoutRows,
     }
     update();
 }
+bool TryParseEarthCoordinate(const QLineEdit& field, foundation::float64& outCoordinate)
+{
+    const QByteArray bytes = field.text().trimmed().toLatin1();
+    foundation::float32 coordinate = 0;
+    if (foundation::ParseFloat32(bytes.constData(), static_cast<foundation::usize>(bytes.size()), coordinate) !=
+        foundation::NumberParseStatus::Success)
+    {
+        return false;
+    }
+    outCoordinate = static_cast<foundation::float64>(coordinate);
+    return true;
+}
+
 void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
 {
     const QString component = QStringLiteral("light");
@@ -299,24 +314,106 @@ void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows
             OpenWorldEarthLocation(*location, *latitudeOrNull, *longitudeOrNull);
         });
     }
-    const auto updateRows = [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, celestialRows]() {
-        const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
-        const bool hasDriver = isDirectional == true && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
-        const QString driver = driverOrNull->currentData().toString();
-        const bool hasObserver = hasDriver == true && driver != WORLD_CELESTIAL_AUTHORED;
-        const bool hasOrbit = hasObserver == true && driver == WORLD_CELESTIAL_ORBIT;
-        const bool hasEarth = hasObserver == true && hasOrbit == false;
-        for (const CelestialRow& row : celestialRows)
+    QCheckBox* manualOrNull =
+        qobject_cast<QCheckBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_MANUAL_PHOTOMETRY)));
+    WorldEarthTimeField* timeOrNull =
+        qobject_cast<WorldEarthTimeField*>(fields.value(FieldKey(component, WORLD_CELESTIAL_TIME)));
+    if (manualOrNull == nullptr || timeOrNull == nullptr || latitudeOrNull == nullptr || longitudeOrNull == nullptr)
+    {
+        return;
+    }
+    timeOrNull->setToolTip(QStringLiteral("Applying Earth time and location updates all active Earth presets."));
+    QLabel* calculated = new QLabel(&inoutGroup);
+    calculated->setObjectName(QStringLiteral("worldEarthComputedPhotometry"));
+    calculated->setWordWrap(true);
+    calculated->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    inoutRows.addRow(calculated);
+    QWidget* intensityOrNull = fields.value(FieldKey(component, QStringLiteral("intensity")));
+    QWidget* redOrNull = fields.value(FieldKey(component, QStringLiteral("r")));
+    const auto updatePhotometry = [calculated,
+                                   manualOrNull,
+                                   timeOrNull,
+                                   latitudeOrNull,
+                                   longitudeOrNull,
+                                   driverOrNull,
+                                   kindOrNull,
+                                   roleOrNull,
+                                   intensityOrNull,
+                                   redOrNull,
+                                   &inoutRows,
+                                   &inoutGroup]() {
+        foundation::float64 latitude = 0;
+        foundation::float64 longitude = 0;
+        const bool isLatitudeValid = TryParseEarthCoordinate(*latitudeOrNull, latitude);
+        const bool isLongitudeValid = TryParseEarthCoordinate(*longitudeOrNull, longitude);
+        const QJsonObject light{{QStringLiteral("kind"), kindOrNull->currentData().toString()},
+                                {WORLD_CELESTIAL_ROLE, roleOrNull->currentData().toString()},
+                                {WORLD_CELESTIAL_DRIVER, driverOrNull->currentData().toString()},
+                                {WORLD_CELESTIAL_TIME, timeOrNull->GetDaysSinceEpoch()},
+                                {WORLD_CELESTIAL_LATITUDE, latitude},
+                                {WORLD_CELESTIAL_LONGITUDE, longitude}};
+        const bool hasEarth = IsWorldEarthLight(light);
+        const bool isAutomatic = hasEarth == true && manualOrNull->isChecked() == false;
+        for (QWidget* fieldOrNull : {intensityOrNull, redOrNull})
         {
-            const bool isVisible = (row.Group == WorldCelestialFieldGroup::Role && isDirectional == true) ||
-                                   (row.Group == WorldCelestialFieldGroup::Driver && hasDriver == true) ||
-                                   (row.Group == WorldCelestialFieldGroup::Observer && hasObserver == true) ||
-                                   (row.Group == WorldCelestialFieldGroup::Earth && hasEarth == true) ||
-                                   (row.Group == WorldCelestialFieldGroup::Orbit && hasOrbit == true);
-            inoutRows.setRowVisible(GetFormRowWidget(inoutRows, row.Field), isVisible);
+            if (fieldOrNull != nullptr)
+            {
+                GetFormRowWidget(inoutRows, fieldOrNull)->setEnabled(isAutomatic == false);
+            }
         }
+        inoutRows.setRowVisible(calculated, isAutomatic);
+        if (isAutomatic == false)
+        {
+            return;
+        }
+        gameplay::world::EarthCelestialLighting sample;
+        if (isLatitudeValid == false || isLongitudeValid == false || TrySampleWorldEarthLight(light, sample) == false)
+        {
+            calculated->setText(QStringLiteral("Enter a valid Earth date and observer location."));
+            return;
+        }
+        namespace math = foundation::math;
+        constexpr math::Vector3 LUMINANCE_WEIGHTS{0.2126F, 0.7152F, 0.0722F}; // Linear Rec. 709 Y.
+        constexpr foundation::int32 SIGNIFICANT_DIGITS = 4;
+        const math::Vector3 illuminance = sample.GroundIlluminance;
+        const foundation::float32 lux = math::Dot(illuminance, LUMINANCE_WEIGHTS);
+        const foundation::float32 peak = math::Max(illuminance.X, math::Max(illuminance.Y, illuminance.Z));
+        const math::Vector3 colour = peak > 0 ? illuminance / peak : math::Vector3{1, 1, 1};
+        const foundation::float32 diameterDegrees = math::RadiansToDegrees(2 * sample.AngularRadiusRadians);
+        calculated->setText(
+            QStringLiteral("Calculated Earth light\n%1 lx at sea level · %2° diameter\nLinear RGB %3, %4, %5")
+                .arg(QString::number(static_cast<foundation::float64>(lux), 'g', SIGNIFICANT_DIGITS),
+                     QString::number(static_cast<foundation::float64>(diameterDegrees), 'g', SIGNIFICANT_DIGITS),
+                     QString::number(static_cast<foundation::float64>(colour.X), 'g', SIGNIFICANT_DIGITS),
+                     QString::number(static_cast<foundation::float64>(colour.Y), 'g', SIGNIFICANT_DIGITS),
+                     QString::number(static_cast<foundation::float64>(colour.Z), 'g', SIGNIFICANT_DIGITS)));
         inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
     };
+    QObject::connect(manualOrNull, &QCheckBox::toggled, calculated, updatePhotometry);
+    QObject::connect(timeOrNull, &WorldEarthTimeField::Edited, calculated, updatePhotometry);
+    QObject::connect(latitudeOrNull, &QLineEdit::textChanged, calculated, updatePhotometry);
+    QObject::connect(longitudeOrNull, &QLineEdit::textChanged, calculated, updatePhotometry);
+    const auto updateRows =
+        [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, celestialRows, updatePhotometry]() {
+            const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
+            const bool hasDriver =
+                isDirectional == true && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
+            const QString driver = driverOrNull->currentData().toString();
+            const bool hasObserver = hasDriver == true && driver != WORLD_CELESTIAL_AUTHORED;
+            const bool hasOrbit = hasObserver == true && driver == WORLD_CELESTIAL_ORBIT;
+            const bool hasEarth = hasObserver == true && hasOrbit == false;
+            for (const CelestialRow& row : celestialRows)
+            {
+                const bool isVisible = (row.Group == WorldCelestialFieldGroup::Role && isDirectional == true) ||
+                                       (row.Group == WorldCelestialFieldGroup::Driver && hasDriver == true) ||
+                                       (row.Group == WorldCelestialFieldGroup::Observer && hasObserver == true) ||
+                                       (row.Group == WorldCelestialFieldGroup::Earth && hasEarth == true) ||
+                                       (row.Group == WorldCelestialFieldGroup::Orbit && hasOrbit == true);
+                inoutRows.setRowVisible(GetFormRowWidget(inoutRows, row.Field), isVisible);
+            }
+            updatePhotometry();
+            inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+        };
     QObject::connect(kindOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     QObject::connect(roleOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
@@ -3356,7 +3453,8 @@ void WorldWorkspace::coverProbeVolume(foundation::float64 spacingMetres)
 bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                                QString& outError,
                                QWidget*& outInvalidOrNull,
-                               bool shouldReadMaterial)
+                               bool shouldReadMaterial,
+                               bool* outHasInheritedEarthObserverOrNull)
 {
     auto components = Document_.Entity(Selected_).value(QStringLiteral("components")).toObject();
     for (auto c = components.begin(); c != components.end(); ++c)
@@ -3476,6 +3574,16 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             .Edit(Selected_, components, Name_->text(), outError, scene.isEmpty() == true ? nullptr : &scene) == false)
     {
         return false;
+    }
+    if (outHasInheritedEarthObserverOrNull != nullptr)
+    {
+        const QJsonObject proposed = components.value(QStringLiteral("light")).toObject();
+        const QJsonObject accepted = inoutDocument.Entity(Selected_)
+                                         .value(QStringLiteral("components"))
+                                         .toObject()
+                                         .value(QStringLiteral("light"))
+                                         .toObject();
+        *outHasInheritedEarthObserverOrNull = AreWorldEarthObserversEqual(proposed, accepted) == false;
     }
     return true;
 }
@@ -3632,7 +3740,8 @@ bool WorldWorkspace::Apply()
     WorldDocument candidate = Document_;
     QString error;
     QWidget* invalid = nullptr;
-    if (readDraft(candidate, error, invalid) == false)
+    bool hasInheritedEarthObserver = false;
+    if (readDraft(candidate, error, invalid, true, &hasInheritedEarthObserver) == false)
     {
         if (invalid != nullptr)
         {
@@ -3650,9 +3759,9 @@ bool WorldWorkspace::Apply()
     DraftTimer_.stop();
     Document_ = candidate;
     Pending_ = false;
-    if (isProbeLayoutChanged == true)
+    if (isProbeLayoutChanged == true || hasInheritedEarthObserver == true)
     {
-        // The layout change can derive new scale or count values. Show the values the document accepted.
+        // Layout changes and newly linked Earth lights can derive inspector values during the edit.
         RenderInspector();
     }
     // Update labels in place so Save preserves the focused field's text buffer.

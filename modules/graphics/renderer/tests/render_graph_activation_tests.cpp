@@ -544,23 +544,23 @@ TEST_CASE("RG3 malformed runtime packages reject without a partial generation", 
     PackageOptions options;
     options.Version = format::PACKAGE_VERSION + 1;
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::UnsupportedVersion);
-    Array<uint8> truncated = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> truncated = Array<uint8>::FromRange(valid.AsView());
     truncated.RemoveLast();
     CHECK(DecodeBytes(truncated) == renderer::RenderGraphPackageStatus::Malformed);
-    Array<uint8> trailing = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> trailing = Array<uint8>::FromRange(valid.AsView());
     for (usize i = 0; i < sizeof(uint32); ++i)
     {
         trailing.Add(0);
     }
     CHECK(DecodeBytes(trailing) == renderer::RenderGraphPackageStatus::Malformed);
-    Array<uint8> badMagic = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> badMagic = Array<uint8>::FromRange(valid.AsView());
     badMagic[0] = 0;
     CHECK(DecodeBytes(badMagic) == renderer::RenderGraphPackageStatus::UnsupportedVersion);
-    Array<uint8> manyResources = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> manyResources = Array<uint8>::FromRange(valid.AsView());
     manyResources[8] = static_cast<uint8>(format::MAX_RESOURCES + 1);
     CHECK(DecodeBytes(manyResources) == renderer::RenderGraphPackageStatus::CapacityExceeded);
     // Resource 0's aspect field lies after the header and two record words.
-    Array<uint8> badAspect = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> badAspect = Array<uint8>::FromRange(valid.AsView());
     badAspect[format::HEADER_BYTES + 2 * sizeof(uint32)] = 7;
     CHECK(DecodeBytes(badAspect) == renderer::RenderGraphPackageStatus::Malformed);
     // The fragment entry "FragmentMain" is 12 bytes; corrupt the vertex entry's zero padding instead.
@@ -568,17 +568,17 @@ TEST_CASE("RG3 malformed runtime packages reject without a partial generation", 
                              format::PASS_RECORD_BYTES;
     const usize vertexEntryPadding = firstStage + format::STAGE_FIELD_COUNT * sizeof(uint32) +
                                      format::STATIC_INPUT_COUNT * format::INPUT_RECORD_BYTES + 10;
-    Array<uint8> badPadding = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> badPadding = Array<uint8>::FromRange(valid.AsView());
     badPadding[vertexEntryPadding] = 1;
     CHECK(DecodeBytes(badPadding) == renderer::RenderGraphPackageStatus::Malformed);
-    Array<uint8> badInput = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> badInput = Array<uint8>::FromRange(valid.AsView());
     badInput[firstStage + format::STAGE_FIELD_COUNT * sizeof(uint32) + sizeof(uint32)] = 0;
     CHECK(DecodeBytes(badInput) == renderer::RenderGraphPackageStatus::Malformed);
     // A color-only package omits both DepthOnly roles consistently.
     PackageOptions colorOnly;
     colorOnly.HasDepthStages = false;
     CHECK(DecodeBytes(MakePackageBytes(colorOnly)) == renderer::RenderGraphPackageStatus::Ready);
-    Array<uint8> duplicate = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> duplicate = Array<uint8>::FromRange(valid.AsView());
     // Relabel the DepthVertex stage as a second ColorVertex record.
     const usize stageBytes = format::STAGE_FIELD_COUNT * sizeof(uint32) +
                              format::STATIC_INPUT_COUNT * format::INPUT_RECORD_BYTES + 12 + 20 +
@@ -675,7 +675,7 @@ TEST_CASE("Ray path capture generations decode only through their diagnostic ent
           "[render-graph][activation][ray-path]")
 {
     const Array<uint8> runtime = MakePackageBytes({});
-    Array<uint8> capture = Array<uint8>::FromRange(runtime.AsSpan());
+    Array<uint8> capture = Array<uint8>::FromRange(runtime.AsView());
     // Same layout as a runtime package; only the leading little-endian magic word differs.
     constexpr usize MAGIC_BYTES = 4;
     constexpr uint32 BITS_PER_BYTE = 8;
@@ -929,10 +929,10 @@ TEST_CASE("RG3 runtime packages carry GLSL ES block names and reject malformed u
     // The binding record follows the pass record; its third word is the stage visibility.
     const usize binding = format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES + format::CAMERA_RECORD_BYTES +
                           format::PASS_RECORD_BYTES;
-    Array<uint8> badVisibility = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> badVisibility = Array<uint8>::FromRange(valid.AsView());
     badVisibility[binding + 2 * sizeof(uint32)] = 4;
     CHECK(DecodeBytes(badVisibility) == renderer::RenderGraphPackageStatus::Malformed);
-    Array<uint8> manyValues = Array<uint8>::FromRange(valid.AsSpan());
+    Array<uint8> manyValues = Array<uint8>::FromRange(valid.AsView());
     manyValues[5 * sizeof(uint32)] = static_cast<uint8>(format::MAX_UNIFORM_VALUES + 1);
     CHECK(DecodeBytes(manyValues) == renderer::RenderGraphPackageStatus::CapacityExceeded);
 }

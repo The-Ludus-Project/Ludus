@@ -75,7 +75,7 @@ MacroTableOutcome MacroTable::TryDefine(foundation::uint32 index,
                                         const foundation::Array<BodyToken>& body) noexcept
 {
     const foundation::usize first = mBodies.GetSize();
-    if (mBodies.TryAddRange(body.AsSpan()) == false)
+    if (mBodies.TryAddRange(body.AsView()) == false)
     {
         return MacroTableOutcome::OutOfMemory;
     }

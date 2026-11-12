@@ -6,10 +6,10 @@
 
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <cmath>
 #include <cstring>
-#include <span>
 
 namespace ludus::audio::test
 {
@@ -49,13 +49,13 @@ inline Array<uint8> MakeSineWav(uint32 sampleRate, // NOLINT(bugprone-easily-swa
     b.EnsureCapacity(44 + dataBytes);
     // RIFF header
     const uint8 riff[4] = {'R', 'I', 'F', 'F'};
-    b.AddRange(std::span<const uint8>(riff, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(riff, 4));
     PutU32(b, 36 + dataBytes);
     const uint8 wave[4] = {'W', 'A', 'V', 'E'};
-    b.AddRange(std::span<const uint8>(wave, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(wave, 4));
     // fmt chunk
     const uint8 fmt[4] = {'f', 'm', 't', ' '};
-    b.AddRange(std::span<const uint8>(fmt, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(fmt, 4));
     PutU32(b, 16);
     PutU16(b, 1); // PCM
     PutU16(b, channels);
@@ -65,7 +65,7 @@ inline Array<uint8> MakeSineWav(uint32 sampleRate, // NOLINT(bugprone-easily-swa
     PutU16(b, bitsPerSample);
     // data chunk
     const uint8 data[4] = {'d', 'a', 't', 'a'};
-    b.AddRange(std::span<const uint8>(data, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(data, 4));
     PutU32(b, dataBytes);
     for (uint32 f = 0; f < frames; ++f)
     {
@@ -95,12 +95,12 @@ inline Array<uint8> MakeLrWav(uint32 sampleRate, // NOLINT(bugprone-easily-swapp
     const uint32 byteRate = sampleRate * blockAlign;
     const uint32 dataBytes = frames * blockAlign;
     const uint8 riff[4] = {'R', 'I', 'F', 'F'};
-    b.AddRange(std::span<const uint8>(riff, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(riff, 4));
     PutU32(b, 36 + dataBytes);
     const uint8 wave[4] = {'W', 'A', 'V', 'E'};
-    b.AddRange(std::span<const uint8>(wave, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(wave, 4));
     const uint8 fmt[4] = {'f', 'm', 't', ' '};
-    b.AddRange(std::span<const uint8>(fmt, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(fmt, 4));
     PutU32(b, 16);
     PutU16(b, 1);
     PutU16(b, channels);
@@ -109,7 +109,7 @@ inline Array<uint8> MakeLrWav(uint32 sampleRate, // NOLINT(bugprone-easily-swapp
     PutU16(b, blockAlign);
     PutU16(b, bitsPerSample);
     const uint8 data[4] = {'d', 'a', 't', 'a'};
-    b.AddRange(std::span<const uint8>(data, 4));
+    b.AddRange(foundation::BorrowedView<const uint8>(data, 4));
     PutU32(b, dataBytes);
     for (uint32 f = 0; f < frames; ++f)
     {

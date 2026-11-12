@@ -684,7 +684,7 @@ TEST_CASE("Gameplay command overflow retains failure context without publishing"
     REQUIRE(world.GetTraceRing()[0].Commands == 32);
     REQUIRE(world.GetTraceRing()[0].Result == Status::CapacityExceeded);
     REQUIRE(world.GetOutbox().empty());
-    REQUIRE(world.Transforms().GetOwners().size() == 3);
+    REQUIRE(world.Transforms().GetOwners().GetSize() == 3);
 }
 
 TEST_CASE("A failed tick cannot publish a newly reached level outcome", "[world-demo]")

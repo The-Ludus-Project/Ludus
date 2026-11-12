@@ -25,6 +25,8 @@
 #include "texture_decode_queue.h"
 #include "transform_utilities.h"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/parsing/parsing.hpp>
@@ -584,7 +586,7 @@ void RepackSurfaceBand(void* context, usize band) noexcept
         uint32 shared = IR_NONE;
         if (texture.Source == IR_NONE)
         {
-            texture.SwatchDigest = Hash(texture.Image.Texels.AsSpan());
+            texture.SwatchDigest = Hash(foundation::MakeSpan(texture.Image.Texels));
             for (usize i = 0; i < unique.GetSize(); ++i)
             {
                 const CookedTexture& candidate = unique[i];
@@ -1200,7 +1202,7 @@ void HalveTextureTask(void* context, usize task) noexcept
             return status;
         }
     }
-    if (outFileReads.TryAddRange(decodes.GetFileReads()) == false)
+    if (outFileReads.TryAddRange(foundation::MakeBorrowedView(decodes.GetFileReads())) == false)
     {
         return Status::OutOfMemory;
     }
@@ -1370,7 +1372,8 @@ void HalveTextureTask(void* context, usize task) noexcept
                     tangent.Z,
                     tangent.W,
                 };
-                if (cooked->Vertices.TryAddRange(std::span<const float32>(values, VERTEX_FLOATS)) == false)
+                if (cooked->Vertices.TryAddRange(foundation::BorrowedView<const float32>(values, VERTEX_FLOATS)) ==
+                    false)
                 {
                     return Status::OutOfMemory;
                 }
@@ -1509,7 +1512,7 @@ void PackBundle(const SceneIr& scene,
         inoutBlob.AppendUint32(texture.Image.Width);
         inoutBlob.AppendUint32(texture.Image.Height);
         inoutBlob.AppendUint32(static_cast<uint32>(texture.Image.Texels.GetSize()));
-        inoutBlob.AppendBytes(texture.Image.Texels.AsSpan());
+        inoutBlob.AppendBytes(foundation::MakeSpan(texture.Image.Texels));
     }
     for (usize slot = 0; slot < plan.Materials.GetSize(); ++slot)
     {
@@ -2312,10 +2315,10 @@ void ReportDisabledLights(const SceneIr& scene, const CookedLighting& lighting, 
         }
         outResult.License.Clear();
     }
-    const Digest licenseDigest = Hash(outResult.License.AsSpan());
+    const Digest licenseDigest = Hash(foundation::MakeSpan(outResult.License));
     const Status collected = CollectInputs(scene,
                                            root.GetView(),
-                                           textureFileReads.AsSpan(),
+                                           foundation::MakeSpan(textureFileReads),
                                            lighting,
                                            licenseName.empty() == true ? nullptr : &licenseDigest,
                                            licenseName,
@@ -2576,7 +2579,12 @@ bool ImportGltfBestEffort(std::string_view entryFile,
     if (status == Status::Ok)
     {
         NativeSourceResolver resolver(root.GetView());
-        status = gltf::ReadScene(bytes.AsSpan(), detail::GetBaseName(native), resolver, scene, log, cancelOrNull);
+        status = gltf::ReadScene(foundation::MakeSpan(bytes),
+                                 detail::GetBaseName(native),
+                                 resolver,
+                                 scene,
+                                 log,
+                                 cancelOrNull);
     }
     return CookImportedScene(GLTF_BEST_EFFORT_PROFILE,
                              scene,
@@ -2621,7 +2629,7 @@ bool ImportLudusScene(std::string_view entryFile,
     }
     if (status == Status::Ok)
     {
-        status = ludus_scene::ReadScene(bytes.AsSpan(),
+        status = ludus_scene::ReadScene(foundation::MakeSpan(bytes),
                                         detail::GetBaseName(native),
                                         options.ShouldDeferApertures,
                                         scene,
@@ -2705,7 +2713,7 @@ bool WriteBestEffortImport(std::string_view output, const BestEffortResult& resu
             }
             continue;
         }
-        if (detail::WriteFileAtomic(resolved.GetView(), file.Name, file.Data->AsSpan()) != Status::Ok)
+        if (detail::WriteFileAtomic(resolved.GetView(), file.Name, foundation::MakeSpan(*file.Data)) != Status::Ok)
         {
             return FailWith(outError, Status::IoError, "cannot write the import outputs");
         }

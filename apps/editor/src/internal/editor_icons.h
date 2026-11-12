@@ -69,10 +69,12 @@ enum class EditorIcon : foundation::uint8
     Music,
     AudioSource,
     UnknownAsset,
+    Add,
+    Refresh,
 };
 
 /// Number of icons in EditorIcon.
-inline constexpr foundation::usize EDITOR_ICON_COUNT = 46;
+inline constexpr foundation::usize EDITOR_ICON_COUNT = 48;
 
 /// Side of the grid every icon is drawn on, in SVG units.
 inline constexpr qreal EDITOR_ICON_GRID = 24.0;

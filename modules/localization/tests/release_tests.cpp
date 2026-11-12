@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/localization/catalog.hpp>
 
 #include "fixture.hpp"
@@ -107,7 +108,7 @@ Status Prepare(std::span<const uint8> bytes, Diagnostic& outDiagnostic)
 Array<uint8> Copy(std::span<const uint8> bytes)
 {
     Array<uint8> result;
-    REQUIRE(result.TryAddRange(bytes));
+    REQUIRE(result.TryAddRange(ludus::foundation::MakeBorrowedView(bytes)));
     return result;
 }
 
@@ -351,7 +352,8 @@ TEST_CASE("version 2 leases keep their bytes and tokens across replacement", "[l
 
     // A failed replacement preserves the previous catalog.
     const Array<uint8> broken = Copy(std::span<const uint8>(kReleaseFrFr).first(HEADER_BYTES));
-    REQUIRE(PrepareCatalog(broken.AsSpan(), GetSystemAllocationDomain(), moved, diagnostic) == Status::Invalid);
+    REQUIRE(PrepareCatalog(ludus::foundation::MakeSpan(broken), GetSystemAllocationDomain(), moved, diagnostic) ==
+            Status::Invalid);
     REQUIRE(moved.GetLocale() == "fr-CA");
 
     FailingHeap heap;
@@ -370,14 +372,14 @@ TEST_CASE("version 2 rejects every truncation and targeted corruption", "[locali
     }
     Array<uint8> extended = Copy(original);
     REQUIRE(extended.TryAdd(uint8{0}));
-    WriteField(extended.AsSpan(), 8, static_cast<uint32>(extended.GetSize()));
-    REQUIRE(Prepare(extended.AsSpan(), diagnostic) == Status::Invalid);
+    WriteField(ludus::foundation::MakeSpan(extended), 8, static_cast<uint32>(extended.GetSize()));
+    REQUIRE(Prepare(ludus::foundation::MakeSpan(extended), diagnostic) == Status::Invalid);
 
     const auto expect = [&](usize offset, uint32 value, Status expected) {
         Array<uint8> bytes = Copy(original);
-        WriteField(bytes.AsSpan(), offset, value);
+        WriteField(ludus::foundation::MakeSpan(bytes), offset, value);
         Diagnostic local;
-        REQUIRE(Prepare(bytes.AsSpan(), local) == expected);
+        REQUIRE(Prepare(ludus::foundation::MakeSpan(bytes), local) == expected);
     };
     expect(4, 3, Status::Unsupported);   // Unknown package version.
     expect(28, 20, Status::Unsupported); // Record width.
@@ -415,7 +417,8 @@ TEST_CASE("version 2 rejects every truncation and targeted corruption", "[locali
         const uint8 saved = mutated[i];
         mutated[i] = static_cast<uint8>(saved ^ 0xa5U);
         Catalog candidate;
-        if (PrepareCatalog(mutated.AsSpan(), GetSystemAllocationDomain(), candidate, diagnostic) == Status::Ok)
+        if (PrepareCatalog(ludus::foundation::MakeSpan(mutated), GetSystemAllocationDomain(), candidate, diagnostic) ==
+            Status::Ok)
         {
             for (const MessageDescriptor* descriptor :
                  {&release::kMenuStart, &release::kMenuQuit, &release::kHudLives, &release::kMoodSelect})

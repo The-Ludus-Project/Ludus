@@ -2475,7 +2475,7 @@ TEST_CASE("Source-preserving PBRT materials survive project publication and move
     }
     extensionOffset += sizeof(format::MaterialRecordV6);
     Array<uint8> malformed;
-    REQUIRE(malformed.TryAddRange(bundle.AsSpan()) == true);
+    REQUIRE(malformed.TryAddRange(bundle.AsView()) == true);
     REQUIRE(TryWriteLittleEndian(~uint32{0},
                                  {malformed.GetData() + extensionOffset + offsetof(format::MaterialExtensionV7, Model),
                                   sizeof(uint32)}) == true);

@@ -50,6 +50,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
@@ -170,7 +171,7 @@ Array<uint8> ReadPackageBytes(const PackageLocation& location)
     REQUIRE(directory.OpenRead(location.File, file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-    const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+    const filesystem::ReadResult read = file.ReadAt(0, MakeSpan(bytes));
     REQUIRE(read.Outcome.Succeeded() == true);
     REQUIRE(read.BytesRead == bytes.GetSize());
     return bytes;
@@ -865,7 +866,7 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     REQUIRE(directory.OpenRead("rg2_raytracing.lurgrt", file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-    const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+    const filesystem::ReadResult read = file.ReadAt(0, MakeSpan(bytes));
     REQUIRE(read.Outcome.Succeeded() == true);
     REQUIRE(read.BytesRead == bytes.GetSize());
     renderer::RenderGraphPackage package;
@@ -7268,7 +7269,7 @@ struct LargeLineScene final
         REQUIRE(directory.OpenRead(path.substr(separator + 1), file).Succeeded() == true);
         Array<uint8> bytes;
         REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-        const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+        const filesystem::ReadResult read = file.ReadAt(0, MakeSpan(bytes));
         REQUIRE(read.Outcome.Succeeded() == true);
         REQUIRE(read.BytesRead == bytes.GetSize());
         constexpr usize WORD_BYTES = 4;

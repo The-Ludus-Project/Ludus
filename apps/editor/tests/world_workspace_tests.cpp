@@ -3250,6 +3250,13 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     QComboBox* driverOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
     QWidget* timeOrNull = reopened.findChild<QWidget*>(QStringLiteral("worldField:light/celestialTime"));
     QDateTimeEdit* dateTimeOrNull = reopened.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    QCheckBox* overrideOrNull =
+        reopened.findChild<QCheckBox*>(QStringLiteral("worldField:light/celestialManualPhotometry"));
+    QLabel* calculatedOrNull = reopened.findChild<QLabel*>(QStringLiteral("worldEarthComputedPhotometry"));
+    QLineEdit* intensityOrNull = reopened.findChild<QLineEdit*>(QStringLiteral("worldField:light/intensity"));
+    REQUIRE(overrideOrNull != nullptr);
+    REQUIRE(calculatedOrNull != nullptr);
+    REQUIRE(intensityOrNull != nullptr);
     REQUIRE(kindOrNull != nullptr);
     REQUIRE(roleOrNull != nullptr);
     REQUIRE(driverOrNull != nullptr);
@@ -3287,13 +3294,26 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     REQUIRE(scene.AuthoredLights.Count == 1);
     CHECK(scene.AuthoredLights.Lights[0].Direction != authoredDirectionWorld);
     CHECK(scene.AuthoredLights.Lights[0].Direction.Y < 0);
-    CHECK(scene.AuthoredLights.Lights[0].Intensity > 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity > 100'000);
+    CHECK(intensityOrNull->isEnabled() == false);
+    CHECK(calculatedOrNull->isHidden() == false);
     const math::Vector3 solarNoonDirectionWorld = scene.AuthoredLights.Lights[0].Direction;
 
     driverOrNull->setCurrentText(QStringLiteral("Earth Moon"));
     REQUIRE(reopened.Apply() == true);
     REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
     CHECK(scene.AuthoredLights.Lights[0].Direction != solarNoonDirectionWorld);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity < 0.4F);
+    overrideOrNull->setChecked(true);
+    CHECK(intensityOrNull->isEnabled() == true);
+    intensityOrNull->setText(QStringLiteral("10"));
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity == 10);
+    overrideOrNull->setChecked(false);
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity < 0.4F);
 
     roleOrNull->setCurrentText(QStringLiteral("Static Moon"));
     REQUIRE(reopened.Apply() == true);
@@ -6202,6 +6222,42 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     REQUIRE(reopened.Undo() == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.Celestial.LunarAngularRadiusRadians > 0);
+    values.insert(QStringLiteral("stars"), true);
+    components.insert(atmosphereComponent, values);
+    REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
+            true);
+    const auto setEarthPreset = [&reopened, &error](const QString& id, QLatin1StringView preset) {
+        const QJsonObject entity = reopened.Entity(id);
+        QJsonObject entityComponents = entity.value(QStringLiteral("components")).toObject();
+        QJsonObject light = entityComponents.value(QStringLiteral("light")).toObject();
+        light.insert(WORLD_CELESTIAL_ROLE, WORLD_CELESTIAL_DYNAMIC);
+        light.insert(WORLD_CELESTIAL_DRIVER, preset);
+        entityComponents.insert(QStringLiteral("light"), light);
+        REQUIRE(reopened.Edit(id, entityComponents, entity.value(QStringLiteral("name")).toString(), error) == true);
+    };
+    setEarthPreset(sunId, WORLD_CELESTIAL_EARTH_SUN);
+    setEarthPreset(moonId, WORLD_CELESTIAL_EARTH_MOON);
+    const QJsonObject beforeEarthEdit = reopened.Draft();
+    const QJsonObject sun = reopened.Entity(sunId);
+    QJsonObject sunComponents = sun.value(QStringLiteral("components")).toObject();
+    QJsonObject sunLight = sunComponents.value(QStringLiteral("light")).toObject();
+    sunLight.insert(WORLD_CELESTIAL_TIME, 19.69);
+    sunComponents.insert(QStringLiteral("light"), sunLight);
+    REQUIRE(reopened.Edit(sunId, sunComponents, sun.value(QStringLiteral("name")).toString(), error) == true);
+    const QJsonObject synchronizedMoonLight = reopened.Entity(moonId)
+                                                  .value(QStringLiteral("components"))
+                                                  .toObject()
+                                                  .value(QStringLiteral("light"))
+                                                  .toObject();
+    CHECK(synchronizedMoonLight.value(WORLD_CELESTIAL_TIME).toDouble() == 19.69);
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance > 0);
+    CHECK(scene.Atmosphere.Celestial.Planets[0].Illuminance.X > 0);
+    CHECK(scene.Atmosphere.SolarIlluminance.X > 100'000);
+    CHECK(scene.Atmosphere.Celestial.LunarAngularRadiusRadians > 0.004F);
+    CHECK(scene.Atmosphere.Celestial.DirectionToSunAtMoonWorld != math::Vector3{});
+    REQUIRE(reopened.Undo() == true);
+    CHECK(reopened.Draft() == beforeEarthEdit);
     REQUIRE(reopened.RemoveEntities({atmosphereId}, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.IsEnabled == false);

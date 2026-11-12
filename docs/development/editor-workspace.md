@@ -55,6 +55,8 @@ central document well, and **tool windows** dock around it (see
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
 | Profiling | Record editor CPU scopes, viewport GPU durations, or both into a Perfetto JSON trace |
 
+The Project Explorer's top row is one search field (it matches whole file names
+and folders) with two icon buttons beside it: **Add** (plus) and **Refresh**.
 Right-click a Project Explorer category, file, or empty area to open its context
 menu. The **Add** button also offers **New World**, **New Render Graph**,
 **New Shader**, **New Script**, **New Sound**, **New Music**, and the audio/content
@@ -2086,10 +2088,11 @@ Select a directional light and set **Light → Celestial Role** in **Properties*
 rotation. **None** is the default for ordinary directional lights and older
 Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
 
-Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
+Set **Dynamic Celestial → Celestial Preset** to **Transform** to use the entity's
 rotation, including rotation supplied by a game. Choose **Earth Sun** or
-**Earth Moon** to sample an approximate sky direction at **Date & Time (UTC)**
-and the observer's coordinates. Open the calendar to pick a date or type into
+**Earth Moon** to sample direction, colour, illuminance and apparent disk size
+from **Date & Time (UTC)** and the observer's coordinates. Earth Moon also
+samples lunar phase using the Sun at that time. Open the calendar to pick a date or type into
 the date and time field. **Use Now** copies the current instant into the draft.
 The World stores fractional UTC days since January 1, 2000 at 12:00 UTC, so
 existing Earth Time values open at the same instant. The supported dates span
@@ -2104,16 +2107,22 @@ a secure browser context and location access. Choose **Use Coordinates** to
 copy the selected result into the inspector, then **Apply Changes** to apply
 the draft. Saved Worlds store the coordinates. Manual entry works offline and
 when device location is unavailable. North latitude and east longitude are
-positive. Use the same date, time, and coordinates on both lights to preview
-the sky at a single place and moment. The World frame is +X east, +Y up, and
-−Z north.
+positive. Applying an Earth time or location edit updates all active Earth
+presets in one undoable change. A newly activated preset inherits the existing
+Earth observer unless the same edit supplies new observer values. Previously
+saved Earth lights can have different observers until the first time or location
+edit. The World frame is +X east, +Y up, and −Z north.
 
-The editor samples the authored time and preserves the entity's saved
-Transform rotation as a fallback. A sampled body at or below the geometric
-horizon contributes zero direct light. Intensity and colour come from the
-authored light. The rules model direction and horizon visibility. Lunar phase
-and atmospheric effects are outside their scope. Games can pass
-their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+Properties shows the calculated sea-level direct illuminance in lux, linear RGB
+colour and apparent diameter. The clear-sky model dims and warms direct light
+near the horizon, and a body at or below the geometric horizon contributes zero
+direct light. Enable **Override Earth Colour and Intensity** to use the light's
+authored values with the same celestial motion and disk geometry. Previously
+saved colour and intensity remain available through this override. Static lights,
+**Transform** and **Custom Orbit** use authored colour and intensity. The
+Earth model approximates clear skies without weather, refraction, earthshine or
+eclipses. Games can pass their own simulation time to the
+[GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
 
 During a supported hosted Play session, choose **Fast-forward (4×)** in the
 **Play** menu or Game toolbar to advance the game by four fixed ticks per
@@ -2152,22 +2161,23 @@ authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
-**Dynamic Celestial → Earth Sun** to also show the Milky Way and Mercury,
-Venus, Mars, Jupiter, and Saturn. The Sun driver's UTC date, time, latitude
-and longitude place the planets and rotate the star field and Milky Way.
-The linked **Earth Moon** driver supplies those settings when the Sun has
+**Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
+Way and Mercury, Venus, Mars, Jupiter, and Saturn. The Sun preset's UTC date,
+time, latitude and longitude place the planets and rotate the star field and
+Milky Way. The linked **Earth Moon** preset supplies those settings when the Sun has
 an authored transform or a custom orbit. Look along the ecliptic after
 dark for planets above the horizon. Their apparent brightness and color
 vary, and they appear as points at ordinary viewport fields of view.
 
 To show the Moon, choose a different directional light in **Atmosphere → Moon**.
-Set that light's role
-to **Static Moon** for an authored direction or use the **Earth Moon**
-celestial driver. Its direction sets the disk position, its color and
-intensity set the full-phase brightness, and the Sun direction determines
-which part of the disk is lit. Atmospheric extinction dims the celestial
-background toward the horizon. Turning the linked Moon off in the light controls hides
-the disk.
+Set that light's role to **Static Moon** for an authored direction or use the **Earth Moon**
+celestial preset. Earth Moon uses its sampled disk size and lunar lighting
+direction, and its brightness follows the same phase model as the direct beam.
+For an authored Moon, colour and intensity set the full-phase brightness, and
+the linked Sun direction determines which part of the disk is lit. Atmospheric
+extinction dims the celestial background toward the horizon. Turning the linked Moon
+off in the light controls hides the disk. The presets' angular sizes drive the
+sky disks. Direct lights use the renderer's existing directional shadow path.
 
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or
@@ -2675,6 +2685,12 @@ geometry. They have no area to hit or emit from.
 | CPU oracle | Default when GPU compute is unavailable. Traces a CPU BVH on every platform and admits masked materials. |
 | GPU compute | Default when supported by the editor build and device. Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
+
+CPU oracle and GPU compute automatically give enabled directional lights such
+as a Sun or Moon a separate direct-light sample. A lone directional light gets
+a shadow ray from each surface hit that can receive its light. Bulbs and the
+environment keep their own proposal. The capture records the
+[`SeparateDirectional` sampler](../architecture/renderer-systems.md#light-sampling-modes).
 
 **Trace pixel centres** sends every camera ray through its pixel's centre instead
 of a random point in the pixel. A render graph's camera rays do the same, so turn
@@ -3411,11 +3427,19 @@ See [architecture](../architecture/editor-architecture.md),
 
 Text that does not fit is cut where it costs the least, and never silently:
 
-- **Paths** (Project Explorer, Graph Sources, the Error List's File column, the
-  render-graph document header and the source file selector) keep the file name
-  whole. The folder is dimmed and elided from the middle first; only a file name
-  wider than the field is elided itself, also from the middle. Text with no folder
-  part elides from the middle.
+- **Paths** (Graph Sources, the Error List's File column, the render-graph
+  document header and the source file selector) keep the file name whole. The
+  folder is dimmed and elided from the middle first; only a file name wider than
+  the field is elided itself, also from the middle. Text with no folder part
+  elides from the middle.
+- **Document names** (Project Explorer) leave out the suffix their group already
+  names: a world is "sponza", not "sponza.world.json", and the same goes for
+  `.lurender.json` and `.lushader.json`. Slang sources and scripts keep their
+  extensions. Rows are sorted by that name. When two rows in a group share it, each is followed by a dimmed
+  folder ("sponza · assets"): the folder's own name when that tells them apart,
+  else its path. The folder is cut first; a name that is still too wide is elided
+  from the middle, so its head and tail stay ("SliceSampl…Coupled"). The tooltip
+  and the search use the whole relative path.
 - **Combo boxes** draw their current text with the same elision, never a cut
   mid-word, and ask for a width that holds their longest item.
 - **Tool window tab bars** show each window's icon and title while they fit. When
