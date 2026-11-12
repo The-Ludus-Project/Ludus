@@ -24,6 +24,7 @@ inline std::string MakeScratchDirectory(std::string_view prefix)
 }
 
 /// `base` followed by a `/` separator and `relative`; `/` is accepted on every host.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the parent precedes the child, as in a path.
 inline std::string JoinPath(std::string_view base, std::string_view relative)
 {
     std::string path(base);

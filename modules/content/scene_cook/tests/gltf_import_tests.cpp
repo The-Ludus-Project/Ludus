@@ -9,6 +9,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/strings/string.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "importers/gltf/gltf_reader.h"
@@ -630,22 +631,37 @@ TEST_CASE("local smoke test: licensed glTF/GLB and OBJ collections import or exp
             continue;
         }
         hasCollection = true;
-        ludus::foundation::Array<std::string> entries;
+        // The visitor is noexcept: it records allocation failure instead of throwing.
+        struct SceneFiles final
+        {
+            ludus::foundation::Array<ludus::foundation::String> Paths;
+            bool HasFailed = false;
+        };
+        SceneFiles sceneFiles;
         const ludus::test_support::DirectoryEntryVisitor collectEntry =
             [](const ludus::test_support::DirectoryEntry& entry, void* context) noexcept {
                 const bool isScene = entry.Name.ends_with(".gltf") == true || entry.Name.ends_with(".glb") == true ||
                                      entry.Name.ends_with(".obj") == true;
-                if (entry.IsRegularFile == true && isScene == true)
+                if (entry.IsRegularFile == false || isScene == false)
                 {
-                    static_cast<ludus::foundation::Array<std::string>*>(context)->Add(std::string(entry.Path));
+                    return;
+                }
+                SceneFiles& files = *static_cast<SceneFiles*>(context);
+                ludus::foundation::String path;
+                if (path.TryAssign(entry.Path) != ludus::foundation::StringStatus::Ok ||
+                    files.Paths.TryAdd(ludus::foundation::Move(path)) == false)
+                {
+                    files.HasFailed = true;
                 }
             };
         REQUIRE(ludus::test_support::VisitDirectory(directoryOrNull,
                                                     ludus::test_support::DirectoryWalk::Recursive,
                                                     collectEntry,
-                                                    &entries) == true);
-        for (const std::string& file : entries)
+                                                    &sceneFiles) == true);
+        REQUIRE(sceneFiles.HasFailed == false);
+        for (const ludus::foundation::String& path : sceneFiles.Paths)
         {
+            const std::string file(path.GetView());
             INFO(file);
             BestEffortResult result;
             CookError error;
