@@ -60,6 +60,21 @@ runs:
         # runner remained in update for 47 minutes without producing output.
         timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq
         timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq "${packages[@]}"
+    - name: Select Lavapipe for Linux sanitizer tests
+      if: runner.os == 'Linux' && github.job == 'sanitizers' && inputs.preset == 'linux-clang-asan-ubsan' && inputs.editor == 'true'
+      shell: bash
+      run: |
+        # The hosted Vulkan tests exercise Mesa's software device. Default discovery also
+        # loads other drivers, which can leak during enumeration on hosted Ubuntu.
+        # Thanks to Khronos, Vulkan Loader Driver Interface, "Overriding the Default Driver Discovery".
+        # https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md#overriding-the-default-driver-discovery
+        manifest="$(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd(\.[[:alnum:]_]+)?\.json$/ { print }')"
+        if [[ ! -f "$manifest" || ! -r "$manifest" ]]; then
+          echo '::error::Expected one readable Lavapipe manifest. Restore the Ubuntu mesa-vulkan-drivers package.'
+          exit 1
+        fi
+        printf 'VK_DRIVER_FILES=%s\n' "$manifest" >> "$GITHUB_ENV"
+        printf 'Vulkan software driver manifest: %s\n' "$manifest"
     - name: Cache pip downloads
       if: inputs.prerequisites-only != 'true'
       uses: actions/cache@v4

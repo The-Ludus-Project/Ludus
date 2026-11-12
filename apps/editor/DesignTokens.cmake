@@ -1,5 +1,5 @@
-# Generates internal/design_tokens.h from config/design-tokens.json, the one source of colour, spacing and
-# radius tokens shared with scripts/python/init_theme.py and browser/editor.css.
+# Generates internal/design_tokens.h from config/design-tokens.json, the one source of colour, spacing,
+# radius and size tokens shared with scripts/python/init_theme.py and browser/editor.css.
 # Uses only CMake's string(JSON), so configuring needs neither Python nor cooked assets.
 
 set(design_tokens_file "${PROJECT_SOURCE_DIR}/config/design-tokens.json")
@@ -85,7 +85,7 @@ foreach(index RANGE ${design_pair_last})
 endforeach()
 
 set(design_scale_constants "")
-foreach(group spacing radius)
+foreach(group spacing radius size)
     string(JSON member_count LENGTH "${design_tokens_json}" ${group})
     math(EXPR member_last "${member_count} - 1")
     string(TOUPPER "${group}" group_upper)
