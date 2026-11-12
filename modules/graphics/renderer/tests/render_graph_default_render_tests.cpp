@@ -2319,6 +2319,7 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
         camera.Atmosphere.DirectionToSunWorld = -directionWorld;
         camera.Atmosphere.Celestial.DirectionToMoonWorld = directionWorld;
     };
+    const math::Matrix4 worldToOrthographicClip = camera.WorldToClip;
     camera.OrthographicCamera = true;
     pointAtMoon({0, 1, 0});
     render();
@@ -2415,6 +2416,52 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
     CHECK(stars != starless);
     render();
     CHECK(fixture.Pixels == stars);
+
+    camera.Atmosphere.Celestial.StarRadiance = 0;
+    camera.OrthographicCamera = true;
+    camera.CameraPosition = {};
+    camera.WorldToClip = worldToOrthographicClip;
+    camera.CameraForward = {0, 1, 0};
+    camera.Atmosphere.DirectionToSunWorld = {0, -1, 0};
+    camera.Atmosphere.Celestial.GalacticNorthWorld = {1, 0, 0};
+    camera.Atmosphere.Celestial.GalacticCenterWorld = {0, 1, 0};
+    camera.Atmosphere.Celestial.MilkyWayRadiance = 0.045F;
+    render();
+    const uint8 milkyWay = fixture.Pixels[center + BLUE_CHANNEL];
+    CHECK(milkyWay > 0);
+
+    // Pack a planet after a disabled slot and composite it over the galactic band.
+    constexpr float32 TEST_BLUE_ILLUMINANCE_LUX = 2e-7F;
+    camera.Atmosphere.Celestial.Planets[1] =
+    {
+        .DirectionWorld = {0, 1, 0},
+        .Illuminance = {0, 0, TEST_BLUE_ILLUMINANCE_LUX},
+    };
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] > milkyWay);
+
+    // A new Moon masks both the planet and the Milky Way.
+    camera.Atmosphere.Celestial.DirectionToMoonWorld = camera.CameraForward;
+    camera.Atmosphere.DirectionToSunWorld = {1, 1, 0};
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = TEST_DISK_RADIUS;
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = 0;
+    camera.Atmosphere.DirectionToSunWorld = {0, -1, 0};
+    camera.Atmosphere.Celestial.GalacticNorthWorld = camera.CameraForward;
+    camera.Atmosphere.Celestial.GalacticCenterWorld = {1, 0, 0};
+    camera.Atmosphere.Celestial.Planets[1].DirectionWorld = {1, 0, 0};
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+
+    camera.CameraForward = {0, -1, 0};
+    camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    camera.Atmosphere.Celestial.GalacticNorthWorld = {1, 0, 0};
+    camera.Atmosphere.Celestial.GalacticCenterWorld = camera.CameraForward;
+    camera.Atmosphere.Celestial.Planets[1].DirectionWorld = camera.CameraForward;
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
 }
 
 TEST_CASE("The resolved solar disk darkens toward its limb and preserves authored illuminance",

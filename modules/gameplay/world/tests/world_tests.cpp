@@ -247,6 +247,53 @@ TEST_CASE("Earth sky rules provide time-dependent rotations and horizon state", 
     CHECK(moon.IsAboveHorizon == last.IsAboveHorizon);
 }
 
+TEST_CASE("Earth night sky follows planetary ephemerides and sidereal rotation", "[world][celestial]")
+{
+    struct HorizonAngles final
+    {
+        float32 AzimuthDegrees;
+        float32 ElevationDegrees;
+    };
+    // NASA JPL Horizons, observer quantity 4, airless at 0° N, 0° E and 0 km, 2000-01-01 12:00 UTC.
+    // https://ssd-api.jpl.nasa.gov/doc/horizons.html
+    constexpr StaticArray<HorizonAngles, EARTH_VISIBLE_PLANET_COUNT> HORIZONS{{
+        {197.803911F, 64.264891F},
+        {242.842830F, 46.104095F},
+        {106.987824F, 38.687754F},
+        {81.168638F, -13.256459F},
+        {75.737880F, -27.564694F},
+    }};
+    EarthNightSkySample noon;
+    REQUIRE(TrySampleEarthNightSky(0, 0, 0, noon) == true);
+    constexpr float32 ANGULAR_TOLERANCE_DEGREES = 0.2F;
+    const float32 minimumDot = math::Cos(math::DegreesToRadians(ANGULAR_TOLERANCE_DEGREES));
+    for (usize i = 0; i < HORIZONS.GetSize(); ++i)
+    {
+        CAPTURE(i);
+        const float32 azimuth = math::DegreesToRadians(HORIZONS[i].AzimuthDegrees);
+        const float32 elevation = math::DegreesToRadians(HORIZONS[i].ElevationDegrees);
+        const math::Vector3 expectedDirectionWorld{
+            math::Cos(elevation) * math::Sin(azimuth),
+            math::Sin(elevation),
+            -math::Cos(elevation) * math::Cos(azimuth),
+        };
+        CHECK(math::Dot(noon.Planets[i].DirectionWorld, expectedDirectionWorld) > minimumDot);
+        CHECK(math::IsFinite(noon.Planets[i].Illuminance) == true);
+        CHECK(noon.Planets[i].Illuminance.X > 0);
+    }
+    constexpr usize VENUS = 1;
+    constexpr usize MARS = 2;
+    CHECK(noon.Planets[VENUS].Illuminance.X > noon.Planets[MARS].Illuminance.X);
+    CHECK(noon.Planets[MARS].Illuminance.X > noon.Planets[MARS].Illuminance.Z);
+    CHECK(math::Abs(math::Dot(noon.GalacticCenterWorld, noon.GalacticNorthWorld)) < 1e-6F);
+    EarthNightSkySample midnight;
+    REQUIRE(TrySampleEarthNightSky(0.5, 0, 0, midnight) == true);
+    CHECK(math::Abs(noon.GalacticCenterWorld.Y + midnight.GalacticCenterWorld.Y) < 0.01F);
+    CHECK(midnight.Planets[VENUS].DirectionWorld.Y < 0);
+    CHECK(TrySampleEarthNightSky(0, 0, MAX_EARTH_LONGITUDE_DEGREES + 1, midnight) == false);
+    CHECK(midnight.Planets[VENUS].DirectionWorld.Y < 0);
+}
+
 TEST_CASE("Custom orbit sky motion separates world spin from the source path", "[world][celestial]")
 {
     constexpr math::Vector3 LIGHT_FORWARD{0, 0, -1};
