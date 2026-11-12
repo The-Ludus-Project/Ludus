@@ -214,6 +214,8 @@ set(editor_viewport_sources
     src/preview_viewport.cpp
     src/internal/viewport_pass_bars.h
     src/viewport_pass_bars.cpp
+    src/internal/viewport_hud_text.h
+    src/viewport_hud_text.cpp
     src/internal/viewport_object_overlay.h
     src/internal/mesh_silhouette.h
     src/mesh_silhouette.cpp

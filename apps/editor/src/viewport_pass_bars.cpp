@@ -12,7 +12,7 @@ constexpr qreal BAR_RADIUS = 2;
 constexpr int BAR_OPACITY = 120;
 /// Pass bar of every scope but the slowest.
 constexpr QRgb BAR_COLOUR = WithAlpha(GetViewportArgb(design::ThemeColour::AccentPrimary), BAR_OPACITY);
-/// Pass bar of the slowest scope, so the frame's bottleneck stands out at a glance.
+/// Pass bar of the slowest scope when it dominates the others, so the frame's bottleneck stands out at a glance.
 constexpr QRgb SLOWEST_BAR_COLOUR = WithAlpha(GetViewportArgb(design::ThemeColour::StatusWarning), BAR_OPACITY);
 } // namespace
 void PaintViewportPassBars(QPainter& inoutPainter,
@@ -34,7 +34,8 @@ void PaintViewportPassBars(QPainter& inoutPainter,
                          textArea.top() + static_cast<qreal>(firstLine + static_cast<qsizetype>(row)) * lineHeight,
                          textArea.width() * static_cast<qreal>(bars.Fractions[row]),
                          lineHeight);
-        inoutPainter.setBrush(QColor::fromRgba(row == bars.SlowestRow ? SLOWEST_BAR_COLOUR : BAR_COLOUR));
+        inoutPainter.setBrush(QColor::fromRgba(
+            bars.IsSlowestWarning == true && row == bars.SlowestRow ? SLOWEST_BAR_COLOUR : BAR_COLOUR));
         inoutPainter.drawRoundedRect(bar, BAR_RADIUS, BAR_RADIUS);
     }
     inoutPainter.restore();

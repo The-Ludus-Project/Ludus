@@ -1168,13 +1168,16 @@ There are no separate Scene or 3D Levels authoring tabs.
 2. Select **World → Open World…**, then `authoring/starter.world.json`.
 3. Select **Starter Cube**. Edit its position or presentation fields. Units,
    project help, enum choices and logical asset names appear in the inspector.
-   A number with a minimum and maximum has a slider beside its field. Narrow
-   ranges (colour channels, angles) move evenly; wide ranges such as 0 to
-   10000 m use a logarithmic scale, so small values stay reachable. Type in the
-   field for an exact value. The slider edits the same draft as typing, so
+   A number with a minimum and maximum has a slider beside its field, except
+   angles (°) and distances (m), which you type or scrub. The slider fills the
+   field column and the number keeps the width its value needs. Narrow ranges
+   such as colour channels move evenly; wide ranges such as 0 to 1000000 cd use
+   a logarithmic scale, so small values stay reachable. Type in the field for
+   an exact value. The slider edits the same draft as typing, so
    **Apply Changes** and **Reset Fields** treat both alike. Position, rotation,
    scale and colour channels keep their compact rows: drag an axis letter to
-   change one of those.
+   change one of those. The default World's Transform also reads as one
+   Position, Rotation and Scale row each rather than nine separate rows.
 4. Use **Apply Changes** to validate all fields as one edit. Invalid text stays
    visible and the applied document stays intact. **Reset Fields** restores the
    last applied values. Selection and structural commands wait for Apply/Reset.
@@ -2392,16 +2395,23 @@ overlapping fragments. The debug view is saved like the other modes. Older
 preferences open in Solid.
 
 The **Stats** toolbar toggle overlays averaged frame statistics in the
-viewport's top-left corner:
+viewport's top-left corner. Each row is a quiet label and a right-aligned value in
+body type with tabular figures (`viewport_hud_text`), so numbers line up without a
+monospace font:
 
 - **GPU**: device timestamp time for the frame.
-- **CPU**: time spent preparing and submitting the frame.
-- **Resolution** and **draw count**.
+- **Editor CPU per frame**: time the editor spends preparing and submitting the frame.
+- **Image**: resolution and draw count.
 - **Passes**: the total GPU time of the named render scopes, then the six slowest
   scopes ("Viewport/Scene", the render-graph passes, and so on) with their rolling
   average in milliseconds. A bar behind each row shows its share of the slowest
-  pass, which is drawn in the warning colour; any further scopes collapse into one
+  pass. The slowest bar is drawn in the warning colour only when that pass takes
+  more than half of the passes' time (`ViewportPassBars::IsSlowestWarning`);
+  otherwise every bar uses the accent. Any further scopes collapse into one
   `+N more` row. The same rows appear in the graph viewer's overlay.
+
+Shader and render messages appear bottom-centre, above the legend, so they never
+cover the statistics. An error message carries a danger-coloured edge on its left.
 
 Per-pass timing uses the RHI's timestamp queries (`ArmGpuPassTimings`), which
 Vulkan and Metal implement. The queries are armed only while **Stats** is on (or

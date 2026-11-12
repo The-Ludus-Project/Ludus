@@ -73,6 +73,9 @@ enum class EditorIcon : foundation::uint8
     Refresh,
     More,
     Locked,
+    FrameAll,
+    Help,
+    ReferenceRender,
     Sun,
     Atmosphere,
     Camera,
@@ -80,7 +83,7 @@ enum class EditorIcon : foundation::uint8
 };
 
 /// Number of icons in EditorIcon.
-inline constexpr foundation::usize EDITOR_ICON_COUNT = 54;
+inline constexpr foundation::usize EDITOR_ICON_COUNT = 57;
 
 /// Side of the grid every icon is drawn on, in SVG units.
 inline constexpr qreal EDITOR_ICON_GRID = 24.0;

@@ -5,6 +5,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
+#include <QLatin1StringView>
 #include <QString>
 
 namespace ludus::editor
@@ -40,6 +41,11 @@ inline constexpr foundation::usize MAX_VIEWPORT_PASS_ROWS = 6;
 inline constexpr foundation::usize MAX_VIEWPORT_PASS_SERIES = 64;
 /// Completed batches a scope may be absent from before its series is dropped as no longer rendered.
 inline constexpr foundation::usize VIEWPORT_PASS_STALE_BATCHES = 30;
+
+/// Separates a row's label from its value in the overlay text; the overlay draws the two as grid columns.
+inline constexpr QLatin1StringView VIEWPORT_STATISTICS_VALUE_SEPARATOR{": "};
+/// Label of the editor's own CPU time per viewport frame, so it is not read as the game's CPU time.
+inline constexpr QLatin1StringView VIEWPORT_EDITOR_CPU_LABEL{"Editor CPU per frame"};
 
 /// Rolling average of the most recent VIEWPORT_STATISTICS_AVERAGE_FRAMES samples.
 /// Owner-thread value type; adding never allocates.
@@ -108,8 +114,10 @@ struct ViewportPassBars final
     foundation::usize TrailingLines = 0;
     /// Bar length of each row, from zero to one, relative to the slowest pass.
     foundation::StaticArray<foundation::float32, MAX_VIEWPORT_PASS_ROWS> Fractions{};
-    /// Row of the slowest pass; drawn in the warning token instead of the accent.
+    /// Row of the slowest pass.
     foundation::usize SlowestRow = 0;
+    /// Whether the slowest pass dominates the others enough to be drawn in the warning token instead of the accent.
+    bool IsSlowestWarning = false;
 };
 
 /// Smoothed per-frame viewport measurements shown by the statistics overlay.
@@ -217,14 +225,16 @@ private:
     foundation::float64 mReportedMilliseconds = 0;
 };
 
-/// Graph overlay: delivered-image FPS, active CPU work, device GPU time, and elapsed readback.
-/// GPU timing comes from the existing device owner; this formatter never arms or polls queries.
+/// Graph overlay rows ("label: value"): the delivered-image rate ("idle, renders on change" while nothing is
+/// rendered), the editor's active CPU work, device GPU time, then the readback and inspection times that have
+/// been measured (none while paused or zero), then the pass block. GPU timing comes from the existing device
+/// owner; this formatter never arms or polls queries.
 [[nodiscard]] QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
                                                     const ViewportStatistics& deviceStatistics,
                                                     foundation::uint64 nowNanoseconds);
 
 /// Pass block appended to the overlay text: a header with the summed time, then the slowest
-/// MAX_VIEWPORT_PASS_ROWS scopes by rolling average with one aligned millisecond column, then one
+/// MAX_VIEWPORT_PASS_ROWS scopes by rolling average, each a "name: 1.00 ms" row, then one
 /// "+N more" row. Empty while waiting for the first batch; "Passes: n/a" when per-pass timing is
 /// unsupported, even where frame GPU time is shown. Lines carry no leading or trailing newline.
 [[nodiscard]] QString FormatViewportPassLines(const ViewportStatistics& statistics);
@@ -233,7 +243,7 @@ private:
 /// a status line.
 [[nodiscard]] ViewportPassBars MakeViewportPassBars(const ViewportStatistics& statistics);
 
-/// Overlay text: GPU and CPU frame times (two decimals, milliseconds), then resolution and draws.
+/// Overlay text: GPU and editor CPU frame times (two decimals, milliseconds), then image size and draws.
 /// Unavailable GPU timing reads "GPU: n/a"; a pending first sample reads "GPU: …". Per-pass lines
 /// from FormatViewportPassLines follow once measured.
 [[nodiscard]] QString FormatViewportStatistics(const ViewportStatistics& statistics);
