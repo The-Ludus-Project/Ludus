@@ -440,28 +440,32 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
     path.DirectDepth = path.Depth;
     return rhi::RasterStatus::Ready;
 }
+struct ReferenceDirectReceiver final
+{
+    math::Vector3 PositionWorld;
+    math::Vector3 ScatteringNormalWorld;
+    math::Vector3 ShadingNormalWorld;
+    math::Vector3 ViewDirectionWorld;
+};
 rhi::RasterStatus QueueDirectContribution(const ReferenceJob& job,
                                           ReferenceCaptureInfo& inoutInfo,
                                           ReferencePath& inoutPath,
                                           const ReferenceTriangle& triangle,
                                           const ReferenceBsdf& bsdf,
-                                          math::Vector3 positionWorld,
-                                          math::Vector3 scatteringNormalWorld,
-                                          math::Vector3 normalWorld,
-                                          math::Vector3 viewWorld,
+                                          const ReferenceDirectReceiver& receiver,
                                           const ReferenceIncidentLight& proposal,
                                           float32 lightProbability) noexcept
 {
-    const float32 cosine = math::Dot(normalWorld, proposal.DirectionWorld);
+    const float32 cosine = math::Dot(receiver.ShadingNormalWorld, proposal.DirectionWorld);
     if ((lightProbability > 0 && Positive(proposal.Radiance) == true && cosine > 0 &&
-         math::Dot(scatteringNormalWorld, proposal.DirectionWorld) > 0) == false)
+         math::Dot(receiver.ScatteringNormalWorld, proposal.DirectionWorld) > 0) == false)
     {
         return rhi::RasterStatus::Ready;
     }
     ReferenceBsdfEvaluation evaluation;
     if (EvaluateReferenceBsdf(bsdf,
-                              normalWorld,
-                              viewWorld,
+                              receiver.ShadingNormalWorld,
+                              receiver.ViewDirectionWorld,
                               proposal.DirectionWorld,
                               evaluation,
                               MakeMaterialRandomContext(job, inoutPath)) != rhi::RasterStatus::Ready)
@@ -479,7 +483,7 @@ rhi::RasterStatus QueueDirectContribution(const ReferenceJob& job,
         return FailReferencePath(inoutInfo, inoutPath, ReferenceFailure::InvalidDirectContribution);
     }
     return Positive(contribution) == true
-               ? QueueShadow(job, inoutInfo, inoutPath, triangle, positionWorld, proposal, contribution)
+               ? QueueShadow(job, inoutInfo, inoutPath, triangle, receiver.PositionWorld, proposal, contribution)
                : rhi::RasterStatus::Ready;
 }
 // Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th ed.,
@@ -761,6 +765,13 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             return sampled;
         }
     }
+    const ReferenceDirectReceiver receiver
+    {
+        .PositionWorld = point,
+        .ScatteringNormalWorld = scatteringNormal,
+        .ShadingNormalWorld = normal,
+        .ViewDirectionWorld = view,
+    };
     if (isSpecular == false && job.DirectionalLightCount != 0)
     {
         const ReferenceLightChoice directionalChoice = SelectDirectionalLight(job, path);
@@ -775,10 +786,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                                                                  path,
                                                                  triangle,
                                                                  bsdf,
-                                                                 point,
-                                                                 scatteringNormal,
-                                                                 normal,
-                                                                 view,
+                                                                 receiver,
                                                                  directional,
                                                                  directionalChoice.SelectionPmf);
         if (queued != rhi::RasterStatus::Ready)
@@ -786,17 +794,8 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             return queued;
         }
     }
-    const rhi::RasterStatus queued = QueueDirectContribution(job,
-                                                             inoutInfo,
-                                                             path,
-                                                             triangle,
-                                                             bsdf,
-                                                             point,
-                                                             scatteringNormal,
-                                                             normal,
-                                                             view,
-                                                             proposal,
-                                                             lightProbability);
+    const rhi::RasterStatus queued =
+        QueueDirectContribution(job, inoutInfo, path, triangle, bsdf, receiver, proposal, lightProbability);
     if (queued != rhi::RasterStatus::Ready)
     {
         return queued;
