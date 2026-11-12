@@ -170,6 +170,9 @@ def compiler_cache_args(root: Path, preset: str, engine, environment=None) -> li
 def setup_editor(args, engine, *, preparation: BackgroundCommands | None = None) -> None:
     if not args.with_editor:
         return
+    if getattr(args, "configure_editor_only", False):
+        configure_editor(args, engine, preparation=preparation)
+        return
     build_editor(args, engine, preparation=preparation)
     refresh_editor_engine_installs(args, engine)
 
@@ -227,6 +230,12 @@ def homebrew_qt_prefixes(brew: str, engine, root: Path, *, with_preview: bool) -
 
 
 def build_editor(args, engine, *, preparation: BackgroundCommands | None = None) -> None:
+    configure_editor(args, engine, preparation=preparation)
+    init_progress.begin("editor_build")
+    engine.cmake_build(engine.repo_root(), args.preset, ["--target", "ludus_editor"])
+
+
+def configure_editor(args, engine, *, preparation: BackgroundCommands | None = None) -> None:
     validate_editor_options(args, engine)
     root = engine.repo_root()
     preview_args = [f"-DLUDUS_EDITOR_RENDER_PREVIEW={'ON' if args.with_editor_preview else 'OFF'}"]
@@ -265,8 +274,6 @@ def build_editor(args, engine, *, preparation: BackgroundCommands | None = None)
         cmake_targets.query_codemodel(engine.build_dir_for_preset(root, args.preset), "ludus-editor")
         engine.cmake_configure(root, args.preset, ["-DLUDUS_BUILD_EDITOR=ON", *preview_args, *qt_args],
                                reuse_current_cache=True)
-        init_progress.begin("editor_build")
-        engine.cmake_build(root, args.preset, ["--target", "ludus_editor"])
         return
     if not args.no_system_install:
         init_progress.begin("editor_packages")
@@ -293,5 +300,3 @@ def build_editor(args, engine, *, preparation: BackgroundCommands | None = None)
     cmake_targets.query_codemodel(engine.build_dir_for_preset(root, args.preset), "ludus-editor")
     engine.cmake_configure(root, args.preset, ["-DLUDUS_BUILD_EDITOR=ON", *preview_args],
                            reuse_current_cache=True)
-    init_progress.begin("editor_build")
-    engine.cmake_build(root, args.preset, ["--target", "ludus_editor"])

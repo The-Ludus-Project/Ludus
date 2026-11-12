@@ -10,6 +10,8 @@ using foundation::float32;
 using foundation::float64;
 namespace
 {
+constexpr float64 DAYS_PER_JULIAN_CENTURY = 36525;
+
 struct EclipticCoordinates final
 {
     float64 LongitudeRadians;
@@ -148,9 +150,7 @@ struct HorizonObserver
     float64 RadiusRatio = 0;
 };
 
-bool TryProjectCelestialTransform(math::Vector3d directionEquatorial,
-                                  const HorizonObserver& observer,
-                                  CelestialTransform& outTransform) noexcept
+math::Vector3d ProjectToHorizon(math::Vector3d directionEquatorial, const HorizonObserver& observer) noexcept
 {
     const float64 cosMeridian = math::Cos(observer.MeridianRadians);
     const float64 sinMeridian = math::Sin(observer.MeridianRadians);
@@ -161,19 +161,211 @@ bool TryProjectCelestialTransform(math::Vector3d directionEquatorial,
     const float64 north = directionEquatorial.Z * cosLatitude - equatorialMeridian * sinLatitude;
     // The body direction has unit length. Subtract the observer's radius in body-distance units.
     const float64 up = equatorialMeridian * cosLatitude + directionEquatorial.Z * sinLatitude - observer.RadiusRatio;
-    const math::Vector3 incomingWorld{-static_cast<float32>(east),
-                                      -static_cast<float32>(up),
-                                      static_cast<float32>(north)};
+    return {east, up, -north};
+}
+
+math::Vector3 NarrowDirection(math::Vector3d directionWorld) noexcept
+{
+    return {static_cast<float32>(directionWorld.X),
+            static_cast<float32>(directionWorld.Y),
+            static_cast<float32>(directionWorld.Z)};
+}
+
+bool TryProjectCelestialTransform(math::Vector3d directionEquatorial,
+                                  const HorizonObserver& observer,
+                                  CelestialTransform& outTransform) noexcept
+{
+    const math::Vector3d directionWorld = ProjectToHorizon(directionEquatorial, observer);
     CelestialTransform transform;
-    if (math::TryRotationBetween({0, 0, -1}, incomingWorld, transform.Rotation) != math::MathStatus::Success)
+    if (math::TryRotationBetween({0, 0, -1}, -NarrowDirection(directionWorld), transform.Rotation) !=
+        math::MathStatus::Success)
     {
         return false;
     }
     // Dimensionless roundoff allowance in the vertical direction component at the exact horizon.
     constexpr float64 HORIZON_COMPONENT_TOLERANCE = 1e-12;
-    transform.IsAboveHorizon = up > HORIZON_COMPONENT_TOLERANCE;
+    transform.IsAboveHorizon = directionWorld.Y > HORIZON_COMPONENT_TOLERANCE;
     outTransform = transform;
     return true;
+}
+
+bool IsValidEarthObserver(float64 daysSinceJ2000, float64 latitudeDegrees, float64 longitudeDegrees) noexcept
+{
+    return IsWithinCelestialRange(daysSinceJ2000, MAX_EARTH_CELESTIAL_DAYS) == true &&
+           IsWithinCelestialRange(latitudeDegrees, MAX_EARTH_LATITUDE_DEGREES) == true &&
+           IsWithinCelestialRange(longitudeDegrees, MAX_EARTH_LONGITUDE_DEGREES) == true;
+}
+
+HorizonObserver MakeEarthHorizon(float64 daysSinceJ2000, float64 latitudeDegrees, float64 longitudeDegrees) noexcept
+{
+    // Thanks to the U.S. Naval Observatory, "Computing Approximate Sidereal Time" and "Computing Altitude
+    // and Azimuth from Greenwich Apparent Sidereal Time" (https://aa.usno.navy.mil/faq/GAST and
+    // https://aa.usno.navy.mil/faq/alt_az). Project into the mean local horizon without computing azimuth.
+    constexpr float64 SIDEREAL_AT_EPOCH_HOURS = 18.697375;
+    constexpr float64 SIDEREAL_HOURS_PER_DAY = 24.065709824279;
+    constexpr float64 DEGREES_PER_SIDEREAL_HOUR = 15;
+    return
+    {
+        .MeridianRadians = math::DegreesToRadians(
+            DEGREES_PER_SIDEREAL_HOUR * (SIDEREAL_AT_EPOCH_HOURS + SIDEREAL_HOURS_PER_DAY * daysSinceJ2000) +
+            longitudeDegrees),
+        .LatitudeRadians = math::DegreesToRadians(latitudeDegrees),
+    };
+}
+
+struct SecularElement final
+{
+    float64 AtEpoch;
+    float64 PerJulianCentury;
+};
+
+struct PlanetOrbit final
+{
+    SecularElement SemimajorAxisAu;
+    SecularElement Eccentricity;
+    SecularElement InclinationDegrees;
+    SecularElement MeanLongitudeDegrees;
+    SecularElement PerihelionLongitudeDegrees;
+    SecularElement AscendingNodeDegrees;
+};
+
+struct VisiblePlanet final
+{
+    PlanetOrbit Orbit;
+    float64 FullPhaseMagnitudeAtUnitDistances;
+    math::Vector3 Tint;
+};
+
+// Thanks to E.M. Standish, J.G. Williams and NASA JPL Solar System Dynamics, "Approximate Positions of
+// the Planets", Table 1 and section "Formulae for using the Keplerian elements"
+// (https://ssd.jpl.nasa.gov/planets/approx_pos.html). Use the Earth–Moon barycenter as the observer's center.
+// Thanks to NASA NSSDC's "Planetary Fact Sheets" (https://nssdc.gsfc.nasa.gov/planetary/planetfact.html)
+// for the V(1,0) magnitudes. The RGB tints are representative display colors.
+constexpr PlanetOrbit EARTH_MOON_ORBIT{
+    {1.00000261, 0.00000562},
+    {0.01671123, -0.00004392},
+    {-0.00001531, -0.01294668},
+    {100.46457166, 35999.37244981},
+    {102.93768193, 0.32327364},
+    {0, 0},
+};
+
+constexpr foundation::StaticArray<VisiblePlanet, EARTH_VISIBLE_PLANET_COUNT> VISIBLE_PLANETS{{
+    {
+        .Orbit = {{0.38709927, 0.00000037},
+                  {0.20563593, 0.00001906},
+                  {7.00497902, -0.00594749},
+                  {252.25032350, 149472.67411175},
+                  {77.45779628, 0.16047689},
+                  {48.33076593, -0.12534081}},
+        .FullPhaseMagnitudeAtUnitDistances = -0.613,
+        .Tint = {1, 0.94F, 0.86F},
+    }, // Mercury
+    {
+        .Orbit = {{0.72333566, 0.00000390},
+                  {0.00677672, -0.00004107},
+                  {3.39467605, -0.00078890},
+                  {181.97909950, 58517.81538729},
+                  {131.60246718, 0.00268329},
+                  {76.67984255, -0.27769418}},
+        .FullPhaseMagnitudeAtUnitDistances = -4.38,
+        .Tint = {1, 0.98F, 0.92F},
+    }, // Venus
+    {
+        .Orbit = {{1.52371034, 0.00001847},
+                  {0.09339410, 0.00007882},
+                  {1.84969142, -0.00813131},
+                  {-4.55343205, 19140.30268499},
+                  {-23.94362959, 0.44441088},
+                  {49.55953891, -0.29257343}},
+        .FullPhaseMagnitudeAtUnitDistances = -1.60,
+        .Tint = {1, 0.54F, 0.32F},
+    }, // Mars
+    {
+        .Orbit = {{5.20288700, -0.00011607},
+                  {0.04838624, -0.00013253},
+                  {1.30439695, -0.00183714},
+                  {34.39644051, 3034.74612775},
+                  {14.72847983, 0.21252668},
+                  {100.47390909, 0.20469106}},
+        .FullPhaseMagnitudeAtUnitDistances = -9.40,
+        .Tint = {1, 0.93F, 0.81F},
+    }, // Jupiter
+    {
+        .Orbit = {{9.53667594, -0.00125060},
+                  {0.05386179, -0.00050991},
+                  {2.48599187, 0.00193609},
+                  {49.95424423, 1222.49362201},
+                  {92.59887831, -0.41897216},
+                  {113.66242448, -0.28867794}},
+        .FullPhaseMagnitudeAtUnitDistances = -8.91,
+        .Tint = {1, 0.87F, 0.65F},
+    }, // Saturn
+}};
+
+float64 EvaluateElement(SecularElement element, float64 centuries) noexcept
+{
+    return element.AtEpoch + element.PerJulianCentury * centuries;
+}
+
+math::Vector3d ComputeHeliocentricPositionEcliptic(const PlanetOrbit& orbit, float64 centuries) noexcept
+{
+    const float64 semimajorAxis = EvaluateElement(orbit.SemimajorAxisAu, centuries);
+    const float64 eccentricity = EvaluateElement(orbit.Eccentricity, centuries);
+    const float64 inclination = math::DegreesToRadians(EvaluateElement(orbit.InclinationDegrees, centuries));
+    const float64 perihelionLongitude = EvaluateElement(orbit.PerihelionLongitudeDegrees, centuries);
+    const float64 nodeLongitude = EvaluateElement(orbit.AscendingNodeDegrees, centuries);
+    const float64 perihelionArgument = math::DegreesToRadians(perihelionLongitude - nodeLongitude);
+    const float64 node = math::DegreesToRadians(nodeLongitude);
+    const float64 unwrappedAnomaly =
+        math::DegreesToRadians(EvaluateElement(orbit.MeanLongitudeDegrees, centuries) - perihelionLongitude);
+    const float64 meanAnomaly = unwrappedAnomaly - math::kTau * math::Floor(unwrappedAnomaly / math::kTau + 0.5);
+    float64 anomaly = meanAnomaly + eccentricity * math::Sin(meanAnomaly);
+    // The largest eccentricity in Table 1's subset is Mercury's ~0.206.
+    // Four Newton iterations suffice for all admitted dates at JPL's angular tolerance.
+    constexpr foundation::usize KEPLER_ITERATIONS = 4;
+    for (foundation::usize i = 0; i < KEPLER_ITERATIONS; ++i)
+    {
+        anomaly +=
+            (meanAnomaly - anomaly + eccentricity * math::Sin(anomaly)) / (1 - eccentricity * math::Cos(anomaly));
+    }
+    const float64 xOrbit = semimajorAxis * (math::Cos(anomaly) - eccentricity);
+    const float64 yOrbit = semimajorAxis * math::Sqrt(1 - eccentricity * eccentricity) * math::Sin(anomaly);
+    const float64 xNode = xOrbit * math::Cos(perihelionArgument) - yOrbit * math::Sin(perihelionArgument);
+    const float64 yNode = xOrbit * math::Sin(perihelionArgument) + yOrbit * math::Cos(perihelionArgument);
+    const float64 yInclined = yNode * math::Cos(inclination);
+    return {xNode * math::Cos(node) - yInclined * math::Sin(node),
+            xNode * math::Sin(node) + yInclined * math::Cos(node),
+            yNode * math::Sin(inclination)};
+}
+
+math::Vector3d RotateEclipticToEquatorial(math::Vector3d vectorEcliptic, float64 obliquityRadians) noexcept
+{
+    return {vectorEcliptic.X,
+            vectorEcliptic.Y * math::Cos(obliquityRadians) - vectorEcliptic.Z * math::Sin(obliquityRadians),
+            vectorEcliptic.Y * math::Sin(obliquityRadians) + vectorEcliptic.Z * math::Cos(obliquityRadians)};
+}
+
+float32 ComputePlanetIlluminance(float64 fullPhaseMagnitude,
+                                 math::Vector3d positionEcliptic,
+                                 math::Vector3d displacementEcliptic,
+                                 float64 observerDistance) noexcept
+{
+    // Thanks to Andrew Crumey, "Human contrast threshold and astronomical visibility", section 3
+    // (https://doi.org/10.1093/mnras/stu992), for the V-band zero point and illuminance relation.
+    constexpr float64 MAGNITUDE_ZERO_LUX = 2.54e-6;
+    constexpr float64 MAGNITUDE_FLUX_BASE = 10;
+    constexpr float64 MAGNITUDE_FLUX_EXPONENT = -0.4;
+    const float64 sunDistanceSquared = math::LengthSquared(positionEcliptic);
+    const float64 distanceProduct = math::Sqrt(sunDistanceSquared) * observerDistance;
+    const float64 cosine = math::Dot(positionEcliptic, displacementEcliptic) / distanceProduct;
+    const float64 sine = math::Length(math::Cross(positionEcliptic, displacementEcliptic)) / distanceProduct;
+    const float64 phaseAngle = math::Atan2(sine, cosine);
+    // Use a Lambertian sphere for the visible phase, including the crescent falloff near conjunction.
+    const float64 phase = math::Max(0.0, (sine + (math::kPi - phaseAngle) * cosine) / math::kPi);
+    const float64 fullPhaseLux =
+        MAGNITUDE_ZERO_LUX * math::Pow(MAGNITUDE_FLUX_BASE, MAGNITUDE_FLUX_EXPONENT * fullPhaseMagnitude);
+    return static_cast<float32>(fullPhaseLux * phase / (distanceProduct * distanceProduct));
 }
 } // namespace
 
@@ -231,14 +423,11 @@ bool TrySampleEarthCelestialTransform(EarthCelestialBody body,
                                       EarthCelestialTransform& outTransform) noexcept
 {
     if ((body != EarthCelestialBody::Sun && body != EarthCelestialBody::Moon) ||
-        math::IsFinite(daysSinceJ2000) == false || math::Abs(daysSinceJ2000) > MAX_EARTH_CELESTIAL_DAYS ||
-        math::IsFinite(latitudeDegrees) == false || math::Abs(latitudeDegrees) > MAX_EARTH_LATITUDE_DEGREES ||
-        math::IsFinite(longitudeDegrees) == false || math::Abs(longitudeDegrees) > MAX_EARTH_LONGITUDE_DEGREES)
+        IsValidEarthObserver(daysSinceJ2000, latitudeDegrees, longitudeDegrees) == false)
     {
         return false;
     }
 
-    constexpr float64 DAYS_PER_JULIAN_CENTURY = 36525;
     constexpr float64 OBLIQUITY_AT_EPOCH_DEGREES = 23.439;
     constexpr float64 OBLIQUITY_DEGREES_PER_DAY = -0.00000036;
     const EclipticCoordinates coordinates = body == EarthCelestialBody::Sun
@@ -250,25 +439,49 @@ bool TrySampleEarthCelestialTransform(EarthCelestialBody body,
     const float64 xEcliptic = eclipticHorizontal * math::Cos(coordinates.LongitudeRadians);
     const float64 yEcliptic = eclipticHorizontal * math::Sin(coordinates.LongitudeRadians);
     const float64 zEcliptic = math::Sin(coordinates.LatitudeRadians);
-    const float64 yEquatorial = yEcliptic * math::Cos(obliquityRadians) - zEcliptic * math::Sin(obliquityRadians);
-    const float64 zEquatorial = yEcliptic * math::Sin(obliquityRadians) + zEcliptic * math::Cos(obliquityRadians);
+    HorizonObserver horizon = MakeEarthHorizon(daysSinceJ2000, latitudeDegrees, longitudeDegrees);
+    horizon.RadiusRatio = math::Sin(coordinates.ParallaxRadians);
+    return TryProjectCelestialTransform(RotateEclipticToEquatorial({xEcliptic, yEcliptic, zEcliptic}, obliquityRadians),
+                                        horizon,
+                                        outTransform);
+}
 
-    // Thanks to the U.S. Naval Observatory, "Computing Approximate Sidereal Time" and "Computing Altitude
-    // and Azimuth from Greenwich Apparent Sidereal Time" (https://aa.usno.navy.mil/faq/GAST and
-    // https://aa.usno.navy.mil/faq/alt_az). Use mean sidereal time and project the equatorial vector directly
-    // into the local horizon basis, avoiding the singularity of azimuth at zenith.
-    constexpr float64 SIDEREAL_AT_EPOCH_HOURS = 18.697375;
-    constexpr float64 SIDEREAL_HOURS_PER_DAY = 24.065709824279;
-    constexpr float64 DEGREES_PER_SIDEREAL_HOUR = 15;
-    const float64 siderealRadians = math::DegreesToRadians(
-        DEGREES_PER_SIDEREAL_HOUR * (SIDEREAL_AT_EPOCH_HOURS + SIDEREAL_HOURS_PER_DAY * daysSinceJ2000) +
-        longitudeDegrees);
-    const HorizonObserver horizon
+bool TrySampleEarthNightSky(float64 daysSinceJ2000,
+                            float64 latitudeDegrees,
+                            float64 longitudeDegrees,
+                            EarthNightSkySample& outSky) noexcept
+{
+    if (IsValidEarthObserver(daysSinceJ2000, latitudeDegrees, longitudeDegrees) == false)
     {
-        .MeridianRadians = siderealRadians,
-        .LatitudeRadians = math::DegreesToRadians(latitudeDegrees),
-        .RadiusRatio = math::Sin(coordinates.ParallaxRadians),
-    };
-    return TryProjectCelestialTransform({xEcliptic, yEquatorial, zEquatorial}, horizon, outTransform);
+        return false;
+    }
+    const HorizonObserver horizon = MakeEarthHorizon(daysSinceJ2000, latitudeDegrees, longitudeDegrees);
+    // Thanks to the ESA Gaia Data Release 3 Documentation, section 4.1.7, for the Hipparcos convention.
+    // https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu3ast/sec_cu3ast_intro/ssec_cu3ast_intro_transforms.html
+    // These are the Galactic rotation matrix's first and third rows in ICRS.
+    constexpr math::Vector3d GALACTIC_CENTER_EQUATORIAL{-0.05487556, -0.87343709, -0.48383502};
+    constexpr math::Vector3d GALACTIC_NORTH_EQUATORIAL{-0.86766615, -0.19807637, 0.45598378};
+    constexpr float64 J2000_OBLIQUITY_RADIANS = math::DegreesToRadians(23.43928);
+    EarthNightSkySample sky;
+    sky.GalacticCenterWorld = NarrowDirection(ProjectToHorizon(GALACTIC_CENTER_EQUATORIAL, horizon));
+    sky.GalacticNorthWorld = NarrowDirection(ProjectToHorizon(GALACTIC_NORTH_EQUATORIAL, horizon));
+    const float64 centuries = daysSinceJ2000 / DAYS_PER_JULIAN_CENTURY;
+    const math::Vector3d earthEcliptic = ComputeHeliocentricPositionEcliptic(EARTH_MOON_ORBIT, centuries);
+    for (foundation::usize i = 0; i < VISIBLE_PLANETS.GetSize(); ++i)
+    {
+        const VisiblePlanet& planet = VISIBLE_PLANETS[i];
+        const math::Vector3d positionEcliptic = ComputeHeliocentricPositionEcliptic(planet.Orbit, centuries);
+        const math::Vector3d displacementEcliptic = positionEcliptic - earthEcliptic;
+        const float64 distance = math::Length(displacementEcliptic);
+        const math::Vector3d directionEquatorial =
+            RotateEclipticToEquatorial(displacementEcliptic * (1 / distance), J2000_OBLIQUITY_RADIANS);
+        sky.Planets[i].DirectionWorld = NarrowDirection(ProjectToHorizon(directionEquatorial, horizon));
+        sky.Planets[i].Illuminance = planet.Tint * ComputePlanetIlluminance(planet.FullPhaseMagnitudeAtUnitDistances,
+                                                                            positionEcliptic,
+                                                                            displacementEcliptic,
+                                                                            distance);
+    }
+    outSky = sky;
+    return true;
 }
 } // namespace ludus::gameplay::world

@@ -1,5 +1,6 @@
 #include "filesystem_fixture.h"
 
+#include "internal/path_text.h"
 #include "internal/project_explorer.h"
 #include "internal/project_files.h"
 
@@ -11,6 +12,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLineEdit>
 #include <QMenu>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -193,4 +195,103 @@ TEST_CASE("Without a project the explorer lists only its hint, not the Configura
         hasConfiguration = hasConfiguration == true || (*iterator)->text(0) == QStringLiteral("Configuration");
     }
     CHECK(hasConfiguration == true);
+}
+
+TEST_CASE("Explorer rows show document names, tell shared names apart by folder and search whole file names",
+          "[editor][project-explorer]")
+{
+    QTemporaryDir project;
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("sponza.world.json")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("assets/sponza.world.json")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("assets/cornell-box.world.json")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("graphs/deferred/main.lurender.json")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("graphs/forward/main.lurender.json")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("shaders/sky.lushader.json")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("shaders/sky.slang")));
+    ProjectExplorer explorer;
+    explorer.SetProject(root, QStringLiteral("Test"));
+    QTreeWidget* tree = explorer.findChild<QTreeWidget*>(QStringLiteral("projectExplorerTree"));
+    REQUIRE(tree != nullptr);
+    QTreeWidgetItem* worlds = FindExplorerItem(tree->topLevelItem(0), QStringLiteral("Worlds"));
+    QTreeWidgetItem* graphs = FindExplorerItem(tree->topLevelItem(0), QStringLiteral("Render Graphs"));
+    QTreeWidgetItem* shaders = FindExplorerItem(tree->topLevelItem(0), QStringLiteral("Shaders"));
+    REQUIRE(worlds != nullptr);
+    REQUIRE(graphs != nullptr);
+    REQUIRE(shaders != nullptr);
+
+    // The group already says ".world.json"; a name no other row shares needs no folder.
+    QTreeWidgetItem* cornell = FindExplorerItem(worlds, QStringLiteral("cornell-box"));
+    REQUIRE(cornell != nullptr);
+    CHECK(cornell->data(0, DOCUMENT_QUALIFIER_ROLE).isValid() == true);
+    CHECK(cornell->data(0, DOCUMENT_QUALIFIER_ROLE).toString().isEmpty() == true);
+    CHECK(cornell->toolTip(0) == QDir::toNativeSeparators(QStringLiteral("assets/cornell-box.world.json")));
+    // Two worlds named sponza: the folder tells them apart.
+    QStringList sponzaQualifiers;
+    QStringList graphQualifiers;
+    for (ludus::foundation::int32 index = 0; index < worlds->childCount(); ++index)
+    {
+        if (worlds->child(index)->text(0) == QStringLiteral("sponza"))
+        {
+            sponzaQualifiers.append(worlds->child(index)->data(0, DOCUMENT_QUALIFIER_ROLE).toString());
+        }
+    }
+    CHECK(sponzaQualifiers.size() == 2);
+    // Rows are ordered by the shown name, so the two sponza rows sit together.
+    REQUIRE(worlds->childCount() == 3);
+    CHECK(worlds->child(0)->text(0) == QStringLiteral("cornell-box"));
+    CHECK(worlds->child(1)->text(0) == QStringLiteral("sponza"));
+    CHECK(worlds->child(2)->text(0) == QStringLiteral("sponza"));
+    CHECK(sponzaQualifiers.contains(QStringLiteral("assets")) == true);
+    CHECK(sponzaQualifiers.contains(QStringLiteral("project folder")) == true);
+    // Graph packages are told apart by their own folder name, not the whole path.
+    for (ludus::foundation::int32 index = 0; index < graphs->childCount(); ++index)
+    {
+        CHECK(graphs->child(index)->text(0) == QStringLiteral("main"));
+        graphQualifiers.append(graphs->child(index)->data(0, DOCUMENT_QUALIFIER_ROLE).toString());
+    }
+    graphQualifiers.sort();
+    CHECK(graphQualifiers == QStringList{QStringLiteral("deferred"), QStringLiteral("forward")});
+    // Shader manifests drop their suffix; Slang sources keep their extension, so the two stay distinct.
+    CHECK(FindExplorerItem(shaders, QStringLiteral("sky")) != nullptr);
+    CHECK(FindExplorerItem(shaders, QStringLiteral("sky.slang")) != nullptr);
+    CHECK(FindExplorerItem(shaders, QStringLiteral("sky"))->data(0, DOCUMENT_QUALIFIER_ROLE).toString().isEmpty() ==
+          true);
+
+    // The search still matches the whole file name and its folder.
+    QLineEdit* filter = explorer.findChild<QLineEdit*>(QStringLiteral("projectExplorerFilter"));
+    REQUIRE(filter != nullptr);
+    CHECK(filter->placeholderText() == QStringLiteral("Search"));
+    filter->setText(QStringLiteral(".world.json"));
+    CHECK(cornell->isHidden() == false);
+    CHECK(FindExplorerItem(shaders, QStringLiteral("sky"))->isHidden() == true);
+    filter->setText(QStringLiteral("assets/"));
+    for (ludus::foundation::int32 index = 0; index < worlds->childCount(); ++index)
+    {
+        QTreeWidgetItem* world = worlds->child(index);
+        CHECK(world->isHidden() ==
+              (world->data(0, DOCUMENT_QUALIFIER_ROLE).toString() == QStringLiteral("project folder")));
+    }
+    filter->clear();
+    // Opening still uses the real file.
+    QSignalSpy opens(&explorer, &ProjectExplorer::OpenRequested);
+    REQUIRE(explorer.ActivateItem(ProjectItemKind::World,
+                                  QDir(root).filePath(QStringLiteral("assets/cornell-box.world.json"))) == true);
+    REQUIRE(opens.size() == 1);
+    CHECK(opens.first().at(1).toString() == QDir(root).filePath(QStringLiteral("assets/cornell-box.world.json")));
+}
+
+TEST_CASE("Explorer Add and Refresh are named icon buttons beside the search field", "[editor][project-explorer]")
+{
+    ProjectExplorer explorer;
+    for (const QString& name : {QStringLiteral("projectExplorerAdd"), QStringLiteral("projectExplorerRefresh")})
+    {
+        INFO(name.toStdString());
+        QToolButton* button = explorer.findChild<QToolButton*>(name);
+        REQUIRE(button != nullptr);
+        CHECK(button->toolButtonStyle() == Qt::ToolButtonIconOnly);
+        CHECK(button->icon().isNull() == false);
+        CHECK(button->accessibleName().isEmpty() == false);
+        CHECK(button->toolTip().isEmpty() == false);
+    }
 }

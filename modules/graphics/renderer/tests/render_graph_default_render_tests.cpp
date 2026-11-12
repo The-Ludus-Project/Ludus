@@ -1,6 +1,7 @@
 // Default-graph pixel suite: clustered deferred against forward shading, the forward-lit graph,
 // bilinear and spatial upscaling (MetalFX where available) and deferred mesh area lights.
 
+#include "../src/internal/camera_inverse.h"
 #include "../src/internal/raster_mesh_lights.h"
 #include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
@@ -62,7 +63,8 @@ constexpr float32 EDITOR_NEAR_PLANE_METERS = .01F;
 constexpr float32 EDITOR_FAR_PLANE_METERS = 400;
 constexpr float32 EDITOR_VERTICAL_FOV_RADIANS = .2F;
 /// The World viewport's perspective camera at eyeWorld looking at targetWorld: its finite reverse-Z projection
-/// rewritten to conventional depth (clip z becomes w - z), as the editor draws with a centimetre near plane.
+/// rewritten to conventional depth (clip z becomes w - z), as RenderGraph draws graphs with ray passes. The default
+/// graph keeps reverse-Z; this exercises the conventional depth allowance with a centimetre near plane.
 void BuildConventionalEditorCamera(math::Vector3 eyeWorld,
                                    math::Vector3 targetWorld,
                                    renderer::ViewDescription& outCamera)
@@ -1317,7 +1319,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
     }
     SECTION("far perspective camera keeps steep receivers free of self-shadowing")
     {
-        // The World viewport uses conventional depth with a centimetre near plane. Tens of metres above a
+        // A conventional camera with a centimetre near plane, as RenderGraph draws ray graphs. Tens of metres above a
         // scene, several texels of the whole-scene map fall in each pixel and the receiver position carries
         // the depth buffer's rounding. A flat receiver under one steep light must stay uniformly lit.
         materials[1].Emission = {};
@@ -1695,6 +1697,189 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         render();
         CHECK(fixture.Pixels[center] > 32);
     }
+}
+
+TEST_CASE("default deferred rebuilds far receivers from reverse-Z depth to well under a millimetre",
+          "[render-graph][clustered-deferred][depth-precision][gpu]")
+{
+    // The World viewport hands the default graph the editor's finite reverse-Z projection with a centimetre near
+    // plane. Its stored float32 depth keeps a relative precision near 2^-24 at every distance, so the resolve rebuilds
+    // a receiver tens of metres away within micrometres. The same camera rewritten to conventional depth (w - z) puts
+    // it centimetres off its surface: the control below shows the measurement detects that loss. Read the stored
+    // depth back exactly and rebuild each pixel as renderer_deferred_lighting.slang does, with and without the
+    // prepass, whose depth the deferred pass loads and tests for equality.
+    constexpr usize POLL_ATTEMPTS = 10000;
+    constexpr float32 RECEIVER_HALF_EXTENT_METERS = 40;
+    constexpr float32 RECEIVER_HEIGHT_METERS = .5F;
+    constexpr usize QUAD_VERTEX_COUNT = 4;
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    constexpr float32 NEAR_PLANE_METERS = .01F;
+    // The editor bounds an infinite lens 1% beyond the farthest corner of the World's geometry (FINITE_FAR_MARGIN in
+    // apps/editor/src/render_scene.cpp), here the receiver's: about 93 m at 50 m out and 158 m at 120 m.
+    constexpr float32 FINITE_FAR_MARGIN = 1.01F;
+    constexpr float32 VERTICAL_FOV_RADIANS = .2F;
+    // Well under a millimetre: reverse-Z float32 depth keeps tens of micrometres even at 120 m.
+    constexpr float64 MAX_POSITION_ERROR_METERS = 1e-4;
+    const bool shouldUsePrepass = GENERATE(false, true);
+    const float32 eyeDistanceMeters = GENERATE(50.0F, 120.0F);
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage(shouldUsePrepass == true
+                        ? PackageLocation{LUDUS_RG3_CLUSTERED_ZPREPASS_DIRECTORY, "rg2_clustered_ZPrepass.lurgrt"}
+                        : PackageLocation{LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(programs.HasClusteredDeferred == true);
+    const auto poll = [&](rhi::RasterStatus status) {
+        for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            threading::SleepFor(timing::Milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.CanUseReverseDepth() == true);
+    uint32 depthResource = format::ABSENT;
+    for (usize resource = 0; resource < package->GetPlan().Resources.GetSize(); ++resource)
+    {
+        if (package->GetPlan().Resources[resource].Kind == format::Aspect::Depth)
+        {
+            depthResource = static_cast<uint32>(resource);
+        }
+    }
+    REQUIRE(depthResource != format::ABSENT);
+
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{
+        {{-RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+         {RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+         {RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+         {-RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+    fixture.Meshes[0].Geometry = {quadPositions.GetData(),
+                                  quadPositions.GetSize(),
+                                  quadIndices.GetData(),
+                                  quadIndices.GetSize()};
+    fixture.Meshes[0].Geometry.Normals = quadNormals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    StaticArray<renderer::SceneShaderMaterial, 1> materials{};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+
+    // Forty-five degrees above the receiver, so depth varies from pixel to pixel, built as the editor builds it.
+    const float32 offset = eyeDistanceMeters * math::Sqrt(0.5F);
+    const math::Vector3 targetWorld{0, 0, RECEIVER_HEIGHT_METERS};
+    const math::Vector3 eyeWorld{0, -offset, RECEIVER_HEIGHT_METERS + offset};
+    renderer::ProjectionDescription projection;
+    projection.Kind = renderer::ProjectionKind::Perspective;
+    REQUIRE(math::TryLookAt(eyeWorld, targetWorld, {0, 0, 1}, projection.WorldToView) == math::MathStatus::Success);
+    projection.VerticalFovRadians = VERTICAL_FOV_RADIANS;
+    projection.Near = NEAR_PLANE_METERS;
+    float32 farthestCornerMeters = 0;
+    for (const math::Vector3& cornerWorld : quadPositions)
+    {
+        farthestCornerMeters = math::Max(farthestCornerMeters, math::Length(cornerWorld - eyeWorld));
+    }
+    projection.Far = farthestCornerMeters * FINITE_FAR_MARGIN;
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::ViewDescription reverseCamera;
+    REQUIRE(renderer::BuildViewDescription(projection, mapping, reverseCamera) == rhi::RasterStatus::Ready);
+    REQUIRE(reverseCamera.Depth == renderer::DepthConvention::ReverseZ);
+    REQUIRE(reverseCamera.InfiniteFar == false);
+    reverseCamera.CameraPosition = eyeWorld;
+    REQUIRE(math::TryNormalize(targetWorld - eyeWorld, reverseCamera.CameraForward) == math::MathStatus::Success);
+    renderer::ViewDescription conventionalCamera = reverseCamera;
+    for (math::Vector4& column : conventionalCamera.WorldToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    conventionalCamera.Depth = renderer::DepthConvention::Conventional;
+
+    DepthDisplay depthBits(fixture.Device, shaders::rg2_depth_bits::Vertex(), shaders::rg2_depth_bits::Fragment());
+    uint64 revision = 0;
+    const auto measure = [&](const renderer::ViewDescription& camera) {
+        fixture.Cameras[0] = camera;
+        renderer::RenderGraphReport report;
+        ++revision;
+        REQUIRE(poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                          {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                          {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                          revision,
+                                          renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                          report,
+                                          &inputs,
+                                          revision)) == rhi::RasterStatus::Ready);
+        fixture.Render();
+        rhi::TextureHandle texture;
+        rhi::TextureAspect aspect = rhi::TextureAspect::Color;
+        rhi::RasterStatus allocation = rhi::RasterStatus::NotReady;
+        for (usize attempt = 0; attempt < POLL_ATTEMPTS && allocation == rhi::RasterStatus::NotReady; ++attempt)
+        {
+            allocation = fixture.Graph.GetResourceAllocation(depthResource, texture, aspect);
+            if (allocation == rhi::RasterStatus::NotReady)
+            {
+                threading::SleepFor(timing::Milliseconds(1));
+            }
+        }
+        REQUIRE(allocation == rhi::RasterStatus::Ready);
+        REQUIRE(aspect == rhi::TextureAspect::Depth);
+        StaticArray<uint8, PIXEL_BYTES> depthPixels{};
+        depthBits.Show(fixture.Surface, texture, depthPixels);
+
+        // The resolve's arithmetic: clip-to-world about the eye, then a float32 homogeneous product per pixel centre.
+        math::Matrix4 clipToWorld;
+        REQUIRE(renderer::internal::TryMakeCameraClipToWorld(camera, clipToWorld) == true);
+        const float32 clearDepth = camera.Depth == renderer::DepthConvention::ReverseZ ? 0.0F : 1.0F;
+        float64 maximumErrorMeters = 0;
+        usize coveredPixels = 0;
+        for (uint32 y = 0; y < HEIGHT; ++y)
+        {
+            for (uint32 x = 0; x < WIDTH; ++x)
+            {
+                const float32 depth = ReadDepthBits(depthPixels, x, y);
+                if (depth == clearDepth)
+                {
+                    continue;
+                }
+                ++coveredPixels;
+                const math::Vector4 positionHomogeneousClip{
+                    (static_cast<float32>(x) + 0.5F) / static_cast<float32>(WIDTH) * 2 - 1,
+                    1 - (static_cast<float32>(y) + 0.5F) / static_cast<float32>(HEIGHT) * 2,
+                    depth,
+                    1};
+                const math::Vector4 positionHomogeneousWorld = clipToWorld * positionHomogeneousClip;
+                const math::Vector3d rebuiltWorld{
+                    static_cast<float64>(positionHomogeneousWorld.X / positionHomogeneousWorld.W),
+                    static_cast<float64>(positionHomogeneousWorld.Y / positionHomogeneousWorld.W),
+                    static_cast<float64>(positionHomogeneousWorld.Z / positionHomogeneousWorld.W)};
+                // The rebuilt point lies on its pixel's ray; its error is how far along that ray it misses the
+                // receiver plane.
+                const math::Vector3d eye{static_cast<float64>(eyeWorld.X),
+                                         static_cast<float64>(eyeWorld.Y),
+                                         static_cast<float64>(eyeWorld.Z)};
+                const math::Vector3d ray = rebuiltWorld - eye;
+                const float64 alongRay =
+                    (static_cast<float64>(RECEIVER_HEIGHT_METERS) - eye.Z) / (rebuiltWorld.Z - eye.Z);
+                maximumErrorMeters = math::Max(maximumErrorMeters, math::Abs(1 - alongRay) * math::Length(ray));
+            }
+        }
+        // The receiver fills the view.
+        CHECK(coveredPixels == static_cast<usize>(WIDTH) * HEIGHT);
+        return maximumErrorMeters;
+    };
+    const float64 reverseErrorMeters = measure(reverseCamera);
+    const float64 conventionalErrorMeters = measure(conventionalCamera);
+    CAPTURE(shouldUsePrepass, eyeDistanceMeters, reverseErrorMeters, conventionalErrorMeters);
+    CHECK(reverseErrorMeters < MAX_POSITION_ERROR_METERS);
+    CHECK(conventionalErrorMeters > MAX_POSITION_ERROR_METERS);
 }
 
 TEST_CASE("default deferred samples minified material textures at their mean", "[texture-mips][gpu]")
@@ -2319,6 +2504,7 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
         camera.Atmosphere.DirectionToSunWorld = -directionWorld;
         camera.Atmosphere.Celestial.DirectionToMoonWorld = directionWorld;
     };
+    const math::Matrix4 worldToOrthographicClip = camera.WorldToClip;
     camera.OrthographicCamera = true;
     pointAtMoon({0, 1, 0});
     render();
@@ -2415,6 +2601,52 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
     CHECK(stars != starless);
     render();
     CHECK(fixture.Pixels == stars);
+
+    camera.Atmosphere.Celestial.StarRadiance = 0;
+    camera.OrthographicCamera = true;
+    camera.CameraPosition = {};
+    camera.WorldToClip = worldToOrthographicClip;
+    camera.CameraForward = {0, 1, 0};
+    camera.Atmosphere.DirectionToSunWorld = {0, -1, 0};
+    camera.Atmosphere.Celestial.GalacticNorthWorld = {1, 0, 0};
+    camera.Atmosphere.Celestial.GalacticCenterWorld = {0, 1, 0};
+    camera.Atmosphere.Celestial.MilkyWayRadiance = 0.045F;
+    render();
+    const uint8 milkyWay = fixture.Pixels[center + BLUE_CHANNEL];
+    CHECK(milkyWay > 0);
+
+    // Pack a planet after a disabled slot and composite it over the galactic band.
+    constexpr float32 TEST_BLUE_ILLUMINANCE_LUX = 2e-7F;
+    camera.Atmosphere.Celestial.Planets[1] =
+    {
+        .DirectionWorld = {0, 1, 0},
+        .Illuminance = {0, 0, TEST_BLUE_ILLUMINANCE_LUX},
+    };
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] > milkyWay);
+
+    // A new Moon masks both the planet and the Milky Way.
+    camera.Atmosphere.Celestial.DirectionToMoonWorld = camera.CameraForward;
+    camera.Atmosphere.DirectionToSunWorld = {1, 1, 0};
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = TEST_DISK_RADIUS;
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+
+    camera.Atmosphere.Celestial.LunarAngularRadiusRadians = 0;
+    camera.Atmosphere.DirectionToSunWorld = {0, -1, 0};
+    camera.Atmosphere.Celestial.GalacticNorthWorld = camera.CameraForward;
+    camera.Atmosphere.Celestial.GalacticCenterWorld = {1, 0, 0};
+    camera.Atmosphere.Celestial.Planets[1].DirectionWorld = {1, 0, 0};
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
+
+    camera.CameraForward = {0, -1, 0};
+    camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    camera.Atmosphere.Celestial.GalacticNorthWorld = {1, 0, 0};
+    camera.Atmosphere.Celestial.GalacticCenterWorld = camera.CameraForward;
+    camera.Atmosphere.Celestial.Planets[1].DirectionWorld = camera.CameraForward;
+    render();
+    CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
 }
 
 TEST_CASE("The resolved solar disk darkens toward its limb and preserves authored illuminance",

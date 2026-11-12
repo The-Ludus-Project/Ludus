@@ -89,9 +89,10 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
             # waits for the download and verification to finish.
             steps.append(Step("preview_tools", "Fetching pinned shader tools"))
         steps.append(Step("editor_configure", "CMake configure (editor)"))
-        steps.append(Step("editor_build", "Building the editor"))
-        if not getattr(args, "skip_engine_refresh", False):
-            steps.append(Step("engine_refresh", "Refreshing project engine installs"))
+        if not getattr(args, "configure_editor_only", False):
+            steps.append(Step("editor_build", "Building the editor"))
+            if not getattr(args, "skip_engine_refresh", False):
+                steps.append(Step("engine_refresh", "Refreshing project engine installs"))
     if getattr(args, "run_tests", False) and not validating:
         steps.append(Step("tests", "Building and running tests"))
     if validating:
