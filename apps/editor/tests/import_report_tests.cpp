@@ -17,7 +17,6 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
@@ -299,7 +298,7 @@ TEST_CASE("World shows the import preview, imports on confirmation and shows the
     workspace.setParent(&layoutHost, Qt::Widget);
     layoutHost.show();
     workspace.show();
-    QScrollArea* hierarchy = workspace.findChild<QScrollArea*>(QStringLiteral("worldHierarchyScroll"));
+    QWidget* hierarchy = workspace.findChild<QWidget*>(QStringLiteral("worldHierarchy"));
     REQUIRE(hierarchy != nullptr);
     const QJsonObject original = workspace.Document().Draft();
     for (const QSize size : {QSize(1100, 520), QSize(800, 400)})
@@ -313,11 +312,9 @@ TEST_CASE("World shows the import preview, imports on confirmation and shows the
         const ludus::foundation::int32 viewportHeight = viewport->height();
         QToolButton* geometryOrNull = workspace.findChild<QToolButton*>(QStringLiteral("worldAddObject"));
         REQUIRE(geometryOrNull != nullptr);
-        hierarchy->ensureWidgetVisible(geometryOrNull);
-        QApplication::processEvents();
+        // The add button sits beside the search at the top of the column, so the report never pushes it away.
         CHECK(geometryOrNull->isVisible() == true);
-        CHECK(hierarchy->viewport()->rect().contains(
-                  geometryOrNull->mapTo(hierarchy->viewport(), geometryOrNull->rect().center())) == true);
+        CHECK(hierarchy->rect().contains(geometryOrNull->mapTo(hierarchy, geometryOrNull->rect().center())) == true);
         reportToggle->setChecked(false);
         QTest::qWait(40);
         CHECK(viewport->height() == viewportHeight);

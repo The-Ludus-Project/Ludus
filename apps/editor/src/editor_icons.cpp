@@ -101,6 +101,10 @@ constexpr IconDescriptor ICON_DESCRIPTORS[EDITOR_ICON_COUNT] = {
     {"scan", false},
     {"circle-question-mark", false},
     {"aperture", false},
+    {"sun", false},
+    {"cloud", false},
+    {"camera", false},
+    {"user", false},
 };
 
 /// Cursor over SVG path data.

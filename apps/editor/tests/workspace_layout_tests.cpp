@@ -467,7 +467,7 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
         }
         CHECK(world->IsChromeVisible() == false);
         CHECK(world->findChild<QWidget*>(QStringLiteral("worldHeader"))->isHidden() == true);
-        CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchyScroll"))->isHidden() == true);
+        CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchy"))->isHidden() == true);
         CHECK(world->findChild<QWidget*>(QStringLiteral("worldStatus"))->isHidden() == true);
         // The native viewport is neither hidden nor moved; it takes most of the window.
         CHECK(viewport->isHidden() == false);
@@ -507,7 +507,7 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
     CHECK(window.saveState() == before);
     CHECK(world->IsChromeVisible() == true);
     CHECK(world->findChild<QWidget*>(QStringLiteral("worldHeader"))->isHidden() == false);
-    CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchyScroll"))->isHidden() == false);
+    CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchy"))->isHidden() == false);
     CHECK(well.GetActiveDocumentOrNull() == project);
 
     // Reset Window Layout also leaves Focus Viewport.

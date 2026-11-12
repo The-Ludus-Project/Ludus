@@ -21,6 +21,7 @@
 #include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/platform/entropy.h>
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
 #include <QColorDialog>
@@ -422,12 +423,10 @@ TEST_CASE("Renderer controls and inspector remain reachable in a small styled Wo
     REQUIRE(nameOrNull != nullptr);
     QTest::keyClicks(nameOrNull, QStringLiteral("s"));
     QApplication::processEvents();
-    for (const QString& name : {QStringLiteral("worldPreview3D"),
-                                QStringLiteral("worldPreviewReload"),
-                                QStringLiteral("worldAttach"),
-                                QStringLiteral("worldApply")})
+    for (const QString& name :
+         {QStringLiteral("worldViewportMenu"), QStringLiteral("worldAttach"), QStringLiteral("worldApply")})
     {
-        QPushButton* controlOrNull = world.findChild<QPushButton*>(name);
+        QAbstractButton* controlOrNull = world.findChild<QAbstractButton*>(name);
         REQUIRE(controlOrNull != nullptr);
         CHECK(controlOrNull->isVisible());
         const QPoint top = controlOrNull->mapTo(&world, QPoint(0, 0));
