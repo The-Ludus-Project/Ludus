@@ -2621,7 +2621,14 @@ only; use **Save…** for the linear capture.
 
 The capture builds its own renderer on the viewport's GPU device. It loads the
 same meshes, textures and Lit materials as the viewport, but no shadow atlas. The
-scene's authored analytic lights and its environment (map or constant) are
+64-bit editor allows up to 5 GiB of RT1 CPU data and setup scratch and up to
+3 GiB of RT1 GPU-compute buffers. These are admission ceilings. Available
+device memory and storage-buffer limits still apply. Lowering the sample count
+shortens tracing time but does not reduce the memory needed to prepare the scene.
+If RT1 fails, the editor cancels any unfinished comparison and re-enables capture
+settings. Any reference samples already taken remain available.
+
+The scene's authored analytic lights and its environment (map or constant) are
 supplied to the integrator. Emissive surfaces light the scene as true area
 emitters. The raster viewport's area-light proxies are not built or passed, which would
 count that light twice, so their 128-light limit does not apply: curved emitters such

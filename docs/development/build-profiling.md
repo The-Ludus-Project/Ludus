@@ -566,8 +566,70 @@ These are libc++ numbers from one host, not the budget's metric. No Linux host
 was available, so the effect on libstdc++, where the two headers also bring
 `<format>`, is not measured here: the profile above bounds it at the 16.4 s the
 two headers cost, and the next **Build-time budget** summary is the measurement. The aggregate budget is unchanged. `<filesystem>` in test
-fixtures (12.4 s) is the next candidate and needs a test-support library that
-keeps `<filesystem>` behind one `.cpp`.
+fixtures (12.4 s) was the next candidate; see
+[Filesystem in test fixtures](#filesystem-in-test-fixtures).
+
+## Filesystem in test fixtures
+
+In the same profile `<filesystem>` cost 12.4 s over 29 inclusions, mostly
+through three shared test fixtures that every including test source parsed:
+
+| Fixture | Average per include |
+| --- | ---: |
+| `modules/content/scene_cook/tests/import_test_support.h` | 817 ms |
+| `modules/content/scene_cook/tests/scratch_directory.h` | 710 ms |
+| `modules/foundation/filesystem/tests/persistence_fixture.hpp` | 641 ms |
+
+They needed `<filesystem>` (and `<fstream>`, `<random>`) only for scratch
+directories, whole-file reads and writes, copies and directory listings.
+`ludus_test_files` (`tests/support/test_files.hpp`, defined in
+`cmake/EngineTestFiles.cmake`) now provides exactly those operations:
+`CreateScratchDirectory`, `CreateDirectories`, `RemoveTree`, `CopyTree`,
+`CopyRegularFile`, `RemoveFile`, `ReadFile`, `WriteFile`, `IsExistingPath`,
+`IsDirectory`, `GetFileSize`, `GetCanonicalPath` and `VisitDirectory`. Paths
+are UTF-8 `std::string_view` inputs, results are `bool` with
+`ludus::foundation::String` outputs, and `<filesystem>` is parsed only in
+`test_files.cpp`. The library is a static library linked only by test
+targets, is never installed, and compiles without exceptions like engine code
+(every call uses the `std::error_code` overloads). Production code uses
+FoundationFilesystem instead.
+
+The three fixtures no longer include `<filesystem>`; their paths are
+`std::string` values joined with `/`. Test sources that use `std::filesystem`
+for their own setup (symbolic links, renames, many directory operations) keep
+including it directly: `scene_assets_tests.cpp`, `best_effort_import_tests.cpp`,
+`reference_emitter_tests.cpp`, `scene_cook_tests.cpp`, `persistence_tests.cpp`,
+`persistence_fault_tests.cpp` and `watch_tests.cpp`.
+
+Frontend time of eight test sources on a 10-core Apple M5 (pinned Clang 23,
+libc++, `macos-clang-debug` flags from `compile_commands.json`). Each side
+compiles the source and its fixture headers as they are on `origin/develop`
+(before) or on this branch (after), interleaved. "Trace" is `-ftime-trace`
+"Total Frontend", the minimum of five runs (nine for the glTF source); "CPU" is
+the minimum user plus system time of a `-fsyntax-only` compile over the same
+runs. Other work loaded the host to a load average of 20 to 60 throughout, so
+the trace column, which is wall time, is noisy; the CPU column is the steadier
+comparison.
+
+| Translation unit | Trace before | Trace after | CPU before | CPU after | CPU change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `modules/content/scene_cook/tests/image_decoder_tests.cpp` | 2285 ms | 676 ms | 867 ms | 555 ms | -36% |
+| `modules/content/scene_cook/tests/file_digest_tests.cpp` | 1178 ms | 598 ms | 833 ms | 492 ms | -41% |
+| `modules/content/scene_cook/tests/obj_import_tests.cpp` | 1570 ms | 980 ms | 1053 ms | 682 ms | -35% |
+| `modules/content/scene_cook/tests/gltf_import_tests.cpp` | 1147 ms | 814 ms | 939 ms | 745 ms | -21% |
+| `modules/content/scene_cook/tests/texture_decode_tests.cpp` | 1946 ms | 1074 ms | 1021 ms | 683 ms | -33% |
+| `modules/content/scene_cook/tests/ludus_scene_import_tests.cpp` | 1324 ms | 1431 ms | 960 ms | 674 ms | -30% |
+| `modules/foundation/filesystem/tests/watch_fault_tests.cpp` | 1339 ms | 1083 ms | 845 ms | 576 ms | -32% |
+| `modules/foundation/filesystem/tests/persistence_tests.cpp` | 1059 ms | 756 ms | 898 ms | 666 ms | -26% |
+| Sum | 11848 ms | 7412 ms | 7416 ms | 5073 ms | -32% |
+
+`persistence_tests.cpp` still includes `<filesystem>` itself; it gains from the
+fixture's `<fstream>` and `<iterator>`. These are libc++ numbers from one
+loaded host, not the budget's metric; the next **Build-time budget** summary
+measures libstdc++ on the reference runner. The repository-root
+`ClangBuildAnalyzer.ini` (`header = 50`, see the profiling section above) lists
+enough headers for the per-header budget to inspect such fixtures. Budgets are
+unchanged.
 
 ## Borrowed views in the RHI headers
 

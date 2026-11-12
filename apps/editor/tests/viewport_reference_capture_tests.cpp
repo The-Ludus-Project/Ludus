@@ -1,3 +1,4 @@
+#include "internal/builtin_world.h"
 #include "internal/light_switches.h"
 #include "internal/reference_capture_window.h"
 #include "internal/render_preview.h"
@@ -32,6 +33,7 @@
 #include <QComboBox>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QJsonDocument>
 #include <QPushButton>
@@ -624,6 +626,65 @@ TEST_CASE("Reference capture window offers the render graph source only with a p
     CHECK(window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"))->isEnabled() == false);
 }
 
+namespace
+{
+RenderScene LoadSuppliedReferenceWorld(const QString& root, const QString& worldName)
+{
+    WorldDocument world;
+    QString error;
+    QByteArray schema;
+    const QString schemaPath = QDir(root).filePath(QStringLiteral("authoring/world.schema.json"));
+    if (QFileInfo::exists(schemaPath) == true)
+    {
+        schema = tests::ReadTestFile(schemaPath);
+    }
+    else
+    {
+        REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    }
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    const QByteArray worldBytes =
+        tests::ReadTestFile(QDir(root).filePath(QStringLiteral("assets/%1.world.json").arg(worldName)));
+    const bool hasLoadedWorld = world.Load(worldBytes, error);
+    INFO(error.toStdString());
+    REQUIRE(hasLoadedWorld == true);
+    const QJsonObject level = world.SceneLevel();
+    const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
+    const QByteArray rootBytes = root.toUtf8();
+    Array<uint8> bundle;
+    ludus::content::scene_cook::AssetError assetError;
+    const bool hasBundle = ludus::content::scene_cook::AssembleLevel(
+        {rootBytes.constData(), static_cast<usize>(rootBytes.size())},
+        {reinterpret_cast<const uint8*>(levelBytes.constData()), static_cast<usize>(levelBytes.size())},
+        {},
+        bundle,
+        assetError);
+    INFO(assetError.Message.View());
+    REQUIRE(hasBundle == true);
+    const QByteArray cooked = QByteArray::fromRawData(reinterpret_cast<const char*>(bundle.GetData()),
+                                                      static_cast<qsizetype>(bundle.GetSize()));
+    RenderScene scene;
+    const bool hasScene = RenderScene::LoadCooked(cooked, level, scene, error, {});
+    INFO(error.toStdString());
+    REQUIRE(hasScene == true);
+    if (RenderScene::GetSource(root, world) == RenderSceneSource::ProjectBindings)
+    {
+        RenderScene authored;
+        const bool hasAuthoredScene = RenderScene::Load(root, world, authored, error, false);
+        INFO(error.toStdString());
+        REQUIRE(hasAuthoredScene == true);
+        const bool hasMergedScene = RenderScene::MergeLoaded(authored, cooked, level, scene, scene, error, {});
+        INFO(error.toStdString());
+        REQUIRE(hasMergedScene == true);
+    }
+    // Present the World's switched-off lights, as the World viewport does.
+    LightSwitchReport switchReport;
+    REQUIRE(ApplyLightSwitches(world.GetLightSwitches(), scene, switchReport) == true);
+    CHECK(switchReport.MissingSources.isEmpty() == true);
+    return scene;
+}
+} // namespace
+
 TEST_CASE("Supplied World completes reference capture with all reference modes", "[.supplied-reference-capture]")
 {
     const QString root = qEnvironmentVariable("LUDUS_REFERENCE_TEST_PROJECT");
@@ -631,37 +692,8 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
     {
         SKIP("Set LUDUS_REFERENCE_TEST_PROJECT to a project with assets/staircase2.world.json.");
     }
-    // LUDUS_REFERENCE_TEST_WORLD names another World under assets/, for example bathroom.
     const QString worldName = qEnvironmentVariable("LUDUS_REFERENCE_TEST_WORLD", QStringLiteral("staircase2"));
-    WorldDocument world;
-    QString error;
-    REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\",\"label\":\"World\","
-                                               "\"components\":[],\"assets\":[]}"),
-                             error) == true);
-    REQUIRE(world.Load(tests::ReadTestFile(QDir(root).filePath(QStringLiteral("assets/%1.world.json").arg(worldName))),
-                       error) == true);
-    const QJsonObject level = world.SceneLevel();
-    const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
-    const QByteArray rootBytes = root.toUtf8();
-    Array<uint8> bundle;
-    ludus::content::scene_cook::AssetError assetError;
-    REQUIRE(ludus::content::scene_cook::AssembleLevel(
-                {rootBytes.constData(), static_cast<usize>(rootBytes.size())},
-                {reinterpret_cast<const uint8*>(levelBytes.constData()), static_cast<usize>(levelBytes.size())},
-                {},
-                bundle,
-                assetError) == true);
-    RenderScene scene;
-    REQUIRE(RenderScene::LoadCooked(
-                QByteArray(reinterpret_cast<const char*>(bundle.GetData()), static_cast<qsizetype>(bundle.GetSize())),
-                level,
-                scene,
-                error,
-                {}) == true);
-    // Present the World's switched-off lights, as the World viewport does.
-    LightSwitchReport switchReport;
-    REQUIRE(ApplyLightSwitches(world.GetLightSwitches(), scene, switchReport) == true);
-    CHECK(switchReport.MissingSources.isEmpty() == true);
+    const RenderScene scene = LoadSuppliedReferenceWorld(root, worldName);
     // LUDUS_REFERENCE_TEST_EXTENT=<width>x<height> captures another size, for example a source film's 720x1280.
     QSize extent(512, 225);
     const QStringList requestedExtent = qEnvironmentVariable("LUDUS_REFERENCE_TEST_EXTENT").split(QLatin1Char('x'));
@@ -681,6 +713,7 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         preview.RestoreNavigation(QJsonDocument::fromJson(tests::ReadTestFile(navigationPath)).object());
     }
     renderer::ViewDescription view;
+    QString error;
     REQUIRE(
         preview.DescribeView(static_cast<uint32>(extent.width()), static_cast<uint32>(extent.height()), view, error) ==
         true);

@@ -354,6 +354,7 @@ class RequiredGateTests(unittest.TestCase):
         shards = shards.split("\n  scripting-qualification:\n", 1)[0]
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.sanitizer_experiment == 'shared'", build)
         self.assertIn("run: ./scripts/build linux-clang-asan-ubsan", build)
+        self.assertIn("id: bundle\n        shell: bash", build)
         self.assertIn("if-no-files-found: error", build)
         self.assertIn("needs.sanitizer-build.result == 'success'", shards)
         self.assertIn("name: ${{ needs.sanitizer-build.outputs.artifact }}", shards)

@@ -186,11 +186,13 @@ AtmosphereBackgroundTransport EvaluateAtmosphereBackground(in float3 directionWo
     float3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
     float3 moonWorld = atmosphereView.MoonDirectionWorld.xyz;
     float angularFootprint = max(length(ddx(directionWorld)), length(ddy(directionWorld)));
-    float sunCoverage =
-        ComputeCelestialDiskCoverage(length(directionWorld - sunWorld), atmosphereView.SolarIlluminance.w);
-    float moonCoverage =
-        ComputeCelestialDiskCoverage(length(directionWorld - moonWorld), atmosphereView.LunarRadiance.w);
-    float3 boundary = sunCoverage * atmosphereView.CameraForwardWorld.w * atmosphereView.SolarIlluminance.xyz;
+    float3 solarDisk =
+        EvaluateSolarDisk(length(directionWorld - sunWorld), atmosphereView.SolarIlluminance.w, angularFootprint);
+    float moonChord = length(directionWorld - moonWorld);
+    float moonCoverage = ComputeCelestialDiskCoverage(moonChord,
+                                                      atmosphereView.LunarRadiance.w,
+                                                      max(fwidth(moonChord), DIRECTION_EPSILON));
+    float3 boundary = solarDisk * atmosphereView.CameraForwardWorld.w * atmosphereView.SolarIlluminance.xyz;
     if (atmosphereView.Celestial.y > 0)
     {
         boundary += EvaluateCelestialStars(directionWorld, angularFootprint, atmosphereView.Celestial.y);

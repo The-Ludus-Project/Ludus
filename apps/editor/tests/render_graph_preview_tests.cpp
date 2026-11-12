@@ -2704,6 +2704,57 @@ TEST_CASE("Reference capture window names the viewport's render graph and follow
     rhi::Shutdown();
 }
 
+TEST_CASE("RT1 failure unlocks the window before its raster comparison finishes",
+          "[editor][render-graph][world-graph][reference-capture]")
+{
+    rhi::Shutdown();
+    // Raster extraction accepts this finite transform, but RT1 rejects it during scene admission.
+    RenderScene unsupported = MakeCookedScene();
+    unsupported.Lit = true;
+    constexpr float32 TRANSLATION_OUTSIDE_REFERENCE_RANGE = 2'000'000;
+    unsupported.Objects.front().Transform.Translation.X = TRANSLATION_OUTSIDE_REFERENCE_RANGE;
+    RenderPreview preview;
+    preview.Resize(WIDTH, HEIGHT);
+    REQUIRE(preview.SetScene(unsupported) == true);
+    REQUIRE(preview.Start() == true);
+    if (preview.AdmitOffscreenDevice() == false)
+    {
+        SKIP("No offscreen viewport GPU adapter");
+    }
+    RendererWorkspace workspace({});
+    RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(graphOrNull != nullptr);
+    REQUIRE(graphOrNull->Load(GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Waiting);
+    graphOrNull->SetForceRaster(true);
+    ReferenceCaptureWindow window(&preview);
+    window.SetProjectGraph(&workspace);
+    QCheckBox* compareOrNull = window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"));
+    QPushButton* captureOrNull = window.findChild<QPushButton*>(QStringLiteral("referenceCapture"));
+    QPushButton* stopOrNull = window.findChild<QPushButton*>(QStringLiteral("referenceStop"));
+    REQUIRE(compareOrNull != nullptr);
+    REQUIRE(captureOrNull != nullptr);
+    REQUIRE(stopOrNull != nullptr);
+    compareOrNull->setChecked(true);
+    QSignalSpy finished(&window, &ReferenceCaptureWindow::CaptureFinished);
+    const bool hasStarted = window.StartCapture();
+    INFO(window.GetStatusText().toStdString());
+    REQUIRE(hasStarted == true);
+    CHECK(captureOrNull->isEnabled() == false);
+    CHECK(stopOrNull->isEnabled() == true);
+    constexpr int32 CAPTURE_TIMEOUT_MILLISECONDS = 30'000;
+    const bool hasFinished = finished.wait(CAPTURE_TIMEOUT_MILLISECONDS);
+    INFO(window.GetStatusText().toStdString());
+    REQUIRE(hasFinished == true);
+    CHECK(window.GetCapture().GetPhase() == ViewportReferencePhase::Failed);
+    QLabel* comparisonOrNull = window.findChild<QLabel*>(QStringLiteral("referenceComparison"));
+    REQUIRE(comparisonOrNull != nullptr);
+    CHECK(comparisonOrNull->text().contains(QStringLiteral("before the comparison finished")) == true);
+    CHECK(captureOrNull->isEnabled() == true);
+    CHECK(stopOrNull->isEnabled() == false);
+    CHECK(compareOrNull->isEnabled() == true);
+    CHECK(preview.HasActiveGpuCapture() == false);
+}
+
 TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",
           "[editor][render-graph][world-graph][reference-capture]")
 {
