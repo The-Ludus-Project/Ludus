@@ -17,7 +17,7 @@ import urllib.request
 
 
 ATTEMPT_BRANCH = "ci/last-batch-attempt"
-VALIDATION_JOBS = ("native", "sdk", "wiki", "browser", "threading", "windows")
+VALIDATION_JOBS = ("native", "sdk", "wiki", "wiki-macos", "browser", "threading", "windows")
 # Batch job names are "<caller id> / <reusable job name>".
 SUITE_JOBS = (*VALIDATION_JOBS, "recovery")
 # A failed suite job rejects the candidate. Once one has failed, the jobs still

@@ -606,6 +606,25 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotRegex(snapshot, r"(?m)^      contents: write$")
         self.assertIn("    needs: promote", workflow.split("\n  publish:\n", 1)[1])
 
+    def test_linux_wiki_starts_at_capture_and_macos_checks_still_gate_promotion(self):
+        root = self.ROOT / ".github/workflows"
+        batch = split_jobs((root / "batch-ci.yml").read_text())
+        wiki = (root / "wiki.yml").read_text()
+        jobs = split_jobs(wiki)
+        self.assertIn("    needs: snapshot\n", batch["wiki"])
+        self.assertIn("    needs: [snapshot, sdk]\n", batch["wiki-macos"])
+        self.assertNotIn("batch_macos_tools_only", batch["wiki"])
+        self.assertIn("      batch_macos_tools_only: true\n", batch["wiki-macos"])
+        for name in ("wiki", "wiki-macos"):
+            self.assertIn(f"needs.{name}.result == 'success'", batch["promote"])
+        self.assertIn("inputs.batch_macos_tools_only && '-macos'", wiki)
+        for name in ("api-documentation", "editor"):
+            self.assertIn("!inputs.batch_macos_tools_only", jobs[name])
+        self.assertIn("    needs: editor\n", jobs["sample-playback"])
+        self.assertIn("    needs: [editor, sample-playback]\n", jobs["build"])
+        self.assertIn("inputs.batch_sha == '' || inputs.batch_macos_tools_only", jobs["macos-documentation-tools"])
+        self.assertIn("if: inputs.batch_sha == ''", jobs["deploy"])
+
     def test_tick_that_validates_nothing_is_cancelled_rather_than_green(self):
         workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
         job = workflow.split("\n  unvalidated:\n", 1)[1]
