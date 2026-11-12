@@ -1378,11 +1378,13 @@ editor camera. Movement is temporary and applies gravity even while you stand
 still. If you fall below the World, you return to the spawn.
 
 The player uses an upright box and sweeps it against the visible triangles
-of entities with **Static Collider**. It can
-step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
+of entities with **Static Collider**, using the
+[physics collision module](../architecture/physics-collision.md#explore-as-player).
+It can step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
 above the floor and clear of walls and ceilings. Collision preparation can take
 longer for large imports and admits up to eight million instanced collider
-triangles. Publishing changes to geometry or collider membership ends the
+triangles within 100 km of the World origin; triangles without area are
+ignored. Publishing changes to geometry or collider membership ends the
 walk. Choose **Explore as Player** again to use the updated surfaces.
 
 This editor preview only moves the player. Rigid bodies, thrown objects,
