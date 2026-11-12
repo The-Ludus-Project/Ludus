@@ -1438,6 +1438,38 @@ and Game Tools 15(4), 2011, and to Jan Boksanský, Paula Jukarainen and Chris Wy
 *Rendering Many Lights with Grid-Based Reservoirs*, Ray Tracing Gems II, 2021, whose
 per-tile and per-cell light work this template adapts to one exact emitter CDF per tile.
 
+#### Profile tile preparation
+
+`prefix` launches over the color target. Only the first invocation of each
+16 × 16 tile builds its CDF, so 255 of 256 pixel invocations in a full tile
+skip the scan. Thanks to Andrew Lauritzen for the distinction between sparse
+work within a dispatch and gaps between dependent dispatches in
+[*Future Directions for Compute-for-Graphics*](https://openproblems.realtimerendering.com/s2017/04-Future%20Compute%20SIGGRAPH%202017.pptx),
+SIGGRAPH 2017, slides 24–31. The cost of either effect in this template is unmeasured.
+
+1. In an optimized native Editor build with profiling enabled, open a scene with
+   many mesh emitters and a few-emitter control. Keep the camera, render extent
+   and sample budget fixed for each comparison. Include an extent with partial
+   edge tiles and record the adapter, driver, extent and emitter count.
+2. [Record GPU profiling](editor-workspace.md#recording-cpu-and-gpu-profiling)
+   after graph preparation. Match the physical `tiles`, `prefix` and `shade`
+   operations by their scope and ordinal. Record their durations and total
+   frame GPU time. Use calibrated execution slices or a native GPU trace to
+   measure gaps. Duration counters alone cannot locate gaps, and incomplete
+   pass coverage leaves their cost unknown.
+3. If `prefix` is a material frame cost, compare the current graph with a direct
+   launch of one invocation per tile. The scene pipeline currently ties launch
+   extent to its color target. Tile count is known from image dimensions, so the
+   experiment needs a separate launch extent and can use direct dispatch. Keep
+   `tiles` and `shade` unchanged so the comparison isolates the launch change.
+
+Require a repeatable frame-time improvement beyond baseline variation and check
+that CDFs and output still match for full and partial tiles, including the
+overflow bin and uniform fallback. Use the
+[two-emitter quadrature regression](../../modules/graphics/renderer/tests/render_graph_ray_tests.cpp)
+as an independent lighting check. Keep the current launch until the trace
+identifies a cost worth changing the scene pipeline to address.
+
 <a id="run-the-three-pass-restir-di-example"></a>
 
 ### Use the built-in ReSTIR DI template

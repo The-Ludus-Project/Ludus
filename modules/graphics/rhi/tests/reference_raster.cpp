@@ -36,6 +36,7 @@ void Reset() noexcept
     LossOnCompletion = 0;
     Submitted = 0;
     Completed = 0;
+    CompletionPolls = 0;
     Draws = Passes = Barriers = 0;
     PassStart = PassPrepare = RasterStatus::Ready;
     Discards = 0;
@@ -348,6 +349,7 @@ void RasterSubmit(uint64 ordinal) noexcept
 }
 uint64 RasterCompleted() noexcept
 {
+    ++reference::CompletionPolls;
     const auto token = reference::LossOnCompletion;
     reference::LossOnCompletion = 0;
     if (token != 0)

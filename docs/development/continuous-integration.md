@@ -82,15 +82,17 @@ the batch must reject it before `main` advances. Inspect failed batch diagnostic
 revert through a `develop` PR, as described in [recovery](#recover-a-failed-batch).
 Do not bypass full qualification to clear a backlog.
 
-`.github/workflows/batch-ci.yml` wakes at minutes 13 and 43 of each hour. When
-`BATCH_CI_ENABLED` is `true`, it captures the current `main` and `develop` commit SHAs.
+`batch-wake.yml` requests a run of `batch-ci.yml` on `main` when a push advances
+`develop`. The wake job uses its Actions token to dispatch and does not check out
+code or receive the promotion credential. The coordinator also runs at minutes
+13 and 43 of each hour as a fallback. When `BATCH_CI_ENABLED` is `true`, it
+captures the current `main` and `develop` commit SHAs.
 If they differ and `develop` descends from `main`, it records the candidate in
 `ci/last-batch-attempt` and invokes the existing validation workflows with that
 exact SHA. The original workflow definitions come from `main`; source, local
 build actions and tests come from the captured candidate. Changed workflows are
 syntax-checked before admission and take effect as coordinator definitions after
-promotion. Periodic workflows can start late when GitHub is busy; 30 minutes is
-the intended cadence, not a completion deadline.
+promotion. GitHub can delay or drop fallback ticks when it is busy.
 
 A batch that promotes coordinator edits still executes its original workflow
 revision through the last job. Verify changed coordinator behavior with a later
@@ -116,13 +118,23 @@ or rebasing that PR discards the ancestry link; promotion rejects a candidate
 that diverges from `main`, even when the files contain the same repair.
 
 Only one batch is active. New `develop` commits do not cancel it or change its input.
-Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
-before `main` advanced skips, letting the next tick use the new stable revision.
-Native, SDK, Linux wiki, macOS documentation tools, browser, threading-platform
-and Windows workflows must all succeed. Filesystem block-prefix recovery additionally runs when its workflow, persistence implementation, recovery
+Concurrent requests coalesce into at most one pending run. If a request starts
+with a stale workflow revision because `main` advanced, it requests a fresh run
+on `main` when an eligible candidate remains. The stale run records no attempt.
+The coordinator still checks the candidate against the attempt marker. An
+explicit infrastructure retry retains its retry flag when handed off.
+Native, SDK, Linux wiki, both macOS documentation checks, browser, both
+threading checks and Windows workflows must all succeed. Filesystem block-prefix
+recovery additionally runs when its workflow, persistence implementation, recovery
 probe or recovery drivers changed anywhere in the complete batch diff. Invalid
 metadata, failed/cancelled checks and unexpectedly skipped required jobs cannot
 promote. No new changes means no full run.
+
+**Report time to capture** records workflow creation to capture and candidate
+committer date to capture separately. The latter approximates the wait after a
+merge to `develop`. For qualification time, use the capture step completion and
+the promotion completion or the first failed required job. Report time spent
+collecting diagnostics after a rejection separately.
 
 ### Stop a failed batch early
 
@@ -234,9 +246,10 @@ Finish them after the migration PR lands, before accepting ordinary PRs into dev
    deletion to the same App, with non-fast-forward protection. This ref records
    attempts, including failures, not successful qualification. The trusted snapshot
    job uses the main-only environment to mint its own short-lived App token; the
-   default `GITHUB_TOKEN` needs only read permission throughout the coordinator.
+   wake and stale-request handoff use Actions write permission to dispatch the
+   coordinator. The App credential remains restricted to snapshot and promotion.
 7. Set repository variable `BATCH_CI_ENABLED=true`. Retarget remaining feature
-   PRs to develop. The next real develop change starts full validation at the next tick;
+   PRs to develop. The next real develop change requests full validation;
    use **Actions → Batched integration and promotion → Run workflow**, selecting
    main, to start sooner. Confirm the first candidate, all required suites, exact
    promoted SHA and Pages deployment in that run before declaring rollout proven.
@@ -295,7 +308,8 @@ To submit a fix while develop is red:
 
    The prefix selects the workflow: `native` is `ci.yml`, `sdk` is
    `project-sdk.yml`, `wiki` is `wiki.yml`, `browser` is `webgpu-probe.yml`,
-   `threading` is `threading-platforms.yml`, `windows` is
+   `wiki-macos` and `wiki-macos-intel` also use `wiki.yml`. Both `threading` and
+   `threading-windows` use `threading-platforms.yml`. The `windows` workflow is
    `windows-direct3d12.yml` and `recovery` is `filesystem-recovery.yml`.
    Branch dispatches never deploy the wiki or promote.
 4. When each declared job has succeeded on the PR's exact head commit, re-run
@@ -469,15 +483,25 @@ parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
 status condition so a test failure does not suppress independent evidence;
 cancelling the workflow still stops the chain. All required results remain part
 of the promotion gate. The batch also admits ARM-owning workflows in order:
-native, threading, installed host tooling, then macOS documentation tools. This
+native, macOS threading, installed host tooling, then ARM documentation tools. This
 prevents short ARM jobs from expiring behind native work in a different reusable
-workflow. The Linux wiki call starts at candidate capture alongside the browser,
-Windows and recovery workflows. The Linux call builds and verifies the public API
+workflow. The Linux wiki call, Intel documentation tools and Windows threading
+start at candidate capture alongside the browser, Windows and recovery
+workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
-Promotion waits for both wiki calls, and only the post-promotion job deploys.
+Promotion waits for all three wiki calls and both threading checks. Only the
+post-promotion job deploys the candidate wiki.
 The ARM sequence can increase total batch duration. A platform-wide shortage
 can still require retrying a job whose annotations show that it failed to acquire
 a runner.
+
+In a timing replay of [batch 43134442495](https://github.com/The-Ludus-Project/Ludus/actions/runs/43134442495),
+early Linux wiki alone brings capture-to-promotion from 2h 38m 11s to 2h 22m 35s.
+Starting Intel documentation and Windows threading at capture brings that
+estimate to 2h 16m 22s. Intel documentation saves the additional 6m 13s on the
+critical path. Windows threading finishes earlier and its result is available
+while ARM validation is still running. The replay holds job durations and ARM
+start times fixed and assumes the moved jobs can acquire runners at capture.
 
 The native, sanitizer, and nightly analysis jobs prepare the Qt Editor with
 `init.sh --with-editor --configure-editor-only`. Each job builds the Editor in

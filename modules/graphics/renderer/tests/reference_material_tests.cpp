@@ -193,6 +193,43 @@ TEST_CASE("Non-scattering coatings preserve interface and absorption limits", "[
     CHECK(evaluation.Value.Z == Catch::Approx(0.6 / math::kPi).epsilon(0.00001));
 }
 
+TEST_CASE("A black coating substrate preserves interface reflection and absorbs transmitted proposals",
+          "[renderer][rt1][coating]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    rr::ReferenceBsdf coated;
+    coated.BaseColor = {};
+    coated.Scattering.Model = format::MaterialModel::CoatedDiffuse;
+    coated.Scattering.AlphaU = 0.1F;
+    coated.Scattering.AlphaV = coated.Scattering.AlphaU;
+    constexpr float64 REFLECTION_JACOBIAN = 4;
+    constexpr float64 INTERFACE_PDF_WEIGHT = 0.9;
+    const float64 alpha = static_cast<float64>(coated.Scattering.AlphaU);
+    const float64 uniformDensity = 1 / (REFLECTION_JACOBIAN * math::kPi);
+    // The MIS estimate blends the reflection-conditional GGX density with the uniform floor.
+    const float64 expectedMisDensity =
+        uniformDensity * (INTERFACE_PDF_WEIGHT / (alpha * alpha) + 1 - INTERFACE_PDF_WEIGHT);
+    rr::ReferenceBsdfEvaluation evaluated;
+    REQUIRE(rr::EvaluateReferenceBsdf(coated, normalWorld, normalWorld, normalWorld, evaluated) ==
+            rhi::RasterStatus::Ready);
+    CHECK(evaluated.Pdf == Catch::Approx(expectedMisDensity));
+
+    rr::ReferenceBsdfSample sampled;
+    REQUIRE(rr::SampleReferenceBsdf(coated, normalWorld, normalWorld, {0, 0, 0}, sampled) == rhi::RasterStatus::Ready);
+    REQUIRE(sampled.Accepted == true);
+    CHECK(sampled.Direction == normalWorld);
+    CHECK(sampled.Weight.X == Catch::Approx(1));
+    CHECK(sampled.HasProportionalPdf == true);
+    CHECK(sampled.MisPdf == evaluated.Pdf);
+
+    REQUIRE(rr::SampleReferenceBsdf(coated, normalWorld, normalWorld, {0.5F, 0, 0}, sampled) ==
+            rhi::RasterStatus::Ready);
+    CHECK(sampled.Accepted == false);
+    CHECK(sampled.Weight == math::Vector3{});
+    CHECK(sampled.MisPdf == 0);
+}
+
 TEST_CASE("Coating sampling separates the internal path ratio from the external MIS density",
           "[renderer][rt1][coating]")
 {
