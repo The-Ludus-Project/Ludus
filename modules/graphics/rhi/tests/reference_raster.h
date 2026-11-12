@@ -42,6 +42,7 @@ inline foundation::usize PendingCount = 0;
 inline foundation::uint32 LossOnCompletion = 0;
 inline foundation::uint64 Submitted = 0;
 inline foundation::uint64 Completed = 0;
+inline foundation::usize CompletionPolls = 0;
 inline foundation::usize Creates[static_cast<foundation::usize>(internal::RasterKind::Count)]{};
 inline foundation::usize Destroys[static_cast<foundation::usize>(internal::RasterKind::Count)]{};
 inline foundation::usize Draws = 0;

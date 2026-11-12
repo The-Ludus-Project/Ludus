@@ -1047,6 +1047,100 @@ TEST_CASE("Color-write policy distinguishes pipeline requests", "[rhi][raster][c
     REQUIRE(Release(session.Device, depthRequest) == RasterStatus::Ready);
     REQUIRE(Release(session.Device, sameDepthRequest) == RasterStatus::Ready);
 }
+TEST_CASE("Pipeline requests distinguish explicit attachment and stencil state", "[rhi][lifetime]")
+{
+    Session session;
+    Scene scene(session.Device);
+    const RasterVertexStream stream{12, false};
+    const RasterVertexAttribute attribute{0, 0, 0, RasterVertexFormat::Float3};
+    const StaticArray<RasterFormat, 2> formats{RasterFormat::Rgba8Unorm, RasterFormat::Rgba8Srgb};
+    const StaticArray<RasterFormat, 2> reversedFormats{formats[1], formats[0]};
+    const StaticArray<RasterFormat, 2> changedFormats{formats[0], formats[0]};
+    RasterPipelineDescription original{scene.Vertex, scene.Fragment, scene.Layout, {&stream, 1}, {&attribute, 1}, true};
+    original.ColorFormats = {formats.GetData(), formats.GetSize()};
+    RasterPipelineDescription changed = original;
+    bool shouldShare = false;
+    SECTION("attachment count")
+    {
+        changed.ColorFormats = {formats.GetData(), 1};
+    }
+    SECTION("attachment order")
+    {
+        changed.ColorFormats = {reversedFormats.GetData(), reversedFormats.GetSize()};
+    }
+    SECTION("attachment format")
+    {
+        changed.ColorFormats = {changedFormats.GetData(), changedFormats.GetSize()};
+    }
+    SECTION("sample count")
+    {
+        changed.SampleCount = 4;
+    }
+    SECTION("stencil enabled")
+    {
+        changed.Stencil = true;
+    }
+    SECTION("enabled stencil state")
+    {
+        original.Stencil = true;
+        changed.Stencil = true;
+        SECTION("read mask")
+        {
+            changed.StencilReadMask = 1;
+        }
+        SECTION("write mask")
+        {
+            changed.StencilWriteMask = 0;
+        }
+        SECTION("reference")
+        {
+            changed.StencilReference = 1;
+        }
+        SECTION("per-face operations")
+        {
+            const bool isFront = GENERATE(false, true);
+            CAPTURE(isFront);
+            RasterStencilFace& face = isFront == true ? changed.StencilFront : changed.StencilBack;
+            SECTION("compare")
+            {
+                face.Compare = RasterStencilCompare::Equal;
+            }
+            SECTION("fail")
+            {
+                face.Fail = RasterStencilOperation::Zero;
+            }
+            SECTION("depth fail")
+            {
+                face.DepthFail = RasterStencilOperation::Zero;
+            }
+            SECTION("pass")
+            {
+                face.Pass = RasterStencilOperation::Replace;
+            }
+        }
+    }
+    SECTION("disabled stencil state shares the pipeline")
+    {
+        changed.StencilReference = 1;
+        changed.StencilFront.Pass = RasterStencilOperation::Replace;
+        shouldShare = true;
+    }
+    constexpr usize PIPELINE_KIND = static_cast<usize>(internal::RasterKind::Pipeline);
+    PipelineRequest first;
+    REQUIRE(RequestPipeline(session.Device, original, first) == RasterStatus::Pending);
+    REQUIRE(GetStatus(session.Device, first) == RasterStatus::Ready);
+    const usize created = reference::Creates[PIPELINE_KIND];
+    PipelineRequest second;
+    REQUIRE(RequestPipeline(session.Device, changed, second) ==
+            (shouldShare == true ? RasterStatus::Ready : RasterStatus::Pending));
+    REQUIRE(GetStatus(session.Device, second) == RasterStatus::Ready);
+    CHECK(reference::Creates[PIPELINE_KIND] == created + (shouldShare == true ? 0 : 1));
+    PipelineRequest duplicate;
+    REQUIRE(RequestPipeline(session.Device, changed, duplicate) == RasterStatus::Ready);
+    REQUIRE(Release(session.Device, duplicate) == RasterStatus::Ready);
+    REQUIRE(Release(session.Device, second) == RasterStatus::Ready);
+    REQUIRE(Release(session.Device, first) == RasterStatus::Ready);
+}
 TEST_CASE("Cancelled pipeline callbacks retain detached shader and layout dependencies", "[rhi][lifetime]")
 {
     Session session;
@@ -1974,7 +2068,9 @@ TEST_CASE("R6 byte budgets include detached pending resources and recover after 
     CHECK(reference::Creates[0] == 1);
     internal::RasterComplete(request, RasterStatus::Ready);
     reference::Next = RasterStatus::Ready;
+    const usize completionPolls = reference::CompletionPolls;
     REQUIRE(CreateBuffer(session.Device, {BufferRole::Uniform, 16}, bytes, next) == RasterStatus::Ready);
+    CHECK(reference::CompletionPolls == completionPolls + 1);
     REQUIRE(GetStorageUsage(session.Device, usage) == RasterStatus::Ready);
     CHECK(usage.ResourceBytes == 16);
     REQUIRE(Destroy(session.Device, next) == RasterStatus::Ready);

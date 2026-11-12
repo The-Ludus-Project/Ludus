@@ -14,6 +14,10 @@
 // the authors, licensed under Apache-2.0 (see third_party/pbrt/LICENSE.txt). Specialization: isotropic rough dielectric
 // over opaque Lambertian, zero medium scattering, RGB throughput, ten internal events. Philox addresses replace PCG;
 // path ratios are accumulated directly to avoid products of conditional densities.
+// Thanks to Michał Drobot, "Practical Multilayered Materials in Call of Duty: Infinite Warfare",
+// SIGGRAPH 2017 Physically Based Shading course, slide 51, for skipping diffuse work on black albedo.
+// https://research.activision.com/publications/archives/practical-multilayered-materials-in-call-of-dutyinfinite-warfare
+// Here the runtime shortcut retains the interface proposal and its null transmission events.
 namespace ludus::graphics::renderer::internal
 {
 using namespace foundation;
@@ -326,30 +330,33 @@ float32 EvaluateCoatingPdf(const ReferenceBsdf& bsdf,
                            math::Vector3 lightTangent,
                            ReferenceBsdfRandomContext random) noexcept
 {
-    CoatingRandomStream stream(random, COATING_PDF_DOMAIN);
     const float32 alpha = bsdf.Scattering.AlphaU;
     const float32 eta = bsdf.Scattering.CoatingEta;
     float32 sum = 0;
     static_cast<void>(ComputeCoatingInterface(alpha, eta, viewTangent, lightTangent, true, COATING_REFLECTION, sum));
-    const CoatingInterfaceSample entrance =
-        SampleCoatingInterface(alpha, eta, viewTangent, stream.NextThree(), true, COATING_TRANSMISSION);
-    const CoatingInterfaceSample exit =
-        SampleCoatingInterface(alpha, eta, lightTangent, stream.NextThree(), false, COATING_TRANSMISSION);
-    if (entrance.HasSample == true && exit.HasSample == true && GetCoatingMaximum(bsdf.BaseColor) > 0)
+    if (GetCoatingMaximum(bsdf.BaseColor) > 0)
     {
-        const math::Vector3 baseDirectionTangent = SampleCoatingBase(stream.NextThree());
-        const float32 basePdf = baseDirectionTangent.Z / math::kPiF;
-        const float32 reverseBasePdf = math::Abs(exit.DirectionTangent.Z) / math::kPiF;
-        sum += ComputeCoatingPowerWeight(exit.Pdf, reverseBasePdf) * reverseBasePdf;
-        float32 exitPdf = 0;
-        static_cast<void>(ComputeCoatingInterface(alpha,
-                                                  eta,
-                                                  -baseDirectionTangent,
-                                                  lightTangent,
-                                                  true,
-                                                  COATING_TRANSMISSION,
-                                                  exitPdf));
-        sum += ComputeCoatingPowerWeight(basePdf, exitPdf) * exitPdf;
+        CoatingRandomStream stream(random, COATING_PDF_DOMAIN);
+        const CoatingInterfaceSample entrance =
+            SampleCoatingInterface(alpha, eta, viewTangent, stream.NextThree(), true, COATING_TRANSMISSION);
+        const CoatingInterfaceSample exit =
+            SampleCoatingInterface(alpha, eta, lightTangent, stream.NextThree(), false, COATING_TRANSMISSION);
+        if (entrance.HasSample == true && exit.HasSample == true)
+        {
+            const math::Vector3 baseDirectionTangent = SampleCoatingBase(stream.NextThree());
+            const float32 basePdf = baseDirectionTangent.Z / math::kPiF;
+            const float32 reverseBasePdf = math::Abs(exit.DirectionTangent.Z) / math::kPiF;
+            sum += ComputeCoatingPowerWeight(exit.Pdf, reverseBasePdf) * reverseBasePdf;
+            float32 exitPdf = 0;
+            static_cast<void>(ComputeCoatingInterface(alpha,
+                                                      eta,
+                                                      -baseDirectionTangent,
+                                                      lightTangent,
+                                                      true,
+                                                      COATING_TRANSMISSION,
+                                                      exitPdf));
+            sum += ComputeCoatingPowerWeight(basePdf, exitPdf) * exitPdf;
+        }
     }
     return COATING_PDF_ESTIMATE_WEIGHT * sum +
            (1 - COATING_PDF_ESTIMATE_WEIGHT) / (COATING_REFLECTION_JACOBIAN * math::kPiF);
@@ -359,7 +366,6 @@ math::Vector3 EvaluateCoatingValue(const ReferenceBsdf& bsdf,
                                    math::Vector3 lightTangent,
                                    ReferenceBsdfRandomContext random) noexcept
 {
-    CoatingRandomStream stream(random, COATING_EVALUATION_DOMAIN);
     const float32 alpha = bsdf.Scattering.AlphaU;
     const float32 eta = bsdf.Scattering.CoatingEta;
     const float32 thickness = bsdf.Scattering.CoatingThickness;
@@ -367,6 +373,11 @@ math::Vector3 EvaluateCoatingValue(const ReferenceBsdf& bsdf,
     const float32 reflection =
         ComputeCoatingInterface(alpha, eta, viewTangent, lightTangent, true, COATING_ALL, unusedPdf);
     math::Vector3 result{reflection, reflection, reflection};
+    if (GetCoatingMaximum(bsdf.BaseColor) == 0)
+    {
+        return result;
+    }
+    CoatingRandomStream stream(random, COATING_EVALUATION_DOMAIN);
     const CoatingInterfaceSample entrance =
         SampleCoatingInterface(alpha, eta, viewTangent, stream.NextThree(), true, COATING_TRANSMISSION);
     const CoatingInterfaceSample exit =
@@ -502,12 +513,12 @@ ReferenceBsdfSample SampleCoatedDiffuse(const ReferenceBsdf& bsdf,
         result.Accepted = result.MisPdf > 0;
         return result;
     }
-    CoatingRandomStream stream(random, COATING_SAMPLE_DOMAIN);
     CoatingInterfaceSample sampled = SampleCoatingInterface(alpha, eta, viewTangent, samples, true, COATING_ALL);
-    if (sampled.HasSample == false)
+    if (sampled.HasSample == false || (sampled.IsTransmission == true && GetCoatingMaximum(bsdf.BaseColor) == 0))
     {
         return result;
     }
+    CoatingRandomStream stream(random, COATING_SAMPLE_DOMAIN);
     const float32 entranceWeight = sampled.Value * math::Abs(sampled.DirectionTangent.Z) / sampled.Pdf;
     math::Vector3 weight{entranceWeight, entranceWeight, entranceWeight};
     math::Vector3 directionTangent = sampled.DirectionTangent;

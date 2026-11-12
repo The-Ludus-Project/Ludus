@@ -4718,8 +4718,7 @@ Status Renderer::createLitMaterial(MaterialProgram program,
             return textureStatus;
         }
         if (texture.Format != rhi::RasterFormat::Rgba8Unorm || texture.MipLevels != 1 || texture.Attachment == true ||
-            texture.Width != LUDUS_GI_PROBE_ATLAS_WIDTH ||
-            texture.Height != internal::ComputeGiProbeAtlasHeight(probes.Grid))
+            HasGiProbeAtlasExtent(probes.Grid, texture.Width, texture.Height) == false)
         {
             return Status::InvalidDescription;
         }

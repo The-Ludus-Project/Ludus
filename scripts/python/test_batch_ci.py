@@ -52,13 +52,23 @@ class CaptureTests(unittest.TestCase):
             {"ref": f"refs/heads/{batch_ci.ATTEMPT_BRANCH}", "sha": CANDIDATE})
         self.assertIn(f"{BASE}..{CANDIDATE}", self.git.call_args.args[1])
 
-    def test_unchanged_main_dev_and_stale_scheduler_do_no_work(self):
-        for main, develop in ((BASE, BASE), (LATER, CANDIDATE)):
-            with self.subTest(main=main, develop=develop):
-                self.heads.update(main=main, develop=develop)
-                self.assertEqual(self.capture()["should_run"], "false")
-                self.client.request.assert_not_called()
-                self.git.assert_not_called()
+    def test_stale_request_hands_off_new_candidate_without_marking_an_attempt(self):
+        self.heads.update(main=LATER)
+        result = self.capture()
+        self.assertEqual(result["should_run"], "false")
+        self.assertEqual(result["should_redispatch"], "true")
+        self.client.request.assert_not_called()
+        self.git.assert_not_called()
+
+    def test_stale_request_does_not_loop_after_promotion_or_rejection(self):
+        self.heads.update(main=LATER, develop=LATER)
+        self.assertNotIn("should_redispatch", self.capture())
+        self.heads.update(develop=CANDIDATE)
+        self.heads[batch_ci.ATTEMPT_BRANCH] = CANDIDATE
+        self.assertNotIn("should_redispatch", self.capture())
+        self.assertEqual(self.capture(retry=True)["should_redispatch"], "true")
+        self.client.request.assert_not_called()
+        self.git.assert_not_called()
 
     def test_same_failed_or_cancelled_candidate_waits_for_fix_or_explicit_retry(self):
         self.heads[batch_ci.ATTEMPT_BRANCH] = CANDIDATE
@@ -606,23 +616,28 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotRegex(snapshot, r"(?m)^      contents: write$")
         self.assertIn("    needs: promote", workflow.split("\n  publish:\n", 1)[1])
 
-    def test_linux_wiki_starts_at_capture_and_macos_checks_still_gate_promotion(self):
+    def test_linux_wiki_and_intel_docs_start_at_capture_and_all_gate_promotion(self):
         root = self.ROOT / ".github/workflows"
         batch = split_jobs((root / "batch-ci.yml").read_text())
         wiki = (root / "wiki.yml").read_text()
         jobs = split_jobs(wiki)
         self.assertIn("    needs: snapshot\n", batch["wiki"])
+        self.assertIn("    needs: snapshot\n", batch["wiki-macos-intel"])
         self.assertIn("    needs: [snapshot, sdk]\n", batch["wiki-macos"])
-        self.assertNotIn("batch_macos_tools_only", batch["wiki"])
-        self.assertIn("      batch_macos_tools_only: true\n", batch["wiki-macos"])
-        for name in ("wiki", "wiki-macos"):
+        self.assertNotIn("batch_macos_tools_runner", batch["wiki"])
+        self.assertIn("      batch_macos_tools_runner: macos-15\n", batch["wiki-macos"])
+        self.assertIn("      batch_macos_tools_runner: macos-15-intel\n", batch["wiki-macos-intel"])
+        for name in ("wiki", "wiki-macos", "wiki-macos-intel"):
             self.assertIn(f"needs.{name}.result == 'success'", batch["promote"])
-        self.assertIn("inputs.batch_macos_tools_only && '-macos'", wiki)
+        self.assertIn("format('-{0}', inputs.batch_macos_tools_runner)", wiki)
         for name in ("api-documentation", "editor"):
-            self.assertIn("!inputs.batch_macos_tools_only", jobs[name])
+            self.assertIn("inputs.batch_macos_tools_runner == ''", jobs[name])
         self.assertIn("    needs: editor\n", jobs["sample-playback"])
         self.assertIn("    needs: [editor, sample-playback]\n", jobs["build"])
-        self.assertIn("inputs.batch_sha == '' || inputs.batch_macos_tools_only", jobs["macos-documentation-tools"])
+        macos_tools = jobs["macos-documentation-tools"]
+        self.assertIn("inputs.batch_sha == '' || inputs.batch_macos_tools_runner != ''", macos_tools)
+        self.assertIn("fromJSON(format('[\"{0}\"]', inputs.batch_macos_tools_runner))", macos_tools)
+        self.assertIn("fromJSON('[\"macos-15\", \"macos-15-intel\"]')", macos_tools)
         self.assertIn("if: inputs.batch_sha == ''", jobs["deploy"])
 
     def test_tick_that_validates_nothing_is_cancelled_rather_than_green(self):
@@ -631,7 +646,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("    needs: snapshot\n", job)
         self.assertIn("    if: needs.snapshot.outputs.should_run == 'false'\n", job)
         self.assertIn("    permissions:\n      actions: write\n    steps:", job)
-        run = job.split("        run: |\n", 1)[1]
+        handoff, run = job.split("        run: |\n", 1)
+        self.assertIn("if: needs.snapshot.outputs.should_redispatch == 'true'", handoff)
+        self.assertIn('gh workflow run batch-ci.yml --repo "$GITHUB_REPOSITORY" --ref main -f "retry=$SHOULD_RETRY"',
+                      handoff)
         self.assertIn('gh run cancel "$GITHUB_RUN_ID"', run)
         # If cancellation does not take effect, the run must fail, not pass.
         self.assertTrue(run.rstrip().endswith("exit 1"))
@@ -640,6 +658,14 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("actions: write", snapshot)
         promote = workflow.split("\n  promote:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertNotIn("unvalidated", promote)
+
+    def test_develop_wake_dispatches_only_main_without_checking_out_code(self):
+        wake = (self.ROOT / ".github/workflows/batch-wake.yml").read_text()
+        self.assertIn("  push:\n    branches: [develop]\n", wake)
+        self.assertIn("if: vars.BATCH_CI_ENABLED == 'true'", wake)
+        self.assertIn('gh workflow run batch-ci.yml --repo "$GITHUB_REPOSITORY" --ref main\n', wake)
+        self.assertNotIn("actions/checkout", wake)
+        self.assertNotIn("secrets.", wake)
 
     def test_failed_batch_is_stopped_by_trusted_code_outside_promotion(self):
         workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()

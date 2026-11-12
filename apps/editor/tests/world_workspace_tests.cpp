@@ -3862,10 +3862,10 @@ TEST_CASE("The World inspector offers an explicit always-on bake for a static li
     reader.SetScene(probes);
     reader.Poll(probes);
     probes.ProbeGrid.OriginWorld.X = 1;
-    reader.InvalidateProbeGrid();
+    reader.SetProbeGrid(probes.ProbeGrid);
     reader.Poll(probes);
     probes.ProbeGrid.OriginWorld.X = 2;
-    reader.InvalidateProbeGrid();
+    reader.SetProbeGrid(probes.ProbeGrid);
     CHECK(reader.GetReady().isNull() == true);
     REQUIRE(QTest::qWaitFor([&reader, &probes]() {
                 reader.Poll(probes);
@@ -3875,6 +3875,40 @@ TEST_CASE("The World inspector offers an explicit always-on bake for a static li
     REQUIRE(reader.GetReady().isNull() == false);
     CHECK(reader.GetReady()->LightingKey == preview_lighting::MakeKey(probes));
     CHECK(reader.GetReady()->ProbeAtlas.Pixels.isEmpty() == false);
+    REQUIRE(reader.Save() == true);
+    WorldSurfaceBakeState reopened;
+    reopened.SetWorldPath(path);
+    reopened.SetScene(probes);
+    const QSharedPointer<const WorldSurfaceBake> restored = reopened.GetReady();
+    REQUIRE(restored.isNull() == false);
+    CHECK(restored->LightingKey == reader.GetReady()->LightingKey);
+    REQUIRE(restored->Charts.size() == 1);
+    CHECK(restored->Charts.front().Pixels == reader.GetReady()->Charts.front().Pixels);
+    CHECK(restored->ProbeAtlas.Width == reader.GetReady()->ProbeAtlas.Width);
+    CHECK(restored->ProbeAtlas.Height == reader.GetReady()->ProbeAtlas.Height);
+    CHECK(restored->ProbeAtlas.IrradianceScale == reader.GetReady()->ProbeAtlas.IrradianceScale);
+    CHECK(restored->ProbeAtlas.Pixels == reader.GetReady()->ProbeAtlas.Pixels);
+    reopened.Poll(probes);
+    CHECK(reopened.GetReady() == restored);
+    probes.ProbeGrid.OriginWorld.X += 1;
+    reopened.SetScene(probes);
+    CHECK(reopened.GetReady().isNull() == true);
+    probes.ProbeGrid.OriginWorld.X -= 1;
+
+    const QString cachePath = path + QStringLiteral(".ludus-lighting");
+    const QByteArray savedBytes = Read(cachePath);
+    Write(cachePath, savedBytes.chopped(1));
+    WorldSurfaceBakeState truncated;
+    truncated.SetWorldPath(path);
+    truncated.SetScene(probes);
+    CHECK(truncated.GetReady().isNull() == true);
+    REQUIRE(QTest::qWaitFor([&truncated, &probes]() {
+                truncated.Poll(probes);
+                return truncated.GetReady().isNull() == false || truncated.GetFailure().isEmpty() == false;
+            }) == true);
+    INFO(truncated.GetFailure().toStdString());
+    REQUIRE(truncated.GetReady().isNull() == false);
+    CHECK(truncated.GetReady()->ProbeAtlas.Pixels == restored->ProbeAtlas.Pixels);
 
     REQUIRE(findStatic() != nullptr);
     findStatic()->setChecked(false);

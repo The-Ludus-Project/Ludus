@@ -1,0 +1,23 @@
+name: Wake batched integration
+
+on:
+  push:
+    branches: [develop]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    if: vars.BATCH_CI_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      # Thanks to GitHub, "Triggering a workflow": workflow_dispatch can use
+      # GITHUB_TOKEN. The coordinator reads develop once it owns the batch slot.
+      # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+      - name: Request the trusted main coordinator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run batch-ci.yml --repo "$GITHUB_REPOSITORY" --ref main

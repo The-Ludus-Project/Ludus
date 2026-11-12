@@ -4001,7 +4001,7 @@ bool WorldWorkspace::Save()
     preview.SetSurfaceBakeWorldPath(Path_);
     if (preview.SaveSurfaceBake() == false)
     {
-        Changed(QStringLiteral("World saved. Surface charts could not be saved beside the World. Check the folder's "
+        Changed(QStringLiteral("World saved. Baked lighting could not be saved beside the World. Check the folder's "
                                "permissions and available space, then save again."));
         return true;
     }

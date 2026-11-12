@@ -26,10 +26,12 @@ namespace format = content::scene_format;
 namespace
 {
 constexpr uint32 BAKE_MAGIC = 0x43424c57;
-constexpr uint32 BAKE_VERSION = 1;
+constexpr uint32 CHARTS_ONLY_VERSION = 1;
+constexpr uint32 BAKE_WITH_PROBES_VERSION = 2;
 constexpr qsizetype LIGHTING_KEY_BYTES = 32;
-// Bound the on-disk chart payload independently of the worker's peak scratch budget.
-constexpr qsizetype MAX_CHART_FILE_BYTES = qsizetype{128} * 1024 * 1024;
+constexpr qsizetype BYTES_PER_KIBIBYTE = 1024;
+constexpr qsizetype MAX_BAKE_FILE_MEBIBYTES = 128;
+constexpr qsizetype MAX_BAKE_FILE_BYTES = MAX_BAKE_FILE_MEBIBYTES * BYTES_PER_KIBIBYTE * BYTES_PER_KIBIBYTE;
 constexpr float32 MAX_IRRADIANCE_SCALE = 10000;
 
 bool HasBakeInputs(const RenderScene& scene) noexcept
@@ -57,11 +59,37 @@ qsizetype GetChartByteCount(const WorldSurfaceChart& chart) noexcept
     return static_cast<qsizetype>(chart.Width) * chart.Height * format::TEXEL_BYTES;
 }
 
+bool ReadProbeAtlas(QDataStream& inoutStream, WorldProbeAtlas& outAtlas)
+{
+    inoutStream >> outAtlas.Width >> outAtlas.Height >> outAtlas.IrradianceScale;
+    const uint64 texels = uint64{outAtlas.Width} * outAtlas.Height;
+    if (inoutStream.status() != QDataStream::Ok || texels == 0 ||
+        texels > static_cast<uint64>(MAX_BAKE_FILE_BYTES) / format::TEXEL_BYTES ||
+        math::IsFinite(outAtlas.IrradianceScale) == false || outAtlas.IrradianceScale < 0 ||
+        outAtlas.IrradianceScale > MAX_IRRADIANCE_SCALE)
+    {
+        return false;
+    }
+    const qsizetype bytes = static_cast<qsizetype>(texels * format::TEXEL_BYTES);
+    if (bytes != inoutStream.device()->bytesAvailable())
+    {
+        return false;
+    }
+    outAtlas.Pixels.resize(bytes);
+    return inoutStream.readRawData(outAtlas.Pixels.data(), bytes) == bytes;
+}
+
+bool HasMatchingProbeAtlas(const WorldSurfaceBake& bake, const renderer::GiProbeGrid& grid) noexcept
+{
+    const WorldProbeAtlas& atlas = bake.ProbeAtlas;
+    return atlas.Pixels.isEmpty() == false && renderer::HasGiProbeAtlasExtent(grid, atlas.Width, atlas.Height) == true;
+}
+
 QSharedPointer<const WorldSurfaceBake> ReadSurfaceBake(const QString& path)
 {
     QFile file(path);
     if (path.isEmpty() == true || QFileInfo(path).isSymLink() == true || file.open(QIODevice::ReadOnly) == false ||
-        file.size() > MAX_CHART_FILE_BYTES)
+        file.size() > MAX_BAKE_FILE_BYTES)
     {
         return {};
     }
@@ -71,7 +99,8 @@ QSharedPointer<const WorldSurfaceBake> ReadSurfaceBake(const QString& path)
     uint32 version = 0;
     uint32 count = 0;
     stream >> magic >> version >> count;
-    if (magic != BAKE_MAGIC || version != BAKE_VERSION || count == 0 || count > MAX_PREVIEW_OBJECTS)
+    if (magic != BAKE_MAGIC || (version != CHARTS_ONLY_VERSION && version != BAKE_WITH_PROBES_VERSION) || count == 0 ||
+        count > MAX_PREVIEW_OBJECTS)
     {
         return {};
     }
@@ -102,6 +131,10 @@ QSharedPointer<const WorldSurfaceBake> ReadSurfaceBake(const QString& path)
         }
         bake->Charts.append(chart);
     }
+    if (version == BAKE_WITH_PROBES_VERSION && ReadProbeAtlas(stream, bake->ProbeAtlas) == false)
+    {
+        return {};
+    }
     return file.atEnd() == true ? bake : QSharedPointer<const WorldSurfaceBake>{};
 }
 } // namespace
@@ -126,6 +159,7 @@ void WorldSurfaceBakeState::SetWorldPath(const QString& path)
 
 void WorldSurfaceBakeState::SetScene(const RenderScene& scene)
 {
+    mProbeGrid = scene.ProbeGrid;
     const QByteArray key = HasBakeInputs(scene) == true ? preview_lighting::MakeKey(scene) : QByteArray{};
     if (key.isEmpty() == true || key != mLightingKey)
     {
@@ -134,8 +168,9 @@ void WorldSurfaceBakeState::SetScene(const RenderScene& scene)
     }
 }
 
-void WorldSurfaceBakeState::InvalidateProbeGrid() noexcept
+void WorldSurfaceBakeState::SetProbeGrid(const renderer::GiProbeGrid& grid) noexcept
 {
+    mProbeGrid = grid;
     invalidateBake();
     mLightingKey.clear();
 }
@@ -146,8 +181,12 @@ QSharedPointer<const WorldSurfaceBake> WorldSurfaceBakeState::GetReady() const
     {
         return mReady;
     }
-    return mSaved.isNull() == false && mSaved->LightingKey == mLightingKey ? mSaved
-                                                                           : QSharedPointer<const WorldSurfaceBake>{};
+    if (mSaved.isNull() == false && mSaved->LightingKey == mLightingKey &&
+        (mSaved->ProbeAtlas.Pixels.isEmpty() == true || HasMatchingProbeAtlas(*mSaved, mProbeGrid) == true))
+    {
+        return mSaved;
+    }
+    return {};
 }
 
 QString WorldSurfaceBakeState::GetFailure() const
@@ -224,7 +263,8 @@ WorldSurfaceBakeState::BakeResult WorldSurfaceBakeState::bakeScene(const RenderS
         return {};
     }
     const bool hasProbeGrid = scene.ProbeGrid.Counts[0] != 0;
-    if (hasProbeGrid == false && saved.isNull() == false && saved->LightingKey == key)
+    if (saved.isNull() == false && saved->LightingKey == key &&
+        (hasProbeGrid == true ? HasMatchingProbeAtlas(*saved, scene.ProbeGrid) : saved->ProbeAtlas.Pixels.isEmpty()))
     {
         return {key, {}, {}};
     }
@@ -328,7 +368,14 @@ bool WorldSurfaceBakeState::Save()
     }
     QDataStream stream(&file);
     ConfigureStream(stream);
-    stream << BAKE_MAGIC << BAKE_VERSION << static_cast<uint32>(mReady->Charts.size());
+    // Thanks to Colin Barré-Brisebois, A Certain Slant of Light: Past, Present and Future Challenges
+    // of Global Illumination in Games, SIGGRAPH 2017, slide 25, for identifying repeat precompute as an authoring cost.
+    // https://colinbarrebrisebois.com/wp-content/uploads/2022/06/siggraph2017-acertainslantoflight.pdf
+    // Retain the exact probe payload with its charts so reopening can reuse the whole bake.
+    const WorldProbeAtlas& atlas = mReady->ProbeAtlas;
+    const bool hasProbeAtlas = atlas.Pixels.isEmpty() == false;
+    stream << BAKE_MAGIC << (hasProbeAtlas == true ? BAKE_WITH_PROBES_VERSION : CHARTS_ONLY_VERSION)
+           << static_cast<uint32>(mReady->Charts.size());
     if (stream.writeRawData(mReady->LightingKey.constData(), mReady->LightingKey.size()) != mReady->LightingKey.size())
     {
         return false;
@@ -336,8 +383,17 @@ bool WorldSurfaceBakeState::Save()
     for (const WorldSurfaceChart& chart : mReady->Charts)
     {
         stream << chart.Width << chart.Height << chart.Scale.X << chart.Scale.Y << chart.Scale.Z;
-        if (chart.Pixels.size() > MAX_CHART_FILE_BYTES - file.pos() ||
+        if (chart.Pixels.size() > MAX_BAKE_FILE_BYTES - file.pos() ||
             stream.writeRawData(chart.Pixels.constData(), chart.Pixels.size()) != chart.Pixels.size())
+        {
+            return false;
+        }
+    }
+    if (hasProbeAtlas == true)
+    {
+        stream << atlas.Width << atlas.Height << atlas.IrradianceScale;
+        if (atlas.Pixels.size() > MAX_BAKE_FILE_BYTES - file.pos() ||
+            stream.writeRawData(atlas.Pixels.constData(), atlas.Pixels.size()) != atlas.Pixels.size())
         {
             return false;
         }
