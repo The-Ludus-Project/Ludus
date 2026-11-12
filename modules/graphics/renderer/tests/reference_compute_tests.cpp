@@ -111,6 +111,8 @@ enum class SphereSurfaces : uint8
     ProjectBrdf,
     /// Coated diffuse on the sphere, the wall and the masked quad.
     Coated,
+    /// Coated diffuse with a black substrate on the sphere and reflective substrates on the wall and quad.
+    CoatedBlack,
     /// A smooth glass sphere (index 1.5) and a thin masked pane (index 1.33) in front of the wall.
     Glass,
     /// A closure program of diffuse, conductor and cosine-power lobes whose weights read the textured
@@ -273,12 +275,16 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
             material.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
             material.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
         }
-        if (surfaces == SphereSurfaces::Coated && i != 2)
+        if ((surfaces == SphereSurfaces::Coated || surfaces == SphereSurfaces::CoatedBlack) && i != 2)
         {
             namespace format = ludus::content::scene_format;
             material.Scattering.Model = format::MaterialModel::CoatedDiffuse;
             material.Scattering.AlphaU = i == 1 ? 0.01F : 0.1F;
             material.Scattering.AlphaV = material.Scattering.AlphaU;
+            if (surfaces == SphereSurfaces::CoatedBlack && i == 0)
+            {
+                material.Surface.Tint = {0, 0, 0, 1};
+            }
             if (i == 3)
             {
                 material.Scattering.CoatingEta = 1.33F;
@@ -1966,6 +1972,7 @@ TEST_CASE("Typed reflection and transmission match between CPU and GPU reference
                                              SphereSurfaces::Mix,
                                              SphereSurfaces::ProjectBrdf,
                                              SphereSurfaces::Coated,
+                                             SphereSurfaces::CoatedBlack,
                                              SphereSurfaces::Glass,
                                              SphereSurfaces::Program);
     CAPTURE(surfaces);
