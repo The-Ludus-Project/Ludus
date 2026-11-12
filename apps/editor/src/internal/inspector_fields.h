@@ -71,6 +71,10 @@ struct SliderMapping final
 /// Whether minimum and maximum are finite and maximum is greater, so a slider can span them.
 [[nodiscard]] bool HasSliderRange(foundation::float64 minimum, foundation::float64 maximum);
 
+/// Whether a number field with this range and unit gets a slider: a finite range that is not an angle ("°") or a
+/// distance ("m"), which read better typed or scrubbed than dragged across a long track.
+[[nodiscard]] bool ShouldUseSlider(foundation::float64 minimum, foundation::float64 maximum, const QString& unit);
+
 /// The mapping for a field: linear when the range holds at most ten thousand steps (a colour channel, an angle,
 /// a few metres), logarithmic otherwise (0 to 10000 m), so a short drag still reaches small values.
 /// @pre HasSliderRange(minimum, maximum) and step > 0.
