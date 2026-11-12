@@ -3076,9 +3076,9 @@ QString WorldWorkspace::readFieldState(const QWidget& field)
 void WorldWorkspace::recordAppliedFields()
 {
     mAppliedFields.clear();
-    for (auto field = Fields_.cbegin(); field != Fields_.cend(); ++field)
+    for (const QString& key : Fields_.keys())
     {
-        mAppliedFields.insert(field.key(), readFieldState(*field.value()));
+        mAppliedFields.insert(key, readFieldState(*Fields_.value(key)));
     }
     if (Name_ != nullptr)
     {
@@ -3088,13 +3088,15 @@ void WorldWorkspace::recordAppliedFields()
 foundation::int32 WorldWorkspace::countUnappliedFields() const
 {
     foundation::int32 count = 0;
-    for (auto field = Fields_.cbegin(); field != Fields_.cend(); ++field)
+    for (const QString& key : Fields_.keys())
     {
-        const auto applied = mAppliedFields.constFind(field.key());
-        count += applied != mAppliedFields.cend() && *applied != readFieldState(*field.value()) ? 1 : 0;
+        const bool hasChanged =
+            mAppliedFields.contains(key) == true && mAppliedFields.value(key) != readFieldState(*Fields_.value(key));
+        count += hasChanged == true ? 1 : 0;
     }
-    const auto name = mAppliedFields.constFind(QStringLiteral("name"));
-    count += Name_ != nullptr && name != mAppliedFields.cend() && *name != Name_->text() ? 1 : 0;
+    const bool hasNameChanged = Name_ != nullptr && mAppliedFields.contains(QStringLiteral("name")) == true &&
+                                mAppliedFields.value(QStringLiteral("name")) != Name_->text();
+    count += hasNameChanged == true ? 1 : 0;
     return count;
 }
 void WorldWorkspace::updateCommitFooter()
