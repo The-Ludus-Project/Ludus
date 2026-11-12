@@ -4,7 +4,7 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 8
+#define LUDUS_REFERENCE_KERNEL_VERSION 9
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
@@ -22,6 +22,13 @@
 // With LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG: ReferenceLightSampling::ResampledFormFactor (sampler version 3), whose
 // target approximates both integrals with Hill and Heitz's clipped form factor.
 #define LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG 128
+
+// Sampler 4 keeps the version-1 addresses and reserves a separate dimension per
+// depth after all version-2/3 bounce dimensions. Tile.x carries the directional
+// prefix length in the packed analytic light table.
+#define LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION                                                                    \
+    (LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION +                                                                        \
+     LUDUS_REFERENCE_MAX_DEPTH * LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE)
 
 // Sampler version 2 bounce slots (docs/architecture/many-area-light-sampling-reference-review.md, "Random layout,
 // sampler version 2"). Slots 0-7 keep their version-1 meanings, with slots 1-2 also holding the diffuse

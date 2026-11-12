@@ -30,6 +30,7 @@
 #include "internal/texture_viewer.h"
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_graph_capture.h"
+#include "internal/viewport_raster_capture.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
 #include "internal/world_workspace.h"
@@ -74,6 +75,8 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
+#include <QDateTimeEdit>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -626,10 +629,29 @@ TEST_CASE("RG3b editor reverse-Z camera yields a finite conventional view of the
     CHECK(GetDepth(conventional, farWorld) > nearDepth);
     CHECK(GetDepth(reverse, farWorld) < GetDepth(reverse, nearWorld));
 
+    // The World viewport's graph view keeps reverse-Z with the same finite far plane: the conventional view is
+    // exactly its w - z rewrite.
+    renderer::ViewDescription graph;
+    REQUIRE(viewport.DescribeGraphView(WIDTH, HEIGHT, graph, error) == true);
+    CHECK(graph.Depth == renderer::DepthConvention::ReverseZ);
+    CHECK(graph.InfiniteFar == false);
+    CHECK(graph.CameraPosition == reverse.CameraPosition);
+    for (usize column = 0; column < MATRIX_COLUMNS; ++column)
+    {
+        CHECK(graph.WorldToClip.At(0, column) == reverse.WorldToClip.At(0, column));
+        CHECK(graph.WorldToClip.At(1, column) == reverse.WorldToClip.At(1, column));
+        CHECK(graph.WorldToClip.At(3, column) == reverse.WorldToClip.At(3, column));
+        CHECK(conventional.WorldToClip.At(2, column) ==
+              graph.WorldToClip.At(3, column) - graph.WorldToClip.At(2, column));
+    }
+    CHECK(GetDepth(graph, farWorld) < GetDepth(graph, nearWorld));
+
     // A scene without geometry has no finite far plane; the output is preserved.
     RenderPreview empty;
     renderer::ViewDescription unchanged = conventional;
     CHECK(empty.DescribeConventionalView(WIDTH, HEIGHT, unchanged, error) == false);
+    CHECK(unchanged.WorldToClip == conventional.WorldToClip);
+    CHECK(empty.DescribeGraphView(WIDTH, HEIGHT, unchanged, error) == false);
     CHECK(unchanged.WorldToClip == conventional.WorldToClip);
 }
 
@@ -2754,6 +2776,34 @@ TEST_CASE("RT1 failure unlocks the window before its raster comparison finishes"
     CHECK(stopOrNull->isEnabled() == false);
     CHECK(compareOrNull->isEnabled() == true);
     CHECK(preview.HasActiveGpuCapture() == false);
+}
+
+TEST_CASE("A rejected raster comparison scene reaches a terminal failure",
+          "[editor][render-graph][world-graph][reference-capture]")
+{
+    DeviceFixture device(MakeViewportDeviceDescription().Storage);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No offscreen viewport GPU adapter");
+    }
+    ViewportRasterSource source;
+    source.PackagePath = GetDefaultRenderGraphRuntime();
+    ViewportRasterCapture capture;
+    QSize extent;
+    QString error;
+    REQUIRE(capture.Load(device.Device, device.Surface, source, QSize(WIDTH, HEIGHT), extent, error) == true);
+    renderer::ViewDescription view;
+    view.Depth = renderer::DepthConvention::ReverseZ;
+    REQUIRE(capture.Begin(MakeCookedScene(), view, error) == true);
+    ViewportRasterPhase phase = capture.GetPhase();
+    for (usize attempt = 0; attempt < ATTEMPTS && phase == ViewportRasterPhase::Rendering; ++attempt)
+    {
+        phase = capture.Service();
+        QThread::usleep(200);
+    }
+    INFO(capture.GetError().toStdString());
+    CHECK(phase == ViewportRasterPhase::Failed);
+    CHECK(capture.GetError().contains(QStringLiteral("failed to prepare for capture")) == true);
 }
 
 TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",
@@ -4973,6 +5023,16 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     REQUIRE(deleteOrNull != nullptr);
     cubeOrNull->trigger();
     sunOrNull->trigger();
+    QComboBox* roleOrNull = world.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = world.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    QDateTimeEdit* dateTimeOrNull = world.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(dateTimeOrNull != nullptr);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-02T00:00:00Z"), Qt::ISODate));
+    REQUIRE(world.Apply() == true);
     world.ResumePreview();
 
     QWidget* viewportOrNull = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
@@ -5009,10 +5069,18 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     sunFieldOrNull->setCurrentIndex(1);
     REQUIRE(world.Apply() == true);
     REQUIRE(waitFor([&]() {
-                return world.GetRenderPreview().Scene().Atmosphere.IsEnabled == true &&
+                return world.GetRenderPreview().Scene().Atmosphere.Celestial.MilkyWayRadiance > 0 &&
                        graphViewOrNull->GetImage() != clear;
             }) == true);
-    const QImage sky = graphViewOrNull->GetImage();
+    const QImage nightSky = graphViewOrNull->GetImage();
+    starsFieldOrNull->setChecked(false);
+    REQUIRE(world.Apply() == true);
+    REQUIRE(waitFor([&]() {
+                return world.GetRenderPreview().Scene().Atmosphere.Celestial.MilkyWayRadiance == 0 &&
+                       graphViewOrNull->GetImage() != nightSky;
+            }) == true);
+    world.Undo();
+    REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage() == nightSky; }) == true);
     RenderGraphPreview* previewOrNull = rendererWorkspace.GetPreviewOrNull();
     REQUIRE(previewOrNull != nullptr);
     const uint64 skyRevision = previewOrNull->GetPresentedRevision();
@@ -5026,7 +5094,7 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     const QSize resizedExtent(1280, 720);
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().size() == resizedExtent; }) == true);
     const QImage resizedSky = graphViewOrNull->GetImage();
-    CHECK(resizedSky.size() != sky.size());
+    CHECK(resizedSky.size() != nightSky.size());
 
     REQUIRE(deleteOrNull->isEnabled() == true);
     QTimer::singleShot(0, &world, []() {

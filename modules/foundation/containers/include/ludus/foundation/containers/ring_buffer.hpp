@@ -6,17 +6,17 @@
 // Live elements occupy a possibly wrapped run of slots starting at the head.
 // Only those slots hold objects; the rest is uninitialized storage shared with
 // FixedArray's design (detail/inline_slots.hpp). Wrapped storage is exposed as
-// two contiguous spans rather than pretending it is one. "Full" is an ordinary
+// two contiguous borrowed views rather than pretending it is one. "Full" is an ordinary
 // status from the Try operations. This is not a concurrent queue: the existing
 // SPSC/MPSC queues keep their own publication protocols. See
 // docs/architecture/container-systems.md (RingBuffer contract).
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/detail/contiguous_storage.hpp>
 #include <ludus/foundation/containers/detail/inline_slots.hpp>
 
-#include <span>
 #include <type_traits>
 
 namespace ludus::foundation::core
@@ -159,26 +159,26 @@ public:
 
     /// @brief The oldest elements, up to the end of the storage, in FIFO order.
     ///
-    /// GetLeadingSpan() followed by GetTrailingSpan() visits every live element in FIFO order. Both are empty for
-    /// an empty ring. Invalidated by any operation that removes the viewed elements.
-    [[nodiscard]] std::span<ElementType> GetLeadingSpan() noexcept
+    /// GetLeadingView() followed by GetTrailingView() visits every live element in FIFO order. Both are valid and
+    /// empty for an empty ring. Invalidated by any operation that removes the viewed elements.
+    [[nodiscard]] BorrowedView<ElementType> GetLeadingView() noexcept
     {
-        return std::span<ElementType>(slotData() + headOrZero(), leadingSize());
+        return BorrowedView<ElementType>(slotData() + headOrZero(), leadingSize());
     }
-    /// Read-only form of GetLeadingSpan().
-    [[nodiscard]] std::span<const ElementType> GetLeadingSpan() const noexcept
+    /// Read-only form of GetLeadingView().
+    [[nodiscard]] BorrowedView<const ElementType> GetLeadingView() const noexcept
     {
-        return std::span<const ElementType>(slotData() + headOrZero(), leadingSize());
+        return BorrowedView<const ElementType>(slotData() + headOrZero(), leadingSize());
     }
     /// @brief The newer elements that wrapped to the start of the storage; empty when nothing wrapped.
-    [[nodiscard]] std::span<ElementType> GetTrailingSpan() noexcept
+    [[nodiscard]] BorrowedView<ElementType> GetTrailingView() noexcept
     {
-        return std::span<ElementType>(slotData(), mSize - leadingSize());
+        return BorrowedView<ElementType>(slotData(), mSize - leadingSize());
     }
-    /// Read-only form of GetTrailingSpan().
-    [[nodiscard]] std::span<const ElementType> GetTrailingSpan() const noexcept
+    /// Read-only form of GetTrailingView().
+    [[nodiscard]] BorrowedView<const ElementType> GetTrailingView() const noexcept
     {
-        return std::span<const ElementType>(slotData(), mSize - leadingSize());
+        return BorrowedView<const ElementType>(slotData(), mSize - leadingSize());
     }
 
     // --- Adding and removing ------------------------------------------------
@@ -307,10 +307,10 @@ private:
     void copyFrom(const RingBuffer& other)
     {
         LUDUS_ASSERT(mSize == 0);
-        const std::span<const ElementType> leading = other.GetLeadingSpan();
-        const std::span<const ElementType> trailing = other.GetTrailingSpan();
-        internal::UninitializedCopy(slotData(), leading.data(), leading.size());
-        internal::UninitializedCopy(slotData() + leading.size(), trailing.data(), trailing.size());
+        const BorrowedView<const ElementType> leading = other.GetLeadingView();
+        const BorrowedView<const ElementType> trailing = other.GetTrailingView();
+        internal::UninitializedCopy(slotData(), leading.GetDataOrNull(), leading.GetSize());
+        internal::UninitializedCopy(slotData() + leading.GetSize(), trailing.GetDataOrNull(), trailing.GetSize());
         mHead = 0;
         mSize = other.mSize;
     }
@@ -319,10 +319,10 @@ private:
     void takeFrom(RingBuffer& other) noexcept
     {
         LUDUS_ASSERT(mSize == 0);
-        const std::span<ElementType> leading = other.GetLeadingSpan();
-        const std::span<ElementType> trailing = other.GetTrailingSpan();
-        internal::UninitializedRelocate(slotData(), leading.data(), leading.size());
-        internal::UninitializedRelocate(slotData() + leading.size(), trailing.data(), trailing.size());
+        const BorrowedView<ElementType> leading = other.GetLeadingView();
+        const BorrowedView<ElementType> trailing = other.GetTrailingView();
+        internal::UninitializedRelocate(slotData(), leading.GetDataOrNull(), leading.GetSize());
+        internal::UninitializedRelocate(slotData() + leading.GetSize(), trailing.GetDataOrNull(), trailing.GetSize());
         mHead = 0;
         mSize = other.mSize;
         other.mHead = 0;

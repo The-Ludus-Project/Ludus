@@ -17,8 +17,8 @@
 //
 // Bounds checks in operator[] use LUDUS_ASSERT: rich in Debug/Development,
 // compiled out (zero cost) in Profile/Release. There is no checked accessor that
-// throws (Ludus is -fno-exceptions). StaticArray converts to std::span for
-// pointer+count / algorithm / GPU-API interop.
+// throws (Ludus is -fno-exceptions). StaticArray converts to BorrowedView for
+// pointer+count interop; it does not include <span>.
 //
 // The storage member is public (mData) because an aggregate cannot hide it and
 // remain brace-initializable; treat it as an implementation detail and use the
@@ -26,8 +26,9 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
+
 #include <compare>
-#include <span>
 #include <type_traits>
 #include <utility>
 
@@ -186,26 +187,26 @@ struct StaticArray
         }
     }
 
-    // --- std::span interop --------------------------------------------------
-    /// Borrow all Count elements as a mutable span.
-    [[nodiscard]] constexpr operator std::span<ElementType>() noexcept
+    // --- Borrowed views -----------------------------------------------------
+    /// Borrow all Count elements as a mutable view; valid while this array is alive and unmoved.
+    [[nodiscard]] constexpr operator BorrowedView<ElementType>() noexcept
     {
-        return std::span<ElementType>(mData, Count);
+        return BorrowedView<ElementType>(mData, Count);
     }
-    /// Borrow all Count elements as a read-only span.
-    [[nodiscard]] constexpr operator std::span<const ElementType>() const noexcept
+    /// Borrow all Count elements as a read-only view; valid while this array is alive and unmoved.
+    [[nodiscard]] constexpr operator BorrowedView<const ElementType>() const noexcept
     {
-        return std::span<const ElementType>(mData, Count);
+        return BorrowedView<const ElementType>(mData, Count);
     }
-    /// Mutable span over all Count elements.
-    [[nodiscard]] constexpr std::span<ElementType> AsSpan() noexcept
+    /// Mutable view over all Count elements; valid while this array is alive and unmoved.
+    [[nodiscard]] constexpr BorrowedView<ElementType> AsView() noexcept
     {
-        return std::span<ElementType>(mData, Count);
+        return BorrowedView<ElementType>(mData, Count);
     }
-    /// Read-only span over all Count elements.
-    [[nodiscard]] constexpr std::span<const ElementType> AsSpan() const noexcept
+    /// Read-only view over all Count elements; valid while this array is alive and unmoved.
+    [[nodiscard]] constexpr BorrowedView<const ElementType> AsView() const noexcept
     {
-        return std::span<const ElementType>(mData, Count);
+        return BorrowedView<const ElementType>(mData, Count);
     }
 
     // --- Comparison (defaulted; value/key usable) ---------------------------
@@ -306,25 +307,25 @@ struct StaticArray<ElementType, 0>
     /// No-op: there are no elements.
     constexpr void Swap(StaticArray&) noexcept {}
 
-    /// Empty span.
-    [[nodiscard]] constexpr operator std::span<ElementType>() noexcept
+    /// Empty valid view.
+    [[nodiscard]] constexpr operator BorrowedView<ElementType>() noexcept
     {
-        return std::span<ElementType>();
+        return BorrowedView<ElementType>();
     }
-    /// Empty read-only span.
-    [[nodiscard]] constexpr operator std::span<const ElementType>() const noexcept
+    /// Empty valid read-only view.
+    [[nodiscard]] constexpr operator BorrowedView<const ElementType>() const noexcept
     {
-        return std::span<const ElementType>();
+        return BorrowedView<const ElementType>();
     }
-    /// Empty span.
-    [[nodiscard]] constexpr std::span<ElementType> AsSpan() noexcept
+    /// Empty valid view.
+    [[nodiscard]] constexpr BorrowedView<ElementType> AsView() noexcept
     {
-        return std::span<ElementType>();
+        return BorrowedView<ElementType>();
     }
-    /// Empty read-only span.
-    [[nodiscard]] constexpr std::span<const ElementType> AsSpan() const noexcept
+    /// Empty valid read-only view.
+    [[nodiscard]] constexpr BorrowedView<const ElementType> AsView() const noexcept
     {
-        return std::span<const ElementType>();
+        return BorrowedView<const ElementType>();
     }
 
     /// Empty arrays are always equal.

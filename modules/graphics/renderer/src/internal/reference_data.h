@@ -163,7 +163,9 @@ inline constexpr usize REFERENCE_MAX_SHADOWS_PER_VERTEX = REFERENCE_LIGHT_TECHNI
 /// Native queries one tile path may submit in a bounce: its shadow rays and its continuation.
 [[nodiscard]] inline constexpr usize GetReferenceRaysPerPath(ReferenceLightSampling sampling) noexcept
 {
-    return IsReferenceResampled(sampling) == true ? REFERENCE_MAX_SHADOWS_PER_VERTEX + 1 : 2;
+    return IsReferenceResampled(sampling) == true || sampling == ReferenceLightSampling::SeparateDirectional
+               ? REFERENCE_MAX_SHADOWS_PER_VERTEX + 1
+               : 2;
 }
 struct ReferencePath final
 {
@@ -266,6 +268,9 @@ struct ReferenceJob final
     bool IsCpuOnly = false;
     ReferenceCaptureDescription Description;
     DirectLight Lights[128];
+    /// Transport order has directional lights first. The original order stays available for scene identity.
+    StaticArray<uint32, MAX_DIRECT_LIGHTS> LightOrder{};
+    uint32 DirectionalLightCount = 0;
     /// Admitted panel luminaires of a scene-shader job, in SourceId order; packed after the lights.
     PanelLuminaire Luminaires[MAX_PANEL_LUMINAIRES];
     uint32 LuminaireCount = 0;
@@ -298,6 +303,10 @@ struct ReferenceJob final
         }
     }
 };
+[[nodiscard]] LUDUS_INLINE const DirectLight& GetOrderedReferenceLight(const ReferenceJob& job, usize index) noexcept
+{
+    return job.Lights[job.DirectionalLightCount == 0 ? index : job.LightOrder[index]];
+}
 struct ReferenceCaptureRecord final
 {
     uint64 Generation = 1;
@@ -343,9 +352,11 @@ ReferenceRandom(const ReferenceJob& job, const ReferencePath& path, uint16 dimen
 inline constexpr uint32 REFERENCE_UNIFORM_AREA_SAMPLER_VERSION = 1;
 inline constexpr uint32 REFERENCE_RESAMPLED_SAMPLER_VERSION = 2;
 inline constexpr uint32 REFERENCE_RESAMPLED_FORM_FACTOR_SAMPLER_VERSION = 3;
+inline constexpr uint32 REFERENCE_SEPARATE_DIRECTIONAL_SAMPLER_VERSION = 4;
 [[nodiscard]] inline constexpr uint32 GetReferenceSamplerVersion(ReferenceLightSampling sampling) noexcept
 {
-    return sampling == ReferenceLightSampling::ResampledFormFactor ? REFERENCE_RESAMPLED_FORM_FACTOR_SAMPLER_VERSION
+    return sampling == ReferenceLightSampling::SeparateDirectional   ? REFERENCE_SEPARATE_DIRECTIONAL_SAMPLER_VERSION
+           : sampling == ReferenceLightSampling::ResampledFormFactor ? REFERENCE_RESAMPLED_FORM_FACTOR_SAMPLER_VERSION
            : sampling == ReferenceLightSampling::ResampledProjectedSolidAngle ? REFERENCE_RESAMPLED_SAMPLER_VERSION
                                                                               : REFERENCE_UNIFORM_AREA_SAMPLER_VERSION;
 }
@@ -388,6 +399,7 @@ static_assert(LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT + LUDUS_REFERENCE_RIS
                       LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT,
               "sampler version 2 slots stay disjoint within one bounce");
 static_assert(LUDUS_GPU_PREVIEW_MAX_DEPTH <= LUDUS_REFERENCE_MAX_DEPTH, "GPU preview mirrors reference addresses");
+static_assert(LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + LUDUS_REFERENCE_MAX_DEPTH - 1 <= math::RandomMaxDimension);
 /// Dimensions per scattering event of `sampling`'s sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceDimensionsPerBounce(ReferenceLightSampling sampling) noexcept
 {

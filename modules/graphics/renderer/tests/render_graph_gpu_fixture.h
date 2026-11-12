@@ -7,6 +7,7 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/matrix.hpp>
@@ -16,10 +17,12 @@
 #include <ludus/graphics/rhi/device.h>
 
 #include "internal/readback.h"
+#include "rg2_depth_bits.h"
 #include "rg2_depth_display.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <bit>
 #include <new>
 #include <string_view>
 
@@ -88,7 +91,7 @@ struct GraphGpuFixture final
     {
         rhi::SubmissionToken completion;
         REQUIRE(Graph.Render(Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(foundation::MakeSpan(Pixels)) == true);
     }
 };
 /// Build-tree location of one runtime generation cooked by ludus_compile_render_graph(... RUNTIME_PACKAGE).
@@ -105,7 +108,7 @@ inline core::UniquePtr<RenderGraphPackage> LoadPackage(const PackageLocation& lo
     REQUIRE(directory.OpenRead(location.File, file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-    const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+    const filesystem::ReadResult read = file.ReadAt(0, foundation::MakeSpan(bytes));
     REQUIRE(read.Outcome.Succeeded() == true);
     REQUIRE(read.BytesRead == bytes.GetSize());
     RenderGraphPackage* allocationOrNull = new (std::nothrow) RenderGraphPackage;
@@ -114,7 +117,8 @@ inline core::UniquePtr<RenderGraphPackage> LoadPackage(const PackageLocation& lo
     REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == RenderGraphPackageStatus::Ready);
     return package;
 }
-/// Draw a sampled depth aspect into the surface with the depth display recipe and read it back.
+/// Draw a sampled depth aspect into the surface with the depth display recipe and read it back. The
+/// rg2_depth_bits recipe writes each texel's IEEE bits instead; decode them with ReadDepthBits.
 struct DepthDisplay final
 {
     rhi::DeviceHandle Device{};
@@ -122,10 +126,11 @@ struct DepthDisplay final
     rhi::RasterPipelineHandle Pipeline{};
     rhi::BufferHandle Vertices{};
     rhi::BufferHandle Indices{};
-    explicit DepthDisplay(rhi::DeviceHandle device) : Device(device)
+    explicit DepthDisplay(rhi::DeviceHandle device,
+                          const rhi::RasterShaderDescription& vertex = shaders::rg2_depth_display::Vertex(),
+                          const rhi::RasterShaderDescription& fragment = shaders::rg2_depth_display::Fragment())
+        : Device(device)
     {
-        const rhi::RasterShaderDescription vertex = shaders::rg2_depth_display::Vertex();
-        const rhi::RasterShaderDescription fragment = shaders::rg2_depth_display::Fragment();
         rhi::RasterShaderHandle vertexHandle;
         rhi::RasterShaderHandle fragmentHandle;
         REQUIRE(rhi::CreateRasterShader(Device, vertex, vertexHandle) == rhi::RasterStatus::Ready);
@@ -173,7 +178,7 @@ struct DepthDisplay final
         REQUIRE(rhi::DrawIndexed(Device, drawing) == rhi::RasterStatus::Ready);
         rhi::SubmissionToken completion;
         REQUIRE(rhi::EndFrame(Device, completion) == rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(outPixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(foundation::MakeSpan(outPixels)) == true);
         static_cast<void>(rhi::Destroy(Device, set));
         static_cast<void>(rhi::Destroy(Device, depth));
     }
@@ -183,5 +188,17 @@ inline constexpr usize ROW_PIXELS = WIDTH;
 constexpr usize GetPixel(usize column, usize row)
 {
     return (row * ROW_PIXELS + column) * 4;
+}
+/// The stored depth of one pixel of an rg2_depth_bits readback: its four bytes, least significant first.
+inline float32 ReadDepthBits(const StaticArray<uint8, PIXEL_BYTES>& pixels, usize column, usize row)
+{
+    constexpr uint32 BITS_PER_BYTE = 8;
+    const usize pixel = GetPixel(column, row);
+    uint32 bits = 0;
+    for (usize byte = 0; byte < TEXEL_BYTES; ++byte)
+    {
+        bits |= static_cast<uint32>(pixels[pixel + byte]) << (BITS_PER_BYTE * byte);
+    }
+    return std::bit_cast<float32>(bits);
 }
 } // namespace ludus::graphics::renderer::testing

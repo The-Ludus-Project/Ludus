@@ -14,7 +14,7 @@ int ExerciseInstalledContainers() noexcept
         return 30;
     }
     const uint32* value = resources.Find(30);
-    if (value == nullptr || *value != 300 || resources.AsSpan()[0].Key != 10 || resources.Remove(10) == false)
+    if (value == nullptr || *value != 300 || resources.AsView()[0].Key != 10 || resources.Remove(10) == false)
     {
         return 31;
     }
@@ -38,7 +38,8 @@ int ExerciseInstalledContainers() noexcept
         return 34;
     }
     ring.RemoveFirst();
-    if (ring.TryAdd(3U) == false || ring.GetFirst() != 2 || ring.GetLast() != 3 || ring.GetTrailingSpan().size() != 1)
+    if (ring.TryAdd(3U) == false || ring.GetFirst() != 2 || ring.GetLast() != 3 ||
+        ring.GetTrailingView().GetSize() != 1)
     {
         return 35;
     }

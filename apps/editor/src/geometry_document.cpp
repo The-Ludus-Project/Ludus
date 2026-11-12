@@ -4,6 +4,7 @@
 #include "internal/geometry_document.h"
 
 #include <ludus/content/content.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/geometry/path.hpp>
 
 namespace ludus::editor::geometry
@@ -272,7 +273,7 @@ bool GeometryPrepareJob::Begin(const GeometryPrepareRequest& request,
     mIsCancelled = false;
     mDiagnostic = gc::GeometryDiagnosticReport{};
     mBlob.Clear();
-    if (mBlob.TryAddRange(blob) == false)
+    if (mBlob.TryAddRange(foundation::MakeBorrowedView(blob)) == false)
     {
         mStatus = GeometryPrepareStatus::Failed;
         mStage = Stage::Done;

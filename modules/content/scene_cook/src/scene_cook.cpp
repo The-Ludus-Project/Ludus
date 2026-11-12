@@ -16,6 +16,8 @@
 #include "native_files.h"
 #include "python_compat.h"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/summation.hpp>
@@ -382,7 +384,7 @@ struct CookContext final
         {
             views[i] = values[i].GetView();
         }
-        return ParseFiniteValues(views.AsSpan(), outValues);
+        return ParseFiniteValues(foundation::MakeSpan(views), outValues);
     }
 
     [[nodiscard]] bool
@@ -982,7 +984,7 @@ ApplyCamera(CookContext& inoutContext, const Command& command, SceneState& inout
     {
         return errors.FailOutOfMemory();
     }
-    if (ParseCommands(inoutContext, tokens.AsSpan(), inoutScene, shouldAdmitCoatingParameters) == false)
+    if (ParseCommands(inoutContext, foundation::MakeSpan(tokens), inoutScene, shouldAdmitCoatingParameters) == false)
     {
         return false;
     }
@@ -1674,7 +1676,7 @@ struct AtlasPiece final
 {
     Array<Vertex> polygon;
     Array<Vertex> next;
-    if (polygon.TryAddRange(std::span<const Vertex>(vertices, 3)) == false)
+    if (polygon.TryAddRange(foundation::BorrowedView<const Vertex>(vertices)) == false)
     {
         return inoutErrors.FailOutOfMemory();
     }
@@ -2720,14 +2722,14 @@ void PackMesh(ByteWriter& inoutBlob, const Mesh& mesh) noexcept
     blob.AppendUint32(static_cast<uint32>(Cooker::ATLAS_WIDTH));
     blob.AppendUint32(static_cast<uint32>(Cooker::ATLAS_HEIGHT));
     blob.AppendUint32(static_cast<uint32>(inoutCooker.Atlas.GetSize()));
-    blob.AppendBytes(inoutCooker.Atlas.AsSpan());
+    blob.AppendBytes(foundation::MakeSpan(inoutCooker.Atlas));
     for (const usize index : {wood, tiles})
     {
         const Image& image = inoutCooker.Images[index];
         blob.AppendUint32(image.Width);
         blob.AppendUint32(image.Height);
         blob.AppendUint32(static_cast<uint32>(image.Rgba.GetSize()));
-        blob.AppendBytes(image.Rgba.AsSpan());
+        blob.AppendBytes(foundation::MakeSpan(image.Rgba));
     }
     for (const Material& material : inoutCooker.Materials)
     {
@@ -3459,7 +3461,7 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
         writer.AppendUint32(image.Width);
         writer.AppendUint32(image.Height);
         writer.AppendUint32(static_cast<uint32>(image.Rgba.GetSize()));
-        writer.AppendBytes(image.Rgba.AsSpan());
+        writer.AppendBytes(foundation::MakeSpan(image.Rgba));
     }
     for (const Material& material : cooker.Materials)
     {
@@ -3546,7 +3548,7 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
     facts.SourceName = GetBaseName(inoutContext.Root.GetView());
     facts.InputsOrNull = &cooker.Inputs;
     facts.InputDigestsOrNull = &digests;
-    facts.Bundle = Hash(outResult.Bundle.AsSpan());
+    facts.Bundle = Hash(foundation::MakeSpan(outResult.Bundle));
     facts.SourceMeshes = cooker.SourceMeshes;
     facts.SourceTriangles = cooker.SourceTriangles;
     facts.Degenerate = cooker.DegenerateTriangles;
@@ -3564,7 +3566,8 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
     {
         facts.RenderedTriangles += static_cast<int64>(meshes[item.Mesh].Indices.GetSize() / format::TRIANGLE_CORNERS);
     }
-    if (WriteManifest(facts, outResult.Manifest) == false || outResult.License.TryAddRange(license.Data()) == false)
+    if (WriteManifest(facts, outResult.Manifest) == false ||
+        outResult.License.TryAddRange(foundation::MakeBorrowedView(license.Data())) == false)
     {
         return inoutContext.Errors.FailOutOfMemory();
     }
@@ -3607,7 +3610,7 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
         {2, 0.0, math::Sqrt(0.01), {0.0, 0.0, 0.0}},
         {0, 1.0, math::Sqrt(0.1), {0.0, 0.0, 0.0}},
     };
-    if (cooker.Materials.TryAddRange(std::span<const Material>(base, 4)) == false)
+    if (cooker.Materials.TryAddRange(foundation::BorrowedView<const Material>(base)) == false)
     {
         return errors.FailOutOfMemory();
     }
@@ -3638,7 +3641,7 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
             return errors.FailOutOfMemory();
         }
     }
-    if (items.TryAddRange(cooker.EmitterItems.AsSpan()) == false)
+    if (items.TryAddRange(cooker.EmitterItems.AsView()) == false)
     {
         return errors.FailOutOfMemory();
     }
@@ -3672,7 +3675,7 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
     facts.SourceName = GetBaseName(inoutContext.Root.GetView());
     facts.InputsOrNull = &cooker.Inputs;
     facts.InputDigestsOrNull = &digests;
-    facts.Bundle = Hash(outResult.Bundle.AsSpan());
+    facts.Bundle = Hash(foundation::MakeSpan(outResult.Bundle));
     facts.SourceMeshes = cooker.SourceMeshes;
     facts.SourceTriangles = cooker.SourceTriangles;
     facts.Degenerate = cooker.DegenerateTriangles;
@@ -3690,7 +3693,8 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
     facts.CameraOrNull = &frame;
     facts.FieldOfView = scene.FieldOfView;
     outResult.License.Clear();
-    if (WriteManifest(facts, outResult.Manifest) == false || outResult.License.TryAddRange(license.Data()) == false)
+    if (WriteManifest(facts, outResult.Manifest) == false ||
+        outResult.License.TryAddRange(foundation::MakeBorrowedView(license.Data())) == false)
     {
         return errors.FailOutOfMemory();
     }
@@ -3750,9 +3754,9 @@ bool WriteCook(std::string_view output, const CookResult& result, CookError& out
     {
         std::string_view Name;
         std::span<const uint8> Data;
-    } files[3] = {{"scene.luscn", result.Bundle.AsSpan()},
-                  {"manifest.json", result.Manifest.AsSpan()},
-                  {"LICENSE.txt", result.License.AsSpan()}};
+    } files[] = {{"scene.luscn", foundation::MakeSpan(result.Bundle)},
+                 {"manifest.json", foundation::MakeSpan(result.Manifest)},
+                 {"LICENSE.txt", foundation::MakeSpan(result.License)}};
     for (const auto& file : files)
     {
         const Status written = WriteFileAtomic(output, file.Name, file.Data);

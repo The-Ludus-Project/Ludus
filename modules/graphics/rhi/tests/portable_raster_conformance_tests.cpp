@@ -10,6 +10,7 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/graph.h>
@@ -326,7 +327,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
         REQUIRE(rhi::Destroy(owner.Device, attachment) == rhi::RasterStatus::Ready);
     }
     StaticArray<uint8, PIXEL_BYTES> pixels{};
-    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(pixels)) == true);
     const int32 expectedHigh = isSrgb == true ? 55 : hasBlend == true ? 160 : 255;
     const int32 expectedLow = hasBlend == true ? 32 : 0;
     for (uint32 y = 0; y < HEIGHT; ++y)
@@ -438,7 +439,7 @@ TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", 
     REQUIRE(rhi::DrawIndexed(owner.Device, draw) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::EndFrame(owner.Device) == rhi::DeviceStatus::Ready);
     StaticArray<uint8, PIXEL_BYTES> pixels{};
-    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(pixels)) == true);
     const auto isLit = [&pixels](uint32 x, uint32 y) { return pixels[(usize{y} * WIDTH + x) * CHANNELS] > 127; };
     // Rasterization rules differ by a pixel between APIs, so each edge is searched within that tolerance.
     constexpr uint32 TOLERANCE = 1;
@@ -619,7 +620,7 @@ TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip cont
     }
     REQUIRE(rhi::EndFrame(owner.Device) == rhi::DeviceStatus::Ready);
     StaticArray<uint8, PIXEL_BYTES> pixels{};
-    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(pixels)) == true);
     for (uint32 y = 0; y < HEIGHT; ++y)
     {
         for (uint32 x = 0; x < WIDTH; ++x)
@@ -664,7 +665,7 @@ TEST_CASE("Portable surface graph preparation precedes frame acquisition", "[rhi
     rhi::SubmissionToken completion;
     REQUIRE(rhi::ExecuteOrderedGraph(owner.Device, owner.Surface, graph, completion) == rhi::RasterStatus::Ready);
     StaticArray<uint8, PIXEL_BYTES> pixels{};
-    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(pixels)) == true);
     REQUIRE(rhi::GetStatus(owner.Device, completion) == rhi::RasterStatus::Ready);
     const StaticArray<uint8, CHANNELS> expected{255, 0, 255, 255};
     for (usize index = 0; index < PIXEL_BYTES; ++index)

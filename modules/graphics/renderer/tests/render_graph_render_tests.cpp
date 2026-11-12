@@ -18,6 +18,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
@@ -190,7 +191,7 @@ TEST_CASE("RG2 exported offscreen color matches the same direct raster graph", "
     REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
     const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
     REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
-    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     for (usize i = 0; i < PIXEL_BYTES; ++i)
     {
         REQUIRE(fixture.Pixels[i] == direct[i]);
@@ -259,7 +260,7 @@ TEST_CASE("RG2 depth-only export samples actual opaque geometry depth", "[render
         REQUIRE(rhi::DrawIndexed(fixture.Device, drawing) == rhi::RasterStatus::Ready);
         rhi::SubmissionToken completion;
         REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     };
     displayDepth();
     const usize centerPixel = (usize{32} * WIDTH + 48) * 4;
@@ -406,7 +407,7 @@ TEST_CASE("RG3 runtime generation renders the same pixels as its compiled header
     REQUIRE(activeOrNull != nullptr);
     rhi::SubmissionToken completion;
     REQUIRE(activeOrNull->Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     for (usize i = 0; i < PIXEL_BYTES; ++i)
     {
         REQUIRE(fixture.Pixels[i] == compiled[i]);
@@ -598,7 +599,7 @@ TEST_CASE("RG3 bound runtime generation carries the compiled uniform tables and 
     REQUIRE(scene.Update(*activeOrNull, fixture, 1) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
     REQUIRE(activeOrNull->Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     for (usize i = 0; i < PIXEL_BYTES; ++i)
     {
         REQUIRE(fixture.Pixels[i] == header[i]);
@@ -675,7 +676,7 @@ TEST_CASE("RG2 masked color and separately authored masked depth agree on author
     REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
     REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     for (usize row = 0; row < HEIGHT; ++row)
     {
         for (usize column = 0; column < WIDTH; ++column)

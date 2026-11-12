@@ -1,5 +1,6 @@
 #include "python_json.h"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/hash/hash.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/strings/string.hpp>
@@ -1037,7 +1038,7 @@ JsonIndex JsonTree::AddString(std::string_view value) noexcept
         return node;
     }
     const usize offset = mText.GetSize();
-    if (mText.TryAddRange(std::span<const char>(value.data(), value.size())) == false)
+    if (mText.TryAddRange(foundation::BorrowedView<const char>(value.data(), value.size())) == false)
     {
         mIsOk = false;
         return node;
@@ -1123,7 +1124,7 @@ JsonIndex JsonTree::CopyFrom(const JsonTree& source, JsonIndex node) noexcept
             // Copy through a local buffer: the source may be this tree, whose text may reallocate.
             Array<char> text;
             const std::string_view view = source.GetText(node);
-            if (text.TryAddRange(std::span<const char>(view.data(), view.size())) == false)
+            if (text.TryAddRange(foundation::BorrowedView<const char>(view.data(), view.size())) == false)
             {
                 mIsOk = false;
                 return 0;

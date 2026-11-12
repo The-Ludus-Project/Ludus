@@ -287,6 +287,19 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
     description.RouletteDepth = math::Min(REFERENCE_ROULETTE_DEPTH, settings.MaxDepth);
     description.Seed = settings.Seed;
     description.CenterRays = settings.ShouldCenterRays;
+    if (settings.Traversal != renderer::ReferenceTraversal::NativeQueries)
+    {
+        for (uint32 index = 0; index < scene.AuthoredLights.Count; ++index)
+        {
+            const renderer::DirectLight& light = scene.AuthoredLights.Lights[index];
+            if (light.Kind == renderer::LightKind::Directional && light.Intensity > 0 &&
+                (light.Color.X > 0 || light.Color.Y > 0 || light.Color.Z > 0))
+            {
+                description.LightSampling = renderer::ReferenceLightSampling::SeparateDirectional;
+                break;
+            }
+        }
+    }
     mGeneration.Reset(new (std::nothrow)
                           PreviewGpuGeneration(device, scene, PreviewShading::Lit, PreviewShaderSet{}, &setup));
     if (mGeneration.Get() == nullptr)

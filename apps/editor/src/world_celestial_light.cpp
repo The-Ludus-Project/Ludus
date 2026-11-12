@@ -13,8 +13,6 @@ namespace
 using foundation::float64;
 /// Initial spin of a new custom orbit in the editor, in degrees per hour.
 constexpr float64 DEFAULT_WORLD_SPIN_DEGREES_PER_HOUR = 15;
-constexpr QLatin1StringView EARTH_SUN{"Earth Sun"};
-constexpr QLatin1StringView EARTH_MOON{"Earth Moon"};
 constexpr QLatin1StringView ORBIT_TIME{"celestialOrbitTime"};
 constexpr QLatin1StringView OBSERVER_SPIN{"celestialObserverSpin"};
 constexpr QLatin1StringView ORBIT_RATE{"celestialOrbitRate"};
@@ -22,6 +20,20 @@ constexpr QLatin1StringView ORBIT_PHASE{"celestialOrbitPhase"};
 constexpr QLatin1StringView ORBIT_INCLINATION{"celestialOrbitInclination"};
 constexpr QLatin1StringView ORBIT_ASCENDING_NODE{"celestialOrbitAscendingNode"};
 constexpr QLatin1StringView OBSERVER_RADIUS_RATIO{"celestialObserverRadiusRatio"};
+
+struct WorldEarthObserver final
+{
+    float64 DaysSinceJ2000;
+    float64 LatitudeDegrees;
+    float64 LongitudeDegrees;
+};
+
+WorldEarthObserver ReadWorldEarthObserver(const QJsonObject& light)
+{
+    return {light.value(WORLD_CELESTIAL_TIME).toDouble(),
+            light.value(WORLD_CELESTIAL_LATITUDE).toDouble(),
+            light.value(WORLD_CELESTIAL_LONGITUDE).toDouble()};
+}
 
 QJsonObject
 MakeChoiceProperty(QLatin1StringView id, const QString& label, const QString& help, const QJsonArray& choices)
@@ -91,11 +103,19 @@ QJsonArray MakeWorldCelestialProperties()
                             WORLD_CELESTIAL_STATIC_SUN,
                             QStringLiteral("Static Moon"),
                             WORLD_CELESTIAL_DYNAMIC}),
-        MakeChoiceProperty(WORLD_CELESTIAL_DRIVER,
-                           QStringLiteral("Rotation Driver"),
-                           QStringLiteral("Use the Transform directly, sample an Earth sky rule, or author a custom "
-                                          "orbit. +X is east, +Y is up and -Z is north."),
-                           {WORLD_CELESTIAL_AUTHORED, EARTH_SUN, EARTH_MOON, WORLD_CELESTIAL_ORBIT}),
+        MakeChoiceProperty(
+            WORLD_CELESTIAL_DRIVER,
+            QStringLiteral("Celestial Preset"),
+            QStringLiteral("Use the Transform, choose a physical Earth light, or author a custom orbit. "
+                           "+X is east, +Y is up and -Z is north."),
+            {WORLD_CELESTIAL_AUTHORED, WORLD_CELESTIAL_EARTH_SUN, WORLD_CELESTIAL_EARTH_MOON, WORLD_CELESTIAL_ORBIT}),
+        QJsonObject{
+            {QStringLiteral("id"), WORLD_CELESTIAL_MANUAL_PHOTOMETRY},
+            {QStringLiteral("label"), QStringLiteral("Override Earth Colour and Intensity")},
+            {QStringLiteral("type"), QStringLiteral("boolean")},
+            {QStringLiteral("default"), false},
+            {QStringLiteral("help"), QStringLiteral("Use the authored colour and intensity with Earth motion.")},
+            {QStringLiteral("unit"), QString()}},
         MakeCelestialNumberProperty(
         {
             .Id = WORLD_CELESTIAL_TIME,
@@ -206,7 +226,7 @@ WorldCelestialFieldGroup GetWorldCelestialFieldGroup(QStringView property)
     {
         return WorldCelestialFieldGroup::Observer;
     }
-    if (property == WORLD_CELESTIAL_TIME)
+    if (property == WORLD_CELESTIAL_TIME || property == WORLD_CELESTIAL_MANUAL_PHOTOMETRY)
     {
         return WorldCelestialFieldGroup::Earth;
     }
@@ -223,34 +243,108 @@ bool IsWorldCelestialProperty(QStringView property)
     return GetWorldCelestialFieldGroup(property) != WorldCelestialFieldGroup::Other;
 }
 
-bool TryResolveWorldCelestialRotation(const QJsonObject& light,
-                                      foundation::math::Quaternion& inoutRotation,
-                                      bool& outIsAboveHorizon)
+bool IsWorldEarthLight(const QJsonObject& light)
+{
+    const QString driver = light.value(WORLD_CELESTIAL_DRIVER).toString();
+    return light.value(QStringLiteral("kind")).toString() == QStringLiteral("directional") &&
+           light.value(WORLD_CELESTIAL_ROLE).toString() == WORLD_CELESTIAL_DYNAMIC &&
+           (driver == WORLD_CELESTIAL_EARTH_SUN || driver == WORLD_CELESTIAL_EARTH_MOON);
+}
+
+bool AreWorldEarthObserversEqual(const QJsonObject& first, const QJsonObject& second)
+{
+    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    {
+        const QJsonValue firstValue = first.value(property);
+        const QJsonValue secondValue = second.value(property);
+        if ((firstValue.isUndefined() == true ? QJsonValue(0) : firstValue) !=
+            (secondValue.isUndefined() == true ? QJsonValue(0) : secondValue))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void CopyWorldEarthObserver(const QJsonObject& source, QJsonObject& inoutLight)
+{
+    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    {
+        const QJsonValue value = source.value(property);
+        if (value.isUndefined() == true)
+        {
+            inoutLight.remove(property);
+        }
+        else
+        {
+            inoutLight.insert(property, value);
+        }
+    }
+}
+
+bool TrySampleWorldEarthLight(const QJsonObject& light, gameplay::world::EarthCelestialLighting& outLighting)
 {
     using namespace gameplay::world;
-    const QString driver = light.value(WORLD_CELESTIAL_DRIVER).toString();
-    if (light.value(WORLD_CELESTIAL_ROLE).toString() != WORLD_CELESTIAL_DYNAMIC ||
-        (driver != EARTH_SUN && driver != EARTH_MOON && driver != WORLD_CELESTIAL_ORBIT))
-    {
-        outIsAboveHorizon = true;
-        return true;
-    }
-
-    CelestialTransform sample;
-    const bool isSampled =
-        driver == WORLD_CELESTIAL_ORBIT
-            ? TryResolveCustomOrbit(light, sample)
-            : TrySampleEarthCelestialTransform(driver == EARTH_SUN ? EarthCelestialBody::Sun : EarthCelestialBody::Moon,
-                                               light.value(WORLD_CELESTIAL_TIME).toDouble(),
-                                               light.value(WORLD_CELESTIAL_LATITUDE).toDouble(),
-                                               light.value(WORLD_CELESTIAL_LONGITUDE).toDouble(),
-                                               sample);
-    if (isSampled == false)
+    if (IsWorldEarthLight(light) == false)
     {
         return false;
     }
+    const EarthCelestialBody body = light.value(WORLD_CELESTIAL_DRIVER).toString() == WORLD_CELESTIAL_EARTH_SUN
+                                        ? EarthCelestialBody::Sun
+                                        : EarthCelestialBody::Moon;
+    const WorldEarthObserver observer = ReadWorldEarthObserver(light);
+    return TrySampleEarthCelestialLighting(body,
+                                           observer.DaysSinceJ2000,
+                                           observer.LatitudeDegrees,
+                                           observer.LongitudeDegrees,
+                                           outLighting);
+}
+
+bool TryResolveWorldCelestialRotation(const QJsonObject& light,
+                                      foundation::math::Quaternion& inoutRotation,
+                                      bool& outIsAboveHorizon,
+                                      gameplay::world::EarthCelestialLighting& outEarthLighting)
+{
+    using namespace gameplay::world;
+    CelestialTransform sample;
+    EarthCelestialLighting earthLighting;
+    if (IsWorldEarthLight(light) == true)
+    {
+        if (TrySampleWorldEarthLight(light, earthLighting) == false)
+        {
+            return false;
+        }
+        sample = earthLighting.Transform;
+    }
+    else if (light.value(WORLD_CELESTIAL_ROLE).toString() == WORLD_CELESTIAL_DYNAMIC &&
+             light.value(WORLD_CELESTIAL_DRIVER).toString() == WORLD_CELESTIAL_ORBIT)
+    {
+        if (TryResolveCustomOrbit(light, sample) == false)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        sample.Rotation = inoutRotation;
+        sample.IsAboveHorizon = true;
+    }
     inoutRotation = sample.Rotation;
     outIsAboveHorizon = sample.IsAboveHorizon;
+    outEarthLighting = earthLighting;
     return true;
+}
+
+bool TrySampleWorldEarthNightSky(const QJsonObject& light, gameplay::world::EarthNightSkySample& outSky)
+{
+    if (IsWorldEarthLight(light) == false)
+    {
+        return false;
+    }
+    const WorldEarthObserver observer = ReadWorldEarthObserver(light);
+    return gameplay::world::TrySampleEarthNightSky(observer.DaysSinceJ2000,
+                                                   observer.LatitudeDegrees,
+                                                   observer.LongitudeDegrees,
+                                                   outSky);
 }
 } // namespace ludus::editor

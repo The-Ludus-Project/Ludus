@@ -12,6 +12,7 @@
 #include "../decimal_number.h"
 
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -296,7 +297,7 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
         outImage.Height = static_cast<uint32>(height);
         outImage.Texels.Clear();
         const usize byteCount = static_cast<usize>(width) * static_cast<usize>(height) * DECODED_IMAGE_CHANNEL_COUNT;
-        if (outImage.Texels.TryAddRange(std::span<const uint8>(pixels, byteCount)) == false)
+        if (outImage.Texels.TryAddRange(foundation::BorrowedView<const uint8>(pixels, byteCount)) == false)
         {
             result = ImageResult::OutOfMemory;
         }

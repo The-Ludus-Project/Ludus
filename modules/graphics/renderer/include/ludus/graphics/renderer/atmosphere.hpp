@@ -1,11 +1,23 @@
 #pragma once
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
+
+#include <ludus/graphics/renderer/lighting_layout.h>
 
 namespace ludus::graphics::renderer
 {
-/// Stars and an optional distant Moon supply scene-linear radiance beyond the atmosphere shell.
+/// An unresolved planet on the distant celestial boundary.
+struct PlanetBackgroundDescription final
+{
+    /// Nonzero finite world direction toward a visible source. Normalized during preparation.
+    foundation::math::Vector3 DirectionWorld{};
+    /// Finite nonnegative linear RGB illuminance in lux before extinction. Zero omits this point.
+    foundation::math::Vector3 Illuminance{};
+};
+
+/// Stars, planets, the Milky Way and an optional Moon supply scene-linear radiance beyond the atmosphere shell.
 struct CelestialBackgroundDescription final
 {
     /// Enable the celestial boundary and perspective views from orbit.
@@ -14,14 +26,25 @@ struct CelestialBackgroundDescription final
     foundation::float32 StarRadiance = 0;
     /// Nonzero finite world direction toward the Moon, normalized when its disk is present.
     foundation::math::Vector3 DirectionToMoonWorld{0, 0, 1};
-    /// Finite nonnegative linear RGB peak luminance in nits at full phase.
+    /// Finite nonnegative linear RGB luminance in nits at unit lunar surface lighting cosine.
     foundation::math::Vector3 LunarPeakRadiance{};
     /// Apparent lunar radius in radians. Zero omits the disk. A positive radius must be less than half pi.
     foundation::float32 LunarAngularRadiusRadians = 0;
+    /// Procedural Milky Way brightness scale in scene-linear nits. Finite and nonnegative. Zero omits the band.
+    foundation::float32 MilkyWayRadiance = 0;
+    /// Finite nonzero world direction toward the galactic north pole, used when the Milky Way is enabled.
+    foundation::math::Vector3 GalacticNorthWorld{0, 1, 0};
+    /// Finite nonzero world direction toward the galactic center. Its projection onto the galactic plane must
+    /// be nonzero when the Milky Way is enabled. The procedural stars then also use this celestial frame.
+    foundation::math::Vector3 GalacticCenterWorld{0, 0, -1};
+    /// Optional background points. They receive the same view transmittance and occlusion as the stars.
+    foundation::StaticArray<PlanetBackgroundDescription, ATMOSPHERE_PLANET_CAPACITY> Planets{};
     /// Nominal apparent lunar radius of one-quarter degree, from NASA Science's Hubble Glossary.
     static constexpr foundation::float32 DEFAULT_LUNAR_RADIUS_RADIANS = 0.004363323F;
     /// Maximum perspective observer altitude in metres for the orbital background.
     static constexpr foundation::float64 MAXIMUM_ORBITAL_ALTITUDE_METRES = 1'000'000'000;
+    /// Optional direction from the Moon toward the Sun. Zero uses AtmosphereDescription::DirectionToSunWorld.
+    foundation::math::Vector3 DirectionToSunAtMoonWorld{};
 };
 
 /// Spherical Earth atmosphere resolved from one World entity and directional light.
@@ -46,7 +69,7 @@ struct AtmosphereDescription final
     /// Enable multiple scattering, skylight and aerial perspective for opaque deferred surfaces.
     /// Only applies when the view is admitted to the atmosphere shell.
     bool ShouldLightScene = false;
-    /// Optional boundary provider. Its phase uses DirectionToSunWorld, even when SolarIlluminance is zero.
+    /// Optional boundary provider. Its fallback lunar phase uses DirectionToSunWorld even in darkness.
     CelestialBackgroundDescription Celestial{};
 };
 /// Compute the signed altitude in metres above an Earth clear-sky surface.

@@ -7,6 +7,9 @@
 
 #include "entropy_fixture.h"
 #include "internal/preview_lighting.h"
+#include "internal/render_graph_defaults.h"
+#include "internal/render_graph_preview.h"
+#include "internal/renderer_workspace.h"
 #include "internal/viewport_reference_capture.h"
 #include "viewport_fixture.h"
 #include <ludus/content/scene_cook/scene_assets.h>
@@ -748,6 +751,84 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
     constexpr int64 SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS = 600000;
     REQUIRE(preview.Start() == true);
     REQUIRE(preview.AdmitOffscreenDevice() == true);
+    // LUDUS_REFERENCE_TEST_GRAPH keeps a supplied runtime graph resident while the window renders
+    // RT1 and its Force raster comparison on the same device.
+    const QString graphPath = qEnvironmentVariable("LUDUS_REFERENCE_TEST_GRAPH");
+    if (graphPath.isEmpty() == false)
+    {
+        preview.Resize(extent.width(), extent.height());
+        RendererWorkspace workspace({});
+        RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+        REQUIRE(graphOrNull != nullptr);
+        graphOrNull->SetForceRaster(true);
+        REQUIRE(graphOrNull->Attach(preview.GetDevice(), preview.GetSurface()) == true);
+        REQUIRE(graphOrNull->Load(graphPath, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+        graphOrNull->SetReferenceSize(extent);
+        renderer::ViewDescription graphView;
+        REQUIRE(preview.DescribeConventionalView(static_cast<uint32>(extent.width()),
+                                                 static_cast<uint32>(extent.height()),
+                                                 graphView,
+                                                 error) == true);
+        RenderGraphExtraction extraction;
+        REQUIRE(MakeRenderGraphExtraction(scene, graphView, 1, extraction, error) == true);
+        graphOrNull->SetExtraction(extraction);
+        QElapsedTimer timer;
+        timer.start();
+        while (graphOrNull->GetPresentedRevision() != 1 && timer.elapsed() < SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS)
+        {
+            graphOrNull->Tick();
+            QThread::msleep(1);
+        }
+        INFO(graphOrNull->GetDisplayStatus().toStdString());
+        REQUIRE(graphOrNull->GetPresentedRevision() == 1);
+        ReferenceCaptureWindow window(&preview);
+        window.SetProjectGraph(&workspace);
+        QSpinBox* longSideOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceLongSide"));
+        QSpinBox* samplesOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceSamples"));
+        QSpinBox* depthOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceMaxDepth"));
+        QComboBox* traversalOrNull = window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"));
+        QCheckBox* compareOrNull = window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"));
+        REQUIRE(longSideOrNull != nullptr);
+        REQUIRE(samplesOrNull != nullptr);
+        REQUIRE(depthOrNull != nullptr);
+        REQUIRE(traversalOrNull != nullptr);
+        REQUIRE(compareOrNull != nullptr);
+        longSideOrNull->setValue(math::Max(extent.width(), extent.height()));
+        samplesOrNull->setValue(requestedSamples > 0 ? requestedSamples : DEFAULT_SUPPLIED_SAMPLES);
+        depthOrNull->setValue(requestedDepth > 0 ? requestedDepth : DEFAULT_SUPPLIED_DEPTH);
+        const int32 traversalIndex = qEnvironmentVariableIsSet("LUDUS_REFERENCE_TEST_TRAVERSAL") == true
+                                         ? qEnvironmentVariableIntValue("LUDUS_REFERENCE_TEST_TRAVERSAL")
+                                         : static_cast<int32>(renderer::ReferenceTraversal::CpuOracle);
+        REQUIRE(traversalIndex >= 0);
+        REQUIRE(traversalIndex < traversalOrNull->count());
+        traversalOrNull->setCurrentIndex(traversalIndex);
+        Q_EMIT traversalOrNull->activated(traversalIndex);
+        REQUIRE(compareOrNull->isEnabled() == true);
+        compareOrNull->setChecked(true);
+        QSignalSpy finished(&window, &ReferenceCaptureWindow::CaptureFinished);
+        REQUIRE(window.StartCapture() == true);
+        const bool hasFinished = finished.wait(static_cast<int32>(SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS));
+        INFO(window.GetStatusText().toStdString());
+        REQUIRE(hasFinished == true);
+        CHECK(window.GetCapture().GetPhase() == ViewportReferencePhase::Complete);
+        renderer::ReferenceCaptureInfo information;
+        REQUIRE(window.GetCapture().GetInfo(information) == true);
+        CHECK(information.Traversal == static_cast<renderer::ReferenceTraversal>(traversalIndex));
+        REQUIRE(window.HasComparison() == true);
+        const ReferenceComparison& comparison = window.GetComparison();
+        CHECK(comparison.IsReferenceComplete == true);
+        CHECK(comparison.ComparedPixels == static_cast<uint64>(information.Width) * information.Height);
+        CHECK(comparison.MinimumImageSamples == static_cast<uint32>(samplesOrNull->value()));
+        const QString output = qEnvironmentVariable("LUDUS_REFERENCE_TEST_OUTPUT");
+        if (output.isEmpty() == false)
+        {
+            const QString path = QDir(output).filePath(
+                QStringLiteral("%1-comparison-%2.luhdr").arg(worldName).arg(traversalOrNull->currentIndex()));
+            CHECK(window.SaveCapture(path, error) == true);
+        }
+        graphOrNull->Detach();
+        return;
+    }
     const QString selectedTraversal = qEnvironmentVariable("LUDUS_REFERENCE_TEST_TRAVERSAL");
     constexpr usize TRAVERSAL_COUNT = 3;
     bool isValidTraversal = false;

@@ -4,6 +4,7 @@
 #include "internal/camera_inverse.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/graphics/renderer/lighting_layout.h>
 #include <ludus/graphics/renderer/renderer.hpp>
 
 #include <new>
@@ -123,8 +124,13 @@ struct AtmosphereViewUniform final
     math::Vector4 Lighting{};
     math::Vector4 MoonDirectionWorld{};
     math::Vector4 LunarRadiance{};
+    math::Vector4 DirectionToSunAtMoonWorld{};
     math::Vector4 Celestial{};
     math::Vector4 Output{};
+    math::Vector4 GalacticNorthWorld{};
+    math::Vector4 GalacticCenterWorld{};
+    StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetDirectionsWorld{};
+    StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetIlluminance{};
 };
 
 namespace
@@ -143,6 +149,52 @@ bool TryMakeOrbitalRayTransform(const ViewDescription& camera, math::Matrix4& ou
     return math::TryInverse(directionToClip, outClipToEye) == math::MathStatus::Success;
 }
 
+bool TryPackNightSky(const CelestialBackgroundDescription& celestial, AtmosphereViewUniform& inoutUniform) noexcept
+{
+    if (math::IsFinite(celestial.MilkyWayRadiance) == false || celestial.MilkyWayRadiance < 0)
+    {
+        return false;
+    }
+    if (celestial.MilkyWayRadiance > 0)
+    {
+        math::Vector3 northWorld;
+        math::Vector3 centerWorld;
+        math::Vector3 tangentWorld;
+        if (math::TryNormalize(celestial.GalacticNorthWorld, northWorld) != math::MathStatus::Success ||
+            math::TryNormalize(celestial.GalacticCenterWorld, centerWorld) != math::MathStatus::Success ||
+            math::TryNormalize(math::Cross(northWorld, centerWorld), tangentWorld) != math::MathStatus::Success)
+        {
+            return false;
+        }
+        centerWorld = math::Cross(tangentWorld, northWorld);
+        inoutUniform.GalacticNorthWorld = {northWorld.X, northWorld.Y, northWorld.Z, celestial.MilkyWayRadiance};
+        inoutUniform.GalacticCenterWorld = {centerWorld.X, centerWorld.Y, centerWorld.Z, 0};
+    }
+    usize count = 0;
+    for (const PlanetBackgroundDescription& planet : celestial.Planets)
+    {
+        const math::Vector3 illuminance = planet.Illuminance;
+        if (math::IsFinite(illuminance) == false || illuminance.X < 0 || illuminance.Y < 0 || illuminance.Z < 0)
+        {
+            return false;
+        }
+        if (illuminance.X == 0 && illuminance.Y == 0 && illuminance.Z == 0)
+        {
+            continue;
+        }
+        math::Vector3 directionWorld;
+        if (math::TryNormalize(planet.DirectionWorld, directionWorld) != math::MathStatus::Success)
+        {
+            return false;
+        }
+        inoutUniform.PlanetDirectionsWorld[count] = {directionWorld.X, directionWorld.Y, directionWorld.Z, 0};
+        inoutUniform.PlanetIlluminance[count] = {illuminance.X, illuminance.Y, illuminance.Z, 0};
+        ++count;
+    }
+    inoutUniform.Celestial.W = static_cast<float32>(count);
+    return true;
+}
+
 bool TryPackCelestial(const CelestialBackgroundDescription& celestial, AtmosphereViewUniform& inoutUniform) noexcept
 {
     if (celestial.IsEnabled == false)
@@ -152,7 +204,7 @@ bool TryPackCelestial(const CelestialBackgroundDescription& celestial, Atmospher
     const float32 starRadiance = celestial.StarRadiance;
     const float32 moonRadius = celestial.LunarAngularRadiusRadians;
     if (math::IsFinite(starRadiance) == false || starRadiance < 0 || math::IsFinite(moonRadius) == false ||
-        moonRadius < 0 || moonRadius >= math::kHalfPiF)
+        moonRadius < 0 || moonRadius >= math::kHalfPiF || TryPackNightSky(celestial, inoutUniform) == false)
     {
         return false;
     }
@@ -168,6 +220,19 @@ bool TryPackCelestial(const CelestialBackgroundDescription& celestial, Atmospher
         math::IsFinite(radiance) == false || radiance.X < 0 || radiance.Y < 0 || radiance.Z < 0 || sine <= 0)
     {
         return false;
+    }
+    if (celestial.DirectionToSunAtMoonWorld != math::Vector3{})
+    {
+        math::Vector3 directionToSunAtMoonWorld;
+        if (math::TryNormalize(celestial.DirectionToSunAtMoonWorld, directionToSunAtMoonWorld) !=
+            math::MathStatus::Success)
+        {
+            return false;
+        }
+        inoutUniform.DirectionToSunAtMoonWorld = {directionToSunAtMoonWorld.X,
+                                                  directionToSunAtMoonWorld.Y,
+                                                  directionToSunAtMoonWorld.Z,
+                                                  1};
     }
     inoutUniform.MoonDirectionWorld = {directionWorld.X, directionWorld.Y, directionWorld.Z, sine};
     inoutUniform.LunarRadiance = {radiance.X, radiance.Y, radiance.Z, 2 * math::Sin(moonRadius * 0.5F)};

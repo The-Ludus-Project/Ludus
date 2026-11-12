@@ -15,7 +15,12 @@ constexpr uint32 VIEWPORT_RESOURCES_PER_KIND = 4096;
 constexpr uint32 VIEWPORT_BINDING_DESCRIPTORS = 32768;
 constexpr uint32 VIEWPORT_DRAWS_PER_FRAME = 32768;
 constexpr uint32 VIEWPORT_DRAWS_PER_PLAN = 1024;
-constexpr usize VIEWPORT_HOST_BYTES = usize{512} * 1024 * 1024;
+constexpr usize MEBIBYTE = usize{1024} * 1024;
+constexpr usize VIEWPORT_HOST_BYTES = 512 * MEBIBYTE;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+// RT1 retains CPU texture data while the live graph and its private comparison upload geometry.
+constexpr usize VIEWPORT_REFERENCE_CAPTURE_HOST_BYTES = 256 * MEBIBYTE;
+#endif
 constexpr uint32 VIEWPORT_MIN_BINDINGS = 11;
 constexpr usize VIEWPORT_MIN_UNIFORM_RANGE = 16384;
 constexpr uint32 VIEWPORT_MIN_VERTEX_ATTRIBUTES = 16;
@@ -36,6 +41,9 @@ rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
     description.Storage.ResourcesPerGraph = rr::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
     // Native ray UV metadata and temporary opacity tables overlap across scene replacement.
     description.Storage.HostBytes = VIEWPORT_HOST_BYTES;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    description.Storage.HostBytes += VIEWPORT_REFERENCE_CAPTURE_HOST_BYTES;
+#endif
     // Ray previews retain the previous scene during replacement. Raster snapshots,
     // material textures and graph targets have a separate device-wide allowance.
     constexpr uint64 RASTER_RESOURCE_BYTES = uint64{1} * 1024 * 1024 * 1024;

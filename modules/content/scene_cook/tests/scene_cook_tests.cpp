@@ -8,6 +8,7 @@
 #include "python_compat.h"
 #include "scratch_directory.h"
 
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/parsing/json.hpp>
 #include <ludus/foundation/time/time.hpp>
 
@@ -154,7 +155,7 @@ TEST_CASE("Cooked fixture is byte-identical to the Python goldens", "[scene_cook
 
     const OutputRecord bundle = GoldenOutput("cook/scene.luscn");
     CHECK(result.Bundle.GetSize() == bundle.Bytes);
-    CHECK(Hex(content::Hash(result.Bundle.AsSpan())) == bundle.Sha256);
+    CHECK(Hex(content::Hash(MakeSpan(result.Bundle))) == bundle.Sha256);
     CHECK(ViewAsText(result.Manifest) == ReadGolden("expected/files/cook/manifest.json"));
     CHECK(ViewAsText(result.License) == ReadGolden("expected/files/cook/LICENSE.txt"));
 }
@@ -182,7 +183,7 @@ TEST_CASE("NamedMaterial selects its own slot after an inline Material", "[scene
     INFO(std::string(error.Message.View()));
     REQUIRE(isCooked);
     const OutputRecord bundle = GoldenOutput("cook/scene.luscn");
-    CHECK(Hex(content::Hash(result.Bundle.AsSpan())) == bundle.Sha256);
+    CHECK(Hex(content::Hash(MakeSpan(result.Bundle))) == bundle.Sha256);
     std::filesystem::remove_all(directory);
 }
 

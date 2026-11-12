@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <cstring>
 
@@ -805,7 +806,7 @@ bool EncodeFrame(std::string_view payload, ludus::foundation::Array<uint8>& outF
     LUDUS_ASSERT(written);
     (void)written;
     const uint8* bytes = reinterpret_cast<const uint8*>(payload.data());
-    frame.AddRange(std::span<const uint8>(bytes, payload.size())); // within the reserved capacity
+    frame.AddRange(foundation::BorrowedView<const uint8>(bytes, payload.size())); // within the reserved capacity
     outFrame.Swap(frame);
     return true;
 }
@@ -822,7 +823,7 @@ void FrameReader::Append(const uint8* data, usize size)
         Failed_ = true;
         return;
     }
-    if (Buffer_.TryAddRange(std::span<const uint8>(data, size)) == false)
+    if (Buffer_.TryAddRange(foundation::BorrowedView<const uint8>(data, size)) == false)
     {
         Failed_ = true;
     }

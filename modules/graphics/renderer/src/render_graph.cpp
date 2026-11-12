@@ -925,6 +925,8 @@ struct RenderGraph::State final
     MaterialProgram ForwardSurfaceChartProgram{};
     internal::RenderGraphDeferredProgram DeferredProgram;
     bool HasDeferredProgram = false;
+    /// Update's cameras in the depth convention this graph draws; see RenderGraph::CanUseReverseDepth.
+    StaticArray<ViewDescription, format::MAX_CAMERAS> AdmittedCameras{};
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardSurfaceChartProgram = false;
@@ -1091,6 +1093,25 @@ struct RenderGraph::State final
             }
         }
         return inoutPass->Poll();
+    }
+    /// Whether every pass draws and rebuilds positions in reverse-Z depth; see RenderGraph::CanUseReverseDepth.
+    [[nodiscard]] bool CanUseReverseDepth() const noexcept
+    {
+        for (usize i = 0; i < Header.PassCount; ++i)
+        {
+            const format::Technique technique = Passes[i].Program;
+            if (technique == format::Technique::RayTracing)
+            {
+                return false;
+            }
+            if (format::IsImageTechnique(technique) == false &&
+                GetStage(Programs, technique, rhi::ShaderStage::Vertex).Inputs.GetSize() ==
+                    format::VISIBILITY_INPUT_COUNT)
+            {
+                return false;
+            }
+        }
+        return true;
     }
     Status PrepareCameras(BorrowedView<const ViewDescription> cameras, uint64 revision) noexcept
     {
@@ -2969,11 +2990,30 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         {
             return Status::Unsupported;
         }
-        if (camera.Depth != DepthConvention::Conventional)
+        // The conventional rewrite below needs a finite far plane, and graph overlays bound a finite frustum.
+        if ((camera.Depth == DepthConvention::ReverseZ && camera.InfiniteFar == true) ||
+            (camera.Depth != DepthConvention::Conventional && camera.Depth != DepthConvention::ReverseZ))
         {
             return Status::Unsupported;
         }
     }
+    // Admit each camera in the convention every pass of this graph can draw and rebuild positions from. The
+    // conventional rewrite is exact for a finite projection: reverse-Z depth z/w becomes (w - z)/w.
+    const bool canUseReverseDepth = state.CanUseReverseDepth();
+    for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
+    {
+        ViewDescription& admittedCamera = state.AdmittedCameras[cameraIndex];
+        admittedCamera = cameras[cameraIndex];
+        if (admittedCamera.Depth == DepthConvention::ReverseZ && canUseReverseDepth == false)
+        {
+            for (math::Vector4& column : admittedCamera.WorldToClip.Columns)
+            {
+                column.Z = column.W - column.Z;
+            }
+            admittedCamera.Depth = DepthConvention::Conventional;
+        }
+    }
+    cameras = {state.AdmittedCameras.GetData(), cameras.GetSize()};
     const bool hasRevisions = revisions.Geometry != 0 && revisions.Instances != 0 && revisions.Materials != 0 &&
                               revisions.Lights != 0 && revisions.Environment != 0;
     if (hasRevisions == false && revisions != RenderGraphSceneRevisions{})
@@ -3496,6 +3536,10 @@ RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
         }
     }
     return report;
+}
+bool RenderGraph::CanUseReverseDepth() const noexcept
+{
+    return mState.Get() != nullptr && mState->CanUseReverseDepth() == true;
 }
 BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const noexcept
 {

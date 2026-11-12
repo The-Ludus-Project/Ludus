@@ -31,10 +31,10 @@ These types ship today. Each has its reference page in the
 | Runtime size within a hard bound | `FixedArray<T, N>` | `fixed_array.hpp` | Live prefix of inline storage; only occupied slots are constructed; full is a status; never allocates |
 | Growable contiguous sequence | `Array<T>` | `array.hpp` | One heap block; 2x growth; growth invalidates every element borrow |
 | Small or read-mostly ordered dictionary | `SortedMap<K, V>` | `sorted_map.hpp` | Sorted `Array` of entries; O(log n) lookup, O(n) insert/remove |
-| Borrowed read or write of caller storage | `BorrowedView<T>` or `std::span<T>` | `borrowed_view.hpp` | Pointer and count only; never owns or extends the storage's lifetime |
+| Borrowed read or write of caller storage | `BorrowedView<T>` | `borrowed_view.hpp` | Pointer and count only; never owns or extends the storage's lifetime; every contiguous container converts to it |
 | In-place ordering, no stability | `Sort` | `sort.hpp` | Heap sort; O(1) extra storage; equal elements may reorder |
 | Stable ordering | `StableSort` | `stable_sort.hpp` | Merge sort into caller-supplied scratch; no allocation |
-| Bounded first-in, first-out queue | `RingBuffer<T, N>` | `ring_buffer.hpp` | Inline storage; full is a status; wrapped contents as two spans; single owner; never allocates |
+| Bounded first-in, first-out queue | `RingBuffer<T, N>` | `ring_buffer.hpp` | Inline storage; full is a status; wrapped contents as two borrowed views; single owner; never allocates |
 | Flags or membership over a fixed index range | `StaticBitSet<N>` | `static_bit_set.hpp` | `N` bits packed into `uint64` words; set operations and shifts; trivially copyable; never allocates |
 
 `Array` is the default. Use linear search over a small `Array` for short-lived
@@ -65,8 +65,7 @@ then leaves the caller's array unchanged. Swapping never allocates.
 
 ```cpp
 #include <ludus/foundation/containers/array.hpp>
-
-#include <span>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 enum class CollectStatus : ludus::foundation::uint8
 {
@@ -75,18 +74,18 @@ enum class CollectStatus : ludus::foundation::uint8
 };
 
 // Replace outIds with the IDs of every visible object. On failure outIds keeps
-// its previous contents.
-[[nodiscard]] CollectStatus CollectVisible(std::span<const ludus::foundation::uint32> ids,
-                                           std::span<const bool> isVisible,
+// its previous contents. ids and isVisible are valid views of the same size.
+[[nodiscard]] CollectStatus CollectVisible(ludus::foundation::BorrowedView<const ludus::foundation::uint32> ids,
+                                           ludus::foundation::BorrowedView<const bool> isVisible,
                                            ludus::foundation::Array<ludus::foundation::uint32>& outIds) noexcept
 {
     using namespace ludus::foundation;
     Array<uint32> visible;
-    if (visible.TryEnsureCapacity(ids.size()) == false)
+    if (visible.TryEnsureCapacity(ids.GetSize()) == false)
     {
         return CollectStatus::OutOfMemory;
     }
-    for (usize i = 0; i < ids.size(); ++i)
+    for (usize i = 0; i < ids.GetSize(); ++i)
     {
         if (isVisible[i] == true)
         {
@@ -116,8 +115,6 @@ or `nullptr` when the array is full, leaving it unchanged.
 ```cpp
 #include <ludus/foundation/containers/fixed_array.hpp>
 
-#include <span>
-
 constexpr ludus::foundation::usize MAX_TOUCHES = 10;
 
 struct Touch
@@ -135,7 +132,7 @@ struct Touch
 }
 ```
 
-`TryAddRange` appends a whole span or nothing. Storage never moves, so element
+`TryAddRange` appends a whole `BorrowedView` or nothing. Storage never moves, so element
 borrows stay valid until that element is removed or shifted by an ordered
 insert or `RemoveAt`. Copying or moving the array copies or moves its elements;
 borrows do not follow, and a moved-from `FixedArray` is empty. Use
@@ -150,10 +147,10 @@ changing anything. Decide the overflow policy at the call site, such as
 dropping, coalescing, or recovering, as Input does.
 
 ```cpp
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/ring_buffer.hpp>
 
 #include <initializer_list>
-#include <span>
 
 constexpr ludus::foundation::usize MAX_PENDING_COMMANDS = 32;
 
@@ -180,7 +177,7 @@ void DrainCommands(CommandQueue& inoutQueue, const ApplyFunction& apply) noexcep
 [[nodiscard]] ludus::foundation::uint64 SumArguments(const CommandQueue& queue) noexcept
 {
     ludus::foundation::uint64 sum = 0;
-    for (const std::span<const Command> part : {queue.GetLeadingSpan(), queue.GetTrailingSpan()})
+    for (const ludus::foundation::BorrowedView<const Command> part : {queue.GetLeadingView(), queue.GetTrailingView()})
     {
         for (const Command& command : part)
         {
@@ -192,7 +189,7 @@ void DrainCommands(CommandQueue& inoutQueue, const ApplyFunction& apply) noexcep
 ```
 
 The ring is not contiguous once it wraps, so it has no `begin`/`end`. Index it
-with `operator[]` (0 is the oldest) or walk the two spans. It is single-owner,
+with `operator[]` (0 is the oldest) or walk the two views. It is single-owner,
 not a thread-safe queue.
 
 ## Track flags and membership in bits
@@ -270,13 +267,43 @@ enum class BindStatus : ludus::foundation::uint8
 
 When the key set is known during setup, call `TryEnsureCapacity` first. Later
 insertions up to that capacity then never allocate. A range-for over
-`const SortedMap<K, V>::Entry&`, or `AsSpan()`, visits entries in ascending key
+`const SortedMap<K, V>::Entry&`, or `AsView()`, visits entries in ascending key
 order. The default ordering uses `operator<`; keys that are NaN, or that change
 order while stored, break lookup.
 
+## Pass contents to a `std::span` API
+
+Container headers do not include `<span>`. `AsView()`, or an implicit
+conversion, borrows the live elements as a `BorrowedView`, which is what range
+operations such as `TryAddRange` and `FromRange` take. A few existing APIs
+outside FoundationContainers still take `std::span`. Include
+`span_compatibility.hpp` only where you call one: `MakeSpan(container)` borrows
+a contiguous container or view as a span, and `MakeBorrowedView(span)` converts
+a span result back. New APIs take `BorrowedView`
+([ADR 0003](../../decisions/0003-standard-library-usage-policy.md)).
+
+```cpp
+#include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
+
+#include <span>
+
+// An existing interface that predates BorrowedView.
+[[nodiscard]] bool WriteBytes(std::span<const ludus::foundation::uint8> bytes) noexcept;
+
+[[nodiscard]] bool Publish(const ludus::foundation::Array<ludus::foundation::uint8>& bytes) noexcept
+{
+    return WriteBytes(ludus::foundation::MakeSpan(bytes));
+}
+```
+
+`MakeSpan` rejects a temporary container, whose span would dangle. Converting a
+`BorrowedView` asserts that it is valid, because a span cannot represent a null
+pointer with a nonzero size.
+
 ## Keep borrows valid
 
-Pointers, references, iterators and spans into a container are temporary
+Pointers, references, iterators and views into a container are temporary
 borrows. The container does not track them.
 
 - `Array`: growth beyond the current capacity (by insertion, `Resize` or

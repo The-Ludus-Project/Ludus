@@ -26,18 +26,18 @@
       "label": "Solar angular radius",
       "type": "number",
       "default": 0.26786,
-      "help": "Apparent angular radius of the Sun.",
+      "help": "Apparent angular radius for an authored Sun. The Earth Sun preset supplies its own radius.",
       "unit": "°",
       "min": 0.01,
       "max": 10
     },
     {
       "id": "stars",
-      "label": "Stars",
+      "label": "Night sky",
       "type": "boolean",
       "default": true,
       "unit": "",
-      "help": "Show a procedural star field beyond the atmosphere."
+      "help": "Show stars beyond the atmosphere. A linked Earth celestial driver adds the Milky Way and visible planets for its date and observer location."
     },
     {
       "id": "moon",

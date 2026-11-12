@@ -6,6 +6,7 @@
 #include "lifetime_type.hpp"
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -15,10 +16,10 @@
 #include <initializer_list>
 #include <numeric>
 #include <ranges>
-#include <span>
 #include <type_traits>
 
 using ludus::foundation::Array;
+using ludus::foundation::BorrowedView;
 using ludus::foundation::int32;
 using ludus::foundation::uint8;
 using ludus::foundation::usize;
@@ -589,24 +590,42 @@ TEST_CASE("Array EraseUnordered is O(1) swap-with-last", "[array]")
     REQUIRE(v[0] == 0);
 }
 
-TEST_CASE("Array append from span (bulk)", "[array][interop]")
+TEST_CASE("Array append from a borrowed view (bulk)", "[array][interop]")
 {
     Array<int> v;
     int src[] = {1, 2, 3, 4, 5};
-    v.AddRange(std::span<const int>(src, 5));
+    v.AddRange(BorrowedView<const int>(src, 5));
     REQUIRE(v.GetSize() == 5);
-    v.AddRange(std::span<const int>(src, 5));
+    v.AddRange(BorrowedView<const int>(src, 5));
     REQUIRE(v.GetSize() == 10);
     REQUIRE(v[9] == 5);
     // Append empty is a no-op.
-    v.AddRange(std::span<const int>());
+    v.AddRange(BorrowedView<const int>());
     REQUIRE(v.GetSize() == 10);
+}
+
+TEST_CASE("Array rejects an invalid borrowed view without changing", "[array][interop]")
+{
+    Array<int> v;
+    v.Add(1);
+    const int* const before = v.GetData();
+    const usize capacity = v.GetCapacity();
+    REQUIRE(v.TryAddRange(BorrowedView<const int>(nullptr, 3)) == false);
+    REQUIRE(v.GetSize() == 1);
+    REQUIRE(v.GetCapacity() == capacity);
+    REQUIRE(v.GetData() == before);
+    // Mutable containers and views convert to the read-only range parameter.
+    int source[] = {4, 5};
+    REQUIRE(v.TryAddRange(BorrowedView<int>(source)) == true);
+    Array<int> copy = Array<int>::FromRange(v);
+    REQUIRE(copy.GetSize() == 3);
+    REQUIRE(copy[2] == 5);
 }
 
 TEST_CASE("Array From factory", "[array]")
 {
     int src[] = {9, 8, 7};
-    Array<int> v = Array<int>::FromRange(std::span<const int>(src, 3));
+    Array<int> v = Array<int>::FromRange(BorrowedView<const int>(src, 3));
     REQUIRE(v.GetSize() == 3);
     REQUIRE(v[0] == 9);
     REQUIRE(v[2] == 7);
@@ -643,7 +662,7 @@ TEST_CASE("Array shrink_to_fit", "[array]")
     REQUIRE(v.GetData() == nullptr);
 }
 
-TEST_CASE("Array std interop: ranges, algorithms, span, pointer+count", "[array][interop]")
+TEST_CASE("Array std interop: ranges, algorithms, borrowed view, pointer+count", "[array][interop]")
 {
     Array<int> v;
     for (int i = 5; i >= 1; --i)
@@ -664,10 +683,10 @@ TEST_CASE("Array std interop: ranges, algorithms, span, pointer+count", "[array]
     }
     REQUIRE(sum == 15);
 
-    // std::span conversion (GPU/C pointer+count idiom)
-    std::span<const int> s = v;
-    REQUIRE(s.size() == 5);
-    REQUIRE(s.data() == v.GetData());
+    // Borrowed-view conversion (GPU/C pointer+count idiom)
+    const BorrowedView<const int> view = v;
+    REQUIRE(view.GetSize() == 5);
+    REQUIRE(view.GetDataOrNull() == v.GetData());
 }
 
 TEST_CASE("Array over-aligned elements", "[array][alignment]")
@@ -897,7 +916,7 @@ TEST_CASE("TryAddRange grows geometrically so repeated small appends stay linear
     for (usize index = 0; index < APPEND_COUNT; ++index)
     {
         isAppended =
-            bytes.TryAddRange(std::span<const uint8>(word.GetData(), word.GetSize())) == true && isAppended == true;
+            bytes.TryAddRange(BorrowedView<const uint8>(word.GetData(), word.GetSize())) == true && isAppended == true;
         if (bytes.GetData() != previousOrNull)
         {
             ++reallocations;

@@ -150,6 +150,26 @@ class SetupTests(unittest.TestCase):
                           *init_editor.preview_tool_args(engine.repo_root()), f"-DQt6_DIR={qt}/lib/cmake/Qt6"])
                 self.assertEqual(build.call_args.args[1], "macos-clang-development")
 
+    def test_ci_can_configure_the_preview_without_building_or_refreshing_installs(self):
+        args = self.args("macos-clang-asan-ubsan", "--no-system-install", "--configure-editor-only")
+        preparation = Mock()
+        with patch.object(platform, "system", return_value="Darwin"), \
+             patch.object(platform, "machine", return_value="arm64"), \
+             patch.object(platform, "mac_ver", return_value=("15.0", (), "")), \
+             patch.object(init_editor.shutil, "which", return_value=None), \
+             patch.object(engine, "cmake_configure") as configure, \
+             patch.object(engine, "cmake_build") as build, \
+             patch.object(init_editor, "refresh_editor_engine_installs") as refresh, \
+             patch.object(init_editor.cmake_targets, "query_codemodel"):
+            init_editor.setup_editor(args, engine, preparation=preparation)
+        preparation.wait.assert_called_once_with()
+        configure.assert_called_once_with(engine.repo_root(), args.preset,
+                                          ["-DLUDUS_BUILD_EDITOR=ON", "-DLUDUS_EDITOR_RENDER_PREVIEW=ON",
+                                           *init_editor.preview_tool_args(engine.repo_root())],
+                                          reuse_current_cache=True)
+        build.assert_not_called()
+        refresh.assert_not_called()
+
     def test_preview_discovers_separate_homebrew_qt_quick_prefix(self):
         with tempfile.TemporaryDirectory() as temporary:
             qt_base = Path(temporary) / "Qt Base"

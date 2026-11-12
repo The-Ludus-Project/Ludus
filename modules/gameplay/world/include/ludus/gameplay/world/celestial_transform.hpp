@@ -2,7 +2,9 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 namespace ludus::gameplay::world
 {
@@ -43,6 +45,58 @@ struct CelestialTransform final
 
 /// Result of the Earth sky sampler, in the same frame as a custom orbit sample.
 using EarthCelestialTransform = CelestialTransform;
+
+/// Approximate Earth daylight or moonlight in linear RGB at a sampled observer and time.
+struct EarthCelestialLighting final
+{
+    /// Local rotation and geometric horizon visibility.
+    EarthCelestialTransform Transform{};
+    /// Direct RGB illuminance in lux on a plane normal to the light at sea level. Zero below the horizon.
+    foundation::math::Vector3 GroundIlluminance{};
+    /// Direct RGB illuminance in lux on a plane normal to the light above the atmosphere.
+    foundation::math::Vector3 BoundaryIlluminance{};
+    /// Apparent disk radius in radians at the observer.
+    foundation::float32 AngularRadiusRadians = 0;
+    /// Direction from the Moon toward the Sun in observer world axes. Zero for a Sun sample.
+    foundation::math::Vector3 DirectionToSunAtMoonWorld{};
+    /// Linear RGB lunar disk luminance in nits before atmospheric attenuation, at unit lighting cosine.
+    foundation::math::Vector3 LunarPeakRadiance{};
+};
+
+/// Number of planets commonly visible from Earth without a telescope.
+inline constexpr foundation::usize EARTH_VISIBLE_PLANET_COUNT = 5;
+
+/// A distant planet as seen from Earth, before atmospheric extinction or ground occlusion.
+struct EarthPlanetSample final
+{
+    /// Unit direction toward the planet in the local world frame (+X east, +Y up, -Z north).
+    foundation::math::Vector3 DirectionWorld{};
+    /// Approximate linear RGB illuminance in lux, with a representative visible tint.
+    foundation::math::Vector3 Illuminance{};
+};
+
+/// Planetary and galactic directions for a single Earth observer and instant.
+struct EarthNightSkySample final
+{
+    /// Unit direction toward the north galactic pole.
+    foundation::math::Vector3 GalacticNorthWorld{};
+    /// Unit direction toward galactic longitude and latitude zero.
+    foundation::math::Vector3 GalacticCenterWorld{};
+    /// Mercury, Venus, Mars, Jupiter and Saturn in that order, including bodies below the horizon.
+    foundation::StaticArray<EarthPlanetSample, EARTH_VISIBLE_PLANET_COUNT> Planets{};
+};
+
+/// Approximate the Earth night sky in the same local world frame as the Sun and Moon samplers.
+/// @param daysSinceJ2000 UTC days since 2000-01-01 12:00, within MAX_EARTH_CELESTIAL_DAYS.
+/// @param latitudeDegrees Geodetic latitude in degrees, north positive.
+/// @param longitudeDegrees Longitude in degrees, east positive.
+/// @param outSky Directions and illuminance before atmosphere or occlusion. Preserved on failure.
+/// @return True for finite time and observer coordinates within the Earth celestial limits.
+/// @note Planet positions use the Earth–Moon barycenter and omit light time, precession and nutation.
+[[nodiscard]] bool TrySampleEarthNightSky(foundation::float64 daysSinceJ2000,
+                                          foundation::float64 latitudeDegrees,
+                                          foundation::float64 longitudeDegrees,
+                                          EarthNightSkySample& outSky) noexcept;
 
 /// An observer on a spherical world with a fixed spin axis. Zero longitude uses the reference meridian at time zero.
 struct CelestialObserver final
@@ -95,4 +149,18 @@ struct CelestialOrbit final
                                                     foundation::float64 latitudeDegrees,
                                                     foundation::float64 longitudeDegrees,
                                                     EarthCelestialTransform& outTransform) noexcept;
+
+/// Sample the Earth light's transform, normal illuminance and disk using a clear-sky approximation.
+/// @param body Sun or Moon.
+/// @param daysSinceJ2000 Fractional UTC days since 2000-01-01 12:00 UTC, within MAX_EARTH_CELESTIAL_DAYS.
+/// @param latitudeDegrees Observer latitude in degrees, north positive.
+/// @param longitudeDegrees Observer longitude in degrees, east positive.
+/// @param outLighting Replaced on success. Invalid inputs preserve it.
+/// @return True on success. False for an unknown body, a nonfinite value or an input outside the documented range.
+/// @note Allocation-free, with no thread affinity. Excludes weather, eclipses, refraction and earthshine.
+[[nodiscard]] bool TrySampleEarthCelestialLighting(EarthCelestialBody body,
+                                                   foundation::float64 daysSinceJ2000,
+                                                   foundation::float64 latitudeDegrees,
+                                                   foundation::float64 longitudeDegrees,
+                                                   EarthCelestialLighting& outLighting) noexcept;
 } // namespace ludus::gameplay::world
