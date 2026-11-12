@@ -11,6 +11,7 @@ shared by the wiki and offline readers.
 - [graphics debugging architecture and phased plan](../../architecture/graphics-debugging.md)
 - [runtime UI design](../../architecture/ui.md)
 - [renderer systems proposal](../../architecture/renderer-systems.md)
+- [Render pipeline and pass resources](../../architecture/renderer-systems.md#render-pipeline-and-pass-resources)
 - [Material system design](../../architecture/renderer-systems.md#material-system-design)
 - [Clear-sky atmosphere design](../../architecture/renderer-systems.md#clear-sky-atmosphere-design)
 - [reference review](../../architecture/renderer-systems-gems-review.md)

@@ -262,6 +262,24 @@ the [architecture's cross-checks](render-graph-authoring.md#contemporary-cross-c
 These readings are not benchmarks, full engine-source audits, or evidence of new
 Ludus/backend features. No new toolchain version is selected.
 
+### Render pipeline resource management follow-up
+
+The updated local catalog led to these REAC talks. The review checked the
+slides against `RenderGraphActivation`, the bilinear pass's program
+preparation and RHI's raster request path. The
+[resource contract](renderer-systems.md#render-pipeline-and-pass-resources)
+defines the proposed changes.
+
+| Primary material reviewed | Ludus decision |
+| --- | --- |
+| Oleksandr Drazhevskyi, [“Resource Management Architecture in 4A Engine,” REAC 2024](https://enginearchitecture.org/downloads/REAC_2024_4A.pdf), deck slides 9–14 and 30–35 | The talk distinguishes logical resources, views and backend storage, and shows logical textures borrowing cache entries. Apply the ownership distinction to pass definitions, their invocations and device pipeline leases. The source example is texture streaming. |
+| Sebastian Aaltonen, [“Modern Mobile Rendering @ HypeHype,” REAC 2023](https://enginearchitecture.org/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf), PDF pp. 14–15 and 23 | The renderer prepares pipeline state and material bindings before the draw loop. Prewarm the recipes required by Ludus's candidate graph and reuse compatible state across invocations. Scope preparation to the admitted recipes needed by the selected configuration. |
+| Nicolas Lopez and Michel Bouchard, [“Anvil Rendering Architecture,” REAC 2025](https://enginearchitecture.org/downloads/REAC_2025_Anvil.pdf), deck slides 15–17 and 43–46 | Anvil reports difficulty controlling and scaling packaged pass registration with runtime resource resolution. Use references resolved by Ludus's existing graph library and package closure, then resolve device compatibility at preparation. |
+
+These sources motivate ownership and preparation boundaries. The proposed
+Ludus comparison measures reuse, readiness and lifetime on a current
+portable pass.
+
 ## Conference and journal research plan
 
 This is a contextualized reading plan for the [proposed renderer](renderer-systems.md),

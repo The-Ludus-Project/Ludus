@@ -1129,17 +1129,108 @@ profile's verified layout. Cache immutable binding snapshots, allocate dynamic
 constants from aligned completion-scoped storage, and intern compatible layout
 identities through GDI rather than relying on structurally similar handles.
 
-Pipeline keys include shader versions, layout identity, vertex input, topology,
-attachment formats, samples, raster/depth/blend state and declared specialization.
-Viewport size and dynamic constants normally do not belong in the key. Hash
-collisions compare descriptions. Enumerate the legal static variant space;
-record used variants and prewarm before activation. Pipeline readiness is
-asynchronous where the backend permits, with a compatible ready fallback or
-explicit not-ready status. Cold first-use stalls remain visible telemetry.
-Persist native caches only with validated device/driver compatibility; cache
-failure is recoverable. Never claim offline shader compilation eliminates all
-driver pipeline work. Reload swaps package, layouts, bindings and pipelines as
-one validated version set; failed reload leaves the prior set usable.
+### Render pipeline and pass resources
+
+Proposed, November 2026. A project can reuse a pass definition across graphs and
+run it with different inputs. Its invocations should share a prepared pipeline
+when their device state matches. Today `RenderGraphActivation` stages an
+immutable package and retains the active graph until the candidate is ready.
+Many graph programs still create their own shader, layout and pipeline handles
+during preparation. RHI's raster `RequestPipeline` coalesces requests that
+already share exact shader and layout handles. Two graph generations can
+therefore prepare the same device state separately.
+
+| Resource or instance | Identity and owner |
+| --- | --- |
+| Pass definition | A reusable authored node or subgraph and its typed interface, declared resource use and admitted pipeline recipes. The graph library owns its stable ID within its authoring scope. A cooked package pins the definition revision and its dependencies. |
+| Pipeline recipe | An immutable description of admitted shader stages, layout and fixed state. The package owns the portable recipe and its provenance. Several definitions or invocations can reference the same recipe. |
+| Prepared pipeline | A device-session resource for one compatible recipe. Renderer selects the recipe, GDI manages acquisition and prewarming through the existing RHI services, and RHI owns the native handle and retirement. |
+| Pass invocation | The graph instance owns input bindings, targets, dynamic values and any persistent history. The frame uses the exact prepared pipeline and resource versions selected for that invocation. |
+
+Use the existing graph library and package closure to publish reusable
+definitions. Give references a source identity and an exact cooked revision.
+A copied invocation can keep the same definition while changing its port
+bindings. An edited definition produces a new revision. A compatible new
+definition revision can retain the same pipeline. Graph order, attachment
+load/store operations and the declared uses remain part of the
+[graph contract](render-graph-authoring.md#pipeline-readiness-and-execution).
+
+#### Pipeline identity and reuse
+
+- Within a device session, reuse immutable stages by their validated target
+  artifact, entry point and interface metadata, and layouts by their complete
+  binding contract. Hashes may find candidates. Compare the canonical
+  descriptions before sharing and retain the exact RHI incarnations. Distinct
+  authored names can resolve to the same device state.
+- Resolve recipes against the target compatibility contract before requesting
+  a pipeline. Include stage and layout incarnations, vertex interface,
+  topology, fixed raster/depth/stencil/blend state, ordered attachment
+  formats, sample count and any admitted specialization. Compute and ray
+  recipes carry their own stage, layout and fixed state contracts. Dynamic
+  values such as camera constants, attachment handles, and an extent-only
+  resize stay with the invocation unless a recipe explicitly specializes on
+  one of them.
+- The current RHI raster request comparison omits the explicit color format
+  sequence, sample count and stencil state carried by the raster description.
+  Qualify complete equality in RHI before using shared requests for those
+  descriptions. The initial migration uses the existing single-sample
+  portable raster contract. Sharing for compute and ray pipelines requires
+  their own RHI qualification.
+
+#### Acquisition, activation and release
+
+1. During graph preparation, resolve the required recipes for the selected
+   configuration and target. Request each distinct recipe once per owning
+   generation and keep its lease for as long as any invocation can record
+   with it. Prioritize required requests over speculative prewarm. Use the
+   existing owner-thread polling and backend creation path. A native driver
+   call can still take time, so measure preparation separately from recording.
+2. Treat pending, ready and failed as explicit outcomes. Publish the complete
+   candidate with the existing activation transaction only after all required
+   pipelines, compatible bindings and other prerequisites are ready. Keep the
+   last drawable generation during preparation or failure. An optional
+   invocation can use an explicitly authored compatible ready alternative.
+   Report the requested recipe, outcome and available repair at the owning pass.
+3. Record using the resolved handles. A candidate that changes only invocation
+   values can reuse the current pipeline. If a shader, layout or fixed state
+   changes, acquire the new dependencies before releasing the active leases.
+   Release a cancelled candidate's requests and reject stale completions by
+   device session and generation. Accepted work retains the retired pipeline
+   through the RHI completion ledger. Device loss invalidates prepared
+   handles, while the cooked definitions and recipes remain available to
+   prepare for the replacement device.
+
+Track unique recipes, outstanding requests and live pipeline records
+separately. Budget active, preparing and retired records that still occupy
+capacity. Apply the existing RHI quotas and drop speculative requests before
+rejecting required preparation for capacity. A warm lease pins a ready
+pipeline. The final release removes its shared request entry, with physical
+retirement governed by RHI. Measure reuse before retaining an idle working
+set. Any future persistent driver cache is a device/driver-qualified
+accelerator. Its absence or rejection falls back to ordinary preparation.
+
+#### First migration and acceptance
+
+Start with the existing built-in bilinear pass. It currently creates shader,
+layout and pipeline handles in `RenderGraphUpscaleProgram`. Share its immutable
+program dependencies and acquire the compatible raster pipeline through the
+request service. Keep per-invocation input bindings and outputs with their
+graph. Exercise two instances of the same pass and an overlapping active and
+candidate generation. Verify one backend creation for matching state, distinct
+requests for incompatible target contracts, and no new pipeline request on a
+compatible resize or input rebind. Compare output with the current pass, cancel
+a pending replacement and retire a released pipeline while an accepted frame
+still references it. Use existing native and browser raster fixtures to
+qualify the profile. Record creation counts and preparation time separately
+from frame time. Before widening reuse, test inequality for every newly
+admitted field that affects compatibility or rendering.
+
+Thanks to Oleksandr Drazhevskyi for separating logical resources from their
+backend objects, Sebastian Aaltonen for preparing pipeline state outside the
+draw loop, and Nicolas Lopez and Michel Bouchard for describing the ownership
+costs of registering packaged passes. The
+[reference review](renderer-systems-gems-review.md#render-pipeline-resource-management-follow-up)
+records the evidence and its application here.
 
 ## Material system design
 

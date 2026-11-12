@@ -671,6 +671,11 @@ candidate route. Optional effects use an authored ready fallback or explicit
 pending/unsupported status. The diagnostic error route itself must be prewarmed.
 Draw encoding never blocks on compilation or constructs a new pipeline key.
 
+The [pipeline and pass resource contract](renderer-systems.md#render-pipeline-and-pass-resources)
+defines reuse across graph instances, acquisition of device pipelines and
+retirement when a graph generation is replaced. The graph retains ownership
+of invocation bindings and dependencies.
+
 Select observable execution dependencies before checking bound inputs or lowering
 pipeline capabilities. Export/Present operations, root interface outputs and
 explicit active-camera routing obligations are roots. Retain nested effects;
