@@ -2777,7 +2777,7 @@ TEST_CASE("RT1 failure unlocks the window before its raster comparison finishes"
     CHECK(preview.HasActiveGpuCapture() == false);
 }
 
-TEST_CASE("A rejected raster comparison scene reaches a terminal failure",
+TEST_CASE("Raster comparison reports a terminal failure for an infinite-far view",
           "[editor][render-graph][world-graph][reference-capture]")
 {
     DeviceFixture device(MakeViewportDeviceDescription().Storage);
@@ -2791,9 +2791,15 @@ TEST_CASE("A rejected raster comparison scene reaches a terminal failure",
     QSize extent;
     QString error;
     REQUIRE(capture.Load(device.Device, device.Surface, source, QSize(WIDTH, HEIGHT), extent, error) == true);
+    const RenderScene scene = MakeCookedScene();
+    RenderPreview viewport;
+    REQUIRE(viewport.SetScene(scene) == true);
     renderer::ViewDescription view;
-    view.Depth = renderer::DepthConvention::ReverseZ;
-    REQUIRE(capture.Begin(MakeCookedScene(), view, error) == true);
+    REQUIRE(
+        viewport.DescribeView(static_cast<uint32>(extent.width()), static_cast<uint32>(extent.height()), view, error) ==
+        true);
+    REQUIRE(view.InfiniteFar == true);
+    REQUIRE(capture.Begin(scene, view, error) == true);
     ViewportRasterPhase phase = capture.GetPhase();
     for (usize attempt = 0; attempt < ATTEMPTS && phase == ViewportRasterPhase::Rendering; ++attempt)
     {
@@ -2803,6 +2809,7 @@ TEST_CASE("A rejected raster comparison scene reaches a terminal failure",
     INFO(capture.GetError().toStdString());
     CHECK(phase == ViewportRasterPhase::Failed);
     CHECK(capture.GetError().contains(QStringLiteral("failed to prepare for capture")) == true);
+    CHECK(capture.GetError().contains(QStringLiteral("The World extraction was rejected (Unsupported)")) == true);
 }
 
 TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",
