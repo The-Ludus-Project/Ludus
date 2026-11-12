@@ -2128,13 +2128,22 @@ with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
-**Stars** controls the procedural night sky. To show the Moon, choose a
-different directional light in **Atmosphere → Moon**. Set that light's role
+**Night sky** shows stars beyond the atmosphere. Set the linked Sun to
+**Dynamic Celestial → Earth Sun** to also show the Milky Way and Mercury,
+Venus, Mars, Jupiter, and Saturn. The Sun driver's UTC date, time, latitude
+and longitude place the planets and rotate the star field and Milky Way.
+The linked **Earth Moon** driver supplies those settings when the Sun has
+an authored transform or a custom orbit. Look along the ecliptic after
+dark for planets above the horizon. Their apparent brightness and color
+vary, and they appear as points at ordinary viewport fields of view.
+
+To show the Moon, choose a different directional light in **Atmosphere → Moon**.
+Set that light's role
 to **Static Moon** for an authored direction or use the **Earth Moon**
 celestial driver. Its direction sets the disk position, its color and
 intensity set the full-phase brightness, and the Sun direction determines
-which part of the disk is lit. Atmospheric extinction dims the stars and Moon
-toward the horizon. Turning the linked Moon off in the light controls hides
+which part of the disk is lit. Atmospheric extinction dims the celestial
+background toward the horizon. Turning the linked Moon off in the light controls hides
 the disk.
 
 A perspective camera above the atmosphere can see the illuminated limb and

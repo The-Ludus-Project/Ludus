@@ -1,4 +1,5 @@
 #include "display_tone_mapping.slang"
+#include "lighting_layout.h"
 #include "renderer_deferred_fullscreen.slang"
 
 #include "renderer_atmosphere_celestial.slang"
@@ -14,8 +15,12 @@ struct AtmosphereViewParameters
     float4 Lighting;            // x enables multiple scattering.
     float4 MoonDirectionWorld;  // xyz: direction, w: sine of the angular radius.
     float4 LunarRadiance;       // xyz: full-phase peak luminance, w: disk chord radius.
-    float4 Celestial;           // x: actual observer altitude in kilometres, y: star peak luminance, z: orbital flag.
+    float4 Celestial;           // Observer altitude (km), star peak luminance, orbital flag, planet count.
     float4 Output;              // xy: viewport dimensions, z: exposure multiplier, w: display curve
+    float4 GalacticNorthWorld;  // xyz: north galactic pole, w: Milky Way brightness.
+    float4 GalacticCenterWorld; // xyz: galactic center, orthogonal to GalacticNorthWorld.
+    float4 PlanetDirectionsWorld[ATMOSPHERE_PLANET_CAPACITY];
+    float4 PlanetIlluminance[ATMOSPHERE_PLANET_CAPACITY];
 };
 LUDUS_SHADER_BINDING(0)
 ConstantBuffer<AtmosphereViewParameters> atmosphereView LUDUS_SHADER_UNIFORM_REGISTER(0);
@@ -180,6 +185,33 @@ AtmosphereBackgroundTransport EvaluateAtmosphereBackground(in float3 directionWo
     return result;
 }
 
+float3 EvaluateNightSky(in float3 directionWorld, float angularFootprint)
+{
+    float3 background = 0;
+    float3 directionCelestial = directionWorld;
+    if (atmosphereView.GalacticNorthWorld.w > 0)
+    {
+        float3 northWorld = atmosphereView.GalacticNorthWorld.xyz;
+        float3 centerWorld = atmosphereView.GalacticCenterWorld.xyz;
+        directionCelestial = float3(dot(directionWorld, centerWorld),
+                                    dot(directionWorld, cross(northWorld, centerWorld)),
+                                    dot(directionWorld, northWorld));
+        background += EvaluateMilkyWay(directionCelestial, atmosphereView.GalacticNorthWorld.w);
+    }
+    if (atmosphereView.Celestial.y > 0)
+    {
+        background += EvaluateCelestialStars(directionCelestial, angularFootprint, atmosphereView.Celestial.y);
+    }
+    uint planetCount = uint(atmosphereView.Celestial.w);
+    for (uint i = 0; i < planetCount; ++i)
+    {
+        float weight =
+            ComputePlanetPointWeight(directionWorld, atmosphereView.PlanetDirectionsWorld[i].xyz, angularFootprint);
+        background += weight * atmosphereView.PlanetIlluminance[i].xyz;
+    }
+    return background;
+}
+
 [shader("fragment")] float4 AtmosphereDisplayMain(in DeferredVarying input) : SV_Target0
 {
     float3 directionWorld = GetViewDirectionWorld(input.PositionClip.xy);
@@ -191,10 +223,7 @@ AtmosphereBackgroundTransport EvaluateAtmosphereBackground(in float3 directionWo
     float moonCoverage =
         ComputeCelestialDiskCoverage(length(directionWorld - moonWorld), atmosphereView.LunarRadiance.w);
     float3 boundary = sunCoverage * atmosphereView.CameraForwardWorld.w * atmosphereView.SolarIlluminance.xyz;
-    if (atmosphereView.Celestial.y > 0)
-    {
-        boundary += EvaluateCelestialStars(directionWorld, angularFootprint, atmosphereView.Celestial.y);
-    }
+    boundary += (1 - sunCoverage) * EvaluateNightSky(directionWorld, angularFootprint);
     if (atmosphereView.MoonDirectionWorld.w > 0 && moonCoverage > 0)
     {
         float phase = EvaluateLunarPhase(directionWorld, moonWorld, sunWorld, atmosphereView.MoonDirectionWorld.w);
