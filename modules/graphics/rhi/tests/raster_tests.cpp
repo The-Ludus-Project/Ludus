@@ -1974,7 +1974,9 @@ TEST_CASE("R6 byte budgets include detached pending resources and recover after 
     CHECK(reference::Creates[0] == 1);
     internal::RasterComplete(request, RasterStatus::Ready);
     reference::Next = RasterStatus::Ready;
+    const usize completionPolls = reference::CompletionPolls;
     REQUIRE(CreateBuffer(session.Device, {BufferRole::Uniform, 16}, bytes, next) == RasterStatus::Ready);
+    CHECK(reference::CompletionPolls == completionPolls + 1);
     REQUIRE(GetStorageUsage(session.Device, usage) == RasterStatus::Ready);
     CHECK(usage.ResourceBytes == 16);
     REQUIRE(Destroy(session.Device, next) == RasterStatus::Ready);
