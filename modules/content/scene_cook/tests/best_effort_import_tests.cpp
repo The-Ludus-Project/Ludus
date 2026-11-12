@@ -586,6 +586,81 @@ Shape "plymesh" "string filename" "quad.ply" "texture alpha" "escape"
     }
 }
 
+TEST_CASE("pbrt best-effort import omits volume-only boundaries", "[scene_cook][pbrt]")
+{
+    ScratchDirectory scratch;
+    const std::string_view interfaceType =
+        GENERATE(std::string_view("interface"), std::string_view("none"), std::string_view());
+    const fs::path entry = scratch.Path / "scene.pbrt";
+    const std::string source = R"(MakeNamedMedium "fog" "string type" "homogeneous"
+MediumInterface "" "fog"
+Camera "perspective"
+WorldBegin
+Material "diffuse"
+AttributeBegin
+MediumInterface "fog" ""
+Material ")" + std::string(interfaceType) +
+                               R"("
+Shape "plymesh" "string filename" "boundary.ply"
+AttributeEnd
+MakeNamedMaterial "boundary" "string type" ")" +
+                               std::string(interfaceType) + R"("
+AttributeBegin
+NamedMaterial "boundary"
+AreaLightSource "diffuse" "rgb L" [1 1 1]
+Shape "sphere"
+AttributeEnd
+MediumInterface "" ""
+Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
+MediumInterface "fog" ""
+Material "dielectric"
+Shape "sphere"
+)";
+    WriteFile(entry, source);
+    WriteFile(scratch.Path / "boundary.ply", MakeAsciiTriangle());
+
+    SceneIr scene;
+    DiagnosticLog log;
+    ludus::foundation::String root;
+    REQUIRE(pbrt::ReadScene(entry.string(), scene, log, root) == ludus::content::Status::Ok);
+    CHECK(log.CountOccurrences(codes::MEDIUM_SKIPPED) == 4); // Definition and three bindings.
+    CHECK(log.CountOccurrences(codes::SHAPE_SKIPPED) == 2);
+    CHECK(HasCode(log, codes::MATERIAL_DEFAULTED) == false);
+    CHECK(HasCode(log, codes::SHAPE_FAILED) == false);
+    for (const Diagnostic& diagnostic : log.GetEntries())
+    {
+        if (diagnostic.Code.GetView() == codes::SHAPE_SKIPPED)
+        {
+            CHECK(diagnostic.Severity == DiagnosticSeverity::Warning);
+            CHECK(diagnostic.File.GetView() == "scene.pbrt");
+            CHECK(diagnostic.Line == 9);
+        }
+    }
+
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort(entry.string(), {}, result, error) == true);
+    REQUIRE(result.Inputs.GetSize() == 1);
+    CHECK(result.Inputs[0].GetView() == "scene.pbrt");
+    CHECK(ReportHasCode(result, codes::MEDIUM_SKIPPED) == true);
+    CHECK(ReportHasCode(result, codes::SHAPE_SKIPPED) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(DecodesAtRuntime(result, decoded) == true);
+    REQUIRE(decoded.Objects.GetSize() == 2);
+    bool hasDiffuse = false;
+    bool hasGlass = false;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        const ludus::content::scene_format::MaterialModel model = material.Scattering.Model;
+        hasDiffuse = hasDiffuse == true || model == ludus::content::scene_format::MaterialModel::Diffuse;
+        hasGlass = hasGlass == true || model == ludus::content::scene_format::MaterialModel::Dielectric;
+        CHECK(material.AreaSourceId == 0);
+    }
+    CHECK(hasDiffuse == true);
+    CHECK(hasGlass == true);
+}
+
 TEST_CASE("image decoders cover TGA RLE and PFM, with unknown containers unsupported", "[scene_cook][pbrt]")
 {
     DecodedImage image;
