@@ -4,9 +4,9 @@ Link `Ludus::FoundationFilesystem` and include the API you use: `filesystem.hpp`
 for native directories/files, `namespace.hpp` for logical roots and mounts,
 `pack.hpp` for shipping packs, `async.hpp` for bounded background reads,
 `persistence.hpp` for atomic publication, and `watch.hpp` for cooked-file hints.
-Native directory reads work on Linux and macOS. Memory and pack providers work
-on every target. AsyncReader has a dedicated blocking pool on Linux, macOS and
-Windows; browser initialization returns Unsupported. Browser hosts currently use
+Native directory reads work on Linux, macOS and Windows. Memory and pack
+providers work on every target. AsyncReader has a dedicated blocking pool on
+Linux, macOS and Windows. Browser initialization returns Unsupported. Browser hosts use
 synchronous memory/pack reads and own any fetch adapter themselves.
 
 ## Publish a read namespace

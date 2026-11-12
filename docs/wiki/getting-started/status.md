@@ -6,28 +6,25 @@ not a claim of production readiness on every platform.
 
 | Area | Available starting point | Boundary |
 | --- | --- | --- |
-| Desktop editor | Project creation/open/close, build/run/debug, recent history, panel layout and shortcuts | Linux x64 native Qt; the game has its own window |
-| Independent games | Installed CLI, SDK selection, local presets, setup checks and staged creation | Initial native reference toolchain; release identity and SDK compatibility are validated |
+| Desktop editor | Project setup, build and run, [document undo](../../development/editor-workspace.md#undo-history), and [World authoring with a rendered viewport](../../development/editor-workspace.md#world-renderer-and-camera-preview) | Linux x64, macOS and Windows x64 have native paths. See [platform coverage](../guides/platform-targets.md#recognition-is-not-engine-support). |
+| Independent games | [Installed CLI, SDK selection, local presets, setup checks and staged creation](../../development/project-sdk-workflow.md) | Linux x64 and macOS use the Clang SDK workflow. Windows x64 uses MSVC SDKs with Ninja and Visual Studio project workflows. |
 | Audio | Native content definitions, catalog, editing and runtime-backed preview | Check the audio evidence for device and hosted acceptance limits |
 | Configuration | Typed runtime schema, cooked layers, sparse preferences and offline editor preview | Preference edits apply to a future launch, not the running host |
 | Strings and hashing | [Owned/shared bytes, scoped names, cooked dictionaries and lookup hashes](../guides/strings.md) | Explicit lifetimes and failures; dictionary adoption by a content cooker and editor strings inspection remain future work |
-| Filesystem | [Immutable mounts, validated packs and bounded background reads](../guides/filesystem.md) | Native directories on Linux/macOS; async memory/pack workers on native targets; browser async reports Unsupported; persistence/watchers remain F5 |
+| Filesystem | [Native directory reads, validated packs, bounded background reads and atomic publication](../guides/filesystem.md) | Linux, macOS and Windows have native directory reads. Browser hosts use synchronous memory and pack reads. |
 | Randomness | [Caller-owned PCG32 streams and addressed Philox samples](../guides/randomness.md) | Deterministic primitives and the [world demo's room scatter](../../examples/world-demo.md#scatter-placements); game-owned identities/state, no automatic replay or editor RNG inspector |
-| Time | [Shared monotonic clock and owner-local stopwatch/deadline/frame helpers](../guides/time.md) | Nanosecond storage; simulation integration, scheduling, pacing and editor timing telemetry remain separate work |
-| Browser runtime | Pinned Emscripten/WebGPU Foundation, Platform, RHI paths and smoke samples | Runtime work has separate browser/device acceptance; this website contains documentation |
-| Windows | [Win32 windows and a Direct3D 12 device that clears and presents](../../architecture/windows-direct3d12.md) | Bring-up only: no shaders, draws, compute, input or SDK install yet; CI runs on the WARP software adapter |
+| Time | [Shared monotonic clock, frame pacing and runtime timing telemetry](../guides/time.md) | Nanosecond storage. The editor's Timing panel shows read-only runtime status. |
+| Browser runtime | Pinned Emscripten/WebGPU Foundation, Platform, RHI paths and smoke samples | [Browser/device acceptance](../../development/webgpu-w6-evidence.md) tracks tested combinations. |
+| Browser editor | [Project editing, World import and navigation, downloadable projects and playable samples](../guides/browser-editor.md) | Changes live in the browser session until exported. Web Play runs prebuilt samples. |
 | Platform detection | [Compiler-owned target facts and constexpr descriptor](../guides/platform-targets.md) | Recognition does not establish an engine port or runtime capabilities |
 | Engine systems | Foundation, math, graphics, content, gameplay/world and physics modules | Consult each module's implementation/evidence before relying on a feature |
 
-## Next editor stages
+## Editor workflow details
 
-S1 established the workspace and panel structure. The pre-S2 usability increment
-added automatic project creation, a location picker, Close Project and shortcuts.
-This wiki is the documentation increment before S2.
-
-**S2** will establish focused document editing, save routing, undo/redo and
-interaction preservation during background updates. General scene authoring,
-embedded play and a full online editor are separate later work.
+The desktop editor supports [World authoring](../../development/editor-workspace.md#gameplay-world-authoring)
+and [Live Play](../../development/project-live-reload.md) for projects that use
+GameHost. The [document interaction guide](../../development/editor-workspace.md#initial-s2-document-interactions)
+covers save routing, undo history and remaining work on the portable document core.
 
 ## Evidence and design
 

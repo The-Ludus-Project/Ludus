@@ -16,17 +16,14 @@ unlit faces visible. Sixteen fixed light samples give stable but stepped shadows
 
 ## Before you start
 
-The **desktop editor path below uses Ubuntu 24.04, Linux x64**, with a Wayland
-session and a Vulkan-capable driver. Follow [Install and launch](../wiki/getting-started/install.md)
-once to prepare and open the editor. Use [Building Ludus](../development/building.md) for system prerequisites. Keep a code editor available for C++ and Slang files;
-Ludus's current desktop editor manages projects and builds rather than editing
-those source documents.
+The **editor walkthrough below uses Linux x64** with a Wayland session and a
+Vulkan-capable driver. Follow [Install and launch](../wiki/getting-started/install.md)
+to prepare the editor and use [Building Ludus](../development/building.md) for
+system prerequisites. Keep a code editor available for C++ and Slang files.
 
-On macOS, use the [manual setup](#manual-setup-and-command-line-workflow) below,
-then follow the same numbered lessons using its build/run commands. The native
-editor is currently Linux-only. The screenshots here are actual macOS Metal
-runtime captures, not screenshots of the Linux editor. Window decoration and
-small GPU differences can vary.
+On macOS, use the sample's [command-line workflow](#manual-setup-and-command-line-workflow)
+for the numbered lessons. The screenshots show the sample running on macOS Metal.
+Window decoration and small GPU differences can vary.
 
 Use a Ludus checkout that contains `examples/cornell-box`. This sample is not yet
 an option in **New Project**; that dialog creates the minimal native template.

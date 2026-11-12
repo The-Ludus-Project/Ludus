@@ -3,12 +3,12 @@
 Ludus runs on Windows through a Win32 Platform backend and a Direct3D 12 RHI
 backend. This page owns that port: the decision, the contracts of the slices
 that exist, the [port record](../development/platform-porting.md#reusable-record-format)
-and the staged plan. The work is at the **buildable** admission gate for the
-D1/D2 and D3a/D3b raster closure described below (verified on Clang/WARP); it is not yet a runnable or qualified engine
-deployment. D0 adds an MSVC source-build configuration for the existing Win32 and RHI
-targets, using CMake with Ninja or Visual Studio 2022/MSBuild. The
+and the staged plan. The MSVC build has a runnable World player, installed
+runtime SDK and native editor authoring viewport. The
 [Windows lane](../development/continuous-integration.md#windows-direct3d-12-lane)
-runs both generators alongside the historical Clang/WARP lane.
+runs Ninja and Visual Studio 2022/MSBuild checks alongside the historical
+Clang/WARP lane. Hosted WARP coverage and remaining physical GPU and desktop
+qualification are tracked in [D7](#d7-qualify-the-windows-profiles).
 
 
 ## Decision

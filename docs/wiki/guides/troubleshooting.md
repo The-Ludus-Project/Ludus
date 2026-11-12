@@ -6,8 +6,8 @@ avoid repeatedly rebuilding an incompatible or stale setup.
 
 | Symptom | Check and next step |
 | --- | --- |
-| Editor executable missing | Prepare it with `./init.sh --cli --with-editor`; the editor launcher only launches existing builds |
-| Qt/platform plugin error | Verify Qt 6.4+ Core/Gui/Widgets and the appropriate native display plugin; use the supported Linux x64 host |
+| Editor executable missing | Build it using the [install guide for your host](../getting-started/install.md). The launcher opens an existing build. |
+| Qt/platform plugin error | Check the [Qt prerequisites](../../development/editor-workspace.md#prerequisites-optional-editor-setup) and the Wayland or Cocoa plugin. For Windows, check the [MSVC Qt build and PATH setup](../../development/editor-workspace.md#windows-authoring-viewport). |
 | New Project cannot create a folder | Use an absolute Location, a valid name and an absent destination; check parent-folder permissions |
 | Automatic engine selection fails | Check an explicit Advanced override or `LUDUS_SDK_PREFIX`; invalid overrides do not silently fall back |
 | Missing or stale local CMake presets | Run Check Setup, then explicit Repair Project Setup with the intended compatible engine |

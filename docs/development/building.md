@@ -2,7 +2,11 @@
 
 Build this checkout to develop the engine or produce an installed SDK. For a
 game project, use [the independent-project workflow](project-sdk-workflow.md).
-All commands below run from the Ludus repository root.
+Run these commands from the Ludus repository root. The `init.sh` workflow
+covers Linux and macOS. For Windows x64, follow the
+[MSVC source build](../architecture/windows-direct3d12.md#msvc-source-presets),
+[Windows editor setup](editor-workspace.md#windows-authoring-viewport), or
+[Windows runtime SDK setup](project-sdk-workflow.md#windows-runtime-sdk).
 
 ## Initialization and macOS SDK compatibility
 
@@ -193,9 +197,8 @@ sessions automatically use the CLI. The GUI uses Python's optional Tkinter
 module (`sudo apt-get install python3-tk` on Ubuntu); if Tk or a desktop display
 is unavailable, default setup falls back to the CLI. `--gui` requires a window
 and reports an error before setup if it cannot open one. Both interfaces share
-the same setup code and flags; these options also work through `scripts/init`
-and the PowerShell wrappers. Those wrappers do not establish a native Windows
-port; supported native hosts and limits are described below.
+the same setup code and flags through `scripts/init`. Use the MSVC instructions
+linked above when preparing the Windows runtime and editor.
 
 ```bash
 ./init.sh --cli                                      # existing terminal workflow
@@ -334,10 +337,11 @@ compiler detection and prints the init command needed to prepare that profile.
 Debug, Development, and ASan/UBSan builds are validated on Apple silicon.
 Native Cocoa integration tests require a WindowServer session and opt in with
 `LUDUS_TEST_COCOA=1`; deferred feature cases explicitly skip. The pinned LLVM 23
-sanitizer runtimes start on macOS 26; LLVM before 22.1.3 does not, see
-[macOS sanitizer runtimes](#macos-sanitizer-runtimes). The macOS 14 CI job runs the Cocoa lifecycle and keyboard
-tests, Metal lifecycle/rendering tests, native filesystem tests and Content read adapters with ASan/UBSan
-as well as the regular Development build.
+sanitizer runtimes start on macOS 26. See
+[macOS sanitizer runtimes](#macos-sanitizer-runtimes). Native CI uses macOS 15
+on Apple silicon and covers Cocoa lifecycle and keyboard tests, Metal
+lifecycle/rendering tests, native filesystem tests and Content read adapters
+in Development and ASan/UBSan builds.
 
 ### macOS sanitizer runtimes
 
