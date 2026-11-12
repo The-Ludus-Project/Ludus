@@ -2052,6 +2052,105 @@ TEST_CASE("Typed reflection and transmission match between CPU and GPU reference
     CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
 }
 
+TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral on CPU and GPU",
+          "[renderer][gpu][reference-compute][materials]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+
+    QuadItem metal;
+    metal.CornersWorld = {{{-2, -2, 0}, {-2, 2, 0}, {2, 2, 0}, {2, -2, 0}}};
+    metal.BaseColor = {1, 1, 1};
+    metal.Model = ludus::content::scene_format::MaterialModel::MetallicRoughness;
+    metal.Metallic = 1;
+    metal.Roughness = 1;
+    for (Session* session : {&cpu, &gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer, session->Program, &metal, 1, session->Snapshot) == S::Ready);
+    }
+
+    // Thanks to Sébastien Lagarde, "Physically-Based Materials: Where Are We?", SIGGRAPH 2017,
+    // slides 36–37, https://openproblems.realtimerendering.com/s2017/02-PhysicallyBasedMaterialWhereAreWe.pdf.
+    // The furnace isolates missing microfacet bounces. At normal incidence, alpha = F = 1 gives
+    // f(z) = 1 / (2*pi*(1+z)); integrating 2*pi*z*f(z) from 0 to 1 gives 1 - ln(2).
+    const float64 expectedRadiance = 1 - math::Log(2.0);
+    constexpr uint32 IMAGE_EXTENT = 16;
+    constexpr uint32 SAMPLES_PER_PIXEL = 64;
+    constexpr uint32 DEEP_PATH_LIMIT = 4;
+    constexpr uint64 FIRST_SEED = 23;
+    constexpr uint64 SECOND_SEED = 59;
+    // Both proposals have density 1/(4*pi) for valid directions. The two MIS-weighted terms sum to at most one
+    // per trial. At 16,384 trials, Hoeffding's two-sided bound for an error above 0.02 is about 4.1e-6.
+    constexpr float64 MEAN_RADIANCE_TOLERANCE = 0.02;
+    constexpr float32 MATCHED_PIXEL_TOLERANCE = 1e-3F;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = IMAGE_EXTENT;
+    capture.Height = IMAGE_EXTENT;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[3].Z = 0.5F;
+    capture.CenterRays = true;
+    capture.Environment = {1, 1, 1};
+    capture.TargetSamples = SAMPLES_PER_PIXEL;
+    capture.RouletteDepth = DEEP_PATH_LIMIT;
+    for (const uint64 seed : {FIRST_SEED, SECOND_SEED})
+    {
+        capture.Seed = seed;
+        for (const uint32 pathLimit : {uint32{1}, DEEP_PATH_LIMIT})
+        {
+            capture.MaxDepth = pathLimit;
+            CAPTURE(seed, pathLimit);
+            Array<rr::ReferencePixel> oracle;
+            Array<rr::ReferencePixel> compute;
+            rr::ReferenceCaptureInfo oracleInfo;
+            rr::ReferenceCaptureInfo computeInfo;
+            Capture(cpu, capture, surface, oracle, oracleInfo);
+            Capture(gpu, capture, surface, compute, computeInfo);
+            CHECK(oracleInfo.Traversal == rr::ReferenceTraversal::CpuOracle);
+            CHECK(computeInfo.Traversal == rr::ReferenceTraversal::GpuCompute);
+            CHECK(oracleInfo.InvalidContributions == 0);
+            CHECK(computeInfo.InvalidContributions == 0);
+            const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+            CAPTURE(comparison.MaximumRadiance, comparison.MaximumDirect);
+            CHECK(comparison.MaximumRadiance <= MATCHED_PIXEL_TOLERANCE);
+            CHECK(comparison.MaximumDirect <= MATCHED_PIXEL_TOLERANCE);
+            for (const Array<rr::ReferencePixel>* pixels : {&oracle, &compute})
+            {
+                INFO((pixels == &oracle ? "CPU oracle" : "GPU compute"));
+                const ImageMeans means = MeasureImage(*pixels);
+                CAPTURE(means.Radiance.X, expectedRadiance);
+                CHECK(means.Emission == math::Vector3{});
+                CHECK(means.Indirect == math::Vector3{});
+                CHECK(means.Radiance == means.Direct);
+                CHECK(means.Radiance.X == means.Radiance.Y);
+                CHECK(means.Radiance.X == means.Radiance.Z);
+                CHECK(math::Abs(static_cast<float64>(means.Radiance.X) - expectedRadiance) <= MEAN_RADIANCE_TOLERANCE);
+            }
+        }
+    }
+}
+
 TEST_CASE("An emitter seen through smooth glass keeps the Fresnel-transmitted radiance",
           "[renderer][gpu][reference-compute][dielectric]")
 {

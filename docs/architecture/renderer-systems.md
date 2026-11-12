@@ -2180,6 +2180,28 @@ and LOD clamps. Transmission is limited to the
 [smooth dielectric reference](#smooth-dielectric-reference); there is no rough
 transmission, volume, spectral transport, coat,
 multiple-scattering energy compensation or shading-normal energy correction.
+
+The rough-metal white-furnace regression measures the energy missing from the
+single-scatter model. It views a white metallic-roughness plane (`metallic = 1`,
+`roughness = 1`, hence unit Fresnel and GGX alpha) at normal incidence in a
+unit-radiance environment. For light cosine `z`, the BRDF is
+`1 / (2π(1 + z))`. Integrating it against the projected hemisphere yields
+`1 − ln(2) ≈ 0.30685` in each linear RGB channel. The CPU oracle and GPU-compute
+capture each check the direct and total radiance against this expectation using
+16 × 16 pixels, 64 samples per pixel, two seeds and depth limits of 1 and 4.
+The mean tolerance is 0.02 per channel, and matched CPU and GPU pixels must
+agree within an RGB distance of 0.001.
+Increasing scene path depth cannot recover scattering between microfacets.
+Thanks to Sébastien Lagarde for the lossless furnace setup and rough-surface
+comparisons. [*Physically-Based Materials: Where Are We?*, SIGGRAPH 2017,
+slides 36–37 and 76–77](https://openproblems.realtimerendering.com/s2017/02-PhysicallyBasedMaterialWhereAreWe.pdf#page=36)
+
+A future compensated profile needs its own declared integral and CPU/GPU parity.
+For lossless reflection its furnace target is one. Before making compensation
+the raster default, qualify the same lobe under punctual, polygonal and
+environment lighting, including the LTC and environment preintegrations, and
+check the appearance of existing materials.
+
 Depth and finite secondary range are declared truncations. Local/world geometry, generated ray origins, UVs and transform components are
 bounded to ±1,000,000 for the reference profile. Admission rejects oversized
 finite UV scales before address arithmetic; invalid generated origins fail the
