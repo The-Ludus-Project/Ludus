@@ -310,8 +310,11 @@ struct MeshLightShadowFace
     float3 RightWorld;
     float3 UpWorld;
     float3 NormalWorld;
-    // dot(normal, receiver - caster): the caster's height above the receiver's plane.
+    // dot(normal, caster - receiver): the caster's height above the receiver's plane.
     float PlaneHeight;
+    // How far the receiver's plane may lie from the surface along its normal, in metres: the normal component of
+    // the uncertainty of a receiver rebuilt from depth.
+    float PlaneUncertainty;
 };
 // Conventional depth of a forward distance in the face projection.
 float ComputeMeshLightShadowDepth(in MeshLightShadowFace face, float forward)
@@ -320,7 +323,8 @@ float ComputeMeshLightShadowDepth(in MeshLightShadowFace face, float forward)
 }
 // The stored occluder depth at a texel, clamped into the face slot, and the depth the receiver's tangent plane has
 // along that texel's ray: comparing with the plane rather than with the receiver point keeps a flat receiver from
-// shadowing itself where its depth changes across the filter.
+// shadowing itself where its depth changes across the filter. The plane is taken as near the caster as the
+// receiver's uncertainty allows, which widens the comparison by the depth that displacement spans along the ray.
 void ReadMeshLightShadowTexel(in MeshLightShadowFace face, float2 texel, out float outStored, out float outPlane)
 {
     float2 position = clamp(floor(texel), face.Origin, face.Maximum);
@@ -331,12 +335,17 @@ void ReadMeshLightShadowTexel(in MeshLightShadowFace face, float2 texel, out flo
     float3 directionWorld = face.ForwardWorld + (face.RightWorld * ndc.x + face.UpWorld * ndc.y) * face.Tangent;
     float along = -dot(face.NormalWorld, directionWorld);
     // A ray that never meets the plane in front of the caster sees no receiver there: nothing can shadow it.
-    float forward = along > 0 ? face.PlaneHeight / along : face.FarMeters;
+    float forward = along > 0 ? max(face.PlaneHeight - face.PlaneUncertainty, 0) / along : face.FarMeters;
     outPlane = ComputeMeshLightShadowDepth(face, clamp(forward, face.NearMeters, face.FarMeters)) -
                LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES / SHADOW_DEPTH_CODE_MAXIMUM;
 }
 // Fraction of the caster's view of the receiver that no occluder blocks; one without a caster or shadow table.
-float ComputeMeshLightShadowVisibility(uint tableWord, uint casterKey, float3 positionWorld, float3 normalWorld)
+// positionUncertaintyWorld is how far positionWorld may lie from the surface, zero for an exact position.
+float ComputeMeshLightShadowVisibility(uint tableWord,
+                                       uint casterKey,
+                                       float3 positionWorld,
+                                       float3 positionUncertaintyWorld,
+                                       float3 normalWorld)
 {
     if (tableWord == 0 || casterKey == 0)
     {
@@ -356,6 +365,10 @@ float ComputeMeshLightShadowVisibility(uint tableWord, uint casterKey, float3 po
     float3 deltaWorld =
         positionWorld + normalWorld * (LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS * texelMeters) - placement.xyz;
     face.PlaneHeight = -dot(normalWorld, deltaWorld);
+    // A receiver rebuilt from conventional depth lies centimetres off its surface tens of metres from the camera.
+    // Behind the surface, its plane would meet the receiver's own stored depth first and shadow it in a pattern that
+    // changes with every pixel and camera pose.
+    face.PlaneUncertainty = abs(dot(normalWorld, positionUncertaintyWorld));
     float3 magnitude = abs(deltaWorld);
     uint axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
     float component = axis == 0 ? deltaWorld.x : (axis == 1 ? deltaWorld.y : deltaWorld.z);
@@ -423,8 +436,13 @@ uint GetMeshLightGridEntry(uint entryWord, uint entry)
 // omits records whose bounded Lambert term stays below the grid's cull radiance there (raster_mesh_light_grid.cpp),
 // and skips listed records whose bound at the sample is below it too. Every shaded surface lies inside the grid, so a
 // position reconstructed outside it reads the nearest boundary cell. Evaluating every record there instead made a
-// few floor pixels walk the whole record list and stall the pass.
-float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorld, uint polygonCount, uint gridWord)
+// few floor pixels walk the whole record list and stall the pass. positionUncertaintyWorld is how far positionWorld may
+// lie from the surface along the view ray; the shadow comparison allows for it.
+float3 EvaluateRasterMeshLights(in SurfaceSample surface,
+                                in float3 positionWorld,
+                                in float3 positionUncertaintyWorld,
+                                uint polygonCount,
+                                uint gridWord)
 {
     float nv = max(dot(surface.NormalWorld, surface.ViewDirectionWorld), 0);
     if (nv <= 0 || polygonCount == 0)
@@ -501,8 +519,11 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorl
             uint(meshLightWords[record + MESH_LIGHT_POLYGON_HEADER_WORDS + MESH_LIGHT_SHADOW_CASTER_CORNER].w);
         if (casterKey != visibleCaster)
         {
-            visibility =
-                ComputeMeshLightShadowVisibility(shadowTableWord, casterKey, positionWorld, surface.NormalWorld);
+            visibility = ComputeMeshLightShadowVisibility(shadowTableWord,
+                                                          casterKey,
+                                                          positionWorld,
+                                                          positionUncertaintyWorld,
+                                                          surface.NormalWorld);
             visibleCaster = casterKey;
         }
         result += contribution * visibility;
