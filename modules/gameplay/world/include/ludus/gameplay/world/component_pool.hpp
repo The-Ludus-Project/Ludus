@@ -123,14 +123,20 @@ public:
         mSparse[entity.Slot] = MissingIndex();
         return Status::Success;
     }
+    /// Owning entities in dense order; element i owns GetValues()[i].
+    /// @return A view borrowing pool storage; invalidated by the next insert or remove.
     [[nodiscard]] foundation::BorrowedView<const EntityId> GetOwners() const noexcept
     {
         return mOwners.AsView();
     }
+    /// Read-only component values in the same dense order as GetOwners().
+    /// @return A view borrowing pool storage; invalidated by the next insert or remove.
     [[nodiscard]] foundation::BorrowedView<const T> GetValues() const noexcept
     {
         return mValues.AsView();
     }
+    /// Mutable component values in the same dense order as GetOwners(); values may be edited in place.
+    /// @return A view borrowing pool storage; invalidated by the next insert or remove.
     [[nodiscard]] foundation::BorrowedView<T> GetValues() noexcept
     {
         return mValues.AsView();
