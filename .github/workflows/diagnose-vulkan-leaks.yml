@@ -98,7 +98,7 @@ jobs:
           clang-23 -std=c11 -Wall -Wextra -Werror -g -O1 -fno-omit-frame-pointer \
             -fsanitize=address,undefined "$RUNNER_TEMP/enumerate.c" -o "$RUNNER_TEMP/enumerate"
           manifest="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
-          driver="$(dpkg -L mesa-vulkan-drivers | rg '/libvulkan_lvp\.so$')"
+          driver="$(dpkg -L mesa-vulkan-drivers | awk '/\/libvulkan_lvp\.so$/ { print }')"
           test -f "$manifest"
           test -f "$driver"
           run_case() {
