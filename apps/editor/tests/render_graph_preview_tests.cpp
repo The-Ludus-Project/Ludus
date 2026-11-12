@@ -1942,8 +1942,9 @@ TEST_CASE("Graph viewport Stats toggle is visible and persists with navigation",
     CHECK(source.IsStatisticsVisible() == true);
     CHECK(overlay->isHidden() == false);
     CHECK(overlay->testAttribute(Qt::WA_TransparentForMouseEvents) == true);
-    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("FPS (updates):")) == true);
-    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Output readback:")) == true);
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Updates:")) == true);
+    // Output readback has a row only once a readback has been measured.
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Editor CPU per frame:")) == true);
     const QJsonObject navigation = source.Navigation();
     statistics->click();
     CHECK(overlay->isHidden() == true);
@@ -4478,7 +4479,7 @@ TEST_CASE("Live graph viewport presents GPU images through navigation and resize
     source.SetStatisticsVisible(true);
     constexpr int32 IDLE_STATISTICS_MILLISECONDS = 1'250;
     QTest::qWait(IDLE_STATISTICS_MILLISECONDS);
-    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("FPS (updates): 0")) == true);
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Updates: idle")) == true);
     const uint64 lastGeneration = graph.GetPresentedGeneration();
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);

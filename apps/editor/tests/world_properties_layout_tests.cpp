@@ -20,7 +20,9 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPoint>
 #include <QPushButton>
+#include <QRect>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
@@ -43,6 +45,8 @@ constexpr int32 DOCK_HEIGHT = 2000;
 /// Dock widths from the narrowest the editor allows to a roomy one.
 constexpr int32 NARROW_DOCK_WIDTH = 260;
 constexpr int32 MEDIUM_DOCK_WIDTH = 320;
+/// Where a Mac capture showed the Colour row keep R and drop G and B.
+constexpr int32 COLOUR_WRAP_DOCK_WIDTH = 300;
 /// A light range typed in the round-trip test, in metres.
 constexpr float64 EDITED_RANGE_METRES = 12;
 constexpr int32 WIDE_DOCK_WIDTH = 480;
@@ -236,6 +240,11 @@ void CheckNothingClipped(const QWidget& panel)
         }
     }
 }
+/// Where a widget sits inside one of its ancestors.
+QRect GetRectangleIn(const QWidget& ancestor, const QWidget& widget)
+{
+    return {widget.mapTo(&ancestor, QPoint(0, 0)), widget.size()};
+}
 } // namespace
 
 TEST_CASE("Properties keeps every field, label and value whole from the narrowest dock width",
@@ -300,7 +309,11 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     REQUIRE(scrollOrNull != nullptr);
     REQUIRE(scrollOrNull->widget() != nullptr);
 
-    for (const int32 width : {WORLD_PROPERTIES_MINIMUM_WIDTH, NARROW_DOCK_WIDTH, MEDIUM_DOCK_WIDTH, WIDE_DOCK_WIDTH})
+    for (const int32 width : {WORLD_PROPERTIES_MINIMUM_WIDTH,
+                              NARROW_DOCK_WIDTH,
+                              COLOUR_WRAP_DOCK_WIDTH,
+                              MEDIUM_DOCK_WIDTH,
+                              WIDE_DOCK_WIDTH})
     {
         INFO("Dock width " << width);
         dock.resize(width, DOCK_HEIGHT);
@@ -335,6 +348,30 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
                         shots.filePath(QStringLiteral("properties-%1.png").arg(width))) == true);
         }
     }
+
+    // The default World's Transform reads as one Position, Rotation and Scale line each, typed or scrubbed by its
+    // axis letters rather than dragged on nine sliders.
+    const auto findField = [&dock](const char* key) {
+        QLineEdit* fieldOrNull =
+            dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/") + QString::fromLatin1(key));
+        REQUIRE(fieldOrNull != nullptr);
+        return fieldOrNull;
+    };
+    const QRect x = GetRectangleIn(dock, *findField("x"));
+    const QRect y = GetRectangleIn(dock, *findField("y"));
+    const QRect z = GetRectangleIn(dock, *findField("z"));
+    CHECK(y.top() < x.bottom());
+    CHECK(z.top() < x.bottom());
+    CHECK(x.right() < y.left());
+    CHECK(y.right() < z.left());
+    CHECK(GetRectangleIn(dock, *findField("rx")).top() >= x.bottom());
+    CHECK(GetRectangleIn(dock, *findField("sx")).top() >= GetRectangleIn(dock, *findField("rx")).bottom());
+    for (const char* key : {"x", "rx", "sx"})
+    {
+        CHECK(findField(key)->parentWidget()->findChild<BoundedSlider*>(QString(), Qt::FindDirectChildrenOnly) ==
+              nullptr);
+    }
+
     // Apply and Reset appear only with unapplied edits, and say how many fields changed.
     const QWidget* footerOrNull = dock.findChild<QWidget*>(QStringLiteral("worldCommitFooter"));
     const QLabel* summaryOrNull = dock.findChild<QLabel*>(QStringLiteral("worldPendingSummary"));

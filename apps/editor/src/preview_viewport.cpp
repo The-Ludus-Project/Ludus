@@ -1,10 +1,12 @@
 #include "internal/preview_viewport.h"
+#include "internal/editor_icons.h"
 #include "internal/editor_style.h"
 #include "internal/empty_world_view.h"
 #include "internal/orientation_widget.h"
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
 #include "internal/theme_colour.h"
+#include "internal/viewport_hud_text.h"
 #include "internal/viewport_pass_bars.h"
 #include "internal/viewport_screenshot.h"
 #include "internal/viewport_size.h"
@@ -101,6 +103,8 @@ constexpr int32 FLY_SPEED_READOUT_DIGITS = 3;
 constexpr QRgb FRAME_OUTLINE = GetViewportArgb(design::ThemeColour::BorderSubtle);
 /// Width of the shading menu in characters; longer labels are cut, and the full text is in the tooltip.
 constexpr int SHADING_COMBO_CHARACTERS = 12;
+/// Side of the viewport toolbar's icons, in logical pixels.
+constexpr int VIEWPORT_TOOLBAR_ICON_PIXELS = design::SPACING_LARGE;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Shows or hides a widget that was added to the controls toolbar. A toolbar owns the visibility of its
 /// widgets through their actions, so hiding the widget itself would be undone on the next layout.
@@ -281,11 +285,13 @@ private:
 namespace
 {
 /// Inset of the statistics panel from the viewport's top-left corner, in logical pixels.
-constexpr qreal STATISTICS_MARGIN = 8;
+constexpr qreal STATISTICS_MARGIN = design::SPACING_SMALL;
 /// Padding between the statistics panel edge and its text, in logical pixels.
-constexpr qreal STATISTICS_PADDING = 6;
+constexpr qreal STATISTICS_PADDING = design::SPACING_SMALL;
 /// Corner radius of the statistics panel, in logical pixels.
-constexpr qreal STATISTICS_CORNER_RADIUS = 4;
+constexpr qreal STATISTICS_CORNER_RADIUS = design::RADIUS_GROUP;
+/// Width of the severity edge at the left of an error message, in logical pixels.
+constexpr qreal MESSAGE_SEVERITY_EDGE_WIDTH = design::SPACING_EXTRA_SMALL;
 /// Opacity, of 255, of the statistics panel and of the shader error panel.
 constexpr int STATISTICS_BACKGROUND_OPACITY = 190;
 constexpr int SHADER_ERROR_OPACITY = 215;
@@ -294,6 +300,10 @@ constexpr QRgb STATISTICS_BACKGROUND =
     WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), STATISTICS_BACKGROUND_OPACITY);
 /// Statistics text colour.
 constexpr QRgb STATISTICS_TEXT = GetViewportArgb(design::ThemeColour::TextHud);
+/// Statistics labels, quieter than their values.
+constexpr QRgb STATISTICS_LABEL = GetViewportArgb(design::ThemeColour::TextHudQuiet);
+/// Edge that marks an error message.
+constexpr QRgb MESSAGE_ERROR_EDGE = GetViewportArgb(design::ThemeColour::StatusDanger);
 /// Translucent red panel behind live shader errors and restart notices.
 constexpr QRgb SHADER_ERROR_BACKGROUND =
     WithAlpha(GetViewportArgb(design::ThemeColour::StatusDangerSurface), SHADER_ERROR_OPACITY);
@@ -310,17 +320,33 @@ QString GetLiveShadersToolTip()
 constexpr qreal STATISTICS_Z = 1;
 QFont GetStatisticsFont()
 {
-    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    return GetViewportHudFont();
 }
-/// Size of the padded statistics panel for text, in logical pixels; empty text has no panel.
-QSizeF MeasureStatistics(const QString& text)
+/// What an overlay panel holds: statistics are a label and value grid; messages are wrapped sentences, and an
+/// error message carries the danger colour.
+enum class OverlayKind : uint8
+{
+    Statistics,
+    Message,
+    ErrorMessage,
+};
+/// Padding at the left of a panel's text, which holds the severity edge of an error message.
+qreal GetOverlayLeftPadding(OverlayKind kind)
+{
+    return kind == OverlayKind::ErrorMessage ? STATISTICS_PADDING + MESSAGE_SEVERITY_EDGE_WIDTH : STATISTICS_PADDING;
+}
+/// Size of the padded overlay panel for text, in logical pixels; empty text has no panel.
+QSizeF MeasureStatistics(const QString& text, OverlayKind kind = OverlayKind::Statistics)
 {
     if (text.isEmpty() == true)
     {
         return {};
     }
-    const QRectF bounds = QFontMetricsF(GetStatisticsFont()).boundingRect(QRectF(), Qt::AlignLeft, text);
-    return {bounds.width() + 2 * STATISTICS_PADDING, bounds.height() + 2 * STATISTICS_PADDING};
+    const QSizeF content = kind == OverlayKind::Statistics
+                               ? MeasureViewportHudGrid(text, GetStatisticsFont())
+                               : QFontMetricsF(GetStatisticsFont()).boundingRect(QRectF(), Qt::AlignLeft, text).size();
+    return {content.width() + GetOverlayLeftPadding(kind) + STATISTICS_PADDING,
+            content.height() + 2 * STATISTICS_PADDING};
 }
 /// Draw the pass bars behind the last lines of the text, which are the pass rows.
 void PaintPassBars(QPainter& inoutPainter, const QString& text, const QRectF& panel, const ViewportPassBars& bars)
@@ -338,30 +364,45 @@ void PaintPassBars(QPainter& inoutPainter, const QString& text, const QRectF& pa
         firstRow,
         bars);
 }
-/// Paint an overlay panel (statistics or live shader status) with its top-left corner at origin.
+/// Paint an overlay panel (statistics or a viewport message) with its top-left corner at origin.
 void PaintStatistics(QPainter& inoutPainter,
                      const QString& text,
                      QPointF origin,
-                     QRgb background = STATISTICS_BACKGROUND,
+                     OverlayKind kind = OverlayKind::Statistics,
                      const ViewportPassBars& bars = {})
 {
     if (text.isEmpty() == true)
     {
         return;
     }
-    const QRectF panel(origin, MeasureStatistics(text));
+    const QRectF panel(origin, MeasureStatistics(text, kind));
     inoutPainter.save();
     inoutPainter.setRenderHint(QPainter::Antialiasing);
     inoutPainter.setPen(Qt::NoPen);
-    inoutPainter.setBrush(QColor::fromRgba(background));
+    inoutPainter.setBrush(
+        QColor::fromRgba(kind == OverlayKind::ErrorMessage ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND));
     inoutPainter.drawRoundedRect(panel, STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
-    PaintPassBars(inoutPainter, text, panel, bars);
-    inoutPainter.setFont(GetStatisticsFont());
-    inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
-    inoutPainter.drawText(
-        panel.adjusted(STATISTICS_PADDING, STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING),
-        Qt::AlignLeft | Qt::AlignTop,
-        text);
+    const QRectF content =
+        panel.adjusted(GetOverlayLeftPadding(kind), STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING);
+    if (kind == OverlayKind::ErrorMessage)
+    {
+        // The severity edge says "error" before the text is read, as the status colours do elsewhere.
+        inoutPainter.setBrush(QColor::fromRgb(MESSAGE_ERROR_EDGE));
+        inoutPainter.drawRoundedRect(QRectF(panel.left(), panel.top(), MESSAGE_SEVERITY_EDGE_WIDTH, panel.height()),
+                                     MESSAGE_SEVERITY_EDGE_WIDTH / 2,
+                                     MESSAGE_SEVERITY_EDGE_WIDTH / 2);
+    }
+    if (kind == OverlayKind::Statistics)
+    {
+        PaintPassBars(inoutPainter, text, panel, bars);
+        PaintViewportHudGrid(inoutPainter, content, text, GetStatisticsFont(), STATISTICS_LABEL, STATISTICS_TEXT);
+    }
+    else
+    {
+        inoutPainter.setFont(GetStatisticsFont());
+        inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
+        inoutPainter.drawText(content, Qt::AlignLeft | Qt::AlignTop, text);
+    }
     inoutPainter.restore();
 }
 } // namespace
@@ -371,7 +412,7 @@ void PaintStatistics(QPainter& inoutPainter,
 /// so a long path still shows its file name and line. A non-positive maxWidth keeps text.
 QString FitOverlayText(const QString& text, qreal maxWidth)
 {
-    const qreal available = maxWidth - 2 * (STATISTICS_MARGIN + STATISTICS_PADDING);
+    const qreal available = maxWidth - 2 * (STATISTICS_MARGIN + STATISTICS_PADDING) - MESSAGE_SEVERITY_EDGE_WIDTH;
     if (text.isEmpty() == true || maxWidth <= 0 || available <= 0)
     {
         return text;
@@ -429,11 +470,15 @@ QMessageBox* SuggestRasterFallback(QWidget& inoutParent, RenderPreview& inoutSou
 
 namespace
 {
-/// Top-left of the live shader status panel: below the statistics panel when it is shown.
-QPointF GetShaderStatusOrigin(const QString& statisticsText)
+/// Top-left of a viewport message (live shader status, a graph problem, fly speed): centred at the bottom of a
+/// viewport of viewportSize, apart from the statistics at the top-left, and above the bottom reservedHeight (the
+/// legend's band). A message wider than the viewport starts at the margin.
+QPointF GetShaderStatusOrigin(QSizeF viewportSize, QSizeF messageSize, qreal reservedHeight)
 {
-    const qreal statisticsHeight = MeasureStatistics(statisticsText).height();
-    return {STATISTICS_MARGIN, STATISTICS_MARGIN + (statisticsHeight > 0 ? statisticsHeight + STATISTICS_MARGIN : 0)};
+    const qreal left = std::max(STATISTICS_MARGIN, (viewportSize.width() - messageSize.width()) / 2);
+    const qreal top =
+        std::max(STATISTICS_MARGIN, viewportSize.height() - reservedHeight - messageSize.height() - STATISTICS_MARGIN);
+    return {left, top};
 }
 /// Width of the legend's colour bar, in logical pixels.
 constexpr qreal LEGEND_BAR_WIDTH = 168;
@@ -499,25 +544,38 @@ void PaintLegend(QPainter& inoutPainter, const PreviewLegend& legend, QPointF or
     inoutPainter.drawText(labels, Qt::AlignRight | Qt::AlignTop, legend.HighLabel);
     inoutPainter.restore();
 }
+/// Height a shown legend takes from the bottom of the viewport, margin included, so a message sits above it.
+qreal GetLegendReservedHeight(const PreviewLegend* legendOrNull)
+{
+    return legendOrNull == nullptr ? 0 : MeasureLegend(*legendOrNull).height() + STATISTICS_MARGIN;
+}
 /// Overlay panel inside the viewport's QQuickWindow. A sibling QWidget would sit under the
 /// native window that createWindowContainer embeds on macOS and Linux; a scene-graph item is
 /// composited by Qt Quick in the same Metal/Vulkan pass as the frame, so it is always on top.
 class StatisticsItem final : public QQuickPaintedItem
 {
 public:
-    StatisticsItem(QQuickItem* parent, const QString& name) : QQuickPaintedItem(parent)
+    /// isMessage: a viewport message, centred at the bottom of the parent item; otherwise the statistics grid at the
+    /// top-left corner.
+    StatisticsItem(QQuickItem* parent, const QString& name, bool isMessage = false)
+        : QQuickPaintedItem(parent), mIsMessage(isMessage)
     {
         setObjectName(name);
         setZ(STATISTICS_Z);
         setPosition({STATISTICS_MARGIN, STATISTICS_MARGIN});
         setAntialiasing(true);
         setVisible(false);
+        if (mIsMessage == true)
+        {
+            connect(parent, &QQuickItem::widthChanged, this, [this]() { place(); });
+            connect(parent, &QQuickItem::heightChanged, this, [this]() { place(); });
+        }
     }
-    void SetText(const QString& text, QRgb background = STATISTICS_BACKGROUND, const ViewportPassBars& bars = {})
+    void SetText(const QString& text, OverlayKind kind = OverlayKind::Statistics, const ViewportPassBars& bars = {})
     {
-        const bool hasSameBars = bars.RowCount == mBars.RowCount;
+        const bool hasSameBars = bars.RowCount == mBars.RowCount && bars.IsSlowestWarning == mBars.IsSlowestWarning;
         mBars = bars;
-        if (text == mText && background == mBackground)
+        if (text == mText && kind == mKind)
         {
             if (hasSameBars == false)
             {
@@ -526,20 +584,36 @@ public:
             return;
         }
         mText = text;
-        mBackground = background;
-        setSize(MeasureStatistics(text));
+        mKind = kind;
+        setSize(MeasureStatistics(text, kind));
         setVisible(text.isEmpty() == false);
+        place();
         update();
+    }
+    /// Keep a message above the bottom reservedHeight of the parent, where the legend is.
+    void SetReservedHeight(qreal reservedHeight)
+    {
+        mReservedHeight = reservedHeight;
+        place();
     }
     void paint(QPainter* painter) override
     {
-        PaintStatistics(*painter, mText, {0, 0}, mBackground, mBars);
+        PaintStatistics(*painter, mText, {0, 0}, mKind, mBars);
     }
 
 private:
+    void place()
+    {
+        if (mIsMessage == true && parentItem() != nullptr)
+        {
+            setPosition(GetShaderStatusOrigin(parentItem()->size(), size(), mReservedHeight));
+        }
+    }
     QString mText;
-    QRgb mBackground = STATISTICS_BACKGROUND;
+    OverlayKind mKind = OverlayKind::Statistics;
     ViewportPassBars mBars;
+    bool mIsMessage = false;
+    qreal mReservedHeight = 0;
 };
 /// Legend key of the current debug view, anchored to the bottom-left corner of the viewport window.
 class LegendItem final : public QQuickPaintedItem
@@ -645,7 +719,8 @@ public:
     /// Overlay text painted over the frame; empty hides the statistics panel.
     void SetStatisticsText(const QString& text, const ViewportPassBars& bars)
     {
-        const bool isChanged = text != mStatisticsText || bars.RowCount != mStatisticsBars.RowCount;
+        const bool isChanged = text != mStatisticsText || bars.RowCount != mStatisticsBars.RowCount ||
+                               bars.IsSlowestWarning != mStatisticsBars.IsSlowestWarning;
         mStatisticsBars = bars;
         mStatisticsText = text;
         if (isChanged == true)
@@ -706,12 +781,16 @@ protected:
         PaintStatistics(painter,
                         mStatisticsText,
                         {STATISTICS_MARGIN, STATISTICS_MARGIN},
-                        STATISTICS_BACKGROUND,
+                        OverlayKind::Statistics,
                         mStatisticsBars);
+        const QString message = FitOverlayText(mShaderStatusText, width());
+        const OverlayKind messageKind = mHasShaderError == true ? OverlayKind::ErrorMessage : OverlayKind::Message;
         PaintStatistics(painter,
-                        FitOverlayText(mShaderStatusText, width()),
-                        GetShaderStatusOrigin(mStatisticsText),
-                        mHasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
+                        message,
+                        GetShaderStatusOrigin(QSizeF(size()),
+                                              MeasureStatistics(message, messageKind),
+                                              GetLegendReservedHeight(mHasLegend == true ? &mLegend : nullptr)),
+                        messageKind);
         if (mIsOrientationShown == true)
         {
             PaintOrientationWidget(painter,
@@ -1003,7 +1082,7 @@ private:
     {
         if (StatisticsOrNull != nullptr)
         {
-            StatisticsOrNull->SetText(StatisticsText, STATISTICS_BACKGROUND, StatisticsBars);
+            StatisticsOrNull->SetText(StatisticsText, OverlayKind::Statistics, StatisticsBars);
         }
         if (CanvasOrNull != nullptr)
         {
@@ -1019,6 +1098,10 @@ private:
         if (LegendOrNull != nullptr)
         {
             LegendOrNull->SetLegend(hasLegend == true ? &legend : nullptr);
+        }
+        if (ShaderStatusOrNull != nullptr)
+        {
+            ShaderStatusOrNull->SetReservedHeight(GetLegendReservedHeight(hasLegend == true ? &legend : nullptr));
         }
         if (CanvasOrNull != nullptr)
         {
@@ -1289,8 +1372,9 @@ private:
         ObjectOverlayOrNull = CreateViewportObjectOverlayItem(Widget->GetObjectInteraction(), *Window->contentItem());
         ObjectOverlayOrNull->setSize(Window->size());
         StatisticsOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportStatisticsOverlay"));
-        StatisticsOrNull->SetText(StatisticsText, STATISTICS_BACKGROUND, StatisticsBars);
-        ShaderStatusOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"));
+        StatisticsOrNull->SetText(StatisticsText, OverlayKind::Statistics, StatisticsBars);
+        ShaderStatusOrNull =
+            new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"), true);
         applyShaderStatus();
         LegendOrNull = new LegendItem(Window->contentItem());
         applyLegend(Preview->GetShading());
@@ -1558,8 +1642,7 @@ private:
         if (ShaderStatusOrNull != nullptr)
         {
             ShaderStatusOrNull->SetText(FitOverlayText(ShaderStatusText, Window->width()),
-                                        HasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
-            ShaderStatusOrNull->setPosition(GetShaderStatusOrigin(StatisticsText));
+                                        HasShaderError == true ? OverlayKind::ErrorMessage : OverlayKind::Message);
         }
         if (CanvasOrNull != nullptr)
         {
@@ -1640,6 +1723,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mState->Layout->setContentsMargins(0, 0, 0, 0);
     QComboBox* shading = new QComboBox(this);
     shading->setObjectName(QStringLiteral("viewportShading"));
+    shading->setProperty("visualRole", QStringLiteral("ghost"));
     shading->setAccessibleName(QStringLiteral("Viewport shading"));
     shading->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     shading->setMinimumContentsLength(SHADING_COMBO_CHARACTERS);
@@ -1664,10 +1748,14 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     controls->setMovable(false);
     controls->setFloatable(false);
     controls->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    controls->setIconSize(QSize(VIEWPORT_TOOLBAR_ICON_PIXELS, VIEWPORT_TOOLBAR_ICON_PIXELS));
+    // Commands without an icon show their text; those with one choose per button below.
+    controls->setToolButtonStyle(Qt::ToolButtonTextOnly);
     mState->ControlsOrNull = controls;
     controls->addWidget(shading);
     QComboBox* viewportSize = new QComboBox(this);
     viewportSize->setObjectName(QStringLiteral("viewportSize"));
+    viewportSize->setProperty("visualRole", QStringLiteral("ghost"));
     viewportSize->setAccessibleName(QStringLiteral("Viewport size"));
     viewportSize->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     for (foundation::usize i = 0; i < VIEWPORT_SIZE_PRESET_COUNT; ++i)
@@ -1701,6 +1789,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     });
     QPushButton* view = new QPushButton(this);
     view->setObjectName(QStringLiteral("viewportView"));
+    view->setProperty("visualRole", QStringLiteral("ghost"));
     view->setAccessibleName(QStringLiteral("Viewport projection and view direction"));
     view->setToolTip(QStringLiteral("Perspective, or an orthographic view along a world axis for aligning and "
                                     "measuring. Axis views keep the pivot and the visible size there, and look from "
@@ -1888,6 +1977,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     controls->addSeparator();
     QComboBox* objectTool = new QComboBox(this);
     objectTool->setObjectName(QStringLiteral("viewportObjectTool"));
+    objectTool->setProperty("visualRole", QStringLiteral("ghost"));
     objectTool->setAccessibleName(QStringLiteral("Object interaction tool"));
     objectTool->addItems({QStringLiteral("Select (Q)"),
                           QStringLiteral("Move (W)"),
@@ -1913,10 +2003,12 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         const QSignalBlocker blocker(objectTool);
         objectTool->setCurrentIndex(static_cast<int32>(mObjectInteraction->GetTool()));
     });
-    QAction* frameAll = new QAction(QStringLiteral("Frame all"), this);
-    frameAll->setToolTip(QStringLiteral("Fit all visible geometry in the viewport (Home)."));
-    InsertCommand(*controls, nullptr, *frameAll, QStringLiteral("viewportFrameAll"))
-        .setAccessibleName(QStringLiteral("Frame all visible objects"));
+    QAction* frameAll = new QAction(GetEditorIcon(EditorIcon::FrameAll), QStringLiteral("Frame all"), this);
+    frameAll->setToolTip(QStringLiteral("Frame all: fit all visible geometry in the viewport (Home)."));
+    // A known command with a shortcut: its icon is enough on the row, and the overflow menu shows its name too.
+    QToolButton& frameAllButton = InsertCommand(*controls, nullptr, *frameAll, QStringLiteral("viewportFrameAll"));
+    frameAllButton.setAccessibleName(QStringLiteral("Frame all visible objects"));
+    frameAllButton.setToolButtonStyle(Qt::ToolButtonIconOnly);
     mState->FrameAllActionOrNull = frameAll;
     connect(frameAll, &QAction::triggered, preview, &RenderPreview::FrameAll);
     controls->addSeparator();
@@ -1948,11 +2040,12 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     statisticsButton.setAccessibleName(QStringLiteral("Show viewport statistics"));
     connect(statistics, &QAction::toggled, preview, &RenderPreview::SetStatisticsVisible);
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
-    QAction* reference = new QAction(QStringLiteral("Reference…"), this);
+    QAction* reference = new QAction(GetEditorIcon(EditorIcon::ReferenceRender), QStringLiteral("Reference…"), this);
     reference->setToolTip(QStringLiteral("Render a path-traced reference image of this viewport's current camera "
                                          "with the renderer's RT1 progressive path tracer."));
-    InsertCommand(*controls, nullptr, *reference, QStringLiteral("viewportReference"))
-        .setAccessibleName(QStringLiteral("Open reference capture"));
+    QToolButton& referenceButton = InsertCommand(*controls, nullptr, *reference, QStringLiteral("viewportReference"));
+    referenceButton.setAccessibleName(QStringLiteral("Open reference capture"));
+    referenceButton.setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     connect(reference, &QAction::triggered, this, [this, preview]() {
         if (mState->ReferenceWindow.isNull() == true)
         {
@@ -1986,8 +2079,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     // Navigation help lives in a tooltip on the controls row instead of a line of its own,
     // so the rendered image keeps the height; clicking shows it without waiting for hover.
     // The overflow menu shows the full text when the button does not fit, where a bare "?" would not say what it is.
-    QAction* navigationHint = new QAction(QStringLiteral("Navigation help"), this);
-    navigationHint->setIconText(QStringLiteral("?"));
+    QAction* navigationHint = new QAction(GetEditorIcon(EditorIcon::Help), QStringLiteral("Navigation help"), this);
 #if defined(Q_OS_MACOS)
     navigationHint->setToolTip(QStringLiteral("Option-drag: orbit · Shift-Option-drag: pan · Scroll: zoom\n") +
                                toolTip());
@@ -1998,6 +2090,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QToolButton& navigationHintButton =
         InsertCommand(*controls, nullptr, *navigationHint, QStringLiteral("viewportNavigationHint"));
     navigationHintButton.setAccessibleName(QStringLiteral("Viewport navigation help"));
+    navigationHintButton.setToolButtonStyle(Qt::ToolButtonIconOnly);
     connect(navigationHint, &QAction::triggered, this, [controls, navigationHint, button = &navigationHintButton]() {
         // From the overflow menu the button is hidden, so the help opens below the toolbar's end instead.
         const QPoint anchor = button->isVisible() == true ? button->mapToGlobal(button->rect().bottomLeft())
@@ -2583,7 +2676,14 @@ bool PreviewViewport::tryActivateProblemChip(QPointF globalPosition)
     const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
     const QPointF local = getInteractionPosition(globalPosition) - QPointF(frame.topLeft());
     const QString fitted = FitOverlayText(mState->ShaderStatusText, static_cast<qreal>(frame.width()));
-    const QRectF chip(GetShaderStatusOrigin(mState->StatisticsText), MeasureStatistics(fitted));
+    const QSizeF chipSize =
+        MeasureStatistics(fitted, mState->HasShaderError == true ? OverlayKind::ErrorMessage : OverlayKind::Message);
+    PreviewLegend legend;
+    const bool hasLegend = TryGetPreviewLegend(Preview_->GetShading(), legend);
+    const QRectF chip(GetShaderStatusOrigin(QSizeF(frame.size()),
+                                            chipSize,
+                                            GetLegendReservedHeight(hasLegend == true ? &legend : nullptr)),
+                      chipSize);
     if (chip.contains(local) == false)
     {
         return false;

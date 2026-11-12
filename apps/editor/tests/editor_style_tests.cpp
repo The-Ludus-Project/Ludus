@@ -35,6 +35,7 @@
 #include <QSlider>
 #include <QStatusBar>
 #include <QStyle>
+#include <QStyleOption>
 #include <QStyleOptionComboBox>
 #include <QTabBar>
 #include <QTabWidget>
@@ -551,4 +552,64 @@ TEST_CASE("A focused list rings its current row, selected or not; an unfocused l
     elsewhere->setFocus(Qt::TabFocusReason);
     QApplication::processEvents();
     CHECK(ringPixels(2) == 0);
+}
+
+TEST_CASE("A ghost combo box draws no body at rest, and a toolbar separator is a short one-pixel rule",
+          "[editor][style][toolbar]")
+{
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    EditorStyle style;
+    style.Refresh();
+    QHBoxLayout* layout = new QHBoxLayout(&root);
+    QComboBox* ghost = new QComboBox(&root);
+    ghost->setProperty("visualRole", QStringLiteral("ghost"));
+    QComboBox* plain = new QComboBox(&root);
+    for (QComboBox* combo : {ghost, plain})
+    {
+        combo->addItem(QStringLiteral("Lit"));
+        combo->setStyle(&style);
+        combo->setFocusPolicy(Qt::NoFocus);
+        layout->addWidget(combo);
+    }
+    root.show();
+    QApplication::processEvents();
+    // The first pixel inside the edge, left of the text: the window shows through a ghost combo at rest.
+    constexpr int BODY_SAMPLE_X = 2;
+    const QColor window = root.palette().color(QPalette::Window);
+    const QImage ghostImage = RenderWidgetAtLogicalSize(*ghost);
+    const QImage plainImage = RenderWidgetAtLogicalSize(*plain);
+    CHECK(ghostImage.pixelColor(BODY_SAMPLE_X, ghostImage.height() / 2) == window);
+    CHECK(plainImage.pixelColor(BODY_SAMPLE_X, plainImage.height() / 2) != window);
+    for (QComboBox* combo : {ghost, plain})
+    {
+        combo->setStyle(nullptr);
+    }
+
+    // A separator in a horizontal toolbar is a vertical rule one pixel wide and 16 pixels tall, centred.
+    constexpr QSize SEPARATOR_AREA(8, 28);
+    constexpr int RULE_LENGTH = 16;
+    QImage separator(SEPARATOR_AREA, QImage::Format_ARGB32_Premultiplied);
+    separator.fill(Qt::black);
+    {
+        QPainter painter(&separator);
+        QStyleOption option;
+        option.rect = QRect(QPoint(0, 0), SEPARATOR_AREA);
+        option.state = QStyle::State_Horizontal;
+        style.drawPrimitive(QStyle::PE_IndicatorToolBarSeparator, &option, &painter, nullptr);
+    }
+    int ruleWidth = 0;
+    int ruleHeight = 0;
+    for (int x = 0; x < SEPARATOR_AREA.width(); ++x)
+    {
+        int columnPixels = 0;
+        for (int y = 0; y < SEPARATOR_AREA.height(); ++y)
+        {
+            columnPixels += separator.pixelColor(x, y) != QColor(Qt::black) ? 1 : 0;
+        }
+        ruleWidth += columnPixels > 0 ? 1 : 0;
+        ruleHeight = std::max(ruleHeight, columnPixels);
+    }
+    CHECK(ruleWidth == 1);
+    CHECK(ruleHeight == RULE_LENGTH);
 }

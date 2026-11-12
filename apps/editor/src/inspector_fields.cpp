@@ -71,8 +71,8 @@ constexpr int32 MAXIMUM_SLIDER_DECIMALS = 6;
 constexpr float64 DECIMAL_BASE = 10;
 /// Page Up and Page Down move the handle a tenth of its travel.
 constexpr int32 SLIDER_PAGE_COUNT = 10;
-constexpr int32 SLIDER_STRETCH = 3;
-constexpr int32 SLIDER_FIELD_STRETCH = 2;
+/// Narrowest a slider gets beside its number: enough travel to aim with a pointer.
+constexpr int32 SLIDER_MINIMUM_WIDTH = design::SPACING_PAGE + design::SPACING_LARGE;
 
 /// Nearest integer, halves away from zero.
 float64 RoundToInteger(float64 value)
@@ -161,6 +161,12 @@ QString FormatStoredNumber(float64 value)
 bool HasSliderRange(float64 minimum, float64 maximum)
 {
     return math::IsFinite(minimum) == true && math::IsFinite(maximum) == true && maximum > minimum;
+}
+
+bool ShouldUseSlider(float64 minimum, float64 maximum, const QString& unit)
+{
+    // Angles and distances are typed or scrubbed: a slider over ±360° or kilometres moves in jumps nobody can aim.
+    return HasSliderRange(minimum, maximum) == true && unit != QStringLiteral("°") && unit != QStringLiteral("m");
 }
 
 SliderMapping MakeSliderMapping(float64 minimum, float64 maximum, float64 step, bool isInteger)
@@ -298,12 +304,25 @@ QWidget* MakeSliderRow(QLineEdit& inoutField, const SliderMapping& mapping, QWid
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(design::SPACING_SMALL);
     inoutField.setParent(row);
-    SetNumberFieldMinimumWidth(inoutField);
-    inoutField.setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // The number keeps the width its value needs (never less than a short value such as the range's ends), and the
+    // slider fills the rest of the field column rather than shrinking to a stub beside a wide, mostly empty field.
+    const QString widestEnd =
+        FormatInspectorNumber(mapping.Minimum).size() > FormatInspectorNumber(mapping.Maximum).size()
+            ? FormatInspectorNumber(mapping.Minimum)
+            : FormatInspectorNumber(mapping.Maximum);
+    const auto fit = [&inoutField, widestEnd]() {
+        const int32 shortest = std::max(ComputeLineEditWidth(inoutField, NUMBER_FIELD_SAMPLE.toString()),
+                                        ComputeLineEditWidth(inoutField, widestEnd));
+        inoutField.setFixedWidth(std::max(shortest, ComputeLineEditWidth(inoutField, inoutField.text())));
+    };
+    fit();
+    QObject::connect(&inoutField, &QLineEdit::textChanged, &inoutField, fit);
+    inoutField.setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     BoundedSlider* slider = new BoundedSlider(inoutField, mapping, row);
     slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    layout->addWidget(slider, SLIDER_STRETCH);
-    layout->addWidget(&inoutField, SLIDER_FIELD_STRETCH);
+    slider->setMinimumWidth(SLIDER_MINIMUM_WIDTH);
+    layout->addWidget(slider, 1);
+    layout->addWidget(&inoutField, 0);
     return row;
 }
 
