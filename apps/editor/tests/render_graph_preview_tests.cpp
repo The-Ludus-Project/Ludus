@@ -626,10 +626,29 @@ TEST_CASE("RG3b editor reverse-Z camera yields a finite conventional view of the
     CHECK(GetDepth(conventional, farWorld) > nearDepth);
     CHECK(GetDepth(reverse, farWorld) < GetDepth(reverse, nearWorld));
 
+    // The World viewport's graph view keeps reverse-Z with the same finite far plane: the conventional view is
+    // exactly its w - z rewrite.
+    renderer::ViewDescription graph;
+    REQUIRE(viewport.DescribeGraphView(WIDTH, HEIGHT, graph, error) == true);
+    CHECK(graph.Depth == renderer::DepthConvention::ReverseZ);
+    CHECK(graph.InfiniteFar == false);
+    CHECK(graph.CameraPosition == reverse.CameraPosition);
+    for (usize column = 0; column < MATRIX_COLUMNS; ++column)
+    {
+        CHECK(graph.WorldToClip.At(0, column) == reverse.WorldToClip.At(0, column));
+        CHECK(graph.WorldToClip.At(1, column) == reverse.WorldToClip.At(1, column));
+        CHECK(graph.WorldToClip.At(3, column) == reverse.WorldToClip.At(3, column));
+        CHECK(conventional.WorldToClip.At(2, column) ==
+              graph.WorldToClip.At(3, column) - graph.WorldToClip.At(2, column));
+    }
+    CHECK(GetDepth(graph, farWorld) < GetDepth(graph, nearWorld));
+
     // A scene without geometry has no finite far plane; the output is preserved.
     RenderPreview empty;
     renderer::ViewDescription unchanged = conventional;
     CHECK(empty.DescribeConventionalView(WIDTH, HEIGHT, unchanged, error) == false);
+    CHECK(unchanged.WorldToClip == conventional.WorldToClip);
+    CHECK(empty.DescribeGraphView(WIDTH, HEIGHT, unchanged, error) == false);
     CHECK(unchanged.WorldToClip == conventional.WorldToClip);
 }
 

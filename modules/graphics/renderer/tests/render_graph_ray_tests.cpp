@@ -286,6 +286,8 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
         status = fixture.Graph.Poll();
     }
     REQUIRE(status == rhi::RasterStatus::Ready);
+    // Ray passes rebuild positions from conventional depth, so a reverse-Z camera is converted for this graph.
+    CHECK(fixture.Graph.CanUseReverseDepth() == false);
     fixture.Cameras[0].OrthographicCamera = true;
     const auto update = [&fixture](uint64 revision, bool hasItems = true) {
         renderer::RenderGraphReport report;

@@ -1101,7 +1101,9 @@ eight distinct callback sets across a package's configurations, and the existing
 mesh/item limits. Callback selection and invocation count are separate limits; switching
 configurations does not spend another invocation in the active plan. Multiple invocations or persistent buffers require the scene callback interface. It rejects native ray payloads, recursive tracing, additional hit groups,
 any-hit/intersection/callable stages, resources beyond the two persistent buffer slots and optional visibility/depth pair, masked/transparent or
-deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
+deformed geometry and infinite-far cameras. A finite reverse-Z camera is drawn with
+its exactly equivalent conventional camera, as described for the
+[World viewport preview](#preview-a-cooked-generation). Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
 4 GiB CPU and 6 GiB GPU limits on 64-bit hosts (2 GiB each on 32-bit hosts)
 across retained jobs; device storage limits can be tighter. The existing static opaque setup technique remains in the manifest
@@ -6184,14 +6186,14 @@ their distance from the receiver in the map. This reduces false self-shadowing
 on surfaces that the light reaches at a grazing angle. Opaque and alpha-masked
 scene geometry cast shadows.
 The resolve rebuilds each receiver from the depth buffer, so the receiver's
-position is uncertain along the view ray by the depth buffer's precision. A
-conventional float32 depth with a centimetre near plane loses centimetres tens
-of metres from the camera. The resolve derives that distance at each pixel from
-four units in the last place of the stored depth, and each comparison adds the
-depth it spans in the map and along the sampled caster's slope to the receiver
-bias. Distant receivers therefore shadow slightly later instead of showing
-dithered false shadows that change with the camera pose. A larger near plane
-keeps the allowance small.
+position is uncertain along the view ray by the depth buffer's precision. The
+resolve derives that distance at each pixel from four units in the last place of
+the stored depth, and each comparison adds the depth it spans in the map and
+along the sampled caster's slope to the receiver bias. The World viewport draws
+the default graph in reverse-Z depth, whose allowance stays at micrometres. A
+camera in conventional float32 depth with a centimetre near plane loses
+centimetres tens of metres away; there distant receivers shadow slightly later
+instead of showing dithered false shadows that change with the camera pose.
 The material pass clips shading normals to the camera-facing hemisphere on
 geometrically front-facing surfaces. This keeps smooth terrain ridges lit
 where an interpolated normal turns past the camera.
@@ -8519,9 +8521,10 @@ each authored object's schema tint into its cooked texture, so authored objects 
 a merged World render in their schema color. This static graph does not sample the
 texture or provide the former viewport's Lit material path.
 
-The runtime profile admits only conventional depth (near 0, far 1, `Less`, clear
-1). The World viewport's editor camera is an infinite reverse-Z perspective, so the
-preview asks for a finite conventional projection of the same camera instead:
+The runtime profile admits finite projections in either depth convention. The
+World viewport's editor camera is an infinite reverse-Z perspective, so the preview
+asks for a finite reverse-Z projection of the same camera
+(`RenderPreview::DescribeGraphView`):
 
 - An infinite perspective lens becomes a finite one whose far plane is 1% beyond
   the farthest corner of the World's geometry bounds from the camera (at least
@@ -8529,19 +8532,33 @@ preview asks for a finite conventional projection of the same camera instead:
   their planes. The viewport computes those bounds once, when a scene is
   published, so each camera change during navigation does not transform every
   vertex again.
-- The finite reverse-Z clip z is rewritten as `w - z`. This is exact only for a
-  finite projection; applied to an infinite one it would leave a degenerate far
-  plane at depth 1.
+- A graph whose passes are all raster scene passes outside the visibility codec,
+  or image operations, draws that camera in reverse-Z: depth clears to 0, opaque
+  geometry passes `Greater`, and colour after a depth prepass passes
+  `GreaterEqual`. The default graph, with or without its prepass, is such a graph;
+  `RenderGraph::CanUseReverseDepth` reports it. Float32 reverse-Z depth keeps a
+  relative precision near 2^-24 at every distance, so the deferred resolve
+  rebuilds a receiver 50 m or 120 m from the camera within micrometres. The same
+  camera in conventional depth with the editor's 1 cm near plane misses it by
+  centimetres.
+- Any other graph, with ray tracing passes or a visibility buffer, receives the
+  exactly equivalent conventional camera: `RenderGraph::Update` rewrites clip z
+  as `w - z` for the whole graph, so its depth targets and captures are
+  conventional. The rewrite is exact only for a finite projection; applied to an
+  infinite one it would leave a degenerate far plane at depth 1, so an
+  infinite-far camera is rejected as `Unsupported`. Conventional depth has less
+  precision far from the camera; distant coplanar surfaces can z-fight in such a
+  graph where the viewport does not.
 - Position, orientation, field of view, near plane and the clip x, y and w rows
-  are unchanged, so the image matches the viewport framing. Conventional depth
-  has less precision than reverse-Z far from the camera; distant coplanar
-  surfaces can z-fight in the preview where the viewport does not.
+  are unchanged, so the image matches the viewport framing.
 - A World without finite geometry bounds reports that in the preview status
   instead of drawing.
 
-Reverse-Z graphs are not admitted: that would need an authored and qualified graph
-configuration (depth compare `Greater`, clear 0), never an implicit variant of a
-conventional graph.
+An authored recipe's depth comparison names the conventional order. The Renderer
+prepares each raster program's mirrored reverse-Z pipelines (`Greater`,
+`GreaterEqual` after a prepass, and a reverse-Z depth prepass) together with the
+program, as it already does for the viewport's built-in drawing, so a reverse-Z
+camera needs no second graph configuration and no preparation on first use.
 
 The image changes only when a complete copy of a frame from the **active**
 generation arrives:

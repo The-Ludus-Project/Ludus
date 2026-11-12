@@ -275,9 +275,17 @@ public:
                                     foundation::uint32 height,
                                     graphics::renderer::ViewDescription& outView,
                                     QString& outError) const;
-    /// DescribeView for consumers that admit only DepthConvention::Conventional (the render-graph
-    /// runtime profile): the same camera, with an infinite perspective lens replaced by a finite
-    /// one whose far plane encloses the scene's geometry, and clip z rewritten as w - z.
+    /// DescribeView for the render-graph runtime profile, which admits only finite projections: the
+    /// same camera, with an infinite perspective lens replaced by a finite one whose far plane
+    /// encloses the scene's geometry, in the viewport's reverse-Z depth. RenderGraph keeps reverse-Z
+    /// where its passes allow, so positions rebuilt from depth stay precise far from the camera.
+    /// Needs no device. Failure (including a scene without geometry bounds) preserves outView.
+    [[nodiscard]] bool DescribeGraphView(foundation::uint32 width,
+                                         foundation::uint32 height,
+                                         graphics::renderer::ViewDescription& outView,
+                                         QString& outError) const;
+    /// DescribeGraphView for consumers that admit only DepthConvention::Conventional (the reference
+    /// tracer and raster captures compared with it): clip z is also rewritten as w - z.
     /// Needs no device. Failure (including a scene without geometry bounds) preserves outView.
     [[nodiscard]] bool DescribeConventionalView(foundation::uint32 width,
                                                 foundation::uint32 height,
@@ -427,6 +435,12 @@ Q_SIGNALS:
 private:
     [[nodiscard]] PreviewViewOptions makeViewOptions(foundation::uint32 width,
                                                      foundation::uint32 height) const noexcept;
+    /// Shared body of DescribeGraphView and DescribeConventionalView; failure preserves outView.
+    [[nodiscard]] bool describeFiniteView(foundation::uint32 width,
+                                          foundation::uint32 height,
+                                          bool shouldUseConventionalDepth,
+                                          graphics::renderer::ViewDescription& outView,
+                                          QString& outError) const;
     [[nodiscard]] bool beginNavigation();
     void navigationChanged();
     void invalidateView();

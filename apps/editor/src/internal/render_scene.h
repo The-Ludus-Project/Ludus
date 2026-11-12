@@ -139,14 +139,16 @@ struct PreviewViewOptions final
     const foundation::math::Vector3* OrbitCenter = nullptr;
     foundation::float32 OrbitRadius = 0;
     const gameplay::camera::CameraSample* EditorCameraOrNull = nullptr;
+    /// Replace an infinite perspective lens by a finite one whose far plane encloses the World's
+    /// geometry from the camera, keeping the viewport's reverse-Z depth. A loaded sky-only World
+    /// (no objects, an Atmosphere request) uses the minimum far distance; any other scene without
+    /// geometry bounds, including an unloaded one, fails.
+    bool ShouldUseFiniteFar = false;
     /// Produce DepthConvention::Conventional (near 0, far 1, Less) instead of the viewport's
-    /// reverse-Z. An infinite perspective lens is replaced by a finite one whose far plane
-    /// encloses the World's geometry from the camera, so clip z can be rewritten as w - z exactly.
-    /// A loaded sky-only World (no objects, an Atmosphere request) uses the minimum far distance;
-    /// any other scene without geometry bounds, including an unloaded one, fails.
+    /// reverse-Z. Implies ShouldUseFiniteFar, so clip z can be rewritten as w - z exactly.
     bool ShouldUseConventionalDepth = false;
     /// Optional precomputed TryGetBounds({}) result for this scene, borrowed for the call.
-    /// Conventional depth then bounds the far plane without transforming every vertex again.
+    /// A finite far plane is then bounded without transforming every vertex again.
     /// Null computes the bounds; a caller must not pass bounds of a different scene or transforms.
     const foundation::math::Aabb3* BoundsWorldOrNull = nullptr;
 };

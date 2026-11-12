@@ -1717,10 +1717,11 @@ bool RenderScene::View(const PreviewViewOptions& options, rr::ViewDescription& o
         position = pose.Translation;
         forward = math::Rotate(pose.Rotation, {0, 0, -1});
     }
-    if (options.ShouldUseConventionalDepth == true && projection.Kind == rr::ProjectionKind::PerspectiveInfinite)
+    const bool shouldUseFiniteFar = options.ShouldUseFiniteFar == true || options.ShouldUseConventionalDepth == true;
+    if (shouldUseFiniteFar == true && projection.Kind == rr::ProjectionKind::PerspectiveInfinite)
     {
-        // The conventional flip is exact only for a finite projection, so bound the far plane by
-        // the farthest corner of the World's geometry from this camera.
+        // The conventional flip is exact only for a finite projection, and the render graph admits only finite
+        // ones, so bound the far plane by the farthest corner of the World's geometry from this camera.
         math::Aabb3 boundsWorld;
         if (options.BoundsWorldOrNull != nullptr)
         {

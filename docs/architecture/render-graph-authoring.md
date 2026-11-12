@@ -941,10 +941,14 @@ unsupported and never establish depth coverage. The shipping policy rejects
 incomplete coverage while preserving the prior drawable extraction.
 
 The execution profile uses RGBA8, Depth32, one sample, conventional Less with
-depth writes and the Renderer’s six-location static instance interface. Within a
-material family, ColorAndDepth and DepthOnly share the exact geometry stage;
+depth writes and the Renderer’s six-location static instance interface. A finite
+reverse-Z camera draws the mirrored Greater comparison when every pass is a raster
+scene pass outside the visibility codec or an image operation
+(`RenderGraph::CanUseReverseDepth`), and the exactly equivalent conventional camera
+otherwise; see the [World viewport preview](../development/render-graph-authoring.md#preview-a-cooked-generation).
+Within a material family, ColorAndDepth and DepthOnly share the exact geometry stage;
 opaque depth fixtures qualify the authored void coverage function. Transparency,
-deformation, arbitrary vertex layouts, reverse-Z, imported images and
+deformation, arbitrary vertex layouts, infinite-far cameras, imported images and
 history remain explicit admission failures. Extent-only resize uses the staged
 resource/scene replacement described in the size workflow. Thus an exported depth graph is not
 automatically a compatible pre-Z for an arbitrary subsequent shading pass. No

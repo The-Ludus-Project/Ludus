@@ -1778,13 +1778,29 @@ bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescriptio
     outView = view;
     return true;
 }
+bool RenderPreview::DescribeGraphView(uint32 width,
+                                      uint32 height,
+                                      rr::ViewDescription& outView,
+                                      QString& outError) const
+{
+    return describeFiniteView(width, height, false, outView, outError);
+}
 bool RenderPreview::DescribeConventionalView(uint32 width,
                                              uint32 height,
                                              rr::ViewDescription& outView,
                                              QString& outError) const
 {
+    return describeFiniteView(width, height, true, outView, outError);
+}
+bool RenderPreview::describeFiniteView(uint32 width,
+                                       uint32 height,
+                                       bool shouldUseConventionalDepth,
+                                       rr::ViewDescription& outView,
+                                       QString& outError) const
+{
     PreviewViewOptions options = makeViewOptions(width, height);
-    options.ShouldUseConventionalDepth = true;
+    options.ShouldUseFiniteFar = true;
+    options.ShouldUseConventionalDepth = shouldUseConventionalDepth;
     rr::ViewDescription view;
     if (Scene_.View(options, view, outError) == false)
     {
