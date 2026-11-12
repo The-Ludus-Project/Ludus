@@ -73,6 +73,8 @@ constexpr int TOOL_BUTTON_MENU_INDICATOR_WIDTH = 16;
 constexpr int HEADER_PADDING = 4;
 constexpr int TOOL_BAR_SPACING = design::SPACING_EXTRA_SMALL;
 constexpr int SEPARATOR_EXTENT = 4;
+/// Height of the rule a toolbar separator draws between groups, in logical pixels.
+constexpr int TOOL_BAR_SEPARATOR_LENGTH = design::SPACING_LARGE;
 constexpr qreal HALF = 0.5;
 /// Window lightness (of 255) below which the application palette counts as dark.
 constexpr int DARK_LIGHTNESS_LIMIT = 128;
@@ -125,6 +127,13 @@ bool IsStyledPushButton(const QStyleOptionButton* buttonOrNull)
 bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* value)
 {
     return widgetOrNull != nullptr && widgetOrNull->property(name).toString() == QLatin1String(value);
+}
+
+/// Whether the control speaks the toolbar's "ghost" language (visual role "ghost"): no fill or edge at rest, the
+/// raised surface and control edge on hover or while open, so a row of menus and commands reads as one bar.
+bool IsGhostControl(const QWidget* widgetOrNull)
+{
+    return HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "ghost");
 }
 
 /// True when a control inside container takes focus with Tab.
@@ -567,6 +576,32 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
     {
         case PE_PanelButtonCommand: {
             const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+            if (IsGhostControl(widgetOrNull) == true)
+            {
+                const bool isPressed =
+                    option->state.testFlag(State_Sunken) == true || option->state.testFlag(State_On) == true;
+                if (isFocused == true && isEnabled == true)
+                {
+                    DrawControlBody(painter,
+                                    option->rect,
+                                    {
+                                        .Fill = isPressed == true ? mColours.Selected : mColours.Raised,
+                                        .Edge = mColours.Accent,
+                                    },
+                                    ringWidth);
+                }
+                else if (isPressed == true || isHovered == true)
+                {
+                    DrawControlBody(painter,
+                                    option->rect,
+                                    {
+                                        .Fill = isPressed == true ? mColours.Selected : mColours.Raised,
+                                        .Edge = mColours.Border,
+                                    },
+                                    edgeWidth);
+                }
+                return;
+            }
             if (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "segment") == true)
             {
                 const bool isSelected = option->state.testFlag(State_On);
@@ -702,6 +737,19 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             {
                 DrawControlBody(painter, option->rect, { .Fill = Qt::transparent, .Edge = mColours.Accent }, ringWidth);
             }
+            return;
+        }
+        case PE_IndicatorToolBarSeparator: {
+            // A short quiet rule between groups: visible on the workspace surface without competing with controls.
+            const bool isHorizontalBar = option->state.testFlag(State_Horizontal) == true;
+            const QRect& area = option->rect;
+            const int length =
+                std::min(TOOL_BAR_SEPARATOR_LENGTH, isHorizontalBar == true ? area.height() : area.width());
+            const QRect rule =
+                isHorizontalBar == true
+                    ? QRect(area.center().x(), area.center().y() - length / 2, CONTROL_EDGE_WIDTH, length)
+                    : QRect(area.center().x() - length / 2, area.center().y(), length, CONTROL_EDGE_WIDTH);
+            painter->fillRect(rule, mColours.SubtleBorder);
             return;
         }
         case PE_IndicatorCheckBox:
@@ -1044,7 +1092,18 @@ void EditorStyle::drawComplexControl(ComplexControl control,
         const QStyleOptionComboBox* combo = qstyleoption_cast<const QStyleOptionComboBox*>(option);
         if (combo != nullptr)
         {
-            if (combo->frame == true)
+            const bool isGhost = IsGhostControl(widgetOrNull);
+            const bool isOpenOrHovered =
+                option->state.testFlag(State_MouseOver) == true || option->state.testFlag(State_On) == true;
+            if (isGhost == true && isEnabled == true && (isRingShown == true || isOpenOrHovered == true))
+            {
+                DrawControlBody(
+                    painter,
+                    option->rect,
+                    { .Fill = mColours.Raised, .Edge = isRingShown == true ? mColours.Accent : mColours.Border },
+                    isRingShown == true ? GetFocusRingWidth() : GetEdgeWidth());
+            }
+            else if (combo->frame == true && isGhost == false)
             {
                 drawBody();
             }

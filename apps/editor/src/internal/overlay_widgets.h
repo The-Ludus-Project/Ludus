@@ -66,7 +66,7 @@ protected:
         painter.setPen(Qt::NoPen);
         painter.setBrush(
             QColor::fromRgba(WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), BACKGROUND_OPACITY)));
-        painter.drawRoundedRect(rect(), design::RADIUS_CONTROL, design::RADIUS_CONTROL);
+        painter.drawRoundedRect(rect(), design::RADIUS_GROUP, design::RADIUS_GROUP);
         painter.end();
         QLabel::paintEvent(event);
     }

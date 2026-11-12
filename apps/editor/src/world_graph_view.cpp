@@ -6,6 +6,7 @@
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include "internal/viewport_hud_text.h"
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
@@ -40,7 +41,7 @@ constexpr foundation::int32 DEBUG_VIEW_ROLE = Qt::UserRole + 1;
 } // namespace
 WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent)
     : QWidget(parent), mWorkspace(inoutWorkspace), mPreview(*inoutWorkspace.GetPreviewOrNull()),
-      mTargets(new QComboBox(this)), mStatus(new QLabel(this)), mStatistics(new HudLabel(this))
+      mTargets(new QComboBox(this)), mStatus(new QLabel(this)), mStatistics(new HudGridLabel(this))
 {
     setObjectName(QStringLiteral("worldGraphView"));
     setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -50,6 +51,8 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mTargets->setMinimumContentsLength(MINIMUM_TARGET_TEXT_CHARACTERS);
     mTargets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mTargets->setObjectName(QStringLiteral("worldGraphTargets"));
+    // The output choice sits in the viewport toolbar and speaks its quiet language.
+    mTargets->setProperty("visualRole", QStringLiteral("ghost"));
     mTargets->setAccessibleName(QStringLiteral("Render graph output"));
     mTargets->setToolTip(
         QStringLiteral("Final output and every render-graph attachment, then built-in debug views. A debug view "
@@ -127,6 +130,7 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
     layout->setSpacing(design::SPACING_SMALL);
     QComboBox* configurations = new QComboBox(controls);
     configurations->setObjectName(QStringLiteral("worldGraphConfigurations"));
+    configurations->setProperty("visualRole", QStringLiteral("ghost"));
     configurations->setAccessibleName(QStringLiteral("Render graph configuration"));
     configurations->setToolTip(QStringLiteral("Render graph configuration this viewport builds. Shown when the "
                                               "project graph defines more than one."));

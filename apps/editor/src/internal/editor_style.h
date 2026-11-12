@@ -20,7 +20,10 @@ inline constexpr int RECENT_PROJECT_ITEM_PADDING = 8;
 ///
 /// A widget opts into a variant with the "visualRole" dynamic property: "primary" (the accent action), "secondary"
 /// (a quieter label), "segment" (one button of a segmented control) or "toggle" (a checkable tool button that switches
-/// a mode, such as a viewport's Force raster: when on it fills with the accent, unlike a disclosure button).
+/// a mode, such as a viewport's Force raster: when on it fills with the accent, unlike a disclosure button) or "ghost"
+/// (a combo box or push button in a toolbar row: no fill or edge at rest, the raised surface and control edge on hover
+/// or while open, and the focus ring, so its menus read like the row's tool buttons). Toolbar separators are a short
+/// rule in the subtle border colour.
 ///
 /// The controls the editor draws itself (push and tool buttons, check boxes, group boxes and the tabs of a tab widget)
 /// take their geometry from the common style, not the platform one, so they look and measure the same everywhere. On

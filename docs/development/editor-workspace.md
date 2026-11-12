@@ -2392,16 +2392,23 @@ overlapping fragments. The debug view is saved like the other modes. Older
 preferences open in Solid.
 
 The **Stats** toolbar toggle overlays averaged frame statistics in the
-viewport's top-left corner:
+viewport's top-left corner. Each row is a quiet label and a right-aligned value in
+body type with tabular figures (`viewport_hud_text`), so numbers line up without a
+monospace font:
 
 - **GPU**: device timestamp time for the frame.
-- **CPU**: time spent preparing and submitting the frame.
-- **Resolution** and **draw count**.
+- **Editor CPU per frame**: time the editor spends preparing and submitting the frame.
+- **Image**: resolution and draw count.
 - **Passes**: the total GPU time of the named render scopes, then the six slowest
   scopes ("Viewport/Scene", the render-graph passes, and so on) with their rolling
   average in milliseconds. A bar behind each row shows its share of the slowest
-  pass, which is drawn in the warning colour; any further scopes collapse into one
+  pass. The slowest bar is drawn in the warning colour only when that pass takes
+  more than half of the passes' time (`ViewportPassBars::IsSlowestWarning`);
+  otherwise every bar uses the accent. Any further scopes collapse into one
   `+N more` row. The same rows appear in the graph viewer's overlay.
+
+Shader and render messages appear bottom-centre, above the legend, so they never
+cover the statistics. An error message carries a danger-coloured edge on its left.
 
 Per-pass timing uses the RHI's timestamp queries (`ArmGpuPassTimings`), which
 Vulkan and Metal implement. The queries are armed only while **Stats** is on (or
