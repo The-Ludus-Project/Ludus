@@ -418,7 +418,13 @@ TEST_CASE("Renderer controls and inspector remain reachable in a small styled Wo
     REQUIRE(distanceEditor != nullptr);
     CHECK(distance->isVisible() == true);
     CHECK(distanceEditor->height() >= distanceEditor->minimumSizeHint().height());
-    for (const QString& name : {QStringLiteral("worldViewportMenu"), QStringLiteral("worldApply")})
+    // Apply Changes appears with the first unapplied edit; it must then be reachable too.
+    QLineEdit* nameOrNull = world.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
+    REQUIRE(nameOrNull != nullptr);
+    QTest::keyClicks(nameOrNull, QStringLiteral("s"));
+    QApplication::processEvents();
+    for (const QString& name :
+         {QStringLiteral("worldViewportMenu"), QStringLiteral("worldAttach"), QStringLiteral("worldApply")})
     {
         QAbstractButton* controlOrNull = world.findChild<QAbstractButton*>(name);
         REQUIRE(controlOrNull != nullptr);

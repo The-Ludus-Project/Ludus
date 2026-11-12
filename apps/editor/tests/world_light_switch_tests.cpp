@@ -1,3 +1,4 @@
+#include "internal/inspector_section.h"
 #include "internal/level_workspace.h"
 #include "internal/light_switches.h"
 #include "internal/preview_lighting.h"
@@ -12,7 +13,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -485,14 +485,14 @@ TEST_CASE("Selecting a light shows its properties", "[editor][world][lighting][l
         workspace.Document().Entity(ceilingRow.EntityKeys.first()).value(QStringLiteral("name")).toString();
     REQUIRE(findName() != nullptr);
     CHECK(findName()->text() == ceilingName);
-    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldMaterial")) != nullptr);
+    CHECK(properties.findChild<InspectorSection*>(QStringLiteral("worldMaterial")) != nullptr);
     CHECK(panelOrNull->GetSelectedRowOrNull() != nullptr);
     CHECK(panelOrNull->GetSelectedRowOrNull()->Key == ceilingRow.Key);
 
     // An imported analytic light has no entity: the inspector shows its cooked values instead.
     SelectRow(*panelOrNull, point);
     CHECK(findName() == nullptr);
-    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldLight")) != nullptr);
+    CHECK(properties.findChild<InspectorSection*>(QStringLiteral("worldLight")) != nullptr);
     QLabel* intensityOrNull = properties.findChild<QLabel*>(QStringLiteral("worldLight:Intensity"));
     REQUIRE(intensityOrNull != nullptr);
     CHECK(intensityOrNull->text() == QStringLiteral("3, 1, 2 cd"));
@@ -502,13 +502,13 @@ TEST_CASE("Selecting a light shows its properties", "[editor][world][lighting][l
     // Switching it keeps the light selected and its properties shown, with the new state.
     SetRowChecked(*panelOrNull, point, false);
     CHECK(panelOrNull->GetSelectedRowOrNull() != nullptr);
-    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldLight")) != nullptr);
+    CHECK(properties.findChild<InspectorSection*>(QStringLiteral("worldLight")) != nullptr);
 
     // Selecting the emitter's entity elsewhere selects its light; another entity clears the light selection.
     REQUIRE(workspace.SelectEntity(ceilingRow.EntityKeys.first()) == true);
     REQUIRE(panelOrNull->GetSelectedRowOrNull() != nullptr);
     CHECK(panelOrNull->GetSelectedRowOrNull()->Key == ceilingRow.Key);
-    CHECK(properties.findChild<QGroupBox*>(QStringLiteral("worldLight")) == nullptr);
+    CHECK(properties.findChild<InspectorSection*>(QStringLiteral("worldLight")) == nullptr);
     QString floorKey;
     for (const QJsonValue value : workspace.Document().Draft().value(QStringLiteral("entities")).toArray())
     {

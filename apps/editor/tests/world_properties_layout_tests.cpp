@@ -1,17 +1,20 @@
 #include "internal/controller.h"
 #include "internal/inspector_fields.h"
+#include "internal/inspector_section.h"
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <QAbstractButton>
+#include <QAction>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QGroupBox>
+#include <QFormLayout>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -20,6 +23,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSettings>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTest>
@@ -102,13 +106,11 @@ void AttachComponent(QWidget& inoutProperties, const QString& component)
     REQUIRE(attachOrNull != nullptr);
     REQUIRE(QTest::qWaitFor([attachOrNull]() { return attachOrNull->isEnabled() == true; },
                             SETTLE_TIMEOUT_MILLISECONDS) == true);
-    QComboBox* choicesOrNull = inoutProperties.findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
-    REQUIRE(choicesOrNull != nullptr);
-    const int32 index = choicesOrNull->findData(component);
-    REQUIRE(index >= 0);
-    choicesOrNull->setCurrentIndex(index);
-    attachOrNull->click();
-    REQUIRE(choicesOrNull->findData(component) < 0);
+    const QString name = QStringLiteral("worldAttach:") + component;
+    QAction* choiceOrNull = inoutProperties.findChild<QAction*>(name);
+    REQUIRE(choiceOrNull != nullptr);
+    choiceOrNull->trigger();
+    REQUIRE(inoutProperties.findChild<QAction*>(name) == nullptr);
 }
 
 QString Describe(const QWidget& widget)
@@ -175,8 +177,14 @@ void CheckNothingClipped(const QWidget& panel)
         CHECK(onPanel.left() >= 0);
         CHECK(onPanel.right() <= panel.width() - 1);
         const ElidedLabel* elidedOrNull = qobject_cast<const ElidedLabel*>(widget);
+        const InspectorLabel* inspectorLabelOrNull = qobject_cast<const InspectorLabel*>(widget);
         const QLabel* labelOrNull = qobject_cast<const QLabel*>(widget);
-        if (elidedOrNull != nullptr)
+        if (inspectorLabelOrNull != nullptr && inspectorLabelOrNull->IsElided() == true)
+        {
+            // A label shortened by the shared column keeps its whole text in the tooltip.
+            CHECK(inspectorLabelOrNull->toolTip() == inspectorLabelOrNull->text());
+        }
+        else if (elidedOrNull != nullptr)
         {
             if (elidedOrNull->IsElided() == true)
             {
@@ -216,7 +224,7 @@ void CheckNothingClipped(const QWidget& panel)
         {
             CHECK(widget->width() >= widget->sizeHint().width());
         }
-        if (qobject_cast<const QGroupBox*>(widget) != nullptr)
+        if (qobject_cast<const InspectorSection*>(widget) != nullptr)
         {
             CHECK(widget->width() >= widget->minimumSizeHint().width());
             if (widget->hasHeightForWidth() == true)
@@ -283,7 +291,7 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     QLineEdit* redOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:renderable/r"));
     REQUIRE(redOrNull != nullptr);
     redOrNull->setText(QStringLiteral("0.818579"));
-    REQUIRE(dock.findChild<QGroupBox*>(QStringLiteral("worldMaterial")) != nullptr);
+    REQUIRE(dock.findChild<InspectorSection*>(QStringLiteral("worldMaterial")) != nullptr);
     REQUIRE(dock.findChild<QLineEdit*>(QStringLiteral("worldField:scene/position2")) != nullptr);
     REQUIRE(dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sz")) != nullptr);
     const QScrollArea* scrollOrNull = dock.findChild<QScrollArea*>(QStringLiteral("worldInspectorScroll"));
@@ -304,7 +312,7 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
                       {
                           return false;
                       }
-                      for (const QGroupBox* group : dock.findChildren<QGroupBox*>())
+                      for (const InspectorSection* group : dock.findChildren<InspectorSection*>())
                       {
                           if (group->isVisible() == true && group->hasHeightForWidth() == true &&
                               group->height() < group->heightForWidth(group->width()))
@@ -325,5 +333,146 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
                         shots.filePath(QStringLiteral("properties-%1.png").arg(width))) == true);
         }
     }
+    // Apply and Reset appear only with unapplied edits, and say how many fields changed.
+    const QWidget* footerOrNull = dock.findChild<QWidget*>(QStringLiteral("worldCommitFooter"));
+    const QLabel* summaryOrNull = dock.findChild<QLabel*>(QStringLiteral("worldPendingSummary"));
+    REQUIRE(footerOrNull != nullptr);
+    REQUIRE(summaryOrNull != nullptr);
+    CHECK(footerOrNull->isVisible() == false);
+    QLineEdit* scaleOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sz"));
+    REQUIRE(scaleOrNull != nullptr);
+    scaleOrNull->selectAll();
+    QTest::keyClicks(scaleOrNull, QStringLiteral("2"));
+    CHECK(footerOrNull->isVisible() == true);
+    // Reset brings back the applied values (including the long red typed above) and hides the footer again.
+    QPushButton* resetOrNull = dock.findChild<QPushButton*>(QStringLiteral("worldReset"));
+    REQUIRE(resetOrNull != nullptr);
+    resetOrNull->click();
+    CHECK(footerOrNull->isVisible() == false);
+    scaleOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sz"));
+    REQUIRE(scaleOrNull != nullptr);
+    scaleOrNull->selectAll();
+    QTest::keyClicks(scaleOrNull, QStringLiteral("2"));
+    CHECK(summaryOrNull->text() == QStringLiteral("1 unapplied change"));
+    QLineEdit* greenOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:renderable/g"));
+    REQUIRE(greenOrNull != nullptr);
+    greenOrNull->selectAll();
+    QTest::keyClicks(greenOrNull, QStringLiteral("0.5"));
+    CHECK(summaryOrNull->text() == QStringLiteral("2 unapplied changes"));
+    // The edits preview in the viewport first; Reset is available again once that preview has settled.
+    REQUIRE(QTest::qWaitFor([resetOrNull]() { return resetOrNull->isEnabled() == true; },
+                            SETTLE_TIMEOUT_MILLISECONDS) == true);
+    resetOrNull->click();
+    CHECK(footerOrNull->isVisible() == false);
     workspace.StopPreview();
+}
+
+TEST_CASE("Properties sections share one label column and stack together when the dock is narrow",
+          "[editor][world][inspector][layout]")
+{
+    QWidget root;
+    QVBoxLayout* rootLayout = new QVBoxLayout(&root);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    // A dock can be narrower than its content asks for; the column must cope rather than the window grow.
+    rootLayout->setSizeConstraint(QLayout::SetNoConstraint);
+    InspectorLabelColumn* column = new InspectorLabelColumn(root);
+    InspectorSection* transform = new InspectorSection(QStringLiteral("Transform"), QString(), &root);
+    QFormLayout* transformRows = new QFormLayout(&transform->GetFields());
+    ConfigureInspectorForm(*transformRows);
+    QLineEdit* x = new QLineEdit(QStringLiteral("0.25"), &transform->GetFields());
+    InspectorLabel& xLabel = AddInspectorRow(*transformRows, QStringLiteral("X"), *x);
+    InspectorSection* light = new InspectorSection(QStringLiteral("Light"), QString(), &root);
+    QFormLayout* lightRows = new QFormLayout(&light->GetFields());
+    ConfigureInspectorForm(*lightRows);
+    QLineEdit* angle = new QLineEdit(QStringLiteral("25"), &light->GetFields());
+    InspectorLabel& angleLabel =
+        AddInspectorRow(*lightRows, QStringLiteral("Outer half angle of the spot cone in degrees"), *angle);
+    QCheckBox* enabled = new QCheckBox(&light->GetFields());
+    InspectorLabel& enabledLabel = AddInspectorRow(*lightRows, QStringLiteral("Enabled"), *enabled);
+    rootLayout->addWidget(transform);
+    rootLayout->addWidget(light);
+    rootLayout->addStretch();
+    root.resize(WIDE_DOCK_WIDTH, DOCK_HEIGHT);
+    root.show();
+    column->Update();
+    QTest::qWait(0);
+
+    // One column: a short label in one section and a long one in another start and end at the same place.
+    CHECK(column->IsStacked() == false);
+    CHECK(xLabel.width() == column->GetLabelWidth());
+    CHECK(angleLabel.width() == column->GetLabelWidth());
+    CHECK(xLabel.mapTo(&root, QPoint(0, 0)).x() == angleLabel.mapTo(&root, QPoint(0, 0)).x());
+    CHECK(x->mapTo(&root, QPoint(0, 0)).x() == angle->mapTo(&root, QPoint(0, 0)).x());
+    // The long label shortens at its end and keeps the whole text in its tooltip.
+    CHECK(angleLabel.IsElided() == true);
+    CHECK(angleLabel.toolTip() == angleLabel.text());
+    // The check box sits in the field column on its label's row, and clicking the label toggles it.
+    CHECK(enabledLabel.isVisible() == true);
+    CHECK(enabled->text().isEmpty() == true);
+    CHECK(enabled->mapTo(&root, QPoint(0, 0)).x() == angle->mapTo(&root, QPoint(0, 0)).x());
+    QTest::mouseClick(&enabledLabel, Qt::LeftButton);
+    CHECK(enabled->isChecked() == true);
+
+    // Too narrow for a number beside the column: every section puts its labels above its fields at once.
+    root.resize(column->GetLabelWidth(), DOCK_HEIGHT);
+    column->Update();
+    QTest::qWait(0);
+    CHECK(column->IsStacked() == true);
+    CHECK(transformRows->rowWrapPolicy() == QFormLayout::WrapAllRows);
+    CHECK(lightRows->rowWrapPolicy() == QFormLayout::WrapAllRows);
+    // A check box never sits alone under its label: it carries the label beside the box instead.
+    CHECK(enabledLabel.isHidden() == true);
+    CHECK(enabled->text() == QStringLiteral("Enabled"));
+
+    root.resize(WIDE_DOCK_WIDTH, DOCK_HEIGHT);
+    column->Update();
+    CHECK(column->IsStacked() == false);
+    CHECK(enabledLabel.isHidden() == false);
+    CHECK(enabled->text().isEmpty() == true);
+}
+
+TEST_CASE("A Properties section folds away, keeps that state and offers its actions in one menu",
+          "[editor][world][inspector][layout]")
+{
+    const QString key = QStringLiteral("r9-layout-test-section");
+    QSettings().remove(QStringLiteral("inspector/collapsedSections/") + key);
+    {
+        InspectorSection section(QStringLiteral("Light"), key, nullptr);
+        section.SetIcon(EditorIcon::Lighting);
+        section.SetHelp(QStringLiteral("Authored photometric light. Point and spot lights use candela; directional "
+                                       "lights use lux at the surface they face."));
+        QAction& remove = section.AddMenuAction(QStringLiteral("Remove Component"), QStringLiteral("removeIt"));
+        QFormLayout* rows = new QFormLayout(&section.GetFields());
+        rows->addRow(QStringLiteral("Range"), new QLineEdit(QStringLiteral("10"), &section.GetFields()));
+        section.resize(NARROW_DOCK_WIDTH, DOCK_HEIGHT);
+        section.show();
+        QTest::qWait(0);
+        CHECK(section.findChild<QAction*>(QStringLiteral("removeIt")) == &remove);
+        const QWidget* menuOrNull = section.findChild<QWidget*>(QStringLiteral("inspectorSectionMenu"));
+        REQUIRE(menuOrNull != nullptr);
+        CHECK(menuOrNull->isVisible() == true);
+        // The help is one caption line; "More" shows all of it.
+        const InspectorLabel* helpOrNull = section.findChild<InspectorLabel*>(QStringLiteral("inspectorSectionHelp"));
+        REQUIRE(helpOrNull != nullptr);
+        CHECK(helpOrNull->IsElided() == true);
+        QAbstractButton* moreOrNull = section.findChild<QAbstractButton*>(QStringLiteral("inspectorSectionMore"));
+        REQUIRE(moreOrNull != nullptr);
+        CHECK(moreOrNull->isVisible() == true);
+        moreOrNull->click();
+        QTest::qWait(0);
+        CHECK(section.IsHelpExpanded() == true);
+        CHECK(helpOrNull->wordWrap() == true);
+        // Folding hides the fields and is remembered for the next section with the same key.
+        QAbstractButton* toggleOrNull = section.findChild<QAbstractButton*>(QStringLiteral("inspectorSectionToggle"));
+        REQUIRE(toggleOrNull != nullptr);
+        toggleOrNull->click();
+        CHECK(section.IsCollapsed() == true);
+        CHECK(section.GetFields().isVisible() == false);
+    }
+    {
+        InspectorSection again(QStringLiteral("Light"), key, nullptr);
+        CHECK(again.IsCollapsed() == true);
+        again.SetCollapsed(false);
+    }
+    CHECK(QSettings().contains(QStringLiteral("inspector/collapsedSections/") + key) == false);
 }
