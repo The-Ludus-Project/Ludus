@@ -231,6 +231,7 @@ endif()
 include(EngineDependencyPreflight)
 
 include(EngineTestDiagnostics)
+include(EngineTestFiles)
 
 add_subdirectory(modules/foundation/base)
 if(LUDUS_SHADER_WORKER_ONLY)

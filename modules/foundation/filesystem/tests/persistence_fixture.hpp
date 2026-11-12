@@ -1,16 +1,19 @@
 #pragma once
 
 #include <ludus/foundation/filesystem/persistence.hpp>
+#include <ludus/foundation/strings/string.hpp>
+
+#include "test_files.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <string_view>
 
 #include <unistd.h>
+
+// Host file operations go through ludus_test_files, so including this fixture
+// does not parse <filesystem> (docs/development/build-profiling.md).
 
 namespace filesystem_fixture
 {
@@ -22,43 +25,44 @@ struct Fixture final
     Fixture()
     {
         REQUIRE(::mkdtemp(Root) != nullptr);
-        std::filesystem::create_directory(std::filesystem::path(Root) / "nested");
+        REQUIRE(ludus::test_support::CreateDirectories(Path("nested")) == true);
     }
-    // Best-effort temporary-directory cleanup: only std::filesystem::path allocation
-    // can throw, and bad_alloc terminating the test process is acceptable here.
-    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~Fixture()
     {
-        std::error_code ignored;
-        std::filesystem::remove_all(Root, ignored);
+        static_cast<void>(ludus::test_support::RemoveTree(Root));
     }
-    [[nodiscard]] std::filesystem::path Path(std::string_view name) const
+    [[nodiscard]] std::string Path(std::string_view name) const
     {
-        return std::filesystem::path(Root) / name;
+        std::string path(Root);
+        path.push_back('/');
+        path.append(name);
+        return path;
     }
     void Write(const char* name, std::string_view data) const
     {
-        std::ofstream stream(Path(name), std::ios::binary);
-        stream.write(data.data(), static_cast<std::streamsize>(data.size()));
-        stream.close();
-        REQUIRE(stream.good());
+        REQUIRE(ludus::test_support::WriteFile(Path(name),
+                                               {reinterpret_cast<const uint8*>(data.data()), data.size()}) == true);
     }
     [[nodiscard]] std::string Read(std::string_view name) const
     {
-        std::ifstream stream(Path(name), std::ios::binary);
-        REQUIRE(stream.good());
-        return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+        String bytes;
+        REQUIRE(ludus::test_support::ReadFile(Path(name), bytes) == true);
+        return std::string(bytes.GetView());
     }
     [[nodiscard]] usize Temporaries() const
     {
         usize count = 0;
-        for (const auto& entry : std::filesystem::directory_iterator(Path("nested")))
-        {
-            if (entry.path().filename().string().starts_with(".ludus-write-"))
-            {
-                ++count;
-            }
-        }
+        const ludus::test_support::DirectoryEntryVisitor countTemporary =
+            [](const ludus::test_support::DirectoryEntry& entry, void* context) noexcept {
+                if (entry.Name.starts_with(".ludus-write-") == true)
+                {
+                    ++*static_cast<usize*>(context);
+                }
+            };
+        REQUIRE(ludus::test_support::VisitDirectory(Path("nested"),
+                                                    ludus::test_support::DirectoryWalk::Immediate,
+                                                    countTemporary,
+                                                    &count) == true);
         return count;
     }
 };

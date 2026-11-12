@@ -1,33 +1,34 @@
 #pragma once
 
 // Portable fresh scratch directory for the scene cooker tests (Linux, macOS and
-// Windows). Test-only code: failure throws, which Catch2 reports.
+// Windows). Test-only code: failure is a Catch2 assertion. Host file operations
+// go through ludus_test_files, so this header does not parse <filesystem>
+// (docs/development/build-profiling.md).
 
-#include <ludus/foundation/base/types.h>
+#include <ludus/foundation/strings/string.hpp>
 
-#include <filesystem>
-#include <random>
-#include <stdexcept>
+#include "test_files.hpp"
+
+#include <catch2/catch_test_macros.hpp>
 #include <string>
 #include <string_view>
 
 namespace ludus::scene_cook_tests
 {
 /// Create a new, empty directory named prefix-<random> in the system temporary directory.
-inline std::filesystem::path MakeScratchDirectory(std::string_view prefix)
+inline std::string MakeScratchDirectory(std::string_view prefix)
 {
-    constexpr foundation::core::uint32 MAX_ATTEMPTS = 64;
-    std::random_device entropy;
-    const std::filesystem::path parent = std::filesystem::temp_directory_path();
-    for (foundation::core::uint32 attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
-    {
-        const foundation::core::uint32 suffix = entropy();
-        const std::filesystem::path candidate = parent / (std::string(prefix) + "-" + std::to_string(suffix));
-        if (std::filesystem::create_directory(candidate) == true)
-        {
-            return candidate;
-        }
-    }
-    throw std::runtime_error("could not create a fresh scratch directory");
+    foundation::String path;
+    REQUIRE(test_support::CreateScratchDirectory(prefix, path) == true);
+    return std::string(path.GetView());
+}
+
+/// `base` followed by a `/` separator and `relative`; `/` is accepted on every host.
+inline std::string JoinPath(std::string_view base, std::string_view relative)
+{
+    std::string path(base);
+    path.push_back('/');
+    path.append(relative);
+    return path;
 }
 } // namespace ludus::scene_cook_tests
