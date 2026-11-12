@@ -479,6 +479,18 @@ The ARM sequence can increase total batch duration. A platform-wide shortage
 can still require retrying a job whose annotations show that it failed to acquire
 a runner.
 
+The native, sanitizer, and nightly analysis jobs prepare the Qt Editor with
+`init.sh --with-editor --configure-editor-only`. Each job builds the Editor in
+its own qualification configuration, includes the Behavior provider in the
+same build, and runs the provider's CTest cases from the resulting tree.
+The locked Conan install can reuse compatible packages from another macOS cache
+when its own cache misses. Both qualification jobs save compiler outputs after
+a successful build even if a later test fails, so the next candidate can reuse
+the compiled objects. Compare setup plus build time when evaluating changes to
+this sequence. The **macOS native backends and diagnostics** job uploads JUnit
+results from its native CTest suite, including individual case times on test
+failures.
+
 Native viewport scheduling acceptance requires presentation and camera input to
 advance in each of three consecutive one-second windows while input stays active.
 An initial idle window confirms that the native viewport is presenting. A separate
