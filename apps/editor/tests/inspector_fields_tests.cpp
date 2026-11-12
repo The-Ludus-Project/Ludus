@@ -26,11 +26,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::editor;
+using ludus::foundation::float32;
 using ludus::foundation::float64;
 using ludus::foundation::int32;
 
 namespace
 {
+/// Latitude and longitude as a World file stores them after a float32 round trip.
+constexpr float64 STORED_LATITUDE = 43.46527099609375;
+constexpr float64 STORED_LONGITUDE = -80.52229309082031;
 constexpr float64 DEGREE_SCRUB_STEP = 1.0;
 constexpr float64 COLOUR_SCRUB_STEP = 0.005;
 constexpr float64 METRE_SCRUB_STEP = 0.01;
@@ -341,6 +345,13 @@ TEST_CASE("Inspector numbers show their shortest exact text", "[editor][inspecto
     // The text reads back as exactly the same number.
     const float64 sum = 0.1 + 0.2;
     CHECK(FormatInspectorNumber(sum).toDouble() == sum);
+    // A stored float32 round trip shows its float32 text, not every binary digit of the double, and that text reads
+    // back as the same float32. The stored text keeps every digit for the tooltip.
+    CHECK(FormatInspectorNumber(STORED_LATITUDE) == QStringLiteral("43.46527"));
+    CHECK(FormatInspectorNumber(STORED_LONGITUDE) == QStringLiteral("-80.52229"));
+    CHECK(static_cast<float32>(FormatInspectorNumber(STORED_LATITUDE).toDouble()) ==
+          static_cast<float32>(STORED_LATITUDE));
+    CHECK(FormatStoredNumber(STORED_LATITUDE) == QStringLiteral("43.46527099609375"));
 }
 
 TEST_CASE("A slider is linear over narrow ranges and logarithmic over wide ones", "[editor][inspector]")

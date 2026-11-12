@@ -76,6 +76,7 @@
 #include <QSplitter>
 #include <QStringList>
 #include <QStringView>
+#include <QStyle>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -90,6 +91,10 @@ namespace
 /// Room in a recovery envelope for its header line and SHA-256 hex digest line.
 constexpr foundation::int64 MAX_RECOVERY_HEADER_BYTES = 256;
 /// The entity list never shrinks below a few rows, and entities take more of the column than lights (parts of 5).
+/// Side of a texture's swatch in a material row: an icon with a little room around it.
+constexpr foundation::int32 MATERIAL_SWATCH_EXTENT = design::SPACING_LARGE + design::SPACING_SMALL;
+/// Characters of a reference key shown after a label that two entries share ("Sun · ae99").
+constexpr qsizetype REFERENCE_DISAMBIGUATOR_LENGTH = 4;
 /// Inclusive limits of a scene instance's saved position (metres), rotation (degrees) and scale.
 /// Axes in a transform or colour row: X, Y and Z, or red, green and blue.
 constexpr qsizetype VECTOR_COMPONENT_COUNT = 3;
@@ -233,6 +238,101 @@ QWidget* GetFormRowWidget(const QFormLayout& rows, QWidget* field)
         }
     }
     return field;
+}
+/// Applies a component's schema "when" and "unit_for" hints: a row shows only while its sibling enum holds one of the
+/// listed choices, and a label's unit follows that enum ("Intensity (cd)" for a point light, "(lx)" for a directional
+/// one). Hidden rows keep their fields, so Apply writes their authored values back unchanged.
+void ConfigureConditionalFields(QFormLayout& inoutRows,
+                                const QJsonObject& component,
+                                const QMap<QString, QWidget*>& fields,
+                                const std::function<void()>& relayout)
+{
+    struct ConditionalRow final
+    {
+        QWidget* Field;
+        QString Label;
+        QComboBox* VisibleSelectorOrNull;
+        QStringList VisibleChoices;
+        QComboBox* UnitSelectorOrNull;
+        QJsonObject Units;
+    };
+    const QString componentId = component.value(QStringLiteral("id")).toString();
+    QVector<ConditionalRow> conditionalRows;
+    QSet<QComboBox*> selectors;
+    const auto findSelector = [&fields, &componentId](const QJsonObject& condition) -> QComboBox* {
+        if (condition.isEmpty() == true)
+        {
+            return nullptr;
+        }
+        return qobject_cast<QComboBox*>(fields.value(FieldKey(componentId, condition.begin().key())));
+    };
+    for (const QJsonValue value : component.value(QStringLiteral("properties")).toArray())
+    {
+        const QJsonObject property = value.toObject();
+        const QJsonObject when = property.value(QStringLiteral("when")).toObject();
+        const QJsonObject unitFor = property.value(QStringLiteral("unit_for")).toObject();
+        QWidget* fieldOrNull = fields.value(FieldKey(componentId, property.value(QStringLiteral("id")).toString()));
+        if ((when.isEmpty() == true && unitFor.isEmpty() == true) || fieldOrNull == nullptr)
+        {
+            continue;
+        }
+        ConditionalRow row
+        {
+            .Field = fieldOrNull,
+            .Label = property.value(QStringLiteral("label")).toString(),
+            .VisibleSelectorOrNull = findSelector(when),
+            .VisibleChoices = {},
+            .UnitSelectorOrNull = findSelector(unitFor),
+            .Units = unitFor.isEmpty() == true ? QJsonObject() : unitFor.begin().value().toObject(),
+        };
+        if (when.isEmpty() == false)
+        {
+            for (const QJsonValue choice : when.begin().value().toArray())
+            {
+                row.VisibleChoices.append(choice.toString());
+            }
+        }
+        for (QComboBox* selectorOrNull : {row.VisibleSelectorOrNull, row.UnitSelectorOrNull})
+        {
+            if (selectorOrNull != nullptr)
+            {
+                selectors.insert(selectorOrNull);
+            }
+        }
+        conditionalRows.append(row);
+    }
+    if (conditionalRows.isEmpty() == true)
+    {
+        return;
+    }
+    const auto update = [&inoutRows, conditionalRows, relayout]() {
+        for (const ConditionalRow& row : conditionalRows)
+        {
+            QWidget* rowWidget = GetFormRowWidget(inoutRows, row.Field);
+            if (row.VisibleSelectorOrNull != nullptr)
+            {
+                inoutRows.setRowVisible(
+                    rowWidget,
+                    row.VisibleChoices.contains(row.VisibleSelectorOrNull->currentData().toString()));
+            }
+            QLabel* labelOrNull = qobject_cast<QLabel*>(inoutRows.labelForField(rowWidget));
+            if (row.UnitSelectorOrNull != nullptr && labelOrNull != nullptr)
+            {
+                const QString unit = row.Units.value(row.UnitSelectorOrNull->currentData().toString()).toString();
+                const QString title =
+                    unit.isEmpty() == true ? row.Label : QStringLiteral("%1 (%2)").arg(row.Label, unit);
+                labelOrNull->setText(title);
+                // The label column may shorten the title, so its tooltip keeps the whole one.
+                labelOrNull->setToolTip(title);
+            }
+        }
+        relayout();
+    };
+    for (QComboBox* selector : selectors)
+    {
+        QObject::connect(selector, &QComboBox::currentIndexChanged, selector, update);
+    }
+    update();
 }
 bool TryParseEarthCoordinate(const QLineEdit& field, foundation::float64& outCoordinate)
 {
@@ -1851,20 +1951,24 @@ void WorldWorkspace::addLightGroup(const WorldLightRow& row)
     help->setTextFormat(Qt::PlainText);
     help->setWordWrap(true);
     rows->addRow(help);
-    AddInspectorRow(*rows, QStringLiteral("Name"), *new QLabel(row.Label, group));
+    QLabel* name = new QLabel(row.Label, group);
+    MarkReadOnlyValue(*name);
+    AddInspectorRow(*rows, QStringLiteral("Name"), *name);
     QString state = row.IsEnabled == true ? QStringLiteral("On") : QStringLiteral("Off");
     if (row.Origin == WorldLightOrigin::Missing)
     {
         state = QStringLiteral("Off (missing from the scene)");
     }
-    AddInspectorRow(*rows, QStringLiteral("Switch"), *new QLabel(state, group));
+    QLabel* switchState = new QLabel(state, group);
+    MarkReadOnlyValue(*switchState);
+    AddInspectorRow(*rows, QStringLiteral("Switch"), *switchState);
     for (const WorldLightProperty& property : row.Properties)
     {
         QLabel* value = new QLabel(property.Value, group);
         value->setObjectName(QStringLiteral("worldLight:") + property.Label);
         value->setTextFormat(Qt::PlainText);
         value->setWordWrap(true);
-        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        MarkReadOnlyValue(*value);
         AddInspectorRow(*rows, property.Label, *value);
     }
     Inspector_->addWidget(section);
@@ -1923,8 +2027,8 @@ void WorldWorkspace::addMaterialGroup()
         else
         {
             value->setWordWrap(true);
-            value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         }
+        MarkReadOnlyValue(*value);
         if (property.Swatch.isValid() == false && property.Thumbnail.isNull() == true)
         {
             AddInspectorRow(*rows, property.Label, *value);
@@ -1942,7 +2046,15 @@ void WorldWorkspace::addMaterialGroup()
         {
             QLabel* thumbnail = new QLabel(row);
             thumbnail->setObjectName(QStringLiteral("worldMaterialThumbnail:") + property.Label);
-            thumbnail->setPixmap(QPixmap::fromImage(property.Thumbnail));
+            // Swatch-sized beside its text: what the texture looks like at a glance, not a large square.
+            const qreal pixelRatio = thumbnail->devicePixelRatioF();
+            QPixmap swatch = QPixmap::fromImage(
+                property.Thumbnail.scaled(QSize(MATERIAL_SWATCH_EXTENT, MATERIAL_SWATCH_EXTENT) * pixelRatio,
+                                          Qt::KeepAspectRatio,
+                                          Qt::SmoothTransformation));
+            swatch.setDevicePixelRatio(pixelRatio);
+            thumbnail->setPixmap(swatch);
+            thumbnail->setToolTip(property.Value);
             thumbnail->setAccessibleName(property.Label + QStringLiteral(" preview"));
             rowLayout->addWidget(thumbnail);
         }
@@ -2918,6 +3030,13 @@ void WorldWorkspace::RenderInspector()
                     const auto candidates = type == QStringLiteral("entity")
                                                 ? Document_.Draft().value(QStringLiteral("entities")).toArray()
                                                 : Document_.Schema().value(QStringLiteral("assets")).toArray();
+                    struct ReferenceChoice final
+                    {
+                        QString Label;
+                        QString Key;
+                    };
+                    QVector<ReferenceChoice> references;
+                    QHash<QString, foundation::int32> labelCounts;
                     for (const auto candidate : candidates)
                     {
                         const auto entry = candidate.toObject();
@@ -2931,20 +3050,41 @@ void WorldWorkspace::RenderInspector()
                             continue;
                         }
                         const bool isEntity = type == QStringLiteral("entity");
-                        // Entity references store the entity key (a version-2 UUID) and show its label.
+                        // Entity references store the entity key (a version-2 UUID); assets store their id. Both
+                        // show the name a person gave them, and keep the key in the item's tooltip.
                         const QString key = isEntity == true ? Document_.GetEntityKey(entry)
                                                              : entry.value(QStringLiteral("id")).toString();
-                        const QString shown = isEntity == true ? Document_.GetEntityLabel(entry) : key;
-                        choices->addItem(
-                            entry.value(isEntity == true ? QStringLiteral("name") : QStringLiteral("label"))
-                                    .toString() +
-                                QStringLiteral(" — ") + shown,
-                            key);
+                        QString referenceLabel =
+                            entry.value(isEntity == true ? QStringLiteral("name") : QStringLiteral("label")).toString();
+                        if (referenceLabel.isEmpty() == true)
+                        {
+                            referenceLabel = isEntity == true ? Document_.GetEntityLabel(entry) : key;
+                        }
+                        references.append({referenceLabel, key});
+                        labelCounts[referenceLabel] += 1;
+                    }
+                    for (const ReferenceChoice& reference : references)
+                    {
+                        // Only entries that share a label get a short piece of their key to tell them apart.
+                        const QString shown =
+                            labelCounts.value(reference.Label) > 1
+                                ? QStringLiteral("%1 · %2").arg(reference.Label,
+                                                                reference.Key.left(REFERENCE_DISAMBIGUATOR_LENGTH))
+                                : reference.Label;
+                        choices->addItem(shown, reference.Key);
+                        choices->setItemData(choices->count() - 1, reference.Key, Qt::ToolTipRole);
                     }
                     const QString reference = current.toString();
                     if (isAtmosphereLight == true && reference.isEmpty() == false && choices->findData(reference) < 0)
                     {
-                        choices->addItem(QStringLiteral("Missing directional light — %1").arg(reference), reference);
+                        choices->addItem(style()->standardIcon(QStyle::SP_MessageBoxWarning),
+                                         QStringLiteral("Missing directional light"),
+                                         reference);
+                        choices->setItemData(
+                            choices->count() - 1,
+                            QStringLiteral("No directional light has the key %1. Choose another light, or None.")
+                                .arg(reference),
+                            Qt::ToolTipRole);
                     }
                 }
                 choices->setCurrentIndex(choices->findData(current.toString()));
@@ -2965,6 +3105,11 @@ void WorldWorkspace::RenderInspector()
             {
                 tooltip += QStringLiteral("\nRange: %1 to %2")
                                .arg(Display(p.value(QStringLiteral("min"))), Display(p.value(QStringLiteral("max"))));
+                // The field shows the number at the precision it was stored with; the tooltip keeps every digit.
+                if (current.isDouble() == true && FormatStoredNumber(current.toDouble()) != Display(current))
+                {
+                    tooltip += QStringLiteral("\nStored value: %1").arg(FormatStoredNumber(current.toDouble()));
+                }
             }
             field->setToolTip(tooltip);
             auto title = p.value(QStringLiteral("label")).toString();
@@ -3116,6 +3261,9 @@ void WorldWorkspace::RenderInspector()
         {
             group->setMinimumHeight(rows->totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
         }
+        ConfigureConditionalFields(*rows, component, Fields_, [group, rows]() {
+            group->setMinimumHeight(rows->totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+        });
         Inspector_->addWidget(section);
     }
     finishComponentMenu();
@@ -3347,7 +3495,7 @@ void WorldWorkspace::PickTint(const QString& id, const QJsonObject& binding)
                 const foundation::float32 channels[]{linear.redF(), linear.greenF(), linear.blueF()};
                 for (foundation::usize i = 0; i < 3; ++i)
                 {
-                    fields[i]->setText(QString::number(static_cast<foundation::float64>(channels[i]), 'g', 17));
+                    fields[i]->setText(FormatInspectorNumber(static_cast<foundation::float64>(channels[i])));
                 }
                 markInspectorPending();
                 Changed(QStringLiteral(

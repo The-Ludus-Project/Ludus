@@ -13,6 +13,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include <algorithm>
+#include <limits>
 #include <string_view>
 
 #include <QStringList>
@@ -28,6 +29,8 @@ using foundation::usize;
 
 /// Significant digits shown for a material scalar; enough to round-trip typical source values.
 constexpr foundation::int32 DISPLAYED_DIGITS = 6;
+/// Most texels a texture may have and still read as a constant when every texel is the same (4 × 4).
+constexpr usize MAX_CONSTANT_TEXTURE_TEXELS = 16;
 
 QString FormatScalar(float32 value)
 {
@@ -169,11 +172,31 @@ QString DescribeTexture(const resources::SceneDefinition& definition, uint32 tex
         return QStringLiteral("Texture %1 (missing)").arg(texture);
     }
     const resources::SceneTexture& source = definition.Textures[texture];
-    return QStringLiteral("Texture %1 · %2 × %3 · %4")
-        .arg(texture)
-        .arg(source.Width)
-        .arg(source.Height)
-        .arg(source.IsLinear == true ? QStringLiteral("linear") : QStringLiteral("sRGB"));
+    const QString encoding = source.IsLinear == true ? QStringLiteral("linear") : QStringLiteral("sRGB");
+    // A tiny texture of one texel value is a constant, such as an importer's 4 × 4 white stand-in: name the constant.
+    constexpr usize BYTES_PER_TEXEL = 4;
+    const usize texelCount = static_cast<usize>(source.Width) * source.Height;
+    if (texelCount > 0 && texelCount <= MAX_CONSTANT_TEXTURE_TEXELS &&
+        source.Pixels.GetSize() == texelCount * BYTES_PER_TEXEL)
+    {
+        bool isUniform = true;
+        for (usize i = BYTES_PER_TEXEL; i < source.Pixels.GetSize(); ++i)
+        {
+            isUniform = isUniform == true && source.Pixels[i] == source.Pixels[i % BYTES_PER_TEXEL];
+        }
+        if (isUniform == true)
+        {
+            const bool isWhite = source.Pixels[0] == std::numeric_limits<foundation::uint8>::max() &&
+                                 source.Pixels[1] == std::numeric_limits<foundation::uint8>::max() &&
+                                 source.Pixels[2] == std::numeric_limits<foundation::uint8>::max();
+            const bool isBlack = source.Pixels[0] == 0 && source.Pixels[1] == 0 && source.Pixels[2] == 0;
+            const QString constant = isWhite == true   ? QStringLiteral("Constant white")
+                                     : isBlack == true ? QStringLiteral("Constant black")
+                                                       : QStringLiteral("Constant colour");
+            return QStringLiteral("%1 · %2 × %3 · %4").arg(constant).arg(source.Width).arg(source.Height).arg(encoding);
+        }
+    }
+    return QStringLiteral("Texture %1 · %2 × %3 · %4").arg(texture).arg(source.Width).arg(source.Height).arg(encoding);
 }
 } // namespace
 
@@ -254,7 +277,7 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                                                       ? foundation::math::Vector3{}
                                                       : foundation::math::Vector3{1, 1, 1};
     rows.append(MakeColourRow(QStringLiteral("Reflectance (linear RGB)"), reflectance));
-    rows.append({QStringLiteral("Base color map"),
+    rows.append({QStringLiteral("Base colour map"),
                  DescribeTexture(definition, material.Texture),
                  false,
                  {},

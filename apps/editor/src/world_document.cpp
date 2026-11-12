@@ -234,6 +234,93 @@ bool Fields(const QJsonObject& object, const QStringList& allowed)
     }
     return true;
 }
+/// Whether a property's optional "when" ({"kind": ["point", "spot"]}) or "unit_for"
+/// ({"kind": {"point": "cd", "directional": "lx"}}) names one sibling enum and lists its choices.
+bool IsPropertyCondition(const QJsonValue& value, bool isUnitMap)
+{
+    if (value.isUndefined() == true)
+    {
+        return true;
+    }
+    const QJsonObject condition = value.toObject();
+    if (value.isObject() == false || condition.size() != 1 || Id(condition.begin().key()) == false)
+    {
+        return false;
+    }
+    const QJsonValue choices = condition.begin().value();
+    if (isUnitMap == true)
+    {
+        const QJsonObject units = choices.toObject();
+        if (choices.isObject() == false || units.isEmpty() == true || units.size() > MAX_ENUM_CHOICES)
+        {
+            return false;
+        }
+        for (const QString& choice : units.keys())
+        {
+            if (Text(QJsonValue(choice), MAX_LABEL_BYTES) == false ||
+                Text(units.value(choice), MAX_UNIT_BYTES) == false)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    const QJsonArray list = choices.toArray();
+    if (choices.isArray() == false || list.isEmpty() == true || list.size() > MAX_ENUM_CHOICES)
+    {
+        return false;
+    }
+    for (const QJsonValue choice : list)
+    {
+        if (Text(choice, MAX_LABEL_BYTES) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+/// Display hints the bundled default schema gains in memory only, so the bytes that World recovery fingerprints
+/// keep are unchanged: kind-specific light fields, the intensity unit for each kind, and Canadian display labels.
+void AddBuiltInDisplayHints(QJsonArray& inoutComponents)
+{
+    const QString kind = QStringLiteral("kind");
+    for (qsizetype i = 0; i < inoutComponents.size(); ++i)
+    {
+        QJsonObject component = inoutComponents[i].toObject();
+        const QString componentId = component.value(QStringLiteral("id")).toString();
+        QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
+        for (qsizetype j = 0; j < properties.size(); ++j)
+        {
+            QJsonObject property = properties[j].toObject();
+            const QString propertyId = property.value(QStringLiteral("id")).toString();
+            if (componentId == QStringLiteral("light") && propertyId == QStringLiteral("range"))
+            {
+                property.insert(QStringLiteral("when"),
+                                QJsonObject{{kind, QJsonArray{QStringLiteral("point"), QStringLiteral("spot")}}});
+            }
+            else if (componentId == QStringLiteral("light") &&
+                     (propertyId == QStringLiteral("innerAngle") || propertyId == QStringLiteral("outerAngle")))
+            {
+                property.insert(QStringLiteral("when"), QJsonObject{{kind, QJsonArray{QStringLiteral("spot")}}});
+            }
+            else if (componentId == QStringLiteral("light") && propertyId == QStringLiteral("intensity"))
+            {
+                property.insert(QStringLiteral("unit_for"),
+                                QJsonObject{{kind,
+                                             QJsonObject{{QStringLiteral("point"), QStringLiteral("cd")},
+                                                         {QStringLiteral("spot"), QStringLiteral("cd")},
+                                                         {QStringLiteral("directional"), QStringLiteral("lx")}}}});
+            }
+            else if (componentId == QStringLiteral("renderable") && propertyId == QStringLiteral("texture"))
+            {
+                property.insert(QStringLiteral("label"), QStringLiteral("Colour texture"));
+            }
+            properties[j] = property;
+        }
+        component.insert(QStringLiteral("properties"), properties);
+        inoutComponents[i] = component;
+    }
+}
 bool ValidateEncodedObject(const QByteArray& bytes, foundation::int64 limit, QString& outError)
 {
     namespace parsing = foundation::parsing;
@@ -422,6 +509,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
             {
                 return false;
             }
+            AddBuiltInDisplayHints(components);
             const QJsonArray celestialProperties = MakeWorldCelestialProperties();
             for (qsizetype i = 0; i < components.size(); ++i)
             {
@@ -544,9 +632,12 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                         QStringLiteral("choices"),
                         QStringLiteral("help"),
                         QStringLiteral("unit"),
-                        QStringLiteral("asset_kind")}) == false ||
-                Id(key) == false || propertiesSeen.contains(key) ||
-                Text(p.value(QStringLiteral("label")), MAX_LABEL_BYTES) == false ||
+                        QStringLiteral("asset_kind"),
+                        QStringLiteral("when"),
+                        QStringLiteral("unit_for")}) == false ||
+                IsPropertyCondition(p.value(QStringLiteral("when")), false) == false ||
+                IsPropertyCondition(p.value(QStringLiteral("unit_for")), true) == false || Id(key) == false ||
+                propertiesSeen.contains(key) || Text(p.value(QStringLiteral("label")), MAX_LABEL_BYTES) == false ||
                 Text(p.value(QStringLiteral("help")), MAX_HELP_BYTES) == false ||
                 Text(p.value(QStringLiteral("unit")), MAX_UNIT_BYTES) == false)
             {

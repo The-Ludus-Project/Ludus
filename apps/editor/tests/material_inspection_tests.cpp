@@ -139,7 +139,7 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     CHECK(FindValue(rows, QStringLiteral("Name")) == QStringLiteral("brushed_copper"));
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Conductor"));
     CHECK(FindValue(rows, QStringLiteral("Reflectance (linear RGB)")) == QStringLiteral("0.5, 0.25, 1"));
-    CHECK(FindValue(rows, QStringLiteral("Base color map")) == QStringLiteral("Texture 0 · 2 × 1 · sRGB"));
+    CHECK(FindValue(rows, QStringLiteral("Base colour map")) == QStringLiteral("Texture 0 · 2 × 1 · sRGB"));
     CHECK(FindValue(rows, QStringLiteral("Addressing")) == QStringLiteral("Repeat"));
     CHECK(FindValue(rows, QStringLiteral("Metallic")) == QStringLiteral("1"));
     CHECK(FindValue(rows, QStringLiteral("Roughness (perceptual)")) == QStringLiteral("0.3"));
@@ -158,7 +158,7 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     CHECK(FindValue(rows, QStringLiteral("Name")) == QStringLiteral("Material 2"));
     CHECK(FindValue(rows, QStringLiteral("Name")) == GetFallbackMaterialName(2));
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Coated diffuse"));
-    CHECK(FindValue(rows, QStringLiteral("Base color map")) == QStringLiteral("None"));
+    CHECK(FindValue(rows, QStringLiteral("Base colour map")) == QStringLiteral("None"));
     CHECK(FindValue(rows, QStringLiteral("Addressing")).isNull() == true);
     CHECK(FindValue(rows, QStringLiteral("IOR η (RGB)")).isNull() == true);
     CHECK(FindValue(rows, QStringLiteral("Coating IOR")) == QStringLiteral("1.5"));
@@ -189,7 +189,7 @@ TEST_CASE("Material inspection offers swatches and thumbnails beside the numbers
     // 0.5 linear is about 188 as displayed, so the swatch is not the raw number scaled to 255.
     CHECK(reflectanceOrNull->Swatch.red() > 180);
     CHECK(reflectanceOrNull->Swatch.red() < 195);
-    const MaterialPropertyRow* baseOrNull = FindRowOrNull(rows, QStringLiteral("Base color map"));
+    const MaterialPropertyRow* baseOrNull = FindRowOrNull(rows, QStringLiteral("Base colour map"));
     REQUIRE(baseOrNull != nullptr);
     CHECK(baseOrNull->Thumbnail.isNull() == false);
     CHECK(baseOrNull->Thumbnail.width() <= MATERIAL_THUMBNAIL_EXTENT);
