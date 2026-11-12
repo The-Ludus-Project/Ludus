@@ -101,9 +101,43 @@ float ComputePlanetPointWeight(in float3 directionWorld, in float3 planetWorld, 
     return KERNEL_NORMALIZATION * coverage * coverage / (radius * radius);
 }
 
-float ComputeCelestialDiskCoverage(float chord, float chordRadius)
+float ComputeCelestialDiskCoverage(float chord, float chordRadius, float chordWidth)
 {
-    return saturate(0.5 + (chordRadius - chord) / max(fwidth(chord), DIRECTION_EPSILON));
+    return saturate(0.5 + (chordRadius - chord) / chordWidth);
+}
+
+// Thanks to Sébastien Hillaire, "Physically Based Sky, Atmosphere and Cloud
+// Rendering in Frostbite", SIGGRAPH 2016 course notes, §4.1.3 and Appendix B.
+// https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/s2016-pbs-frostbite-sky-clouds-new.pdf
+// The RGB exponents approximate three wavelengths from Daniel Hestroffer and
+// Christian Magnan, "Wavelength dependency of the Solar limb darkening",
+// A&A 333 (1998), §2 and Table 2, https://ui.adsabs.harvard.edu/abs/1998A%26A...333..338H
+float3 EvaluateSolarDisk(float chord, float chordRadius, float angularFootprint, out float outCoverage)
+{
+    const float3 LIMB_EXPONENT = float3(0.397, 0.503, 0.652);
+    float chordWidth = max(fwidth(chord), DIRECTION_EPSILON);
+    float coverage = ComputeCelestialDiskCoverage(chord, chordRadius, chordWidth);
+    outCoverage = coverage;
+    // Use the disk-average radiance when the pixel cannot resolve the profile.
+    float profileWeight = saturate(2 - 2 * angularFootprint / chordRadius);
+    if (coverage == 0 || profileWeight == 0)
+    {
+        return float3(coverage);
+    }
+
+    // Sample the midpoint of the covered part of a partially covered pixel.
+    float sampleChord = max(0, min(chord, chordRadius - 0.5 * coverage * chordWidth));
+    float halfChord = 0.5 * sampleChord;
+    float halfRadius = 0.5 * chordRadius;
+    float radiusRatio = sampleChord / chordRadius;
+    // mu^2 = 1 - (sin(view angle) / sin(angular radius))^2. Work in
+    // chord distances to keep precision for the small apparent Earth Sun.
+    float muSquared =
+        saturate(1 - radiusRatio * radiusRatio * (1 - halfChord * halfChord) / (1 - halfRadius * halfRadius));
+    // Projected disk area has measure 2*mu dmu. The mean of mu^a is 2/(2+a).
+    float3 exponent = 0.5 * LIMB_EXPONENT;
+    float3 profile = (1 + exponent) * pow(muSquared, exponent);
+    return coverage * lerp(float3(1), profile, profileWeight);
 }
 
 // Thanks to NASA Science, "Moon Phases", for the Sun-lit sphere geometry.

@@ -53,6 +53,11 @@ collision consumer. Its **Static Collider** component is authored World data,
 so the P1 collision world consumes that component and adds no second collider
 vocabulary. The editor keeps its own step, slide and jump rules.
 
+The first P1 slice, the [physics collision module](physics-collision.md),
+ships `PhysicsCollision` with an immutable static triangle mesh, a closest
+raycast and a closest axis-aligned box cast. It lifts the preview's sweep;
+the preview itself has not moved onto it yet.
+
 ## Primary evidence
 
 Thanks to Jorrit Rouwé, [Architecture of Jolt Physics](https://jrouwe.github.io/JoltPhysics/),
@@ -888,7 +893,7 @@ quality, including the serial path and debug-capture overhead.
 | Gate | Reviewable output and acceptance |
 | --- | --- |
 | P0: backend feasibility | Closed without a qualified engine. Stock Jolt 5.6.0, ODE 0.16.6 and Box3D failed the allocation gate on macOS arm64, and six further engines failed the source screen. The outcome is the [selection revision](#selection-revision). The native/web matrix, SDK and replay evidence were not collected and move to the gates below |
-| P1: collision and query world | `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; Explore as Player moves onto these queries with **Static Collider** as authored input; installed SDK consumer on native and Emscripten |
+| P1: collision and query world | In progress: the [static triangle mesh and closest queries](physics-collision.md) have landed. `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; Explore as Player moves onto these queries with **Static Collider** as authored input; installed SDK consumer on native and Emscripten |
 | P2: rigid motion | `PhysicsRigid`: static/kinematic/dynamic integration, mass frames, forces/materials, convex and mesh contacts, the soft-constraint substep solver and selective CCD; stack/friction/spin/replay scenes; zero-growth active path; contact capacity rejected before any pose changes; headless stepping and plain-value state export; comparison with a pinned test-only engine on shared scenes |
 | P3: sensors and joints | Complete occupancy/events, distance/ball/hinge/slider, motor/break/sleep diagnostics; lifecycle, capacity and singularity regressions |
 | P4: engine integration | GameWorld binding, terrain revision/coverage installation, content cooking, inspector/recording, SDK and hot-reload boundaries; one sibling simulation built against the installed SDK |

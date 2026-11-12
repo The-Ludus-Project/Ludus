@@ -30,9 +30,9 @@ namespace codes = ludus::content::scene_cook::importers::codes;
 namespace math = ludus::foundation::math;
 
 /// A checked-in engine test scene below tests/scenes.
-fs::path GetTestScene(std::string_view relative)
+std::string GetTestScene(std::string_view relative)
 {
-    return fs::path(LUDUS_TEST_SCENES_DIR) / relative;
+    return JoinPath(LUDUS_TEST_SCENES_DIR, relative);
 }
 
 std::string_view GetReport(const BestEffortResult& result)
@@ -68,7 +68,7 @@ TEST_CASE("Ludus scene import cooks the engine's occlusion test scenes", "[scene
     for (const ExpectedScene& expected : SCENES)
     {
         INFO(expected.File);
-        const std::string entry = GetTestScene(expected.File).string();
+        const std::string entry = GetTestScene(expected.File);
         BestEffortResult first;
         BestEffortResult second;
         CookError error;
@@ -134,7 +134,7 @@ TEST_CASE("Ludus scene import cooks the engine's occlusion test scenes", "[scene
 
 TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene", "[scene_cook][ludus-scene]")
 {
-    const std::string entry = GetTestScene("diffraction/single-slit.luscene.json").string();
+    const std::string entry = GetTestScene("diffraction/single-slit.luscene.json");
     BestEffortResult result;
     CookError error;
     REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
@@ -179,7 +179,7 @@ TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene",
 
 TEST_CASE("Ludus scene import can leave the slit's aperture to the importing World", "[scene_cook][ludus-scene]")
 {
-    const std::string entry = GetTestScene("diffraction/single-slit.luscene.json").string();
+    const std::string entry = GetTestScene("diffraction/single-slit.luscene.json");
     BestEffortOptions options;
     options.ShouldDeferApertures = true;
     BestEffortResult result;
@@ -207,7 +207,7 @@ TEST_CASE("Ludus scene import can leave the slit's aperture to the importing Wor
 TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[scene_cook][ludus-scene]")
 {
     ScratchDirectory scratch;
-    const fs::path entry = scratch.Path / "room.luscene.json";
+    const std::string entry = scratch.GetPath("room.luscene.json");
     WriteFile(entry, R"({"format": "ludus.scene", "version": 1, "name": "Room",
         "materials": [
           {"name": "Floor", "model": "diffuse", "base_color": [0.25, 0.5, 0.75]},
@@ -225,7 +225,7 @@ TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[
            "polygons": [[0, 1, 2]]}]})");
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportSceneBestEffort(entry.string(), {}, result, error) == true);
+    REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
     // A white rough emitter is exactly what LUSCN keeps; no camera means a framing view.
     CHECK(ReportHasCode(result, codes::MATERIAL_APPROXIMATED) == false);
     ludus::resources::SceneDefinition decoded;
@@ -271,7 +271,7 @@ TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[
         "objects": [{"name": "Floor", "material": "Ceiling", "positions": [[0, 0, 0], [1, 0, 0], [0, 0, 1]],
                      "polygons": [[0, 1, 2]]}]})");
     BestEffortResult failed;
-    CHECK(ImportSceneBestEffort(entry.string(), {}, failed, error) == false);
+    CHECK(ImportSceneBestEffort(entry, {}, failed, error) == false);
     CHECK(error.Result == ludus::content::Status::Invalid);
     CHECK(ReportHasCode(failed, codes::MALFORMED_INPUT) == true);
     CHECK(GetReport(failed).find("objects[0].material: names no declared material") != std::string_view::npos);
@@ -281,7 +281,7 @@ TEST_CASE("Ludus scene import cooks closure programs into LUSCN version 11", "[s
 {
     namespace format = ludus::content::scene_format;
     ScratchDirectory scratch;
-    const fs::path entry = scratch.Path / "program.luscene.json";
+    const std::string entry = scratch.GetPath("program.luscene.json");
     WriteFile(entry, R"({"format": "ludus.scene", "version": 1, "name": "Program room",
         "materials": [
           {"name": "Floor", "model": "diffuse", "base_color": [0.25, 0.5, 0.75]},
@@ -299,7 +299,7 @@ TEST_CASE("Ludus scene import cooks closure programs into LUSCN version 11", "[s
            "polygons": [[0, 1, 2]]}]})");
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportSceneBestEffort(entry.string(), {}, result, error) == true);
+    REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
     uint32 version = 0;
     REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
                 {result.Bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
@@ -375,10 +375,8 @@ TEST_CASE("Ludus scene import cooks the engine's closure-program test scene", "[
     namespace format = ludus::content::scene_format;
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/closure-program-block.luscene.json").string(),
-                                  {},
-                                  result,
-                                  error) == true);
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/closure-program-block.luscene.json"), {}, result, error) ==
+            true);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);

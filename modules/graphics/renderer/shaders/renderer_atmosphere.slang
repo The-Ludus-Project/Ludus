@@ -218,11 +218,16 @@ float3 EvaluateNightSky(in float3 directionWorld, float angularFootprint)
     float3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
     float3 moonWorld = atmosphereView.MoonDirectionWorld.xyz;
     float angularFootprint = max(length(ddx(directionWorld)), length(ddy(directionWorld)));
-    float sunCoverage =
-        ComputeCelestialDiskCoverage(length(directionWorld - sunWorld), atmosphereView.SolarIlluminance.w);
-    float moonCoverage =
-        ComputeCelestialDiskCoverage(length(directionWorld - moonWorld), atmosphereView.LunarRadiance.w);
-    float3 boundary = sunCoverage * atmosphereView.CameraForwardWorld.w * atmosphereView.SolarIlluminance.xyz;
+    float sunCoverage;
+    float3 solarDisk = EvaluateSolarDisk(length(directionWorld - sunWorld),
+                                         atmosphereView.SolarIlluminance.w,
+                                         angularFootprint,
+                                         sunCoverage);
+    float moonChord = length(directionWorld - moonWorld);
+    float moonCoverage = ComputeCelestialDiskCoverage(moonChord,
+                                                      atmosphereView.LunarRadiance.w,
+                                                      max(fwidth(moonChord), DIRECTION_EPSILON));
+    float3 boundary = solarDisk * atmosphereView.CameraForwardWorld.w * atmosphereView.SolarIlluminance.xyz;
     boundary += (1 - sunCoverage) * EvaluateNightSky(directionWorld, angularFootprint);
     if (atmosphereView.MoonDirectionWorld.w > 0 && moonCoverage > 0)
     {

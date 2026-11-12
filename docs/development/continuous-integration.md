@@ -475,10 +475,9 @@ workflow. The Linux wiki call starts at candidate capture alongside the browser,
 Windows and recovery workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for both wiki calls, and only the post-promotion job deploys.
-The ARM checks retain their sequence; the ARM sequence can increase
-the total batch duration. This ordering reduces demand; a platform-wide shortage
-can still require retrying a job whose annotations confirm runner acquisition
-failed before execution.
+The ARM sequence can increase total batch duration. A platform-wide shortage
+can still require retrying a job whose annotations show that it failed to acquire
+a runner.
 
 Native viewport scheduling acceptance requires presentation and camera input to
 advance in each of three consecutive one-second windows while input stays active.
@@ -822,6 +821,14 @@ download/extract times, and whether the producer and baseline jobs hit their
 Conan and compiler caches. Repeat with comparable cache states before adopting the
 shared build. Both experiments are manual. Pull requests and promotion continue
 to use the existing four independent builds.
+
+In the November 11, 2026 warm-cache comparison, the shared build reduced runner
+time before the sanitizer controls from 31m 37s to 15m 25s. The full run took
+58m 53s and used 132m 29s of runner time, compared with 34m 37s and 124m 57s for
+independent builds. The shared job serialized the initial build and shard 1 spent
+more time on its subsequent probe builds and CTest cases.
+[Independent builds](https://github.com/The-Ludus-Project/Ludus/actions/runs/43127809603)
+· [Shared build](https://github.com/The-Ludus-Project/Ludus/actions/runs/43127813584)
 
 The `ludus_editor_tests` build entry point also builds every executable target
 ending in `_tests` in the editor's own CMake directory, including optional preview

@@ -58,6 +58,36 @@ copyable, zero/identity-initialized as specified, with natural scalar alignment
 and no hidden SIMD padding, virtual functions, swizzle proxies or expression
 templates.
 
+#### Name and compose coordinate transforms
+
+Name transforms `SourceToDestination` and suffix coordinate-bearing values with
+their space. For example, `worldToView` maps `positionWorld` to `positionView`.
+Use the same names for affine transforms and matrices.
+
+Read a column-vector product from right to left. Start with the source space
+of the rightmost transform. The destination of each transform must match the
+source of the next one to its left. The composed name takes its source from
+the rightmost transform and its destination from the leftmost one.
+
+```cpp
+const Matrix4 worldToClip = viewToClip * worldToView;
+const Vector4 positionClip = worldToClip * positionWorld;
+```
+
+A successful inverse swaps the spaces, so `TryInverse(worldToClip, clipToWorld)`
+produces a transform from clip space back to world space. Keep homogeneous clip
+coordinates distinct from NDC, which requires the perspective divide. When a
+pass maps between two variants of a space, qualify both endpoints. For example,
+the direct viewport applies `logicalClipToTargetClip` after `viewToLogicalClip`.
+Names support code review. The untagged `Matrix4` type accepts either operand
+order, so use noncommuting inputs when testing a composition.
+
+Thanks to Tom Forsyth and Sebastian Sylvan for the composition and inverse
+checks. Both describe destination-first names for column vectors. Ludus keeps
+its source-first spelling and checks the chain in application order.
+[Tom Forsyth, *Matrix maths and names* (2012)](https://tomforsyth1000.github.io/blog.wiki.html#%5B%5BMatrix%20maths%20and%20names%5D%5D) ·
+[Sebastian Sylvan, *Naming Convention for Matrix Math* (2017), OpenGL style](https://www.sebastiansylvan.com/post/matrix_naming_convention/#opengl-style-matrix-convention)
+
 ### Numerical and failure contracts (frozen)
 
 - Checked, fallible operations return `[[nodiscard]] MathStatus` and write

@@ -1103,11 +1103,12 @@ or surface cannot trigger an undocumented backend switch.
 
 ## Materials, shaders and pipeline control
 
-The proposed [render graph authoring architecture](render-graph-authoring.md)
-owns reusable graph/function/resource nodes, camera output routes, scene coverage,
+The [render graph architecture](render-graph-authoring.md) owns reusable
+graph/function/resource nodes, camera output routes, scene coverage,
 author-declared compilation configurations, shared schemas, incremental builds
-and editor/reload integration. It is an authoring layer over these Renderer and
-RHI contracts, not a claim that the current material graph editor is implemented.
+and editor/reload integration. See its
+[execution boundary](render-graph-authoring.md#logical-resource-uses-and-submitted-work)
+for the relationship between the offline plan, cooked profiles and RHI.
 Users can consume selected graph outputs; this never synthesizes shader variants.
 Depth-only rendering requires an authored technique preserving geometry/coverage.
 
@@ -1757,11 +1758,25 @@ as the material resolve. The sky draw preserves depth. The material resolve
 then overwrites covered samples and leaves the sky elsewhere. This placement
 requires no new graph shader bindings or HDR color edge. Evaluate the solar disk at
 pixel resolution with edge coverage and analytic ground occlusion, then
-attenuate it by view transmittance. A uniform disk of angular radius `a`
-uses radiance `E / (pi * sin(a)^2)` for perpendicular illuminance `E` at the
-top of the atmosphere. The scattering term uses a directional Sun
+attenuate it by view transmittance. The disk-average radiance for angular
+radius `a` and top-of-atmosphere perpendicular illuminance `E` is
+`E / (pi * sin(a)^2)`. A resolved disk multiplies this by
+`(1 + p/2) * mu^p` per RGB channel, with `mu` the cosine between the viewing
+ray toward the observer and the visible solar surface normal. The factor
+has unit mean over projected disk area, so the profile preserves `E` in each
+channel. As the pixel footprint approaches the disk radius, blend toward the
+disk-average radiance. The scattering term uses a directional Sun
 approximation. Keep the disk out of the sky-view texture and apply exposure
 once to the result.
+
+Thanks to Sébastien Hillaire for presenting solar limb darkening in
+*Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite*, SIGGRAPH
+2016 course notes, §4.1.3 and Appendix B. The three-channel approximation uses
+power-law fits from Daniel Hestroffer and Christian Magnan, *Wavelength
+dependency of the Solar limb darkening*, §2 and Table 2. Ludus normalizes the
+fit to its authored perpendicular illuminance.
+[Frostbite course notes](https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/s2016-pbs-frostbite-sky-clouds-new.pdf) ·
+[Solar measurements](https://ui.adsabs.harvard.edu/abs/1998A%26A...333..338H)
 
 ### Opaque raster lighting
 
