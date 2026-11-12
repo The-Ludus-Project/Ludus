@@ -20,6 +20,8 @@
 #include <QItemSelectionModel>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -366,6 +368,10 @@ TEST_CASE("World workspace saves version-2 and version-1 documents in their own 
         REQUIRE(reference != nullptr);
         CHECK(reference->currentData().toString() ==
               (hasUuidRecords == true ? QLatin1String(STARTER_CUBE) : QStringLiteral("starter.cube")));
+        // The choice reads as the entity's name; its key stays in the item's tooltip.
+        CHECK(reference->currentText().contains(reference->currentData().toString()) == false);
+        CHECK(reference->itemData(reference->currentIndex(), Qt::ToolTipRole).toString() ==
+              reference->currentData().toString());
         view.findChild<QAction*>(QStringLiteral("worldAdd"))->trigger();
         Select(view, target);
         view.findChild<QAction*>(QStringLiteral("worldDuplicate"))->trigger();
@@ -466,4 +472,50 @@ TEST_CASE("World demo opens, edits and saves the committed manifest's version-2 
     REQUIRE(ludus::world_demo::ReadWorldLevel(View(bytes), runtime).Error == ludus::world_demo::LevelError::None);
     CHECK(runtime.EntityCount == version1.EntityCount + 1);
     CHECK(runtime.Entities[0].Position.X == .5F);
+}
+
+TEST_CASE("Schema display hints name one sibling enum and list its choices", "[editor][world]")
+{
+    const QJsonObject starter = QJsonDocument::fromJson(StarterSchema()).object();
+    const auto loadWithHint = [&starter](const QString& key, const QJsonValue& hint) {
+        QJsonObject schema = starter;
+        QJsonArray components = schema.value(QStringLiteral("components")).toArray();
+        for (qsizetype i = 0; i < components.size(); ++i)
+        {
+            QJsonObject component = components[i].toObject();
+            if (component.value(QStringLiteral("id")).toString() != QStringLiteral("light"))
+            {
+                continue;
+            }
+            QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
+            for (qsizetype j = 0; j < properties.size(); ++j)
+            {
+                QJsonObject property = properties[j].toObject();
+                if (property.value(QStringLiteral("id")).toString() == QStringLiteral("range"))
+                {
+                    property.insert(key, hint);
+                    properties[j] = property;
+                }
+            }
+            component.insert(QStringLiteral("properties"), properties);
+            components[i] = component;
+        }
+        schema.insert(QStringLiteral("components"), components);
+        WorldDocument document;
+        QString error;
+        return document.LoadSchema(QJsonDocument(schema).toJson(), error);
+    };
+    const QString kind = QStringLiteral("kind");
+    const QString point = QStringLiteral("point");
+    CHECK(loadWithHint(QStringLiteral("when"), QJsonObject{{kind, QJsonArray{point}}}) == true);
+    CHECK(loadWithHint(QStringLiteral("unit_for"), QJsonObject{{kind, QJsonObject{{point, QStringLiteral("cd")}}}}) ==
+          true);
+    // Malformed hints are rejected like any other unknown or invalid property member.
+    CHECK(loadWithHint(QStringLiteral("when"), QJsonArray{point}) == false);
+    CHECK(loadWithHint(QStringLiteral("when"), QJsonObject{{kind, QJsonArray{}}}) == false);
+    CHECK(loadWithHint(QStringLiteral("when"),
+                       QJsonObject{{kind, QJsonArray{point}}, {QStringLiteral("enabled"), QJsonArray{point}}}) ==
+          false);
+    CHECK(loadWithHint(QStringLiteral("unit_for"), QJsonObject{{kind, QJsonObject{{point, QJsonValue(1)}}}}) == false);
+    CHECK(loadWithHint(QStringLiteral("show_if"), QJsonObject{{kind, QJsonArray{point}}}) == false);
 }

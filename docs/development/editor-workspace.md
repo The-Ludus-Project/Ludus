@@ -1225,6 +1225,29 @@ The schema root has `id`, `label`, `components` and `assets`, and may declare th
 | `entity` | Empty-string default. Picker uses an entity's key in the current world (its version-2 UUID or version-1 ID) or empty for None |
 | `asset` | Empty-string default and `asset_kind`. Picker uses a declared logical asset ID of that kind or empty for None |
 
+A property may also declare two optional display hints. Both name one sibling
+`enum` property of the same component:
+
+- `when` lists the choices for which the row shows. For example,
+  `"when": {"kind": ["point", "spot"]}`.
+- `unit_for` maps choices to the unit shown in the label. For example,
+  `"unit_for": {"kind": {"point": "cd", "directional": "lx"}}`.
+
+A hidden row keeps its field. **Apply Changes** writes its authored value back
+unchanged, so switching a light from spot to directional and back loses nothing.
+The default World adds these hints in memory, leaving its schema bytes unchanged:
+
+- Range shows for point and spot lights only.
+- The cone angles show for spot lights only.
+- Intensity reads in cd for point and spot lights, and in lx for directional ones.
+
+The inspector shows numbers at the precision they were stored with. A value that
+is exactly a float32, as Ludus's float32 converter stores it, shows its shortest
+float32 text: 43.46527099609375 reads "43.46527". The field's tooltip keeps
+every stored digit. An untouched field writes its JSON value back exactly.
+Entity and asset choices show their names. The key stays in the item's tooltip,
+and a short piece of it is added only when two entries share a name.
+
 Each declared asset has `id`, `label` and `kind`. The list is supplied by the
 project schema; it is not automatically populated from Content Browser and does
 not prove that an asset exists or is loadable at runtime. A game's importer/binder

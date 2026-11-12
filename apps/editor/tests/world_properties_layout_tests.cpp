@@ -370,6 +370,7 @@ void ApplyChanges(QWidget& inoutProperties, WorldWorkspace& inoutWorkspace)
                             SETTLE_TIMEOUT_MILLISECONDS) == true);
     applyOrNull->click();
     WaitForWorld(inoutWorkspace);
+    QTest::qWait(0);
 }
 } // namespace
 
@@ -418,6 +419,9 @@ TEST_CASE("Light fields follow the light's kind, and an untouched number keeps e
     };
     QComboBox* kindOrNull = qobject_cast<QComboBox*>(find("kind"));
     REQUIRE(kindOrNull != nullptr);
+    // A widget added to a shown layout appears once queued events run.
+    REQUIRE(QTest::qWaitFor([kindOrNull, &dock]() { return kindOrNull->isVisibleTo(&dock) == true; },
+                            SETTLE_TIMEOUT_MILLISECONDS) == true);
     kindOrNull->setCurrentIndex(kindOrNull->findData(QStringLiteral("directional")));
     CHECK(find("range")->isVisibleTo(&dock) == false);
     CHECK(find("innerAngle")->isVisibleTo(&dock) == false);
@@ -435,7 +439,8 @@ TEST_CASE("Light fields follow the light's kind, and an untouched number keeps e
     // the stored number exactly as it was.
     QLineEdit* intensityOrNull = qobject_cast<QLineEdit*>(find("intensity"));
     REQUIRE(intensityOrNull != nullptr);
-    intensityOrNull->setText(QStringLiteral("43.46527099609375"));
+    intensityOrNull->selectAll();
+    QTest::keyClicks(intensityOrNull, QStringLiteral("43.46527099609375"));
     ApplyChanges(dock, workspace);
     const QJsonValue stored = GetDraftLight(workspace, floor).value(QStringLiteral("intensity"));
     REQUIRE(stored.isDouble() == true);
@@ -445,7 +450,8 @@ TEST_CASE("Light fields follow the light's kind, and an untouched number keeps e
     CHECK(intensityOrNull->toolTip().contains(FormatStoredNumber(stored.toDouble())) == true);
     QLineEdit* rangeOrNull = qobject_cast<QLineEdit*>(find("range"));
     REQUIRE(rangeOrNull != nullptr);
-    rangeOrNull->setText(FormatInspectorNumber(EDITED_RANGE_METRES));
+    rangeOrNull->selectAll();
+    QTest::keyClicks(rangeOrNull, FormatInspectorNumber(EDITED_RANGE_METRES));
     ApplyChanges(dock, workspace);
     CHECK(GetDraftLight(workspace, floor).value(QStringLiteral("intensity")) == stored);
     CHECK(GetDraftLight(workspace, floor).value(QStringLiteral("range")).toDouble() == EDITED_RANGE_METRES);
