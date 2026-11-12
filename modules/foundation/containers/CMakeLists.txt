@@ -27,6 +27,7 @@ target_sources(
             include/ludus/foundation/containers/sort.hpp
             include/ludus/foundation/containers/array.hpp
             include/ludus/foundation/containers/sorted_map.hpp
+            include/ludus/foundation/containers/span_compatibility.hpp
             include/ludus/foundation/containers/relocation.hpp
             include/ludus/foundation/containers/containers.hpp
             include/ludus/foundation/containers/detail/contiguous_storage.hpp
@@ -70,6 +71,7 @@ if(LUDUS_BUILD_TESTS)
             tests/sort_tests.cpp
             tests/array_tests.cpp
             tests/sorted_map_tests.cpp
+            tests/span_compatibility_tests.cpp
             tests/relocation_tests.cpp
             tests/array_accounting_tests.cpp
     )

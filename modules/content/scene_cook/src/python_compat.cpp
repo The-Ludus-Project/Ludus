@@ -1,5 +1,6 @@
 #include "python_compat.h"
 
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/parsing/json.hpp>
 
@@ -178,7 +179,7 @@ void ByteWriter::Append(std::string_view text) noexcept
 
 void ByteWriter::AppendBytes(std::span<const uint8> data) noexcept
 {
-    if (mIsOk == true && data.empty() == false && mBuffer.TryAddRange(data) == false)
+    if (mIsOk == true && data.empty() == false && mBuffer.TryAddRange(foundation::MakeBorrowedView(data)) == false)
     {
         mIsOk = false;
     }

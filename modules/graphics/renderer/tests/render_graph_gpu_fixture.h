@@ -7,6 +7,7 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/matrix.hpp>
@@ -88,7 +89,7 @@ struct GraphGpuFixture final
     {
         rhi::SubmissionToken completion;
         REQUIRE(Graph.Render(Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(foundation::MakeSpan(Pixels)) == true);
     }
 };
 /// Build-tree location of one runtime generation cooked by ludus_compile_render_graph(... RUNTIME_PACKAGE).
@@ -105,7 +106,7 @@ inline core::UniquePtr<RenderGraphPackage> LoadPackage(const PackageLocation& lo
     REQUIRE(directory.OpenRead(location.File, file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-    const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+    const filesystem::ReadResult read = file.ReadAt(0, foundation::MakeSpan(bytes));
     REQUIRE(read.Outcome.Succeeded() == true);
     REQUIRE(read.BytesRead == bytes.GetSize());
     RenderGraphPackage* allocationOrNull = new (std::nothrow) RenderGraphPackage;
@@ -173,7 +174,7 @@ struct DepthDisplay final
         REQUIRE(rhi::DrawIndexed(Device, drawing) == rhi::RasterStatus::Ready);
         rhi::SubmissionToken completion;
         REQUIRE(rhi::EndFrame(Device, completion) == rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(outPixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(foundation::MakeSpan(outPixels)) == true);
         static_cast<void>(rhi::Destroy(Device, set));
         static_cast<void>(rhi::Destroy(Device, depth));
     }

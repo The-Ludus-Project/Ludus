@@ -1,6 +1,6 @@
 #include "internal/include_path.hpp"
 
-#include <span>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 namespace ludus::tooling::shader_language::internal
 {
@@ -61,7 +61,8 @@ AppendComponents(std::string_view path, bool isDirectoryOnly, foundation::Array<
             {
                 return IncludePathOutcome::OutOfMemory;
             }
-            if (inoutPath.TryAddRange(std::span<const char>(component.data(), component.size())) == false)
+            if (inoutPath.TryAddRange(foundation::BorrowedView<const char>(component.data(), component.size())) ==
+                false)
             {
                 return IncludePathOutcome::OutOfMemory;
             }

@@ -5,6 +5,7 @@
 #include "renderer_composite.h"
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
@@ -49,7 +50,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
         REQUIRE(directory.OpenRead(name, file).Succeeded() == true);
         Array<uint8> bytes;
         REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
-        REQUIRE(file.ReadAt(0, bytes.AsSpan()).Outcome.Succeeded() == true);
+        REQUIRE(file.ReadAt(0, MakeSpan(bytes)).Outcome.Succeeded() == true);
         return bytes;
     };
     const Array<uint8> initial = readBytes("initial.lurgrt");
@@ -61,7 +62,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
                                   identity.GetInterfaceIdentity(),
                                   shaders::renderer_composite::Vertex(),
                                   shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
-    REQUIRE(publication.Publish("main.lurgrt", initial.AsSpan()).Published == true);
+    REQUIRE(publication.Publish("main.lurgrt", MakeSpan(initial)).Published == true);
     ludus::runtime::shader_development::ReloadSession reload;
     REQUIRE(reload.Initialize({rootOrNull, std::strlen(rootOrNull)},
                               {"main.lurgrt", sizeof("main.lurgrt") - 1},
@@ -118,7 +119,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
         rhi::SubmissionToken completion;
         REQUIRE(activation.GetActiveOrNull()->Render(fixture.Surface, WIDTH, HEIGHT, completion) ==
                 rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     };
     awaitDelivery(ReloadState::Staged);
     activate(1);
@@ -135,13 +136,13 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
     render();
     CHECK(std::memcmp(firstPixels.GetData(), fixture.Pixels.GetData(), PIXEL_BYTES) == 0);
     // Supersede a read before collecting it; the stale payload must never stage.
-    REQUIRE(publication.Publish("main.lurgrt", initial.AsSpan()).Published == true);
+    REQUIRE(publication.Publish("main.lurgrt", MakeSpan(initial)).Published == true);
     reload.RequestReload();
     static_cast<void>(reload.Service(time::NowTicks()));
     CHECK(activation.GetReport().ActiveGeneration == 1);
     render();
     CHECK(std::memcmp(firstPixels.GetData(), fixture.Pixels.GetData(), PIXEL_BYTES) == 0);
-    REQUIRE(publication.Publish("main.lurgrt", changed.AsSpan()).Published == true);
+    REQUIRE(publication.Publish("main.lurgrt", MakeSpan(changed)).Published == true);
     reload.RequestReload();
     const uint64 pipelineStart = time::NowTicks();
     // Driver work is deliberately held on its worker. Neither delivery nor
@@ -202,7 +203,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
     REQUIRE(fragmentOffset != std::string_view::npos);
     Array<uint8> rejected = changed;
     rejected[fragmentOffset] = '?';
-    REQUIRE(publication.Publish("main.lurgrt", rejected.AsSpan()).Published == true);
+    REQUIRE(publication.Publish("main.lurgrt", MakeSpan(rejected)).Published == true);
     reload.RequestReload();
     awaitDelivery(ReloadState::Staged);
     timing::Deadline failureDeadline;
@@ -221,7 +222,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
     // CPU ABI changes require a restart and preserve the green generation.
     Array<uint8> incompatible = changed;
     incompatible[format::HEADER_FIELD_COUNT * sizeof(uint32)] ^= 1;
-    REQUIRE(publication.Publish("main.lurgrt", incompatible.AsSpan()).Published == true);
+    REQUIRE(publication.Publish("main.lurgrt", MakeSpan(incompatible)).Published == true);
     reload.RequestReload();
     awaitDelivery(ReloadState::RestartRequired);
     CHECK(activation.GetReport().ActiveGeneration == 3);

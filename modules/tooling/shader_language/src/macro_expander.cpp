@@ -7,13 +7,12 @@
 
 #include "internal/macro_expander.hpp"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/tooling/shader_language/limits.hpp>
 
 #include "internal/array_growth.hpp"
 #include "internal/lexer.hpp"
-
-#include <span>
 
 namespace ludus::tooling::shader_language::internal
 {
@@ -568,8 +567,10 @@ bool MacroExpander::paste(Array<WorkToken>& inoutOutput,
     const std::string_view leftSpelling = mText.Spell(left.Value);
     const std::string_view rightSpelling = mText.Spell(right.Value);
     mPasteScratch.Clear();
-    if (mPasteScratch.TryAddRange(std::span<const char>(leftSpelling.data(), leftSpelling.size())) == false ||
-        mPasteScratch.TryAddRange(std::span<const char>(rightSpelling.data(), rightSpelling.size())) == false)
+    if (mPasteScratch.TryAddRange(foundation::BorrowedView<const char>(leftSpelling.data(), leftSpelling.size())) ==
+            false ||
+        mPasteScratch.TryAddRange(foundation::BorrowedView<const char>(rightSpelling.data(), rightSpelling.size())) ==
+            false)
     {
         return failOutOfMemory();
     }

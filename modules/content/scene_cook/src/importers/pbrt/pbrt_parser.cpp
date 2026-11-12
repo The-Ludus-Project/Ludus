@@ -9,6 +9,7 @@
 #include "shape_tessellation.h"
 #include "spectrum_tables.h"
 
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::content::scene_cook::importers::pbrt
@@ -511,7 +512,7 @@ Status SceneReader::readDirective(Tokenizer& inoutTokens, Directive& outDirectiv
                 warn(codes::SYNTAX_ERROR, outDirective.Line, "value without a parameter declaration");
                 continue;
             }
-            if (outDirective.Numbers.TryAddRange(item.Numbers.AsSpan()) == false)
+            if (outDirective.Numbers.TryAddRange(item.Numbers.AsView()) == false)
             {
                 return Status::OutOfMemory;
             }
@@ -791,10 +792,12 @@ bool SceneReader::applyTransformDirective(Directive& inoutDirective) noexcept
     }
     else if (name == "LookAt")
     {
+        // Eye position, target position and up direction, three components each.
+        constexpr usize LOOK_AT_VALUE_COUNT = 9;
         math::Matrix4d look;
-        if (hasFiniteValues(9) == true)
+        if (hasFiniteValues(LOOK_AT_VALUE_COUNT) == true)
         {
-            if (MakeLookAt(values.AsSpan().first(9), look) == true)
+            if (MakeLookAt(foundation::MakeSpan(values).first(LOOK_AT_VALUE_COUNT), look) == true)
             {
                 transform = MultiplyMatrices(transform, look);
             }
@@ -1933,7 +1936,7 @@ Status SceneReader::loadPly(Directive& inoutDirective, uint32& outMesh) noexcept
     IrMesh mesh;
     PlyHeaderSummary summary;
     std::string_view message = "cannot read the PLY file";
-    if (read != Status::Ok || ReadPly(bytes.AsSpan(), mesh, summary, message) == false)
+    if (read != Status::Ok || ReadPly(foundation::MakeSpan(bytes), mesh, summary, message) == false)
     {
         warn(codes::SHAPE_FAILED, inoutDirective.Line, message);
         return Status::Ok;
@@ -1945,7 +1948,7 @@ Status SceneReader::loadPly(Directive& inoutDirective, uint32& outMesh) noexcept
     String dataFile;
     if (dataFile.TryAssign(resolved.Relative.GetView()) != StringStatus::Ok ||
         mScene.DataFiles.TryAdd(static_cast<String&&>(dataFile)) == false ||
-        mScene.DataDigests.TryAdd(Hash(bytes.AsSpan())) == false)
+        mScene.DataDigests.TryAdd(Hash(foundation::MakeSpan(bytes))) == false)
     {
         return Status::OutOfMemory;
     }
@@ -2111,7 +2114,7 @@ Status SceneReader::addShape(Directive& inoutDirective) noexcept
         ShapeArguments arguments;
         const auto copyNumbers = [&](std::string_view name, Array<float64>& outValues) noexcept -> bool {
             const Parameter* parameter = findParameter(inoutDirective, name);
-            return parameter == nullptr || outValues.TryAddRange(parameter->Value.Numbers.AsSpan()) == true;
+            return parameter == nullptr || outValues.TryAddRange(parameter->Value.Numbers.AsView()) == true;
         };
         bool isCopied = copyNumbers("P", arguments.Positions) == true && copyNumbers("N", arguments.Normals) == true &&
                         copyNumbers("indices", arguments.Indices) == true && copyNumbers("uv", arguments.Uvs) == true;

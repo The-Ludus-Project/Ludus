@@ -8,6 +8,7 @@
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -387,7 +388,7 @@ void MakeQueueScene(const ScratchDirectory& scratch, SceneIr& outScene)
     REQUIRE(embeddedOrNull != nullptr);
     REQUIRE(embeddedOrNull->DecoderName.TryAssign("embedded.png") == ludus::foundation::StringStatus::Ok);
     const std::string leaf = ReadFileText(scratch.Path / "textures/leaf.png");
-    REQUIRE(embeddedOrNull->Bytes.TryAddRange(AsBytes(leaf)) == true);
+    REQUIRE(embeddedOrNull->Bytes.TryAddRange(ludus::foundation::MakeBorrowedView(AsBytes(leaf))) == true);
     outScene.Textures[outScene.Textures.GetSize() - 1].EmbeddedImage = 0;
 }
 } // namespace
@@ -844,7 +845,7 @@ TEST_CASE("Texture reduction filters colour energy and coverage in their own dom
     DecodedImage image;
     image.Width = 2;
     image.Height = 2;
-    REQUIRE(image.Texels.TryAddRange(pixels.AsSpan()) == true);
+    REQUIRE(image.Texels.TryAddRange(pixels.AsView()) == true);
     REQUIRE(TryHalveImage(image, ImageReductionProfile::SrgbColor) == true);
     CHECK(image.Width == 1);
     CHECK(image.Height == 1);
@@ -856,7 +857,7 @@ TEST_CASE("Texture reduction filters colour energy and coverage in their own dom
     image.Width = 2;
     image.Height = 2;
     image.Texels.Clear();
-    REQUIRE(image.Texels.TryAddRange(pixels.AsSpan()) == true);
+    REQUIRE(image.Texels.TryAddRange(pixels.AsView()) == true);
     REQUIRE(TryHalveImage(image, ImageReductionProfile::LinearData) == true);
     for (const ludus::foundation::uint8 value : image.Texels)
     {
@@ -872,7 +873,7 @@ TEST_CASE("Texture reduction averages reconstructed normal directions before enc
     DecodedImage image;
     image.Width = 2;
     image.Height = 2;
-    REQUIRE(image.Texels.TryAddRange(pixels.AsSpan()) == true);
+    REQUIRE(image.Texels.TryAddRange(pixels.AsView()) == true);
     REQUIRE(TryHalveImage(image, ImageReductionProfile::TangentNormal) == true);
     // Equal +X and +Z directions produce a 45-degree normal, not averaged RG slopes.
     CHECK(image.Texels[0] == 218);

@@ -669,7 +669,7 @@ void GameWorld::Intent(TickInput input) noexcept
         }
     }
     const auto owners = mEnemies.GetOwners();
-    for (usize index = 0; index < owners.size(); ++index)
+    for (usize index = 0; index < owners.GetSize(); ++index)
     {
         const auto entity = owners[index];
         if (mRegistry.IsActive(entity) == false)
@@ -715,7 +715,7 @@ void GameWorld::MoveAndCollide() noexcept
     // Axis-separated swept box motion against static authored boxes; no gravity.
     // Authoritative positions are never interpolated or written by rendering.
     const auto owners = mMotion.GetOwners();
-    for (usize index = 0; index < owners.size(); ++index)
+    for (usize index = 0; index < owners.GetSize(); ++index)
     {
         const auto entity = owners[index];
         if (mRegistry.IsActive(entity) == false)

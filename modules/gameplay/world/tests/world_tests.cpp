@@ -183,7 +183,7 @@ TEST_CASE("Sparse pool swap removal preserves exact owners and enforces phases",
     registry.SetStructuralPhase(false);
     REQUIRE(pool.TryRemove(registry, fresh) == Status::InvalidPhase);
     REQUIRE(registry.TryCreate(fresh) == Status::InvalidPhase);
-    REQUIRE(pool.GetOwners().size() == pool.GetValues().size());
+    REQUIRE(pool.GetOwners().GetSize() == pool.GetValues().GetSize());
 }
 
 TEST_CASE("Pool moves transfer ownership and reject insertion into the empty source", "[world]")

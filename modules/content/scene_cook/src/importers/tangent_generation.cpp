@@ -2,6 +2,7 @@
 
 #include "front_end_support.h"
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
@@ -188,15 +189,15 @@ Status GenerateTangents(IrMesh& inoutMesh) noexcept
     IrMesh candidate;
     candidate.SourceVertexCount =
         inoutMesh.SourceVertexCount != 0 ? inoutMesh.SourceVertexCount : static_cast<uint32>(vertexCount);
-    if (candidate.Positions.TryAddRange(inoutMesh.Positions.AsSpan()) == false ||
-        candidate.Uvs.TryAddRange(inoutMesh.Uvs.AsSpan()) == false ||
-        candidate.Indices.TryAddRange(inoutMesh.Indices.AsSpan()) == false)
+    if (candidate.Positions.TryAddRange(inoutMesh.Positions.AsView()) == false ||
+        candidate.Uvs.TryAddRange(inoutMesh.Uvs.AsView()) == false ||
+        candidate.Indices.TryAddRange(inoutMesh.Indices.AsView()) == false)
     {
         return Status::OutOfMemory;
     }
     if (inoutMesh.Normals.GetSize() == vertexCount * IR_VECTOR_COMPONENT_COUNT)
     {
-        if (candidate.Normals.TryAddRange(inoutMesh.Normals.AsSpan()) == false)
+        if (candidate.Normals.TryAddRange(inoutMesh.Normals.AsView()) == false)
         {
             return Status::OutOfMemory;
         }
@@ -262,7 +263,8 @@ Status GenerateTangents(IrMesh& inoutMesh) noexcept
             }
             const uint32 split = static_cast<uint32>(candidate.GetVertexCount());
             if (DuplicateVertex(candidate, original) == false ||
-                candidate.Tangents.TryAddRange(std::span<const float32>(tangent, TANGENT_COMPONENTS)) == false ||
+                candidate.Tangents.TryAddRange(foundation::BorrowedView<const float32>(tangent, TANGENT_COMPONENTS)) ==
+                    false ||
                 nextSplit.TryAdd(IR_NONE) == false || isAssigned.TryAdd(uint8{1}) == false)
             {
                 return Status::OutOfMemory;
