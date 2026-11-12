@@ -5824,13 +5824,13 @@ The **Stats** toggle beside the viewport controls shows a live performance overl
 The preference is saved with World navigation. It refreshes four times a second;
 time measurements average the last 30 completed samples:
 
-- **FPS (updates)** counts completed graph output images delivered to the viewport,
+- **Updates** counts completed graph output images delivered to the viewport,
   using the average interval between images. Raster graphs render on demand;
   ray graphs also produce progressive samples until their budget is exhausted.
   This is an image update rate, not monitor refresh or a continuous benchmark.
-  It shows zero before two images arrive and after one second without a new image;
-  a new interaction after that idle gap starts a fresh rate window.
-- **CPU** sums active owner-thread World/camera extraction, graph preparation,
+  It reads `idle, renders on change` before two images arrive and after one second
+  without a new image; a new interaction after that idle gap starts a fresh rate window.
+- **Editor CPU per frame** sums active owner-thread World/camera extraction, graph preparation,
   submission, polling, texture inspection setup/readback, output conversion and image
   publication work per delivered image. It excludes worker conversion, wall-clock
   gaps between asynchronous service calls and other editor work.
@@ -5843,14 +5843,14 @@ time measurements average the last 30 completed samples:
   and image conversion. It excludes the earlier graph render and final Qt paint.
   Shared-device GPU output snapshots report zero because output presentation performs no CPU readback.
 - **Inspection CPU** sums active GUI-thread GPU snapshot setup, band readback and
-  polling per completed inspection attempt. It is also included in CPU service
-  work; these series have different sample counts and should not be added together.
+  polling per completed inspection attempt. It is also included in Editor CPU per
+  frame; these series have different sample counts and should not be added together.
   Worker conversion is excluded from both GUI CPU series.
 - **Inspection readback** measures elapsed time from starting the diagnostic
   snapshot through raw CPU bytes being ready, including asynchronous waits.
   Inspection series update independently of output delivery, so GPU output cannot
-  overwrite diagnostic readback measurements with zero. The overlay shows
-  **Inspection: paused** while the viewer is hidden. The last 30 completed attempts
+  overwrite diagnostic readback measurements with zero. The inspection and conversion
+  rows are hidden while the viewer is hidden. The last 30 completed attempts
   are retained for resuming; cancelled inspections do not add samples.
 - **Conversion worker** measures the active worker call for each current, completed
   conversion. It includes range scanning and display image creation, under the
@@ -5860,6 +5860,9 @@ time measurements average the last 30 completed samples:
   series update independently of raw readback and output frames. Superseded or
   cancelled conversions add no samples; their profiling scopes still expose work
   that ran. Only short GUI publication work contributes to the frame CPU series.
+
+A row appears only once its measurement has a sample above zero, so readback and
+inspection rows stay out of the overlay until something was actually read back.
 
 Pending or failed output copies do not publish successful frame samples or erase
 last-completed time averages. Device replacement clears the graph series. These
