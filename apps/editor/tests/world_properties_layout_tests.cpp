@@ -33,7 +33,6 @@ using namespace ludus::editor;
 using namespace ludus::foundation;
 
 constexpr int32 SETTLE_TIMEOUT_MILLISECONDS = 10000;
-constexpr int32 SETTLE_MILLISECONDS = 50;
 constexpr int32 TEXTURE_SIZE = 4;
 /// Tall enough that every section is laid out on screen, so the screenshots show the whole inspector.
 constexpr int32 DOCK_HEIGHT = 2000;
@@ -272,9 +271,12 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     // Every section the Mac captures showed clipping: the scene instance, its material, Renderable and Transform.
     AttachComponent(dock, QStringLiteral("renderable"));
     AttachComponent(dock, QStringLiteral("transform"));
+    WaitForWorld(workspace);
     REQUIRE(QTest::qWaitFor(
                 [&dock]() {
-                    return dock.findChild<QWidget*>(QStringLiteral("worldMaterialThumbnail:Base color map")) != nullptr;
+                    const QWidget* thumbnailOrNull =
+                        dock.findChild<QWidget*>(QStringLiteral("worldMaterialThumbnail:Base color map"));
+                    return thumbnailOrNull != nullptr && thumbnailOrNull->isVisible() == true;
                 },
                 SETTLE_TIMEOUT_MILLISECONDS) == true);
     // A long colour value, as the staircase's Renderable showed it ("0.818579" read as "818579").
@@ -284,18 +286,40 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     REQUIRE(dock.findChild<QGroupBox*>(QStringLiteral("worldMaterial")) != nullptr);
     REQUIRE(dock.findChild<QLineEdit*>(QStringLiteral("worldField:scene/position2")) != nullptr);
     REQUIRE(dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sz")) != nullptr);
+    const QScrollArea* scrollOrNull = dock.findChild<QScrollArea*>(QStringLiteral("worldInspectorScroll"));
+    REQUIRE(scrollOrNull != nullptr);
+    REQUIRE(scrollOrNull->widget() != nullptr);
 
     for (const int32 width : {WORLD_PROPERTIES_MINIMUM_WIDTH, NARROW_DOCK_WIDTH, MEDIUM_DOCK_WIDTH, WIDE_DOCK_WIDTH})
     {
         INFO("Dock width " << width);
         dock.resize(width, DOCK_HEIGHT);
-        QTest::qWait(SETTLE_MILLISECONDS);
+        // The forms wrap at the new width. Let the scroll area process the resulting layout requests
+        // before checking the geometry, including the height that the wrapped rows need.
+        // Thanks to the Qt contributors for QScrollArea::event's layout-request handling:
+        // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qscrollarea.cpp#L252-L267
+        CHECK(QTest::qWaitFor(
+                  [&dock, scrollOrNull, width]() {
+                      if (dock.width() != width || scrollOrNull->widget()->width() > scrollOrNull->viewport()->width())
+                      {
+                          return false;
+                      }
+                      for (const QGroupBox* group : dock.findChildren<QGroupBox*>())
+                      {
+                          if (group->isVisible() == true && group->hasHeightForWidth() == true &&
+                              group->height() < group->heightForWidth(group->width()))
+                          {
+                              return false;
+                          }
+                      }
+                      return true;
+                  },
+                  SETTLE_TIMEOUT_MILLISECONDS) == true);
+        CHECK(dock.width() == width);
         CheckNothingClipped(*panelOrNull);
         if (qEnvironmentVariableIsSet("LUDUS_PROPERTIES_SCREENSHOT_DIRECTORY") == true)
         {
             const QDir shots(qEnvironmentVariable("LUDUS_PROPERTIES_SCREENSHOT_DIRECTORY"));
-            const QScrollArea* scrollOrNull = dock.findChild<QScrollArea*>(QStringLiteral("worldInspectorScroll"));
-            REQUIRE(scrollOrNull != nullptr);
             // The inspector's whole content at this width, then the dock as it shows.
             REQUIRE(scrollOrNull->widget()->grab().save(
                         shots.filePath(QStringLiteral("properties-%1.png").arg(width))) == true);
