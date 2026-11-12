@@ -569,6 +569,68 @@ two headers cost, and the next **Build-time budget** summary is the measurement.
 fixtures (12.4 s) is the next candidate and needs a test-support library that
 keeps `<filesystem>` behind one `.cpp`.
 
+## Borrowed views in the RHI headers
+
+The same 2026-11-08 profile ranked the `std::span<$>` template set as the most
+expensive instantiation: 49 s over 3490 instantiations. `rhi/raster.h` declared
+eleven `std::span<const X>` members and parameters, `render.h` three and
+`device.h` one, each instantiated in every translation unit that reaches them.
+[PR 1141](https://github.com/The-Ludus-Project/Ludus/pull/1141) replaced them
+with FoundationContainers' `BorrowedView` (range-for iteration, no `<span>`
+include) and retired the R1 `std::span` exception in
+[ADR 0003](../decisions/0003-standard-library-usage-policy.md). The migration
+guide for callers is in
+[fullscreen rendering](fullscreen-rendering.md).
+
+The two batch **Build-time budget** jobs around the merge show the effect.
+[Run 42925791682](https://github.com/The-Ludus-Project/Ludus/actions/runs/42925791682)
+validated `4674a7faf` (before PR 1141) and
+[run 42957466370](https://github.com/The-Ludus-Project/Ludus/actions/runs/42957466370)
+validated `62ec4d11e` (after it). Seconds are converted with each run's own
+normalization factor (305.1 / 620.6 and 259.0 / 354.6):
+
+| Analyzer entry | Before | After |
+| --- | ---: | ---: |
+| `std::span<$>` | 3535 instantiations, 46.9 s | 1638 instantiations, 21.9 s |
+| Nine `std::span<const rhi::Raster…>` / `TextureMipUpload` entries | 178 each, 20.8 s | not listed |
+| `std::span<const unsigned int>` | 202, 3.1 s | not listed |
+| Frontend parsing, normalized | 305.1 s | 259.0 s |
+
+The 46 s aggregate difference also includes the other pull requests merged
+between the two candidates, notably
+[PR 1139](https://github.com/The-Ludus-Project/Ludus/pull/1139), which shares
+renderer and RHI test compilations. The disappearance of the per-type RHI
+entries is attributable to PR 1141; the 25 s reduction of the `std::span<$>`
+set is an upper bound for it.
+
+Frontend time of eight RHI and renderer translation units on a 10-core Apple M5
+(pinned Clang 23, libc++, `macos-clang-development` flags, `-ftime-trace`
+"Total Frontend", minimum of three serial runs, before and after compilations
+interleaved). The source trees are `26dbd63d8^1` and `26dbd63d8`, the merge of
+PR 1141, so only its changes differ. `world_grid.cpp` and
+`gpu_preview_camera.cpp` are unchanged by it and measure the headers alone.
+Other builds kept the host's load average between 10 and 15:
+
+| Translation unit | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `modules/graphics/rhi/src/device.cpp` | 134 ms | 103 ms | -23% |
+| `modules/graphics/rhi/src/rhi_metal.mm` | 508 ms | 495 ms | -2% |
+| `modules/graphics/renderer/src/renderer.cpp` | 415 ms | 341 ms | -18% |
+| `modules/graphics/renderer/src/render_graph.cpp` | 262 ms | 241 ms | -8% |
+| `modules/graphics/renderer/src/render_graph_forward.cpp` | 180 ms | 145 ms | -20% |
+| `modules/graphics/renderer/src/render_graph_ray.cpp` | 179 ms | 146 ms | -19% |
+| `modules/graphics/renderer/src/world_grid.cpp` | 167 ms | 143 ms | -14% |
+| `modules/graphics/renderer/src/gpu_preview_camera.cpp` | 203 ms | 172 ms | -15% |
+| Sum | 2048 ms | 1787 ms | -13% |
+
+`rhi_metal.mm` is dominated by the Metal framework headers. With
+`-ftime-trace-granularity=0`, `world_grid.cpp` instantiates 26 `std::span`
+classes before and 6 after; the remaining six are `std::byte` and
+`unsigned char` spans reached through headers that still include `<span>`,
+such as FoundationContainers' `StaticArray` interoperability. Those container
+interfaces, and the `std::span` parameters left in other modules' public
+headers, are the next candidates for the same change.
+
 ## Build graph check
 
 Header parse budgets miss work that the build graph itself repeats: a source
