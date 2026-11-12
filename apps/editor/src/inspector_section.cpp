@@ -358,8 +358,9 @@ int32 InspectorLabelColumn::getAvailableWidth() const
         return mRoot.contentsRect().width();
     }
     // The root sits inset in the viewport by its parents' margins; the same inset is kept on the right.
+    // The root can be wider than the viewport only while its fields are too wide, never narrower than it shows.
     const int32 inset = mRoot.mapTo(mViewport.data(), QPoint(0, 0)).x();
-    return std::max(mViewport->width() - 2 * inset, 0);
+    return std::max(std::min(mViewport->width() - 2 * inset, mRoot.contentsRect().width()), 0);
 }
 
 const InspectorLabelColumn* InspectorLabelColumn::FindOrNull(const QWidget& widget)
@@ -414,6 +415,8 @@ void InspectorLabelColumn::Update()
     for (QFormLayout* form : forms)
     {
         applyTo(*form);
+        // Lay the rows out against the new column now, so no frame shows fields beside a column of the old width.
+        form->activate();
     }
     mIsUpdating = false;
 }
