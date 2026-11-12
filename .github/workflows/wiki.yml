@@ -17,10 +17,10 @@ on:
         description: Stable main commit captured with this candidate.
         required: true
         type: string
-      batch_macos_tools_only:
-        description: Run the two macOS documentation tool checks in a separate batch call.
-        type: boolean
-        default: false
+      batch_macos_tools_runner:
+        description: Run only the documentation tools on this macOS runner.
+        type: string
+        default: ''
   workflow_dispatch:
 
 permissions:
@@ -34,12 +34,12 @@ permissions:
 # cancels. A cancelled duplicate would otherwise leave a cancelled or failed
 # required check on the head commit and block the PR.
 concurrency:
-  group: wiki-${{ inputs.batch_sha || github.ref }}${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && format('-head-{0}', github.event.pull_request.head.sha) || '' }}${{ inputs.batch_macos_tools_only && '-macos' || '' }}
+  group: wiki-${{ inputs.batch_sha || github.ref }}${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && format('-head-{0}', github.event.pull_request.head.sha) || '' }}${{ inputs.batch_macos_tools_runner && format('-{0}', inputs.batch_macos_tools_runner) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 jobs:
   api-documentation:
-    if: ${{ !inputs.batch_macos_tools_only }}
+    if: inputs.batch_macos_tools_runner == ''
     name: Public API documentation
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -79,7 +79,7 @@ jobs:
           python scripts/check-wiki --documentation-only
 
   editor:
-    if: ${{ !inputs.batch_macos_tools_only && (github.event_name != 'pull_request' || github.base_ref != 'develop') }}
+    if: inputs.batch_macos_tools_runner == '' && (github.event_name != 'pull_request' || github.base_ref != 'develop')
     name: Build or reuse browser editor
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -232,14 +232,14 @@ jobs:
   macos-documentation-tools:
     # Pull requests build the wiki on Linux; the macOS tool checks run in
     # batches and on main, keeping scarce macOS runners for combined work.
-    if: github.event_name != 'pull_request' && (inputs.batch_sha == '' || inputs.batch_macos_tools_only)
+    if: github.event_name != 'pull_request' && (inputs.batch_sha == '' || inputs.batch_macos_tools_runner != '')
     name: Documentation tools (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        runner: ${{ inputs.batch_macos_tools_runner != '' && fromJSON(format('["{0}"]', inputs.batch_macos_tools_runner)) || fromJSON('["macos-15", "macos-15-intel"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
