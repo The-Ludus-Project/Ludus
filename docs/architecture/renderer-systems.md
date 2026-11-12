@@ -4226,6 +4226,41 @@ at Initialize, while the source texture bytes remain borrowed through destructio
 Use a bake revision key for physical geometry/material/light/environment changes;
 camera movement and exposure do not change these view-independent irradiance charts.
 
+### Mesh color textures for static irradiance
+
+Cem Yuksel's [*Mesh Color Textures*](https://doi.org/10.1145/3105762.3105780)
+(HPG 2017, §§3.1–3.4) stores shared surface samples at vertices and edges and
+packs the faces into independently generated atlas levels. Thanks to Yuksel for
+showing how the fourth texel of a diagonal bilinear footprint can make the
+sampled edge depend only on its two endpoints. Set the fourth value to
+`c1 + c2 - c0`, where `c1` and `c2` are the edge endpoints and `c0` is the
+opposite corner inside the triangle. At level zero, Ludus already has room
+for this fourth texel in its two-by-two tile interior. The current bake fills
+that interior and its gutter with the same centroid irradiance.
+
+A CPU experiment used `TryGetBakeChartUv` for two triangles that share an edge
+mapped diagonally in one tile and axially in the other. Over 257 edge positions,
+a linear irradiance ramp with corner values `(0.2, 0.6, 0.4)` and
+`(0.6, 0.4, 0.8)` had a maximum jump of 0.2 with the centroid baseline. Encoding
+the corner samples as RGBA8 and deriving the fourth texel in that same encoding
+reduced the jump to below `1e-12` in the simulated bilinear filter. With corner
+values `(1, 0, 0)` and `(0, 0, 0)`, the fourth texel must be −1. Clamping it to
+zero introduced a jump of 0.25 at the midpoint. The signed numerical reference
+kept the edge continuous. Across a real 0.25-to-0.75 irradiance discontinuity,
+forcing the edge to a shared 0.5 would introduce 0.25 error on each side.
+
+Defer a bake change until a per-placement bake can supply corner irradiance,
+identify edges where sharing is valid, and represent extrapolated values without
+clipping. A level-zero candidate should measure linear irradiance error against
+an independently sampled reference across smooth surfaces and across hard normals
+and visibility boundaries. Measure error near smooth edges as well as on them.
+Figure 6 shows how a change in gradient can reveal an edge whose values agree.
+Compare bake time, chart bytes and viewport time against centroid charts before
+extending the format. The CPU experiment measures reconstruction, and the paper's
+GPU timings (§4, Figure 13) cover a texture-only shader. The 4D coordinates and
+separate atlas levels become relevant if the bake needs minification beyond
+its existing level-zero sampling contract.
+
 ### Baked GI probe volume
 
 The optional analytic-light bake also samples incoming bounced radiance at
