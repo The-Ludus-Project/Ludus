@@ -475,10 +475,9 @@ workflow. The Linux wiki call starts at candidate capture alongside the browser,
 Windows and recovery workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for both wiki calls, and only the post-promotion job deploys.
-The ARM checks retain their sequence; the ARM sequence can increase
-the total batch duration. This ordering reduces demand; a platform-wide shortage
-can still require retrying a job whose annotations confirm runner acquisition
-failed before execution.
+The ARM sequence can increase total batch duration. A platform-wide shortage
+can still require retrying a job whose annotations show that it failed to acquire
+a runner.
 
 Native viewport scheduling acceptance requires presentation and camera input to
 advance in each of three consecutive one-second windows while input stays active.
