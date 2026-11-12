@@ -75,11 +75,10 @@ bool CancelImmediately(void*) noexcept
 
 TEST_CASE("OBJ fixture reads groups, relative indices and MTL terms into SceneIR", "[scene_cook][obj]")
 {
-    const fs::path root = fs::canonical(GetFixture("obj/room"));
     // The resolver borrows its root, spelled like a resolved cooker path ('/' separators).
-    const std::string rootText = root.generic_string();
+    const std::string rootText = GetCanonicalPath(GetFixture("obj/room"));
     NativeSourceResolver resolver(rootText);
-    const std::string text = ReadFileText(root / "room.obj");
+    const std::string text = ReadFileText(JoinPath(rootText, "room.obj"));
     MemoryByteSource source(AsBytes(text));
     SceneIr scene;
     DiagnosticLog log;
@@ -155,7 +154,7 @@ TEST_CASE("OBJ fixture reads groups, relative indices and MTL terms into SceneIR
 
 TEST_CASE("OBJ import cooks a deterministic, runtime-decodable bundle", "[scene_cook][obj]")
 {
-    const std::string entry = GetFixture("obj/room/room.obj").string();
+    const std::string entry = GetFixture("obj/room/room.obj");
     BestEffortResult first;
     BestEffortResult second;
     CookError error;
@@ -224,10 +223,10 @@ TEST_CASE("OBJ import cooks a deterministic, runtime-decodable bundle", "[scene_
     CHECK(contains("LICENSE.txt"));
 
     ScratchDirectory scratch;
-    REQUIRE(WriteBestEffortImport((scratch.Path / "out").string(), first, error) == true);
-    CHECK(fs::file_size(scratch.Path / "out/scene.luscn") == first.Bundle.GetSize());
-    CHECK(fs::exists(scratch.Path / "out/import-report.json"));
-    CHECK(ReadFileText(scratch.Path / "out/LICENSE.txt") == ReadFileText(GetFixture("obj/room/LICENSE.txt")));
+    REQUIRE(WriteBestEffortImport(scratch.GetPath("out"), first, error) == true);
+    CHECK(GetFileSize(scratch.GetPath("out/scene.luscn")) == first.Bundle.GetSize());
+    CHECK(IsExistingPath(scratch.GetPath("out/import-report.json")));
+    CHECK(ReadFileText(scratch.GetPath("out/LICENSE.txt")) == ReadFileText(GetFixture("obj/room/LICENSE.txt")));
 }
 
 TEST_CASE("OBJ faces: fan triangulation, smoothing groups and degenerate corners", "[scene_cook][obj]")
@@ -389,14 +388,14 @@ TEST_CASE("OBJ surface maps beyond the texture count are averaged into scalar te
     // one base texture per slot leaves room for one surface map, the rest are averaged.
     constexpr int32 MATERIAL_COUNT = static_cast<int32>(format::IMPORT_LIMITS.Textures) - 1;
     ScratchDirectory scratch;
-    std::filesystem::create_directories(scratch.Path / "textures");
-    std::filesystem::copy_file(GetFixture("obj/room/textures/rough.png"), scratch.Path / "textures/rough.png");
+    CreateDirectories(scratch.GetPath("textures"));
+    CopyRegularFile(GetFixture("obj/room/textures/rough.png"), scratch.GetPath("textures/rough.png"));
     std::string wavefrontText = "mtllib m.mtl\n";
     std::string mtl;
     for (int32 i = 0; i < MATERIAL_COUNT; ++i)
     {
         const std::string roughnessName = "rough" + std::to_string(i) + ".png";
-        std::filesystem::copy_file(scratch.Path / "textures/rough.png", scratch.Path / "textures" / roughnessName);
+        CopyRegularFile(scratch.GetPath("textures/rough.png"), JoinPath(scratch.GetPath("textures"), roughnessName));
         mtl += "newmtl M" + std::to_string(i) +
                "\nKd 0.5 0.5 0.5\nmap_Kd textures/rough.png\nPr 0.5\nmap_Pr -imfchan g textures/" + roughnessName +
                "\n";
@@ -411,11 +410,11 @@ TEST_CASE("OBJ surface maps beyond the texture count are averaged into scalar te
         wavefrontText += std::to_string(i);
         wavefrontText += "\nf -3 -2 -1\n";
     }
-    WriteFile(scratch.Path / "scene.obj", wavefrontText);
-    WriteFile(scratch.Path / "m.mtl", mtl);
+    WriteFile(scratch.GetPath("scene.obj"), wavefrontText);
+    WriteFile(scratch.GetPath("m.mtl"), mtl);
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportObjBestEffort((scratch.Path / "scene.obj").string(), {}, result, error) == true);
+    REQUIRE(ImportObjBestEffort(scratch.GetPath("scene.obj"), {}, result, error) == true);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);
@@ -443,7 +442,7 @@ TEST_CASE("OBJ map_d cooks LUSCN v5 alpha masks into the base texture", "[scene_
     constexpr usize TEXEL_BYTES = format::TEXEL_BYTES;
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportObjBestEffort(GetFixture("obj/cutout/cutout.obj").string(), {}, result, error) == true);
+    REQUIRE(ImportObjBestEffort(GetFixture("obj/cutout/cutout.obj"), {}, result, error) == true);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);
@@ -509,11 +508,11 @@ TEST_CASE("OBJ budget: excess materials merge and decorative emitters drop inste
         wavefrontText += std::to_string(i);
         wavefrontText += "\nf -3 -2 -1\n";
     }
-    WriteFile(scratch.Path / "scene.obj", wavefrontText);
-    WriteFile(scratch.Path / "m.mtl", mtl);
+    WriteFile(scratch.GetPath("scene.obj"), wavefrontText);
+    WriteFile(scratch.GetPath("m.mtl"), mtl);
     BestEffortResult result;
     CookError error;
-    REQUIRE(ImportObjBestEffort((scratch.Path / "scene.obj").string(), {}, result, error) == true);
+    REQUIRE(ImportObjBestEffort(scratch.GetPath("scene.obj"), {}, result, error) == true);
     CHECK(result.Summary.CookedMaterials <= format::IMPORT_LIMITS.Meshes);
     CHECK(ReportHasCode(result, codes::EMISSION_DROPPED));
     CHECK(ReportHasCode(result, codes::MATERIALS_MERGED));
@@ -522,7 +521,7 @@ TEST_CASE("OBJ budget: excess materials merge and decorative emitters drop inste
     BestEffortResult dry;
     BestEffortOptions options;
     options.IsDryRun = true;
-    REQUIRE(ImportObjBestEffort((scratch.Path / "scene.obj").string(), options, dry, error) == true);
+    REQUIRE(ImportObjBestEffort(scratch.GetPath("scene.obj"), options, dry, error) == true);
     CHECK(dry.Bundle.IsEmpty());
     CHECK(GetReport(dry).find("\"dry_run\": true") != std::string_view::npos);
 }
@@ -540,10 +539,10 @@ TEST_CASE("scene format detection uses content before extensions", "[scene_cook]
     BestEffortResult result;
     CookError error;
     ScratchDirectory scratch;
-    WriteFile(scratch.Path / "image.png", "\x89PNG\r\n");
-    CHECK(ImportSceneBestEffort((scratch.Path / "image.png").string(), {}, result, error) == false);
+    WriteFile(scratch.GetPath("image.png"), "\x89PNG\r\n");
+    CHECK(ImportSceneBestEffort(scratch.GetPath("image.png"), {}, result, error) == false);
     CHECK(error.Result == Status::Unsupported);
-    CHECK(ImportSceneBestEffort((scratch.Path / "missing.obj").string(), {}, result, error) == false);
+    CHECK(ImportSceneBestEffort(scratch.GetPath("missing.obj"), {}, result, error) == false);
     CHECK(error.Result == Status::NotFound);
 }
 
