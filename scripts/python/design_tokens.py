@@ -1,6 +1,6 @@
 """Ludus design tokens: one JSON source for the Editor, the init window and the browser editor.
 
-``config/design-tokens.json`` owns every colour, spacing and radius token and the
+``config/design-tokens.json`` owns every colour, spacing, radius and size token and the
 contrast pairs that must hold. Consumers:
 
 * the Qt editor reads a header generated from the JSON at configure time
@@ -100,7 +100,7 @@ def validate(document: dict) -> None:
                              "or a contrastExempt reason when it is decorative or inactive")
         if name in checked and exemption is not None:
             raise TokenError(f"colour '{name}' is both checked and contrastExempt; remove the exemption")
-    for group in ("spacing", "radius"):
+    for group in ("spacing", "radius", "size"):
         if not all(isinstance(value, int) and value > 0 for value in document.get(group, {}).values()):
             raise TokenError(f"{group} values must be positive integers")
 
@@ -161,6 +161,7 @@ def render_css(document: dict) -> str:
     lines += [f"  --ludus-space-{re.sub(r'(?<=[a-z])(?=[A-Z])', '-', key).lower()}: {value}px;"
               for key, value in document["spacing"].items()]
     lines += [f"  --ludus-radius-{key}: {value}px;" for key, value in document["radius"].items()]
+    lines += [f"  --ludus-size-{key}: {value}px;" for key, value in document.get("size", {}).items()]
     lines += ["}", "@media (prefers-color-scheme: light) {", "  :root {"]
     lines += declarations(LIGHT, "    ")
     lines += ["  }", "}", "@media (prefers-contrast: more) {", "  :root {"]
