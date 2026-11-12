@@ -671,6 +671,11 @@ candidate route. Optional effects use an authored ready fallback or explicit
 pending/unsupported status. The diagnostic error route itself must be prewarmed.
 Draw encoding never blocks on compilation or constructs a new pipeline key.
 
+The [pipeline and pass resource contract](renderer-systems.md#render-pipeline-and-pass-resources)
+defines reuse across graph instances, acquisition of device pipelines and
+retirement when a graph generation is replaced. The graph retains ownership
+of invocation bindings and dependencies.
+
 Select observable execution dependencies before checking bound inputs or lowering
 pipeline capabilities. Export/Present operations, root interface outputs and
 explicit active-camera routing obligations are roots. Retain nested effects;
@@ -687,13 +692,6 @@ RHI/GDI graph validation. It owns hazard lowering and accepted-submission state;
 the authoring compiler never commits speculative GPU state. Reflection and
 declared uses must agree; widen conservative ranges instead of guessing safety.
 Keep streaming outside the frame graph with explicit imported readiness.
-
-A retained operation can contain several Renderer-owned GPU stages, as in the
-clustered-deferred profile. The
-[Renderer execution plan](renderer-systems.md#render-pipeline-composition-and-execution)
-defines how to expose those stages and their resource uses under the parent
-pass while preserving its authored ports and order. A cross-operation
-dependency still uses the authored graph interface.
 
 Cache plans by topology/configuration/profile/resource compatibility. Bind fresh
 scene/view data and imported resources each frame, retaining exact versions.

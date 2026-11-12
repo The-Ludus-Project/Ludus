@@ -262,26 +262,23 @@ the [architecture's cross-checks](render-graph-authoring.md#contemporary-cross-c
 These readings are not benchmarks, full engine-source audits, or evidence of new
 Ludus/backend features. No new toolchain version is selected.
 
-## Render pipeline composition follow-up
+### Render pipeline resource management follow-up
 
-The updated reference catalog pointed to three REAC talks. The review used
-the talk slides and available speaker notes, then checked the current cooked
-plan, serial encoder and clustered-deferred implementation in Ludus. The
-[render pipeline design](renderer-systems.md#render-pipeline-composition-and-execution)
-uses the results to specify the private execution stages beneath an authored
-operation.
+The updated local catalog led to these REAC talks. The review checked the
+slides against `RenderGraphActivation`, the bilinear pass's program
+preparation and RHI's raster request path. The
+[resource contract](renderer-systems.md#render-pipeline-and-pass-resources)
+defines the proposed changes.
 
-| Primary material reviewed | Observed design and Ludus decision |
+| Primary material reviewed | Ludus decision |
 | --- | --- |
-| Charlie Birtwistle and Francois Durand, [“Task Graph Renderer at Activision,” REAC 2023](https://enginearchitecture.org/downloads/reac2023_task_graph_renderer.pdf), printed slides 13–23, 26 and 31–34 | Task definitions declare accesses, a setup function composes a schedule, and existing leaf encoders can be reused. Per-view temporal resources address split-screen history, and inspection follows resources through the resulting tasks. Use the expanded plan to drive execution and inspection in Ludus, with history committed on accepted work. Keep the existing serial order and RHI submission path. |
-| Nicolas Lopez and Michel Bouchard, [“Anvil Rendering Architecture,” REAC 2025](https://enginearchitecture.org/downloads/REAC_2025_Anvil.pdf), deck slides 15–17, 38 and 43–49 | Anvil describes the control and scaling costs of registering packaged passes for runtime resource resolution, hidden game-specific shader hooks, and the need for workload-specific schedules. Use explicit authored dependencies and Renderer-owned expansion for a bounded set of profiles. Show which route was selected and why. |
-| Sebastian Aaltonen, [“Modern Mobile Rendering @ HypeHype,” REAC 2023](https://enginearchitecture.org/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf), PDF pp. 14–15 and 23–25 | HypeHype prepares pipelines and persistent material bindings outside the draw loop and groups dynamic updates by frequency. Prepare only Ludus's admitted recipes and compatible stages, then bind fresh frame inputs through the existing resource services. Draw-stream compression and direct mapped writes would need separate measurements and platform contracts. |
+| Oleksandr Drazhevskyi, [“Resource Management Architecture in 4A Engine,” REAC 2024](https://enginearchitecture.org/downloads/REAC_2024_4A.pdf), deck slides 9–14 and 30–35 | The talk distinguishes logical resources, views and backend storage, and shows logical textures borrowing cache entries. Apply the ownership distinction to pass definitions, their invocations and device pipeline leases. The source example is texture streaming. |
+| Sebastian Aaltonen, [“Modern Mobile Rendering @ HypeHype,” REAC 2023](https://enginearchitecture.org/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf), PDF pp. 14–15 and 23 | The renderer prepares pipeline state and material bindings before the draw loop. Prewarm the recipes required by Ludus's candidate graph and reuse compatible state across invocations. Scope preparation to the admitted recipes needed by the selected configuration. |
+| Nicolas Lopez and Michel Bouchard, [“Anvil Rendering Architecture,” REAC 2025](https://enginearchitecture.org/downloads/REAC_2025_Anvil.pdf), deck slides 15–17 and 43–46 | Anvil reports difficulty controlling and scaling packaged pass registration with runtime resource resolution. Use references resolved by Ludus's existing graph library and package closure, then resolve device compatibility at preparation. |
 
-The talks describe production choices on their own workloads. Ludus's first
-acceptance comparison uses its current clustered-deferred encoder with the
-same inputs and follows private depth and the G-buffer through their scheduled
-uses. The first migration uses Ludus's existing package and command
-representations.
+These sources motivate ownership and preparation boundaries. The proposed
+Ludus comparison measures reuse, readiness and lifetime on a current
+portable pass.
 
 ## Conference and journal research plan
 

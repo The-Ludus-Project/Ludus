@@ -940,8 +940,7 @@ profile. Detailed retention, state and submission rules remain owned by
    finite values and configured capacities before publication.
 4. Build render views, CPU visibility/LOD and draw lists from those values.
 5. Resolve ready pipelines/bindings and select declared effect variants.
-6. Bind ordered passes to the current inputs; GDI validates declared subresource
-   uses and plans imports.
+6. Build ordered passes; GDI validates declared subresource uses and plans imports.
 7. Record/submit through one RHI owner. On acceptance, transfer retained uses to
    its authoritative ledger; on failure discard unsubmitted reservations safely.
 8. Commit temporal state only for accepted render work under the view's policy.
@@ -963,107 +962,6 @@ Bounded diagnostics carry source/view/object/pass IDs. Optional debug geometry
 may be dropped with a counter; essential scene work must not silently disappear
 because a packet buffer overflowed. A frame admission failure returns a status
 and preserves the last valid presentation where the surface permits it.
-
-## Render pipeline composition and execution
-
-Proposed, November 2026. A cooked `RenderGraphPlan` describes authored
-operations in serial order. It is sufficient for the flat raster route, but
-some profiles expand an operation inside the encoder. For example,
-`RenderGraph::State::EncodePasses` can record a shadow atlas before
-`ColorAndDepth`, and `RenderGraphDeferredPass::Draw` can record atmosphere
-tables, copy depth, write the G-buffer, resolve lighting with sky, and draw
-overlays. The G-buffer and its consumers are private to Renderer. Existing GPU
-scopes time several of these stages, while the cooked pass and resource tables
-describe their parent operation and its public attachments. This makes it hard
-to trace a private resource from its producer to its last use or explain which
-work changed when a profile changed.
-
-### Expand the selected profile during preparation
-
-Keep authored pipeline nodes, their typed ports and ordered dependencies in
-the [authoring contract](render-graph-authoring.md#pipeline-readiness-and-execution).
-After package admission, Renderer expands each retained operation into a
-bounded, private serial plan for the selected profile. Use concrete records
-and existing stage encoders. Each stage has a parent pass index, a stable
-renderer-owned stage identifier, an ordinal, a view or shared-resource scope,
-and the resource accesses that cross the stage boundary. Resolve the parent
-index through the package's pass names and source mapping. Include attachment
-format, extent policy, aspects, load/store intent and explicit order constraints
-where they apply. Model shadow atlas production once at its existing scope and
-preserve every consumer and the current ordering. A stage may group draws in
-the same render pass, such as sky and lighting. The stage boundary should
-expose resource use without forcing an extra native pass.
-
-Use the same records to drive serial execution and produce a bounded report.
-For each stage, show planned order, declared accesses, whether recording
-completed, skipped or failed, and the reason where applicable. Associate GPU
-timings with those stage identities where available. Identify
-resources as imported, private scratch, per-view history or exported. Show the
-producer, first and last scheduled use, resolved descriptor, and logical
-attachment bytes when known. Logical bytes and scheduled last use describe the
-plan. Physical residency and reuse depend on the existing allocation and RHI
-completion contracts, including holds on exported images. RHI retains authority
-over legal bindings, barriers, accepted submission and retirement.
-
-Allow only profiles and structural alternatives defined by the cooked package
-and existing Renderer capabilities. Resolve their selection before recording
-and expose the requested and selected route with any rejection or fallback
-reason. Effect insertion requires an explicit authored dependency or a
-Renderer-owned expansion associated with a selected profile. This keeps the
-plan explainable across Editor and game hosts. Keep renderer-generated stages
-private to their parent until an authored consumer needs a new typed port.
-
-### Prepare by update frequency
-
-| Change | Work admitted before recording |
-| --- | --- |
-| Package, profile or structural setting | Expand and validate stage order, required resource uses and ready pipeline recipes. Resolve formats, samples and layout compatibility with the existing recipe keys. |
-| Drawable extent or target binding | Re-resolve affected descriptors and stage bindings. A compatible extent-only change keeps the stage order and pipeline keys. Prepare replacements under the existing resize and activation boundaries. |
-| Scene, camera or ordinary uniform change | Bind the exact accepted snapshots and leases, prepare visibility and per-view data, and service uploads. Reuse compatible prepared stages. |
-
-Give history to the owning graph instance, view and effect output. Share
-immutable packages and ready pipelines across compatible instances. Initialize
-history when the producer or output contract becomes incompatible, the extent
-changes, or the view declares a cut. Effects still own their additional
-invalidation conditions. Advance history only after the corresponding work is
-accepted, and report presentation separately. Keep the active generation
-drawable during candidate preparation or failure. Stage reports identify the
-plan generation and view revision so a candidate diagnostic can be understood
-alongside an older presented image.
-
-### First migration and acceptance
-
-Start with the existing [clustered-deferred](../development/render-graph-authoring.md#default-clustered-deferred-lighting)
-`ColorAndDepth` operation. Make its
-shadow, atmosphere-table, conditional depth-copy, geometry, lighting/sky and
-overlay stages visible through the private plan and record through the current
-encoders. In the load-depth route, the copy reads logical depth and initializes
-private depth. Geometry writes private depth and three G-buffer color targets.
-The lighting resolve reads them and writes the logical color and depth, which
-the overlay stage loads. Keep existing package bytes, attachment allocation,
-load/store behavior, submission ordering and completion tracking for this
-slice. Treat a later change to the private attachment allocator or GPU
-scheduling as an independent optimization.
-
-- Compare the serial stage list, bound attachment accesses and command order
-  against the existing route for clear and load depth, with atmosphere and
-  shadows enabled and disabled. Check stage omissions and their reasons.
-- Compare frozen color/depth outputs and coverage for the same scene, camera
-  and settings. Verify a compatible extent-only resize reuses the plan and
-  pipeline identities. Exercise pending, rejected and successful replacement,
-  including a frame still in flight and an outstanding exported-image consumer.
-- Exercise the production World viewport on an admitted native deferred
-  target and the portable raster fallback through its existing browser path.
-  Report cold preparation, warm CPU recording time, GPU pass time and peak
-  logical attachment bytes under matched inputs. Require image and submission
-  parity before attributing any performance change to the new plan.
-
-Thanks to Charlie Birtwistle and Francois Durand for their typed task inputs
-and stage inspection, Nicolas Lopez and Michel Bouchard for their account of
-explicit schedules and runtime feature registration, and Sebastian Aaltonen
-for separating low-frequency preparation from draws. The
-[conference review](renderer-systems-gems-review.md#render-pipeline-composition-follow-up)
-records the sources and how Ludus adapts them.
 
 ## Primitive submission, visibility and batching
 
@@ -1231,17 +1129,108 @@ profile's verified layout. Cache immutable binding snapshots, allocate dynamic
 constants from aligned completion-scoped storage, and intern compatible layout
 identities through GDI rather than relying on structurally similar handles.
 
-Pipeline keys include shader versions, layout identity, vertex input, topology,
-attachment formats, samples, raster/depth/blend state and declared specialization.
-Viewport size and dynamic constants normally do not belong in the key. Hash
-collisions compare descriptions. Enumerate the legal static variant space;
-record used variants and prewarm before activation. Pipeline readiness is
-asynchronous where the backend permits, with a compatible ready fallback or
-explicit not-ready status. Cold first-use stalls remain visible telemetry.
-Persist native caches only with validated device/driver compatibility; cache
-failure is recoverable. Never claim offline shader compilation eliminates all
-driver pipeline work. Reload swaps package, layouts, bindings and pipelines as
-one validated version set; failed reload leaves the prior set usable.
+### Render pipeline and pass resources
+
+Proposed, November 2026. A project can reuse a pass definition across graphs and
+run it with different inputs. Its invocations should share a prepared pipeline
+when their device state matches. Today `RenderGraphActivation` stages an
+immutable package and retains the active graph until the candidate is ready.
+Many graph programs still create their own shader, layout and pipeline handles
+during preparation. RHI's raster `RequestPipeline` coalesces requests that
+already share exact shader and layout handles. Two graph generations can
+therefore prepare the same device state separately.
+
+| Resource or instance | Identity and owner |
+| --- | --- |
+| Pass definition | A reusable authored node or subgraph and its typed interface, declared resource use and admitted pipeline recipes. The graph library owns its stable ID within its authoring scope. A cooked package pins the definition revision and its dependencies. |
+| Pipeline recipe | An immutable description of admitted shader stages, layout and fixed state. The package owns the portable recipe and its provenance. Several definitions or invocations can reference the same recipe. |
+| Prepared pipeline | A device-session resource for one compatible recipe. Renderer selects the recipe, GDI manages acquisition and prewarming through the existing RHI services, and RHI owns the native handle and retirement. |
+| Pass invocation | The graph instance owns input bindings, targets, dynamic values and any persistent history. The frame uses the exact prepared pipeline and resource versions selected for that invocation. |
+
+Use the existing graph library and package closure to publish reusable
+definitions. Give references a source identity and an exact cooked revision.
+A copied invocation can keep the same definition while changing its port
+bindings. An edited definition produces a new revision. A compatible new
+definition revision can retain the same pipeline. Graph order, attachment
+load/store operations and the declared uses remain part of the
+[graph contract](render-graph-authoring.md#pipeline-readiness-and-execution).
+
+#### Pipeline identity and reuse
+
+- Within a device session, reuse immutable stages by their validated target
+  artifact, entry point and interface metadata, and layouts by their complete
+  binding contract. Hashes may find candidates. Compare the canonical
+  descriptions before sharing and retain the exact RHI incarnations. Distinct
+  authored names can resolve to the same device state.
+- Resolve recipes against the target compatibility contract before requesting
+  a pipeline. Include stage and layout incarnations, vertex interface,
+  topology, fixed raster/depth/stencil/blend state, ordered attachment
+  formats, sample count and any admitted specialization. Compute and ray
+  recipes carry their own stage, layout and fixed state contracts. Dynamic
+  values such as camera constants, attachment handles, and an extent-only
+  resize stay with the invocation unless a recipe explicitly specializes on
+  one of them.
+- The current RHI raster request comparison omits the explicit color format
+  sequence, sample count and stencil state carried by the raster description.
+  Qualify complete equality in RHI before using shared requests for those
+  descriptions. The initial migration uses the existing single-sample
+  portable raster contract. Sharing for compute and ray pipelines requires
+  their own RHI qualification.
+
+#### Acquisition, activation and release
+
+1. During graph preparation, resolve the required recipes for the selected
+   configuration and target. Request each distinct recipe once per owning
+   generation and keep its lease for as long as any invocation can record
+   with it. Prioritize required requests over speculative prewarm. Use the
+   existing owner-thread polling and backend creation path. A native driver
+   call can still take time, so measure preparation separately from recording.
+2. Treat pending, ready and failed as explicit outcomes. Publish the complete
+   candidate with the existing activation transaction only after all required
+   pipelines, compatible bindings and other prerequisites are ready. Keep the
+   last drawable generation during preparation or failure. An optional
+   invocation can use an explicitly authored compatible ready alternative.
+   Report the requested recipe, outcome and available repair at the owning pass.
+3. Record using the resolved handles. A candidate that changes only invocation
+   values can reuse the current pipeline. If a shader, layout or fixed state
+   changes, acquire the new dependencies before releasing the active leases.
+   Release a cancelled candidate's requests and reject stale completions by
+   device session and generation. Accepted work retains the retired pipeline
+   through the RHI completion ledger. Device loss invalidates prepared
+   handles, while the cooked definitions and recipes remain available to
+   prepare for the replacement device.
+
+Track unique recipes, outstanding requests and live pipeline records
+separately. Budget active, preparing and retired records that still occupy
+capacity. Apply the existing RHI quotas and drop speculative requests before
+rejecting required preparation for capacity. A warm lease pins a ready
+pipeline. The final release removes its shared request entry, with physical
+retirement governed by RHI. Measure reuse before retaining an idle working
+set. Any future persistent driver cache is a device/driver-qualified
+accelerator. Its absence or rejection falls back to ordinary preparation.
+
+#### First migration and acceptance
+
+Start with the existing built-in bilinear pass. It currently creates shader,
+layout and pipeline handles in `RenderGraphUpscaleProgram`. Share its immutable
+program dependencies and acquire the compatible raster pipeline through the
+request service. Keep per-invocation input bindings and outputs with their
+graph. Exercise two instances of the same pass and an overlapping active and
+candidate generation. Verify one backend creation for matching state, distinct
+requests for incompatible target contracts, and no new pipeline request on a
+compatible resize or input rebind. Compare output with the current pass, cancel
+a pending replacement and retire a released pipeline while an accepted frame
+still references it. Use existing native and browser raster fixtures to
+qualify the profile. Record creation counts and preparation time separately
+from frame time. Before widening reuse, test inequality for every newly
+admitted field that affects compatibility or rendering.
+
+Thanks to Oleksandr Drazhevskyi for separating logical resources from their
+backend objects, Sebastian Aaltonen for preparing pipeline state outside the
+draw loop, and Nicolas Lopez and Michel Bouchard for describing the ownership
+costs of registering packaged passes. The
+[reference review](renderer-systems-gems-review.md#render-pipeline-resource-management-follow-up)
+records the evidence and its application here.
 
 ## Material system design
 
