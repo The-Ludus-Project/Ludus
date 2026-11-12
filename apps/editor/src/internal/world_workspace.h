@@ -340,7 +340,7 @@ private:
     /// Entity hierarchy column of the splitter; SetChromeVisible hides it.
     QWidget* mHierarchy;
     /// The "+" Add World Preset button beside the entity search; hidden for project schemas.
-    QToolButton* mAddObjectButton = nullptr;
+    QToolButton* mAddObjectButton;
     /// Light switches under the entity list, in the hierarchy column.
     WorldLightsPanel* mLightsPanel;
     QTabWidget* mWorldLists;

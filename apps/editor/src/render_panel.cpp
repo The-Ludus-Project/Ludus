@@ -85,12 +85,13 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
         menuItems.append({action, button});
     }
     connect(viewportMenu, &QMenu::aboutToShow, this, [menuItems]() {
-        for (const auto& [action, button] : menuItems)
+        for (const QPair<QAction*, QPushButton*>& item : menuItems)
         {
-            action->setText(button->text().remove(QStringLiteral(" ▸")).remove(QStringLiteral(" ▾")));
-            action->setToolTip(button->toolTip());
-            action->setEnabled(button->isEnabled());
-            action->setChecked(button->isChecked());
+            const QPushButton& button = *item.second;
+            item.first->setText(button.text().remove(QStringLiteral(" ▸")).remove(QStringLiteral(" ▾")));
+            item.first->setToolTip(button.toolTip());
+            item.first->setEnabled(button.isEnabled());
+            item.first->setChecked(button.isChecked());
         }
     });
     mViewportMenuButton->setMenu(viewportMenu);

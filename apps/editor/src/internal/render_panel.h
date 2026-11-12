@@ -121,7 +121,7 @@ private:
     QPushButton* Refresh_;
     QPushButton* Stop_;
     QPushButton* Tint_;
-    QToolButton* mViewportMenuButton = nullptr;
+    QToolButton* mViewportMenuButton;
     QComboBox* Cameras_;
     QSlider* Yaw_;
     QSlider* Pitch_;
