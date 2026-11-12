@@ -488,6 +488,8 @@ function(ludus_add_render_graph_pixel_fixtures target)
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/lusl_composite.lusl" RASTER VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_compile_shader(TARGET ${target} NAME rg2_depth_display RASTER
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/depth_display.slang" VERTEX VSMain FRAGMENT PSMain)
+    ludus_compile_shader(TARGET ${target} NAME rg2_depth_bits RASTER
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/depth_bits.slang" VERTEX VSMain FRAGMENT PSMain)
     target_include_directories(${target} PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(${target} PRIVATE Ludus::FoundationFilesystem)
 endfunction()
