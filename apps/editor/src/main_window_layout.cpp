@@ -87,6 +87,8 @@ namespace
 // older layouts reset. Version 5 added the render-graph Render Preview tool window.
 constexpr foundation::int32 LAYOUT_VERSION = 7;
 constexpr foundation::int32 PERCENT = 100;
+/// How long a World edit message stays in the status bar before the workspace status returns.
+constexpr foundation::int32 WORLD_STATUS_MESSAGE_MILLISECONDS = 8000;
 // First-run window: this share of the screen, at least the minimum below.
 constexpr foundation::int32 DEFAULT_WINDOW_PERCENT = 85;
 constexpr foundation::int32 MIN_WINDOW_WIDTH_PIXELS = 1100;
@@ -359,6 +361,13 @@ void MainWindow::BuildUi()
     // A click takes focus so the World's shortcuts apply, but Tab passes over the container to its controls: it has
     // nothing of its own to show focus on.
     World_->setFocusPolicy(Qt::ClickFocus);
+    // The World reports edits in the window's status bar while it is the shown document.
+    connect(World_, &WorldWorkspace::StatusMessage, this, [this](const QString& message) {
+        if (World_->isVisible() == true)
+        {
+            statusBar()->showMessage(message, WORLD_STATUS_MESSAGE_MILLISECONDS);
+        }
+    });
     Scripts_ = new ScriptWorkspace(Controller_, mDocuments);
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
     mCodeArea = new CodeEditorArea(mDocuments);

@@ -17,12 +17,15 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
-#include <QHBoxLayout>
 #include <QLabel>
+#include <QList>
+#include <QMenu>
+#include <QPair>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace ludus::editor
@@ -38,7 +41,6 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     Preview_.SetPresentationVisible(false);
 #endif
-    QHBoxLayout* actions = new QHBoxLayout;
     Open_ = new QPushButton(QStringLiteral("Resume viewport"), this);
     Open_->setObjectName(QStringLiteral("worldPreview3D"));
     Open_->setToolTip(QStringLiteral("Validate the World snapshot and project render.preview.json, then resume the "
@@ -54,14 +56,44 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
     Tint_->setObjectName(QStringLiteral("worldPickTint"));
     Tint_->setToolTip(QStringLiteral("Load valid preview bindings, select a renderable and finish pending fields. The "
                                      "display color picker supplies linear RGB fields for Apply."));
-    // One compact row, so the viewport below keeps the height.
+    // The viewport's occasional commands share one menu button, which the World places on its header row, so the
+    // viewport keeps the height a row of buttons took. Each item presses the command button it stands for; the
+    // hidden buttons stay the one place each command's state and tooltip live.
+    mViewportMenuButton = new QToolButton(this);
+    mViewportMenuButton->setObjectName(QStringLiteral("worldViewportMenu"));
+    mViewportMenuButton->setText(QStringLiteral("Viewport"));
+    mViewportMenuButton->setAccessibleName(QStringLiteral("Viewport commands"));
+    mViewportMenuButton->setToolTip(
+        QStringLiteral("Resume, pause or reload the viewport, tint the selection, or show camera and diagnostics."));
+    mViewportMenuButton->setPopupMode(QToolButton::InstantPopup);
+    mViewportMenuButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mViewportMenuButton->setAutoRaise(true);
+    QMenu* viewportMenu = new QMenu(mViewportMenuButton);
+    viewportMenu->setToolTipsVisible(true);
+    QList<QPair<QAction*, QPushButton*>> menuItems;
     for (QPushButton* button : {Open_, Refresh_, Stop_, Tint_, details})
     {
-        button->setProperty("density", QStringLiteral("compact"));
-        actions->addWidget(button);
+        if (button == details)
+        {
+            viewportMenu->addSeparator();
+        }
+        button->hide();
+        QAction* action = viewportMenu->addAction(QString());
+        action->setObjectName(button->objectName() + QStringLiteral("Action"));
+        action->setCheckable(button->isCheckable());
+        connect(action, &QAction::triggered, button, [button]() { button->click(); });
+        menuItems.append({action, button});
     }
-    actions->addStretch();
-    layout->addLayout(actions);
+    connect(viewportMenu, &QMenu::aboutToShow, this, [menuItems]() {
+        for (const auto& [action, button] : menuItems)
+        {
+            action->setText(button->text().remove(QStringLiteral(" ▸")).remove(QStringLiteral(" ▾")));
+            action->setToolTip(button->toolTip());
+            action->setEnabled(button->isEnabled());
+            action->setChecked(button->isChecked());
+        }
+    });
+    mViewportMenuButton->setMenu(viewportMenu);
     Status_ = new QLabel(
         QStringLiteral(
             "Valid World fields update the embedded viewport. The project supplies authoring/render.preview.json."),

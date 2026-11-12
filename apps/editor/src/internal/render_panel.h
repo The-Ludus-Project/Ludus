@@ -14,6 +14,7 @@ class QCheckBox;
 class QLabel;
 class QPushButton;
 class QSlider;
+class QToolButton;
 class QDoubleSpinBox;
 QT_END_NAMESPACE
 namespace ludus::editor
@@ -48,6 +49,11 @@ public:
     [[nodiscard]] LUDUS_INLINE PreviewViewport& GetViewport() noexcept
     {
         return *Viewport_;
+    }
+    /// The "Viewport" menu of resume, pause, reload, tint and camera commands; its owner places it in a header row.
+    [[nodiscard]] LUDUS_INLINE QToolButton& GetViewportMenuButton() noexcept
+    {
+        return *mViewportMenuButton;
     }
     /// @brief Begin Play in the viewport: the game launched with outAddress opens in this viewport.
     ///
@@ -115,6 +121,7 @@ private:
     QPushButton* Refresh_;
     QPushButton* Stop_;
     QPushButton* Tint_;
+    QToolButton* mViewportMenuButton = nullptr;
     QComboBox* Cameras_;
     QSlider* Yaw_;
     QSlider* Pitch_;

@@ -217,6 +217,9 @@ Q_SIGNALS:
     void PlayRequested(ludus::editor::PlayMode mode);
     /// GetRenderPreview now returns a different viewport renderer (the shown view changed).
     void RenderPreviewChanged();
+    /// The World reported what an edit, import or save did; the window shows it in its status bar.
+    /// @param message One sentence for the user, already including any recovery warning.
+    void StatusMessage(const QString& message);
 
 private:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -335,6 +338,8 @@ private:
     QWidget* mHeader;
     /// Entity hierarchy column of the splitter; SetChromeVisible hides it.
     QWidget* mHierarchy;
+    /// The "+" Add World Preset button beside the entity search; hidden for project schemas.
+    QToolButton* mAddObjectButton = nullptr;
     /// Light switches under the entity list, in the hierarchy column.
     WorldLightsPanel* mLightsPanel;
     QTabWidget* mWorldLists;

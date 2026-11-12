@@ -90,8 +90,22 @@ constexpr foundation::float64 SCENE_POSITION_LIMIT = 1000000;
 constexpr foundation::float64 SCENE_ROTATION_LIMIT = 360;
 constexpr foundation::float64 SCENE_SCALE_MINIMUM = 0.000001;
 constexpr foundation::int32 ENTITY_LIST_MINIMUM_HEIGHT = 96;
+/// Narrowest the entity column may be dragged, in logical pixels.
+constexpr foundation::int32 HIERARCHY_MINIMUM_WIDTH = 130;
 constexpr foundation::int32 ENTITY_SECTION_STRETCH = 3;
 constexpr foundation::int32 WORLD_LISTS_SECTION_STRETCH = 2;
+/// The extension every World file carries; the breadcrumb leaves it out.
+constexpr QLatin1StringView WORLD_FILE_SUFFIX(".world.json");
+/// A project-relative World path as a breadcrumb: "authoring/starter.world.json" reads "authoring › starter".
+QString MakeWorldBreadcrumb(const QString& relativePath)
+{
+    QString crumb = relativePath;
+    if (crumb.endsWith(WORLD_FILE_SUFFIX, Qt::CaseInsensitive) == true)
+    {
+        crumb.chop(WORLD_FILE_SUFFIX.size());
+    }
+    return crumb.replace(QLatin1Char('/'), QStringLiteral(" › "));
+}
 bool Read(const QString& path, QByteArray& output, foundation::int64 limit)
 {
     const QFileInfo info(path);
@@ -390,7 +404,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     mImportReportToggleOrNull->setText(QStringLiteral("Import report"));
     mImportReportToggleOrNull->setCheckable(true);
     mImportReportToggleOrNull->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    mImportReportToggleOrNull->setArrowType(Qt::RightArrow);
+    // A pressed toggle with the report icon, not a disclosure arrow: the report opens below the header row.
+    mImportReportToggleOrNull->setIcon(GetEditorIcon(EditorIcon::Information));
+    mImportReportToggleOrNull->setAutoRaise(true);
+    mImportReportToggleOrNull->setToolTip(QStringLiteral("Show or hide what the last scene import reported."));
     mImportReportToggleOrNull->hide();
     files->addWidget(mImportReportToggleOrNull);
     header->addLayout(files);
@@ -456,10 +473,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     ImportReport_->hide();
     connect(mImportReportToggleOrNull, &QToolButton::toggled, this, [this](bool isExpanded) {
         ImportReport_->setVisible(isExpanded);
-        mImportReportToggleOrNull->setArrowType(isExpanded == true ? Qt::DownArrow : Qt::RightArrow);
     });
     Render_ = new RenderPanel(this);
     header->addWidget(Render_);
+    // The viewport's command menu reads after the World's breadcrumb, on the row that already holds its commands.
+    files->insertWidget(files->indexOf(PathLabel_) + 1, &Render_->GetViewportMenuButton());
     connect(Render_, &RenderPanel::Starting, this, [this]() {
         updateShownRenderPreview(false);
         Q_EMIT PreviewStarting();
@@ -476,17 +494,14 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     Split_ = split;
     split->setObjectName(QStringLiteral("worldSplitter"));
     layout->addWidget(split, 1);
-    QScrollArea* hierarchyScroll = new QScrollArea(split);
-    mHierarchy = hierarchyScroll;
-    hierarchyScroll->setObjectName(QStringLiteral("worldHierarchyScroll"));
-    hierarchyScroll->setWidgetResizable(true);
-    hierarchyScroll->setMinimumWidth(130);
-    QWidget* left = new QWidget(hierarchyScroll);
+    // The column does not scroll as a whole: the entity list and the World lists share its height through the divider
+    // below and each scrolls itself, so the first entity row is never half under the top edge.
+    QWidget* left = new QWidget(split);
+    mHierarchy = left;
+    left->setObjectName(QStringLiteral("worldHierarchy"));
+    left->setMinimumWidth(HIERARCHY_MINIMUM_WIDTH);
     QVBoxLayout* hierarchy = new QVBoxLayout(left);
-    // A docked workspace may be shorter than the hierarchy's controls. Scroll
-    // the contents instead of compressing styled button text below its hint.
-    hierarchy->setSizeConstraint(QLayout::SetMinimumSize);
-    hierarchyScroll->setWidget(left);
+    hierarchy->setContentsMargins(0, 0, 0, 0);
     // The divider lets the entity hierarchy and the World lists share the column's height.
     QSplitter* sections = new QSplitter(Qt::Vertical, left);
     sections->setObjectName(QStringLiteral("worldHierarchySections"));
@@ -505,7 +520,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                                          "Right-click to add, duplicate, or delete entities."));
     mEntities->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
     mEntitySearch = new WorldEntitySearch(*mEntities, entityColumn);
-    entityLayout->addWidget(mEntitySearch);
+    // Search, its count and the add button share one row above the list.
+    QHBoxLayout* searchRow = new QHBoxLayout;
+    searchRow->setSpacing(design::SPACING_EXTRA_SMALL);
+    searchRow->addWidget(mEntitySearch, 1);
+    entityLayout->addLayout(searchRow);
     entityLayout->addWidget(mEntities, 1);
     mEntityMenu = new QMenu(this);
     mEntityMenu->setObjectName(QStringLiteral("worldEntityContextMenu"));
@@ -524,27 +543,29 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                            : itemOrNull->data(0, Qt::UserRole).toString());
     });
     QToolButton* addObject = new QToolButton(entityColumn);
+    mAddObjectButton = addObject;
     addObject->setObjectName(QStringLiteral("worldAddObject"));
     addObject->setText(QStringLiteral("Add World Preset"));
-    addObject->setToolTip(QStringLiteral("Create geometry, lights, a GI probe volume, a player spawn or an aperture in "
-                                         "a default World. Project-owned schemas use Add Entity and their declared "
-                                         "components."));
+    addObject->setAccessibleName(addObject->text());
+    addObject->setIcon(GetEditorIcon(EditorIcon::Add));
+    addObject->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    addObject->setAutoRaise(true);
+    addObject->setToolTip(QStringLiteral("Add World Preset: geometry, lights, a GI probe volume, a player spawn or an "
+                                         "aperture."));
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject->text(), addObject);
     mEntityMenu->addSeparator();
     mEntityMenu->addMenu(objectMenu);
     addObject->setMenu(objectMenu);
-    addObject->setMinimumHeight(addObject->sizeHint().height());
-    entityLayout->addWidget(addObject);
+    // Presets exist only in a default World; a project schema adds entities from the context menu instead, so the
+    // button and the submenu are hidden rather than offering a menu of disabled items (see Changed).
+    searchRow->addWidget(addObject);
     mExploreFirstPersonButton->setObjectName(QStringLiteral("worldExploreFirstPerson"));
     mExploreFirstPersonButton->setToolTip(
         QStringLiteral("Hold the right mouse button to look, WASD to walk, Shift to run, and Space to jump. "
                        "Press Escape to return to the editor view."));
-    mExploreFirstPersonButton->setMinimumHeight(mExploreFirstPersonButton->sizeHint().height());
-    // Reserve the button row so selecting a player cannot push the clicked entity out of view.
-    QSizePolicy exploreSizePolicy = mExploreFirstPersonButton->sizePolicy();
-    exploreSizePolicy.setRetainSizeWhenHidden(true);
-    mExploreFirstPersonButton->setSizePolicy(exploreSizePolicy);
+    mExploreFirstPersonButton->setProperty("density", QStringLiteral("compact"));
+    // Shown under the list only while a player is selected; it reserves no blank band otherwise.
     entityLayout->addWidget(mExploreFirstPersonButton);
     connect(mExploreFirstPersonButton, &QPushButton::clicked, this, &WorldWorkspace::exploreFirstPerson);
     for (const QString& preset : {QStringLiteral("Cube"),
@@ -711,6 +732,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     Status_->setTextFormat(Qt::PlainText);
     Status_->setWordWrap(true);
     Status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // The window's status bar shows each message (StatusMessage), so the World keeps no wrapped line of its own
+    // under the panels; the label only holds the latest message for state capture.
+    Status_->hide();
     layout->addWidget(Status_);
     const auto pick = [this](bool creating) {
         if (Root_.isEmpty())
@@ -2959,6 +2983,7 @@ void WorldWorkspace::Changed(const QString& message)
             (RecoveryFailed_
                  ? QStringLiteral(" Recovery could not be written; Save World is required to preserve this edit.")
                  : QString()));
+        Q_EMIT StatusMessage(Status_->text());
     }
     const bool isBusy = SceneBusy();
     if (Name_ != nullptr)
@@ -2986,6 +3011,11 @@ void WorldWorkspace::Changed(const QString& message)
                                    entityCount + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
                                    isBusy == false);
     mDeleteEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
+    // World presets exist only in a default World; a project schema never offers a menu of disabled items.
+    const bool hasPresets = Document_.Loaded() == false || IsBuiltInWorld(Document_) == true;
+    mAddObjectButton->setVisible(hasPresets);
+    mAddObjectButton->setEnabled(mAddEntity->isEnabled());
+    mAddObjectButton->menu()->menuAction()->setVisible(hasPresets);
     Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false && Components_->count() > 0 &&
                         isBusy == false);
     Components_->setEnabled(Pending_ == false && isBusy == false);
@@ -3022,9 +3052,15 @@ void WorldWorkspace::Changed(const QString& message)
                              QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery"));
     Recovery_->setVisible(hasRecovery);
     Recovery_->setEnabled(hasRecovery == true && isWorkerActive == false);
-    PathLabel_->setText(Path_.isEmpty()
-                            ? QStringLiteral("No world open")
-                            : (Dirty() ? QStringLiteral("● ") : QString()) + QDir(Root_).relativeFilePath(Path_));
+    // A breadcrumb of the World's folders and name; the file path and extension stay in the tooltip.
+    PathLabel_->setText(Path_.isEmpty() ? QStringLiteral("No world open")
+                                        : (Dirty() ? QStringLiteral("● ") : QString()) +
+                                              MakeWorldBreadcrumb(QDir(Root_).relativeFilePath(Path_)));
+    PathLabel_->setAccessibleName(
+        Path_.isEmpty()
+            ? QStringLiteral("No world open")
+            : QStringLiteral("World %1%2")
+                  .arg(QDir(Root_).relativeFilePath(Path_), Dirty() ? QStringLiteral(", unsaved changes") : QString()));
     PathLabel_->setToolTip((Path_.isEmpty() ? QString() : QDir::toNativeSeparators(Path_) + QStringLiteral("\n\n")) +
                            GetWorldIntroduction());
     Render_->SetSelection(Selected_, Pending_);
@@ -3393,7 +3429,6 @@ void WorldWorkspace::SetChromeVisible(bool isVisible)
     }
     mHeader->setVisible(isVisible);
     mHierarchy->setVisible(isVisible);
-    Status_->setVisible(isVisible);
     // A Properties tool window owns the inspector once taken; only an embedded one is chrome.
     if (mPropertiesPanel->parentWidget() == Split_)
     {

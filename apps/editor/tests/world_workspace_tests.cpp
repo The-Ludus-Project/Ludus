@@ -709,10 +709,14 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK((isSameRow("worldAttach", "worldComponentChoice") == true ||
            (choiceRect.bottom() < attachRect.top() && choiceRect.left() == attachRect.left())) == true);
     CHECK(attachOrNull->width() >= attachOrNull->sizeHint().width());
-    CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
+    // The viewport's commands are one menu on the header row, not a row of their own.
+    CHECK(isSameRow("worldViewportMenu", "worldPath") == true);
+    CHECK(view.findChild<QPushButton*>(QStringLiteral("worldPreview3D"))->isHidden() == true);
     QLabel* pathLabel = view.findChild<QLabel*>(QStringLiteral("worldPath"));
     REQUIRE(pathLabel != nullptr);
-    CHECK(pathLabel->text() == QStringLiteral("authoring/starter.world.json"));
+    // The header reads as a breadcrumb; the full file name stays in the tooltip and accessible name.
+    CHECK(pathLabel->text() == QStringLiteral("authoring › starter"));
+    CHECK(pathLabel->accessibleName().contains(QStringLiteral("authoring/starter.world.json")) == true);
     CHECK(pathLabel->toolTip().contains(QDir::toNativeSeparators(path)) == true);
     CHECK(pathLabel->wordWrap() == false);
     // Restore Recovery appears only while a recovery file exists.
@@ -5967,7 +5971,8 @@ TEST_CASE("World entity search keeps group commands scoped to visible matches", 
     CHECK(selectionChanges.count() == 1);
     CHECK(firstOrNull->isHidden() == false);
     CHECK(workspace.Document().Encode() == before);
-    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entitiesOrNull->topLevelItemCount()));
+    CHECK(count->text() == QStringLiteral("1 of %1").arg(entitiesOrNull->topLevelItemCount()));
+    CHECK(count->accessibleName() == QStringLiteral("1 of %1 entities match").arg(entitiesOrNull->topLevelItemCount()));
     REQUIRE(entitiesOrNull->selectedItems().size() == 1);
     CHECK(entitiesOrNull->selectedItems().front() == firstOrNull);
     entitiesOrNull->selectAll();
@@ -5976,7 +5981,8 @@ TEST_CASE("World entity search keeps group commands scoped to visible matches", 
     CHECK(entitiesOrNull->topLevelItemCount() ==
           QJsonDocument::fromJson(before).object().value(QStringLiteral("entities")).toArray().size() + 1);
     // A document rebuild reapplies the query. The new stable ID does not match it.
-    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entitiesOrNull->topLevelItemCount()));
+    CHECK(count->text() == QStringLiteral("1 of %1").arg(entitiesOrNull->topLevelItemCount()));
+    CHECK(count->accessibleName() == QStringLiteral("1 of %1 entities match").arg(entitiesOrNull->topLevelItemCount()));
     search->setText(QStringLiteral("no matching entity"));
     CHECK(entitiesOrNull->selectedItems().isEmpty() == true);
     CHECK(workspace.findChild<QAction*>(QStringLiteral("worldDuplicate"))->isEnabled() == false);
@@ -6054,7 +6060,8 @@ TEST_CASE("World hierarchy shows imported descendants and reveals them for selec
     QTreeWidgetItem* grandchildRowOrNull = childRowOrNull->child(0);
     REQUIRE(grandchildRowOrNull != nullptr);
     CHECK(grandchildRowOrNull->data(0, Qt::UserRole).toString() == grandchildKey);
-    CHECK(countOrNull->text() == QStringLiteral("%1 entities").arg(treeOrNull->topLevelItemCount() + 2));
+    CHECK(countOrNull->text() == QString::number(treeOrNull->topLevelItemCount() + 2));
+    CHECK(countOrNull->accessibleName() == QStringLiteral("%1 entities").arg(treeOrNull->topLevelItemCount() + 2));
 
     treeOrNull->setCurrentItem(grandchildRowOrNull);
     REQUIRE(grandchildRowOrNull->isSelected() == true);
@@ -6065,7 +6072,7 @@ TEST_CASE("World hierarchy shows imported descendants and reveals them for selec
     CHECK(childRowOrNull->isExpanded() == true);
     CHECK(parentRowOrNull->isHidden() == false);
     CHECK(childRowOrNull->isHidden() == false);
-    CHECK(countOrNull->text() == QStringLiteral("1 of %1 entities").arg(treeOrNull->topLevelItemCount() + 2));
+    CHECK(countOrNull->text() == QStringLiteral("1 of %1").arg(treeOrNull->topLevelItemCount() + 2));
     treeOrNull->selectAll();
     REQUIRE(treeOrNull->selectedItems().size() == 1);
     CHECK(treeOrNull->selectedItems().front() == grandchildRowOrNull);
