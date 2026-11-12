@@ -66,6 +66,36 @@ class TextureCookerTests(unittest.TestCase):
         source['mip_levels']=2
         with self.assertRaisesRegex(ValueError,'one clamped mip'):cook(source)
 
+    def test_bake_gutters_check_each_edge_and_corner_of_a_nonsquare_chart(self):
+        width, height, gutter = 9, 7, 2
+        texel_bytes = 4
+        pixels = []
+        border_offsets = []
+        for y in range(height):
+            for x in range(width):
+                interior_x = min(max(x, gutter), width - gutter - 1)
+                interior_y = min(max(y, gutter), height - gutter - 1)
+                if (x, y) != (interior_x, interior_y):
+                    border_offsets.append(len(pixels))
+                pixels.extend((interior_x * 41, interior_y * 53, 0, 255))
+        source = {
+            'width': width, 'height': height, 'format': 'Rgba8Unorm',
+            'semantic': 'data', 'mip_levels': 1, 'pixels': pixels,
+            'bake': {'source_id': 1, 'scene_revision': 2, 'dependency_revision': 3,
+                     'transform': [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+                     'scale': [1, 1, 1], 'gutter': gutter},
+        }
+        for offset in border_offsets:
+            with self.subTest(x=offset // texel_bytes % width, y=offset // texel_bytes // width):
+                invalid_pixels = pixels.copy()
+                invalid_pixels[offset] ^= 255
+                with self.assertRaisesRegex(ValueError, 'gutters'):
+                    cook(dict(source, pixels=invalid_pixels))
+        center_offset = (height // 2 * width + width // 2) * texel_bytes
+        pixels[center_offset] ^= 255
+        blob, _ = cook(source)
+        self.assertEqual(blob, bytes(pixels))
+
     def test_explicit_initialized_range_is_bounded(self):
         source={'width':4,'height':4,'format':'R8Unorm','semantic':'data','pixels':[0]*16,'mip_levels':1}
         self.assertEqual(len(cook(source)[1]),1)

@@ -504,6 +504,12 @@ three `scale` components; and integer `gutter` (1..16, default one). Nonzero num
 components below binary32's minimum magnitude (`2^-149`) are rejected before header
 generation; zero and representable subnormal values are accepted. Every gutter texel
 must replicate its nearest interior texel, and the interior is at least 2×2.
+The cooker checks the border strips and corners against the interior edge.
+The texel-center transform and replicated border keep the mip-zero filter
+footprint inside the chart. Marco Tarini, Cem Yuksel and Sylvain Lefebvre describe
+an invisible-seam technique that aligns the sample grids and matches their
+values across a mesh edge in
+[*Rethinking Texture Mapping*, SIGGRAPH 2017, §§4.1 and 4.3](https://doi.org/10.1145/3084873.3084911).
 The generated `Bake(texture)` returns the immutable metadata and texel-center UV
 transform; the manifest retains that metadata with source/upload hashes.
 See the [SDK bake source](../../tests/sdk_consumer/l4-bake.texture.json) for a complete
