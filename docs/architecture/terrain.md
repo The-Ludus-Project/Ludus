@@ -704,6 +704,36 @@ and applicable browser checks. New public declarations require Doxygen coverage
 and wiki guidance in the same slice. Record measured acceptance separately from
 the design; the present change is documentation only.
 
+### Raster index order
+
+The editor's bounded terrain mesh emits an indexed triangle list in scanline
+order. It defaults to 33 by 33 samples and admits up to 64 per axis. A Metal
+microbenchmark on Apple M5 compared this order with column strips of 4, 8 and
+16 cells, using the same 32-bit indices per triangle and no degenerate
+triangles. Each case checked the exact oriented triangle set and byte-identical
+RGBA8 output, then timed GPU command buffers over 100 interleaved rounds after
+warm-up. The workload used synthetic heights, a simple shaded depth-tested
+pass and either one patch or 64 instanced patches. With eight-cell strips,
+the median paired saving was 1.8–3.4 µs for one default-size patch and
+6.9–10.0 µs for one maximum-size patch. The 64-patch runs improved by
+16–25% across 33 by 33, 64 by 64 and 64 by 17 sample grids. This measures
+an isolated pass on one GPU. The editor frame-time effect is unmeasured.
+
+Retain scanline order for editor terrain. The 64-patch stress case makes index
+order a candidate for the reusable terrain patch path. Before changing that
+path, compare strip and scanline order with the same stitched patches, camera
+and materials. Require a reproducible terrain-pass time reduction on supported
+target GPUs and preserve coverage, winding, cell diagonals and canonical
+triangle IDs. The visibility-buffer path expands triangles to unique corners,
+so reordering the input alone cannot increase shared-vertex reuse there.
+
+The experiment follows Arseny Kapoulkine's comparison of simple strips with
+Ignacio Castaño's FIFO-specific prefetch method. Kapoulkine measured vertex
+shader invocations on several GPUs and found that the winning order varied by
+device. Use invocation counters to diagnose reuse when available and GPU
+duration to judge the benefit. [Kapoulkine, *Optimal grid rendering isn't
+optimal* (2017)](https://zeux.io/2017/07/31/optimal-grid-rendering-is-not-optimal/).
+
 ## Initial design and changes after the Gems review
 
 The initial design was recorded before reading the terrain entries in
