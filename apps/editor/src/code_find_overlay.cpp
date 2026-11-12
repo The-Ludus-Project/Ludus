@@ -415,7 +415,7 @@ void CodeFindOverlay::findNext(bool shouldSearchBackward)
     QTextCursor cursor(mEditor->document());
     cursor.setPosition(match.Start);
     cursor.setPosition(match.End, QTextCursor::KeepAnchor);
-    mEditor->setTextCursor(cursor);
+    mEditor->RevealTextCursor(cursor);
     mEditor->ensureCursorVisible();
     mStatus->setText(QStringLiteral("%1 of %2").arg(chosen + 1).arg(matches.size()));
 }

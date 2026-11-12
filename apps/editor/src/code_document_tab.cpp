@@ -185,7 +185,7 @@ void CodeDocumentTab::RestoreViewState(const QJsonObject& state)
     QTextCursor cursor(mEditor->document());
     cursor.setPosition(qBound(0, anchor, documentEnd));
     cursor.setPosition(qBound(0, caret, documentEnd), QTextCursor::KeepAnchor);
-    mEditor->setTextCursor(cursor);
+    mEditor->RevealTextCursor(cursor);
     mEditor->GetStructure().RestoreFolds(state.value(QStringLiteral("folds")).toArray());
     mEditor->verticalScrollBar()->setValue(state.value(QLatin1String(VIEW_STATE_SCROLL)).toInt(0));
     if (state.value(QLatin1String(VIEW_STATE_PREVIEW)).toBool(false) == false)

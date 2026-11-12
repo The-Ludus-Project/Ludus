@@ -5,13 +5,20 @@
 #include "internal/code_file_limits.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_syntax_grammars.h"
+#include "ludus_editor_lusl_queries.h"
 
 #include <QAtomicInteger>
+#include <QByteArray>
 #include <QByteArrayView>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QSet>
 #include <QStringView>
 #include <QSysInfo>
 #include <QTextDocument>
+
+#include <climits>
+#include <cstdlib>
 
 #if !defined(Q_OS_WASM)
 #    include <QThreadPool>
@@ -29,6 +36,10 @@ namespace
 using namespace foundation;
 using Role = CodeSyntaxRole;
 
+static_assert(static_cast<uint32>(Role::Count) <= CodeSyntaxToken::ROLE_MASK);
+static_assert(CODE_FILE_NORMAL_LIMIT_BYTES <= CodeSyntaxToken::MAXIMUM_END);
+static_assert(sizeof(CodeSyntaxToken) == 2 * sizeof(uint32));
+
 constexpr int32 DEBOUNCE_MILLISECONDS = 85;
 constexpr int32 SLICE_MILLISECONDS = 2;
 constexpr int32 WORK_PER_CLOCK_CHECK = 64;
@@ -45,7 +56,9 @@ enum class SyntaxPhase : uint8
     ScanLines,
     PrepareEdit,
     Parse,
+    CopyPrefix,
     Extract,
+    CopySuffix,
     Ready,
 };
 
@@ -67,12 +80,57 @@ const TSLanguage* GetGrammarOrNull(CodeLanguage language)
             return tree_sitter_cmake();
         case CodeLanguage::Markdown:
             return tree_sitter_markdown();
-        case CodeLanguage::PlainText:
         case CodeLanguage::Lusl:
+            return tree_sitter_lusl();
+        case CodeLanguage::PlainText:
         case CodeLanguage::Count:
             return nullptr;
     }
     return nullptr;
+}
+
+struct SyntaxQueryProfile final
+{
+    QByteArray Source;
+    QByteArray Roots;
+};
+
+SyntaxQueryProfile GetQueryProfile(CodeLanguage language)
+{
+    switch (language)
+    {
+        case CodeLanguage::C:
+        case CodeLanguage::Cpp:
+        case CodeLanguage::Slang:
+            return {"(function_declarator declarator: [(identifier) (field_identifier)] @function) "
+                    "(parameter_declaration declarator: (identifier) @parameter)",
+                    "function_declarator parameter_declaration"};
+        case CodeLanguage::Lusl:
+            return {QByteArray(LUSL_HIGHLIGHTS_QUERY) + LUSL_FOLDS_QUERY,
+                    "function_declarator parameter_declaration field_expression initializer_pair enum_specifier "
+                    "attribute_declaration extern_declaration compound_statement field_declaration_list parameter_list "
+                    "initializer_list enumerator_list argument_list"};
+        case CodeLanguage::Luau:
+            return {"(fn_stmt function_name: (name) @function) (local_fn_stmt function_name: (name) @function) "
+                    "(param parameter_name: (name) @parameter)",
+                    "fn_stmt local_fn_stmt param"};
+        case CodeLanguage::Json:
+            return {"(pair key: (string) @property)", "pair"};
+        case CodeLanguage::CMake:
+            return {"(normal_command (identifier) @function)", "normal_command"};
+        case CodeLanguage::Markdown:
+            return {"[(atx_heading) (setext_heading)] @type", "atx_heading setext_heading"};
+        case CodeLanguage::PlainText:
+        case CodeLanguage::Count:
+            return {};
+    }
+    return {};
+}
+
+uint64 GetCaptureKey(CodeSyntaxRange range)
+{
+    constexpr uint32 POSITION_BITS = sizeof(uint32) * CHAR_BIT;
+    return (static_cast<uint64>(range.Start) << POSITION_BITS) | static_cast<uint64>(range.End);
 }
 
 struct TokenRule final
@@ -104,6 +162,9 @@ constexpr TokenRule TOKEN_RULES[] = {
     {"number_literal", Role::Number},
     {"primitive_type", Role::Type},
     {"type_identifier", Role::Type},
+    {"type_name", Role::Type},
+    {"boolean_literal", Role::Constant},
+    {"reserved_keyword", Role::Invalid},
     {"namedtype", Role::Type},
     {"type_qualifier", Role::Keyword},
     {"namespace_identifier", Role::Namespace},
@@ -225,6 +286,7 @@ constexpr QByteArrayView OUTLINE_TYPES[] = {
     "union_specifier",
     "enum_specifier",
     "interface_specifier",
+    "extension_declaration",
     "type_definition",
     "alias_declaration",
     "concept_definition",
@@ -319,24 +381,20 @@ QString ReadOutlineLabel(QStringView source, TSNode node, QByteArrayView type)
     TSNode declarator = GetField(node, "declarator");
     while (ts_node_is_null(name) == true && ts_node_is_null(declarator) == false)
     {
-        name = declarator;
-        declarator = GetField(name, "declarator");
-        if (ts_node_is_null(declarator) == false)
-        {
-            name = {};
-        }
+        const TSNode named = GetField(declarator, "name");
+        const TSNode nested = GetField(declarator, "declarator");
+        name = ts_node_is_null(named) == false ? named : ts_node_is_null(nested) == true ? declarator : TSNode();
+        declarator = nested;
     }
     return ReadLabel(source, name);
 }
 
-Role GetIdentifierRole(TSNode node, QByteArrayView type)
+Role GetIdentifierRole(QByteArrayView owner, QByteArrayView type)
 {
     if (type != "identifier" && type != "name" && type != "field_identifier")
     {
         return Role::Default;
     }
-    const TSNode parent = ts_node_parent(node);
-    const QByteArrayView owner(ts_node_is_null(parent) == true ? nullptr : ts_node_type(parent));
     if (owner == "function_declarator" || owner == "call_expression" || owner == "normal_command" ||
         owner == "fn_stmt" || owner == "local_fn_stmt" || owner == "call_stmt")
     {
@@ -401,11 +459,15 @@ public:
             ts_tree_cursor_delete(&mCursor);
         }
         ts_tree_delete(mTreeOrNull);
+        ts_query_delete(mQueryOrNull);
+        ts_query_cursor_delete(mQueryCursor);
+        ts_parser_delete(mInlineParserOrNull);
         ts_parser_delete(mParser);
     }
 
     void Begin(CodeLanguage language, QString source, uint64 revision, bool isLargeFile)
     {
+        mJobClock.start();
         mSource = Move(source);
         mResult = {};
         mResult.Revision = revision;
@@ -414,6 +476,9 @@ public:
         mRegions.clear();
         mIndentationFolds.clear();
         mParents.clear();
+        mCaptureRoles.clear();
+        mCaptureFolds.clear();
+        mDamage = {};
         mPosition = 0;
         mTokenEnd = 0;
         mLineStart = 0;
@@ -460,8 +525,14 @@ public:
                         return false;
                     }
                     break;
+                case SyntaxPhase::CopyPrefix:
+                    copyDamageProducts(false);
+                    break;
                 case SyntaxPhase::Extract:
                     extractNode();
+                    break;
+                case SyntaxPhase::CopySuffix:
+                    copyDamageProducts(true);
                     break;
                 case SyntaxPhase::Ready:
                     break;
@@ -491,6 +562,10 @@ public:
 
     CodeSyntaxResult TakeResult()
     {
+        constexpr int64 NANOSECONDS_PER_MICROSECOND = 1000;
+        mResult.WorkerMicroseconds = mJobClock.nsecsElapsed() / NANOSECONDS_PER_MICROSECOND;
+        mResult.HasReusedProducts = mDamage.IsReusable;
+        mPreviousProducts = mResult;
         return Move(mResult);
     }
 
@@ -513,6 +588,23 @@ private:
         int32 NodeIndex;
         CodeSyntaxRange Range;
         Role Color;
+        QByteArrayView Type;
+    };
+
+    struct Damage final
+    {
+        CodeSyntaxRange OldRange;
+        CodeSyntaxRange NewRange;
+        int32 FirstLine = 0;
+        int32 LastLine = 0;
+        int32 LineDelta = 0;
+        int32 UnitDelta = 0;
+        qsizetype TokenIndex = 0;
+        qsizetype NodeIndex = 1;
+        qsizetype FoldIndex = 0;
+        int32 SuffixIndexDelta = 0;
+        bool HasCandidate = false;
+        bool IsReusable = false;
     };
 
     struct Indentation final
@@ -534,17 +626,41 @@ private:
         mTreeOrNull = nullptr;
         mPrevious.clear();
         mPreviousLineStarts.clear();
+        mPreviousProducts = {};
     }
 
     void buildRules()
     {
+        if (mLanguage == CodeLanguage::Markdown && mInlineParserOrNull == nullptr)
+        {
+            mInlineParserOrNull = ts_parser_new();
+            if (ts_parser_set_language(mInlineParserOrNull, tree_sitter_markdown_inline()) == false)
+            {
+                ts_parser_delete(mInlineParserOrNull);
+                mInlineParserOrNull = nullptr;
+            }
+        }
+        const SyntaxQueryProfile profile = GetQueryProfile(mLanguage);
+        ts_query_delete(mQueryOrNull);
+        uint32 errorOffset = 0;
+        TSQueryError error = TSQueryErrorNone;
+        mQueryOrNull = ts_query_new(mGrammarOrNull,
+                                    profile.Source.constData(),
+                                    static_cast<uint32>(profile.Source.size()),
+                                    &errorOffset,
+                                    &error);
+        LUDUS_ASSERT(mQueryOrNull != nullptr);
+        ts_query_cursor_set_max_start_depth(mQueryCursor, 0);
+        const QList<QByteArray> queryRoots = profile.Roots.split(' ');
         const qsizetype symbolCount = ts_language_symbol_count(mGrammarOrNull);
+        mQuerySymbols.fill(false, symbolCount);
         mRoles.fill(Role::Default, symbolCount);
         mFoldSymbols.fill(false, symbolCount);
         mOutlineSymbols.fill(false, symbolCount);
         for (qsizetype index = 0; index < symbolCount; ++index)
         {
             const QByteArrayView type(ts_language_symbol_name(mGrammarOrNull, static_cast<TSSymbol>(index)));
+            mQuerySymbols[index] = queryRoots.contains(type.toByteArray());
             mRoles[index] = GetPunctuationRole(type);
             for (const TokenRule& rule : TOKEN_RULES)
             {
@@ -592,16 +708,17 @@ private:
         // Bound work even for a single huge line, before calling a grammar or lexer.
         constexpr int32 SCAN_CHUNK_UNITS = 4096;
         const int32 end = qMin(static_cast<int32>(mSource.size()), mPosition + SCAN_CHUNK_UNITS);
-        while (mPosition < end)
+        const QStringView chunk = QStringView(mSource).sliced(mPosition, end - mPosition);
+        qsizetype newline = chunk.indexOf(u'\n');
+        while (newline >= 0)
         {
-            if (mSource.at(mPosition) == u'\n')
-            {
-                scanLine(mPosition);
-                mLineStart = mPosition + 1;
-                mLineStarts.append(mLineStart);
-            }
-            ++mPosition;
+            const int32 position = mPosition + static_cast<int32>(newline);
+            scanLine(position);
+            mLineStart = position + 1;
+            mLineStarts.append(mLineStart);
+            newline = chunk.indexOf(u'\n', newline + 1);
         }
+        mPosition = end;
         if (mPosition < mSource.size())
         {
             return;
@@ -643,6 +760,10 @@ private:
             return;
         }
         scanRegion(text.sliced(start), line);
+        if (mIsLarge == false && mGrammarOrNull != nullptr)
+        {
+            return;
+        }
         if (spaces > mPreviousIndentation && mPreviousContentLine >= 0)
         {
             mIndentation.append({mPreviousContentLine, spaces});
@@ -733,6 +854,188 @@ private:
         return {static_cast<uint32>(first), static_cast<uint32>(position - starts.at(first)) * CODE_UNIT_BYTES};
     }
 
+    static TSNode GetRootChild(TSNode root, int32 position)
+    {
+        const uint32 offset = static_cast<uint32>(position) * CODE_UNIT_BYTES;
+        TSNode child = ts_node_named_descendant_for_byte_range(root, offset, offset);
+        while (ts_node_is_null(child) == false && ts_node_eq(child, root) == false)
+        {
+            const TSNode parent = ts_node_parent(child);
+            if (ts_node_eq(parent, root) == true)
+            {
+                return child;
+            }
+            child = parent;
+        }
+        return {};
+    }
+
+    void locateDamage(int32 oldEnd, int32 newEnd)
+    {
+        if (mPreviousProducts.Nodes.isEmpty() == true || mPreviousProducts.Nodes.size() >= MAXIMUM_NODES ||
+            mPreviousProducts.Tokens.size() >= MAXIMUM_TOKENS)
+        {
+            return;
+        }
+        const TSNode root = ts_tree_root_node(mTreeOrNull);
+        if (ts_node_has_error(root) == true)
+        {
+            return;
+        }
+        const TSNode child = GetRootChild(root, mPrefix);
+        if (ts_node_is_null(child) == true)
+        {
+            return;
+        }
+        const CodeSyntaxRange range = GetRange(child);
+        const TSPoint first = ts_node_start_point(child);
+        const TSPoint last = ts_node_end_point(child);
+        const qsizetype nextLine = static_cast<qsizetype>(last.row) + 1;
+        const int32 lineEnd = nextLine < mPreviousLineStarts.size() ? mPreviousLineStarts.at(nextLine) - 1
+                                                                    : static_cast<int32>(mPrevious.size());
+        // Whole-line boundaries keep adjacent declaration folds and captures
+        // outside the replacement. Edits across declarations take the full path.
+        if (range.Start >= mPrefix || oldEnd >= range.End || first.column != 0 || range.End != lineEnd)
+        {
+            return;
+        }
+        mDamage.OldRange = range;
+        mDamage.UnitDelta = newEnd - oldEnd;
+        mDamage.NewRange = {range.Start, range.End + mDamage.UnitDelta};
+        mDamage.FirstLine = static_cast<int32>(first.row);
+        mDamage.LastLine = static_cast<int32>(last.row);
+        mDamage.LineDelta = static_cast<int32>(mLineStarts.size() - mPreviousLineStarts.size());
+        mDamage.HasCandidate = true;
+    }
+
+    TSNode validateDamage(TSTree* nextTree, TSNode root)
+    {
+        if (mDamage.HasCandidate == false || ts_node_has_error(root) == true)
+        {
+            return {};
+        }
+        const TSNode child = GetRootChild(root, mPrefix);
+        if (ts_node_is_null(child) == true || GetRange(child) != mDamage.NewRange)
+        {
+            return {};
+        }
+        uint32 count = 0;
+        TSRange* rangesOrNull = ts_tree_get_changed_ranges(mTreeOrNull, nextTree, &count);
+        const uint32 start = static_cast<uint32>(mDamage.NewRange.Start) * CODE_UNIT_BYTES;
+        const uint32 end = static_cast<uint32>(mDamage.NewRange.End) * CODE_UNIT_BYTES;
+        bool isInside = true;
+        for (uint32 index = 0; index < count; ++index)
+        {
+            const TSRange& range = rangesOrNull[index];
+            if (range.start_byte < start || range.end_byte > end)
+            {
+                isInside = false;
+                break;
+            }
+        }
+        // Tree-sitter returns this array from its C allocator (api.h).
+        std::free(rangesOrNull);
+        return isInside == true ? child : TSNode();
+    }
+
+    void appendOldNode(const CodeSyntaxNode& old, int32 indexDelta, int32 unitDelta)
+    {
+        if (mResult.Nodes.size() >= MAXIMUM_NODES)
+        {
+            return;
+        }
+        CodeSyntaxNode node = old;
+        node.Range.Start += unitDelta;
+        node.Range.End += unitDelta;
+        if (node.Parent > 0)
+        {
+            node.Parent += indexDelta;
+        }
+        if (node.LabelIndex >= 0)
+        {
+            mResult.Outline.append(static_cast<int32>(mResult.Nodes.size()));
+            node.LabelIndex = static_cast<int32>(mResult.Labels.size());
+            mResult.Labels.append(mPreviousProducts.Labels.at(old.LabelIndex));
+        }
+        mResult.Nodes.append(node);
+    }
+
+    void copyDamageProducts(bool isSuffix)
+    {
+        // Copy a bounded chunk per pass so the serial browser scheduler can
+        // yield even when an edit moves the offsets of most of the document.
+        constexpr qsizetype COPY_BATCH = 256;
+        qsizetype count = 0;
+        while (mDamage.TokenIndex < mPreviousProducts.Tokens.size() && count < COPY_BATCH)
+        {
+            const CodeSyntaxToken token = mPreviousProducts.Tokens.at(mDamage.TokenIndex);
+            if (isSuffix == false && token.GetEnd() > mDamage.OldRange.Start)
+            {
+                if (token.GetStart() < mDamage.OldRange.Start)
+                {
+                    appendToken({qMax(token.GetStart(), mTokenEnd), mDamage.OldRange.Start}, token.GetRole());
+                }
+                break;
+            }
+            ++mDamage.TokenIndex;
+            ++count;
+            if (isSuffix == false || token.GetEnd() > mDamage.OldRange.End)
+            {
+                const int32 start = isSuffix == true ? qMax(token.GetStart(), mDamage.OldRange.End) + mDamage.UnitDelta
+                                                     : token.GetStart();
+                const int32 end = token.GetEnd() + (isSuffix == true ? mDamage.UnitDelta : 0);
+                appendToken({start, end}, token.GetRole());
+            }
+        }
+        while (mDamage.NodeIndex < mPreviousProducts.Nodes.size() && count < COPY_BATCH)
+        {
+            const CodeSyntaxNode& node = mPreviousProducts.Nodes.at(mDamage.NodeIndex);
+            if (isSuffix == false && node.Range.Start >= mDamage.OldRange.Start)
+            {
+                break;
+            }
+            ++mDamage.NodeIndex;
+            ++count;
+            if (isSuffix == false || node.Range.Start >= mDamage.OldRange.End)
+            {
+                appendOldNode(node,
+                              isSuffix == true ? mDamage.SuffixIndexDelta : 0,
+                              isSuffix == true ? mDamage.UnitDelta : 0);
+            }
+        }
+        if (count >= COPY_BATCH)
+        {
+            return;
+        }
+        if (isSuffix == false)
+        {
+            mTokenEnd = mDamage.NewRange.Start;
+            mPhase = SyntaxPhase::Extract;
+            return;
+        }
+        while (mDamage.FoldIndex < mPreviousProducts.Folds.size() && count < COPY_BATCH)
+        {
+            CodeSyntaxFold fold = mPreviousProducts.Folds.at(mDamage.FoldIndex);
+            ++mDamage.FoldIndex;
+            ++count;
+            if (fold.Kind == CodeFoldKind::Region ||
+                (fold.FirstLine <= mDamage.LastLine && fold.LastLine >= mDamage.FirstLine))
+            {
+                continue;
+            }
+            if (fold.FirstLine > mDamage.LastLine)
+            {
+                fold.FirstLine += mDamage.LineDelta;
+                fold.LastLine += mDamage.LineDelta;
+            }
+            appendFold(mResult.Folds, Move(fold));
+        }
+        if (mDamage.FoldIndex == mPreviousProducts.Folds.size())
+        {
+            mPhase = SyntaxPhase::Ready;
+        }
+    }
+
     void prepareEditChunk()
     {
         if (mTreeOrNull != nullptr)
@@ -742,6 +1045,12 @@ private:
             const int32 newSize = static_cast<int32>(mSource.size());
             const int32 commonSize = qMin(oldSize, newSize);
             int32 work = 0;
+            if (commonSize - mPrefix >= EDIT_SCAN_UNITS && QStringView(mPrevious).sliced(mPrefix, EDIT_SCAN_UNITS) ==
+                                                               QStringView(mSource).sliced(mPrefix, EDIT_SCAN_UNITS))
+            {
+                mPrefix += EDIT_SCAN_UNITS;
+                return;
+            }
             while (mPrefix < commonSize && mPrevious.at(mPrefix) == mSource.at(mPrefix))
             {
                 ++mPrefix;
@@ -752,6 +1061,13 @@ private:
             }
             // An edit at a surrogate boundary must include both UTF-16 code units.
             const int32 suffixLimit = commonSize - mPrefix;
+            if (suffixLimit - mSuffix >= EDIT_SCAN_UNITS &&
+                QStringView(mPrevious).sliced(oldSize - mSuffix - EDIT_SCAN_UNITS, EDIT_SCAN_UNITS) ==
+                    QStringView(mSource).sliced(newSize - mSuffix - EDIT_SCAN_UNITS, EDIT_SCAN_UNITS))
+            {
+                mSuffix += EDIT_SCAN_UNITS;
+                return;
+            }
             while (mSuffix < suffixLimit && mPrevious.at(oldSize - mSuffix - 1) == mSource.at(newSize - mSuffix - 1))
             {
                 ++mSuffix;
@@ -770,6 +1086,7 @@ private:
             }
             const int32 oldEnd = oldSize - mSuffix;
             const int32 newEnd = newSize - mSuffix;
+            locateDamage(oldEnd, newEnd);
             const TSInputEdit edit
             {
                 .start_byte = static_cast<uint32>(mPrefix) * CODE_UNIT_BYTES,
@@ -805,14 +1122,30 @@ private:
         {
             return false;
         }
+        const TSNode root = ts_tree_root_node(treeOrNull);
+        const TSNode changed = validateDamage(treeOrNull, root);
         ts_tree_delete(mTreeOrNull);
         mTreeOrNull = treeOrNull;
         mPrevious = mSource;
         mPreviousLineStarts = mLineStarts;
-        mCursor = ts_tree_cursor_new(ts_tree_root_node(mTreeOrNull));
+        mDamage.IsReusable = ts_node_is_null(changed) == false;
+        mCursor = ts_tree_cursor_new(mDamage.IsReusable == true ? changed : root);
         mHasCursor = true;
-        mParents.append({-1, {}, Role::Default});
-        mPhase = SyntaxPhase::Extract;
+        if (mDamage.IsReusable == true)
+        {
+            const CodeSyntaxRange rootRange = GetRange(root);
+            mResult.HasPartialFolds = mResult.HasPartialFolds == true || mPreviousProducts.HasPartialFolds == true;
+            mResult.Nodes.append({rootRange, -1, -1});
+            mResult.Nodes.reserve(mPreviousProducts.Nodes.size());
+            mResult.Tokens.reserve(mPreviousProducts.Tokens.size());
+            mParents.append({0, rootRange, Role::Default, QByteArrayView(ts_node_type(root))});
+            mPhase = SyntaxPhase::CopyPrefix;
+        }
+        else
+        {
+            mParents.append({-1, {}, Role::Default, {}});
+            mPhase = SyntaxPhase::Extract;
+        }
         return true;
     }
 
@@ -820,10 +1153,10 @@ private:
     {
         if (range.Start < range.End && role != Role::Default && mResult.Tokens.size() < MAXIMUM_TOKENS)
         {
-            if (mResult.Tokens.isEmpty() == false && mResult.Tokens.constLast().Role == role &&
-                mResult.Tokens.constLast().Range.End == range.Start)
+            if (mResult.Tokens.isEmpty() == false && mResult.Tokens.constLast().GetRole() == role &&
+                mResult.Tokens.constLast().GetEnd() == range.Start)
             {
-                mResult.Tokens.last().Range.End = range.End;
+                mResult.Tokens.last() = CodeSyntaxToken({mResult.Tokens.constLast().GetStart(), range.End}, role);
             }
             else
             {
@@ -833,36 +1166,146 @@ private:
         mTokenEnd = qMax(mTokenEnd, range.End);
     }
 
+    void captureQuery(TSNode node)
+    {
+        if (mQueryOrNull == nullptr)
+        {
+            return;
+        }
+        ts_query_cursor_exec(mQueryCursor, mQueryOrNull, node);
+        TSQueryMatch match = {};
+        while (ts_query_cursor_next_match(mQueryCursor, &match) == true)
+        {
+            for (uint16 index = 0; index < match.capture_count; ++index)
+            {
+                const TSQueryCapture capture = match.captures[index];
+                uint32 length = 0;
+                const char* name = ts_query_capture_name_for_id(mQueryOrNull, capture.index, &length);
+                const QByteArrayView kind(name, length);
+                const uint64 key = GetCaptureKey(GetRange(capture.node));
+                if (kind == "fold")
+                {
+                    mCaptureFolds.insert(key);
+                }
+                else
+                {
+                    const Role role = kind == "function"    ? Role::Function
+                                      : kind == "parameter" ? Role::Parameter
+                                      : kind == "property"  ? Role::Property
+                                      : kind == "keyword"   ? Role::Keyword
+                                                            : Role::Type;
+                    mCaptureRoles.insert(key, role);
+                }
+            }
+        }
+    }
+
+    bool appendMarkdownInline(CodeSyntaxRange range, Role parentRole)
+    {
+        constexpr int32 INLINE_PARSE_UNITS = 4096;
+        if (mInlineParserOrNull == nullptr || range.End - range.Start > INLINE_PARSE_UNITS)
+        {
+            return false;
+        }
+        constexpr TSInputEncoding ENCODING =
+            QSysInfo::ByteOrder == QSysInfo::LittleEndian ? TSInputEncodingUTF16LE : TSInputEncodingUTF16BE;
+        QString text = QString::fromRawData(mSource.constData() + range.Start, range.End - range.Start);
+        const TSInput input
+        {
+            .payload = &text,
+            .read = ReadSource,
+            .encoding = ENCODING,
+            .decode = nullptr,
+        };
+        QElapsedTimer clock;
+        clock.start();
+        const TSParseOptions options
+        {
+            .payload = &clock,
+            .progress_callback = HasSliceExpired,
+        };
+        TSTree* treeOrNull = ts_parser_parse_with_options(mInlineParserOrNull, nullptr, input, options);
+        if (treeOrNull == nullptr)
+        {
+            ts_parser_reset(mInlineParserOrNull);
+            return false;
+        }
+        TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(treeOrNull));
+        bool hasNext = true;
+        while (hasNext == true)
+        {
+            const TSNode node = ts_tree_cursor_current_node(&cursor);
+            const QByteArrayView type(ts_node_type(node));
+            const Role role = type == "code_span"                                 ? Role::String
+                              : type == "link_destination" || type == "link_text" ? Role::Property
+                              : type == "emphasis" || type == "strong_emphasis"   ? Role::Keyword
+                              : type == "backslash_escape"                        ? Role::Escape
+                                                                                  : Role::Default;
+            if (role != Role::Default)
+            {
+                const CodeSyntaxRange local = GetRange(node);
+                appendToken({mTokenEnd, range.Start + local.Start}, parentRole);
+                appendToken({range.Start + local.Start, range.Start + local.End}, role);
+            }
+            else if (ts_tree_cursor_goto_first_child(&cursor) == true)
+            {
+                continue;
+            }
+            while (ts_tree_cursor_goto_next_sibling(&cursor) == false)
+            {
+                if (ts_tree_cursor_goto_parent(&cursor) == false)
+                {
+                    hasNext = false;
+                    break;
+                }
+            }
+        }
+        ts_tree_cursor_delete(&cursor);
+        ts_tree_delete(treeOrNull);
+        appendToken({mTokenEnd, range.End}, parentRole);
+        return true;
+    }
+
     void extractNode()
     {
         const TSNode node = ts_tree_cursor_current_node(&mCursor);
         const CodeSyntaxRange range = GetRange(node);
         const TSSymbol symbol = ts_node_symbol(node);
+        const QByteArrayView type(ts_node_type(node));
         const bool hasSymbol = symbol < mRoles.size();
         const bool isValidRange = range.Start < range.End && range.End <= mSource.size();
+        if (isValidRange == true && hasSymbol == true && mQuerySymbols.at(symbol) == true)
+        {
+            captureQuery(node);
+        }
+        const uint64 captureKey = GetCaptureKey(range);
         const ParentFrame parentFrame = mParents.constLast();
         int32 parent = parentFrame.NodeIndex;
         if (isValidRange == true && ts_node_is_named(node) == true && mResult.Nodes.size() < MAXIMUM_NODES)
         {
             const bool hasLabel = hasSymbol == true && mOutlineSymbols.at(symbol) == true;
-            const QString label =
-                hasLabel == true ? ReadOutlineLabel(mSource, node, QByteArrayView(ts_node_type(node))) : QString();
+            const QString label = hasLabel == true ? ReadOutlineLabel(mSource, node, type) : QString();
             const int32 index = static_cast<int32>(mResult.Nodes.size());
-            mResult.Nodes.append({range, parent, label});
+            int32 labelIndex = -1;
             if (label.isEmpty() == false)
             {
+                labelIndex = static_cast<int32>(mResult.Labels.size());
+                mResult.Labels.append(label);
                 mResult.Outline.append(index);
             }
+            mResult.Nodes.append({range, parent, labelIndex});
             parent = index;
         }
-        Role role = hasSymbol == true ? mRoles.at(symbol) : Role::Default;
+        const Role captured = mCaptureRoles.isEmpty() == false ? mCaptureRoles.take(captureKey) : Role::Default;
+        Role role = captured != Role::Default ? captured : hasSymbol == true ? mRoles.at(symbol) : Role::Default;
+        const bool hasCapturedFold = mCaptureFolds.isEmpty() == false && mCaptureFolds.remove(captureKey) == true;
         if (isValidRange == true && role == Role::Comment &&
             (QStringView(mSource).sliced(range.Start, range.End - range.Start).startsWith(u"///") == true ||
              QStringView(mSource).sliced(range.Start, range.End - range.Start).startsWith(u"/**") == true))
         {
             role = Role::Documentation;
         }
-        if (isValidRange == true && (role == Role::Comment || role == Role::Documentation ||
+        if (isValidRange == true && (role == Role::Comment || role == Role::Documentation || hasCapturedFold == true ||
                                      (hasSymbol == true && mFoldSymbols.at(symbol) == true)))
         {
             const TSPoint first = ts_node_start_point(node);
@@ -875,7 +1318,7 @@ private:
         const bool hasChildren = ts_node_child_count(node) > 0;
         if (isValidRange == true && (role == Role::Default || role == Role::Property) && hasChildren == false)
         {
-            const Role identifier = GetIdentifierRole(node, QByteArrayView(ts_node_type(node)));
+            const Role identifier = GetIdentifierRole(parentFrame.Type, type);
             if (identifier != Role::Default)
             {
                 role = identifier;
@@ -890,10 +1333,12 @@ private:
             role = parentFrame.Color;
         }
         appendToken({mTokenEnd, range.Start}, parentFrame.Color);
-        const bool isAtomic = role == Role::Comment || role == Role::Documentation;
+        const bool hasInlineTokens = isValidRange == true && mLanguage == CodeLanguage::Markdown && type == "inline" &&
+                                     appendMarkdownInline(range, role) == true;
+        const bool isAtomic = role == Role::Comment || role == Role::Documentation || hasInlineTokens == true;
         if (isAtomic == false && hasChildren == true && ts_tree_cursor_goto_first_child(&mCursor) == true)
         {
-            mParents.append({parent, range, role});
+            mParents.append({parent, range, role, type});
             return;
         }
         if (isValidRange == true)
@@ -906,7 +1351,22 @@ private:
             {
                 ts_tree_cursor_delete(&mCursor);
                 mHasCursor = false;
-                mPhase = SyntaxPhase::Ready;
+                if (mDamage.IsReusable == true)
+                {
+                    qsizetype suffix = mDamage.NodeIndex;
+                    while (suffix < mPreviousProducts.Nodes.size() &&
+                           mPreviousProducts.Nodes.at(suffix).Range.Start < mDamage.OldRange.End)
+                    {
+                        ++suffix;
+                    }
+                    mDamage.NodeIndex = suffix;
+                    mDamage.SuffixIndexDelta = static_cast<int32>(mResult.Nodes.size() - suffix);
+                    mPhase = SyntaxPhase::CopySuffix;
+                }
+                else
+                {
+                    mPhase = SyntaxPhase::Ready;
+                }
                 return;
             }
             const ParentFrame completed = mParents.takeLast();
@@ -916,13 +1376,22 @@ private:
 
     QAtomicInteger<uint64> mRequestedRevision{1};
     TSParser* mParser;
+    TSParser* mInlineParserOrNull = nullptr;
+    TSQuery* mQueryOrNull = nullptr;
+    TSQueryCursor* mQueryCursor = ts_query_cursor_new();
+    QHash<uint64, Role> mCaptureRoles;
+    QSet<uint64> mCaptureFolds;
+    QList<bool> mQuerySymbols;
     const TSLanguage* mGrammarOrNull = nullptr;
     TSTree* mTreeOrNull = nullptr;
     TSTreeCursor mCursor = {};
     bool mHasCursor = false;
     CodeLanguage mLanguage = CodeLanguage::Count;
     SyntaxPhase mPhase = SyntaxPhase::Ready;
+    QElapsedTimer mJobClock;
     CodeSyntaxResult mResult;
+    CodeSyntaxResult mPreviousProducts;
+    Damage mDamage;
     QString mSource;
     QString mPrevious;
     QList<int32> mLineStarts;
@@ -943,6 +1412,11 @@ private:
     int32 mSuffix = 0;
     bool mIsLarge = false;
 };
+
+QString CodeSyntaxResult::GetLabel(const CodeSyntaxNode& node) const
+{
+    return node.LabelIndex >= 0 ? Labels.at(node.LabelIndex) : QString();
+}
 
 int32 CodeSyntaxResult::FindContainingNode(CodeSyntaxRange range) const noexcept
 {
@@ -1045,14 +1519,16 @@ void CodeSyntaxService::submit()
     mHasPendingSnapshot = false;
     mIsRunning = true;
     const QString snapshot = mDocument->toRawText().replace(QChar::ParagraphSeparator, u'\n');
+    const bool isLarge =
+        mIsLargeFile == true || static_cast<usize>(mDocument->blockCount()) > CODE_FILE_NORMAL_LIMIT_LINES;
 #if defined(Q_OS_WASM)
     mActiveRevision = mRevision;
-    mParser->Begin(mLanguage, snapshot, mActiveRevision, mIsLargeFile);
+    mParser->Begin(mLanguage, snapshot, mActiveRevision, isLarge);
     QTimer::singleShot(0, this, &CodeSyntaxService::advance);
 #else
     mWatcher.setFuture(QtConcurrent::run(
         &GetSyntaxThreadPool(),
-        [parser = mParser, language = mLanguage, snapshot, revision = mRevision, isLargeFile = mIsLargeFile]() {
+        [parser = mParser, language = mLanguage, snapshot, revision = mRevision, isLargeFile = isLarge]() {
             if (parser->IsRequested(revision) == false)
             {
                 return CodeSyntaxResult();

@@ -1,6 +1,9 @@
 #include "internal/code_structure_view.h"
 
+#include "internal/code_edit_set.h"
+#include "internal/code_keymap.h"
 #include "internal/code_navigation.h"
+#include "internal/code_text.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -11,9 +14,11 @@
 #include <QHBoxLayout>
 #include <QJsonObject>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QTextBlock>
 #include <QTextDocument>
@@ -36,7 +41,8 @@ QString HashFoldHeader(const QTextBlock& block)
 
 CodeStructureView::CodeStructureView(CodeEditor* editor, const CodeSyntaxService& syntax)
     : QObject(editor), mEditor(editor), mSyntax(syntax), mHeader(new QWidget(editor)),
-      mOutline(new QToolButton(mHeader)), mBreadcrumbs(new QToolButton(mHeader)), mSticky(new QToolButton(mHeader))
+      mOutline(new QToolButton(mHeader)), mBreadcrumbs(new QToolButton(mHeader)), mSticky(new QToolButton(mHeader)),
+      mFoldStatus(new QLabel(tr("Folding partial"), mHeader))
 {
     QVBoxLayout* layout = new QVBoxLayout(mHeader);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -45,6 +51,9 @@ CodeStructureView::CodeStructureView(CodeEditor* editor, const CodeSyntaxService
     navigation->setSpacing(0);
     navigation->addWidget(mOutline);
     navigation->addWidget(mBreadcrumbs, 1);
+    navigation->addWidget(mFoldStatus);
+    mFoldStatus->setToolTip(tr("This document exceeds the number of ranges the editor can fold."));
+    mFoldStatus->hide();
     layout->addLayout(navigation);
     layout->addWidget(mSticky, 0, Qt::AlignLeft);
     mOutline->setText(tr("Outline"));
@@ -58,9 +67,6 @@ CodeStructureView::CodeStructureView(CodeEditor* editor, const CodeSyntaxService
     connect(mBreadcrumbs, &QToolButton::clicked, this, &CodeStructureView::showBreadcrumbs);
     connect(mSticky, &QToolButton::clicked, this, [this]() { goToPosition(mStickyPosition); });
 
-    connect(editor, &CodeEditor::ToggleFoldRequested, this, &CodeStructureView::toggleFoldAtCaret);
-    connect(editor, &CodeEditor::FoldAllRequested, this, &CodeStructureView::FoldAll);
-    connect(editor, &CodeEditor::UnfoldAllRequested, this, &CodeStructureView::UnfoldAll);
     connect(&syntax, &CodeSyntaxService::ResultChanged, this, &CodeStructureView::acceptResult);
     connect(editor, &CodeEditor::cursorPositionChanged, this, [this]() {
         if (mIsApplyingVisibility == false)
@@ -114,7 +120,17 @@ CodeStructureView::CodeStructureView(CodeEditor* editor, const CodeSyntaxService
     addAction(tr("Shrink Selection"),
               QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_Left),
               &CodeStructureView::shrinkSelection);
-    addAction(tr("Fold Selection"), QKeySequence(), &CodeStructureView::foldSelection);
+    const CodeKeymap keymap;
+    for (const CodeFoldCommandDescriptor& fold : CODE_FOLD_COMMANDS)
+    {
+        QAction* action = CreateEditorCommand(fold.Command, mEditor);
+        action->setShortcut(QKeySequence(keymap.ResolveShortcut(action->objectName())));
+        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        connect(action, &QAction::triggered, this, [this, operation = fold.Operation, level = fold.Level]() {
+            runFoldCommand(operation, level);
+        });
+        mEditor->addAction(action);
+    }
 }
 
 void CodeStructureView::acceptResult()
@@ -126,8 +142,11 @@ void CodeStructureView::acceptResult()
         return;
     }
     mAvailable.clear();
+    mHasNamedRegions = false;
     for (const CodeSyntaxFold& fold : resultOrNull->Folds)
     {
+        mHasNamedRegions =
+            mHasNamedRegions == true || (fold.Kind == CodeFoldKind::Region && fold.Label.isEmpty() == false);
         const QMap<int32, CodeSyntaxFold>::const_iterator found = mAvailable.constFind(fold.FirstLine);
         if (found == mAvailable.cend() || fold.LastLine > found->LastLine ||
             (fold.LastLine == found->LastLine && fold.Kind == CodeFoldKind::Region))
@@ -285,9 +304,162 @@ void CodeStructureView::refreshVisibility()
     mEditor->updateFoldPresentation();
 }
 
-void CodeStructureView::toggleFoldAtCaret()
+int32 CodeStructureView::findFoldAtLine(int32 line, bool shouldFindParent) const
 {
-    ToggleFold(mEditor->textCursor().blockNumber());
+    if (mSyntax.GetCurrentResultOrNull() == nullptr)
+    {
+        return -1;
+    }
+    QMap<int32, CodeSyntaxFold>::const_iterator candidate = mAvailable.upperBound(line);
+    const int32 extent =
+        shouldFindParent == true && mAvailable.contains(line) == true ? mAvailable.value(line).LastLine : line;
+    while (candidate != mAvailable.cbegin())
+    {
+        --candidate;
+        if (candidate->LastLine >= extent && (shouldFindParent == false || candidate.key() < line))
+        {
+            return candidate.key();
+        }
+    }
+    return -1;
+}
+
+void CodeStructureView::runFoldCommand(CodeFoldCommand operation, int32 level)
+{
+    const int32 line = mEditor->textCursor().blockNumber();
+    const int32 opening = HasFold(line) == true ? line : findFoldAtLine(line, false);
+    switch (operation)
+    {
+        case CodeFoldCommand::Toggle:
+            if (opening >= 0)
+            {
+                ToggleFold(opening);
+            }
+            return;
+        case CodeFoldCommand::Fold:
+        case CodeFoldCommand::FoldRecursively:
+            if (opening >= 0 && mAvailable.contains(opening) == true)
+            {
+                const int32 last = operation == CodeFoldCommand::Fold ? opening : mAvailable.value(opening).LastLine;
+                foldMatching(operation, level, opening, last);
+            }
+            return;
+        case CodeFoldCommand::Unfold:
+        case CodeFoldCommand::UnfoldRecursively:
+            unfoldMatching(operation,
+                           opening,
+                           operation == CodeFoldCommand::Unfold
+                               ? opening
+                               : qMax(GetLastCollapsedLine(opening), mAvailable.value(opening).LastLine));
+            return;
+        case CodeFoldCommand::FoldAll:
+            FoldAll();
+            return;
+        case CodeFoldCommand::UnfoldAll:
+            UnfoldAll();
+            return;
+        case CodeFoldCommand::ToggleAll:
+            if (mCollapsed.isEmpty() == true)
+            {
+                FoldAll();
+            }
+            else
+            {
+                UnfoldAll();
+            }
+            return;
+        case CodeFoldCommand::FoldLevel:
+        case CodeFoldCommand::FoldComments:
+        case CodeFoldCommand::FoldRegions:
+            foldMatching(operation, level, 0, mEditor->blockCount() - 1);
+            return;
+        case CodeFoldCommand::FoldSelection:
+            foldSelection();
+            return;
+        case CodeFoldCommand::RemoveManual:
+            unfoldMatching(operation, opening, opening);
+            return;
+        case CodeFoldCommand::GoToParent: {
+            const int32 parent = findFoldAtLine(line, true);
+            if (parent >= 0)
+            {
+                mEditor->GoToLine(parent + 1);
+            }
+            return;
+        }
+        case CodeFoldCommand::GoToNext:
+        case CodeFoldCommand::GoToPrevious:
+            break;
+    }
+    if (mSyntax.GetCurrentResultOrNull() != nullptr)
+    {
+        QMap<int32, CodeSyntaxFold>::const_iterator destination =
+            operation == CodeFoldCommand::GoToNext ? mAvailable.upperBound(line) : mAvailable.lowerBound(line);
+        if (operation == CodeFoldCommand::GoToPrevious)
+        {
+            if (destination == mAvailable.cbegin())
+            {
+                return;
+            }
+            --destination;
+        }
+        if (destination != mAvailable.cend())
+        {
+            mEditor->GoToLine(destination.key() + 1);
+        }
+    }
+}
+
+void CodeStructureView::foldMatching(CodeFoldCommand operation, int32 level, int32 first, int32 last)
+{
+    if (mSyntax.GetCurrentResultOrNull() == nullptr)
+    {
+        return;
+    }
+    QSet<int32> collapsed;
+    collapsed.reserve(mCollapsed.size() + mAvailable.size());
+    for (const CollapsedFold& fold : mCollapsed)
+    {
+        collapsed.insert(fold.First.blockNumber());
+    }
+    QList<int32> ancestors;
+    int32 count = 0;
+    for (const CodeSyntaxFold& fold : mAvailable)
+    {
+        while (ancestors.isEmpty() == false && fold.LastLine > ancestors.constLast())
+        {
+            ancestors.removeLast();
+        }
+        const bool isLevel = operation != CodeFoldCommand::FoldLevel || ancestors.size() + 1 == level;
+        ancestors.append(fold.LastLine);
+        const bool isKind = (operation != CodeFoldCommand::FoldComments || fold.Kind == CodeFoldKind::Comment) &&
+                            (operation != CodeFoldCommand::FoldRegions || fold.Kind == CodeFoldKind::Region);
+        if (fold.FirstLine >= first && fold.FirstLine <= last && isLevel == true && isKind == true &&
+            collapsed.contains(fold.FirstLine) == false)
+        {
+            addCollapsed(fold);
+            ++count;
+        }
+    }
+    if (count > 0)
+    {
+        refreshVisibility();
+        announce(tr("Collapsed %1 ranges.").arg(count));
+    }
+}
+
+void CodeStructureView::unfoldMatching(CodeFoldCommand operation, int32 first, int32 last)
+{
+    const qsizetype count = mCollapsed.removeIf([operation, first, last](const CollapsedFold& fold) {
+        const int32 line = fold.First.blockNumber();
+        return line >= first && line <= last &&
+               (operation != CodeFoldCommand::RemoveManual || fold.Kind == CodeFoldKind::Manual);
+    });
+    if (count > 0)
+    {
+        refreshVisibility();
+        announce(tr("Expanded %1 ranges.").arg(count));
+    }
 }
 
 void CodeStructureView::ToggleFold(int32 line)
@@ -346,6 +518,30 @@ void CodeStructureView::Reveal(const QTextCursor& cursor)
         const int32 first = fold.First.blockNumber();
         const int32 last = fold.Last.blockNumber();
         return (anchorLine > first && anchorLine <= last) || (positionLine > first && positionLine <= last);
+    });
+    if (removed > 0)
+    {
+        refreshVisibility();
+    }
+}
+
+void CodeStructureView::RevealSecondaryCursors(const QList<CodeSecondaryCursor>& cursors)
+{
+    if (mIsApplyingVisibility == true || mCollapsed.isEmpty() == true || cursors.isEmpty() == true)
+    {
+        return;
+    }
+    // The cursor set may contain thousands of matches. Query ordered
+    // destination lines once per collapsed range, then update layout once.
+    QMap<int32, bool> destinations;
+    for (const CodeSecondaryCursor& cursor : cursors)
+    {
+        destinations.insert(mEditor->document()->findBlock(cursor.Anchor).blockNumber(), true);
+        destinations.insert(mEditor->document()->findBlock(cursor.Caret).blockNumber(), true);
+    }
+    const qsizetype removed = mCollapsed.removeIf([&destinations](const CollapsedFold& fold) {
+        const QMap<int32, bool>::const_iterator inside = destinations.upperBound(fold.First.blockNumber());
+        return inside != destinations.cend() && inside.key() <= fold.Last.blockNumber();
     });
     if (removed > 0)
     {
@@ -439,7 +635,7 @@ bool CodeStructureView::MoveAcrossFold(QKeyEvent* event)
             const QTextBlock destination = mEditor->document()->findBlockByNumber(last + 1);
             if (destination.isValid() == true)
             {
-                mEditor->setTextCursor(QTextCursor(destination));
+                mEditor->RevealTextCursor(QTextCursor(destination));
             }
             return true;
         }
@@ -460,7 +656,7 @@ bool CodeStructureView::MoveAcrossFold(QKeyEvent* event)
                 {
                     cursor.movePosition(QTextCursor::EndOfBlock);
                 }
-                mEditor->setTextCursor(cursor);
+                mEditor->RevealTextCursor(cursor);
             }
             return true;
         }
@@ -478,7 +674,7 @@ QList<int32> CodeStructureView::findScopes(int32 position) const
         while (index >= 0)
         {
             const CodeSyntaxNode& node = resultOrNull->Nodes.at(index);
-            if (node.Label.isEmpty() == false)
+            if (node.LabelIndex >= 0)
             {
                 scopes.prepend(index);
             }
@@ -497,13 +693,15 @@ void CodeStructureView::UpdateHeader()
     {
         return;
     }
-    const bool hasOutline = resultOrNull->Outline.isEmpty() == false;
+    const bool hasOutline = resultOrNull->Outline.isEmpty() == false || mHasNamedRegions == true;
+    mOutline->setVisible(hasOutline);
+    mFoldStatus->setVisible(resultOrNull->HasPartialFolds);
     if (hasOutline == true)
     {
         QStringList labels;
         for (int32 index : findScopes(mEditor->textCursor().position()))
         {
-            labels.append(resultOrNull->Nodes.at(index).Label);
+            labels.append(resultOrNull->GetLabel(resultOrNull->Nodes.at(index)));
         }
         const QString breadcrumb = labels.join(QStringLiteral("  ›  "));
         if (mBreadcrumbs->text() != breadcrumb)
@@ -521,13 +719,18 @@ void CodeStructureView::UpdateHeader()
             if (node.Range.Start < first.position())
             {
                 mStickyPosition = node.Range.Start;
-                mSticky->setText(node.Label);
-                mSticky->setToolTip(tr("Go to %1").arg(node.Label));
+                mSticky->setText(resultOrNull->GetLabel(node));
+                mSticky->setToolTip(tr("Go to %1").arg(resultOrNull->GetLabel(node)));
             }
         }
         mSticky->setVisible(mStickyPosition >= 0);
     }
-    mHeader->setVisible(hasOutline);
+    else
+    {
+        mBreadcrumbs->hide();
+        mSticky->hide();
+    }
+    mHeader->setVisible(hasOutline == true || resultOrNull->HasPartialFolds == true);
     if (previousHeight != GetHeaderHeight())
     {
         mEditor->updateGutterWidth();
@@ -556,7 +759,7 @@ void CodeStructureView::goToPosition(int32 position)
     QTextCursor cursor(mEditor->document());
     cursor.setPosition(position);
     mEditor->GetNavigation().RememberCurrent();
-    mEditor->setTextCursor(cursor);
+    mEditor->RevealTextCursor(cursor);
     mEditor->centerCursor();
     mEditor->setFocus();
 }
@@ -575,7 +778,7 @@ void CodeStructureView::showBreadcrumbs()
     {
         const CodeSyntaxNode& node = resultOrNull->Nodes.at(index);
         const int32 position = node.Range.Start;
-        menu->addAction(node.Label, this, [this, position, revision]() {
+        menu->addAction(resultOrNull->GetLabel(node), this, [this, position, revision]() {
             const CodeSyntaxResult* currentOrNull = mSyntax.GetCurrentResultOrNull();
             if (currentOrNull != nullptr && currentOrNull->Revision == revision)
             {
@@ -589,7 +792,7 @@ void CodeStructureView::showBreadcrumbs()
 void CodeStructureView::showOutline()
 {
     const CodeSyntaxResult* resultOrNull = mSyntax.GetCurrentResultOrNull();
-    if (resultOrNull == nullptr || resultOrNull->Outline.isEmpty() == true)
+    if (resultOrNull == nullptr || (resultOrNull->Outline.isEmpty() == true && mHasNamedRegions == false))
     {
         return;
     }
@@ -609,8 +812,16 @@ void CodeStructureView::showOutline()
     for (qsizetype row = 0; row < count; ++row)
     {
         const CodeSyntaxNode& node = resultOrNull->Nodes.at(resultOrNull->Outline.at(row));
-        QListWidgetItem* item = new QListWidgetItem(node.Label, symbols);
+        QListWidgetItem* item = new QListWidgetItem(resultOrNull->GetLabel(node), symbols);
         item->setData(Qt::UserRole, node.Range.Start);
+    }
+    for (const CodeSyntaxFold& fold : resultOrNull->Folds)
+    {
+        if (fold.Kind == CodeFoldKind::Region && fold.Label.isEmpty() == false)
+        {
+            QListWidgetItem* item = new QListWidgetItem(fold.Label, symbols);
+            item->setData(Qt::UserRole, mEditor->document()->findBlockByNumber(fold.FirstLine).position());
+        }
     }
     connect(filter, &QLineEdit::textChanged, dialog, [symbols](const QString& text) {
         QListWidgetItem* firstOrNull = nullptr;
@@ -667,7 +878,7 @@ void CodeStructureView::expandSelection()
         expanded.setPosition(range.End, QTextCursor::KeepAnchor);
         mSelectionHistory.append(current);
         mLastExpandedSelection = expanded;
-        mEditor->setTextCursor(expanded);
+        mEditor->RevealTextCursor(expanded);
     }
 }
 
@@ -676,7 +887,7 @@ void CodeStructureView::shrinkSelection()
     if (mSelectionHistory.isEmpty() == false && mEditor->textCursor() == mLastExpandedSelection)
     {
         mLastExpandedSelection = mSelectionHistory.takeLast();
-        mEditor->setTextCursor(mLastExpandedSelection);
+        mEditor->RevealTextCursor(mLastExpandedSelection);
     }
 }
 
@@ -704,6 +915,104 @@ QJsonArray CodeStructureView::SaveFolds() const
         });
     }
     return records;
+}
+
+QJsonArray CodeStructureView::CaptureMovedFolds(int32 first, int32 split, int32 last) const
+{
+    QJsonArray moved;
+    for (const QJsonValue& entry : SaveFolds())
+    {
+        QJsonObject record = entry.toObject();
+        const int32 start = record.value(QStringLiteral("line")).toInt();
+        const int32 end = record.value(QStringLiteral("last")).toInt();
+        if (start < first || end > last || (start < split && end >= split))
+        {
+            continue;
+        }
+        const int32 delta = start < split ? last - split + 1 : first - split;
+        record.insert(QStringLiteral("line"), start + delta);
+        record.insert(QStringLiteral("last"), end + delta);
+        moved.append(record);
+    }
+    return moved;
+}
+
+QList<CodeFoldEditRange> CodeStructureView::MapFolds(const QByteArray& before, const CodeEditSet& edits) const
+{
+    if (mCollapsed.isEmpty() == true || edits.Edits.IsValid() == false)
+    {
+        return {};
+    }
+    QMap<int32, usize> endpoints;
+    for (const CollapsedFold& fold : mCollapsed)
+    {
+        endpoints.insert(fold.First.block().position(), 0);
+        endpoints.insert(fold.Last.block().position(), 0);
+    }
+    CodePositionOffset cursor;
+    usize editIndex = 0;
+    isize delta = 0;
+    for (QMap<int32, usize>::iterator point = endpoints.begin(); point != endpoints.end(); ++point)
+    {
+        usize offset = 0;
+        if (AdvanceCodeByteOffset(before, point.key(), cursor, offset) == false)
+        {
+            return {};
+        }
+        while (editIndex < edits.Edits.GetSize())
+        {
+            const CodeTextEdit& edit = edits.Edits[editIndex];
+            if (edit.StartBytes + edit.RemovedBytes > offset)
+            {
+                offset = qMin(offset, edit.StartBytes);
+                break;
+            }
+            delta += static_cast<isize>(edit.Inserted.GetSize()) - static_cast<isize>(edit.RemovedBytes);
+            ++editIndex;
+        }
+        point.value() = static_cast<usize>(static_cast<isize>(offset) + delta);
+    }
+    QList<CodeFoldEditRange> mapped;
+    mapped.reserve(mCollapsed.size());
+    for (const CollapsedFold& fold : mCollapsed)
+    {
+        const usize opening = endpoints.value(fold.First.block().position());
+        const usize closing = endpoints.value(fold.Last.block().position());
+        if (opening < closing)
+        {
+            mapped.append({opening, closing, fold.Kind, fold.Label});
+        }
+    }
+    return mapped;
+}
+
+void CodeStructureView::RestoreMappedFolds(const QList<CodeFoldEditRange>& folds, const QByteArray& after)
+{
+    if (folds.isEmpty() == true)
+    {
+        return;
+    }
+    QMap<usize, int32> endpoints;
+    for (const CodeFoldEditRange& fold : folds)
+    {
+        endpoints.insert(fold.OpeningByte, -1);
+        endpoints.insert(fold.ClosingByte, -1);
+    }
+    CodePositionOffset cursor;
+    for (QMap<usize, int32>::iterator point = endpoints.begin(); point != endpoints.end(); ++point)
+    {
+        int32 position = 0;
+        if (AdvanceCodeCursorPosition(after, point.key(), cursor, position) == true)
+        {
+            point.value() = mEditor->document()->findBlock(position).blockNumber();
+        }
+    }
+    mCollapsed.clear();
+    for (const CodeFoldEditRange& fold : folds)
+    {
+        addCollapsed({endpoints.value(fold.OpeningByte), endpoints.value(fold.ClosingByte), fold.Kind, fold.Label});
+    }
+    refreshVisibility();
 }
 
 void CodeStructureView::RestoreFolds(const QJsonArray& records)

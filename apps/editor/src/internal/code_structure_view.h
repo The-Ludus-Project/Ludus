@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/code_syntax_service.h"
+#include "internal/editor_commands.h"
 
 #include <QJsonArray>
 #include <QList>
@@ -10,12 +11,23 @@
 #include <QTextCursor>
 #include <QTimer>
 
+class QLabel;
 class QRect;
 class QToolButton;
 class QWidget;
 
 namespace ludus::editor
 {
+struct CodeEditSet;
+
+struct CodeFoldEditRange final
+{
+    foundation::usize OpeningByte;
+    foundation::usize ClosingByte;
+    CodeFoldKind Kind;
+    QString Label;
+};
+
 /// Per-projection folding and syntax navigation. The document retains its
 /// full text and undo history. Collapsed ranges use live Qt text anchors.
 class CodeStructureView final : public QObject
@@ -29,6 +41,7 @@ public:
     void FoldAll();
     void UnfoldAll();
     void Reveal(const QTextCursor& cursor);
+    void RevealSecondaryCursors(const QList<CodeSecondaryCursor>& cursors);
     [[nodiscard]] bool HasFold(foundation::int32 line) const;
     [[nodiscard]] foundation::int32 GetHiddenLineCount(foundation::int32 line) const;
     [[nodiscard]] QString DescribeFold(foundation::int32 line) const;
@@ -37,7 +50,11 @@ public:
     [[nodiscard]] bool MoveAcrossFold(QKeyEvent* event);
     void DuplicateFold(foundation::int32 sourceLine, foundation::int32 destinationLine);
     [[nodiscard]] QJsonArray SaveFolds() const;
+    [[nodiscard]] QJsonArray
+    CaptureMovedFolds(foundation::int32 first, foundation::int32 split, foundation::int32 last) const;
     void RestoreFolds(const QJsonArray& records);
+    [[nodiscard]] QList<CodeFoldEditRange> MapFolds(const QByteArray& before, const CodeEditSet& edits) const;
+    void RestoreMappedFolds(const QList<CodeFoldEditRange>& folds, const QByteArray& after);
 
 private:
     struct CollapsedFold final
@@ -59,7 +76,11 @@ private:
     void goToPosition(foundation::int32 position);
     void expandSelection();
     void shrinkSelection();
-    void toggleFoldAtCaret();
+    void runFoldCommand(CodeFoldCommand operation, foundation::int32 level);
+    void
+    foldMatching(CodeFoldCommand operation, foundation::int32 level, foundation::int32 first, foundation::int32 last);
+    void unfoldMatching(CodeFoldCommand operation, foundation::int32 first, foundation::int32 last);
+    [[nodiscard]] foundation::int32 findFoldAtLine(foundation::int32 line, bool shouldFindParent) const;
     void announce(const QString& message);
     [[nodiscard]] QList<foundation::int32> findScopes(foundation::int32 position) const;
 
@@ -69,6 +90,7 @@ private:
     QToolButton* mOutline;
     QToolButton* mBreadcrumbs;
     QToolButton* mSticky;
+    QLabel* mFoldStatus;
     QMap<foundation::int32, CodeSyntaxFold> mAvailable;
     QMap<foundation::int32, foundation::int32> mHiddenThrough;
     QMap<foundation::int32, QString> mPlaceholderLabels;
@@ -82,5 +104,6 @@ private:
     foundation::int32 mPreviousFirstHiddenLine = 0;
     foundation::int32 mPreviousLastHiddenLine = 0;
     bool mIsApplyingVisibility = false;
+    bool mHasNamedRegions = false;
 };
 } // namespace ludus::editor

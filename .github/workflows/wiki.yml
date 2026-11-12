@@ -95,7 +95,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/editor-pages
-          key: editor-pages-v1-${{ runner.os }}-${{ hashFiles('apps/editor/**', 'apps/web_samples/**', 'scripts/script-provider', 'scripts/script-interaction', 'scripts/luau-probe', 'scripts/python/ludus_tools/behavior*.py', 'tools/reflection/**', 'examples/cornell-box/**', 'examples/live-edit-game/**', 'examples/scripted-game/**', 'examples/editor-sdk-project/**', 'modules/**', 'third_party/**', 'cmake/**', 'CMakeLists.txt', 'config/*.json', 'scripts/build-web-editor', 'scripts/python/editor_web.py', 'scripts/python/web_package.py', 'docs/wiki/editor/index.html', 'docs/wiki/assets/ludus-*.png') }}
+          key: editor-pages-v1-${{ runner.os }}-${{ hashFiles('apps/editor/**', 'apps/web_samples/**', 'scripts/script-provider', 'scripts/script-interaction', 'scripts/luau-probe', 'scripts/python/ludus_tools/behavior*.py', 'tools/reflection/**', 'examples/cornell-box/**', 'examples/live-edit-game/**', 'examples/scripted-game/**', 'examples/editor-sdk-project/**', 'modules/**', 'third_party/**', 'cmake/**', 'CMakeLists.txt', 'config/*.json', 'config/code-languages/**', 'scripts/build-web-editor', 'scripts/python/editor_web.py', 'scripts/python/web_package.py', 'docs/wiki/editor/index.html', 'docs/wiki/assets/ludus-*.png') }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"

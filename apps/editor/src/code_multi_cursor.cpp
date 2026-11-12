@@ -1,5 +1,7 @@
 #include "internal/code_multi_cursor.h"
 
+#include "internal/code_structure_view.h"
+
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/containers/sort.hpp>
@@ -61,6 +63,7 @@ bool CodeMultiCursor::Collapse()
 
 void CodeMultiCursor::AdoptSecondaryCursors(const QList<CodeSecondaryCursor>& secondaryCursors)
 {
+    mEditor.GetStructure().RevealSecondaryCursors(secondaryCursors);
     mSecondary = secondaryCursors;
     mColumnAnchorPosition = -1;
     sortAndMerge();
@@ -173,7 +176,7 @@ void CodeMultiCursor::AddNextOccurrence()
         {
             return;
         }
-        mEditor.setTextCursor(primary);
+        mEditor.RevealTextCursor(primary);
         mEditor.NotifyMultiCursorChanged();
         return;
     }
@@ -214,7 +217,7 @@ void CodeMultiCursor::AddNextOccurrence()
     QTextCursor next(mEditor.document());
     next.setPosition(at);
     next.setPosition(at + static_cast<int32>(needle.size()), QTextCursor::KeepAnchor);
-    mEditor.setTextCursor(next);
+    mEditor.RevealTextCursor(next);
     sortAndMerge();
     mEditor.NotifyMultiCursorChanged();
 }
@@ -229,7 +232,7 @@ void CodeMultiCursor::AddAllOccurrences()
         {
             return;
         }
-        mEditor.setTextCursor(primary);
+        mEditor.RevealTextCursor(primary);
     }
     const QString needle = primary.selectedText();
     if (needle.isEmpty() == true || needle.contains(QChar::ParagraphSeparator) == true)
@@ -251,6 +254,7 @@ void CodeMultiCursor::AddAllOccurrences()
         }
         at = static_cast<int32>(text.indexOf(needle, at + static_cast<int32>(needle.size()), Qt::CaseSensitive));
     }
+    mEditor.GetStructure().RevealSecondaryCursors(mSecondary);
     sortAndMerge();
     mEditor.NotifyMultiCursorChanged();
 }
@@ -279,7 +283,7 @@ void CodeMultiCursor::ColumnSelectTo(const QPoint& viewportPoint)
     for (int32 blockNumber = firstBlock; blockNumber <= lastBlock; ++blockNumber)
     {
         const QTextBlock block = document->findBlockByNumber(blockNumber);
-        if (block.isValid() == false)
+        if (block.isValid() == false || block.isVisible() == false)
         {
             continue;
         }
@@ -305,7 +309,7 @@ void CodeMultiCursor::ColumnSelectTo(const QPoint& viewportPoint)
             QTextCursor newPrimary(document);
             newPrimary.setPosition(isRightward == true ? region.Start() : region.End());
             newPrimary.setPosition(isRightward == true ? region.End() : region.Start(), QTextCursor::KeepAnchor);
-            mEditor.setTextCursor(newPrimary);
+            mEditor.RevealTextCursor(newPrimary);
             hasPrimary = true;
         }
         else
@@ -323,7 +327,7 @@ bool CodeMultiCursor::moveEveryCursor(int32 moveOperation, bool shouldKeepAnchor
     const QTextCursor::MoveMode mode = shouldKeepAnchor == true ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor;
     QTextCursor primary = mEditor.textCursor();
     primary.movePosition(operation, mode);
-    mEditor.setTextCursor(primary);
+    mEditor.RevealTextCursor(primary);
     for (CodeSecondaryCursor& secondary : mSecondary)
     {
         QTextCursor cursor(document);

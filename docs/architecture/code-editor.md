@@ -271,13 +271,17 @@ review model, before code lands. See the
 **Threading.** The native editor runs syntax jobs on a single-thread pool.
 Each projection owns its parser and last tree. After a debounce, the view posts
 a copied UTF-16 snapshot and revision. The worker computes a coalesced edit
-between consecutive snapshots, edits the old tree, and reparses. The browser
+between consecutive snapshots, edits the old tree, and reparses. When the
+changed ranges fit inside one whole-line declaration, the worker walks that
+declaration and shifts the cached tokens and structure beyond it. Larger or
+malformed changes rebuild the products from the new tree. The browser
 uses the parser progress callback to yield between slices on the event loop.
 A newer edit cancels obsolete jobs. Publication checks the revision again
 before applying results.
 
-**Tokens.** The worker walks grammar symbols to produce ordered, disjoint
-UTF-16 spans. The highlighter uses the lexical fallback when it has no result
+**Tokens.** The worker combines grammar symbols with rooted queries to produce
+ordered, disjoint UTF-16 spans, with two 32-bit words per token. Markdown also
+uses its inline grammar for code spans, links and emphasis. The highlighter uses the lexical fallback when it has no result
 for the current revision. Qt keeps formatting attached to unchanged blocks.
 On publication the highlighter refreshes the visible blocks first and
 reapplies the rest in timer slices. Large-file mode colors visible lines and
@@ -464,20 +468,18 @@ committing or branch UI.
     for chords such as Ctrl+K Ctrl+C.
   - The shell's shortcut-collision tests enforce these bindings in both
     profiles.
-- **Folding shortcuts (proposed 2026-11-04).** Both profiles bind Fold and
-  Unfold to Ctrl+Shift+[ and Ctrl+Shift+] (Cmd+Option+[ and Cmd+Option+] on
-  macOS, as in VS Code). Shortcuts are matched by key, not by the produced
-  character, so they also work on keyboard layouts where [ needs a modifier.
-  - **Ludus** adds Visual Studio's outlining chords: Ctrl+M Ctrl+M Toggle Fold,
-    Ctrl+M Ctrl+L Unfold All when anything is collapsed and Fold All otherwise,
-    Ctrl+M Ctrl+O Fold Level 1 and Ctrl+M Ctrl+H Fold Selection. On macOS these
-    chords use the Control key, because Command+M is the system's Minimize.
-  - **VS Code** uses VS Code's defaults: Ctrl+K Ctrl+L Toggle Fold, Ctrl+K
-    Ctrl+[ and Ctrl+K Ctrl+] Fold and Unfold Recursively, Ctrl+K Ctrl+0 Fold
-    All, Ctrl+K Ctrl+J Unfold All, Ctrl+K Ctrl+1 to Ctrl+K Ctrl+7 Fold Level N,
-    Ctrl+K Ctrl+/ Fold All Comments, Ctrl+K Ctrl+8 Fold All Regions, and
-    Ctrl+K Ctrl+, and Ctrl+K Ctrl+. Fold Selection and Remove Manual Fold.
-  - Commands without a binding in a profile remain available from the palette.
+- **Folding shortcuts.** Both profiles bind Fold and Unfold to Ctrl+Shift+[
+  and Ctrl+Shift+] (Cmd+Option+[ and Cmd+Option+] on macOS).
+  - **Ludus** uses Ctrl+Alt+M as the outlining prefix, leaving Ctrl+M for Tab
+    Moves Focus. On macOS the outlining prefix is physical Control+M. The
+    second key is M for Toggle Fold, L for Toggle All Folds, O for Fold
+    Level 1 and H for Fold Selection, with the same modifiers as the prefix.
+  - **VS Code** uses Ctrl+K Ctrl+L for Toggle Fold, Ctrl+K Ctrl+[ and Ctrl+K
+    Ctrl+] for recursive folding, Ctrl+K Ctrl+0 and Ctrl+K Ctrl+J for Fold All
+    and Unfold All, and Ctrl+K Ctrl+1 through Ctrl+K Ctrl+7 for levels. Ctrl+K
+    Ctrl+/ folds comments, Ctrl+K Ctrl+8 folds regions, and Ctrl+K Ctrl+, and
+    Ctrl+K Ctrl+. create and remove manual folds.
+  - The source menu and command palette expose every command.
 
 ### Threading and performance
 

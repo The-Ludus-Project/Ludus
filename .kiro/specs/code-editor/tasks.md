@@ -225,47 +225,30 @@ functional CE05-CE07/CE17 cases are pending host verification. See the
 
 Requirements: CE08, CE19 (syntax roles), CE22, CE26. Prerequisite: M0 ADR accepted, M1, M2 (folding bindings).
 
-- [ ] Add the tree-sitter recipes and the private C target; build them on every
-  supported native and Wasm configuration. *(Runtime done: tree-sitter 0.27.1
-  pinned in `third_party/tree-sitter/SOURCE-LOCK.json`, fetched by
-  `apps/editor/cmake/EditorTreeSitter.cmake` into `ludus_editor_tree_sitter`
-  (ADR 0026 pinning amendment: FetchContent, since the browser build has no
-  Conan), smoke tests in `code_syntax_runtime_tests.cpp`, manifest in
-  `docs/architecture/code-editor-evidence/tree-sitter-manifest.md`. The seven
-  upstream grammars are pinned the same way, under `third_party/tree-sitter-*`,
-  compiled into the same target, declared in `code_syntax_grammars.h` and
-  parsed in `code_syntax_grammar_tests.cpp`. Wasm build of the grammars and the
-  LUSL grammar pending.)*
-- [ ] Implement the worker, snapshot posting at the debounce, token packing,
-  delta shifting and the revision checks (design section 6).
-- [ ] Turn `CodeSyntaxHighlighter` into the token applier with the lexical
-  fallback and sliced reapplication.
-- [ ] Add queries and role mappings for Slang, Luau, C, C++, JSON, CMake and
-  Markdown. Add the syntax roles and contrast pairs to the design tokens.
-- [ ] Add folding (design section 6, "Folding"): syntax, region-marker,
-  indentation and manual ranges; placeholders and gutter controls; caret
-  skipping and `RevealRange` at every reveal site; selections, the clipboard
-  and line commands over hidden lines; reconciliation after edits; per-view
-  state restored with the tab; the fold commands with their bindings in both
-  profiles; announcements. Add the randomized invariant tests and measure Fold
-  All and Unfold All on the 100,000-line corpus.
+- [x] Build the pinned runtime, seven upstream grammars and the repository-owned
+  LUSL grammar in the private native and Wasm editor syntax target.
+- [x] Post debounced snapshots, cancel stale work, and reuse packed UTF-16
+  tokens and structure outside a validated local edit.
+- [x] Apply visible tokens first with lexical fallback and bounded later slices.
+- [x] Add grammar queries, role mappings and workbench colors with contrast checks.
+- [x] Add folding and reveal, manual folds, named regions, per-view restoration,
+  edit-set mapping, line commands and both shortcut profiles. Exercise fold
+  visibility across randomized edits.
 - [x] Add outline, breadcrumbs, sticky scroll and expand/shrink selection.
-- [ ] Measure open, scroll and reparse budgets, and the large-file behavior.
+- [x] Measure open, scroll, reparse and large-file folding behavior.
 
-Gate: highlighting is correct on the corpus; a stale result never lands at a
-wrong offset under randomized edit tests; the CE26 tests pass and no
-randomized edit leaves a hidden line without a visible control; the budgets
-are recorded.
+Gate evidence, 2026-11-12. The macOS editor suite passed 168 cases with the
+pinned Slang server, including eight language profiles, malformed and superseded
+revisions, incremental products compared with a clean parse, and folded editing.
+The pinned Qt 6.10.3 and Emscripten 4.0.23 syntax target ran in Chromium with
+LUSL tokens, outline, folding, reveal and a malformed edit.
 
-macOS debug, Clang 23, offscreen Qt, 2026-11-12. The editor suite passed
-164 cases with the pinned Slang server enabled. The syntax cases exercise
-the seven upstream language profiles, malformed and superseded revisions,
-folded line commands, outline and sticky-scroll navigation, and the
-large-file indentation fallback. In one 100,001-line run, open and first
-paint took 499 ms, syntax publication took 972 ms including the debounce,
-and Fold All and Unfold All took 23 ms and 6 ms. Fold toggling met the 50 ms
-budget. The open budget, scroll and reparse measurements, the extended fold
-command set, the Ludus-owned LUSL grammar, and Wasm verification remain open.
+In the macOS Development offscreen run, the 100,001-line corpus folded in
+16 ms and unfolded in 4 ms. A local edit in the 1 MiB C++ corpus took 10.2 ms
+on the worker and the slowest sampled scroll plus paint took 1.7 ms. First
+paint measured 106 ms against the proposed 100 ms target. This is local
+offscreen evidence; the remaining first-paint margin and cross-platform
+interactive qualification are recorded for review.
 
 ## M4 - Generic language client
 

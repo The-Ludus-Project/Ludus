@@ -55,6 +55,7 @@ public:
     void SetPalette(const QPalette& palette);
     void SetLargeFileMode(bool isLarge);
     [[nodiscard]] bool IsLargeDocument() const;
+    void ApplyBlock(QTextBlock block);
     void ApplyVisibleBlocks(QTextBlock first, foundation::int32 lastLine);
     [[nodiscard]] bool UsesVisibleFallback() const;
     void ScheduleReapply();
@@ -62,6 +63,7 @@ public:
 private:
     void highlightBlock(const QString& text) override;
     void applySyntaxTokens();
+    void rehighlightEdit(foundation::int32 position, foundation::int32 added);
     void reapplySlice();
     const CodeSyntaxService& mSyntax;
     QTimer mReapply;
@@ -70,6 +72,8 @@ private:
     foundation::int32 mLastVisibleLine = 0;
     bool mIsApplyingExplicitly = false;
     bool mIsLargeFile = false;
+    foundation::int32 mDocumentRevision = 0;
+    foundation::int32 mApplyThroughLine = -1;
     foundation::StaticArray<QTextCharFormat, static_cast<foundation::usize>(CodeSyntaxRole::Count)> mRoleFormats;
     CodeLanguage mLanguage = CodeLanguage::PlainText;
     QTextCharFormat mKeywordFormat;

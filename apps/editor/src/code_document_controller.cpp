@@ -1,5 +1,7 @@
 #include "internal/code_document_controller.h"
 
+#include "internal/code_structure_view.h"
+
 #include <ludus/foundation/base/core.h>
 
 #include "internal/code_text.h"
@@ -145,7 +147,7 @@ void CodeDocumentController::RestoreSelection(CodeTextSelection selection)
     QTextCursor cursor(mEditor.document());
     cursor.setPosition(anchor);
     cursor.setPosition(caret, QTextCursor::KeepAnchor);
-    mEditor.setTextCursor(cursor);
+    mEditor.RevealTextCursor(cursor);
     mLastSelection = selection;
     mIsSynchronizing = wasSynchronizing;
 }
@@ -528,7 +530,9 @@ CodeEditStatus CodeDocumentController::ApplyEditSet(const CodeDocumentIdentity& 
     const CodeEditStatus status = mHostOrNull->ApplyEdits(expected, edits, false);
     if (status == CodeEditStatus::Ok)
     {
+        const QList<CodeFoldEditRange> folds = mEditor.GetStructure().MapFolds(mBytes, edits);
         Synchronize();
+        mEditor.GetStructure().RestoreMappedFolds(folds, mBytes);
         RestoreSelectionSet(edits.After.Selections);
         mEditor.verticalScrollBar()->setValue(vertical);
         mEditor.horizontalScrollBar()->setValue(horizontal);

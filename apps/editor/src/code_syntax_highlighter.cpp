@@ -13,6 +13,7 @@
 #include <QPalette>
 #include <QStringView>
 #include <QTextDocument>
+#include <QTextLayout>
 
 // Thanks to The Qt Company, "QSyntaxHighlighter", Qt GUI documentation,
 // highlightBlock/previousBlockState: incremental multiline lexical state.
@@ -27,7 +28,10 @@ namespace ludus::editor
 namespace
 {
 using namespace foundation;
-constexpr int32 NORMAL_STATE = 0;
+// Qt initializes every block's state to -1. Keeping the normal state
+// equal to that value avoids propagating a visible refresh through an entire
+// unformatted document (QSyntaxHighlighterPrivate::reformatBlocks).
+constexpr int32 NORMAL_STATE = -1;
 constexpr int32 BLOCK_COMMENT_STATE = 1;
 constexpr int32 LIGHT_PALETTE_THRESHOLD = 128;
 using design::ThemeColour;
@@ -196,6 +200,20 @@ CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document, const Code
     : QSyntaxHighlighter(document), mSyntax(syntax)
 {
     LUDUS_ASSERT(document != nullptr);
+    // Qt's default contentsChange slot walks every inserted block during open,
+    // including blocks the editor has never shown. Use the public per-block
+    // highlighter instead, with synchronous edits and visible-first slices.
+    QObject::disconnect(document, &QTextDocument::contentsChange, this, nullptr);
+    rehighlight(); // Complete Qt's queued initial highlight while the document is empty.
+    mDocumentRevision = document->revision();
+    connect(document, &QTextDocument::contentsChange, this, [this](int32 position, int32, int32 added) {
+        const int32 revision = this->document()->revision();
+        if (revision != mDocumentRevision)
+        {
+            mDocumentRevision = revision;
+            rehighlightEdit(position, added);
+        }
+    });
     mReapply.setSingleShot(true);
     connect(&mReapply, &QTimer::timeout, this, &CodeSyntaxHighlighter::reapplySlice);
 }
@@ -254,18 +272,61 @@ bool CodeSyntaxHighlighter::UsesVisibleFallback() const
     return IsLargeDocument() == true || document()->blockCount() > EAGER_LEXER_LINE_LIMIT;
 }
 
+void CodeSyntaxHighlighter::rehighlightEdit(int32 position, int32 added)
+{
+    const QTextBlock first = document()->findBlock(position);
+    if (first.isValid() == false || mLanguage == CodeLanguage::PlainText)
+    {
+        return;
+    }
+    const QTextBlock last = document()->findBlock(qMin(position + added, document()->characterCount() - 1));
+    if (UsesVisibleFallback() == true && last.blockNumber() > first.blockNumber() + 1)
+    {
+        // Large paste/open takes the same path as scrolling. Its first visible
+        // blocks are colored by the view's queued refresh after Qt lays out.
+        mReapply.stop();
+        return;
+    }
+    constexpr int32 INLINE_BLOCK_BUDGET = 32;
+    const int32 end = qMin(last.blockNumber(), first.blockNumber() + INLINE_BLOCK_BUDGET - 1);
+    mIsApplyingExplicitly = true;
+    mApplyThroughLine = first.blockNumber() + INLINE_BLOCK_BUDGET - 1;
+    for (QTextBlock block = first; block.isValid() == true && block.blockNumber() <= end; block = block.next())
+    {
+        if (static_cast<usize>(block.length() - 1) <= CODE_LONG_LINE_UTF16_UNITS)
+        {
+            rehighlightBlock(block);
+        }
+    }
+    mApplyThroughLine = -1;
+    mIsApplyingExplicitly = false;
+}
+
+void CodeSyntaxHighlighter::ApplyBlock(QTextBlock block)
+{
+    if (block.isValid() == false || static_cast<usize>(block.length() - 1) > CODE_LONG_LINE_UTF16_UNITS)
+    {
+        return;
+    }
+    mApplyThroughLine = block.blockNumber();
+    rehighlightBlock(block);
+    mApplyThroughLine = -1;
+}
+
 void CodeSyntaxHighlighter::ApplyVisibleBlocks(QTextBlock first, int32 lastLine)
 {
     mFirstVisibleLine = first.blockNumber();
     mLastVisibleLine = lastLine;
     mIsApplyingExplicitly = true;
+    mApplyThroughLine = lastLine;
     for (QTextBlock block = first; block.isValid() == true && block.blockNumber() <= lastLine; block = block.next())
     {
-        if (block.isVisible() == true)
+        if (block.isVisible() == true && static_cast<usize>(block.length() - 1) <= CODE_LONG_LINE_UTF16_UNITS)
         {
             rehighlightBlock(block);
         }
     }
+    mApplyThroughLine = -1;
     mIsApplyingExplicitly = false;
 }
 
@@ -287,7 +348,7 @@ void CodeSyntaxHighlighter::reapplySlice()
     mIsApplyingExplicitly = true;
     while (mNextBlock.isValid() == true && clock.elapsed() < SLICE_MILLISECONDS)
     {
-        rehighlightBlock(mNextBlock);
+        ApplyBlock(mNextBlock);
         mNextBlock = mNextBlock.next();
     }
     mIsApplyingExplicitly = false;
@@ -312,7 +373,7 @@ void CodeSyntaxHighlighter::applySyntaxTokens()
     while (first < last)
     {
         const qsizetype middle = first + (last - first) / 2;
-        if (resultOrNull->Tokens.at(middle).Range.End <= start)
+        if (resultOrNull->Tokens.at(middle).GetEnd() <= start)
         {
             first = middle + 1;
         }
@@ -324,18 +385,32 @@ void CodeSyntaxHighlighter::applySyntaxTokens()
     for (qsizetype index = first; index < resultOrNull->Tokens.size(); ++index)
     {
         const CodeSyntaxToken& token = resultOrNull->Tokens.at(index);
-        if (token.Range.Start >= end)
+        if (token.GetStart() >= end)
         {
             break;
         }
-        const int32 clippedStart = qMax(start, token.Range.Start);
-        const int32 clippedEnd = qMin(end, token.Range.End);
-        setFormat(clippedStart - start, clippedEnd - clippedStart, mRoleFormats[static_cast<usize>(token.Role)]);
+        const int32 clippedStart = qMax(start, token.GetStart());
+        const int32 clippedEnd = qMin(end, token.GetEnd());
+        setFormat(clippedStart - start, clippedEnd - clippedStart, mRoleFormats[static_cast<usize>(token.GetRole())]);
     }
 }
 
 void CodeSyntaxHighlighter::highlightBlock(const QString& text)
 {
+    if (mApplyThroughLine >= 0 && currentBlock().blockNumber() > mApplyThroughLine)
+    {
+        // Qt asks for one more block when a multiline state changes. Retain
+        // its formats and state here; a later visible or timed pass updates it.
+        const QTextLayout* layoutOrNull = currentBlock().layout();
+        if (layoutOrNull != nullptr)
+        {
+            for (const QTextLayout::FormatRange& format : layoutOrNull->formats())
+            {
+                setFormat(format.start, format.length, format.format);
+            }
+        }
+        return;
+    }
     if (mLanguage == CodeLanguage::PlainText || static_cast<usize>(text.size()) > CODE_LONG_LINE_UTF16_UNITS)
     {
         return;

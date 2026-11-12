@@ -691,7 +691,7 @@ void ScriptWorkspace::Highlight()
         auto cursor = Text_->textCursor();
         cursor.movePosition(QTextCursor::Start);
         cursor.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, line - 1);
-        Text_->setTextCursor(cursor);
+        Text_->RevealTextCursor(cursor);
         Text_->ensureCursorVisible();
         QTextEdit::ExtraSelection selection;
         selection.cursor = foundation::Move(cursor);

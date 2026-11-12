@@ -1,6 +1,9 @@
+#include "internal/code_edit_set.h"
 #include "internal/code_editor.h"
 #include "internal/code_structure_view.h"
 #include "internal/code_syntax_service.h"
+
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -10,6 +13,7 @@
 #include <QElapsedTimer>
 #include <QLineEdit>
 #include <QRandomGenerator>
+#include <QScrollBar>
 #include <QTest>
 #include <QTextBlock>
 #include <QTextDocument>
@@ -39,8 +43,8 @@ bool HasToken(const CodeSyntaxResult& result, const QString& source, const QStri
 {
     for (const CodeSyntaxToken& token : result.Tokens)
     {
-        const QStringView text = QStringView(source).sliced(token.Range.Start, token.Range.End - token.Range.Start);
-        if (text.trimmed() == spelling && token.Role == role)
+        const QStringView text = QStringView(source).sliced(token.GetStart(), token.GetEnd() - token.GetStart());
+        if (text.trimmed() == spelling && token.GetRole() == role)
         {
             return true;
         }
@@ -52,7 +56,7 @@ bool HasSymbol(const CodeSyntaxResult& result, QStringView name)
 {
     for (int32 index : result.Outline)
     {
-        if (result.Nodes.at(index).Label == name)
+        if (result.GetLabel(result.Nodes.at(index)) == name)
         {
             return true;
         }
@@ -100,6 +104,11 @@ TEST_CASE("editor syntax publishes tokens and outline from every configured gram
                   QStringLiteral("Compute"),
                   CodeSyntaxRole::Function,
                   QStringLiteral("Compute")},
+             Case{CodeLanguage::Lusl,
+                  QStringLiteral("float32 Shade(in float32 normal) {\n  return normal;\n}\n"),
+                  QStringLiteral("Shade"),
+                  CodeSyntaxRole::Function,
+                  QStringLiteral("Shade")},
              Case{CodeLanguage::Luau,
                   QStringLiteral("local function Length(value: number)\n  return value\nend\n"),
                   QStringLiteral("return"),
@@ -116,9 +125,9 @@ TEST_CASE("editor syntax publishes tokens and outline from every configured gram
                   CodeSyntaxRole::Function,
                   QStringLiteral("Build")},
              Case{CodeLanguage::Markdown,
-                  QStringLiteral("# Overview\n\nText.\n\n## Scope\n\nMore text.\n"),
-                  QStringLiteral("# Overview"),
-                  CodeSyntaxRole::Type,
+                  QStringLiteral("# Overview\n\nText with `inline` code.\n\n## Scope\n\nMore text.\n"),
+                  QStringLiteral("`inline`"),
+                  CodeSyntaxRole::String,
                   QStringLiteral("## Scope")},
          })
     {
@@ -133,10 +142,10 @@ TEST_CASE("editor syntax publishes tokens and outline from every configured gram
         int32 end = 0;
         for (const CodeSyntaxToken& token : result.Tokens)
         {
-            CHECK(token.Range.Start >= end);
-            CHECK(token.Range.End > token.Range.Start);
-            CHECK(token.Range.End <= item.Source.size());
-            end = token.Range.End;
+            CHECK(token.GetStart() >= end);
+            CHECK(token.GetEnd() > token.GetStart());
+            CHECK(token.GetEnd() <= item.Source.size());
+            end = token.GetEnd();
         }
     }
 }
@@ -174,6 +183,121 @@ TEST_CASE("same-size malformed edits and language switches reject stale syntax",
     editor.SetLanguage(CodeLanguage::PlainText);
     CHECK(service.GetCurrentResultOrNull() == nullptr);
     CHECK(WaitForResult(editor).Tokens.isEmpty());
+}
+
+TEST_CASE("incremental syntax products equal clean parsing after random local edits", "[editor][code-editor][syntax]")
+{
+    constexpr int32 DECLARATION_COUNT = 24;
+    constexpr int32 EDIT_COUNT = 12;
+    QString source;
+    for (int32 index = 0; index < DECLARATION_COUNT; ++index)
+    {
+        source += QStringLiteral("int Run%1() {\n  // Unicode é😀\n  return 1;\n}\n").arg(index);
+    }
+    CodeEditor incremental;
+    incremental.SetLanguage(CodeLanguage::Cpp);
+    incremental.setPlainText(source);
+    static_cast<void>(WaitForResult(incremental));
+    QRandomGenerator random(1262);
+    bool hasReusedProducts = false;
+    for (int32 index = 0; index < EDIT_COUNT; ++index)
+    {
+        const int32 declaration = static_cast<int32>(random.bounded(static_cast<uint32>(DECLARATION_COUNT)));
+        const QString current = incremental.toPlainText();
+        const qsizetype start = current.indexOf(QStringLiteral("int Run%1()").arg(declaration));
+        const qsizetype value = current.indexOf(QStringLiteral("return "), start) + QStringView(u"return ").size();
+        const qsizetype end = current.indexOf(u';', value);
+        QTextCursor edit(incremental.document());
+        edit.setPosition(static_cast<int32>(value));
+        edit.setPosition(static_cast<int32>(end), QTextCursor::KeepAnchor);
+        edit.insertText(index % 2 == 0 ? QStringLiteral("99") : QStringLiteral("1 +\n      2"));
+        CHECK(GetSyntax(incremental).GetCurrentResultOrNull() == nullptr);
+        const CodeSyntaxResult& updated = WaitForResult(incremental);
+        hasReusedProducts = hasReusedProducts == true || updated.HasReusedProducts == true;
+        CodeEditor clean;
+        clean.SetLanguage(CodeLanguage::Cpp);
+        clean.setPlainText(incremental.toPlainText());
+        const CodeSyntaxResult& expected = WaitForResult(clean);
+        CHECK(updated.Tokens == expected.Tokens);
+        CHECK(updated.Outline == expected.Outline);
+        CHECK(updated.Labels == expected.Labels);
+        REQUIRE(updated.Nodes.size() == expected.Nodes.size());
+        for (qsizetype nodeIndex = 0; nodeIndex < updated.Nodes.size(); ++nodeIndex)
+        {
+            CHECK(updated.Nodes.at(nodeIndex).Range == expected.Nodes.at(nodeIndex).Range);
+            CHECK(updated.Nodes.at(nodeIndex).Parent == expected.Nodes.at(nodeIndex).Parent);
+        }
+        REQUIRE(updated.Folds.size() == expected.Folds.size());
+        for (const CodeSyntaxFold& fold : expected.Folds)
+        {
+            CHECK(updated.Folds.contains(fold));
+        }
+    }
+    CHECK(hasReusedProducts);
+}
+
+TEST_CASE("fold commands retain visible controls across randomized changes", "[editor][code-editor][syntax]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Cpp);
+    editor.setPlainText(QStringLiteral("void Outer() {\n  if (true) {\n    Work();\n  }\n}\n"
+                                       "// #region More\n/* hello\n   world */\n// #endregion\n"));
+    static_cast<void>(WaitForResult(editor));
+    TriggerCommand(editor, QStringLiteral("Fold Recursively"));
+    CHECK(editor.document()->findBlockByNumber(2).isVisible() == false);
+    TriggerCommand(editor, QStringLiteral("Unfold Recursively"));
+    CHECK(editor.document()->findBlockByNumber(2).isVisible());
+    TriggerCommand(editor, QStringLiteral("Fold All Comments"));
+    CHECK(editor.document()->findBlockByNumber(7).isVisible() == false);
+    TriggerCommand(editor, QStringLiteral("Unfold All"));
+    TriggerCommand(editor, QStringLiteral("Fold All Regions"));
+    CHECK(editor.document()->findBlockByNumber(8).isVisible() == false);
+    TriggerCommand(editor, QStringLiteral("Unfold All"));
+    TriggerCommand(editor, QStringLiteral("Fold Level 2"));
+    CHECK(editor.document()->findBlockByNumber(1).isVisible());
+    CHECK(editor.document()->findBlockByNumber(2).isVisible() == false);
+    QRandomGenerator random(1262);
+    constexpr int32 ACTION_COUNT = 24;
+    for (int32 index = 0; index < ACTION_COUNT; ++index)
+    {
+        switch (random.bounded(4U))
+        {
+            case 0:
+                editor.GetStructure().FoldAll();
+                break;
+            case 1:
+                editor.GetStructure().UnfoldAll();
+                break;
+            case 2:
+                editor.GetStructure().ToggleFold(static_cast<int32>(random.bounded(9U)));
+                break;
+            default: {
+                QTextCursor edit(editor.document()->findBlockByNumber(2));
+                edit.insertText(QStringLiteral(" "));
+                static_cast<void>(WaitForResult(editor));
+                break;
+            }
+        }
+        int32 coveredThrough = -1;
+        for (QTextBlock block = editor.document()->firstBlock(); block.isValid() == true; block = block.next())
+        {
+            const int32 line = block.blockNumber();
+            if (block.isVisible() == true)
+            {
+                coveredThrough = editor.GetStructure().GetLastCollapsedLine(line);
+            }
+            else
+            {
+                CHECK(line <= coveredThrough);
+            }
+        }
+        CHECK(editor.textCursor().block().isVisible());
+    }
+    editor.GetStructure().UnfoldAll();
+    for (QTextBlock block = editor.document()->firstBlock(); block.isValid() == true; block = block.next())
+    {
+        CHECK(block.isVisible());
+    }
 }
 
 TEST_CASE("fold controls preserve the full text and reveal a navigation destination", "[editor][code-editor][syntax]")
@@ -226,6 +350,38 @@ TEST_CASE("syntax navigation expands selection and restores the earlier caret", 
     CHECK(editor.textCursor().selectedText() == QStringLiteral("value"));
     TriggerCommand(editor, QStringLiteral("Shrink Selection"));
     CHECK(editor.textCursor() == caret);
+}
+
+TEST_CASE("disjoint format edits remap collapsed opening and closing lines", "[editor][code-editor][syntax]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Cpp);
+    const QByteArray before("int top;\nvoid Run() {\n  Work();\n}\nint tail;\n");
+    editor.setPlainText(QString::fromUtf8(before));
+    static_cast<void>(WaitForResult(editor));
+    CodeStructureView& structure = editor.GetStructure();
+    structure.ToggleFold(1);
+    const QByteArray inserted("// format\n");
+    const QByteArray second("  ");
+    const usize inside = static_cast<usize>(before.indexOf("Work"));
+    constexpr usize EDIT_COUNT = 2;
+    const StaticArray<CodeTextEdit, EDIT_COUNT> replacements = {{
+        {0, 0, {inserted.constData(), static_cast<usize>(inserted.size())}},
+        {inside, 0, {second.constData(), static_cast<usize>(second.size())}},
+    }};
+    CodeEditSet edits;
+    edits.Edits = {replacements.GetData(), replacements.GetSize()};
+    const QList<CodeFoldEditRange> mapped = structure.MapFolds(before, edits);
+    REQUIRE(mapped.size() == 1);
+    QByteArray after = before;
+    after.insert(static_cast<qsizetype>(inside), second);
+    after.prepend(inserted);
+    editor.setPlainText(QString::fromUtf8(after));
+    structure.RestoreMappedFolds(mapped, after);
+    CHECK(editor.document()->findBlockByNumber(3).isVisible() == false);
+    static_cast<void>(WaitForResult(editor));
+    CHECK(editor.document()->findBlockByNumber(3).isVisible() == false);
+    CHECK(editor.toPlainText().toUtf8() == after);
 }
 
 TEST_CASE("outline and sticky navigation jump to the current declaration", "[editor][code-editor][syntax]")
@@ -339,4 +495,87 @@ TEST_CASE("a 100,000-line document can publish and toggle all folds", "[editor][
              .arg(foldMilliseconds)
              .arg(unfoldMilliseconds)
              .toStdString());
+}
+
+TEST_CASE("syntax edit and scroll latency on the M3 corpus", "[editor][code-editor][.benchmark][syntax]")
+{
+    constexpr int32 ONE_MIB = 1024 * 1024;
+    const QString declaration = QStringLiteral("int Sample%1() {\n  const int scale = 7;\n"
+                                               "  return scale + 12;\n}\n");
+    QString source;
+    for (int32 index = 0; source.size() < ONE_MIB; ++index)
+    {
+        source += declaration.arg(index);
+    }
+    CodeEditor editor;
+    editor.resize(900, 640);
+    editor.show();
+    QCoreApplication::processEvents();
+    QElapsedTimer clock;
+    clock.start();
+    editor.SetLanguage(CodeLanguage::Cpp);
+    editor.setPlainText(source);
+    editor.viewport()->repaint();
+    const int64 firstPaint = clock.elapsed();
+    QPlainTextEdit baseline;
+    baseline.setFont(editor.font());
+    baseline.setLineWrapMode(editor.lineWrapMode());
+    baseline.resize(editor.size());
+    baseline.show();
+    QCoreApplication::processEvents();
+    clock.restart();
+    baseline.setPlainText(source);
+    baseline.viewport()->repaint();
+    const int64 plainQtPaint = clock.elapsed();
+    baseline.hide();
+    static_cast<void>(WaitForResult(editor));
+    const int32 offset = static_cast<int32>(source.indexOf(QStringLiteral("return scale + "), source.size() / 2));
+    REQUIRE(offset > 0);
+    QTextCursor edit(editor.document());
+    edit.setPosition(offset + static_cast<int32>(QStringView(u"return scale + ").size()));
+    edit.insertText(QStringLiteral("3"));
+    const CodeSyntaxResult& updated = WaitForResult(editor);
+    const int64 reparse = updated.WorkerMicroseconds;
+    const bool hasReusedProducts = updated.HasReusedProducts;
+    QScrollBar* scroll = editor.verticalScrollBar();
+    constexpr int32 SAMPLES = 20;
+    int64 longestPaint = 0;
+    for (int32 sample = 0; sample < SAMPLES; ++sample)
+    {
+        clock.restart();
+        scroll->setValue(scroll->maximum() * sample / SAMPLES);
+        editor.viewport()->repaint();
+        longestPaint = qMax(longestPaint, clock.nsecsElapsed());
+    }
+    constexpr int64 NANOSECONDS_PER_MICROSECOND = 1000;
+    WARN(QStringLiteral("M3 | %1 units | first paint %2 ms (plain Qt %3 ms) | reparse %4 us | reused %5 | "
+                        "worst sampled scroll + paint %6 us")
+             .arg(source.size())
+             .arg(firstPaint)
+             .arg(plainQtPaint)
+             .arg(reparse)
+             .arg(hasReusedProducts == true ? QStringLiteral("yes") : QStringLiteral("no"))
+             .arg(longestPaint / NANOSECONDS_PER_MICROSECOND)
+             .toStdString());
+}
+
+TEST_CASE("first paint of the M3 8 MiB JSON corpus", "[editor][code-editor][.benchmark][syntax]")
+{
+    constexpr int32 CORPUS_UNITS = 8 * 1024 * 1024;
+    const QString row =
+        QStringLiteral("  {\"name\": \"sample\", \"id\": 7, \"description\": \"representative document row\"},\n");
+    const QString source =
+        QStringLiteral("[\n") + row.repeated(CORPUS_UNITS / row.size() - 1) + QStringLiteral("{}\n]\n");
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Json);
+    editor.resize(900, 640);
+    editor.show();
+    QCoreApplication::processEvents();
+    QElapsedTimer clock;
+    clock.start();
+    editor.setPlainText(source);
+    editor.viewport()->repaint();
+    const int64 firstPaint = clock.elapsed();
+    CHECK(editor.document()->characterCount() == source.size() + 1);
+    WARN(QStringLiteral("M3 | %1 UTF-16 units | first paint %2 ms").arg(source.size()).arg(firstPaint).toStdString());
 }

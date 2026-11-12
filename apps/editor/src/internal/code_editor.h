@@ -97,7 +97,7 @@ public:
     void SetLanguage(CodeLanguage language);
     void SetLargeFileMode(bool isLarge);
     /// Reveal collapsed ranges containing either endpoint before programmatic navigation.
-    void setTextCursor(const QTextCursor& cursor);
+    void RevealTextCursor(const QTextCursor& cursor);
     [[nodiscard]] CodeStructureView& GetStructure() const noexcept;
     /// Clamp and persist text size in points without changing text or history. GUI thread only.
     void SetFontPointSize(foundation::int32 points);
@@ -213,9 +213,6 @@ Q_SIGNALS:
     /// model that act on these land in later milestones (M8, M3); the commands
     /// and their bindings are registered now so the keymap profiles cover them.
     void ToggleBreakpointRequested();
-    void FoldAllRequested();
-    void UnfoldAllRequested();
-    void ToggleFoldRequested();
 
 private:
     QListWidget* mCompletionList;

@@ -187,11 +187,12 @@ and kept in step with the compiler.
 | tree-sitter-lusl | Ludus-authored `grammar.js` and queries | The Ludus project license | `apps/editor/syntax/lusl/` |
 
 - **Generated parser in the repository.** `grammar.js` and the generated
-  `src/parser.c` (plus `src/tree_sitter/*.h`) are committed together. The
-  editor build compiles `parser.c` into `ludus_editor_tree_sitter` like the
-  upstream grammars, and never runs the CLI.
-- **Pinned generator.** One script regenerates the parser with the tree-sitter
-  CLI version pinned in `config/tool_versions.json`. That is the same version
+  `src/parser.c` are committed together. The editor compiles the parser with
+  the pinned runtime's `parser.h`, which is byte-for-byte the CLI's generated
+  header. Ordinary builds never need the CLI.
+- **Pinned generator.** Run
+  `python3 scripts/regenerate-lusl-grammar --tree-sitter /path/to/tree-sitter`
+  with the CLI version pinned in `config/tool_versions.json`. That is the same version
   as the runtime pin, so the parser's ABI matches the runtime the editor links.
   The script writes the SHA-256 of `grammar.js` and the CLI version into a
   header comment of `parser.c`.
@@ -200,8 +201,8 @@ and kept in step with the compiler.
   when someone edits the grammar without regenerating, or bumps the pin without
   regenerating. CI therefore needs neither Node nor the CLI.
 - **One keyword source.** A test checks that the grammar's keywords equal
-  `tooling::shader_language::GetKeywords()`, including contextual words such as
-  `space` and `slang`. The compiler stays the owner, and the editor's lexical
+  `tooling::shader_language::GetKeywords()` and checks the contextual words
+  `space` and `slang` separately. The compiler stays the owner, and the editor's lexical
   fallback and the grammar cannot drift from it.
 - **Queries.** Highlight, fold, indent, locals and textobject queries are
   Ludus-authored under `config/code-languages/lusl/`. They are verified against

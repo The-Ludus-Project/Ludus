@@ -1,0 +1,12 @@
+{
+  "grammars": [
+    {"name": "lusl", "camelcase": "Lusl", "scope": "source.lusl", "path": ".", "file-types": ["lusl", "luslh"]}
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Ludus Shading Language editor grammar",
+    "authors": [{"name": "The Ludus Project"}],
+    "links": {"repository": "https://github.com/The-Ludus-Project/Ludus"}
+  }
+}

@@ -272,7 +272,13 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]() { mSelectionUpdate.start(0); });
     connect(document(), &QTextDocument::contentsChanged, this, [this]() { mSelectionUpdate.start(0); });
     connect(document(), &QTextDocument::contentsChange, this, &CodeEditor::markDiagnosticsOutOfDate);
-    connect(this, &QPlainTextEdit::blockCountChanged, this, &CodeEditor::updateGutterWidth);
+    connect(this, &QPlainTextEdit::blockCountChanged, this, [this]() {
+        updateGutterWidth();
+        if (mHighlighter->UsesVisibleFallback() == true)
+        {
+            mVisibleSyntaxUpdate.start(0);
+        }
+    });
     connect(this, &QPlainTextEdit::undoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
     connect(this, &QPlainTextEdit::redoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
     connect(this, &QPlainTextEdit::updateRequest, this, [this](const QRect& rectangle, int32 verticalDelta) {
@@ -324,21 +330,10 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     addShortcut(QStringLiteral("Previous Diagnostic"), QKeySequence(Qt::SHIFT | Qt::Key_F8), [this]() {
         GoToDiagnostic(true);
     });
-    // Code-editor keymap commands (CE16/CE26): registered as the shell's
-    // catalogue commands so the keymap profiles own their bindings, with a
-    // WidgetWithChildren shortcut context so F9 and the fold chords only fire
-    // while this view has focus. Their gutter and fold-model behavior lands in
-    // M8/M3; here they emit a request the owner will later act on.
-    const auto addKeymapCommand = [this](const EditorCommand& command, void (CodeEditor::*signal)()) {
-        QAction* action = CreateEditorCommand(command, this);
-        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        connect(action, &QAction::triggered, this, signal);
-        addAction(action);
-    };
-    addKeymapCommand(EDITOR_TOGGLE_BREAKPOINT_COMMAND, &CodeEditor::ToggleBreakpointRequested);
-    addKeymapCommand(EDITOR_FOLD_ALL_COMMAND, &CodeEditor::FoldAllRequested);
-    addKeymapCommand(EDITOR_UNFOLD_ALL_COMMAND, &CodeEditor::UnfoldAllRequested);
-    addKeymapCommand(EDITOR_TOGGLE_FOLD_COMMAND, &CodeEditor::ToggleFoldRequested);
+    QAction* breakpoint = CreateEditorCommand(EDITOR_TOGGLE_BREAKPOINT_COMMAND, this);
+    breakpoint->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(breakpoint, &QAction::triggered, this, &CodeEditor::ToggleBreakpointRequested);
+    addAction(breakpoint);
     // Multiple cursors (CE06). Only the collision-free bindings are set here;
     // batch 6's keymap profiles assign the rest (Add Next Occurrence stays
     // unbound because Ctrl+D is Duplicate Lines). The commands are discoverable in
@@ -431,7 +426,7 @@ void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
         }
     }
     mNavigation->RememberCurrent();
-    setTextCursor(mDiagnostics.at(selected < 0 ? boundary : selected).Range);
+    RevealTextCursor(mDiagnostics.at(selected < 0 ? boundary : selected).Range);
     ensureCursorVisible();
     setFocus();
 }
@@ -645,7 +640,7 @@ void CodeEditor::SetLargeFileMode(bool isLarge)
     mHighlighter->SetLargeFileMode(isLarge);
 }
 
-void CodeEditor::setTextCursor(const QTextCursor& cursor)
+void CodeEditor::RevealTextCursor(const QTextCursor& cursor)
 {
     if (cursor.document() == document())
     {
@@ -1476,7 +1471,7 @@ void CodeEditor::IndentSelection(bool shouldOutdent)
         }
     }
     current.endEditBlock();
-    setTextCursor(current);
+    RevealTextCursor(current);
 }
 
 void CodeEditor::AddCursorAbove()
@@ -1573,7 +1568,7 @@ void CodeEditor::ToggleLineComment()
         block = block.previous();
     }
     current.endEditBlock();
-    setTextCursor(current);
+    RevealTextCursor(current);
 }
 
 void CodeEditor::DuplicateLines()
@@ -1592,7 +1587,7 @@ void CodeEditor::DuplicateLines()
     lines.beginEditBlock();
     lines.insertText(QLatin1Char('\n') + text);
     lines.endEditBlock();
-    setTextCursor(lines);
+    RevealTextCursor(lines);
     mStructure->DuplicateFold(firstLine, copyLine);
 }
 
@@ -1606,19 +1601,35 @@ void CodeEditor::MoveLines(bool shouldMoveDown)
     QTextCursor lines = getSelectedLines();
     const int32 start = lines.selectionStart();
     const int32 end = lines.selectionEnd();
-    const QTextBlock adjacent =
-        shouldMoveDown == true ? document()->findBlock(end).next() : document()->findBlock(start).previous();
+    const QTextBlock selectedFirst = document()->findBlock(start);
+    const QTextBlock selectedLast = document()->findBlock(end);
+    QTextBlock adjacent = shouldMoveDown == true ? selectedLast.next() : selectedFirst.previous();
+    while (shouldMoveDown == false && adjacent.isValid() == true && adjacent.isVisible() == false)
+    {
+        adjacent = adjacent.previous();
+    }
     if (adjacent.isValid() == false)
     {
         return;
     }
+    const QTextBlock adjacentLast =
+        document()->findBlockByNumber(mStructure->GetLastCollapsedLine(adjacent.blockNumber()));
+    QTextCursor adjacentLines(adjacent);
+    adjacentLines.setPosition(adjacentLast.position() + adjacentLast.length() - 1, QTextCursor::KeepAnchor);
+    QString adjacentText = adjacentLines.selectedText();
+    adjacentText.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
     QString selected = lines.selectedText();
     selected.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
-    const QString adjacentText = adjacent.text();
     const int32 newStart =
         shouldMoveDown == true ? start + static_cast<int32>(adjacentText.size()) + 1 : adjacent.position();
     const int32 rangeStart = shouldMoveDown == true ? start : adjacent.position();
-    const int32 rangeEnd = shouldMoveDown == true ? adjacent.position() + adjacent.length() - 1 : end;
+    const int32 rangeEnd = shouldMoveDown == true ? adjacentLines.selectionEnd() : end;
+    const QJsonArray movedFolds = shouldMoveDown == true ? mStructure->CaptureMovedFolds(selectedFirst.blockNumber(),
+                                                                                         adjacent.blockNumber(),
+                                                                                         adjacentLast.blockNumber())
+                                                         : mStructure->CaptureMovedFolds(adjacent.blockNumber(),
+                                                                                         selectedFirst.blockNumber(),
+                                                                                         selectedLast.blockNumber());
     lines.setPosition(rangeStart);
     lines.setPosition(rangeEnd, QTextCursor::KeepAnchor);
     lines.beginEditBlock();
@@ -1627,7 +1638,11 @@ void CodeEditor::MoveLines(bool shouldMoveDown)
     lines.endEditBlock();
     lines.setPosition(newStart);
     lines.setPosition(newStart + static_cast<int32>(selected.size()), QTextCursor::KeepAnchor);
-    setTextCursor(lines);
+    RevealTextCursor(lines);
+    if (movedFolds.isEmpty() == false)
+    {
+        mStructure->RestoreFolds(movedFolds);
+    }
 }
 
 void CodeEditor::DeleteLines()
@@ -1652,7 +1667,7 @@ void CodeEditor::DeleteLines()
     lines.beginEditBlock();
     lines.removeSelectedText();
     lines.endEditBlock();
-    setTextCursor(lines);
+    RevealTextCursor(lines);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
@@ -1669,7 +1684,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
     {
         mNavigation->RememberCurrent();
     }
-    setTextCursor(cursor);
+    RevealTextCursor(cursor);
     ensureCursorVisible();
     setFocus();
 }
@@ -1762,7 +1777,7 @@ void CodeEditor::mousePressEvent(QMouseEvent* event)
         getDefinitionLinkAt(position).hasSelection() == true)
     {
         // Place the caret on the clicked name, then use the same compiler request as F12.
-        setTextCursor(cursorForPosition(position));
+        RevealTextCursor(cursorForPosition(position));
         mIsDefinitionClick = true;
         updateDefinitionLink(position, Qt::NoModifier);
         static_cast<void>(mNavigation->RequestDefinition());
@@ -1774,7 +1789,7 @@ void CodeEditor::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton && event->modifiers() == Qt::AltModifier)
     {
         static_cast<void>(mMultiCursor.Collapse());
-        setTextCursor(cursorForPosition(position));
+        RevealTextCursor(cursorForPosition(position));
         mMultiCursor.ColumnSelectTo(position);
         event->accept();
         return;
@@ -1954,7 +1969,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             // Reselect the original text, now between the inserted pair.
             cursor.setPosition(start + 1);
             cursor.setPosition(end + 1, QTextCursor::KeepAnchor);
-            setTextCursor(cursor);
+            RevealTextCursor(cursor);
             return;
         }
     }
@@ -1968,7 +1983,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         QTextCursor cursor = textCursor();
         const int32 position = cursor.positionInBlock();
         // Refresh only this block so a just-typed comment/string is respected before Qt's queued pass.
-        mHighlighter->rehighlightBlock(cursor.block());
+        mHighlighter->ApplyBlock(cursor.block());
         const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(cursor.block().userData());
         bool canPair = dataOrNull != nullptr;
         if (dataOrNull != nullptr)
@@ -1998,7 +2013,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             if (isCloseOfAutoClosingPair(typedChar) == true && next == typedChar)
             {
                 cursor.movePosition(QTextCursor::NextCharacter);
-                setTextCursor(cursor);
+                RevealTextCursor(cursor);
                 Q_EMIT EditBoundary();
                 return;
             }
@@ -2013,7 +2028,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
                 cursor.insertText(typed + openClose);
                 cursor.movePosition(QTextCursor::PreviousCharacter);
                 cursor.endEditBlock();
-                setTextCursor(cursor);
+                RevealTextCursor(cursor);
                 return;
             }
         }
@@ -2027,7 +2042,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             cursor.deletePreviousChar();
             cursor.deleteChar();
             cursor.endEditBlock();
-            setTextCursor(cursor);
+            RevealTextCursor(cursor);
             return;
         }
     }
@@ -2081,7 +2096,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             if (mShouldPairBrackets == true &&
                 document()->characterAt(cursor.position()) == bracketCloseFor(trailingOpen))
             {
-                mHighlighter->rehighlightBlock(cursor.block());
+                mHighlighter->ApplyBlock(cursor.block());
                 const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(cursor.block().userData());
                 if (dataOrNull != nullptr)
                 {
@@ -2101,7 +2116,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             cursor.setPosition(contentPosition);
         }
         cursor.endEditBlock();
-        setTextCursor(cursor);
+        RevealTextCursor(cursor);
         return;
     }
     QPlainTextEdit::keyPressEvent(event);

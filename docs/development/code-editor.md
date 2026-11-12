@@ -38,9 +38,9 @@ Externally. Only UTF-8 is editable; other encodings are an explicit non-goal.
 
 ## Syntax and navigation
 
-The editor recognizes Slang, Luau, C, C++, JSON, CMake and Markdown by file
-name. The language item in the code status bar overrides detection for the
-active view. LUSL uses the compiler's lexical profile and indentation folds.
+The editor recognizes Slang, LUSL, Luau, C, C++, JSON, CMake and Markdown by
+file name. The language item in the code status bar overrides detection for
+the active view.
 
 - **Outline** opens a searchable list of declarations, JSON keys or Markdown
   headings. Type to filter and press Enter to visit the selected entry.
@@ -51,9 +51,10 @@ active view. LUSL uses the compiler's lexical profile and indentation folds.
   context menu. The defaults are Alt+Shift+Right and Alt+Shift+Left.
 - The arrow in the line gutter collapses or expands a range. Click the
   placeholder to reveal the hidden lines. The source context menu also offers
-  **Fold Selection**, **Fold All**, and **Unfold All**. Each split remembers
-  its own folds. A restored tab reapplies folds whose opening line still
-  matches.
+  folding by level or kind, recursive folding, manual folds, and navigation
+  between folds. The command palette lists the same actions while the editor
+  has focus. Each split remembers its own folds. A restored tab reapplies
+  folds whose opening line still matches.
 
 Collapsed lines are part of the text, including when copied in a selection.
 Going to a hidden line opens the folds that contain it. While the parser
