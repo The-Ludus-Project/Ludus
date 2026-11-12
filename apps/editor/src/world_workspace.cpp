@@ -743,6 +743,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     split->setSizes({240, 520, 520, 300});
     // Every form in the inspector shares one label column, so Transform, Light and Material line up.
     mLabelColumn = new InspectorLabelColumn(*fields);
+    mLabelColumn->SetViewport(*scroll->viewport());
     Inspector_->setSpacing(0);
     inspectorLayout->setContentsMargins(design::SPACING_SMALL,
                                         design::SPACING_SMALL,
@@ -2438,6 +2439,11 @@ void WorldWorkspace::RenderInspector()
         QLabel* summary = new QLabel(summaryText + QStringLiteral(" Select one entity to edit its properties."));
         summary->setWordWrap(true);
         Inspector_->addWidget(summary);
+        if (colliderTargets.isEmpty() == false)
+        {
+            Inspector_->addWidget(mAttachRow);
+            mAttachRow->show();
+        }
         finishComponentMenu();
         Inspector_->addStretch();
         return;
@@ -2501,6 +2507,7 @@ void WorldWorkspace::RenderInspector()
                     *identifier);
     Inspector_->addWidget(identifierBlock);
     Inspector_->addWidget(mAttachRow);
+    mAttachRow->show();
     if (entity.value(QStringLiteral("scene")).isObject())
     {
         InspectorSection* section =

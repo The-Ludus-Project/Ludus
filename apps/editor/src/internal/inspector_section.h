@@ -31,6 +31,7 @@ public:
     [[nodiscard]] bool IsElided() const;
     /// The text as drawn: whole, or shortened with an ellipsis at its end.
     [[nodiscard]] QString GetShownText() const;
+    [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
 
 protected:
@@ -106,13 +107,17 @@ private:
 
 /// Gives every inspector form under one root widget (the Properties dock's content) the same label column, so
 /// Transform, Light and Material line up instead of each form choosing its own. The column takes a share of the
-/// dock's width between a minimum and a maximum number of characters. When the dock is too narrow for a readable
-/// field beside that column, every form puts its labels above their fields together; check boxes then carry their
-/// label beside the box, so they never sit alone on a line.
+/// dock's width between a minimum and a maximum number of characters, and gives way to the widest field down to
+/// that minimum. When the dock is too narrow for every field beside the column, every form puts its labels above
+/// their fields together; check boxes then carry their label beside the box, so they never sit alone on a line.
 class InspectorLabelColumn final : public QObject
 {
 public:
     explicit InspectorLabelColumn(QWidget& inoutRoot);
+
+    /// Measure the room from viewport (a scroll area's viewport holding the root) rather than from the root, whose
+    /// own width can exceed what is shown while its fields are too wide.
+    void SetViewport(QWidget& inoutViewport);
 
     /// The column controlling widget, or null when widget is not under one.
     [[nodiscard]] static const InspectorLabelColumn* FindOrNull(const QWidget& widget);
@@ -133,8 +138,10 @@ protected:
 
 private:
     void applyTo(QFormLayout& inoutForm) const;
+    [[nodiscard]] foundation::int32 getAvailableWidth() const;
 
     QWidget& mRoot;
+    QPointer<QWidget> mViewport;
     foundation::int32 mLabelWidth = 0;
     bool mIsStacked = false;
     bool mIsUpdating = false;

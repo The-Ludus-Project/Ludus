@@ -59,7 +59,22 @@ bool InspectorLabel::IsElided() const
 
 QString InspectorLabel::GetShownText() const
 {
-    return fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width() - 2 * margin() - indent());
+    return fontMetrics().elidedText(text(),
+                                    Qt::ElideRight,
+                                    contentsRect().width() - 2 * margin() - std::max(indent(), 0));
+}
+
+QSize InspectorLabel::sizeHint() const
+{
+    if (wordWrap() == true)
+    {
+        return QLabel::sizeHint();
+    }
+    // The whole text on one line, measured afresh: QLabel's own hint keeps the widest fixed width it was ever given.
+    const QMargins margins = contentsMargins();
+    return QSize(fontMetrics().horizontalAdvance(text()) + 2 * margin() + std::max(indent(), 0) + margins.left() +
+                     margins.right(),
+                 QLabel::sizeHint().height());
 }
 
 QSize InspectorLabel::minimumSizeHint() const
@@ -157,8 +172,10 @@ InspectorSection::InspectorSection(const QString& title, const QString& stateKey
     mMenuButton->setAutoRaise(true);
     mMenuButton->setIcon(GetEditorIcon(EditorIcon::More));
     mMenuButton->setIconSize(QSize(SECTION_ICON_SIZE, SECTION_ICON_SIZE));
-    mMenuButton->setPopupMode(QToolButton::InstantPopup);
-    mMenuButton->setMenu(mMenu);
+    // Opened on click rather than through setMenu, which would add a second arrow beside the "⋯".
+    connect(mMenuButton, &QToolButton::clicked, mMenu, [this]() {
+        mMenu->popup(mMenuButton->mapToGlobal(QPoint(0, mMenuButton->height())));
+    });
     mMenuButton->setAccessibleName(QStringLiteral("%1 actions").arg(title));
     mMenuButton->setToolTip(QStringLiteral("%1 actions").arg(title));
     mMenuButton->hide();
@@ -328,6 +345,23 @@ InspectorLabelColumn::InspectorLabelColumn(QWidget& inoutRoot) : QObject(&inoutR
     mRoot.installEventFilter(this);
 }
 
+void InspectorLabelColumn::SetViewport(QWidget& inoutViewport)
+{
+    mViewport = &inoutViewport;
+    inoutViewport.installEventFilter(this);
+}
+
+int32 InspectorLabelColumn::getAvailableWidth() const
+{
+    if (mViewport.isNull() == true || mViewport->isAncestorOf(&mRoot) == false)
+    {
+        return mRoot.contentsRect().width();
+    }
+    // The root sits inset in the viewport by its parents' margins; the same inset is kept on the right.
+    const int32 inset = mRoot.mapTo(mViewport.data(), QPoint(0, 0)).x();
+    return std::max(mViewport->width() - 2 * inset, 0);
+}
+
 const InspectorLabelColumn* InspectorLabelColumn::FindOrNull(const QWidget& widget)
 {
     for (const QWidget* currentOrNull = &widget; currentOrNull != nullptr;
@@ -350,26 +384,45 @@ void InspectorLabelColumn::Update()
     }
     mIsUpdating = true;
     const QFontMetrics metrics = mRoot.fontMetrics();
-    const int32 width = mRoot.contentsRect().width();
+    const int32 width = getAvailableWidth();
     const int32 minimum = metrics.averageCharWidth() * LABEL_MINIMUM_CHARACTERS;
     const int32 maximum = metrics.averageCharWidth() * LABEL_MAXIMUM_CHARACTERS;
-    mLabelWidth = std::clamp(width * LABEL_COLUMN_PERCENT / PERCENT, minimum, maximum);
-    const int32 fieldColumn = width - mLabelWidth - design::SPACING_SMALL;
-    mIsStacked = width > 0 && fieldColumn < GetReadableFieldWidth(metrics);
+    QList<QFormLayout*> forms;
+    int32 widestField = GetReadableFieldWidth(metrics);
     for (QFormLayout* form : mRoot.findChildren<QFormLayout*>())
     {
-        if (form->property(INSPECTOR_FORM_PROPERTY).toBool() == true)
+        if (form->property(INSPECTOR_FORM_PROPERTY).toBool() == false)
         {
-            applyTo(*form);
+            continue;
         }
+        forms.append(form);
+        for (int32 row = 0; row < form->rowCount(); ++row)
+        {
+            const QLayoutItem* labelOrNull = form->itemAt(row, QFormLayout::LabelRole);
+            const QLayoutItem* fieldOrNull = form->itemAt(row, QFormLayout::FieldRole);
+            if (labelOrNull != nullptr && fieldOrNull != nullptr && fieldOrNull->isEmpty() == false)
+            {
+                widestField = std::max(widestField, fieldOrNull->minimumSize().width());
+            }
+        }
+    }
+    // The column gives way to the widest field, down to its minimum, before the labels move above their fields.
+    const int32 roomForLabels = width - design::SPACING_SMALL - widestField;
+    const int32 preferred = std::clamp(width * LABEL_COLUMN_PERCENT / PERCENT, minimum, maximum);
+    mLabelWidth = std::max(std::min(preferred, roomForLabels), minimum);
+    mIsStacked = width > 0 && roomForLabels < mLabelWidth;
+    for (QFormLayout* form : forms)
+    {
+        applyTo(*form);
     }
     mIsUpdating = false;
 }
 
 bool InspectorLabelColumn::eventFilter(QObject* watched, QEvent* event)
 {
-    if (watched == &mRoot && (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest ||
-                              event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange))
+    if ((watched == &mRoot || watched == mViewport.data()) &&
+        (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest ||
+         event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange))
     {
         Update();
     }

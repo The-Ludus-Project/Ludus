@@ -339,19 +339,29 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     REQUIRE(footerOrNull != nullptr);
     REQUIRE(summaryOrNull != nullptr);
     CHECK(footerOrNull->isVisible() == false);
-    QLineEdit* sxOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sz"));
-    REQUIRE(sxOrNull != nullptr);
-    sxOrNull->selectAll();
-    QTest::keyClicks(sxOrNull, QStringLiteral("2"));
+    QLineEdit* scaleOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sz"));
+    REQUIRE(scaleOrNull != nullptr);
+    scaleOrNull->selectAll();
+    QTest::keyClicks(scaleOrNull, QStringLiteral("2"));
     CHECK(footerOrNull->isVisible() == true);
+    // Reset brings back the applied values (including the long red typed above) and hides the footer again.
+    QPushButton* resetOrNull = dock.findChild<QPushButton*>(QStringLiteral("worldReset"));
+    REQUIRE(resetOrNull != nullptr);
+    resetOrNull->click();
+    CHECK(footerOrNull->isVisible() == false);
+    scaleOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/sz"));
+    REQUIRE(scaleOrNull != nullptr);
+    scaleOrNull->selectAll();
+    QTest::keyClicks(scaleOrNull, QStringLiteral("2"));
     CHECK(summaryOrNull->text() == QStringLiteral("1 unapplied change"));
     QLineEdit* greenOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:renderable/g"));
     REQUIRE(greenOrNull != nullptr);
     greenOrNull->selectAll();
     QTest::keyClicks(greenOrNull, QStringLiteral("0.5"));
     CHECK(summaryOrNull->text() == QStringLiteral("2 unapplied changes"));
-    QPushButton* resetOrNull = dock.findChild<QPushButton*>(QStringLiteral("worldReset"));
-    REQUIRE(resetOrNull != nullptr);
+    // The edits preview in the viewport first; Reset is available again once that preview has settled.
+    REQUIRE(QTest::qWaitFor([resetOrNull]() { return resetOrNull->isEnabled() == true; },
+                            SETTLE_TIMEOUT_MILLISECONDS) == true);
     resetOrNull->click();
     CHECK(footerOrNull->isVisible() == false);
     workspace.StopPreview();
@@ -363,6 +373,8 @@ TEST_CASE("Properties sections share one label column and stack together when th
     QWidget root;
     QVBoxLayout* rootLayout = new QVBoxLayout(&root);
     rootLayout->setContentsMargins(0, 0, 0, 0);
+    // A dock can be narrower than its content asks for; the column must cope rather than the window grow.
+    rootLayout->setSizeConstraint(QLayout::SetNoConstraint);
     InspectorLabelColumn* column = new InspectorLabelColumn(root);
     InspectorSection* transform = new InspectorSection(QStringLiteral("Transform"), QString(), &root);
     QFormLayout* transformRows = new QFormLayout(&transform->GetFields());
