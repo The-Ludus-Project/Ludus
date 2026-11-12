@@ -5,7 +5,7 @@ Prepare and launch Ludus using [Install and launch](install.md).
 
 ## 1. Choose a name and location
 
-Select **New Project** on Welcome or press **Ctrl+N**.
+Select **New Project** on Welcome or from the **File** menu.
 
 - **Name** becomes the new project folder's name.
 - **Location** is its parent folder. Use **Browse** to select another location.
@@ -34,12 +34,12 @@ next Configure establishes a build tree at the final location.
 ## 3. Build and run
 
 Review **Project settings**, then choose **Build and Run**. The selected
-executable runs in its own window/process. The editor is currently a project and
-tools workspace; an embedded scene viewport is a later stage.
+executable runs in its own window. For scene placement and viewport navigation,
+open a World with the [World authoring walkthrough](../../development/editor-workspace.md#try-a-3d-authoring-workflow).
 
 ## 4. Close and reopen
 
-Use **File → Close Project** or **Ctrl+Shift+W**. Save or discard pending project
+Use **File → Close Project**. Save or discard pending project
 settings/audio changes, or cancel to continue editing. Stop active owned work
 before closing. Welcome shows the project in recent history; the File menu also
 keeps **Recent Projects** available while working.
@@ -55,7 +55,8 @@ than replacing the minimal project's files.
 
 ## Equivalent CLI creation
 
-Install the CLI in a dedicated virtual environment from your engine checkout:
+On Linux or macOS, install the CLI in a dedicated virtual environment from your
+engine checkout. On Windows, follow [Windows MSVC project setup](../../development/project-sdk-workflow.md#windows-msvc-projects).
 
 ```bash
 python3 -m venv out/ludus-cli-venv
