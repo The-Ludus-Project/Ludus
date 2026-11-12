@@ -37,13 +37,17 @@ inline constexpr foundation::uint32 MAXIMUM_REFERENCE_LONG_SIDE = 2048;
 inline constexpr foundation::uint32 MAXIMUM_REFERENCE_SAMPLES = 65536;
 /// Largest scattering depth RT1 admits.
 inline constexpr foundation::uint32 MAXIMUM_REFERENCE_DEPTH = 64;
-/// Renderer-owned CPU bytes for retained geometry, textures and accumulation of one capture.
-inline constexpr foundation::usize REFERENCE_CPU_BYTE_BUDGET = foundation::usize{1024} * 1024 * 1024;
+inline constexpr foundation::uint64 REFERENCE_GIBIBYTE = foundation::uint64{1024} * 1024 * 1024;
+/// CPU ceiling for retained mesh data, the expanded scene/BVH and peak fingerprint or upload scratch.
+/// A full imported Sponza scene needs both the expanded scene and its packed copy during GPU setup.
+inline constexpr foundation::usize REFERENCE_CPU_BYTE_BUDGET = static_cast<foundation::usize>(
+    sizeof(foundation::usize) > sizeof(foundation::uint32) ? 5 * REFERENCE_GIBIBYTE : REFERENCE_GIBIBYTE);
 /// Device ray buffer, acceleration structure and build scratch bytes for native traversal.
 inline constexpr foundation::usize REFERENCE_RAY_BYTE_BUDGET = foundation::usize{512} * 1024 * 1024;
 /// Packed scene, texel and accumulation buffer bytes for GPU-compute traversal; the device's
 /// own resource budget can reject a capture sooner.
-inline constexpr foundation::usize REFERENCE_GPU_BYTE_BUDGET = foundation::usize{512} * 1024 * 1024;
+inline constexpr foundation::usize REFERENCE_GPU_BYTE_BUDGET = static_cast<foundation::usize>(
+    sizeof(foundation::usize) > sizeof(foundation::uint32) ? 3 * REFERENCE_GIBIBYTE : REFERENCE_GIBIBYTE / 2);
 /// Pixels one CPU-oracle tile advances; small enough that one tile stays well under a frame.
 inline constexpr foundation::uint32 REFERENCE_CPU_TILE_PIXELS = 256;
 /// Largest tile RT1 admits for either traversal.
