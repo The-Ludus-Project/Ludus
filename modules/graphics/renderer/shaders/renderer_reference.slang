@@ -1243,8 +1243,17 @@ bool EvaluateDirectProposal(inout PathSample inoutPath,
     proposal.IsDelta = true;
     proposal.Pdf = 1 / float(Tile.x);
     float3 contribution;
-    if (EvaluateDirectProposal(inoutPath, proposal, bsdf, throughput, scatteringNormalWorld, normalWorld, viewWorld,
-                               pixel, sample, depth, contribution) == false)
+    if (EvaluateDirectProposal(inoutPath,
+                               proposal,
+                               bsdf,
+                               throughput,
+                               scatteringNormalWorld,
+                               normalWorld,
+                               viewWorld,
+                               pixel,
+                               sample,
+                               depth,
+                               contribution) == false)
         return false;
     if (HasPositiveComponent(contribution) == false)
         return true;
@@ -1910,13 +1919,31 @@ PathSample TracePath(uint pixel, uint sample)
             return path;
         float3 pendingDirect;
         uint directDepth = depth;
-        if (EvaluateDirectProposal(path, proposal, bsdf, throughput, scatteringNormalWorld, normalWorld, viewWorld,
-                                   pixel, sample, depth, pendingDirect) == false)
+        if (EvaluateDirectProposal(path,
+                                   proposal,
+                                   bsdf,
+                                   throughput,
+                                   scatteringNormalWorld,
+                                   normalWorld,
+                                   viewWorld,
+                                   pixel,
+                                   sample,
+                                   depth,
+                                   pendingDirect) == false)
             return path;
         bool hasShadow = HasPositiveComponent(pendingDirect);
         if (isSpecular == false && Tile.x != 0 &&
-            TraceDirectionalLight(path, pixel, sample, depth, triangle, positionWorld, bsdf, throughput,
-                                  scatteringNormalWorld, normalWorld, viewWorld) == false)
+            TraceDirectionalLight(path,
+                                  pixel,
+                                  sample,
+                                  depth,
+                                  triangle,
+                                  positionWorld,
+                                  bsdf,
+                                  throughput,
+                                  scatteringNormalWorld,
+                                  normalWorld,
+                                  viewWorld) == false)
             return path;
         float3 samples = float3(RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_LOBE_SLOT)),
                                 RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_FIRST_SLOT)),
