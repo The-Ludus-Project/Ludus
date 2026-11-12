@@ -333,10 +333,10 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
 
 namespace
 {
-/// The text of the label beside field in its inspector form, or empty when it has none.
-QString GetFormLabelText(QWidget& field)
+/// The text of the label beside inoutField in its inspector form, or empty when it has none.
+QString GetFormLabelText(QWidget& inoutField)
 {
-    for (QWidget* rowOrNull = &field; rowOrNull != nullptr; rowOrNull = rowOrNull->parentWidget())
+    for (QWidget* rowOrNull = &inoutField; rowOrNull != nullptr; rowOrNull = rowOrNull->parentWidget())
     {
         QWidget* parentOrNull = rowOrNull->parentWidget();
         QFormLayout* formOrNull =

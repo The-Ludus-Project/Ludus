@@ -255,9 +255,10 @@ bool IsPropertyCondition(const QJsonValue& value, bool isUnitMap)
         {
             return false;
         }
-        for (auto unit = units.begin(); unit != units.end(); ++unit)
+        for (const QString& choice : units.keys())
         {
-            if (Text(QJsonValue(unit.key()), MAX_LABEL_BYTES) == false || Text(unit.value(), MAX_UNIT_BYTES) == false)
+            if (Text(QJsonValue(choice), MAX_LABEL_BYTES) == false ||
+                Text(units.value(choice), MAX_UNIT_BYTES) == false)
             {
                 return false;
             }
