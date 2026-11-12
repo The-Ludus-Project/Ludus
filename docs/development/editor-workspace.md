@@ -55,6 +55,8 @@ central document well, and **tool windows** dock around it (see
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
 | Profiling | Record editor CPU scopes, viewport GPU durations, or both into a Perfetto JSON trace |
 
+The Project Explorer's top row is one search field (it matches whole file names
+and folders) with two icon buttons beside it: **Add** (plus) and **Refresh**.
 Right-click a Project Explorer category, file, or empty area to open its context
 menu. The **Add** button also offers **New World**, **New Render Graph**,
 **New Shader**, **New Script**, **New Sound**, **New Music**, and the audio/content
@@ -3388,11 +3390,19 @@ See [architecture](../architecture/editor-architecture.md),
 
 Text that does not fit is cut where it costs the least, and never silently:
 
-- **Paths** (Project Explorer, Graph Sources, the Error List's File column, the
-  render-graph document header and the source file selector) keep the file name
-  whole. The folder is dimmed and elided from the middle first; only a file name
-  wider than the field is elided itself, also from the middle. Text with no folder
-  part elides from the middle.
+- **Paths** (Graph Sources, the Error List's File column, the render-graph
+  document header and the source file selector) keep the file name whole. The
+  folder is dimmed and elided from the middle first; only a file name wider than
+  the field is elided itself, also from the middle. Text with no folder part
+  elides from the middle.
+- **Document names** (Project Explorer) leave out the suffix their group already
+  names: a world is "sponza", not "sponza.world.json", and the same goes for
+  `.lurender.json` and `.lushader.json`. Slang sources and scripts keep their
+  extensions. Rows are sorted by that name. When two rows in a group share it, each is followed by a dimmed
+  folder ("sponza · assets"): the folder's own name when that tells them apart,
+  else its path. The folder is cut first; a name that is still too wide is elided
+  from the middle, so its head and tail stay ("SliceSampl…Coupled"). The tooltip
+  and the search use the whole relative path.
 - **Combo boxes** draw their current text with the same elision, never a cut
   mid-word, and ask for a width that holds their longest item.
 - **Tool window tab bars** show each window's icon and title while they fit. When
