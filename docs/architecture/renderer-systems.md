@@ -1129,17 +1129,108 @@ profile's verified layout. Cache immutable binding snapshots, allocate dynamic
 constants from aligned completion-scoped storage, and intern compatible layout
 identities through GDI rather than relying on structurally similar handles.
 
-Pipeline keys include shader versions, layout identity, vertex input, topology,
-attachment formats, samples, raster/depth/blend state and declared specialization.
-Viewport size and dynamic constants normally do not belong in the key. Hash
-collisions compare descriptions. Enumerate the legal static variant space;
-record used variants and prewarm before activation. Pipeline readiness is
-asynchronous where the backend permits, with a compatible ready fallback or
-explicit not-ready status. Cold first-use stalls remain visible telemetry.
-Persist native caches only with validated device/driver compatibility; cache
-failure is recoverable. Never claim offline shader compilation eliminates all
-driver pipeline work. Reload swaps package, layouts, bindings and pipelines as
-one validated version set; failed reload leaves the prior set usable.
+### Render pipeline and pass resources
+
+Proposed, November 2026. A project can reuse a pass definition across graphs and
+run it with different inputs. Its invocations should share a prepared pipeline
+when their device state matches. Today `RenderGraphActivation` stages an
+immutable package and retains the active graph until the candidate is ready.
+Many graph programs still create their own shader, layout and pipeline handles
+during preparation. RHI's raster `RequestPipeline` coalesces requests that
+already share exact shader and layout handles. Two graph generations can
+therefore prepare the same device state separately.
+
+| Resource or instance | Identity and owner |
+| --- | --- |
+| Pass definition | A reusable authored node or subgraph and its typed interface, declared resource use and admitted pipeline recipes. The graph library owns its stable ID within its authoring scope. A cooked package pins the definition revision and its dependencies. |
+| Pipeline recipe | An immutable description of admitted shader stages, layout and fixed state. The package owns the portable recipe and its provenance. Several definitions or invocations can reference the same recipe. |
+| Prepared pipeline | A device-session resource for one compatible recipe. Renderer selects the recipe, GDI manages acquisition and prewarming through the existing RHI services, and RHI owns the native handle and retirement. |
+| Pass invocation | The graph instance owns input bindings, targets, dynamic values and any persistent history. The frame uses the exact prepared pipeline and resource versions selected for that invocation. |
+
+Use the existing graph library and package closure to publish reusable
+definitions. Give references a source identity and an exact cooked revision.
+A copied invocation can keep the same definition while changing its port
+bindings. An edited definition produces a new revision. A compatible new
+definition revision can retain the same pipeline. Graph order, attachment
+load/store operations and the declared uses remain part of the
+[graph contract](render-graph-authoring.md#pipeline-readiness-and-execution).
+
+#### Pipeline identity and reuse
+
+- Within a device session, reuse immutable stages by their validated target
+  artifact, entry point and interface metadata, and layouts by their complete
+  binding contract. Hashes may find candidates. Compare the canonical
+  descriptions before sharing and retain the exact RHI incarnations. Distinct
+  authored names can resolve to the same device state.
+- Resolve recipes against the target compatibility contract before requesting
+  a pipeline. Include stage and layout incarnations, vertex interface,
+  topology, fixed raster/depth/stencil/blend state, ordered attachment
+  formats, sample count and any admitted specialization. Compute and ray
+  recipes carry their own stage, layout and fixed state contracts. Dynamic
+  values such as camera constants, attachment handles, and an extent-only
+  resize stay with the invocation unless a recipe explicitly specializes on
+  one of them.
+- The current RHI raster request comparison omits the explicit color format
+  sequence, sample count and stencil state carried by the raster description.
+  Qualify complete equality in RHI before using shared requests for those
+  descriptions. The initial migration uses the existing single-sample
+  portable raster contract. Sharing for compute and ray pipelines requires
+  their own RHI qualification.
+
+#### Acquisition, activation and release
+
+1. During graph preparation, resolve the required recipes for the selected
+   configuration and target. Request each distinct recipe once per owning
+   generation and keep its lease for as long as any invocation can record
+   with it. Prioritize required requests over speculative prewarm. Use the
+   existing owner-thread polling and backend creation path. A native driver
+   call can still take time, so measure preparation separately from recording.
+2. Treat pending, ready and failed as explicit outcomes. Publish the complete
+   candidate with the existing activation transaction only after all required
+   pipelines, compatible bindings and other prerequisites are ready. Keep the
+   last drawable generation during preparation or failure. An optional
+   invocation can use an explicitly authored compatible ready alternative.
+   Report the requested recipe, outcome and available repair at the owning pass.
+3. Record using the resolved handles. A candidate that changes only invocation
+   values can reuse the current pipeline. If a shader, layout or fixed state
+   changes, acquire the new dependencies before releasing the active leases.
+   Release a cancelled candidate's requests and reject stale completions by
+   device session and generation. Accepted work retains the retired pipeline
+   through the RHI completion ledger. Device loss invalidates prepared
+   handles, while the cooked definitions and recipes remain available to
+   prepare for the replacement device.
+
+Track unique recipes, outstanding requests and live pipeline records
+separately. Budget active, preparing and retired records that still occupy
+capacity. Apply the existing RHI quotas and drop speculative requests before
+rejecting required preparation for capacity. A warm lease pins a ready
+pipeline. The final release removes its shared request entry, with physical
+retirement governed by RHI. Measure reuse before retaining an idle working
+set. Any future persistent driver cache is a device/driver-qualified
+accelerator. Its absence or rejection falls back to ordinary preparation.
+
+#### First migration and acceptance
+
+Start with the existing built-in bilinear pass. It currently creates shader,
+layout and pipeline handles in `RenderGraphUpscaleProgram`. Share its immutable
+program dependencies and acquire the compatible raster pipeline through the
+request service. Keep per-invocation input bindings and outputs with their
+graph. Exercise two instances of the same pass and an overlapping active and
+candidate generation. Verify one backend creation for matching state, distinct
+requests for incompatible target contracts, and no new pipeline request on a
+compatible resize or input rebind. Compare output with the current pass, cancel
+a pending replacement and retire a released pipeline while an accepted frame
+still references it. Use existing native and browser raster fixtures to
+qualify the profile. Record creation counts and preparation time separately
+from frame time. Before widening reuse, test inequality for every newly
+admitted field that affects compatibility or rendering.
+
+Thanks to Oleksandr Drazhevskyi for separating logical resources from their
+backend objects, Sebastian Aaltonen for preparing pipeline state outside the
+draw loop, and Nicolas Lopez and Michel Bouchard for describing the ownership
+costs of registering packaged passes. The
+[reference review](renderer-systems-gems-review.md#render-pipeline-resource-management-follow-up)
+records the evidence and its application here.
 
 ## Material system design
 
@@ -2607,6 +2698,44 @@ adaptive sampling and reduced resolution need independent quality/cost evidence.
 Fix sampling variance and AS build/traversal costs before adding a general GPU
 work scheduler. No vendor denoiser or resampling SDK is a mandatory dependency.
 
+### Qualify wavefront hit shading
+
+Mark Lee, Brian Green, Feng Xie and Eric Tabellion's
+[Vectorized Production Path Tracing](https://doi.org/10.1145/3105762.3105768)
+(HPG 2017, §§5–8, Table 2 and Figure 8) grouped MoonRay hits by shader
+instance, then ordered them within those groups for light-set and texture
+locality. On four production scenes, its AVX2 CPU path ran 1.28–2.31× as fast
+as the scalar path. Queuing, sorting and layout conversion took 6.86–18.99% of
+vectorized render time. The large secondary-ray sorting experiment lost overall
+once the authors included sorting cost and intermediate ray state memory.
+
+Defer a Ludus scheduler change until profiling identifies hit shading as a
+substantial cost and shows a plausible gain from grouping work. The
+[GPU-compute reference](#gpu-compute-reference) runs closest-hit traversal,
+material evaluation, shadow queries and accumulation in one transport dispatch.
+Its existing benchmark reports aggregate transport device time, capture wall
+time and query counts. The Staircase2 measurements above found that per-sample
+submission, wait and readback dominated wall time after the BVH improvement.
+Use a backend profiler or a separate diagnostic run to attribute traversal and
+shading costs and inspect active lanes or register pressure where the device
+exposes those counters. Start with Staircase2, a single-material Cornell
+control and Cornell variants that rearrange the same material assignments
+while holding geometry and lighting fixed. Use a release-optimized build on
+the target GPU and verify timestamp coverage before using the reported sum.
+
+If profiling supports an experiment, first compare the existing loop with a
+bounded hit-shading queue in input order. Then compare that queue with hits
+bucketed by material execution path to isolate the effect of grouping. Keep
+the same traversal, scene, camera, depth, seed and sample addresses across
+variants. Time all dispatches, including queue construction and draining, and
+report first-sample and total capture latency, peak queue bytes and high-water
+entry counts. Advance the variant only if repeated paired runs show a gain
+after those costs and the single-material control stays within its timing noise.
+Check raw emission, direct, indirect and total radiance against the
+[CPU oracle contract](#cpu-and-gpu-reference-implementation-requirement).
+Exercise partially filled queues and capacity exhaustion, and verify that
+every admitted sample is committed exactly once on successful completion.
+
 ### Ray milestones and evidence
 
 These optional milestones depend on explicit compute/material/attachment and RHI
@@ -2618,7 +2747,7 @@ extensions; they do not claim any existing R1 backend already traces rays.
 | RT1: progressive reference | CPU oracle and GPU reference implementations of the same frozen RGB surface profile, light/environment/BSDF sampling, MIS, raw accumulation and HDR export | Matched raw CPU/GPU emission/direct/indirect/total comparisons; furnace/Cornell/emissive fixtures, sampling/PDF normalization, multiple seeds/depths, no double lighting; unsupported content and overflow are visible |
 | RT2: hybrid effects | Bounded shadows, reflections and then indirect diffuse with reconstruction/fallbacks | Raw and reconstructed images compared to RT1; moving/disoccluded/reloaded scenes, per-view history, build/ray/filter median and tail times |
 | RT3: dynamic scene scaling | Skinned/morphed BLAS, measured refit/rebuild, optional compaction and scheduling | Pose parity, changing topology/opacity, extreme/mirrored transforms, thin geometry, streaming/rebase/loss and peak overlap memory |
-| RT4: high-end real-time PT | Reviewed resampling, reconstruction and optional wavefront/ray-pipeline variants | Scene suite at fixed resolution/quality budget; temporal artifacts and error versus RT1; measured target-GPU benefit and disabled-mode support |
+| RT4: high-end real-time PT | Reviewed resampling, reconstruction and optional wavefront/ray-pipeline variants | Scene suite at fixed resolution/quality budget; temporal artifacts and error versus RT1; measured target-GPU benefit and disabled-mode support. See [wavefront hit-shading qualification](#qualify-wavefront-hit-shading). |
 
 Track AS resident/scratch/pending bytes, build/refit/compaction costs, traced
 ray classes, path-depth distribution, opacity candidates, NaN/invalid-PDF counts,
