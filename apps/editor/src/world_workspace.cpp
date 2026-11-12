@@ -478,6 +478,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     header->addWidget(Render_);
     // The viewport's command menu reads after the World's breadcrumb, on the row that already holds its commands.
     files->insertWidget(files->indexOf(PathLabel_) + 1, &Render_->GetViewportMenuButton());
+    files->insertWidget(files->indexOf(PathLabel_) + 2, mExploreFirstPersonButton);
     connect(Render_, &RenderPanel::Starting, this, [this]() {
         updateShownRenderPreview(false);
         Q_EMIT PreviewStarting();
@@ -565,8 +566,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         QStringLiteral("Hold the right mouse button to look, WASD to walk, Shift to run, and Space to jump. "
                        "Press Escape to return to the editor view."));
     mExploreFirstPersonButton->setProperty("density", QStringLiteral("compact"));
-    // Shown under the list only while a player is selected; it reserves no blank band otherwise.
-    entityLayout->addWidget(mExploreFirstPersonButton);
+    mExploreFirstPersonButton->setIcon(GetEditorIcon(EditorIcon::Player));
+    // Shown beside the Viewport menu only while a player is selected: the header row has room to spare, so showing
+    // it moves neither the entity list nor the row that was clicked, and it reserves no blank band otherwise.
+    mExploreFirstPersonButton->hide();
     connect(mExploreFirstPersonButton, &QPushButton::clicked, this, &WorldWorkspace::exploreFirstPerson);
     for (const QString& preset : {QStringLiteral("Cube"),
                                   QStringLiteral("Plane"),
