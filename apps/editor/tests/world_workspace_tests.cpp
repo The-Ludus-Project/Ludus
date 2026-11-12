@@ -702,11 +702,18 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     const QWidget* footerOrNull = view.findChild<QWidget*>(QStringLiteral("worldCommitFooter"));
     REQUIRE(footerOrNull != nullptr);
     CHECK(footerOrNull->isVisible() == false);
-    // Add Component is one menu button; with no entity selected it is not shown at all.
+    // Add Component is one menu button under the entity's name and identifier, at its natural width.
     CHECK(view.findChild<QWidget*>(QStringLiteral("worldComponentChoice")) == nullptr);
     const QWidget* attachOrNull = view.findChild<QWidget*>(QStringLiteral("worldAttach"));
     REQUIRE(attachOrNull != nullptr);
-    CHECK(attachOrNull->isVisible() == false);
+    if (attachOrNull->isVisible() == true)
+    {
+        CHECK(attachOrNull->width() >= attachOrNull->sizeHint().width());
+        const QWidget* identifierOrNull = view.findChild<QWidget*>(QStringLiteral("worldEntityIdentifier"));
+        REQUIRE(identifierOrNull != nullptr);
+        CHECK(attachOrNull->mapTo(&view, QPoint(0, 0)).y() >
+              identifierOrNull->mapTo(&view, QPoint(0, 0)).y() + identifierOrNull->height() - 1);
+    }
     CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
     QLabel* pathLabel = view.findChild<QLabel*>(QStringLiteral("worldPath"));
     REQUIRE(pathLabel != nullptr);
