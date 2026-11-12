@@ -226,7 +226,8 @@ class RequiredGateTests(unittest.TestCase):
                   "macos-analysis": "[changes, macos-compile]"}
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
-                self.assertEqual(dependencies.get(name), serial.get(name, "changes"))
+                self.assertEqual(dependencies.get(name),
+                                 "[changes, sanitizer-build]" if name == "sanitizers" else serial.get(name, "changes"))
         conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
         for name in serial:
             self.assertTrue(conditions[name].startswith("${{ !cancelled() && "), name)
@@ -346,6 +347,23 @@ class RequiredGateTests(unittest.TestCase):
         for writer in ("conan-cache-writer", "compiler-cache-writer"):
             self.assertIn(f"          {writer}: ${{{{ matrix.shard == 1 && 'true' || 'false' }}}}\n", sanitizers)
 
+    def test_shared_sanitizer_build_is_manual_and_reuses_the_required_shard_steps(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/ci.yml").read_text()
+        build, shards = workflow.split("\n  sanitizer-build:\n", 1)[1].split("\n  sanitizers:\n", 1)
+        shards = shards.split("\n  scripting-qualification:\n", 1)[0]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.sanitizer_experiment == 'shared'", build)
+        self.assertIn("run: ./scripts/build linux-clang-asan-ubsan", build)
+        self.assertIn("if-no-files-found: error", build)
+        self.assertIn("needs.sanitizer-build.result == 'success'", shards)
+        self.assertIn("name: ${{ needs.sanitizer-build.outputs.artifact }}", shards)
+        self.assertIn("prerequisites-only: 'true'", shards)
+        self.assertIn("git diff --exit-code", shards)
+        self.assertIn("if: inputs.sanitizer_experiment != 'shared'\n"
+                      "        run: ./scripts/build linux-clang-asan-ubsan", shards)
+        self.assertNotIn("if:", shards.split("- name: Prove ASan detection", 1)[1].split("- name:", 1)[0])
+        self.assertIn("sanitizers", ci_scope.NATIVE_JOBS)
+
     def test_full_validation_is_owned_by_the_batch_scheduler(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         for path in root.glob("*.yml"):
@@ -377,17 +395,17 @@ class RequiredGateTests(unittest.TestCase):
         # These are all reusable workflows with ARM jobs. Follow the dependency
         # chain once to ensure none can queue behind an active ARM predecessor.
         self.assertEqual(dependencies["native"], "snapshot")
-        for previous, current in (("native", "threading"), ("threading", "sdk"), ("sdk", "wiki")):
+        for previous, current in (("native", "threading"), ("threading", "sdk"), ("sdk", "wiki-macos")):
             with self.subTest(workflow=current):
                 self.assertEqual(dependencies[current], f"[snapshot, {previous}]")
                 self.assertEqual(conditions[current],
                                  "${{ !cancelled() && needs.snapshot.outputs.should_run == 'true' }}")
         # Other platforms retain parallel qualification, and promotion still
         # requires every result, including a failed earlier ARM workflow.
-        for name in ("browser", "windows", "recovery"):
+        for name in ("browser", "windows", "recovery", "wiki"):
             self.assertEqual(dependencies[name], "snapshot")
         self.assertEqual(dependencies["promote"],
-                         "[snapshot, native, sdk, wiki, browser, threading, windows, recovery]")
+                         "[snapshot, native, sdk, wiki, wiki-macos, browser, threading, windows, recovery]")
 
     def test_integration_prs_check_sources_compile_and_analyze(self):
         event = {"pull_request": {"base": {"ref": "develop"}, "labels": [{"name": "ci:full"}]}}
@@ -440,7 +458,8 @@ class RequiredGateTests(unittest.TestCase):
     def test_pull_requests_leave_macos_tooling_jobs_to_the_batch(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         wiki = root.joinpath("wiki.yml").read_text().split("\n  macos-documentation-tools:\n", 1)[1]
-        self.assertIn("    if: github.event_name != 'pull_request'\n", wiki.split("\n    steps:", 1)[0])
+        self.assertIn("    if: github.event_name != 'pull_request' && (inputs.batch_sha == '' || inputs.batch_macos_tools_only)\n",
+                      wiki.split("\n    steps:", 1)[0])
         butler = root.joinpath("project-sdk.yml").read_text().split("\n  butler-install:\n", 1)[1]
         runners = re.search(r"runner: \$\{\{ fromJSON\(github.event_name == 'pull_request' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}",
                             butler)
@@ -645,7 +664,7 @@ class CancelledRunTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         gate = workflow.split("\n  linux:\n", 1)[1]
         header = gate.split("\n    steps:", 1)[0]
-        self.assertIn("    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true)\n", header)
+        self.assertIn("    if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'))\n", header)
         self.assertIn("    permissions:\n      contents: read\n      actions: read", header)
         self.assertIn("          GITHUB_TOKEN: ${{ github.token }}\n        run: python3 scripts/python/ci_scope.py gate",
                       gate)
@@ -653,7 +672,7 @@ class CancelledRunTests(unittest.TestCase):
     def test_focused_vulkan_mode_is_manual_and_cannot_replace_pull_request_or_batch_checks(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         changes = workflow.split("\n  changes:\n", 1)[1].split("\n  mcmc-vulkan-parity:\n", 1)[0]
-        self.assertIn("if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true", changes)
+        self.assertIn("if: github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true", changes)
         focused = workflow.split("\n  mcmc-vulkan-parity:\n", 1)[1].split("\n  macos-compile:\n", 1)[0]
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true", focused)
         self.assertIn("ref: ${{ inputs.batch_sha || github.sha }}", focused)
@@ -680,8 +699,10 @@ class CancelledRunTests(unittest.TestCase):
                     "\nconcurrency:\n"
                     f"  group: {prefix}-${{{{ inputs.batch_sha || github.ref }}}}"
                     "${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && "
-                    "format('-head-{0}', github.event.pull_request.head.sha) || '' }}\n"
-                    "  cancel-in-progress: ${{ github.event_name == 'pull_request' && "
+                    "format('-head-{0}', github.event.pull_request.head.sha) || '' }}",
+                    workflow)
+                self.assertIn(
+                    "\n  cancel-in-progress: ${{ github.event_name == 'pull_request' && "
                     "github.event.action == 'synchronize' }}\n",
                     workflow)
 

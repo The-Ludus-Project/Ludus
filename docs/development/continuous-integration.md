@@ -67,8 +67,8 @@ static analysis and the installed Behavior SDK journey. This replaces the separa
 PR with one authoring build per combined batch. Native dependency and compiler
 caches continue to be saved in the batch's `main` scope.
 
-Native build, test and analysis jobs depend only on change classification, not
-on the source/tooling job. A source-policy or formatting failure therefore no
+Required native build, test and analysis jobs start after change classification
+and any macOS runner admission dependencies. A source-policy or formatting failure therefore no
 longer skips every Linux compile in a batch, including **Development and SDK**
 and the Editor job: each still reports its own result, so one batch shows every
 failure to fix. Promotion is unchanged: the `Ubuntu Clang` gate still requires
@@ -118,8 +118,8 @@ that diverges from `main`, even when the files contain the same repair.
 Only one batch is active. New `develop` commits do not cancel it or change its input.
 Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
 before `main` advanced skips, letting the next tick use the new stable revision.
-Native, SDK, wiki, browser and threading-platform workflows must all succeed. Filesystem block-prefix
-recovery additionally runs when its workflow, persistence implementation, recovery
+Native, SDK, Linux wiki, macOS documentation tools, browser, threading-platform
+and Windows workflows must all succeed. Filesystem block-prefix recovery additionally runs when its workflow, persistence implementation, recovery
 probe or recovery drivers changed anywhere in the complete batch diff. Invalid
 metadata, failed/cancelled checks and unexpectedly skipped required jobs cannot
 promote. No new changes means no full run.
@@ -139,8 +139,9 @@ backends ended within about 45, so most failures still appear in one run.
 
 A stopped run shows as cancelled. Its failed jobs, not the jobs cancelled to stop
 it, are the batch failures: [develop health](#develop-health) treats it as red and
-fix PRs name those jobs. Jobs that had not started, such as the SDK and wiki suites
-waiting for native validation, report only on a later candidate. The watcher
+fix PRs name those jobs. Jobs that had not started, such as installed host tooling
+and macOS documentation tools waiting for native validation, report only on a
+later candidate. The watcher
 fails open: if job listings stay unavailable or it reaches its 330-minute limit,
 the batch finishes normally. **Prune superseded caches** still runs after a stop.
 
@@ -468,9 +469,13 @@ parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
 status condition so a test failure does not suppress independent evidence;
 cancelling the workflow still stops the chain. All required results remain part
 of the promotion gate. The batch also admits ARM-owning workflows in order:
-native, threading, installed host tooling, then wiki. This prevents short ARM
-jobs from expiring behind native work in a different reusable workflow. Browser,
-Windows and recovery workflows remain parallel; the ARM sequence can increase
+native, threading, installed host tooling, then macOS documentation tools. This
+prevents short ARM jobs from expiring behind native work in a different reusable
+workflow. The Linux wiki call starts at candidate capture alongside the browser,
+Windows and recovery workflows. The Linux call builds and verifies the public API
+and the browser editor, checks sample playback and uploads the Pages artifact.
+Promotion waits for both wiki calls, and only the post-promotion job deploys.
+The ARM checks retain their sequence; the ARM sequence can increase
 the total batch duration. This ordering reduces demand; a platform-wide shortage
 can still require retrying a job whose annotations confirm runner acquisition
 failed before execution.
@@ -796,6 +801,27 @@ share a device or worker owner use `RESOURCE_LOCK`, as the Editor shards do, so 
 later parallel CTest run keeps their results stable. The scheduled batch runs the
 workflow definitions on `main`, so this takes effect after the first promotion
 that includes it.
+
+#### Compare one shared sanitizer build with four independent builds
+
+Dispatch both experiment modes on the same branch commit. Each runs the same four
+test shards, sanitizer controls and shard 1 evidence steps. The `shared` run first
+builds the preset on one runner, then restores that run's build tree and test
+inputs on four fresh runners with the same workspace path. The tar preserves
+symlinks, modes and source timestamps for CTest and for shard 1's SDK and probe
+steps. The runner installs the system prerequisites before using the bundle.
+
+```bash
+gh workflow run ci.yml --ref <branch> -f sanitizer_experiment=rebuild
+gh workflow run ci.yml --ref <branch> -f sanitizer_experiment=shared
+```
+
+Compare elapsed time from the first job start to the last shard completion and
+the sum of job runtimes. Record the archive size, archive/upload and
+download/extract times, and whether the producer and baseline jobs hit their
+Conan and compiler caches. Repeat with comparable cache states before adopting the
+shared build. Both experiments are manual. Pull requests and promotion continue
+to use the existing four independent builds.
 
 The `ludus_editor_tests` build entry point also builds every executable target
 ending in `_tests` in the editor's own CMake directory, including optional preview
