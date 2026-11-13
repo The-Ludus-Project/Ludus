@@ -10,6 +10,7 @@
 
 #include <ludus/physics/collision/collision_world.h>
 #include <ludus/physics/collision/convex_shape.h>
+#include <ludus/physics/collision/debug_overlay.h>
 #include <ludus/physics/collision/geometry_store.h>
 #include <ludus/physics/collision/queries.h>
 #include <ludus/physics/collision/status.h>
@@ -515,6 +516,13 @@ TEST_CASE("Convex colliders, overlap queries and Any/All modes allocate nothing"
                 view.CastConvexAll(falling,
                                    BorrowedView<WorldConvexCastResult>(castHits.GetData(), RECORD_COUNT),
                                    hits) == Status::Success;
+            constexpr usize DEBUG_LINE_COUNT = 256;
+            StaticArray<DebugLine, DEBUG_LINE_COUNT> debugStorage{};
+            DebugLineBuffer debugLines(BorrowedView<DebugLine>(debugStorage.GetData(), DEBUG_LINE_COUNT));
+            isEverySuccess = isEverySuccess == true &&
+                             AppendColliderLines(view, {}, true, debugLines) == Status::Success &&
+                             AppendRaycastLines(across, anyRay, {}, debugLines) == Status::Success &&
+                             AppendConvexCastLines(view, falling, anyCast, {}, debugLines) == Status::Success;
             WorldOverlapResult overlap;
             isEverySuccess =
                 isEverySuccess == true && view.Overlap(

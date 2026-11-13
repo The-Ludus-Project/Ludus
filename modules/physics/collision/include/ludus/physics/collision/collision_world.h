@@ -352,6 +352,7 @@ public:
 
 private:
     friend class CollisionWorld;
+    friend class CollisionDebugExtraction;
 
     CollisionWorld* mWorldOrNull = nullptr;
     uint64 mEpoch = 0;
@@ -487,6 +488,7 @@ private:
     friend class CollisionReadView;
     friend class CollisionWorldQueries;
     friend class ColliderHierarchy;
+    friend class CollisionDebugExtraction;
 
     [[nodiscard]] Slot* findLive(ColliderHandle collider) noexcept;
     [[nodiscard]] const Slot* findLive(ColliderHandle collider) const noexcept;

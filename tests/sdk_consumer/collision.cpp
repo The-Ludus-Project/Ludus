@@ -3,6 +3,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/physics/collision/collision_world.h>
 #include <ludus/physics/collision/convex_shape.h>
+#include <ludus/physics/collision/debug_overlay.h>
 #include <ludus/physics/collision/geometry_store.h>
 #include <ludus/physics/collision/triangle_mesh.h>
 
@@ -138,6 +139,13 @@ bool ExerciseInstalledCollision() noexcept
                               BorrowedView<WorldRaycastResult>(rayHits.GetData(), RECORD_COUNT),
                               hits) == Status::Success &&
                           hits.HitCount == 1 && hits.IsComplete == true && rayHits[0].Collider == collider;
+    // The collider's bounds draw as one box of 12 debug lines.
+    constexpr ludus::foundation::usize BOX_LINE_COUNT = 12;
+    StaticArray<DebugLine, BOX_LINE_COUNT> debugStorage{};
+    DebugLineBuffer debugLines(BorrowedView<DebugLine>(debugStorage.GetData(), BOX_LINE_COUNT));
+    const bool isDrawn = isListed == true && AppendColliderLines(view, {}, false, debugLines) == Status::Success &&
+                         debugLines.IsComplete() == true && debugLines.GetWrittenCount() == BOX_LINE_COUNT &&
+                         debugStorage[0].Collider == collider;
     view.Release();
-    return isListed == true && world.TryDestroyCollider(collider) == Status::Success;
+    return isDrawn == true && world.TryDestroyCollider(collider) == Status::Success;
 }

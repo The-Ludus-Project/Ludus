@@ -20,6 +20,7 @@ Public headers:
 | `<ludus/physics/collision/queries.h>` | Raycast, box-cast and convex-cast inputs, results, policies and tolerances |
 | `<ludus/physics/collision/triangle_mesh.h>` | Cook source, settings and result, and `TriangleMesh` |
 | `<ludus/physics/collision/geometry_store.h>` | `ShapeHandle`, `ShapeKind` and `GeometryStore` |
+| `<ludus/physics/collision/debug_overlay.h>` | `DebugLine`, `DebugLineBuffer`, `DebugLineStyle` and the debug extraction functions |
 | `<ludus/physics/collision/collision_world.h>` | `ColliderHandle`, poses, participation, filters, world query inputs and results, `CollisionWorld` and `CollisionReadView` |
 
 The Doxygen comments beside each declaration are the API contract. This page
@@ -440,6 +441,31 @@ completion fields as an overlap query:
 
 The first record of a complete `All` result equals the `Closest` answer.
 
+## Query debug lines
+
+`<ludus/physics/collision/debug_overlay.h>` describes collision state and query
+answers as plain world-space line segments. An editor or renderer draws them,
+choosing a colour for each `DebugLineKind`; PhysicsCollision depends on no
+renderer. Each `DebugLine` names its kind and, where one applies, the collider.
+
+| Function | Lines |
+| --- | --- |
+| `AppendShapeLines` | A posed shape: a box's 12 edges, a sphere's three great circles, a capsule's end circles, side lines and half circles. A hull has no face list, so it draws a marker at each stored point and its oriented bounds |
+| `AppendColliderLines` | Every live collider's world bounds: `ColliderBounds` when a `QueryFilter` reports it, `FilteredColliderBounds` when it is disabled, the wrong category, a sensor or ignored. It can also draw every internal hierarchy node |
+| `AppendRaycastLines` | The ray up to its hit or limit, the rest beyond the hit, a hit marker and the normal |
+| `AppendConvexCastLines` | The shape at its start, the path of its origin, and on a hit the shape at first contact, a witness marker and the normal. A stored `QueryShape` is resolved |
+| `AppendOverlapLines` | The shape at its pose and the bounds of every reported collider |
+
+The functions append to a caller-owned `DebugLineBuffer`, which follows the
+completion rule of `All` queries. It writes lines until its storage is full,
+keeps counting, and reports `GetRequiredCount` and `IsComplete`, so a caller
+can retry with enough storage. A function validates every input before it
+appends, so a failure adds nothing. `DebugLineStyle` sets the marker size and
+the drawn normal length.
+
+The extraction allocates nothing. Functions that read a world take an active
+`CollisionReadView`, whose epoch identifies the state drawn.
+
 ## Determinism and the correctness oracle
 
 Ordering never uses an epsilon comparison: finite values compare strictly, then
@@ -523,6 +549,15 @@ for rays, casts and `All` overlaps (records, triangle counts and completion)
 as the brute-force traversal. A regression places boxes, hulls and capsules at
 symmetric points of a triangle's plane, where the search once mistook an
 overlap for touching.
+
+The debug tests check:
+- the documented line count of every shape wire, with box, sphere and capsule
+  endpoints on the rotated shape and hull markers at its points;
+- the lines of a ray hit and miss, a stored-shape cast (the contact wire sits at
+  the hit fraction), and an overlap;
+- filter classification of disabled, sensor, category and ignored colliders,
+  and the hierarchy node count;
+- a full buffer that keeps counting, and failures that append nothing.
 
 The stored-shape tests check:
 - a view of one world freezes the shared store and the other world's collider
@@ -656,10 +691,9 @@ envelope returns to the spawn. Starting reports more than
 `MAX_TRIANGLE_MESH_TRIANGLES` collider triangles, collider geometry outside the
 envelope and a spawn outside it as separate failures that name the limit.
 
-## Remaining P1 work
+## Beyond P1
 
-This slice is not the whole gate. Still to come:
-- query debug overlays.
-
-Hull faces, volume validation from faces and mass properties belong to the
-rigid-body gate.
+The P1 collision items are delivered; the next physics work lives in later
+gates. Drawing these debug lines in the editor viewport belongs to the
+inspector work of gate P4. Hull faces, volume validation from faces and mass
+properties belong to the rigid-body gate.
