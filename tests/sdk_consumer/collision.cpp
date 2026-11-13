@@ -116,6 +116,16 @@ bool ExerciseInstalledCollision() noexcept
                            worldHit) == Status::Success &&
                        worldHit.HasHit == true && worldHit.DistanceMeters == 2.0 && worldHit.Collider == collider &&
                        worldHit.Binding == BINDING;
+    // A box resting across the raised quad overlaps it.
+    constexpr ludus::foundation::usize RECORD_COUNT = 2;
+    StaticArray<ColliderOverlap, RECORD_COUNT> records{};
+    WorldOverlapResult overlap;
+    const bool isOverlapping =
+        isHit == true &&
+        view.Overlap({ .Shape = MakeBoxShape({0.25, 0.25, 0.25}), .PositionWorld = {0.5, 1.0, 0.5} },
+                     BorrowedView<ColliderOverlap>(records.GetData(), RECORD_COUNT),
+                     overlap) == Status::Success &&
+        overlap.WrittenCount == 1 && overlap.IsComplete == true && records[0].Collider == collider;
     view.Release();
-    return isHit == true && world.TryDestroyCollider(collider) == Status::Success;
+    return isOverlapping == true && world.TryDestroyCollider(collider) == Status::Success;
 }

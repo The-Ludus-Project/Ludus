@@ -23,6 +23,11 @@ class TriangleMesh;
 
 namespace ludus::physics::collision::internal
 {
+/// Largest translation component the posed entry points admit. A collider's rotation can grow the largest
+/// component of an admitted world translation by up to sqrt(3); every separating-axis and support product stays
+/// finite at twice the public limit.
+inline constexpr float64 MAX_LOCAL_TRANSLATION_METERS = 2.0 * MAX_QUERY_DISTANCE_METERS;
+
 /// Bounds of a posed shape: centre relative to its position, and half extents including the margin.
 struct PosedBounds final
 {
@@ -49,7 +54,29 @@ struct PosedConvexCast final
 /// Axis-aligned bounds of a posed shape in its mesh axes.
 [[nodiscard]] PosedBounds GetPosedBounds(const PosedConvex& shape) noexcept;
 
+/// Triangles a posed shape overlaps in one mesh.
+struct MeshOverlap final
+{
+    uint32 TriangleCount = 0;                            ///< Overlapping triangles.
+    uint32 LowestTriangleIndex = INVALID_TRIANGLE_INDEX; ///< Lowest overlapping source triangle.
+};
+
 /// Cast a posed shape. Only the position and translation envelope is checked (OutOfRange); the shape must be valid.
 [[nodiscard]] Status
 CastPosedConvex(const TriangleMesh& mesh, const PosedConvexCast& request, ConvexCastResult& outResult) noexcept;
+
+/// Cast a posed shape against a convex target posed at the origin of the same frame. TriangleIndex stays invalid.
+[[nodiscard]] Status CastPosedConvexAgainstConvex(const PosedConvex& target,
+                                                  const PosedConvexCast& request,
+                                                  ConvexCastResult& outResult) noexcept;
+
+/// Find the triangles a stationary posed shape overlaps, by the same rule as a cast's initial overlap.
+/// Only request.PositionMesh, request.Shape and request.Traversal are read.
+[[nodiscard]] Status
+OverlapPosedConvexWithMesh(const TriangleMesh& mesh, const PosedConvexCast& request, MeshOverlap& outOverlap) noexcept;
+
+/// Whether a stationary posed shape overlaps a convex target posed at the origin, by the same rule.
+/// Only request.PositionMesh and request.Shape are read.
+[[nodiscard]] Status
+IsOverlappingConvex(const PosedConvex& target, const PosedConvexCast& request, bool& outIsOverlapping) noexcept;
 } // namespace ludus::physics::collision::internal

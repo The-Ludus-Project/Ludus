@@ -393,3 +393,30 @@ TEST_CASE("Convex casts are deterministic across repeated queries", "[collision]
     CHECK(first.WitnessPositionMesh == second.WitnessPositionMesh);
     CHECK(first.TriangleIndex <= 1);
 }
+
+TEST_CASE("A shape centred on a triangle's plane at a symmetric point overlaps it", "[collision][convex]")
+{
+    // These poses put the origin of the Minkowski difference exactly on a GJK simplex face, where the separating
+    // direction is float64 rounding; they once ended the search as "touching" and missed the overlap.
+    const TriangleMesh floor = MakeFloor();
+    const ConvexHull cube = CookHullOrFail(MakeBoxPoints({0.25f, 0.25f, 0.25f}));
+    const StaticArray<Vector3d, 4> centres{Vector3d{0.5, 0.0, 0.5},
+                                           Vector3d{0.0, 0.0, 0.5},
+                                           Vector3d{0.5, 0.0, 1.0},
+                                           Vector3d{0.0, 0.0, 0.0}};
+    const StaticArray<ConvexShape, 3> shapes{MakeBoxShape({0.25, 0.25, 0.25}),
+                                             MakeHullShape(cube),
+                                             MakeCapsuleShape(0.3, 0.1)};
+    for (const Vector3d centre : centres)
+    {
+        for (const ConvexShape shape : shapes)
+        {
+            INFO("centre " << centre.X << "," << centre.Z << " kind " << static_cast<int>(shape.Kind));
+            ConvexCastInput input{ .Shape = shape, .PositionMesh = centre };
+            const ConvexCastResult stationary = CastOrFail(floor, input);
+            CHECK(stationary.HasStartedOverlapping == true);
+            input.TranslationMesh = {0.0, 1.0, 0.0};
+            CHECK(CastOrFail(floor, input).HasStartedOverlapping == true);
+        }
+    }
+}

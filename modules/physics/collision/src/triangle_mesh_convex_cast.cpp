@@ -35,6 +35,10 @@ using internal::Widen;
 constexpr usize TRIANGLE_CORNER_COUNT = 3;
 constexpr float64 CENTROID_WEIGHT = 1.0 / static_cast<float64>(TRIANGLE_CORNER_COUNT);
 constexpr float64 HALF = 0.5;
+/// A starting core separation below this fraction of the contact tolerance has no reliable direction: it is
+/// float64 rounding of an origin that lies on the simplex. The cores meet, so the start counts as overlapping.
+/// The ratio sits far above rounding (about 1e-16 of the scale) and far below the tolerance (1e-9 of it).
+constexpr float64 DEGENERATE_SEPARATION_RATIO = 1.0e-3;
 
 /// Per-cast constants. Triangle corners are taken relative to PositionMesh.
 struct ConvexCastContext final
@@ -146,8 +150,20 @@ Status internal::ValidateConvexCast(const ConvexCastInput& input) noexcept
 namespace
 {
 
+/// Bounds of the target geometry in the cast's frame, for the tolerance scale.
+struct TargetBounds final
+{
+    math::Vector3d Minimum{};
+    math::Vector3d Maximum{};
+};
+
+TargetBounds ToTargetBounds(const math::Aabb3& boundsMesh) noexcept
+{
+    return { .Minimum = Widen(boundsMesh.Min), .Maximum = Widen(boundsMesh.Max) };
+}
+
 ConvexCastContext MakeConvexCastContext(const internal::PosedConvexCast& request,
-                                        const math::Aabb3& boundsMesh) noexcept
+                                        const TargetBounds& boundsMesh) noexcept
 {
     ConvexCastContext cast;
     cast.Shape = request.Shape;
@@ -156,8 +172,8 @@ ConvexCastContext MakeConvexCastContext(const internal::PosedConvexCast& request
     cast.OverlapPolicy = request.OverlapPolicy;
     const internal::PosedBounds bounds = internal::GetPosedBounds(cast.Shape);
     cast.BoundsCenterMesh = bounds.CenterMesh;
-    const float64 meshScale = math::Max(internal::GetMaxMagnitude(Widen(boundsMesh.Min) - request.PositionMesh),
-                                        internal::GetMaxMagnitude(Widen(boundsMesh.Max) - request.PositionMesh));
+    const float64 meshScale = math::Max(internal::GetMaxMagnitude(boundsMesh.Minimum - request.PositionMesh),
+                                        internal::GetMaxMagnitude(boundsMesh.Maximum - request.PositionMesh));
     const float64 scale = meshScale + internal::GetMaxMagnitude(request.TranslationMesh) +
                           internal::GetMaxMagnitude(bounds.HalfExtentsMesh) +
                           internal::GetMaxMagnitude(bounds.CenterMesh);
@@ -184,6 +200,17 @@ bool OverlapsSweep(const ConvexCastContext& cast, const math::Aabb3& boundsMesh,
            maximumMesh.Z >= math::Min(startMesh.Z, endMesh.Z) - reachMesh.Z;
 }
 
+/// What a shape is cast against: a triangle, or a convex core rounded by a margin. Positions are relative to the
+/// cast's starting position.
+struct CastTarget final
+{
+    StaticArray<math::Vector3d, TRIANGLE_CORNER_COUNT> CornersMesh{}; ///< Triangle corners; unused for convex.
+    const internal::PosedConvex* ConvexOrNull = nullptr;              ///< Convex target, or null for a triangle.
+    math::Vector3d ConvexOffsetMesh{};                                ///< Convex target origin.
+    math::Vector3d InteriorMesh{};                                    ///< A point of the target core.
+    float64 MarginMeters = 0.0;                                       ///< Convex target rounding radius.
+};
+
 /// The triangle corner farthest along directionMesh; ties keep the lowest corner.
 math::Vector3d GetTriangleSupport(const StaticArray<math::Vector3d, TRIANGLE_CORNER_COUNT>& cornersMesh,
                                   math::Vector3d directionMesh) noexcept
@@ -202,6 +229,27 @@ math::Vector3d GetTriangleSupport(const StaticArray<math::Vector3d, TRIANGLE_COR
     return cornersMesh[best];
 }
 
+math::Vector3d GetTargetSupport(const CastTarget& target, math::Vector3d directionMesh) noexcept
+{
+    if (target.ConvexOrNull == nullptr)
+    {
+        return GetTriangleSupport(target.CornersMesh, directionMesh);
+    }
+    return target.ConvexOffsetMesh + internal::GetCoreSupport(*target.ConvexOrNull, directionMesh);
+}
+
+/// The target's surface point under a core witness: a rounded target's surface lies its margin along the
+/// separating direction, from the target toward the shape.
+math::Vector3d GetSurfaceWitness(math::Vector3d coreWitnessMesh, float64 margin, math::Vector3d separationMesh) noexcept
+{
+    math::Vector3d unitMesh;
+    if (margin == 0.0 || internal::TryNormalize(separationMesh, unitMesh) == false)
+    {
+        return coreWitnessMesh;
+    }
+    return coreWitnessMesh + unitMesh * margin;
+}
+
 bool HasDifference(const internal::Simplex& simplex, math::Vector3d differenceMesh) noexcept
 {
     for (usize index = 0; index < simplex.Count; ++index)
@@ -214,25 +262,21 @@ bool HasDifference(const internal::Simplex& simplex, math::Vector3d differenceMe
     return false;
 }
 
-/// One triangle over the whole translation. The arithmetic never depends on
+/// One target over the whole translation. The arithmetic never depends on
 /// the current best hit, so hierarchy and brute-force traversal agree.
-TriangleOutcome CastTriangle(const ConvexCastContext& cast,
-                             const internal::TriangleCorners& corners,
-                             ConvexCandidate& outCandidate) noexcept
+TriangleOutcome
+CastAgainst(const ConvexCastContext& cast, const CastTarget& target, ConvexCandidate& outCandidate) noexcept
 {
-    const StaticArray<math::Vector3d, TRIANGLE_CORNER_COUNT> cornersMesh{Widen(corners.FirstMesh) - cast.PositionMesh,
-                                                                         Widen(corners.SecondMesh) - cast.PositionMesh,
-                                                                         Widen(corners.ThirdMesh) - cast.PositionMesh};
     const math::Vector3d translationMesh = cast.TranslationMesh;
-    const float64 margin = cast.Shape.MarginMeters;
+    // Both rounding radii add: the cores are cast against each other at their combined margin.
+    const float64 margin = cast.Shape.MarginMeters + target.MarginMeters;
     const float64 tolerance = cast.ToleranceMeters;
-    const math::Vector3d centroidMesh = (cornersMesh[0] + cornersMesh[1] + cornersMesh[2]) * CENTROID_WEIGHT;
 
     // rayPoint = fraction * translation; v = rayPoint - (nearest known point of C = T - A).
     float64 fraction = 0.0;
     math::Vector3d rayPointMesh{};
-    math::Vector3d separationMesh = cast.Shape.InteriorMesh - centroidMesh;
-    math::Vector3d witnessMesh = centroidMesh;
+    math::Vector3d separationMesh = cast.Shape.InteriorMesh - target.InteriorMesh;
+    math::Vector3d witnessMesh = target.InteriorMesh;
     math::Vector3d normalMesh{};
     internal::Simplex simplex;
     bool hasAdvanced = false;
@@ -254,13 +298,14 @@ TriangleOutcome CastTriangle(const ConvexCastContext& cast,
             isStopped = true;
             break;
         }
-        if (hasAdvanced == false && separation < margin - tolerance)
+        if (hasAdvanced == false &&
+            (separation < margin - tolerance || separation <= tolerance * DEGENERATE_SEPARATION_RATIO))
         {
             stop = CastStop::Overlap;
             isStopped = true;
             break;
         }
-        const math::Vector3d targetMesh = GetTriangleSupport(cornersMesh, separationMesh);
+        const math::Vector3d targetMesh = GetTargetSupport(target, separationMesh);
         const math::Vector3d differenceMesh = targetMesh - internal::GetCoreSupport(cast.Shape, -separationMesh);
         // separationMesh . (rayPoint - support) / |separationMesh| is a lower bound on the distance.
         const float64 planeDistanceScaled = math::Dot(separationMesh, rayPointMesh - differenceMesh);
@@ -340,7 +385,7 @@ TriangleOutcome CastTriangle(const ConvexCastContext& cast,
             outCandidate.HasHit = true;
             outCandidate.Fraction = 0.0;
             outCandidate.NormalMesh = separationMesh;
-            outCandidate.WitnessMesh = witnessMesh;
+            outCandidate.WitnessMesh = GetSurfaceWitness(witnessMesh, target.MarginMeters, separationMesh);
             outCandidate.HasWitness = true;
             return TriangleOutcome::Hit;
         case CastStop::Contact:
@@ -348,11 +393,24 @@ TriangleOutcome CastTriangle(const ConvexCastContext& cast,
             // A contact entered at exactly zero may carry a negative zero; report +0.
             outCandidate.Fraction = fraction > 0.0 ? fraction : 0.0;
             outCandidate.NormalMesh = normalMesh;
-            outCandidate.WitnessMesh = witnessMesh;
+            outCandidate.WitnessMesh = GetSurfaceWitness(witnessMesh, target.MarginMeters, normalMesh);
             outCandidate.HasWitness = hasEnclosedOrigin == false;
             return TriangleOutcome::Hit;
     }
     return TriangleOutcome::Miss;
+}
+
+/// One triangle over the whole translation.
+TriangleOutcome CastTriangle(const ConvexCastContext& cast,
+                             const internal::TriangleCorners& corners,
+                             ConvexCandidate& outCandidate) noexcept
+{
+    CastTarget target;
+    target.CornersMesh = {Widen(corners.FirstMesh) - cast.PositionMesh,
+                          Widen(corners.SecondMesh) - cast.PositionMesh,
+                          Widen(corners.ThirdMesh) - cast.PositionMesh};
+    target.InteriorMesh = (target.CornersMesh[0] + target.CornersMesh[1] + target.CornersMesh[2]) * CENTROID_WEIGHT;
+    return CastAgainst(cast, target, outCandidate);
 }
 } // namespace
 
@@ -363,6 +421,14 @@ public:
     static Status Cast(const TriangleMesh& mesh, const ConvexCastInput& input, ConvexCastResult& outResult) noexcept;
     static Status
     CastPosed(const TriangleMesh& mesh, const internal::PosedConvexCast& request, ConvexCastResult& outResult) noexcept;
+    /// Convert a best candidate into a result in the cast's frame.
+    static ConvexCastResult MakeResult(const ConvexCastContext& cast, const ConvexCandidate& best) noexcept
+    {
+        return makeResult(cast, best);
+    }
+    static Status Overlap(const TriangleMesh& mesh,
+                          const internal::PosedConvexCast& request,
+                          internal::MeshOverlap& outOverlap) noexcept;
 
 private:
     /// Visit outcome: Rejected and NotConverged stop the cast.
@@ -514,11 +580,11 @@ Status TriangleMeshConvexCaster::CastPosed(const TriangleMesh& mesh,
         return Status::NoGeometry;
     }
     if (internal::IsWithinMagnitude(request.PositionMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false ||
-        internal::IsWithinMagnitude(request.TranslationMesh, MAX_QUERY_DISTANCE_METERS) == false)
+        internal::IsWithinMagnitude(request.TranslationMesh, internal::MAX_LOCAL_TRANSLATION_METERS) == false)
     {
         return Status::OutOfRange;
     }
-    const ConvexCastContext cast = MakeConvexCastContext(request, mesh.GetBoundsMesh());
+    const ConvexCastContext cast = MakeConvexCastContext(request, ToTargetBounds(mesh.GetBoundsMesh()));
     ConvexCandidate best;
     Visit visit = Visit::Continue;
     if (request.Traversal == QueryTraversal::AllTriangles)
@@ -545,6 +611,82 @@ Status TriangleMeshConvexCaster::CastPosed(const TriangleMesh& mesh,
         return Status::NotConverged;
     }
     outResult = makeResult(cast, best);
+    return Status::Success;
+}
+
+Status TriangleMeshConvexCaster::Overlap(const TriangleMesh& mesh,
+                                         const internal::PosedConvexCast& request,
+                                         internal::MeshOverlap& outOverlap) noexcept
+{
+    if (mesh.IsCooked() == false)
+    {
+        return Status::NoGeometry;
+    }
+    if (internal::IsWithinMagnitude(request.PositionMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false)
+    {
+        return Status::OutOfRange;
+    }
+    internal::PosedConvexCast stationary = request;
+    stationary.TranslationMesh = {};
+    stationary.OverlapPolicy = InitialOverlapPolicy::Report;
+    const ConvexCastContext cast = MakeConvexCastContext(stationary, ToTargetBounds(mesh.GetBoundsMesh()));
+    internal::MeshOverlap overlap;
+    // False when the triangle did not converge.
+    const auto visit = [&cast, &overlap](const TriangleMesh::Triangle& triangle) {
+        ConvexCandidate candidate;
+        const internal::TriangleCorners corners
+        {
+            .FirstMesh = triangle.FirstMesh,
+            .SecondMesh = triangle.SecondMesh,
+            .ThirdMesh = triangle.ThirdMesh,
+        };
+        const TriangleOutcome outcome = CastTriangle(cast, corners, candidate);
+        if (outcome == TriangleOutcome::Hit && candidate.IsInitiallyOverlapping == true)
+        {
+            ++overlap.TriangleCount;
+            overlap.LowestTriangleIndex = math::Min(overlap.LowestTriangleIndex, triangle.SourceIndex);
+        }
+        return outcome != TriangleOutcome::NotConverged;
+    };
+    if (request.Traversal == QueryTraversal::AllTriangles)
+    {
+        for (const TriangleMesh::Triangle& triangle : mesh.mTriangles)
+        {
+            if (visit(triangle) == false)
+            {
+                return Status::NotConverged;
+            }
+        }
+        outOverlap = overlap;
+        return Status::Success;
+    }
+    StaticArray<uint32, MAX_TRIANGLE_MESH_HIERARCHY_DEPTH + 1> pending{};
+    usize pendingCount = 0;
+    pending[pendingCount++] = 0;
+    while (pendingCount > 0)
+    {
+        const uint32 nodeIndex = pending[--pendingCount];
+        const TriangleMesh::Node& node = mesh.mNodes[nodeIndex];
+        if (OverlapsSweep(cast, node.BoundsMesh, 0.0) == false)
+        {
+            continue;
+        }
+        if (node.Count == 0)
+        {
+            LUDUS_ASSERT(pendingCount + 2 <= pending.GetSize());
+            pending[pendingCount++] = node.Right;
+            pending[pendingCount++] = nodeIndex + 1;
+            continue;
+        }
+        for (uint32 index = node.First; index < node.First + node.Count; ++index)
+        {
+            if (visit(mesh.mTriangles[index]) == false)
+            {
+                return Status::NotConverged;
+            }
+        }
+    }
+    outOverlap = overlap;
     return Status::Success;
 }
 
@@ -606,6 +748,88 @@ PosedBounds GetPosedBounds(const PosedConvex& shape) noexcept
 Status CastPosedConvex(const TriangleMesh& mesh, const PosedConvexCast& request, ConvexCastResult& outResult) noexcept
 {
     return TriangleMeshConvexCaster::CastPosed(mesh, request, outResult);
+}
+
+Status
+OverlapPosedConvexWithMesh(const TriangleMesh& mesh, const PosedConvexCast& request, MeshOverlap& outOverlap) noexcept
+{
+    return TriangleMeshConvexCaster::Overlap(mesh, request, outOverlap);
+}
+
+namespace
+{
+/// The cast context and target for a convex target posed at the origin.
+struct ConvexTargetCast final
+{
+    ConvexCastContext Context{};
+    CastTarget Target{};
+};
+
+ConvexTargetCast MakeConvexTargetCast(const PosedConvex& target, const PosedConvexCast& request) noexcept
+{
+    const PosedBounds bounds = GetPosedBounds(target);
+    const TargetBounds targetBounds
+    {
+        .Minimum = bounds.CenterMesh - bounds.HalfExtentsMesh,
+        .Maximum = bounds.CenterMesh + bounds.HalfExtentsMesh,
+    };
+    ConvexTargetCast cast{ .Context = MakeConvexCastContext(request, targetBounds) };
+    cast.Target.ConvexOrNull = &target;
+    cast.Target.ConvexOffsetMesh = -request.PositionMesh;
+    cast.Target.InteriorMesh = target.InteriorMesh - request.PositionMesh;
+    cast.Target.MarginMeters = target.MarginMeters;
+    return cast;
+}
+} // namespace
+
+Status CastPosedConvexAgainstConvex(const PosedConvex& target,
+                                    const PosedConvexCast& request,
+                                    ConvexCastResult& outResult) noexcept
+{
+    if (IsWithinMagnitude(request.PositionMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false ||
+        IsWithinMagnitude(request.TranslationMesh, MAX_LOCAL_TRANSLATION_METERS) == false)
+    {
+        return Status::OutOfRange;
+    }
+    const ConvexTargetCast cast = MakeConvexTargetCast(target, request);
+    ConvexCandidate candidate;
+    const TriangleOutcome outcome = CastAgainst(cast.Context, cast.Target, candidate);
+    if (outcome == TriangleOutcome::NotConverged)
+    {
+        return Status::NotConverged;
+    }
+    if (outcome == TriangleOutcome::Hit && candidate.IsInitiallyOverlapping == true)
+    {
+        if (request.OverlapPolicy == InitialOverlapPolicy::Reject)
+        {
+            return Status::InitialOverlap;
+        }
+        if (request.OverlapPolicy == InitialOverlapPolicy::Ignore)
+        {
+            candidate = {};
+        }
+    }
+    outResult = TriangleMeshConvexCaster::MakeResult(cast.Context, candidate);
+    return Status::Success;
+}
+
+Status IsOverlappingConvex(const PosedConvex& target, const PosedConvexCast& request, bool& outIsOverlapping) noexcept
+{
+    if (IsWithinMagnitude(request.PositionMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false)
+    {
+        return Status::OutOfRange;
+    }
+    PosedConvexCast stationary = request;
+    stationary.TranslationMesh = {};
+    const ConvexTargetCast cast = MakeConvexTargetCast(target, stationary);
+    ConvexCandidate candidate;
+    const TriangleOutcome outcome = CastAgainst(cast.Context, cast.Target, candidate);
+    if (outcome == TriangleOutcome::NotConverged)
+    {
+        return Status::NotConverged;
+    }
+    outIsOverlapping = outcome == TriangleOutcome::Hit && candidate.IsInitiallyOverlapping == true;
+    return Status::Success;
 }
 } // namespace internal
 } // namespace ludus::physics::collision

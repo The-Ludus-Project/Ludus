@@ -275,7 +275,6 @@ TEST_CASE("Colliders lease their shapes and stale handles are rejected", "[colli
         CHECK(after == before);
     };
     expectFailure({ .Shape = floor }, Status::InvalidHandle);
-    expectFailure({ .Shape = sphere }, Status::Unsupported);
     ColliderDescription invalid{ .Shape = second };
     invalid.Pose.PositionWorld.X = std::numeric_limits<float64>::quiet_NaN();
     expectFailure(invalid, Status::NonFiniteInput);

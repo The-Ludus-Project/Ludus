@@ -114,16 +114,24 @@ struct WorldRaycastInput final
 ///
 /// On a miss `HasHit` is false and every other field keeps its default value. Equal distances resolve to the lower
 /// collider slot, then generation, then the lower source triangle index.
+///
+/// Mesh colliders follow RaycastResult. A convex collider is a closed solid: its hit is the entry point, with the
+/// outward surface normal and IsFrontFace set, decided with the convex cast's contact tolerance. A ray that starts
+/// inside a convex collider hits it at distance zero with no normal and IsFrontFace false. FacePolicy BackFacesOnly
+/// never reports convex colliders; request an exit query instead.
 struct WorldRaycastResult final
 {
-    bool HasHit = false;                           ///< Whether any reported collider lies within the limit.
-    float64 DistanceMeters = 0.0;                  ///< Ray parameter of the hit, meters.
-    foundation::math::Vector3d PositionWorld{};    ///< `OriginWorld + DirectionWorld * DistanceMeters`.
-    foundation::math::Vector3d NormalWorld{};      ///< Unit geometric triangle normal from its winding, in world axes.
-    bool IsFrontFace = false;                      ///< Whether the ray direction points against NormalWorld.
-    uint32 TriangleIndex = INVALID_TRIANGLE_INDEX; ///< Source triangle index in the collider's mesh.
-    ColliderHandle Collider{};                     ///< The hit collider.
-    uint64 Binding = 0;                            ///< The hit collider's binding.
+    bool HasHit = false;                        ///< Whether any reported collider lies within the limit.
+    float64 DistanceMeters = 0.0;               ///< Ray parameter of the hit, meters.
+    foundation::math::Vector3d PositionWorld{}; ///< `OriginWorld + DirectionWorld * DistanceMeters`.
+    bool HasNormal = false;                     ///< Whether NormalWorld is valid; false for a start inside a solid.
+    /// Unit normal in world axes: a mesh triangle's winding normal, or a convex collider's outward surface normal.
+    foundation::math::Vector3d NormalWorld{};
+    bool IsFrontFace = false; ///< Whether the ray direction points against NormalWorld.
+    /// Source triangle index in a mesh collider; INVALID_TRIANGLE_INDEX for a convex collider.
+    uint32 TriangleIndex = INVALID_TRIANGLE_INDEX;
+    ColliderHandle Collider{}; ///< The hit collider.
+    uint64 Binding = 0;        ///< The hit collider's binding.
 };
 
 /// @brief Closest world convex cast request. Admitted values follow ConvexCastInput, in world space.
@@ -161,6 +169,52 @@ struct WorldConvexCastResult final
 struct CollisionWorldSettings final
 {
     uint32 MaxColliders = 0; ///< Collider slots to reserve, in [1, MAX_COLLISION_WORLD_COLLIDERS].
+};
+
+/// @brief How many overlapping colliders an overlap query looks for.
+enum class OverlapMode : uint8
+{
+    Any, ///< Stop at the first overlapping collider found; promises no particular one.
+    All, ///< Find every overlapping collider and record as many as the buffer holds.
+};
+
+/// @brief World overlap request: which reported colliders a stationary posed convex shape overlaps.
+///
+/// Admitted values follow ConvexCastInput with no translation. A collider overlaps when the shape is provably deeper
+/// than the convex cast's contact tolerance inside it, exactly the rule for a cast's initial overlap; touching is
+/// not overlapping. Broadphase bounds are only candidates.
+struct WorldOverlapInput final
+{
+    ConvexShape Shape{};                                  ///< Shape to test; a hull is borrowed for this call.
+    foundation::math::Vector3d PositionWorld{};           ///< Shape origin, meters.
+    foundation::math::Quaternion OrientationWorld{};      ///< Rotation from shape axes to world axes.
+    OverlapMode Mode = OverlapMode::All;                  ///< Any or All.
+    QueryFilter Filter{};                                 ///< Colliders the query may report.
+    QueryTraversal Traversal = QueryTraversal::Hierarchy; ///< Hierarchy, or brute force over colliders and triangles.
+};
+
+/// @brief One overlapping collider.
+struct ColliderOverlap final
+{
+    ColliderHandle Collider{}; ///< The overlapping collider.
+    uint64 Binding = 0;        ///< Its binding.
+    /// Lowest overlapping source triangle of a mesh collider; INVALID_TRIANGLE_INDEX for a convex collider.
+    uint32 TriangleIndex = INVALID_TRIANGLE_INDEX;
+    uint32 TriangleCount = 0; ///< Overlapping triangles of a mesh collider; zero for a convex collider.
+};
+
+/// @brief Completion of an overlap query.
+///
+/// Records are written in increasing collider slot order. IsComplete is true exactly when every overlap the mode
+/// looks for was written: an All query whose buffer was too small reports IsComplete false with OverlapCount, the
+/// number it found, so the caller can retry with a larger buffer; the written records are then the first overlaps
+/// in slot order, not a nearest subset. An Any query finds at most one overlap.
+struct WorldOverlapResult final
+{
+    bool HasOverlap = false; ///< Whether any reported collider overlaps the shape.
+    usize OverlapCount = 0;  ///< Overlapping colliders found: all of them for All, at most one for Any.
+    usize WrittenCount = 0;  ///< Records written to the buffer, a prefix of the buffer.
+    bool IsComplete = true;  ///< Whether WrittenCount equals OverlapCount.
 };
 
 class CollisionWorld;
@@ -220,6 +274,18 @@ public:
     [[nodiscard]] Status CastConvexClosest(const WorldConvexCastInput& input,
                                            WorldConvexCastResult& outResult) const noexcept;
 
+    /// @brief Find the reported colliders a stationary posed convex shape overlaps.
+    /// @param input Shape, pose, mode, filter and traversal, in world space.
+    /// @param overlapBuffer Caller storage for the records, borrowed for this call; may be empty.
+    /// @param outResult Receives the counts and completion on Success; unchanged on failure.
+    /// @return Success; InvalidPhase for an inactive view; the ConvexCastInput validation failures; InvalidArgument for
+    /// an unknown mode, an invalid buffer view or an invalid ignored-collider view; NotConverged; or OutOfRange when
+    /// the shape reaches a collider's bounds from outside the coordinate envelope of its local space. After a failure
+    /// the buffer's contents are unspecified.
+    [[nodiscard]] Status Overlap(const WorldOverlapInput& input,
+                                 foundation::BorrowedView<ColliderOverlap> overlapBuffer,
+                                 WorldOverlapResult& outResult) const noexcept;
+
 private:
     friend class CollisionWorld;
 
@@ -230,9 +296,9 @@ private:
 /// @brief A set of posed colliders over one GeometryStore, with filtered queries through protected read views.
 ///
 /// The world reserves every collider slot when it is initialized, so creating, changing and destroying colliders
-/// never allocate. Each collider takes its own lease on its shape and releases it when destroyed. This slice admits
-/// triangle-mesh shapes only; convex shapes are rejected with Status::Unsupported until overlap queries land.
-/// Queries test every collider's world bounds before its mesh hierarchy; there is no collider hierarchy yet.
+/// never allocate. Each collider takes its own lease on its shape and releases it when destroyed. Colliders may use
+/// any stored shape: triangle meshes, hulls and sphere, box and capsule primitives. Queries test every collider's
+/// world bounds before its own geometry; there is no collider hierarchy yet.
 ///
 /// Thread affinity: initialization and mutation happen on one owner thread, and only while no read view is active.
 /// The world is neither copyable nor movable, because read views keep its address.
@@ -264,7 +330,7 @@ public:
     /// @param description Shape, pose, participation, filter, enabled state and binding.
     /// @param outCollider Receives the new handle on success; unchanged on failure.
     /// @return Success; InvalidPhase when uninitialized or a read view is active; InvalidHandle for a shape that is
-    /// not live in the store; Unsupported for a shape other than a triangle mesh; NonFiniteInput, OutOfRange or
+    /// not live in the store; NonFiniteInput, OutOfRange or
     /// InvalidArgument for the pose; InvalidArgument for a solid sensor or zero category bits; or CapacityExceeded
     /// when no slot is free or the shape's lease count is full.
     [[nodiscard]] Status TryCreateCollider(const ColliderDescription& description,
@@ -322,8 +388,11 @@ private:
     /// One collider slot.
     struct Slot final
     {
-        ColliderDescription Description{};        ///< The collider as created, with its current pose and state.
-        const TriangleMesh* MeshOrNull = nullptr; ///< The leased mesh; null while the slot is free.
+        ColliderDescription Description{};           ///< The collider as created, with its current pose and state.
+        const TriangleMesh* MeshOrNull = nullptr;    ///< The leased mesh; null for a convex collider or a free slot.
+        ConvexShape Convex{};                        ///< The leased convex shape when MeshOrNull is null.
+        foundation::math::Vector3d BoundsMinLocal{}; ///< Exact bounds of the shape in its local frame.
+        foundation::math::Vector3d BoundsMaxLocal{}; ///< Upper corner of BoundsMinLocal's box.
         foundation::math::Vector3d AxisXWorld{1.0, 0.0, 0.0};       ///< Local +X in world axes.
         foundation::math::Vector3d AxisYWorld{0.0, 1.0, 0.0};       ///< Local +Y in world axes.
         foundation::math::Vector3d AxisZWorld{0.0, 0.0, 1.0};       ///< Local +Z in world axes.

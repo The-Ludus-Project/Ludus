@@ -189,9 +189,16 @@ public:
     Raycast(const CollisionWorld& world, const WorldRaycastInput& input, WorldRaycastResult& outResult) noexcept;
     static Status
     Cast(const CollisionWorld& world, const WorldConvexCastInput& input, WorldConvexCastResult& outResult) noexcept;
+    static Status Overlap(const CollisionWorld& world,
+                          const WorldOverlapInput& input,
+                          foundation::BorrowedView<ColliderOverlap> overlapBuffer,
+                          WorldOverlapResult& outResult) noexcept;
 
 private:
     using Slot = CollisionWorld::Slot;
+
+    /// Raycast a convex collider in its local frame as a cast of a point, with RaycastResult semantics.
+    static Status raycastConvex(const Slot& slot, const RaycastInput& rayLocal, RaycastResult& outResult) noexcept;
 
     static math::Vector3d toLocalDirection(const Slot& slot, math::Vector3d directionWorld) noexcept
     {
@@ -215,6 +222,46 @@ private:
 
     static bool isReported(const CollisionWorld& world, uint32 slotIndex, const QueryFilter& filter) noexcept;
 };
+
+Status
+CollisionWorldQueries::raycastConvex(const Slot& slot, const RaycastInput& rayLocal, RaycastResult& outResult) noexcept
+{
+    // A convex collider is solid: a back-face-only ray would need its exit surface, a separate query.
+    if (rayLocal.FacePolicy == TriangleFacePolicy::BackFacesOnly)
+    {
+        outResult = {};
+        return Status::Success;
+    }
+    const internal::PosedConvexCast point
+    {
+        .Shape = {},
+        .PositionMesh = rayLocal.OriginMesh,
+        .TranslationMesh = rayLocal.DirectionMesh * rayLocal.MaxDistanceMeters,
+        .OverlapPolicy = InitialOverlapPolicy::Report,
+        .Traversal = rayLocal.Traversal,
+    };
+    ConvexCastResult contact;
+    const Status status =
+        internal::CastPosedConvexAgainstConvex(internal::PoseConvexShape(slot.Convex, {}), point, contact);
+    if (status != Status::Success)
+    {
+        return status;
+    }
+    RaycastResult result;
+    if (contact.HasHit == true)
+    {
+        result.HasHit = true;
+        result.DistanceMeters = contact.Fraction * rayLocal.MaxDistanceMeters;
+        result.PositionMesh = rayLocal.OriginMesh + rayLocal.DirectionMesh * result.DistanceMeters;
+        result.IsFrontFace = contact.HasStartedOverlapping == false;
+        if (contact.HasNormal == true)
+        {
+            result.NormalMesh = contact.NormalMesh;
+        }
+    }
+    outResult = result;
+    return Status::Success;
+}
 
 bool CollisionWorldQueries::isReported(const CollisionWorld& world,
                                        uint32 slotIndex,
@@ -285,13 +332,9 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
         float64 limit = input.MaxDistanceMeters;
         if (internal::IsWithinMagnitude(originLocal, static_cast<float64>(MAX_COORDINATE_METERS)) == false)
         {
-            // Start at the mesh bounds: they lie inside the envelope, and nothing before them can be hit.
-            const math::Aabb3 boundsLocal = slot.MeshOrNull->GetBoundsMesh();
+            // Start at the collider's bounds: they lie inside the envelope, and nothing before them can be hit.
             const ClipInterval clip = ClipToBox({ .Origin = originLocal, .Direction = directionLocal },
-                                                {
-                                                    .Minimum = Widen(boundsLocal.Min),
-                                                    .Maximum = Widen(boundsLocal.Max),
-                                                });
+                                                { .Minimum = slot.BoundsMinLocal, .Maximum = slot.BoundsMaxLocal });
             if (clip.HasOverlap == false || clip.Exit < 0.0 || clip.Enter >= limit)
             {
                 continue;
@@ -309,7 +352,8 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
             .Traversal = input.Traversal,
         };
         RaycastResult local;
-        const Status status = slot.MeshOrNull->RaycastClosest(localRay, local);
+        const Status status = slot.MeshOrNull != nullptr ? slot.MeshOrNull->RaycastClosest(localRay, local)
+                                                         : raycastConvex(slot, localRay, local);
         if (status != Status::Success)
         {
             return status;
@@ -342,6 +386,8 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
     result.HasHit = true;
     result.DistanceMeters = best.Key;
     result.PositionWorld = input.OriginWorld + input.DirectionWorld * best.Key;
+    // A ray starting inside a convex collider reports no normal (raycastConvex leaves it zero).
+    result.HasNormal = math::LengthSquared(bestLocal.NormalMesh) > 0.0;
     result.NormalWorld = toWorldDirection(hit, bestLocal.NormalMesh);
     result.IsFrontFace = bestLocal.IsFrontFace;
     result.TriangleIndex = bestLocal.TriangleIndex;
@@ -415,14 +461,13 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
         float64 start = 0.0;
         if (internal::IsWithinMagnitude(positionLocal, static_cast<float64>(MAX_COORDINATE_METERS)) == false)
         {
-            // Start where the shape's bounds first reach the mesh bounds; nothing earlier can be contacted.
+            // Start where the shape's bounds first reach the collider's bounds; nothing earlier can be contacted.
             const internal::PosedBounds boundsLocal = internal::GetPosedBounds(posedLocal);
-            const math::Aabb3 meshBounds = slot.MeshOrNull->GetBoundsMesh();
             const math::Vector3d reachLocal =
                 boundsLocal.HalfExtentsMesh + math::Vector3d{widening, widening, widening};
-            const ClipInterval clip = ClipToBox(
-                { .Origin = positionLocal + boundsLocal.CenterMesh, .Direction = translationLocal },
-                { .Minimum = Widen(meshBounds.Min) - reachLocal, .Maximum = Widen(meshBounds.Max) + reachLocal });
+            const ClipInterval clip =
+                ClipToBox({ .Origin = positionLocal + boundsLocal.CenterMesh, .Direction = translationLocal },
+                          { .Minimum = slot.BoundsMinLocal - reachLocal, .Maximum = slot.BoundsMaxLocal + reachLocal });
             if (clip.HasOverlap == false || clip.Exit < 0.0 || clip.Enter >= 1.0)
             {
                 continue;
@@ -447,7 +492,10 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
             .Traversal = input.Traversal,
         };
         ConvexCastResult local;
-        const Status status = internal::CastPosedConvex(*slot.MeshOrNull, request, local);
+        const Status status =
+            slot.MeshOrNull != nullptr
+                ? internal::CastPosedConvex(*slot.MeshOrNull, request, local)
+                : internal::CastPosedConvexAgainstConvex(internal::PoseConvexShape(slot.Convex, {}), request, local);
         if (status != Status::Success)
         {
             return status;
@@ -499,6 +547,124 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
     return Status::Success;
 }
 
+Status CollisionWorldQueries::Overlap(const CollisionWorld& world,
+                                      const WorldOverlapInput& input,
+                                      foundation::BorrowedView<ColliderOverlap> overlapBuffer,
+                                      WorldOverlapResult& outResult) noexcept
+{
+    const ConvexCastInput stationary
+    {
+        .Shape = input.Shape,
+        .PositionMesh = input.PositionWorld,
+        .OrientationMesh = input.OrientationWorld,
+        .Traversal = input.Traversal,
+    };
+    const Status validation = internal::ValidateConvexCast(stationary);
+    if (validation != Status::Success)
+    {
+        return validation;
+    }
+    if ((input.Mode != OverlapMode::Any && input.Mode != OverlapMode::All) || IsFilterValid(input.Filter) == false ||
+        overlapBuffer.IsValid() == false)
+    {
+        return Status::InvalidArgument;
+    }
+    internal::PosedConvex shapeAxes;
+    const bool isRotated = internal::TrySetRotation(input.OrientationWorld, shapeAxes);
+    LUDUS_ASSERT(isRotated == true);
+    (void)isRotated;
+    const internal::PosedBounds boundsWorld =
+        internal::GetPosedBounds(internal::PoseConvexShape(input.Shape, shapeAxes));
+    const math::Vector3d centerWorld = input.PositionWorld + boundsWorld.CenterMesh;
+    const float64 shapeExtent = math::Length(boundsWorld.HalfExtentsMesh) + math::Length(boundsWorld.CenterMesh);
+    WorldOverlapResult result;
+    for (uint32 slotIndex = 0; slotIndex < world.mSlots.GetSize(); ++slotIndex)
+    {
+        if (isReported(world, slotIndex, input.Filter) == false)
+        {
+            continue;
+        }
+        const Slot& slot = world.mSlots[slotIndex];
+        const float64 meshExtent = math::Max(math::Length(slot.BoundsMinWorld - input.PositionWorld),
+                                             math::Length(slot.BoundsMaxWorld - input.PositionWorld));
+        const float64 widening =
+            (meshExtent + shapeExtent) * (COLLIDER_TOLERANCE_ALLOWANCE + internal::TRAVERSAL_RELATIVE_ALLOWANCE);
+        const Box bounds{ .Minimum = slot.BoundsMinWorld, .Maximum = slot.BoundsMaxWorld };
+        const bool canReach =
+            bounds.Overlaps(MakeSweptBox(centerWorld,
+                                         centerWorld,
+                                         boundsWorld.HalfExtentsMesh + math::Vector3d{widening, widening, widening}));
+        if (input.Traversal == QueryTraversal::Hierarchy && canReach == false)
+        {
+            continue;
+        }
+        const math::Vector3d positionLocal = toLocalPoint(slot, input.PositionWorld);
+        if (internal::IsWithinMagnitude(positionLocal, static_cast<float64>(MAX_COORDINATE_METERS)) == false)
+        {
+            // Only a shape larger than its distance to the collider can reach it from outside the envelope.
+            if (canReach == true)
+            {
+                return Status::OutOfRange;
+            }
+            continue;
+        }
+        internal::PosedConvex localAxes;
+        localAxes.AxisXMesh = toLocalDirection(slot, shapeAxes.AxisXMesh);
+        localAxes.AxisYMesh = toLocalDirection(slot, shapeAxes.AxisYMesh);
+        localAxes.AxisZMesh = toLocalDirection(slot, shapeAxes.AxisZMesh);
+        const internal::PosedConvexCast request
+        {
+            .Shape = internal::PoseConvexShape(input.Shape, localAxes),
+            .PositionMesh = positionLocal,
+            .Traversal = input.Traversal,
+        };
+        ColliderOverlap overlap
+        {
+            .Collider = { .Owner = world.mOwner, .Slot = slotIndex, .Generation = slot.Generation },
+            .Binding = slot.Description.Binding,
+        };
+        bool isOverlapping = false;
+        if (slot.MeshOrNull != nullptr)
+        {
+            internal::MeshOverlap triangles;
+            const Status status = internal::OverlapPosedConvexWithMesh(*slot.MeshOrNull, request, triangles);
+            if (status != Status::Success)
+            {
+                return status;
+            }
+            isOverlapping = triangles.TriangleCount > 0;
+            overlap.TriangleIndex = triangles.LowestTriangleIndex;
+            overlap.TriangleCount = triangles.TriangleCount;
+        }
+        else
+        {
+            const Status status =
+                internal::IsOverlappingConvex(internal::PoseConvexShape(slot.Convex, {}), request, isOverlapping);
+            if (status != Status::Success)
+            {
+                return status;
+            }
+        }
+        if (isOverlapping == false)
+        {
+            continue;
+        }
+        if (result.WrittenCount < overlapBuffer.GetSize())
+        {
+            overlapBuffer[result.WrittenCount++] = overlap;
+        }
+        ++result.OverlapCount;
+        if (input.Mode == OverlapMode::Any)
+        {
+            break;
+        }
+    }
+    result.HasOverlap = result.OverlapCount > 0;
+    result.IsComplete = result.WrittenCount == result.OverlapCount;
+    outResult = result;
+    return Status::Success;
+}
+
 CollisionReadView::CollisionReadView(CollisionReadView&& other) noexcept
     : mWorldOrNull(other.mWorldOrNull), mEpoch(other.mEpoch)
 {
@@ -541,6 +707,17 @@ Status CollisionReadView::RaycastClosest(const WorldRaycastInput& input, WorldRa
         return Status::InvalidPhase;
     }
     return CollisionWorldQueries::Raycast(*mWorldOrNull, input, outResult);
+}
+
+Status CollisionReadView::Overlap(const WorldOverlapInput& input,
+                                  foundation::BorrowedView<ColliderOverlap> overlapBuffer,
+                                  WorldOverlapResult& outResult) const noexcept
+{
+    if (mWorldOrNull == nullptr)
+    {
+        return Status::InvalidPhase;
+    }
+    return CollisionWorldQueries::Overlap(*mWorldOrNull, input, overlapBuffer, outResult);
 }
 
 Status CollisionReadView::CastConvexClosest(const WorldConvexCastInput& input,
@@ -644,6 +821,17 @@ bool CollisionWorld::IsAlive(ColliderHandle collider) const noexcept
 
 namespace
 {
+/// Exact local bounds of a convex shape posed at its local origin.
+Box GetConvexLocalBounds(const ConvexShape& shape) noexcept
+{
+    const internal::PosedBounds bounds = internal::GetPosedBounds(internal::PoseConvexShape(shape, {}));
+    return
+    {
+        .Minimum = bounds.CenterMesh - bounds.HalfExtentsMesh,
+        .Maximum = bounds.CenterMesh + bounds.HalfExtentsMesh,
+    };
+}
+
 /// A slot's rotation columns and conservative world bounds.
 struct SlotPlacement final
 {
@@ -654,16 +842,15 @@ struct SlotPlacement final
     math::Vector3d BoundsMaxWorld{};
 };
 
-/// Place a mesh by a validated pose.
-SlotPlacement PlaceSlot(const RigidPose& pose, const TriangleMesh& mesh) noexcept
+/// Place local bounds by a validated pose.
+SlotPlacement PlaceSlot(const RigidPose& pose, const Box& boundsLocal) noexcept
 {
     internal::PosedConvex rotation;
     const bool isRotated = internal::TrySetRotation(pose.OrientationWorld, rotation);
     LUDUS_ASSERT(isRotated == true);
     (void)isRotated;
-    const math::Aabb3 boundsLocal = mesh.GetBoundsMesh();
-    const math::Vector3d minimumLocal = Widen(boundsLocal.Min);
-    const math::Vector3d maximumLocal = Widen(boundsLocal.Max);
+    const math::Vector3d minimumLocal = boundsLocal.Minimum;
+    const math::Vector3d maximumLocal = boundsLocal.Maximum;
     math::Vector3d minimum{UNBOUNDED, UNBOUNDED, UNBOUNDED};
     math::Vector3d maximum{-UNBOUNDED, -UNBOUNDED, -UNBOUNDED};
     for (uint32 corner = 0; corner < BOX_CORNER_COUNT; ++corner)
@@ -702,12 +889,19 @@ Status CollisionWorld::TryCreateCollider(const ColliderDescription& description,
     {
         return phase;
     }
-    const TriangleMesh* meshOrNull = nullptr;
-    const Status shape = mStoreOrNull->TryGetTriangleMesh(description.Shape, meshOrNull);
+    ShapeKind kind = ShapeKind::TriangleMesh;
+    const Status shape = mStoreOrNull->TryGetKind(description.Shape, kind);
     if (shape != Status::Success)
     {
         return shape;
     }
+    const TriangleMesh* meshOrNull = nullptr;
+    ConvexShape convex;
+    const Status resolved = kind == ShapeKind::TriangleMesh
+                                ? mStoreOrNull->TryGetTriangleMesh(description.Shape, meshOrNull)
+                                : mStoreOrNull->TryGetConvexShape(description.Shape, convex);
+    LUDUS_ASSERT(resolved == Status::Success);
+    (void)resolved;
     const Status pose = ValidatePose(description.Pose);
     if (pose != Status::Success)
     {
@@ -732,7 +926,13 @@ Status CollisionWorld::TryCreateCollider(const ColliderDescription& description,
     Slot& slot = mSlots[slotIndex];
     slot.Description = description;
     slot.MeshOrNull = meshOrNull;
-    const SlotPlacement placement = PlaceSlot(description.Pose, *meshOrNull);
+    slot.Convex = convex;
+    const Box boundsLocal = meshOrNull != nullptr ? Box{ .Minimum = Widen(meshOrNull->GetBoundsMesh().Min),
+                                                         .Maximum = Widen(meshOrNull->GetBoundsMesh().Max), }
+                                                  : GetConvexLocalBounds(convex);
+    slot.BoundsMinLocal = boundsLocal.Minimum;
+    slot.BoundsMaxLocal = boundsLocal.Maximum;
+    const SlotPlacement placement = PlaceSlot(description.Pose, boundsLocal);
     slot.AxisXWorld = placement.AxisXWorld;
     slot.AxisYWorld = placement.AxisYWorld;
     slot.AxisZWorld = placement.AxisZWorld;
@@ -795,7 +995,8 @@ Status CollisionWorld::TrySetColliderPose(ColliderHandle collider, const RigidPo
         return validation;
     }
     slotOrNull->Description.Pose = pose;
-    const SlotPlacement placement = PlaceSlot(pose, *slotOrNull->MeshOrNull);
+    const SlotPlacement placement =
+        PlaceSlot(pose, { .Minimum = slotOrNull->BoundsMinLocal, .Maximum = slotOrNull->BoundsMaxLocal });
     slotOrNull->AxisXWorld = placement.AxisXWorld;
     slotOrNull->AxisYWorld = placement.AxisYWorld;
     slotOrNull->AxisZWorld = placement.AxisZWorld;

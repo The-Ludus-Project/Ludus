@@ -132,6 +132,13 @@ public:
     /// @return Success; InvalidHandle; or Unsupported for a shape of another kind.
     [[nodiscard]] Status TryGetTriangleMesh(ShapeHandle shape, const TriangleMesh*& outMeshOrNull) const noexcept;
 
+    /// @brief Describe a live sphere, box, capsule or hull shape.
+    /// @param shape Handle to resolve.
+    /// @param outShape Receives the shape on success; a hull's value borrows the stored hull, valid while a lease is
+    /// held. Unchanged on failure.
+    /// @return Success; InvalidHandle; or Unsupported for a triangle mesh.
+    [[nodiscard]] Status TryGetConvexShape(ShapeHandle shape, ConvexShape& outShape) const noexcept;
+
     /// Whether the store has been initialized.
     [[nodiscard]] LUDUS_INLINE bool IsInitialized() const noexcept
     {

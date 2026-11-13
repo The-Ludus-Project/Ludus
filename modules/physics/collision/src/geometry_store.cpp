@@ -241,4 +241,19 @@ Status GeometryStore::TryGetTriangleMesh(ShapeHandle shape, const TriangleMesh*&
     outMeshOrNull = &recordOrNull->Mesh;
     return Status::Success;
 }
+
+Status GeometryStore::TryGetConvexShape(ShapeHandle shape, ConvexShape& outShape) const noexcept
+{
+    const Slot* recordOrNull = findLive(shape);
+    if (recordOrNull == nullptr)
+    {
+        return Status::InvalidHandle;
+    }
+    if (recordOrNull->Kind == ShapeKind::TriangleMesh)
+    {
+        return Status::Unsupported;
+    }
+    outShape = recordOrNull->Primitive;
+    return Status::Success;
+}
 } // namespace ludus::physics::collision
