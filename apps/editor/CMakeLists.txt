@@ -1158,11 +1158,16 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     set(content_editor_timeout 60)
     set(graph_configuration_timeout 180)
-    if(WIN32 AND LUDUS_ENABLE_ASAN)
-        # The instrumented content scan took 57 seconds on the hosted runner;
-        # keep the process deadlines distinct from the tests' own assertions.
-        set(content_editor_timeout 120)
+    if(LUDUS_ENABLE_ASAN)
+        # With the asynchronous code editor's syntax services, the instrumented render-graph configuration shards
+        # took 184-190 seconds on the hosted macOS runner (105-117 before), and the code editor suite exceeded 30.
+        # Keep the process deadlines distinct from the tests' own assertions.
         set(graph_configuration_timeout 300)
+        set(code_editor_timeout 90)
+    endif()
+    if(WIN32 AND LUDUS_ENABLE_ASAN)
+        # The instrumented content scan took 57 seconds on the hosted runner.
+        set(content_editor_timeout 120)
     endif()
     add_executable(ludus_editor_texture_benchmark EXCLUDE_FROM_ALL
         tests/texture_display_benchmark.cpp src/texture_inspection.cpp)
