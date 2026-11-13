@@ -3,8 +3,9 @@
 `Ludus::PhysicsCollision` (`modules/physics/collision/`) is the first slice of
 physics gate P1 in the [physics systems architecture](physics-systems.md#delivery-gates).
 It exports an immutable static triangle mesh with a bounded bounding volume
-hierarchy (BVH), a closest raycast and a closest translation-only cast of an
-axis-aligned box. It depends only on FoundationBase, FoundationContainers and
+hierarchy (BVH), a closest raycast, a closest translation-only cast of an
+axis-aligned box, and a general closest cast of a posed sphere, box, capsule or
+convex hull. It depends only on FoundationBase, FoundationContainers and
 FoundationMath, contains no third-party physics code, and builds for native
 and Emscripten targets. The installed SDK exports it as a component.
 
@@ -13,7 +14,8 @@ Public headers:
 | Header | Contents |
 | --- | --- |
 | `<ludus/physics/collision/status.h>` | `Status`, the coordinate envelope and `INVALID_TRIANGLE_INDEX` |
-| `<ludus/physics/collision/queries.h>` | Raycast and box-cast inputs, results and policies |
+| `<ludus/physics/collision/convex_shape.h>` | `ConvexShape`, its `Make*Shape` constructors, and `ConvexHull` with its cook source and result |
+| `<ludus/physics/collision/queries.h>` | Raycast, box-cast and convex-cast inputs, results, policies and tolerances |
 | `<ludus/physics/collision/triangle_mesh.h>` | Cook source, settings and result, and `TriangleMesh` |
 
 The Doxygen comments beside each declaration are the API contract. This page
@@ -120,6 +122,100 @@ two-sided for casts.
 - Ordering is smaller fraction, then an initial overlap before a touching
   contact at the same fraction, then the lowest source triangle index.
 
+## Convex shapes
+
+A `ConvexShape` is a value that names one of four kinds, in its own shape
+space and meters:
+
+| Kind | Constructor | Admitted values |
+| --- | --- | --- |
+| Sphere | `MakeSphereShape(radius)` | Radius in (0, `MAX_QUERY_DISTANCE_METERS`] |
+| Box | `MakeBoxShape(halfExtents)` | Each half extent in (0, `MAX_QUERY_DISTANCE_METERS`] |
+| Capsule | `MakeCapsuleShape(halfHeight, radius)` | Segment from -`halfHeight` to +`halfHeight` along shape +Y, rounded by `radius`; half height in [0, `MAX_QUERY_DISTANCE_METERS`], radius positive |
+| Hull | `MakeHullShape(hull)` | A cooked `ConvexHull`, borrowed for each query that uses it |
+
+Queries check these values; a shape is not validated when it is made. The
+total height of a capsule is `2 * (halfHeight + radius)`.
+
+### Cooking a convex hull
+
+```cpp
+ConvexHull hull;
+const ConvexHullCookResult cooked = ConvexHull::TryCook(
+    { .PointsShape = BorrowedView<const Vector3>(points, pointCount) }, hull);
+```
+
+`ConvexHull::TryCook` validates before it allocates:
+
+| Check | Failure |
+| --- | --- |
+| A valid view | `InvalidArgument` |
+| At least one point | `NoGeometry` |
+| At least `MIN_CONVEX_HULL_POINTS` (4) points | `DegenerateShape` |
+| At most `MAX_CONVEX_HULL_POINTS` (256) points | `CapacityExceeded` |
+| Coordinates finite | `NonFiniteInput` with the point |
+| Coordinates within `MAX_COORDINATE_METERS` | `OutOfRange` with the point |
+| Thicker than `MIN_CONVEX_HULL_THICKNESS_RATIO` (1e-6) of its length | `DegenerateShape` |
+
+The flatness test is scale free. Cooking takes the two points farthest apart
+along the widest axis, then the point farthest from their line, then the point
+farthest from the plane of those three. Either distance at or below the ratio
+times the first separation rejects the set: coincident, collinear and coplanar
+points fail. The centroid of those four points is the hull's interior point.
+
+The hull copies its points in one allocation and keeps duplicates and interior
+points. Support queries visit every stored point, which is exact for the
+convex hull of the set, because an interior point never changes the answer.
+The hull builds no face list. Faces, volume and mass properties belong to the
+rigid-body gate. A failed cook, including an allocation failure, leaves the
+output hull unchanged.
+
+### Closest convex cast
+
+`CastConvexClosest` places a shape at `PositionMesh` with `OrientationMesh`
+(shape axes to mesh axes) and translates it by `TranslationMesh` without
+rotating. The orientation's squared norm must be within
+`UNIT_QUATERNION_SQUARED_TOLERANCE` (1e-5) of one; the cast renormalizes it in
+`float64`. Positions, translations and policies follow the box cast.
+
+This is the module's one general convex path: a GJK ray cast (Gino van den
+Bergen, 2004) of the origin along the translation against the Minkowski
+difference of each candidate triangle and the shape. A sphere is cast as a
+point core and a capsule as a segment core, each rounded by its radius; boxes
+and hulls are their own cores. Every core is a polytope, so the support search
+ends in a finite number of steps rather than converging slowly on a curved
+surface. `CastBoxClosest` stays as the exact separating-axis kernel for
+axis-aligned boxes.
+
+Contact is decided with an absolute tolerance,
+`CONVEX_CAST_RELATIVE_TOLERANCE` (1e-9) times the query scale. The scale is
+the largest coordinate of the mesh bounds relative to the starting position,
+plus the largest translation component and the shape's largest posed extent.
+A 20 m scene therefore resolves contact to about 20 nm.
+
+- A triangle **starts overlapping** when the support search proves it deeper
+  than the tolerance inside the shape, or encloses the origin exactly. `Report`
+  returns it at fraction zero with no normal and no witness, as for the box.
+- A triangle is **touching** at the start when its distance is within the
+  tolerance of zero. Moving into it is a hit at fraction zero with a normal;
+  moving away or parallel is a miss. Exact touching of two flat faces can
+  resolve as either touching or overlap.
+- Otherwise the shape **first contacts** a triangle at the smallest fraction
+  where their distance falls to the tolerance, and a contact at or after the
+  end of the translation is a miss.
+- `NormalMesh` is the separating direction at first contact, from the triangle
+  toward the shape. `WitnessPositionMesh` is the point of the triangle closest
+  to the shape there.
+- Ordering, the overlap policies and the zero-translation rule are those of the
+  box cast.
+
+Each triangle may spend at most `MAX_CONVEX_CAST_ITERATIONS` (128) support
+steps; the search also stops as soon as a support point repeats. A triangle
+that exhausts the bound fails the whole query with `Status::NotConverged`. It
+reports a numerical failure and never guesses a contact. No test scene has
+reached it. Because a pruned node is never visited, a failing triangle may
+fail only the traversal that visits it.
+
 ## Determinism and the correctness oracle
 
 Ordering never uses an epsilon comparison: finite values compare strictly, then
@@ -147,15 +243,31 @@ triangle terrain; and the hierarchy against the all-triangles oracle on seeded
 random triangle soups, random terrain and duplicated geometry, with exact
 result equality.
 
+The same executable covers hull cooking, with each failure, scale-free
+flatness and output preservation; analytic drops of a sphere, upright and lying
+capsules, an axis-aligned and a rotated box and a hull onto a floor; agreement
+with the separating-axis box cast on a wall; the touching, overlap and policy
+rules; and every convex-cast validation failure. The convex cast is compared
+with an independent first-contact oracle on seeded random triangle soups, with
+random sizes, orientations and translations for every shape kind. The oracle
+uses exact point-triangle and segment-triangle distances for spheres and
+capsules and the oriented-box separating-axis gap for boxes and box-shaped
+hulls. Translating separation is convex in time, so a golden-section search
+and a bisection find the first contact. Contact distances agree within 1 µm
+(about 4e-8 m observed), and the hierarchy equals the all-triangles traversal
+exactly, also for random point-cloud hulls over terrain.
+
 `ludus_physics_collision_allocation_tests` replaces the global allocation
-functions to fail each cook allocation in turn, cooking into an empty mesh,
-over a cooked mesh and with skipped triangles, and checks that each failure
-reports `AllocationFailure` and leaves the mesh unchanged. It also checks that
-rejected sources and queries allocate nothing. Sanitizer and MSVC builds skip
+functions to fail each cook allocation in turn, cooking meshes into an empty
+mesh, over a cooked mesh and with skipped triangles, and hulls into an empty
+and over a cooked hull. It checks that each failure reports
+`AllocationFailure` and leaves the output unchanged, and that rejected sources
+and every query, including convex casts of each shape kind, allocate nothing. Sanitizer and MSVC builds skip
 this executable because their runtimes replace the same functions.
 
 The installed SDK consumer (`tests/sdk_consumer/collision.cpp`) links
-`Ludus::PhysicsCollision`, cooks a quad and runs a raycast and a box cast.
+`Ludus::PhysicsCollision`, cooks a quad and a tetrahedral hull, and runs a
+raycast, a box cast and convex casts of a sphere and the hull.
 
 ## Attribution
 
@@ -172,6 +284,18 @@ The installed SDK consumer (`tests/sdk_consumer/collision.cpp`) links
   Geometric Tools, sections 4 and 6: the time intervals on the 13 separating
   axes of a moving box and a triangle. The sweep and the hierarchy partition
   are lifted from the editor's Explore as Player preview.
+- Gino van den Bergen, *Ray Casting against General Convex Objects with
+  Application to Continuous Collision Detection*, 2004, and *Collision
+  Detection in Interactive 3D Environments*, Morgan Kaufmann, 2003, section
+  4.3: the GJK ray cast that advances by the separating-plane distance while it
+  refines the simplex, and casting rounded shapes as a core plus a margin.
+  Ludus adds the initial-overlap classification, the scale-aware tolerance and
+  the bounded, reported failure.
+- Christer Ericson, *Real-Time Collision Detection*, Morgan Kaufmann, 2005,
+  sections 5.1.2, 5.1.5 and 5.1.6: the closest points on a segment, triangle
+  and tetrahedron that reduce the GJK simplex, here with explicit fallbacks for
+  degenerate simplices. Section 5.1.9 supplies the test oracle's
+  segment-segment distance.
 
 ## Explore as Player
 
@@ -205,8 +329,9 @@ envelope and a spawn outside it as separate failures that name the limit.
 
 ## Remaining P1 work
 
-This slice is not the whole gate. Still to come: primitive and convex-hull
-shapes and the general convex cast; shape, collider and world identities;
-filters; the geometry store and protected read views; overlap queries and
-`Any`/`All` query modes with completion semantics; query debug overlays; and
-Emscripten SDK consumer evidence.
+This slice is not the whole gate. Still to come: shape, collider and world
+identities; filters; the geometry store, with retained shape leases in place of
+borrowed hulls, and protected read views; overlap queries and `Any`/`All` query
+modes with completion semantics; query debug overlays; and Emscripten SDK
+consumer evidence. Hull faces, volume validation from faces and mass
+properties belong to the rigid-body gate.

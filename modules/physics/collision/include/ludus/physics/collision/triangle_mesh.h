@@ -126,6 +126,18 @@ public:
     /// validation failure.
     [[nodiscard]] Status CastBoxClosest(const BoxCastInput& input, BoxCastResult& outResult) const noexcept;
 
+    /// @brief Find the first triangle a posed convex shape contacts while translating.
+    ///
+    /// The general convex path: a GJK ray cast on the Minkowski difference of the shape and each candidate triangle,
+    /// with spheres and capsules cast as a point or segment core rounded by their radius. Triangles are two-sided.
+    /// CastBoxClosest remains the exact separating-axis kernel for axis-aligned boxes; this cast agrees with it
+    /// within the contact tolerance documented on ConvexCastResult.
+    /// @param input Shape, pose, translation, overlap policy and traversal mode; see ConvexCastInput.
+    /// @param outResult Receives the hit, or an explicit miss, on Success. Unchanged on any failure.
+    /// @return Success, InitialOverlap under InitialOverlapPolicy::Reject, NoGeometry for an uncooked mesh,
+    /// NotConverged when one triangle exhausts MAX_CONVEX_CAST_ITERATIONS, or the validation failure.
+    [[nodiscard]] Status CastConvexClosest(const ConvexCastInput& input, ConvexCastResult& outResult) const noexcept;
+
     /// Whether the mesh holds cooked geometry.
     [[nodiscard]] LUDUS_INLINE bool IsCooked() const noexcept
     {
@@ -178,6 +190,7 @@ private:
     friend class TriangleMeshBuilder;
     friend class TriangleMeshRaycaster;
     friend class TriangleMeshBoxCaster;
+    friend class TriangleMeshConvexCaster;
 
     foundation::Array<Triangle> mTriangles;
     foundation::Array<Node> mNodes;

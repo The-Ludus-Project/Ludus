@@ -9,13 +9,30 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/physics/collision/convex_shape.h>
 #include <ludus/physics/collision/status.h>
 
 namespace ludus::physics::collision
 {
 /// Largest admitted deviation of a ray direction's squared length from one.
 inline constexpr float64 UNIT_DIRECTION_SQUARED_TOLERANCE = 1.0e-6;
+
+/// Largest admitted deviation of a cast orientation's squared norm from one. A float32 quaternion normalized in
+/// float32 deviates by about 1e-7; the cast renormalizes the admitted value in float64.
+inline constexpr float64 UNIT_QUATERNION_SQUARED_TOLERANCE = 1.0e-5;
+
+/// @brief Convex cast contact tolerance relative to the query's scale.
+///
+/// The scale is the largest coordinate magnitude, relative to the shape's starting position, of the mesh bounds, plus
+/// the largest translation component and the shape's largest posed half extent. Shapes closer than the tolerance
+/// count as in contact; see ConvexCastResult.
+inline constexpr float64 CONVEX_CAST_RELATIVE_TOLERANCE = 1.0e-9;
+
+/// Most support iterations a convex cast spends on one triangle before failing with Status::NotConverged. Polytope
+/// cores converge in finitely many steps; the bound only stops numerical cycling.
+inline constexpr uint32 MAX_CONVEX_CAST_ITERATIONS = 128;
 
 /// @brief Which triangle faces a ray may hit.
 ///
@@ -108,6 +125,48 @@ struct BoxCastResult final
     bool HasNormal = false;             ///< Whether NormalMesh is valid; false for an initial overlap.
     /// Unit separating normal at first contact, pointing from the triangle toward the box. Zero unless HasNormal.
     foundation::math::Vector3d NormalMesh{};
+    uint32 TriangleIndex = INVALID_TRIANGLE_INDEX; ///< Source triangle index (index-buffer offset divided by 3).
+};
+
+/// @brief Closest translation-only cast of a posed convex shape in mesh space.
+///
+/// The shape is placed by `PositionMesh` and `OrientationMesh` (shape space to mesh space) and translates by
+/// `TranslationMesh` without rotating. Admitted values: a valid ConvexShape (see its documentation); a finite position
+/// with components within MAX_COORDINATE_METERS; a finite orientation whose squared norm is within
+/// UNIT_QUATERNION_SQUARED_TOLERANCE of one; translation components within MAX_QUERY_DISTANCE_METERS. A zero
+/// translation performs only the selected initial-overlap test. Triangles are two-sided for casts.
+struct ConvexCastInput final
+{
+    ConvexShape Shape{};                            ///< Shape to cast; a hull is borrowed for this call.
+    foundation::math::Vector3d PositionMesh{};      ///< Shape origin at the start of the cast, meters.
+    foundation::math::Quaternion OrientationMesh{}; ///< Rotation from shape axes to mesh axes.
+    foundation::math::Vector3d TranslationMesh{};   ///< Full cast displacement, meters.
+    InitialOverlapPolicy OverlapPolicy = InitialOverlapPolicy::Report; ///< Treatment of starting overlaps.
+    QueryTraversal Traversal = QueryTraversal::Hierarchy;              ///< Hierarchy or brute-force oracle traversal.
+};
+
+/// @brief Closest convex cast answer.
+///
+/// On a miss `HasHit` is false and every other field keeps its default value. Contact is decided with the absolute
+/// tolerance `CONVEX_CAST_RELATIVE_TOLERANCE` times the query scale: a triangle starts overlapping when it is
+/// provably deeper than the tolerance inside the shape (or the support search encloses the origin exactly), it is
+/// touching when its distance lies within the tolerance of zero, and a translating shape first contacts it at the
+/// smallest fraction where the distance falls to the tolerance. Touching at the start and moving into the triangle
+/// is a hit at fraction zero; moving away or parallel is a miss. A contact that would begin at or after the end of the
+/// translation is a miss. Ordering matches BoxCastResult: smaller fraction, then an initial overlap before a touching
+/// contact, then the lowest source triangle index.
+struct ConvexCastResult final
+{
+    bool HasHit = false;                ///< Whether the shape contacts or overlaps an admitted triangle.
+    float64 Fraction = 0.0;             ///< Fraction of the translation in [0, 1) at first contact.
+    float64 DistanceMeters = 0.0;       ///< `Fraction * Length(TranslationMesh)`.
+    bool HasStartedOverlapping = false; ///< The shape overlapped the triangle at its starting pose.
+    bool HasNormal = false;             ///< Whether NormalMesh is valid; false for an initial overlap.
+    /// Unit separating normal at first contact, pointing from the triangle toward the shape. Zero unless HasNormal.
+    foundation::math::Vector3d NormalMesh{};
+    bool HasWitness = false; ///< Whether WitnessPositionMesh is valid; false for an initial overlap.
+    /// Point on the hit triangle closest to the shape at first contact, in mesh space. Zero unless HasWitness.
+    foundation::math::Vector3d WitnessPositionMesh{};
     uint32 TriangleIndex = INVALID_TRIANGLE_INDEX; ///< Source triangle index (index-buffer offset divided by 3).
 };
 } // namespace ludus::physics::collision
