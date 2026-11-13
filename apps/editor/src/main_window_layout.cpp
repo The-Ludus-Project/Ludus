@@ -364,10 +364,11 @@ void MainWindow::BuildUi()
     // nothing of its own to show focus on.
     World_->setFocusPolicy(Qt::ClickFocus);
     // The World reports edits in the window's status bar while it is the shown document.
-    connect(World_, &WorldWorkspace::StatusMessage, this, [this](const QString& message) {
+    // A failure stays until another message replaces it, so its repair remains readable.
+    connect(World_, &WorldWorkspace::StatusMessage, this, [this](const QString& message, bool isFailure) {
         if (World_->isVisible() == true)
         {
-            statusBar()->showMessage(message, WORLD_STATUS_MESSAGE_MILLISECONDS);
+            statusBar()->showMessage(message, isFailure == true ? 0 : WORLD_STATUS_MESSAGE_MILLISECONDS);
         }
     });
     Scripts_ = new ScriptWorkspace(Controller_, mDocuments);

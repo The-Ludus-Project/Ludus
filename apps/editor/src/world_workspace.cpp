@@ -743,6 +743,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         Q_EMIT PreviewStarting();
     });
     connect(Render_, &RenderPanel::TintRequested, this, &WorldWorkspace::PickTint);
+    // The viewport's pauses, Play states and failures reach the window's status bar like the World's own messages.
+    connect(Render_, &RenderPanel::StatusAnnounced, this, &WorldWorkspace::StatusMessage);
     connect(Render_, &RenderPanel::PlayStateChanged, this, [this]() {
         // The game's images were refused after launch: Play ended, and the offer stands.
         if (Render_->IsPlaying() == false && Render_->GetPlayUnavailableReason().isEmpty() == false)
@@ -3522,7 +3524,7 @@ void WorldWorkspace::Changed(const QString& message)
             (RecoveryFailed_
                  ? QStringLiteral(" Recovery could not be written; Save World is required to preserve this edit.")
                  : QString()));
-        Q_EMIT StatusMessage(Status_->text());
+        Q_EMIT StatusMessage(Status_->text(), false);
     }
     const bool isBusy = SceneBusy();
     if (Name_ != nullptr)

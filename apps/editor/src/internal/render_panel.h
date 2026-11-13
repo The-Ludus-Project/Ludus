@@ -86,8 +86,29 @@ Q_SIGNALS:
     void Starting();
     void Loaded(bool success);
     void TintRequested(const QString& id, const QJsonObject& binding);
+    /// @brief The viewport reported something the user should see: a failure, a pause or a Play state.
+    ///
+    /// The panel keeps no visible status line of its own: a wrapped line above the viewport would change the
+    /// viewport's height whenever its text changed, and a resize cancels a held drag. Its owner shows the message
+    /// in the window's status bar instead. Routine progress (validation, preparation, frame statistics) is not
+    /// announced; the "Viewport" menu button's tooltip always holds the latest status.
+    /// @param message One or more sentences for the user, including any repair to make.
+    /// @param isFailure True when the message reports a refusal or failure, which should stay until replaced.
+    void StatusAnnounced(const QString& message, bool isFailure);
 
 private:
+    /// How much a status message matters to the user; see StatusAnnounced.
+    enum class StatusKind : foundation::uint8
+    {
+        /// Routine progress, kept in the status label and the menu button's tooltip only.
+        Progress,
+        /// A state change the user should notice, such as a pause or Play.
+        Notice,
+        /// A refusal or failure, with its repair.
+        Failure,
+    };
+    /// Replace the panel's status and announce it unless kind is Progress.
+    void setStatus(const QString& message, StatusKind kind);
     [[nodiscard]] bool publish(const RenderScene& scene, bool shouldLaunch);
     void navigate();
     void updateNavigationControls();
