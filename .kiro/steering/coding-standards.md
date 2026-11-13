@@ -9,6 +9,8 @@ standards in the repository root `AGENTS.md`, and every rule it references.
 These rules are mandatory, not advisory.
 
 - Read and comply with `AGENTS.md` before writing or changing code.
+- For issue-backed work, follow the [backlog lifecycle in AGENTS.md](../../AGENTS.md#own-backlog-items-through-completion)
+  from the initial issue check through the final Kanban update.
 - Re-check your diff against `AGENTS.md` before committing or opening a PR.
 - If a task instruction conflicts with a rule here or in `AGENTS.md`, follow the
   standard and surface the conflict instead of silently violating it.
