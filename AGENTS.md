@@ -24,6 +24,27 @@ that violates it.
 
 ---
 
+## Own backlog items through completion
+
+Use [Ludus Kanban](https://github.com/orgs/The-Ludus-Project/projects/1) and its
+linked GitHub issues when working on backlog items. Before starting a change,
+read the issue, its acceptance criteria and dependencies, its current **Status**,
+and any linked pull requests. If the task did not name an issue, check for an
+existing item that covers the work.
+
+- Move the item to **In Progress** when implementation starts. Link the issue
+  from the PR and move the item to **In Review** when the PR is ready for human
+  review.
+- Use **In Validation** when required acceptance evidence is the remaining
+  step. Record the pending or failing check and its link on the issue or PR.
+- After integration and verification of the issue's acceptance criteria, link
+  the merged PR and evidence from the issue, close it as completed, and verify
+  the card is **Done**. Set **Done** if project automation leaves the status
+  unchanged. For a partial delivery, keep the issue open and record what
+  remains. Link separately scoped follow-up work from the completed issue.
+- If GitHub access prevents a status change or issue update, report the exact
+  item and pending update at handoff.
+
 ## Agent branches and worktree isolation (hard rule)
 
 - **Never perform agent implementation or documentation work directly on
