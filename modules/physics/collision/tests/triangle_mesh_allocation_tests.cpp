@@ -439,7 +439,7 @@ TEST_CASE("Collider changes and world queries allocate nothing", "[collision][al
     // Releasing the last lease frees the mesh's storage: frees are expected, allocations are not.
 }
 
-TEST_CASE("Convex colliders and overlap queries allocate nothing", "[collision][alloc][world]")
+TEST_CASE("Convex colliders, overlap queries and Any/All modes allocate nothing", "[collision][alloc][world]")
 {
     GeometryStore store;
     REQUIRE(store.TryInitialize({ .MaxShapes = 4 }) == Status::Success);
@@ -490,6 +490,31 @@ TEST_CASE("Convex colliders and overlap queries allocate nothing", "[collision][
                                                                .TranslationWorld = {0.0, -3.0, 0.0},
                                                            },
                                                            cast) == Status::Success;
+            StaticArray<WorldRaycastResult, RECORD_COUNT> rayHits{};
+            StaticArray<WorldConvexCastResult, RECORD_COUNT> castHits{};
+            WorldHitsResult hits;
+            WorldRaycastResult anyRay;
+            WorldConvexCastResult anyCast;
+            const WorldRaycastInput across
+            {
+                .OriginWorld = {offset - 1.0, 0.2, 0.1},
+                .DirectionWorld = {1.0, 0.0, 0.0},
+                .MaxDistanceMeters = 5.0,
+            };
+            const WorldConvexCastInput falling
+            {
+                .Shape = MakeCapsuleShape(0.3, 0.2),
+                .PositionWorld = {offset, 2.0, 0.2},
+                .TranslationWorld = {0.0, -3.0, 0.0},
+            };
+            isEverySuccess =
+                isEverySuccess == true && view.RaycastAny(across, anyRay) == Status::Success &&
+                view.RaycastAll(across, BorrowedView<WorldRaycastResult>(rayHits.GetData(), RECORD_COUNT), hits) ==
+                    Status::Success &&
+                view.CastConvexAny(falling, anyCast) == Status::Success &&
+                view.CastConvexAll(falling,
+                                   BorrowedView<WorldConvexCastResult>(castHits.GetData(), RECORD_COUNT),
+                                   hits) == Status::Success;
             WorldOverlapResult overlap;
             isEverySuccess =
                 isEverySuccess == true && view.Overlap(

@@ -217,6 +217,21 @@ struct WorldOverlapResult final
     bool IsComplete = true;  ///< Whether WrittenCount equals OverlapCount.
 };
 
+/// @brief Completion of a ray or convex-cast query that records every hit collider.
+///
+/// An All query reports each reported collider it hits once, with that collider's closest hit. It writes records
+/// until the buffer is full and keeps counting, then sorts the written records by distance or fraction (an initial
+/// overlap first), collider slot, generation and triangle. When the buffer was too small the written records are the
+/// first hits found in slot order, sorted: a subset, not the nearest ones. Retry with HitCount records for all of
+/// them.
+struct WorldHitsResult final
+{
+    bool HasHit = false;    ///< Whether any reported collider was hit.
+    usize HitCount = 0;     ///< Hit colliders found.
+    usize WrittenCount = 0; ///< Records written to the buffer, a sorted prefix of the buffer.
+    bool IsComplete = true; ///< Whether WrittenCount equals HitCount.
+};
+
 class CollisionWorld;
 
 /// @brief Scoped, protected read access to a CollisionWorld.
@@ -264,6 +279,26 @@ public:
     /// an invalid or oversized ignored-collider view.
     [[nodiscard]] Status RaycastClosest(const WorldRaycastInput& input, WorldRaycastResult& outResult) const noexcept;
 
+    /// @brief Find any reported collider triangle or solid along a ray; stops at the first one found.
+    ///
+    /// The answer is a genuine hit within the limit but neither the nearest nor a stable choice: a mesh collider
+    /// reports the first hit its traversal finds. A miss is certified only after every candidate was searched, which
+    /// is always the case when the result is a miss.
+    /// @param input As for RaycastClosest.
+    /// @param outResult Receives a hit or an explicit miss on Success; unchanged on failure.
+    /// @return As for RaycastClosest.
+    [[nodiscard]] Status RaycastAny(const WorldRaycastInput& input, WorldRaycastResult& outResult) const noexcept;
+
+    /// @brief Find every reported collider a ray hits, each at its closest hit.
+    /// @param input As for RaycastClosest.
+    /// @param hitBuffer Caller storage for the records, borrowed for this call; may be empty.
+    /// @param outResult Receives the counts and completion on Success (see WorldHitsResult); unchanged on failure.
+    /// @return As for RaycastClosest, plus InvalidArgument for an invalid buffer view. After a failure the buffer's
+    /// contents are unspecified.
+    [[nodiscard]] Status RaycastAll(const WorldRaycastInput& input,
+                                    foundation::BorrowedView<WorldRaycastResult> hitBuffer,
+                                    WorldHitsResult& outResult) const noexcept;
+
     /// @brief Find the first reported collider a posed convex shape contacts while translating.
     /// @param input Shape, pose, translation, overlap policy, filter and traversal, in world space.
     /// @param outResult Receives the hit or an explicit miss on Success; unchanged on failure.
@@ -273,6 +308,27 @@ public:
     /// envelope where its path enters that collider's bounds.
     [[nodiscard]] Status CastConvexClosest(const WorldConvexCastInput& input,
                                            WorldConvexCastResult& outResult) const noexcept;
+
+    /// @brief Find any reported collider a posed convex shape contacts while translating; stops at the first found.
+    ///
+    /// The answer follows the contact rules of CastConvexClosest but is neither the earliest contact nor a stable
+    /// choice. Under InitialOverlapPolicy::Reject every candidate is still searched, because any overlap must fail the
+    /// query.
+    /// @param input As for CastConvexClosest.
+    /// @param outResult Receives a hit or an explicit miss on Success; unchanged on failure.
+    /// @return As for CastConvexClosest.
+    [[nodiscard]] Status CastConvexAny(const WorldConvexCastInput& input,
+                                       WorldConvexCastResult& outResult) const noexcept;
+
+    /// @brief Find every reported collider a posed convex shape contacts while translating, each at its first contact.
+    /// @param input As for CastConvexClosest.
+    /// @param hitBuffer Caller storage for the records, borrowed for this call; may be empty.
+    /// @param outResult Receives the counts and completion on Success (see WorldHitsResult); unchanged on failure.
+    /// @return As for CastConvexClosest, plus InvalidArgument for an invalid buffer view. After a failure the
+    /// buffer's contents are unspecified.
+    [[nodiscard]] Status CastConvexAll(const WorldConvexCastInput& input,
+                                       foundation::BorrowedView<WorldConvexCastResult> hitBuffer,
+                                       WorldHitsResult& outResult) const noexcept;
 
     /// @brief Find the reported colliders a stationary posed convex shape overlaps.
     /// @param input Shape, pose, mode, filter and traversal, in world space.

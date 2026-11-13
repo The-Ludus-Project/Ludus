@@ -7,6 +7,7 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/identity/handle.hpp>
 #include <ludus/foundation/identity/lifetime.hpp>
@@ -181,14 +182,30 @@ bool IsBetter(const WorldCandidate& candidate, const WorldCandidate& best) noexc
 }
 } // namespace
 
+/// Which hits a ray or cast query keeps.
+enum class CollectMode : uint8
+{
+    Closest, ///< The single best hit.
+    Any,     ///< The first hit found.
+    All,     ///< Every hit collider, each at its own closest hit.
+};
+
 /// World query implementation with access to collider slots.
 class CollisionWorldQueries final
 {
 public:
-    static Status
-    Raycast(const CollisionWorld& world, const WorldRaycastInput& input, WorldRaycastResult& outResult) noexcept;
-    static Status
-    Cast(const CollisionWorld& world, const WorldConvexCastInput& input, WorldConvexCastResult& outResult) noexcept;
+    static Status Raycast(const CollisionWorld& world,
+                          const WorldRaycastInput& input,
+                          CollectMode mode,
+                          foundation::BorrowedView<WorldRaycastResult> hitBuffer,
+                          WorldRaycastResult& outResult,
+                          WorldHitsResult& outHits) noexcept;
+    static Status Cast(const CollisionWorld& world,
+                       const WorldConvexCastInput& input,
+                       CollectMode mode,
+                       foundation::BorrowedView<WorldConvexCastResult> hitBuffer,
+                       WorldConvexCastResult& outResult,
+                       WorldHitsResult& outHits) noexcept;
     static Status Overlap(const CollisionWorld& world,
                           const WorldOverlapInput& input,
                           foundation::BorrowedView<ColliderOverlap> overlapBuffer,
@@ -196,6 +213,17 @@ public:
 
 private:
     using Slot = CollisionWorld::Slot;
+
+    /// The world-space answer for one collider's local ray hit.
+    static WorldRaycastResult makeRayResult(const CollisionWorld& world,
+                                            const WorldRaycastInput& input,
+                                            const WorldCandidate& candidate,
+                                            const RaycastResult& local) noexcept;
+    /// The world-space answer for one collider's local cast hit.
+    static WorldConvexCastResult makeCastResult(const CollisionWorld& world,
+                                                const WorldConvexCastInput& input,
+                                                const WorldCandidate& candidate,
+                                                const ConvexCastResult& local) noexcept;
 
     /// Raycast a convex collider in its local frame as a cast of a point, with RaycastResult semantics.
     static Status raycastConvex(const Slot& slot, const RaycastInput& rayLocal, RaycastResult& outResult) noexcept;
@@ -286,9 +314,32 @@ bool CollisionWorldQueries::isReported(const CollisionWorld& world,
     return true;
 }
 
+WorldRaycastResult CollisionWorldQueries::makeRayResult(const CollisionWorld& world,
+                                                        const WorldRaycastInput& input,
+                                                        const WorldCandidate& candidate,
+                                                        const RaycastResult& local) noexcept
+{
+    const Slot& hit = world.mSlots[candidate.Slot];
+    WorldRaycastResult result;
+    result.HasHit = true;
+    result.DistanceMeters = candidate.Key;
+    result.PositionWorld = input.OriginWorld + input.DirectionWorld * candidate.Key;
+    // A ray starting inside a convex collider reports no normal (raycastConvex leaves it zero).
+    result.HasNormal = math::LengthSquared(local.NormalMesh) > 0.0;
+    result.NormalWorld = toWorldDirection(hit, local.NormalMesh);
+    result.IsFrontFace = local.IsFrontFace;
+    result.TriangleIndex = local.TriangleIndex;
+    result.Collider = { .Owner = world.mOwner, .Slot = candidate.Slot, .Generation = candidate.Generation };
+    result.Binding = hit.Description.Binding;
+    return result;
+}
+
 Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
                                       const WorldRaycastInput& input,
-                                      WorldRaycastResult& outResult) noexcept
+                                      CollectMode mode,
+                                      foundation::BorrowedView<WorldRaycastResult> hitBuffer,
+                                      WorldRaycastResult& outResult,
+                                      WorldHitsResult& outHits) noexcept
 {
     // Validate in world space with the triangle-mesh rules, so failures match RaycastClosest.
     const RaycastInput worldRay
@@ -304,7 +355,7 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
     {
         return validation;
     }
-    if (IsFilterValid(input.Filter) == false)
+    if (IsFilterValid(input.Filter) == false || hitBuffer.IsValid() == false)
     {
         return Status::InvalidArgument;
     }
@@ -314,6 +365,7 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
     const Box path = MakeSweptBox(input.OriginWorld, endWorld, {slack, slack, slack});
     WorldCandidate best;
     RaycastResult bestLocal;
+    WorldHitsResult hits;
     for (uint32 slotIndex = 0; slotIndex < world.mSlots.GetSize(); ++slotIndex)
     {
         if (isReported(world, slotIndex, input.Filter) == false)
@@ -352,8 +404,16 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
             .Traversal = input.Traversal,
         };
         RaycastResult local;
-        const Status status = slot.MeshOrNull != nullptr ? slot.MeshOrNull->RaycastClosest(localRay, local)
-                                                         : raycastConvex(slot, localRay, local);
+        Status status = Status::Success;
+        if (slot.MeshOrNull == nullptr)
+        {
+            status = raycastConvex(slot, localRay, local);
+        }
+        else
+        {
+            status = mode == CollectMode::Any ? internal::RaycastAnyHit(*slot.MeshOrNull, localRay, local)
+                                              : slot.MeshOrNull->RaycastClosest(localRay, local);
+        }
         if (status != Status::Success)
         {
             return status;
@@ -370,36 +430,82 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
             .Generation = slot.Generation,
             .TriangleIndex = local.TriangleIndex,
         };
-        if (IsBetter(candidate, best) == true)
+        if (mode == CollectMode::All)
+        {
+            ++hits.HitCount;
+            if (hits.WrittenCount < hitBuffer.GetSize())
+            {
+                hitBuffer[hits.WrittenCount++] = makeRayResult(world, input, candidate, local);
+            }
+            continue;
+        }
+        if (mode == CollectMode::Any || IsBetter(candidate, best) == true)
         {
             best = candidate;
             bestLocal = local;
         }
+        if (mode == CollectMode::Any)
+        {
+            break;
+        }
     }
-    if (best.HasHit == false)
+    if (mode == CollectMode::All)
     {
-        outResult = {};
+        foundation::Sort(hitBuffer.GetDataOrNull(),
+                         hits.WrittenCount,
+                         [](const WorldRaycastResult& first, const WorldRaycastResult& second) {
+                             if (first.DistanceMeters != second.DistanceMeters)
+                             {
+                                 return first.DistanceMeters < second.DistanceMeters;
+                             }
+                             if (first.Collider.Slot != second.Collider.Slot)
+                             {
+                                 return first.Collider.Slot < second.Collider.Slot;
+                             }
+                             return first.Collider.Generation < second.Collider.Generation;
+                         });
+        hits.HasHit = hits.HitCount > 0;
+        hits.IsComplete = hits.WrittenCount == hits.HitCount;
+        outHits = hits;
         return Status::Success;
     }
-    const Slot& hit = world.mSlots[best.Slot];
-    WorldRaycastResult result;
-    result.HasHit = true;
-    result.DistanceMeters = best.Key;
-    result.PositionWorld = input.OriginWorld + input.DirectionWorld * best.Key;
-    // A ray starting inside a convex collider reports no normal (raycastConvex leaves it zero).
-    result.HasNormal = math::LengthSquared(bestLocal.NormalMesh) > 0.0;
-    result.NormalWorld = toWorldDirection(hit, bestLocal.NormalMesh);
-    result.IsFrontFace = bestLocal.IsFrontFace;
-    result.TriangleIndex = bestLocal.TriangleIndex;
-    result.Collider = { .Owner = world.mOwner, .Slot = best.Slot, .Generation = best.Generation };
-    result.Binding = hit.Description.Binding;
-    outResult = result;
+    outResult = best.HasHit == true ? makeRayResult(world, input, best, bestLocal) : WorldRaycastResult{};
     return Status::Success;
+}
+
+WorldConvexCastResult CollisionWorldQueries::makeCastResult(const CollisionWorld& world,
+                                                            const WorldConvexCastInput& input,
+                                                            const WorldCandidate& candidate,
+                                                            const ConvexCastResult& local) noexcept
+{
+    const Slot& hit = world.mSlots[candidate.Slot];
+    WorldConvexCastResult result;
+    result.HasHit = true;
+    result.Fraction = candidate.Key;
+    result.DistanceMeters = candidate.Key * math::Length(input.TranslationWorld);
+    result.HasStartedOverlapping = candidate.IsInitiallyOverlapping;
+    result.HasNormal = local.HasNormal;
+    if (result.HasNormal == true)
+    {
+        result.NormalWorld = toWorldDirection(hit, local.NormalMesh);
+    }
+    result.HasWitness = local.HasWitness;
+    if (result.HasWitness == true)
+    {
+        result.WitnessPositionWorld = toWorldPoint(hit, local.WitnessPositionMesh);
+    }
+    result.TriangleIndex = local.TriangleIndex;
+    result.Collider = { .Owner = world.mOwner, .Slot = candidate.Slot, .Generation = candidate.Generation };
+    result.Binding = hit.Description.Binding;
+    return result;
 }
 
 Status CollisionWorldQueries::Cast(const CollisionWorld& world,
                                    const WorldConvexCastInput& input,
-                                   WorldConvexCastResult& outResult) noexcept
+                                   CollectMode mode,
+                                   foundation::BorrowedView<WorldConvexCastResult> hitBuffer,
+                                   WorldConvexCastResult& outResult,
+                                   WorldHitsResult& outHits) noexcept
 {
     const ConvexCastInput worldCast
     {
@@ -415,7 +521,7 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
     {
         return validation;
     }
-    if (IsFilterValid(input.Filter) == false)
+    if (IsFilterValid(input.Filter) == false || hitBuffer.IsValid() == false)
     {
         return Status::InvalidArgument;
     }
@@ -431,6 +537,9 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
     const float64 shapeExtent = math::Length(boundsWorld.HalfExtentsMesh) + math::Length(boundsWorld.CenterMesh);
     WorldCandidate best;
     ConvexCastResult bestLocal;
+    WorldHitsResult hits;
+    // Under Reject every candidate must be searched for an overlap, so Any keeps its first hit and continues.
+    const bool isAnyStoppingEarly = mode == CollectMode::Any && input.OverlapPolicy != InitialOverlapPolicy::Reject;
     for (uint32 slotIndex = 0; slotIndex < world.mSlots.GetSize(); ++slotIndex)
     {
         if (isReported(world, slotIndex, input.Filter) == false)
@@ -490,6 +599,7 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
             .TranslationMesh = translationLocal,
             .OverlapPolicy = input.OverlapPolicy,
             .Traversal = input.Traversal,
+            .ShouldStopAtFirstHit = mode == CollectMode::Any,
         };
         ConvexCastResult local;
         const Status status =
@@ -513,37 +623,51 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
             .Generation = slot.Generation,
             .TriangleIndex = local.TriangleIndex,
         };
-        if (IsBetter(candidate, best) == true)
+        if (mode == CollectMode::All)
+        {
+            ++hits.HitCount;
+            if (hits.WrittenCount < hitBuffer.GetSize())
+            {
+                hitBuffer[hits.WrittenCount++] = makeCastResult(world, input, candidate, local);
+            }
+            continue;
+        }
+        const bool isFirstForAny = mode == CollectMode::Any && best.HasHit == false;
+        if (isFirstForAny == true || (mode == CollectMode::Closest && IsBetter(candidate, best) == true))
         {
             best = candidate;
             bestLocal = local;
         }
+        if (isAnyStoppingEarly == true)
+        {
+            break;
+        }
     }
-    if (best.HasHit == false)
+    if (mode == CollectMode::All)
     {
-        outResult = {};
+        foundation::Sort(hitBuffer.GetDataOrNull(),
+                         hits.WrittenCount,
+                         [](const WorldConvexCastResult& first, const WorldConvexCastResult& second) {
+                             if (first.Fraction != second.Fraction)
+                             {
+                                 return first.Fraction < second.Fraction;
+                             }
+                             if (first.HasStartedOverlapping != second.HasStartedOverlapping)
+                             {
+                                 return first.HasStartedOverlapping == true;
+                             }
+                             if (first.Collider.Slot != second.Collider.Slot)
+                             {
+                                 return first.Collider.Slot < second.Collider.Slot;
+                             }
+                             return first.Collider.Generation < second.Collider.Generation;
+                         });
+        hits.HasHit = hits.HitCount > 0;
+        hits.IsComplete = hits.WrittenCount == hits.HitCount;
+        outHits = hits;
         return Status::Success;
     }
-    const Slot& hit = world.mSlots[best.Slot];
-    WorldConvexCastResult result;
-    result.HasHit = true;
-    result.Fraction = best.Key;
-    result.DistanceMeters = best.Key * translationLength;
-    result.HasStartedOverlapping = best.IsInitiallyOverlapping;
-    result.HasNormal = bestLocal.HasNormal;
-    if (result.HasNormal == true)
-    {
-        result.NormalWorld = toWorldDirection(hit, bestLocal.NormalMesh);
-    }
-    result.HasWitness = bestLocal.HasWitness;
-    if (result.HasWitness == true)
-    {
-        result.WitnessPositionWorld = toWorldPoint(hit, bestLocal.WitnessPositionMesh);
-    }
-    result.TriangleIndex = bestLocal.TriangleIndex;
-    result.Collider = { .Owner = world.mOwner, .Slot = best.Slot, .Generation = best.Generation };
-    result.Binding = hit.Description.Binding;
-    outResult = result;
+    outResult = best.HasHit == true ? makeCastResult(world, input, best, bestLocal) : WorldConvexCastResult{};
     return Status::Success;
 }
 
@@ -706,7 +830,30 @@ Status CollisionReadView::RaycastClosest(const WorldRaycastInput& input, WorldRa
     {
         return Status::InvalidPhase;
     }
-    return CollisionWorldQueries::Raycast(*mWorldOrNull, input, outResult);
+    WorldHitsResult unused;
+    return CollisionWorldQueries::Raycast(*mWorldOrNull, input, CollectMode::Closest, {}, outResult, unused);
+}
+
+Status CollisionReadView::RaycastAny(const WorldRaycastInput& input, WorldRaycastResult& outResult) const noexcept
+{
+    if (mWorldOrNull == nullptr)
+    {
+        return Status::InvalidPhase;
+    }
+    WorldHitsResult unused;
+    return CollisionWorldQueries::Raycast(*mWorldOrNull, input, CollectMode::Any, {}, outResult, unused);
+}
+
+Status CollisionReadView::RaycastAll(const WorldRaycastInput& input,
+                                     foundation::BorrowedView<WorldRaycastResult> hitBuffer,
+                                     WorldHitsResult& outResult) const noexcept
+{
+    if (mWorldOrNull == nullptr)
+    {
+        return Status::InvalidPhase;
+    }
+    WorldRaycastResult unused;
+    return CollisionWorldQueries::Raycast(*mWorldOrNull, input, CollectMode::All, hitBuffer, unused, outResult);
 }
 
 Status CollisionReadView::Overlap(const WorldOverlapInput& input,
@@ -727,7 +874,31 @@ Status CollisionReadView::CastConvexClosest(const WorldConvexCastInput& input,
     {
         return Status::InvalidPhase;
     }
-    return CollisionWorldQueries::Cast(*mWorldOrNull, input, outResult);
+    WorldHitsResult unused;
+    return CollisionWorldQueries::Cast(*mWorldOrNull, input, CollectMode::Closest, {}, outResult, unused);
+}
+
+Status CollisionReadView::CastConvexAny(const WorldConvexCastInput& input,
+                                        WorldConvexCastResult& outResult) const noexcept
+{
+    if (mWorldOrNull == nullptr)
+    {
+        return Status::InvalidPhase;
+    }
+    WorldHitsResult unused;
+    return CollisionWorldQueries::Cast(*mWorldOrNull, input, CollectMode::Any, {}, outResult, unused);
+}
+
+Status CollisionReadView::CastConvexAll(const WorldConvexCastInput& input,
+                                        foundation::BorrowedView<WorldConvexCastResult> hitBuffer,
+                                        WorldHitsResult& outResult) const noexcept
+{
+    if (mWorldOrNull == nullptr)
+    {
+        return Status::InvalidPhase;
+    }
+    WorldConvexCastResult unused;
+    return CollisionWorldQueries::Cast(*mWorldOrNull, input, CollectMode::All, hitBuffer, unused, outResult);
 }
 
 CollisionWorld::~CollisionWorld() noexcept

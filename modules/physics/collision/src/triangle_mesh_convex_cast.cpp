@@ -50,6 +50,7 @@ struct ConvexCastContext final
     math::Vector3d ReachMesh{};        ///< Posed half extents widened by the tolerance and traversal slack.
     float64 ToleranceMeters = 0.0;
     InitialOverlapPolicy OverlapPolicy = InitialOverlapPolicy::Report;
+    bool ShouldStopAtFirstHit = false; ///< Any-hit search; never under InitialOverlapPolicy::Reject.
 };
 
 /// One triangle's answer. Ordered by fraction, then initial overlap before a
@@ -170,6 +171,8 @@ ConvexCastContext MakeConvexCastContext(const internal::PosedConvexCast& request
     cast.PositionMesh = request.PositionMesh;
     cast.TranslationMesh = request.TranslationMesh;
     cast.OverlapPolicy = request.OverlapPolicy;
+    cast.ShouldStopAtFirstHit =
+        request.ShouldStopAtFirstHit == true && request.OverlapPolicy != InitialOverlapPolicy::Reject;
     const internal::PosedBounds bounds = internal::GetPosedBounds(cast.Shape);
     cast.BoundsCenterMesh = bounds.CenterMesh;
     const float64 meshScale = math::Max(internal::GetMaxMagnitude(boundsMesh.Minimum - request.PositionMesh),
@@ -515,6 +518,10 @@ TriangleMeshConvexCaster::Visit TriangleMeshConvexCaster::traverse(const Triangl
             {
                 return visit;
             }
+            if (cast.ShouldStopAtFirstHit == true && inoutBest.HasHit == true)
+            {
+                return Visit::Continue;
+            }
         }
     }
     return Visit::Continue;
@@ -592,7 +599,7 @@ Status TriangleMeshConvexCaster::CastPosed(const TriangleMesh& mesh,
         for (const TriangleMesh::Triangle& triangle : mesh.mTriangles)
         {
             visit = testTriangle(cast, triangle, best);
-            if (visit != Visit::Continue)
+            if (visit != Visit::Continue || (cast.ShouldStopAtFirstHit == true && best.HasHit == true))
             {
                 break;
             }

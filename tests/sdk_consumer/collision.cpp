@@ -126,6 +126,18 @@ bool ExerciseInstalledCollision() noexcept
                      BorrowedView<ColliderOverlap>(records.GetData(), RECORD_COUNT),
                      overlap) == Status::Success &&
         overlap.WrittenCount == 1 && overlap.IsComplete == true && records[0].Collider == collider;
+    StaticArray<WorldRaycastResult, RECORD_COUNT> rayHits{};
+    WorldHitsResult hits;
+    const bool isListed = isOverlapping == true &&
+                          view.RaycastAll(
+                              {
+                                  .OriginWorld = {0.25, 3.0, 0.75},
+                                  .DirectionWorld = {0.0, -1.0, 0.0},
+                                  .MaxDistanceMeters = 5.0,
+                              },
+                              BorrowedView<WorldRaycastResult>(rayHits.GetData(), RECORD_COUNT),
+                              hits) == Status::Success &&
+                          hits.HitCount == 1 && hits.IsComplete == true && rayHits[0].Collider == collider;
     view.Release();
-    return isOverlapping == true && world.TryDestroyCollider(collider) == Status::Success;
+    return isListed == true && world.TryDestroyCollider(collider) == Status::Success;
 }

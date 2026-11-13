@@ -364,6 +364,34 @@ written are the first ones in slot order, not a nearest subset. A miss is a
 complete, empty result. A failed query leaves the result unchanged; the
 buffer's contents are then unspecified.
 
+### Any and All modes for rays and casts
+
+Rays and convex casts come in three modes on `CollisionReadView`:
+
+| Query | Answer |
+| --- | --- |
+| `RaycastClosest`, `CastConvexClosest` | The single nearest hit |
+| `RaycastAny`, `CastConvexAny` | Some hit; the search stops at the first one it finds |
+| `RaycastAll`, `CastConvexAll` | Every hit collider, each once, at its own closest hit |
+
+`Any` searches colliders in slot order and lets a mesh stop at the first
+triangle its traversal finds. The answer is a genuine hit within the limit,
+but neither the nearest nor a stable choice. A miss is certified only after
+every candidate was searched, which is the case whenever the answer is a miss.
+Under `InitialOverlapPolicy::Reject`, `CastConvexAny` still searches every
+candidate, because any starting overlap must fail the query.
+
+`All` writes into a caller buffer and reports a `WorldHitsResult` with the same
+completion fields as an overlap query:
+- It keeps counting after the buffer fills.
+- It then sorts the written records by distance or fraction (a starting overlap
+  first), collider slot and generation.
+- If the buffer was too small, the written records are the first hits found in
+  slot order, sorted. They are not the nearest ones; retry with `HitCount`
+  records.
+
+The first record of a complete `All` result equals the `Closest` answer.
+
 ## Determinism and the correctness oracle
 
 Ordering never uses an epsilon comparison: finite values compare strictly, then
@@ -448,6 +476,21 @@ as the brute-force traversal. A regression places boxes, hulls and capsules at
 symmetric points of a triangle's plane, where the search once mistook an
 overlap for touching.
 
+The query-mode tests cover:
+- `All` rays and casts on stacked floors, with distance order, a short buffer
+  (first hits in slot order, sorted), an empty buffer, a miss, a distance
+  limit and invalid buffers;
+- `Any` stopping at the first collider in slot order rather than the nearest;
+- every overlap policy for `All` and `Any` casts, including `Reject`, which
+  still fails an `Any` cast whose first hit is clean.
+
+On 24 random mesh and convex colliders, over 300 queries:
+- every complete `All` result's first record equals `Closest` exactly;
+- the brute-force traversal writes the same records;
+- `Any` hits exactly when `Closest` does, on a listed collider, at a distance
+  no nearer than that collider's closest hit;
+- short buffers give sorted subsets with the full count.
+
 On 24 randomly posed colliders with sensors, disabled colliders and category
 masks, world queries equal the brute-force traversal exactly (about half of
 the queries hit). A rotated, translated collider also agrees within 0.1 mm
@@ -456,13 +499,13 @@ with the same triangles baked into a world-space mesh.
 The allocation tests also cover store and world initialization under each
 injected allocation failure, and they show that adding a shape, creating,
 moving and destroying a collider and running world queries allocate nothing,
-including convex colliders and overlap queries.
+including convex colliders, overlap queries and the `Any` and `All` modes.
 
 The installed SDK consumer (`tests/sdk_consumer/collision.cpp`) links
 `Ludus::PhysicsCollision`, cooks a quad and a tetrahedral hull, runs a
 raycast, a box cast and convex casts of a sphere and the hull, and then puts
-the quad in a store and world, casts a ray and runs an overlap query through a
-read view.
+the quad in a store and world, and runs a ray, an overlap query and an `All`
+ray through a read view.
 
 ## Attribution
 
@@ -525,7 +568,6 @@ envelope and a spawn outside it as separate failures that name the limit.
 ## Remaining P1 work
 
 This slice is not the whole gate. Still to come:
-- `Any` and `All` modes for rays and convex casts, which need multi-hit mesh traversal;
 - a collider hierarchy in place of the linear bounds test;
 - retained shape handles for query shapes in place of borrowed hulls;
 - query debug overlays;

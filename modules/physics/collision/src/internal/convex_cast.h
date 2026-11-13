@@ -43,6 +43,9 @@ struct PosedConvexCast final
     math::Vector3d TranslationMesh{};
     InitialOverlapPolicy OverlapPolicy = InitialOverlapPolicy::Report;
     QueryTraversal Traversal = QueryTraversal::Hierarchy;
+    /// Stop at the first admitted hit instead of finding the closest. Ignored under InitialOverlapPolicy::Reject,
+    /// which must visit every candidate to find any overlap.
+    bool ShouldStopAtFirstHit = false;
 };
 
 /// Validate a convex cast request: unknown kind or enumerator, finiteness, admitted values, then the envelope.
