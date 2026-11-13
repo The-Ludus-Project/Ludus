@@ -1,10 +1,14 @@
 add_library(ludus_physics_collision STATIC
+    src/convex_hull_cook.cpp
+    src/gjk_simplex.cpp
     src/triangle_mesh_box_cast.cpp
+    src/triangle_mesh_convex_cast.cpp
     src/triangle_mesh_cook.cpp
     src/triangle_mesh_raycast.cpp)
 add_library(Ludus::PhysicsCollision ALIAS ludus_physics_collision)
 set_target_properties(ludus_physics_collision PROPERTIES EXPORT_NAME PhysicsCollision)
 target_sources(ludus_physics_collision PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
+    include/ludus/physics/collision/convex_shape.h
     include/ludus/physics/collision/queries.h
     include/ludus/physics/collision/status.h
     include/ludus/physics/collision/triangle_mesh.h)
@@ -16,7 +20,8 @@ ludus_apply_project_defaults(ludus_physics_collision)
 install(TARGETS ludus_physics_collision EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_physics_collision_tests tests/triangle_mesh_tests.cpp tests/triangle_mesh_oracle_tests.cpp)
+    add_executable(ludus_physics_collision_tests tests/triangle_mesh_tests.cpp tests/triangle_mesh_oracle_tests.cpp
+        tests/convex_cast_tests.cpp tests/convex_cast_oracle_tests.cpp)
     target_link_libraries(ludus_physics_collision_tests PRIVATE Ludus::PhysicsCollision Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_physics_collision_tests)
     ludus_enable_test_exceptions(ludus_physics_collision_tests)

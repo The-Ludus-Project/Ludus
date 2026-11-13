@@ -31,6 +31,8 @@ enum class Status : uint8
     CapacityExceeded,   ///< The source exceeds a named admission limit.
     AllocationFailure,  ///< Storage for a new mesh could not be allocated.
     InitialOverlap,     ///< A cast with the reject initial-overlap policy started overlapping a triangle.
+    DegenerateShape,    ///< A convex hull source has fewer than four points or encloses no usable volume.
+    NotConverged,       ///< A convex cast exhausted MAX_CONVEX_CAST_ITERATIONS on one triangle without converging.
 };
 
 /// Largest magnitude, in meters, of any mesh vertex coordinate or query origin/center component.
@@ -38,7 +40,7 @@ enum class Status : uint8
 /// float32 vertices keep about 7.8 mm spacing at this magnitude; larger scenes need local mesh frames.
 inline constexpr float32 MAX_COORDINATE_METERS = 1.0e5f;
 
-/// Largest ray distance, box half extent or box translation component, in meters, that a query admits.
+/// Largest ray distance, shape dimension or cast translation component, in meters, that a query admits.
 ///
 /// The bound keeps every separating-axis product finite in float64 for admitted mesh coordinates.
 inline constexpr float64 MAX_QUERY_DISTANCE_METERS = 1.0e6;

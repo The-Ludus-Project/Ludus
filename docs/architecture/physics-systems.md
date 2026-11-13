@@ -58,6 +58,8 @@ ships `PhysicsCollision` with an immutable static triangle mesh, a closest
 raycast and a closest axis-aligned box cast. It lifts the preview's sweep, and
 the preview now cooks its **Static Collider** triangles into that module and
 sweeps with its box cast; see [Explore as Player](physics-collision.md#explore-as-player).
+A second slice adds sphere, box, capsule and convex hull shapes and the
+general convex cast.
 
 ## Primary evidence
 
@@ -630,6 +632,10 @@ replacements for each other, and an overlap boolean is not a distance/manifold
 contract. Require bounded iterations, feature ties, zero directions, deep overlap,
 degeneracy and explicit numerical failure handling. Choose the general path at
 P1, where convex casts and overlaps first need it, and do not ship two.
+P1 chose GJK: the [convex cast](physics-collision.md#closest-convex-cast) is a
+GJK ray cast on polytope cores with spheres and capsules as rounded cores, and
+overlap queries are to reuse the same support and simplex code. EPA
+penetration depth remains a separately qualified option.
 
 The Gems review strengthens persistence: key contacts by full collider
 incarnations, geometry revision, leaf IDs and feature identity, not memory
@@ -894,7 +900,7 @@ quality, including the serial path and debug-capture overhead.
 | Gate | Reviewable output and acceptance |
 | --- | --- |
 | P0: backend feasibility | Closed without a qualified engine. Stock Jolt 5.6.0, ODE 0.16.6 and Box3D failed the allocation gate on macOS arm64, and six further engines failed the source screen. The outcome is the [selection revision](#selection-revision). The native/web matrix, SDK and replay evidence were not collected and move to the gates below |
-| P1: collision and query world | In progress: the [static triangle mesh and closest queries](physics-collision.md) have landed, and Explore as Player sweeps against them with **Static Collider** as authored input. `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; installed SDK consumer on native and Emscripten |
+| P1: collision and query world | In progress: the [static triangle mesh and closest queries](physics-collision.md), sphere, box, capsule and convex hull shapes and the general GJK convex cast have landed, and Explore as Player sweeps against them with **Static Collider** as authored input. `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; installed SDK consumer on native and Emscripten |
 | P2: rigid motion | `PhysicsRigid`: static/kinematic/dynamic integration, mass frames, forces/materials, convex and mesh contacts, the soft-constraint substep solver and selective CCD; stack/friction/spin/replay scenes; zero-growth active path; contact capacity rejected before any pose changes; headless stepping and plain-value state export; comparison with a pinned test-only engine on shared scenes |
 | P3: sensors and joints | Complete occupancy/events, distance/ball/hinge/slider, motor/break/sleep diagnostics; lifecycle, capacity and singularity regressions |
 | P4: engine integration | GameWorld binding, terrain revision/coverage installation, content cooking, inspector/recording, SDK and hot-reload boundaries; one sibling simulation built against the installed SDK |

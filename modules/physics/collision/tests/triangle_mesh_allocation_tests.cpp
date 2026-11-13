@@ -8,6 +8,7 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/physics/collision/convex_shape.h>
 #include <ludus/physics/collision/queries.h>
 #include <ludus/physics/collision/status.h>
 #include <ludus/physics/collision/triangle_mesh.h>
@@ -125,6 +126,49 @@ using namespace ludus::physics::collision::test;
 
 namespace
 {
+constexpr usize HULL_CORNER_COUNT = 8;
+
+Array<Vector3> MakeHullPoints(float32 halfExtent)
+{
+    Array<Vector3> points;
+    for (uint32 corner = 0; corner < HULL_CORNER_COUNT; ++corner)
+    {
+        points.Add({(corner & 1U) == 0 ? -halfExtent : halfExtent,
+                    (corner & 2U) == 0 ? -halfExtent : halfExtent,
+                    (corner & 4U) == 0 ? -halfExtent : halfExtent});
+    }
+    return points;
+}
+
+ConvexHullSource GetHullSource(const Array<Vector3>& points)
+{
+    return { .PointsShape = BorrowedView<const Vector3>(points.GetData(), points.GetSize()) };
+}
+
+/// Cook a hull while failing each allocation in turn; every failure must report AllocationFailure and leave the
+/// hull unchanged. Returns the number of allocations cooking needs.
+long RequireEveryAllocationFailurePreservesHull(const ConvexHullSource& source, ConvexHull& inoutHull)
+{
+    const bool wasCooked = inoutHull.IsCooked();
+    const usize pointCount = inoutHull.GetPointsShape().GetSize();
+    const Vector3 maximum = inoutHull.GetBoundsShape().Max;
+    for (long failedAllocation = 0;; ++failedAllocation)
+    {
+        gFailAfter = failedAllocation;
+        const ConvexHullCookResult result = ConvexHull::TryCook(source, inoutHull);
+        gFailAfter = -1;
+        if (result.Result == Status::Success)
+        {
+            return failedAllocation;
+        }
+        REQUIRE(result.Result == Status::AllocationFailure);
+        REQUIRE(result.PointIndex == INVALID_POINT_INDEX);
+        REQUIRE(inoutHull.IsCooked() == wasCooked);
+        REQUIRE(inoutHull.GetPointsShape().GetSize() == pointCount);
+        REQUIRE(inoutHull.GetBoundsShape().Max == maximum);
+    }
+}
+
 RaycastInput MakeProbeRay()
 {
     return { .OriginMesh = {0.25, 1.0, 0.75}, .DirectionMesh = {0.0, -1.0, 0.0}, .MaxDistanceMeters = 10.0 };
@@ -200,6 +244,41 @@ TEST_CASE("Every cook allocation failure preserves an empty or cooked mesh", "[c
     }
 }
 
+TEST_CASE("Every hull cook allocation failure preserves an empty or cooked hull", "[collision][alloc][hull]")
+{
+    const Array<Vector3> small = MakeHullPoints(0.5f);
+    const Array<Vector3> large = MakeHullPoints(2.0f);
+    SECTION("into an empty hull")
+    {
+        ConvexHull hull;
+        CHECK(RequireEveryAllocationFailurePreservesHull(GetHullSource(small), hull) > 0);
+        CHECK(hull.GetBoundsShape().Max == Vector3{0.5f, 0.5f, 0.5f});
+    }
+    SECTION("replacing a cooked hull")
+    {
+        ConvexHull hull;
+        REQUIRE(ConvexHull::TryCook(GetHullSource(small), hull).Result == Status::Success);
+        CHECK(RequireEveryAllocationFailurePreservesHull(GetHullSource(large), hull) > 0);
+        CHECK(hull.GetBoundsShape().Max == Vector3{2.0f, 2.0f, 2.0f});
+    }
+}
+
+TEST_CASE("Rejected hull sources allocate nothing", "[collision][alloc][hull]")
+{
+    Array<Vector3> flat = MakeHullPoints(1.0f);
+    for (Vector3& point : flat)
+    {
+        point.Z = 0.0f;
+    }
+    ConvexHull hull;
+    gCounters = {};
+    isTrackingAllocations = true;
+    const ConvexHullCookResult result = ConvexHull::TryCook(GetHullSource(flat), hull);
+    isTrackingAllocations = false;
+    CHECK(result.Result == Status::DegenerateShape);
+    CHECK(gCounters.Allocations == 0);
+}
+
 TEST_CASE("Rejected sources allocate nothing", "[collision][alloc]")
 {
     MeshData data;
@@ -222,6 +301,8 @@ TEST_CASE("Queries allocate nothing", "[collision][alloc]")
     const TriangleMesh mesh = CookOrFail(data);
     RandomStream random;
     REQUIRE(random.TryReseed(13, 0) == true);
+    ConvexHull hull;
+    REQUIRE(ConvexHull::TryCook(GetHullSource(MakeHullPoints(0.3f)), hull).Result == Status::Success);
     gCounters = {};
     isTrackingAllocations = true;
     bool isEverySuccess = true;
@@ -247,6 +328,20 @@ TEST_CASE("Queries allocate nothing", "[collision][alloc]")
         };
         BoxCastResult boxResult;
         isEverySuccess = isEverySuccess == true && mesh.CastBoxClosest(box, boxResult) == Status::Success;
+        constexpr uint32 KIND_COUNT = 4;
+        const StaticArray<ConvexShape, KIND_COUNT> shapes{MakeSphereShape(0.4),
+                                                          MakeCapsuleShape(0.5, 0.3),
+                                                          MakeBoxShape(box.HalfExtentsMesh),
+                                                          MakeHullShape(hull)};
+        const ConvexCastInput convex
+        {
+            .Shape = shapes[query % KIND_COUNT],
+            .PositionMesh = ray.OriginMesh,
+            .TranslationMesh = box.TranslationMesh,
+            .Traversal = box.Traversal,
+        };
+        ConvexCastResult convexResult;
+        isEverySuccess = isEverySuccess == true && mesh.CastConvexClosest(convex, convexResult) == Status::Success;
     }
     isTrackingAllocations = false;
     CHECK(isEverySuccess == true);

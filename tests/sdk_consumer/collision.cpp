@@ -1,6 +1,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/physics/collision/convex_shape.h>
 #include <ludus/physics/collision/triangle_mesh.h>
 
 bool ExerciseInstalledCollision() noexcept
@@ -40,7 +41,48 @@ bool ExerciseInstalledCollision() noexcept
         .TranslationMesh = {0.0, -3.0, 0.0},
     };
     BoxCastResult contact;
-    return mesh.RaycastClosest(ray, hit) == Status::Success && hit.HasHit == true && hit.DistanceMeters == 2.0 &&
-           hit.TriangleIndex == 0 && mesh.CastBoxClosest(box, contact) == Status::Success && contact.HasHit == true &&
-           contact.Fraction == 0.5;
+    if (mesh.RaycastClosest(ray, hit) != Status::Success || hit.HasHit == false || hit.DistanceMeters != 2.0 ||
+        hit.TriangleIndex != 0 || mesh.CastBoxClosest(box, contact) != Status::Success || contact.HasHit == false ||
+        contact.Fraction != 0.5)
+    {
+        return false;
+    }
+    constexpr ludus::foundation::usize HULL_POINT_COUNT = 4;
+    const StaticArray<Vector3, HULL_POINT_COUNT> tetrahedron{Vector3{0.0f, 0.0f, 0.0f},
+                                                             Vector3{0.5f, 0.0f, 0.0f},
+                                                             Vector3{0.0f, 0.5f, 0.0f},
+                                                             Vector3{0.0f, 0.0f, 0.5f}};
+    ConvexHull hull;
+    if (ConvexHull::TryCook(
+            {
+                .PointsShape = BorrowedView<const Vector3>(tetrahedron.GetData(), HULL_POINT_COUNT),
+            },
+            hull)
+            .Result != Status::Success)
+    {
+        return false;
+    }
+    const ConvexCastInput sphere
+    {
+        .Shape = MakeSphereShape(0.5),
+        .PositionMesh = {0.5, 2.0, 0.5},
+        .TranslationMesh = {0.0, -3.0, 0.0},
+    };
+    const ConvexCastInput tetrahedronCast
+    {
+        .Shape = MakeHullShape(hull),
+        .PositionMesh = {0.25, 1.0, 0.25},
+        .TranslationMesh = {0.0, -2.0, 0.0},
+    };
+    ConvexCastResult sphereContact;
+    ConvexCastResult hullContact;
+    // Both land when their lowest point reaches the floor, half way along the translation.
+    constexpr float64 CONTACT_FRACTION = 0.5;
+    constexpr float64 FRACTION_TOLERANCE = 1.0e-9;
+    return mesh.CastConvexClosest(sphere, sphereContact) == Status::Success && sphereContact.HasHit == true &&
+           sphereContact.Fraction > CONTACT_FRACTION - FRACTION_TOLERANCE &&
+           sphereContact.Fraction < CONTACT_FRACTION + FRACTION_TOLERANCE &&
+           mesh.CastConvexClosest(tetrahedronCast, hullContact) == Status::Success && hullContact.HasHit == true &&
+           hullContact.Fraction > CONTACT_FRACTION - FRACTION_TOLERANCE &&
+           hullContact.Fraction < CONTACT_FRACTION + FRACTION_TOLERANCE;
 }
