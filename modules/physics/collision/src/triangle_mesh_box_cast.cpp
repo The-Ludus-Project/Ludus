@@ -121,8 +121,9 @@ bool OverlapsSweep(const BoxCastContext& cast, const math::Aabb3& boundsMesh, fl
 // intervals on the face normals and edge cross products of two convex shapes.
 // https://www.geometrictools.com/Documentation/MethodOfSeparatingAxes.pdf
 // Here one shape is a stationary triangle and the other a translating AABB.
-// Lifted from the Explore as Player preview (apps/editor/src/viewport_walk_collision.cpp),
-// with the box half extents as a parameter instead of a fixed player size.
+// Lifted from the editor's Explore as Player preview, with the box half extents as a
+// parameter instead of a fixed player size; that preview now calls this cast
+// (apps/editor/src/viewport_walk_collision.cpp).
 struct SweepInterval final
 {
     float64 Enter = -1;

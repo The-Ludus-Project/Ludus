@@ -262,6 +262,91 @@ TEST_CASE("Explore walks up a step and a fast move cannot tunnel through a thin 
     CHECK(shortcut.isAccepted() == false);
 }
 
+TEST_CASE("Explore lands on a stair tread whichever triangle the riser edge precedes",
+          "[editor][navigation][first-person]")
+{
+    // The falling box straddles the riser's top edge, so the riser and the tread meet it at the
+    // same landing time. Only the tread supports the player; a jump proves it is grounded.
+    constexpr usize ORDER_COUNT = 2;
+    constexpr StaticArray<bool, ORDER_COUNT> RISER_ORDERS{true, false};
+    for (const bool isRiserFirst : RISER_ORDERS)
+    {
+        INFO("riser first: " << isRiserFirst);
+        RenderScene scene = MakeNavigationScene();
+        scene.StaticColliderEntityIds.insert(scene.Objects[0].Id);
+        PreviewMesh& mesh = scene.Meshes[0];
+        mesh.Positions.clear();
+        constexpr float32 TREAD_HEIGHT_METRES = 0.25F;
+        if (isRiserFirst == true)
+        {
+            AddCollisionQuad(mesh, {1, 0, -2}, {1, 0, 2}, {1, TREAD_HEIGHT_METRES, -2}, {1, TREAD_HEIGHT_METRES, 2});
+        }
+        AddCollisionQuad(mesh,
+                         {1, TREAD_HEIGHT_METRES, -2},
+                         {1, TREAD_HEIGHT_METRES, 2},
+                         {3, TREAD_HEIGHT_METRES, -2},
+                         {3, TREAD_HEIGHT_METRES, 2});
+        if (isRiserFirst == false)
+        {
+            AddCollisionQuad(mesh, {1, 0, -2}, {1, 0, 2}, {1, TREAD_HEIGHT_METRES, -2}, {1, TREAD_HEIGHT_METRES, 2});
+        }
+        RenderPreview preview;
+        REQUIRE(preview.SetScene(scene) == true);
+        camera::CameraSample spawn = scene.Cameras[0].Sample;
+        spawn.Pose = { .Position = {1, 1.95, 0}, .Orientation = {} };
+        QString error;
+        REQUIRE(preview.BeginFirstPerson(spawn, error) == true);
+        for (uint32 frame = 0; frame < 10; ++frame)
+        {
+            preview.AdvanceFirstPerson({}, 0.1F, 3, false);
+        }
+        const math::Vector3d landedWorld = preview.GetVisibleCameraSample().Pose.Position;
+        CHECK(landedWorld.Y == Catch::Approx(1.852).margin(0.003));
+        preview.AdvanceFirstPerson({}, 0.1F, 3, true);
+        CHECK(preview.GetVisibleCameraSample().Pose.Position.Y > landedWorld.Y + 0.1);
+    }
+}
+
+TEST_CASE("Explore skips degenerate collider triangles and names the coordinate limit",
+          "[editor][navigation][first-person]")
+{
+    RenderScene scene = MakeWalkingScene();
+    PreviewMesh& mesh = scene.Meshes[0];
+    // Collinear corners have no area. The preview has always left such triangles out.
+    const uint32 first = static_cast<uint32>(mesh.Positions.size());
+    mesh.Positions.append({{-1, 0, 1}, {0, 0, 1}, {1, 0, 1}});
+    mesh.Indices.append({first, first + 1, first + 2});
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    camera::CameraSample spawn = scene.Cameras[0].Sample;
+    spawn.Pose = { .Position = {0, 1.61, 0}, .Orientation = {} };
+    QString error;
+    REQUIRE(preview.BeginFirstPerson(spawn, error) == true);
+    preview.EndFirstPerson();
+
+    // A spawn outside the collision envelope fails with the limit and preserves the editor view.
+    const camera::CameraSample editorCamera = preview.GetVisibleCameraSample();
+    constexpr float64 BEYOND_ENVELOPE_METRES = 200000;
+    spawn.Pose.Position = {BEYOND_ENVELOPE_METRES, 1.61, 0};
+    CHECK(preview.BeginFirstPerson(spawn, error) == false);
+    CHECK(error.contains(QStringLiteral("within 100 km of the World origin before exploring")) == true);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == editorCamera.Pose.Position);
+
+    // So does collider geometry outside it.
+    AddCollisionQuad(mesh,
+                     {static_cast<float32>(BEYOND_ENVELOPE_METRES), 0, -1},
+                     {static_cast<float32>(BEYOND_ENVELOPE_METRES), 0, 1},
+                     {static_cast<float32>(BEYOND_ENVELOPE_METRES) + 1, 0, -1},
+                     {static_cast<float32>(BEYOND_ENVELOPE_METRES) + 1, 0, 1});
+    scene.Identity = QByteArrayLiteral("distant-collision-fixture");
+    REQUIRE(preview.SetScene(scene) == true);
+    spawn.Pose.Position = {0, 1.61, 0};
+    CHECK(preview.BeginFirstPerson(spawn, error) == false);
+    CHECK(error.contains(QStringLiteral("within 100 km of the World origin. Move distant collider entities")) == true);
+    CHECK(preview.IsExploringFirstPerson() == false);
+}
+
 TEST_CASE("Selected object framing ignores scene-wide radius and fits portrait and wide viewports",
           "[editor][navigation]")
 {

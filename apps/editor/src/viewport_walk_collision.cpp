@@ -3,31 +3,35 @@
 #include "internal/render_scene.h"
 
 #include <ludus/foundation/base/core.h>
+
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
-#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/transform.hpp>
+
+// Explore as Player is the first consumer of PhysicsCollision's closest box cast
+// (docs/architecture/physics-collision.md). That sweep was lifted from this file;
+// see the attribution beside CastTriangle in triangle_mesh_box_cast.cpp.
 
 namespace ludus::editor
 {
 using namespace foundation;
+namespace collision = physics::collision;
 namespace math = foundation::math;
 
 namespace
 {
 constexpr usize TRIANGLE_CORNER_COUNT = 3;
-constexpr usize MAX_COLLISION_TRIANGLES = 8000000;
-constexpr uint32 TRIANGLES_PER_LEAF = 8;
-constexpr uint32 AXIS_COUNT = 3;
-constexpr StaticArray<math::Vector3d, AXIS_COUNT> WORLD_AXES{math::Vector3d{1, 0, 0},
-                                                             math::Vector3d{0, 1, 0},
-                                                             math::Vector3d{0, 0, 1}};
+/// The cook source addresses world-space vertices with uint32 indices.
+constexpr usize MAX_COLLISION_VERTICES = 0xFFFFFFFFU;
 constexpr math::Vector3d BODY_HALF_EXTENT_METRES{0.24, 0.875, 0.24};
 constexpr math::Vector3d CENTER_TO_EYE_METRES{0, 0.725, 0};
 constexpr float64 STEP_HEIGHT_METRES = 0.35;
 constexpr float64 GROUND_SNAP_METRES = 0.09;
 constexpr float64 CONTACT_SKIN_METRES = 0.002;
-// Equal contacts on a shared edge can use axes scaled by different triangle areas.
+// A riser and its tread meet the falling box at one landing time, but their
+// separating axes are scaled by different triangle areas, so the two fractions
+// can differ by rounding.
 constexpr float64 CONTACT_FRACTION_TOLERANCE = 1e-12;
 constexpr float64 MIN_WALKABLE_NORMAL_Y = 0.7071067811865475;
 constexpr float64 GRAVITY_METRES_PER_SECOND_SQUARED = 9.81;
@@ -42,16 +46,6 @@ math::Vector3d Widen(math::Vector3 value) noexcept
     return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
 }
 
-void IncludePoint(math::Aabb3& inoutBoundsWorld, math::Vector3 pointWorld) noexcept
-{
-    inoutBoundsWorld.Min = {math::Min(inoutBoundsWorld.Min.X, pointWorld.X),
-                            math::Min(inoutBoundsWorld.Min.Y, pointWorld.Y),
-                            math::Min(inoutBoundsWorld.Min.Z, pointWorld.Z)};
-    inoutBoundsWorld.Max = {math::Max(inoutBoundsWorld.Max.X, pointWorld.X),
-                            math::Max(inoutBoundsWorld.Max.Y, pointWorld.Y),
-                            math::Max(inoutBoundsWorld.Max.Z, pointWorld.Z)};
-}
-
 bool TryNormalize(math::Vector3d directionWorld, math::Vector3d& outUnitWorld) noexcept
 {
     const float64 length = math::Length(directionWorld);
@@ -63,76 +57,57 @@ bool TryNormalize(math::Vector3d directionWorld, math::Vector3d& outUnitWorld) n
     return true;
 }
 
-float64 GetAxis(math::Vector3 value, uint32 axis) noexcept
-{
-    return static_cast<float64>(axis == 0 ? value.X : (axis == 1 ? value.Y : value.Z));
-}
-
 float64 ComputeSafeFraction(math::Vector3d movementWorld, float64 fraction) noexcept
 {
     const float64 length = math::Length(movementWorld);
     return length > CONTACT_SKIN_METRES ? math::Max(0.0, fraction - CONTACT_SKIN_METRES / length) : 0;
 }
 
-bool OverlapsSweep(const math::Aabb3& boundsWorld, math::Vector3d startWorld, math::Vector3d endWorld) noexcept
+/// Whether a box centre lies inside the coordinate envelope PhysicsCollision queries admit.
+bool IsWithinQueryEnvelope(math::Vector3d centerWorld) noexcept
 {
-    const math::Vector3d minimumWorld = Widen(boundsWorld.Min);
-    const math::Vector3d maximumWorld = Widen(boundsWorld.Max);
-    return minimumWorld.X <= math::Max(startWorld.X, endWorld.X) + BODY_HALF_EXTENT_METRES.X &&
-           maximumWorld.X >= math::Min(startWorld.X, endWorld.X) - BODY_HALF_EXTENT_METRES.X &&
-           minimumWorld.Y <= math::Max(startWorld.Y, endWorld.Y) + BODY_HALF_EXTENT_METRES.Y &&
-           maximumWorld.Y >= math::Min(startWorld.Y, endWorld.Y) - BODY_HALF_EXTENT_METRES.Y &&
-           minimumWorld.Z <= math::Max(startWorld.Z, endWorld.Z) + BODY_HALF_EXTENT_METRES.Z &&
-           maximumWorld.Z >= math::Min(startWorld.Z, endWorld.Z) - BODY_HALF_EXTENT_METRES.Z;
+    constexpr float64 LIMIT = static_cast<float64>(collision::MAX_COORDINATE_METERS);
+    return math::Abs(centerWorld.X) <= LIMIT && math::Abs(centerWorld.Y) <= LIMIT && math::Abs(centerWorld.Z) <= LIMIT;
 }
 
-// Thanks to David Eberly, "Intersection of Convex Objects: The Method of
-// Separating Axes", Geometric Tools, sections 4 and 6, for intersecting time
-// intervals on the face normals and edge cross products of two convex shapes.
-// https://www.geometrictools.com/Documentation/MethodOfSeparatingAxes.pdf
-// Here one shape is a stationary triangle and the other a translating AABB.
-struct SweepInterval final
+/// Whether a face can carry the player, by the same 45 degree limit as the contact normal.
+bool IsSupportFace(math::Vector3 firstWorld, math::Vector3 secondWorld, math::Vector3 thirdWorld) noexcept
 {
-    float64 Enter = -1;
-    float64 Exit = 1;
-    math::Vector3d NormalWorld{};
-};
+    const math::Vector3d faceWorld =
+        math::Cross(Widen(secondWorld) - Widen(firstWorld), Widen(thirdWorld) - Widen(firstWorld));
+    math::Vector3d unitWorld;
+    return TryNormalize(faceWorld, unitWorld) == true && math::Abs(unitWorld.Y) >= MIN_WALKABLE_NORMAL_Y;
+}
 
-bool ClipAxis(math::Vector3d axisWorld,
-              math::Vector3d firstWorld,
-              math::Vector3d secondWorld,
-              math::Vector3d thirdWorld,
-              math::Vector3d movementWorld,
-              SweepInterval& inoutInterval) noexcept
+/// Cook one partition. An empty or entirely degenerate partition stays uncooked.
+ViewportWalkCollision::StartStatus CookPartition(BorrowedView<const math::Vector3> positionsWorld,
+                                                 BorrowedView<const uint32> indices,
+                                                 collision::TriangleMesh& outMesh) noexcept
 {
-    if (math::LengthSquared(axisWorld) == 0)
+    using StartStatus = ViewportWalkCollision::StartStatus;
+    if (indices.GetSize() == 0)
     {
-        return true;
+        return StartStatus::Ready;
     }
-    const float64 first = math::Dot(axisWorld, firstWorld);
-    const float64 second = math::Dot(axisWorld, secondWorld);
-    const float64 third = math::Dot(axisWorld, thirdWorld);
-    const float64 minimum = math::Min(first, math::Min(second, third));
-    const float64 maximum = math::Max(first, math::Max(second, third));
-    const float64 radius = math::Abs(axisWorld.X) * BODY_HALF_EXTENT_METRES.X +
-                           math::Abs(axisWorld.Y) * BODY_HALF_EXTENT_METRES.Y +
-                           math::Abs(axisWorld.Z) * BODY_HALF_EXTENT_METRES.Z;
-    const float64 projectedMovement = math::Dot(axisWorld, movementWorld);
-    if (projectedMovement == 0)
+    // Leave degenerate triangles out instead of failing the walk, as the preview always has:
+    // imported meshes often carry zero-area slivers.
+    constexpr collision::TriangleMeshCookSettings SETTINGS
     {
-        // A stationary axis that merely touches allows parallel movement.
-        return minimum < radius && maximum > -radius;
-    }
-    const float64 firstTime = (minimum - radius) / projectedMovement;
-    const float64 lastTime = (maximum + radius) / projectedMovement;
-    const float64 enter = math::Min(firstTime, lastTime);
-    if (enter > inoutInterval.Enter)
+        .DegeneratePolicy = collision::DegenerateTrianglePolicy::Skip,
+    };
+    const collision::TriangleMeshSource source{ .PositionsMesh = positionsWorld, .Indices = indices };
+    switch (collision::TriangleMesh::TryCook(source, SETTINGS, outMesh).Result)
     {
-        inoutInterval.Enter = enter;
-        inoutInterval.NormalWorld = projectedMovement > 0 ? -axisWorld : axisWorld;
+        case collision::Status::Success:
+        case collision::Status::NoGeometry:
+            return StartStatus::Ready;
+        case collision::Status::CapacityExceeded:
+            return StartStatus::GeometryTooLarge;
+        case collision::Status::OutOfRange:
+            return StartStatus::GeometryOutOfRange;
+        default:
+            return StartStatus::GeometryUnavailable;
     }
-    inoutInterval.Exit = math::Min(inoutInterval.Exit, math::Max(firstTime, lastTime));
-    return inoutInterval.Exit > 0 && inoutInterval.Enter < inoutInterval.Exit;
 }
 } // namespace
 
@@ -153,16 +128,25 @@ ViewportWalkCollision::StartStatus ViewportWalkCollision::Start(const RenderScen
                                                                 math::Vector3d eyeWorld) noexcept
 {
     ViewportWalkCollision candidate;
-    if (candidate.build(scene) == false)
+    const StartStatus built = candidate.build(scene);
+    if (built != StartStatus::Ready)
     {
-        return StartStatus::GeometryUnavailable;
+        return built;
     }
-    if (candidate.mNodes.IsEmpty() == true)
+    if (candidate.hasGeometry() == false)
     {
         return StartStatus::NoGeometry;
     }
     candidate.mCenterWorld = eyeWorld - CENTER_TO_EYE_METRES;
-    if (math::IsFinite(eyeWorld) == false || candidate.cast(candidate.mCenterWorld, {}).IsPenetrating == true)
+    if (math::IsFinite(eyeWorld) == false)
+    {
+        return StartStatus::SpawnObstructed;
+    }
+    if (IsWithinQueryEnvelope(candidate.mCenterWorld) == false)
+    {
+        return StartStatus::SpawnOutOfRange;
+    }
+    if (candidate.cast(candidate.mCenterWorld, {}).IsPenetrating == true)
     {
         return StartStatus::SpawnObstructed;
     }
@@ -177,13 +161,15 @@ void ViewportWalkCollision::Reset() noexcept
     *this = {};
 }
 
-bool ViewportWalkCollision::build(const RenderScene& scene) noexcept
+ViewportWalkCollision::StartStatus ViewportWalkCollision::build(const RenderScene& scene) noexcept
 {
     if (scene.Definition != nullptr && scene.Definition->Meshes.GetSize() != static_cast<usize>(scene.Meshes.size()))
     {
-        return false;
+        return StartStatus::GeometryUnavailable;
     }
     usize triangleCount = 0;
+    usize vertexCount = 0;
+    constexpr usize MAX_TRIANGLES = collision::MAX_TRIANGLE_MESH_TRIANGLES;
     for (const PreviewObject& object : scene.Objects)
     {
         if (scene.StaticColliderEntityIds.contains(object.Id) == false)
@@ -192,20 +178,37 @@ bool ViewportWalkCollision::build(const RenderScene& scene) noexcept
         }
         if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size())
         {
-            return false;
+            return StartStatus::GeometryUnavailable;
         }
         const usize count = GetRenderSceneMeshIndices(scene, object.Mesh).GetSize();
-        if (count % TRIANGLE_CORNER_COUNT != 0 ||
-            count / TRIANGLE_CORNER_COUNT > MAX_COLLISION_TRIANGLES - triangleCount)
+        if (count % TRIANGLE_CORNER_COUNT != 0)
         {
-            return false;
+            return StartStatus::GeometryUnavailable;
+        }
+        if (count / TRIANGLE_CORNER_COUNT > MAX_TRIANGLES - triangleCount)
+        {
+            return StartStatus::GeometryTooLarge;
         }
         triangleCount += count / TRIANGLE_CORNER_COUNT;
+        const usize positionCount = GetRenderSceneMeshPositions(scene, object.Mesh).GetSize();
+        // Each instance gets its own world-space copy of its mesh vertices.
+        if (positionCount > MAX_COLLISION_VERTICES - vertexCount)
+        {
+            return StartStatus::GeometryTooLarge;
+        }
+        vertexCount += positionCount;
     }
-    if (mTriangles.TryEnsureCapacity(triangleCount) == false)
+    // One shared vertex array and one index array: support triangles fill it from the front and obstacle
+    // triangles from the back, so neither partition needs a second reservation.
+    Array<math::Vector3> positionsWorld;
+    Array<uint32> indices;
+    if (positionsWorld.TryEnsureCapacity(vertexCount) == false ||
+        indices.TryResize(triangleCount * TRIANGLE_CORNER_COUNT) == false)
     {
-        return false;
+        return StartStatus::GeometryUnavailable;
     }
+    usize supportEnd = 0;
+    usize obstacleBegin = indices.GetSize();
     for (const PreviewObject& object : scene.Objects)
     {
         if (scene.StaticColliderEntityIds.contains(object.Id) == false)
@@ -213,196 +216,141 @@ bool ViewportWalkCollision::build(const RenderScene& scene) noexcept
             continue;
         }
         const BorrowedView<const math::Vector3> positionsMesh = GetRenderSceneMeshPositions(scene, object.Mesh);
-        const BorrowedView<const uint32> indices = GetRenderSceneMeshIndices(scene, object.Mesh);
-        for (usize index = 0; index < indices.GetSize(); index += TRIANGLE_CORNER_COUNT)
+        const BorrowedView<const uint32> meshIndices = GetRenderSceneMeshIndices(scene, object.Mesh);
+        const uint32 baseVertex = static_cast<uint32>(positionsWorld.GetSize());
+        for (const math::Vector3 positionMesh : positionsMesh)
         {
-            const uint32 first = indices[index];
-            const uint32 second = indices[index + 1];
-            const uint32 third = indices[index + 2];
+            if (positionsWorld.TryAdd(math::TransformPoint(object.Transform, positionMesh)) == false)
+            {
+                return StartStatus::GeometryUnavailable;
+            }
+        }
+        for (usize index = 0; index < meshIndices.GetSize(); index += TRIANGLE_CORNER_COUNT)
+        {
+            const uint32 first = meshIndices[index];
+            const uint32 second = meshIndices[index + 1];
+            const uint32 third = meshIndices[index + 2];
             if (first >= positionsMesh.GetSize() || second >= positionsMesh.GetSize() ||
                 third >= positionsMesh.GetSize())
             {
-                return false;
+                return StartStatus::GeometryUnavailable;
             }
-            const Triangle triangle
+            const bool isSupport = IsSupportFace(positionsWorld[baseVertex + first],
+                                                 positionsWorld[baseVertex + second],
+                                                 positionsWorld[baseVertex + third]);
+            usize corner = supportEnd;
+            if (isSupport == true)
             {
-                .FirstWorld = math::TransformPoint(object.Transform, positionsMesh[first]),
-                .SecondWorld = math::TransformPoint(object.Transform, positionsMesh[second]),
-                .ThirdWorld = math::TransformPoint(object.Transform, positionsMesh[third]),
-            };
-            if (math::IsFinite(triangle.FirstWorld) == false || math::IsFinite(triangle.SecondWorld) == false ||
-                math::IsFinite(triangle.ThirdWorld) == false)
-            {
-                return false;
+                supportEnd += TRIANGLE_CORNER_COUNT;
             }
-            if (math::LengthSquared(math::Cross(Widen(triangle.SecondWorld) - Widen(triangle.FirstWorld),
-                                                Widen(triangle.ThirdWorld) - Widen(triangle.FirstWorld))) > 0 &&
-                mTriangles.TryAdd(triangle) == false)
+            else
             {
-                return false;
+                obstacleBegin -= TRIANGLE_CORNER_COUNT;
+                corner = obstacleBegin;
             }
+            indices[corner] = baseVertex + first;
+            indices[corner + 1] = baseVertex + second;
+            indices[corner + 2] = baseVertex + third;
         }
     }
-    return mTriangles.IsEmpty() == true || buildNode(0, static_cast<uint32>(mTriangles.GetSize())) == true;
+    const BorrowedView<const math::Vector3> positionsView(positionsWorld.GetData(), positionsWorld.GetSize());
+    const StartStatus support =
+        CookPartition(positionsView, BorrowedView<const uint32>(indices.GetData(), supportEnd), mSupportMesh);
+    if (support != StartStatus::Ready)
+    {
+        return support;
+    }
+    const StartStatus obstacle =
+        CookPartition(positionsView,
+                      BorrowedView<const uint32>(indices.GetData() + obstacleBegin, indices.GetSize() - obstacleBegin),
+                      mObstacleMesh);
+    if (obstacle != StartStatus::Ready)
+    {
+        return obstacle;
+    }
+    float64 lowestWorldY = static_cast<float64>(collision::MAX_COORDINATE_METERS);
+    if (mSupportMesh.IsCooked() == true)
+    {
+        lowestWorldY = static_cast<float64>(mSupportMesh.GetBoundsMesh().Min.Y);
+    }
+    if (mObstacleMesh.IsCooked() == true)
+    {
+        lowestWorldY = math::Min(lowestWorldY, static_cast<float64>(mObstacleMesh.GetBoundsMesh().Min.Y));
+    }
+    mLowestWorldY = lowestWorldY;
+    return StartStatus::Ready;
 }
 
-bool ViewportWalkCollision::buildNode(uint32 first, uint32 count) noexcept
+bool ViewportWalkCollision::hasGeometry() const noexcept
 {
-    const uint32 node = static_cast<uint32>(mNodes.GetSize());
-    math::Aabb3 boundsWorld = math::EmptyAabb3();
-    for (uint32 index = first; index < first + count; ++index)
+    return mSupportMesh.IsCooked() == true || mObstacleMesh.IsCooked() == true;
+}
+
+ViewportWalkCollision::Hit ViewportWalkCollision::castMesh(const collision::TriangleMesh& mesh,
+                                                           math::Vector3d centerWorld,
+                                                           math::Vector3d movementWorld,
+                                                           bool isSupportMesh) noexcept
+{
+    Hit hit;
+    if (mesh.IsCooked() == false)
     {
-        const Triangle& triangle = mTriangles[index];
-        IncludePoint(boundsWorld, triangle.FirstWorld);
-        IncludePoint(boundsWorld, triangle.SecondWorld);
-        IncludePoint(boundsWorld, triangle.ThirdWorld);
+        return hit;
     }
-    if (mNodes.TryAdd({ .BoundsWorld = boundsWorld, .First = first, .Count = count }) == false)
+    const collision::BoxCastInput input
     {
-        return false;
-    }
-    if (count <= TRIANGLES_PER_LEAF)
+        .CenterMesh = centerWorld,
+        .HalfExtentsMesh = BODY_HALF_EXTENT_METRES,
+        .TranslationMesh = movementWorld,
+        .OverlapPolicy = collision::InitialOverlapPolicy::Report,
+    };
+    collision::BoxCastResult result;
+    if (mesh.CastBoxClosest(input, result) != collision::Status::Success)
     {
-        return true;
+        // A query the module cannot answer blocks like an overlap, so it can never let the player tunnel.
+        hit.HasContact = true;
+        hit.IsPenetrating = true;
+        hit.Fraction = 0;
+        return hit;
     }
-    const math::Vector3d spanWorld = Widen(boundsWorld.Max) - Widen(boundsWorld.Min);
-    constexpr uint32 Z_AXIS = 2;
-    const uint32 horizontalAxis = spanWorld.X >= spanWorld.Z ? 0 : Z_AXIS;
-    const uint32 axis = spanWorld.Y > math::Max(spanWorld.X, spanWorld.Z) ? 1 : horizontalAxis;
-    const float64 pivot = 0.5 * (GetAxis(boundsWorld.Min, axis) + GetAxis(boundsWorld.Max, axis));
-    uint32 middle = first;
-    for (uint32 index = first; index < first + count; ++index)
+    if (result.HasHit == false)
     {
-        const Triangle& triangle = mTriangles[index];
-        constexpr float64 CENTROID_WEIGHT = 1.0 / TRIANGLE_CORNER_COUNT;
-        const float64 centroid = (GetAxis(triangle.FirstWorld, axis) + GetAxis(triangle.SecondWorld, axis) +
-                                  GetAxis(triangle.ThirdWorld, axis)) *
-                                 CENTROID_WEIGHT;
-        if (centroid < pivot)
-        {
-            const Triangle saved = triangle;
-            mTriangles[index] = mTriangles[middle];
-            mTriangles[middle] = saved;
-            ++middle;
-        }
+        return hit;
     }
-    // Split by count on a poor partition to bound build and traversal depth.
-    constexpr uint32 MIN_PARTITION_DIVISOR = 4;
-    if (middle - first < count / MIN_PARTITION_DIVISOR || first + count - middle < count / MIN_PARTITION_DIVISOR)
+    hit.HasContact = true;
+    hit.IsPenetrating = result.HasStartedOverlapping;
+    hit.Fraction = result.Fraction;
+    if (result.HasNormal == true)
     {
-        middle = first + count / 2;
+        hit.NormalWorld = result.NormalMesh;
+        hit.IsWalkable = isSupportMesh == true && result.NormalMesh.Y >= MIN_WALKABLE_NORMAL_Y;
     }
-    if (buildNode(first, middle - first) == false)
-    {
-        return false;
-    }
-    mNodes[node].Count = 0;
-    mNodes[node].Right = static_cast<uint32>(mNodes.GetSize());
-    return buildNode(middle, first + count - middle);
+    return hit;
 }
 
 ViewportWalkCollision::Hit ViewportWalkCollision::cast(math::Vector3d centerWorld,
                                                        math::Vector3d movementWorld) const noexcept
 {
-    Hit hit;
-    castNode(0, centerWorld, movementWorld, hit);
-    return hit;
-}
-
-void ViewportWalkCollision::castNode(uint32 node,
-                                     math::Vector3d centerWorld,
-                                     math::Vector3d movementWorld,
-                                     Hit& inoutHit) const noexcept
-{
-    const Node& bounds = mNodes[node];
-    const float64 fraction = math::Min(1.0, inoutHit.Fraction + CONTACT_FRACTION_TOLERANCE);
-    if (inoutHit.IsPenetrating == true ||
-        OverlapsSweep(bounds.BoundsWorld, centerWorld, centerWorld + movementWorld * fraction) == false)
+    const Hit support = castMesh(mSupportMesh, centerWorld, movementWorld, true);
+    const Hit obstacle = castMesh(mObstacleMesh, centerWorld, movementWorld, false);
+    if (support.HasContact == false || obstacle.IsPenetrating == true)
     {
-        return;
+        return obstacle.HasContact == true ? obstacle : support;
     }
-    if (bounds.Count == 0)
+    if (obstacle.HasContact == false || support.IsPenetrating == true)
     {
-        castNode(node + 1, centerWorld, movementWorld, inoutHit);
-        castNode(bounds.Right, centerWorld, movementWorld, inoutHit);
-        return;
+        return support;
     }
-    for (uint32 index = bounds.First; index < bounds.First + bounds.Count; ++index)
-    {
-        castTriangle(mTriangles[index], centerWorld, movementWorld, inoutHit);
-        if (inoutHit.IsPenetrating == true)
-        {
-            return;
-        }
-    }
-}
-
-void ViewportWalkCollision::castTriangle(const Triangle& triangle,
-                                         math::Vector3d centerWorld,
-                                         math::Vector3d movementWorld,
-                                         Hit& inoutHit) noexcept
-{
-    const math::Vector3d firstWorld = Widen(triangle.FirstWorld) - centerWorld;
-    const math::Vector3d secondWorld = Widen(triangle.SecondWorld) - centerWorld;
-    const math::Vector3d thirdWorld = Widen(triangle.ThirdWorld) - centerWorld;
-    const StaticArray<math::Vector3d, TRIANGLE_CORNER_COUNT> edgesWorld{secondWorld - firstWorld,
-                                                                        thirdWorld - secondWorld,
-                                                                        firstWorld - thirdWorld};
-    const math::Vector3d faceWorld = math::Cross(edgesWorld[0], edgesWorld[1]);
-    SweepInterval interval;
-    if (ClipAxis(faceWorld, firstWorld, secondWorld, thirdWorld, movementWorld, interval) == false)
-    {
-        return;
-    }
-    for (const math::Vector3d axisWorld : WORLD_AXES)
-    {
-        if (ClipAxis(axisWorld, firstWorld, secondWorld, thirdWorld, movementWorld, interval) == false)
-        {
-            return;
-        }
-        for (const math::Vector3d edgeWorld : edgesWorld)
-        {
-            if (ClipAxis(math::Cross(axisWorld, edgeWorld),
-                         firstWorld,
-                         secondWorld,
-                         thirdWorld,
-                         movementWorld,
-                         interval) == false)
-            {
-                return;
-            }
-        }
-    }
+    Hit nearest = support.Fraction <= obstacle.Fraction ? support : obstacle;
     const bool isDownward = movementWorld.X == 0 && movementWorld.Z == 0 && movementWorld.Y < 0;
-    const bool isSharedContact = inoutHit.HasContact == true && isDownward == true &&
-                                 math::Abs(interval.Enter - inoutHit.Fraction) <= CONTACT_FRACTION_TOLERANCE;
-    if (isSharedContact == false && interval.Enter >= inoutHit.Fraction)
-    {
-        return;
-    }
-    Hit candidate;
-    candidate.HasContact = true;
-    candidate.IsPenetrating = interval.Enter < 0;
-    candidate.Fraction = math::Max(0.0, interval.Enter);
-    math::Vector3d surfaceWorld;
-    if (candidate.IsPenetrating == false && TryNormalize(interval.NormalWorld, candidate.NormalWorld) == true &&
-        TryNormalize(faceWorld, surfaceWorld) == true)
-    {
-        candidate.IsWalkable =
-            candidate.NormalWorld.Y >= MIN_WALKABLE_NORMAL_Y && math::Abs(surfaceWorld.Y) >= MIN_WALKABLE_NORMAL_Y;
-    }
-    if (isSharedContact == true && candidate.IsPenetrating == false)
+    if (isDownward == true && support.IsWalkable == true &&
+        math::Abs(support.Fraction - obstacle.Fraction) <= CONTACT_FRACTION_TOLERANCE)
     {
         // A stair riser and its tread share the landing time. Keep the earliest
         // obstruction, but prefer the tread's support normal over the riser edge.
-        candidate.Fraction = math::Min(candidate.Fraction, inoutHit.Fraction);
-        if (inoutHit.IsWalkable == true)
-        {
-            candidate.IsWalkable = true;
-            candidate.NormalWorld = inoutHit.NormalWorld;
-        }
+        nearest.NormalWorld = support.NormalWorld;
+        nearest.IsWalkable = true;
     }
-    inoutHit = candidate;
+    return nearest;
 }
 
 bool ViewportWalkCollision::tryStep(math::Vector3d movementWorld, math::Vector3d& outCenterWorld) const noexcept
@@ -494,7 +442,7 @@ void ViewportWalkCollision::tick(math::Vector3d velocityWorld, bool shouldJump) 
         // The extra ground probe must never accelerate a fall over a ledge.
         mCenterWorld.Y += distance;
     }
-    if (mCenterWorld.Y < static_cast<float64>(mNodes[0].BoundsWorld.Min.Y) - FALL_LIMIT_BELOW_WORLD_METRES)
+    if (mCenterWorld.Y < mLowestWorldY - FALL_LIMIT_BELOW_WORLD_METRES || IsWithinQueryEnvelope(mCenterWorld) == false)
     {
         mCenterWorld = mSpawnCenterWorld;
         mVerticalSpeed = 0;
@@ -505,7 +453,7 @@ void ViewportWalkCollision::tick(math::Vector3d velocityWorld, bool shouldJump) 
 math::Vector3d
 ViewportWalkCollision::Advance(math::Vector3d velocityWorld, float64 deltaSeconds, bool shouldJump) noexcept
 {
-    if (mNodes.IsEmpty() == false && math::IsFinite(deltaSeconds) == true && deltaSeconds > 0 &&
+    if (hasGeometry() == true && math::IsFinite(deltaSeconds) == true && deltaSeconds > 0 &&
         math::IsFinite(velocityWorld) == true)
     {
         velocityWorld.Y = 0;

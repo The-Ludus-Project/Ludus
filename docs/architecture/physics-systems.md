@@ -48,15 +48,16 @@ describes that game's analytic model; it does not define this general system.
 Future buoyancy samples fluid state through an explicit game or coupling pass.
 
 The editor's [Explore as Player](../development/editor-workspace.md#explore-from-a-first-person-player)
-preview owns a private triangle hierarchy and box sweep. It is the first
-collision consumer. Its **Static Collider** component is authored World data,
-so the P1 collision world consumes that component and adds no second collider
-vocabulary. The editor keeps its own step, slide and jump rules.
+preview is the first collision consumer. Its **Static Collider** component is
+authored World data, so the P1 collision world consumes that component and
+adds no second collider vocabulary. The editor keeps its own step, slide and
+jump rules.
 
 The first P1 slice, the [physics collision module](physics-collision.md),
 ships `PhysicsCollision` with an immutable static triangle mesh, a closest
-raycast and a closest axis-aligned box cast. It lifts the preview's sweep;
-the preview itself has not moved onto it yet.
+raycast and a closest axis-aligned box cast. It lifts the preview's sweep, and
+the preview now cooks its **Static Collider** triangles into that module and
+sweeps with its box cast; see [Explore as Player](physics-collision.md#explore-as-player).
 
 ## Primary evidence
 
@@ -251,7 +252,7 @@ budgeting a solver.
 | The allocation gate has no stock candidate | Jolt, ODE and Box3D failed the runtime probes above. PhysX, Bullet, ReactPhysics3D, Nudge, Rapier and MuJoCo failed the source screen. Every remaining route needs a maintained fork or a storage proof over code Ludus does not own. |
 | Preflight needs control of the step order | Jolt reported contact exhaustion after it had moved bodies. An owned step counts contact storage before it changes any pose. See the [failure contracts](#world-phases-commands-and-failure-contracts). |
 | Simulation research needs an open solver | Researchers read, change and replace solvers, inspect state every tick and compare against a baseline. A private third-party engine offers none of that through the Ludus API. |
-| A Ludus-owned collision consumer already exists | Explore as Player sweeps a box against up to eight million static triangles using Ludus containers and no third-party code. |
+| A Ludus-owned collision consumer already exists | Explore as Player sweeps a box against up to eight million static triangles with `PhysicsCollision`, using Ludus containers and no third-party code. |
 
 **What this commits Ludus to.** A rigid-body engine has a long robustness
 tail: general convex narrowphase, contact reduction, internal mesh edges,
@@ -893,7 +894,7 @@ quality, including the serial path and debug-capture overhead.
 | Gate | Reviewable output and acceptance |
 | --- | --- |
 | P0: backend feasibility | Closed without a qualified engine. Stock Jolt 5.6.0, ODE 0.16.6 and Box3D failed the allocation gate on macOS arm64, and six further engines failed the source screen. The outcome is the [selection revision](#selection-revision). The native/web matrix, SDK and replay evidence were not collected and move to the gates below |
-| P1: collision and query world | In progress: the [static triangle mesh and closest queries](physics-collision.md) have landed. `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; Explore as Player moves onto these queries with **Static Collider** as authored input; installed SDK consumer on native and Emscripten |
+| P1: collision and query world | In progress: the [static triangle mesh and closest queries](physics-collision.md) have landed, and Explore as Player sweeps against them with **Static Collider** as authored input. `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; installed SDK consumer on native and Emscripten |
 | P2: rigid motion | `PhysicsRigid`: static/kinematic/dynamic integration, mass frames, forces/materials, convex and mesh contacts, the soft-constraint substep solver and selective CCD; stack/friction/spin/replay scenes; zero-growth active path; contact capacity rejected before any pose changes; headless stepping and plain-value state export; comparison with a pinned test-only engine on shared scenes |
 | P3: sensors and joints | Complete occupancy/events, distance/ball/hinge/slider, motor/break/sleep diagnostics; lifecycle, capacity and singularity regressions |
 | P4: engine integration | GameWorld binding, terrain revision/coverage installation, content cooking, inspector/recording, SDK and hot-reload boundaries; one sibling simulation built against the installed SDK |

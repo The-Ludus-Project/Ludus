@@ -31,6 +31,7 @@
 #include <new>
 
 #include <QElapsedTimer>
+#include <QLocale>
 
 namespace ludus::editor
 {
@@ -46,6 +47,7 @@ constexpr float32 MINIMUM_ORBIT_RADIUS_WORLD = 0.000001F;
 constexpr int64 STATISTICS_REFRESH_MILLISECONDS = 250;
 /// Nanoseconds per millisecond, for GPU timestamp durations.
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1000000.0;
+constexpr float64 METRES_PER_KILOMETRE = 1000.0;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
 bool Accepted(rhi::RasterStatus s) noexcept
 {
@@ -1519,6 +1521,21 @@ bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn
         case StartStatus::GeometryUnavailable:
             outError = QStringLiteral("Could not prepare the World's collision geometry. Remove Static Collider from "
                                       "unneeded surfaces or reimport invalid geometry, then try again.");
+            return false;
+        case StartStatus::GeometryTooLarge:
+            outError = QStringLiteral("The Static Collider surfaces have more than %1 triangles. Remove Static "
+                                      "Collider from surfaces the player never touches, then try again.")
+                           .arg(QLocale().toString(physics::collision::MAX_TRIANGLE_MESH_TRIANGLES));
+            return false;
+        case StartStatus::GeometryOutOfRange:
+            outError = QStringLiteral("Static Collider geometry must lie within %1 km of the World origin. Move "
+                                      "distant collider entities closer or remove their Static Collider, then try "
+                                      "again.")
+                           .arg(static_cast<float64>(physics::collision::MAX_COORDINATE_METERS) / METRES_PER_KILOMETRE);
+            return false;
+        case StartStatus::SpawnOutOfRange:
+            outError = QStringLiteral("Move the First Person Player within %1 km of the World origin before exploring.")
+                           .arg(static_cast<float64>(physics::collision::MAX_COORDINATE_METERS) / METRES_PER_KILOMETRE);
             return false;
         case StartStatus::SpawnObstructed:
             outError = QStringLiteral("Move the First Person Player's eye above the floor and clear of walls "
