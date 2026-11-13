@@ -43,7 +43,7 @@ FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "startup_fa
 DECLARATION = re.compile(r"^[ \t]*Batch-Fix:[ \t]*(\S[^\r\n]*?)[ \t]*\r?$", re.MULTILINE)
 MAX_DECLARATIONS = 32
 MAX_METADATA_BYTES = 2 * 1024 * 1024
-# Includes fallback ticks and develop-triggered requests that validated nothing.
+# Scheduler ticks every 30 minutes; 120 completed runs cover about 60 hours of idle ticks.
 MAX_SCANNED_BATCH_RUNS = 120
 BATCH_RUNS_PAGE_SIZE = 40
 MAX_JOB_PAGES = 5

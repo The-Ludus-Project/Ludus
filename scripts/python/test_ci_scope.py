@@ -373,8 +373,8 @@ class RequiredGateTests(unittest.TestCase):
                 workflow = path.read_text()
                 triggers = workflow.split("\npermissions:", 1)[0]
                 self.assertNotIn("merge_group", workflow)
-                if path.name in {"develop-cache.yml", "batch-wake.yml"}:
-                    # Only the cache warmer and dispatch-only wake react to develop pushes.
+                if path.name == "develop-cache.yml":
+                    # Only the cache warmer reacts to develop pushes.
                     self.assertIn("\n  push:\n    branches: [develop]\n", triggers)
                     self.assertNotRegex(triggers, r"(?m)^  (pull_request|pull_request_target|merge_group|workflow_call):")
                     continue
