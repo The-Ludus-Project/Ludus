@@ -22,7 +22,6 @@ namespace ludus::editor
 namespace
 {
 using namespace foundation;
-constexpr int32 FORMAT_TIMEOUT_MILLISECONDS = 10000;
 constexpr int64 DECODE_SLICE_MILLISECONDS = 2;
 #if !defined(Q_OS_WASM)
 // Transport limits for the clang-format child process; the browser has none.
@@ -209,6 +208,11 @@ bool CodeFormatter::Start(const CodeFormatterTool& tool)
         mMessage = QStringLiteral("Formatting is unavailable; choose the pinned clang-format executable.");
         return false;
     }
+    if (tool.TimeoutMilliseconds <= 0)
+    {
+        mMessage = QStringLiteral("Formatting needs a positive deadline; source was retained.");
+        return false;
+    }
     mCapture = mDocument.Capture();
     mTool = tool;
     mResult = {};
@@ -217,7 +221,7 @@ bool CodeFormatter::Start(const CodeFormatterTool& tool)
     mErrors.clear();
     mMessage = QStringLiteral("Formatting source...");
     mPhase = Phase::Version;
-    mTimeout.start(FORMAT_TIMEOUT_MILLISECONDS);
+    mTimeout.start(mTool.TimeoutMilliseconds);
 #if !defined(Q_OS_WASM)
     mProcess.start(mTool.Program, mTool.PrefixArguments + QStringList{QStringLiteral("--version")});
 #endif

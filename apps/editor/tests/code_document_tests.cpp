@@ -399,6 +399,7 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
                            profile.MinimumVersion,
                            {fixture}};
     bool shouldSucceed = false;
+    bool isTimeoutExpected = false;
     SECTION("success")
     {
         shouldSucceed = true;
@@ -457,7 +458,20 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     }
     SECTION("timeout")
     {
+        // The fixture sleeps far past this deadline; the default deadline would
+        // make the suite wait 10 seconds for the same outcome.
+        constexpr int32 SHORT_TIMEOUT_MILLISECONDS = 1500;
+        isTimeoutExpected = true;
         tool.Arguments = {QStringLiteral("timeout")};
+        tool.TimeoutMilliseconds = SHORT_TIMEOUT_MILLISECONDS;
+    }
+    SECTION("non-positive deadline")
+    {
+        tool.TimeoutMilliseconds = 0;
+        CHECK(formatter.Start(tool) == false);
+        CHECK(formatter.IsRunning() == false);
+        CHECK(document.GetState().Text == QByteArrayLiteral("intx;"));
+        return;
     }
     SECTION("cancel")
     {
@@ -488,6 +502,10 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     INFO(formatter.GetMessage().toStdString());
     CHECK(finished.at(0).at(0).toBool() == shouldSucceed);
     CHECK(formatter.IsRunning() == false);
+    if (isTimeoutExpected == true)
+    {
+        CHECK(formatter.GetMessage().contains(QStringLiteral("timed out")) == true);
+    }
     if (shouldSucceed == true)
     {
         CHECK(document.GetState().Text == QByteArrayLiteral("int x;"));

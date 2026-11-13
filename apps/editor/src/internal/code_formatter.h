@@ -13,6 +13,10 @@
 
 namespace ludus::editor
 {
+/// Default wall-clock deadline, in milliseconds, for one formatting request
+/// (version probe, formatting and replacement decoding together).
+inline constexpr foundation::int32 DEFAULT_FORMAT_TIMEOUT_MILLISECONDS = 10000;
+
 /// Language/tool profile. Arguments are passed directly; never interpreted by a shell.
 /// The first provider uses clang-format replacement XML; future scripting providers
 /// can supply their own profile/decoder without changing document/history ownership.
@@ -24,6 +28,9 @@ struct CodeFormatterTool final
     QString MinimumVersion;
     /// Interpreter arguments prepended to both version and formatting requests.
     QStringList PrefixArguments;
+    /// Deadline in milliseconds for the whole request; must be positive. On
+    /// expiry the process is stopped and the source is retained.
+    foundation::int32 TimeoutMilliseconds = DEFAULT_FORMAT_TIMEOUT_MILLISECONDS;
 };
 
 /// Replacement positions refer to the captured UTF-8 source, in ascending order.
@@ -52,7 +59,8 @@ class CodeFormatter final : public QObject
 public:
     explicit CodeFormatter(CodeDocumentController& inoutDocument, QObject* parentOrNull = nullptr);
     ~CodeFormatter() override;
-    /// False if unavailable, unbound or already running. A successful launch
+    /// False if unavailable, unbound, already running or the tool's deadline is
+    /// not positive. A successful launch
     /// reports completion through Finished; failure leaves the document untouched.
     [[nodiscard]] bool Start(const CodeFormatterTool& tool);
     void Cancel();
