@@ -1727,6 +1727,54 @@ TEST_CASE("The World viewport is labelled while the game plays in its own window
     view.SetPlayingElsewhere(false);
     CHECK(status->text() == QStringLiteral("Viewport paused. World data is preserved."));
 }
+TEST_CASE("Viewport status messages reach the status bar without resizing the World viewport", "[editor][world][play]")
+{
+    // A resize cancels a held drag or terrain stroke, so a status line that wraps to a new line count above the
+    // viewport would cancel the stroke whenever the preview reported progress.
+    QTemporaryDir dir;
+    const QString path = Fixture(dir);
+    WorldWorkspace view;
+    view.SetProject(dir.path(), 1);
+    REQUIRE(view.Open(path));
+    view.StopPreview();
+    view.resize(view.minimumSizeHint());
+    view.show();
+    RenderPanel* renderOrNull = view.findChild<RenderPanel*>();
+    REQUIRE(renderOrNull != nullptr);
+    const PreviewViewport& viewport = renderOrNull->GetViewport();
+    const auto settleLayout = []() {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        QCoreApplication::processEvents();
+    };
+    settleLayout();
+    REQUIRE(viewport.isVisible() == true);
+    const QSize viewportSize = viewport.size();
+    QSignalSpy messages(&view, &WorldWorkspace::StatusMessage);
+
+    view.SetPlayingElsewhere(true);
+    settleLayout();
+    CHECK(viewport.size() == viewportSize);
+    REQUIRE(messages.size() == 1);
+    CHECK(messages.back()[0].toString().startsWith(QStringLiteral("Playing in a separate window.")) == true);
+    CHECK(messages.back()[1].toBool() == false);
+
+    // A failure several lines long at this width stays out of the World's layout and is kept in the status bar.
+    const QString failure = QStringLiteral("The cooked scene could not be read. ").repeated(12);
+    renderOrNull->ShowSceneFailure(failure);
+    settleLayout();
+    CHECK(viewport.size() == viewportSize);
+    REQUIRE(messages.size() == 2);
+    CHECK(messages.back()[0].toString() == QStringLiteral("Scene import failed: ") + failure);
+    CHECK(messages.back()[1].toBool() == true);
+    const QToolButton* menuOrNull = view.findChild<QToolButton*>(QStringLiteral("worldViewportMenu"));
+    REQUIRE(menuOrNull != nullptr);
+    CHECK(menuOrNull->toolTip().endsWith(failure) == true);
+
+    view.SetPlayingElsewhere(false);
+    settleLayout();
+    CHECK(viewport.size() == viewportSize);
+    CHECK(messages.back()[0].toString() == QStringLiteral("Viewport paused. World data is preserved."));
+}
 
 namespace
 {

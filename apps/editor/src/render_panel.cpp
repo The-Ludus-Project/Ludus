@@ -30,6 +30,12 @@
 
 namespace ludus::editor
 {
+namespace
+{
+/// What the "Viewport" menu offers; the latest viewport status follows it in the button's tooltip.
+const QString VIEWPORT_MENU_TOOLTIP =
+    QStringLiteral("Resume, pause or reload the viewport, tint the selection, or show camera and diagnostics.");
+} // namespace
 RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
 {
     setObjectName(QStringLiteral("worldRenderPanel"));
@@ -63,8 +69,7 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
     mViewportMenuButton->setObjectName(QStringLiteral("worldViewportMenu"));
     mViewportMenuButton->setText(QStringLiteral("Viewport"));
     mViewportMenuButton->setAccessibleName(QStringLiteral("Viewport commands"));
-    mViewportMenuButton->setToolTip(
-        QStringLiteral("Resume, pause or reload the viewport, tint the selection, or show camera and diagnostics."));
+    mViewportMenuButton->setToolTip(VIEWPORT_MENU_TOOLTIP);
     mViewportMenuButton->setPopupMode(QToolButton::InstantPopup);
     mViewportMenuButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
     mViewportMenuButton->setAutoRaise(true);
@@ -102,6 +107,10 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
     Status_->setObjectName(QStringLiteral("worldPreviewStatus"));
     Status_->setTextFormat(Qt::PlainText);
     Status_->setWordWrap(true);
+    // The owner shows announced messages in the window's status bar (StatusAnnounced). A wrapped line here would
+    // change the viewport's height with every message, and a resize cancels a held drag or terrain stroke, so the
+    // label only holds the latest status for state capture.
+    Status_->hide();
     layout->addWidget(Status_);
     auto* settings = new QWidget(this);
     auto* form = new QFormLayout(settings);
@@ -200,6 +209,10 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
         Cameras_->setCurrentIndex(0);
     });
     connect(&Preview_, &RenderPreview::Changed, this, &RenderPanel::ShowStatus);
+    // The viewport shows the failure over its frame as well; the status bar keeps it after the frame is replaced.
+    const auto announceFailure = [this](const QString& error) { Q_EMIT StatusAnnounced(error, true); };
+    connect(&Preview_, &RenderPreview::Failed, this, announceFailure);
+    connect(&Preview_, &RenderPreview::BuiltInViewFailed, this, announceFailure);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // The game's images are imported onto the viewport's device; a Vulkan import must be
     // destroyed before that device, so Play ends before the device stops.
@@ -296,8 +309,9 @@ bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
     }
     mIsPlaying = true;
     outAddress = mPlayOrNull->GetChannelAddress();
-    Status_->setText(QStringLiteral("Starting the game in this viewport. The World stays as edited until its first "
-                                    "frame arrives."));
+    setStatus(QStringLiteral("Starting the game in this viewport. The World stays as edited until its first "
+                             "frame arrives."),
+              StatusKind::Notice);
     Q_EMIT PlayStateChanged();
     return true;
 #else
@@ -349,8 +363,9 @@ void RenderPanel::SetPlayingElsewhere(bool isPlayingElsewhere)
     mIsPlayingElsewhere = isPlayingElsewhere;
     if (isPlayingElsewhere == true)
     {
-        Status_->setText(QStringLiteral("Playing in a separate window. The viewport shows the World as edited and "
-                                        "resumes when the game exits."));
+        setStatus(QStringLiteral("Playing in a separate window. The viewport shows the World as edited and "
+                                 "resumes when the game exits."),
+                  StatusKind::Notice);
         return;
     }
     if (Preview_.Running() == true)
@@ -358,7 +373,7 @@ void RenderPanel::SetPlayingElsewhere(bool isPlayingElsewhere)
         ShowStatus();
         return;
     }
-    Status_->setText(QStringLiteral("Viewport paused. World data is preserved."));
+    setStatus(QStringLiteral("Viewport paused. World data is preserved."), StatusKind::Notice);
 }
 bool RenderPanel::IsPlayingElsewhere() const noexcept
 {
@@ -379,8 +394,9 @@ void RenderPanel::updatePlay()
         Viewport_->SetPlayInput(&mPlayOrNull->GetEndpoint());
         // The edit preview keeps its device but stops drawing frames nobody sees.
         Preview_.SetPresentationVisible(false);
-        Status_->setText(QStringLiteral("Playing in the viewport. Click it to give the game the keyboard; Shift+F1 "
-                                        "gives the keyboard back to the editor and Shift+F6 stops the game."));
+        setStatus(QStringLiteral("Playing in the viewport. Click it to give the game the keyboard; Shift+F1 "
+                                 "gives the keyboard back to the editor and Shift+F6 stops the game."),
+                  StatusKind::Notice);
         Q_EMIT PlayStateChanged();
         return;
     }
@@ -393,7 +409,7 @@ void RenderPanel::updatePlay()
         // Set before EndPlay reports the end, so the workspace can offer a separate window.
         mPlayUnavailableReason = isRefused == true ? reason : QString();
         EndPlay();
-        Status_->setText(reason);
+        setStatus(reason, StatusKind::Failure);
     }
 #endif
 }
@@ -443,17 +459,19 @@ void RenderPanel::SetWorld(const QString& root, const WorldDocument* world)
     Refresh_->setEnabled(loaded);
     if (isAwaitingScene == true)
     {
-        Status_->setText(QStringLiteral("No scene imported yet. Import scene… cooks a scene into this World."));
+        setStatus(QStringLiteral("No scene imported yet. Import scene… cooks a scene into this World."),
+                  StatusKind::Notice);
         return;
     }
-    Status_->setText(
-        loaded ? QStringLiteral("Valid fields update the viewport; Apply commits them. Games own runtime binding.")
-               : QStringLiteral("Open a World with project render bindings to preview 3D."));
+    setStatus(loaded
+                  ? QStringLiteral("Valid fields update the viewport; Apply commits them. Games own runtime binding.")
+                  : QStringLiteral("Open a World with project render bindings to preview 3D."),
+              StatusKind::Progress);
 }
 void RenderPanel::ShowSceneFailure(const QString& error)
 {
     Viewport_->ClearFrame(QStringLiteral("Scene import failed: ") + error);
-    Status_->setText(QStringLiteral("Scene import failed: ") + error);
+    setStatus(QStringLiteral("Scene import failed: ") + error, StatusKind::Failure);
 }
 bool RenderPanel::Refresh(bool launch)
 {
@@ -469,7 +487,7 @@ bool RenderPanel::Refresh(bool launch)
         QueuedLaunch_ = QueuedLaunch_ || launch || inheritedLaunch;
         return true;
     }
-    Status_->setText(QStringLiteral("Validating World preview and assets… Editing remains available."));
+    setStatus(QStringLiteral("Validating World preview and assets… Editing remains available."), StatusKind::Progress);
     Job_ = new RenderLoadJob(Root_, PreviewWorld_, Generation_, launch, this);
     UpdateTintAction();
     Stop_->setEnabled(true);
@@ -488,11 +506,15 @@ bool RenderPanel::Refresh(bool launch)
         }
         else if (isCurrent == true)
         {
+            // Each edit reloads the preview; a failure the user was already told about is not announced again,
+            // so it does not replace the edit's own message.
+            const bool isNewFailure = finished->Error() != Stale_;
             Stale_ = finished->Error();
-            Status_->setText(
-                Stale_ + (Preview_.Running()
-                              ? QStringLiteral(" Previous preview retained; latest World/assets are not represented.")
-                              : QString()));
+            setStatus(Stale_ +
+                          (Preview_.Running()
+                               ? QStringLiteral(" Previous preview retained; latest World/assets are not represented.")
+                               : QString()),
+                      isNewFailure == true ? StatusKind::Failure : StatusKind::Progress);
         }
         Stop_->setEnabled(Preview_.Running());
         UpdateTintAction();
@@ -539,7 +561,7 @@ bool RenderPanel::publish(const RenderScene& scene, bool shouldLaunch)
     if (Preview_.SetScene(scene) == false)
     {
         Stale_ = Preview_.Status();
-        Status_->setText(Stale_);
+        setStatus(Stale_, StatusKind::Failure);
         return false;
     }
     mShouldUseDefaultCamera = false;
@@ -563,18 +585,20 @@ bool RenderPanel::publish(const RenderScene& scene, bool shouldLaunch)
                 return false;
             }
             Viewport_->ClearFrame(Preview_.Status());
+            Q_EMIT StatusAnnounced(Preview_.Status(), true);
         }
         return true;
     }
     if (Preview_.Running() == false)
     {
-        Status_->setText(
+        setStatus(
             QStringLiteral(
                 "Preview validated: %1 objects, %2 meshes, %3 textures, %4 cameras. Resume viewport starts rendering.")
                 .arg(scene.Objects.size())
                 .arg(scene.Meshes.size())
                 .arg(scene.Textures.size())
-                .arg(scene.Cameras.size()));
+                .arg(scene.Cameras.size()),
+            StatusKind::Progress);
     }
     return true;
 }
@@ -652,6 +676,8 @@ void RenderPanel::CancelTerrainDraft() noexcept
 void RenderPanel::Stop() noexcept
 {
     const bool wasLoadingTerrain = mHasPendingTerrainLoad;
+    // Opening a World stops a viewport that never ran; only pausing a running one is news.
+    const bool wasRunning = Preview_.Running();
     CancelTerrainDraft();
     Preview_.Stop();
     ++Generation_;
@@ -659,7 +685,8 @@ void RenderPanel::Stop() noexcept
     QueuedLaunch_ = false;
     Stop_->setEnabled(false);
     Open_->setEnabled(World_ != nullptr && World_->Loaded());
-    Status_->setText(QStringLiteral("Viewport paused. World data is preserved."));
+    setStatus(QStringLiteral("Viewport paused. World data is preserved."),
+              wasRunning == true ? StatusKind::Notice : StatusKind::Progress);
     if (wasLoadingTerrain == true)
     {
         Stale_ = QStringLiteral("Viewport paused. Resume it and refresh the terrain draft.");
@@ -701,6 +728,15 @@ void RenderPanel::updateNavigationControls()
                 .arg(rig.FollowId.isEmpty() ? QStringLiteral("None") : rig.FollowId));
     }
 }
+void RenderPanel::setStatus(const QString& message, StatusKind kind)
+{
+    Status_->setText(message);
+    mViewportMenuButton->setToolTip(VIEWPORT_MENU_TOOLTIP + QStringLiteral("\n\n") + message);
+    if (kind != StatusKind::Progress)
+    {
+        Q_EMIT StatusAnnounced(message, kind == StatusKind::Failure);
+    }
+}
 void RenderPanel::ShowStatus()
 {
     Open_->setEnabled(World_ != nullptr && World_->Loaded() && Preview_.Running() == false);
@@ -708,11 +744,12 @@ void RenderPanel::ShowStatus()
     // The playing-elsewhere label stays until the game exits.
     if (Preview_.Status().isEmpty() == false && mIsPlayingElsewhere == false)
     {
-        Status_->setText(
-            Preview_.Status() +
-            (Job_ != nullptr ? QStringLiteral(" Loading updated preview data; previous frame is shown.") : QString()) +
-            (Stale_.isEmpty() ? QString()
-                              : QStringLiteral(" Previous preview; latest World/assets rejected: ") + Stale_));
+        setStatus(Preview_.Status() +
+                      (Job_ != nullptr ? QStringLiteral(" Loading updated preview data; previous frame is shown.")
+                                       : QString()) +
+                      (Stale_.isEmpty() ? QString()
+                                        : QStringLiteral(" Previous preview; latest World/assets rejected: ") + Stale_),
+                  StatusKind::Progress);
     }
 }
 } // namespace ludus::editor

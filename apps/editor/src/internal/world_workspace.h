@@ -219,9 +219,11 @@ Q_SIGNALS:
     void PlayRequested(ludus::editor::PlayMode mode);
     /// GetRenderPreview now returns a different viewport renderer (the shown view changed).
     void RenderPreviewChanged();
-    /// The World reported what an edit, import or save did; the window shows it in its status bar.
-    /// @param message One sentence for the user, already including any recovery warning.
-    void StatusMessage(const QString& message);
+    /// The World or its viewport reported what an edit, import, save, pause or Play did; the window shows it in its
+    /// status bar. The World keeps no wrapped status line of its own, so a message never resizes the viewport.
+    /// @param message One or more sentences for the user, already including any recovery warning or repair.
+    /// @param isFailure True for a refusal or failure, which stays shown until another message replaces it.
+    void StatusMessage(const QString& message, bool isFailure);
 
 private:
     bool eventFilter(QObject* watched, QEvent* event) override;

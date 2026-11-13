@@ -635,6 +635,14 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   position, selection, indentation, encoding, line endings, language and
   language-server state; position, language and line endings are clickable to
   change where the current milestone supports it ([code editor](code-editor.md#status-bar)).
+- While the **World** is shown, the status bar reports what an edit, import or
+  save did and when its viewport pauses, plays a game or fails. Edit messages
+  clear after eight seconds; a viewport failure, with its repair, stays until
+  another message replaces it, and the viewport also shows it over its frame.
+  Routine progress such as validation and frame statistics is not announced:
+  the **Viewport** menu button's tooltip holds the latest viewport status. The
+  World keeps no wrapped status line of its own, so a message never resizes the
+  viewport or cancels a held drag or terrain stroke.
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
   ([build settings](render-graph-authoring.md#build-settings)). Its **General**
