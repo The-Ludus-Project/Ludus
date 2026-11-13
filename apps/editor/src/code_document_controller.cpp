@@ -337,9 +337,13 @@ void CodeDocumentController::endOperation()
 
 void CodeDocumentController::captureChange(int32 position, int32 removed, int32 added)
 {
-    // Syntax formats and folding invalidate the layout without changing its text revision.
+    // Syntax formats and folding invalidate the layout without changing its text revision; they report as many
+    // characters removed as added. A text change in one edit block can also keep the revision: setPlainText
+    // reports its clear and then its insertion, so only a same-length report at the same revision is a format.
+    // Thanks to The Qt Company, Qt 6.8 QTextDocument::setPlainText and QTextDocumentPrivate::clear:
+    // https://github.com/qt/qtbase/blob/v6.8.3/src/gui/text/qtextdocument_p.cpp
     const int32 revision = mEditor.document()->revision();
-    if (revision == mProjectionRevision)
+    if (revision == mProjectionRevision && removed == added)
     {
         return;
     }

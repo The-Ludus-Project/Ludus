@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QColor>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -193,6 +194,44 @@ TEST_CASE("multi-line commands are one authoritative history entry", "[editor][t
     controller.Synchronize();
     CHECK(editor.toPlainText() == QStringLiteral("one\ntwo\nthree"));
     CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("replacing the whole text keeps the inserted text in the bound document", "[editor][text][history]")
+{
+    // setPlainText reports its clear and its insertion at one document revision; both must reach the owner.
+    CodeEditor editor;
+    MemoryCodeDocument document(QByteArrayLiteral("float3 Red() { return float3(1, 0, 0); }"));
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    REQUIRE(editor.toPlainText() == QStringLiteral("float3 Red() { return float3(1, 0, 0); }"));
+    editor.setPlainText(QStringLiteral("float3 Blue() { return float3(0, 0, 1); }"));
+    CHECK(document.GetState().Text == QByteArrayLiteral("float3 Blue() { return float3(0, 0, 1); }"));
+    CHECK(editor.toPlainText() == QStringLiteral("float3 Blue() { return float3(0, 0, 1); }"));
+    // The replacement is one edit: a single undo restores the previous text, not an empty document.
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetState().Text == QByteArrayLiteral("float3 Red() { return float3(1, 0, 0); }"));
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("syntax reapply survives the document being replaced before its next slice", "[editor][text][syntax]")
+{
+    // A pending reapply resumes from a block of the replaced text; it must look the block up again.
+    CodeEditor editor;
+    QString longSource;
+    constexpr int32 SOURCE_LINE_COUNT = 2000;
+    for (int32 line = 0; line < SOURCE_LINE_COUNT; ++line)
+    {
+        longSource += QStringLiteral("float value%1 = %1.0;\n").arg(line);
+    }
+    editor.setPlainText(longSource);
+    editor.SetLanguage(CodeLanguage::Slang);
+    QCoreApplication::processEvents();
+    editor.SetLanguage(CodeLanguage::PlainText);
+    editor.SetLanguage(CodeLanguage::Slang);
+    editor.setPlainText(QStringLiteral("float shorter = 1.0;"));
+    QTest::qWait(0);
+    QTest::qWait(0);
+    CHECK(editor.toPlainText() == QStringLiteral("float shorter = 1.0;"));
 }
 
 TEST_CASE("Unicode input and CRLF survive document history and formatting", "[editor][text][history]")

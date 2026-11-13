@@ -67,7 +67,9 @@ private:
     void reapplySlice();
     const CodeSyntaxService& mSyntax;
     QTimer mReapply;
-    QTextBlock mNextBlock;
+    // The next block to reapply, by number. A stored QTextBlock would keep a fragment index that an edit or a
+    // replaced document frees between slices.
+    foundation::int32 mNextBlockNumber = 0;
     foundation::int32 mFirstVisibleLine = 0;
     foundation::int32 mLastVisibleLine = 0;
     bool mIsApplyingExplicitly = false;
