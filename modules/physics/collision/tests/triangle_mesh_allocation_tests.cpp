@@ -8,7 +8,9 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/physics/collision/collision_world.h>
 #include <ludus/physics/collision/convex_shape.h>
+#include <ludus/physics/collision/geometry_store.h>
 #include <ludus/physics/collision/queries.h>
 #include <ludus/physics/collision/status.h>
 #include <ludus/physics/collision/triangle_mesh.h>
@@ -347,4 +349,92 @@ TEST_CASE("Queries allocate nothing", "[collision][alloc]")
     CHECK(isEverySuccess == true);
     CHECK(gCounters.Allocations == 0);
     CHECK(gCounters.Frees == 0);
+}
+
+TEST_CASE("Store and world initialization fail allocations without installing state", "[collision][alloc][world]")
+{
+    constexpr uint32 CAPACITY = 16;
+    GeometryStore store;
+    for (long failedAllocation = 0;; ++failedAllocation)
+    {
+        gFailAfter = failedAllocation;
+        const Status status = store.TryInitialize({ .MaxShapes = CAPACITY });
+        gFailAfter = -1;
+        if (status == Status::Success)
+        {
+            CHECK(failedAllocation > 0);
+            break;
+        }
+        REQUIRE(status == Status::AllocationFailure);
+        REQUIRE(store.IsInitialized() == false);
+    }
+    CollisionWorld world;
+    for (long failedAllocation = 0;; ++failedAllocation)
+    {
+        gFailAfter = failedAllocation;
+        const Status status = world.TryInitialize(store, { .MaxColliders = CAPACITY });
+        gFailAfter = -1;
+        if (status == Status::Success)
+        {
+            CHECK(failedAllocation > 0);
+            break;
+        }
+        REQUIRE(status == Status::AllocationFailure);
+        REQUIRE(world.IsInitialized() == false);
+    }
+}
+
+TEST_CASE("Collider changes and world queries allocate nothing", "[collision][alloc][world]")
+{
+    RandomStream heights;
+    REQUIRE(heights.TryReseed(21, 0) == true);
+    GeometryStore store;
+    REQUIRE(store.TryInitialize({ .MaxShapes = 4 }) == Status::Success);
+    TriangleMesh terrain = CookOrFail(MakeGrid(16, &heights));
+    CollisionWorld world;
+    REQUIRE(world.TryInitialize(store, { .MaxColliders = 8 }) == Status::Success);
+    ConvexHull hull;
+    REQUIRE(ConvexHull::TryCook(GetHullSource(MakeHullPoints(0.3f)), hull).Result == Status::Success);
+    gCounters = {};
+    isTrackingAllocations = true;
+    ShapeHandle shape;
+    bool isEverySuccess = store.TryAddTriangleMesh(ludus::foundation::Move(terrain), shape) == Status::Success;
+    ColliderHandle collider;
+    isEverySuccess = isEverySuccess == true && world.TryCreateCollider({ .Shape = shape }, collider) == Status::Success;
+    isEverySuccess = isEverySuccess == true &&
+                     world.TrySetColliderPose(collider, { .PositionWorld = {1.0, 0.0, 2.0} }) == Status::Success;
+    {
+        CollisionReadView view;
+        isEverySuccess = isEverySuccess == true && world.TryAcquireReadView(view) == Status::Success;
+        RandomStream random;
+        isEverySuccess = isEverySuccess == true && random.TryReseed(22, 0) == true;
+        constexpr uint32 QUERY_COUNT = 200;
+        for (uint32 query = 0; query < QUERY_COUNT; ++query)
+        {
+            const WorldRaycastInput ray
+            {
+                .OriginWorld = {static_cast<float64>(NextInRange(random, 1.0f, 17.0f)),
+                                2.0,
+                                static_cast<float64>(NextInRange(random, 2.0f, 18.0f))},
+                .DirectionWorld = NextDirection(random),
+                .MaxDistanceMeters = 30.0,
+            };
+            WorldRaycastResult rayResult;
+            isEverySuccess = isEverySuccess == true && view.RaycastClosest(ray, rayResult) == Status::Success;
+            const WorldConvexCastInput cast
+            {
+                .Shape = query % 2 == 0 ? MakeHullShape(hull) : MakeCapsuleShape(0.4, 0.2),
+                .PositionWorld = ray.OriginWorld,
+                .TranslationWorld = ray.DirectionWorld * 5.0,
+            };
+            WorldConvexCastResult castResult;
+            isEverySuccess = isEverySuccess == true && view.CastConvexClosest(cast, castResult) == Status::Success;
+        }
+    }
+    isEverySuccess = isEverySuccess == true && world.TryDestroyCollider(collider) == Status::Success;
+    isEverySuccess = isEverySuccess == true && store.TryRelease(shape) == Status::Success;
+    isTrackingAllocations = false;
+    CHECK(isEverySuccess == true);
+    CHECK(gCounters.Allocations == 0);
+    // Releasing the last lease frees the mesh's storage: frees are expected, allocations are not.
 }

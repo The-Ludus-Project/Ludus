@@ -1,6 +1,7 @@
 #include <ludus/physics/collision/triangle_mesh.h>
 
 #include "internal/mesh_arithmetic.h"
+#include "internal/query_validation.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -50,31 +51,6 @@ bool IsBetter(const RayCandidate& candidate, const RayCandidate& best) noexcept
     }
     return candidate.Distance < best.Distance ||
            (candidate.Distance == best.Distance && candidate.TriangleIndex < best.TriangleIndex);
-}
-
-Status ValidateRay(const RaycastInput& input) noexcept
-{
-    if (math::IsFinite(input.OriginMesh) == false || math::IsFinite(input.DirectionMesh) == false ||
-        math::IsFinite(input.MaxDistanceMeters) == false)
-    {
-        return Status::NonFiniteInput;
-    }
-    const bool isKnownFacePolicy = input.FacePolicy == TriangleFacePolicy::TwoSided ||
-                                   input.FacePolicy == TriangleFacePolicy::FrontFacesOnly ||
-                                   input.FacePolicy == TriangleFacePolicy::BackFacesOnly;
-    const bool isKnownTraversal =
-        input.Traversal == QueryTraversal::Hierarchy || input.Traversal == QueryTraversal::AllTriangles;
-    if (isKnownFacePolicy == false || isKnownTraversal == false || input.MaxDistanceMeters <= 0 ||
-        math::Abs(math::LengthSquared(input.DirectionMesh) - 1) > UNIT_DIRECTION_SQUARED_TOLERANCE)
-    {
-        return Status::InvalidArgument;
-    }
-    if (internal::IsWithinMagnitude(input.OriginMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false ||
-        input.MaxDistanceMeters > MAX_QUERY_DISTANCE_METERS)
-    {
-        return Status::OutOfRange;
-    }
-    return Status::Success;
 }
 
 // Thanks to Sven Woop, Carsten Benthin and Ingo Wald, "Watertight Ray/Triangle
@@ -230,6 +206,31 @@ bool IsFaceAdmitted(TriangleFacePolicy policy, float64 alignment) noexcept
 }
 } // namespace
 
+Status internal::ValidateRaycast(const RaycastInput& input) noexcept
+{
+    if (math::IsFinite(input.OriginMesh) == false || math::IsFinite(input.DirectionMesh) == false ||
+        math::IsFinite(input.MaxDistanceMeters) == false)
+    {
+        return Status::NonFiniteInput;
+    }
+    const bool isKnownFacePolicy = input.FacePolicy == TriangleFacePolicy::TwoSided ||
+                                   input.FacePolicy == TriangleFacePolicy::FrontFacesOnly ||
+                                   input.FacePolicy == TriangleFacePolicy::BackFacesOnly;
+    const bool isKnownTraversal =
+        input.Traversal == QueryTraversal::Hierarchy || input.Traversal == QueryTraversal::AllTriangles;
+    if (isKnownFacePolicy == false || isKnownTraversal == false || input.MaxDistanceMeters <= 0 ||
+        math::Abs(math::LengthSquared(input.DirectionMesh) - 1) > UNIT_DIRECTION_SQUARED_TOLERANCE)
+    {
+        return Status::InvalidArgument;
+    }
+    if (internal::IsWithinMagnitude(input.OriginMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false ||
+        input.MaxDistanceMeters > MAX_QUERY_DISTANCE_METERS)
+    {
+        return Status::OutOfRange;
+    }
+    return Status::Success;
+}
+
 /// Closest raycast traversal for TriangleMesh::RaycastClosest.
 class TriangleMeshRaycaster final
 {
@@ -367,7 +368,7 @@ TriangleMeshRaycaster::Cast(const TriangleMesh& mesh, const RaycastInput& input,
     {
         return Status::NoGeometry;
     }
-    const Status validation = ValidateRay(input);
+    const Status validation = internal::ValidateRaycast(input);
     if (validation != Status::Success)
     {
         return validation;

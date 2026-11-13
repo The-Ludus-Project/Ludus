@@ -1,8 +1,10 @@
 #include <ludus/physics/collision/triangle_mesh.h>
 
+#include "internal/convex_cast.h"
 #include "internal/convex_support.h"
 #include "internal/gjk_simplex.h"
 #include "internal/mesh_arithmetic.h"
+#include "internal/shape_validation.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -92,63 +94,6 @@ bool IsBetter(const ConvexCandidate& candidate, const ConvexCandidate& best) noe
     return candidate.TriangleIndex < best.TriangleIndex;
 }
 
-bool IsKnownKind(ConvexShapeKind kind) noexcept
-{
-    return kind == ConvexShapeKind::Sphere || kind == ConvexShapeKind::Box || kind == ConvexShapeKind::Capsule ||
-           kind == ConvexShapeKind::Hull;
-}
-
-bool AreShapeFieldsFinite(const ConvexShape& shape) noexcept
-{
-    switch (shape.Kind)
-    {
-        case ConvexShapeKind::Sphere:
-            return math::IsFinite(shape.RadiusMeters) == true;
-        case ConvexShapeKind::Capsule:
-            return math::IsFinite(shape.RadiusMeters) == true && math::IsFinite(shape.HalfHeightMeters) == true;
-        case ConvexShapeKind::Box:
-            return math::IsFinite(shape.HalfExtentsMeters) == true;
-        case ConvexShapeKind::Hull:
-            return true;
-    }
-    return false;
-}
-
-bool AreShapeFieldsAdmitted(const ConvexShape& shape) noexcept
-{
-    switch (shape.Kind)
-    {
-        case ConvexShapeKind::Sphere:
-            return shape.RadiusMeters > 0.0;
-        case ConvexShapeKind::Capsule:
-            return shape.RadiusMeters > 0.0 && shape.HalfHeightMeters >= 0.0;
-        case ConvexShapeKind::Box:
-            return shape.HalfExtentsMeters.X > 0.0 && shape.HalfExtentsMeters.Y > 0.0 &&
-                   shape.HalfExtentsMeters.Z > 0.0;
-        case ConvexShapeKind::Hull:
-            return shape.HullOrNull != nullptr && shape.HullOrNull->IsCooked() == true;
-    }
-    return false;
-}
-
-bool AreShapeFieldsInRange(const ConvexShape& shape) noexcept
-{
-    switch (shape.Kind)
-    {
-        case ConvexShapeKind::Sphere:
-            return shape.RadiusMeters <= MAX_QUERY_DISTANCE_METERS;
-        case ConvexShapeKind::Capsule:
-            return shape.RadiusMeters <= MAX_QUERY_DISTANCE_METERS &&
-                   shape.HalfHeightMeters <= MAX_QUERY_DISTANCE_METERS;
-        case ConvexShapeKind::Box:
-            return internal::IsWithinMagnitude(shape.HalfExtentsMeters, MAX_QUERY_DISTANCE_METERS) == true;
-        case ConvexShapeKind::Hull:
-            // Cooked hull points already lie within MAX_COORDINATE_METERS.
-            return true;
-    }
-    return false;
-}
-
 bool IsOrientationFinite(math::Quaternion orientation) noexcept
 {
     return math::IsFinite(orientation.X) == true && math::IsFinite(orientation.Y) == true &&
@@ -164,14 +109,16 @@ float64 GetNormSquared(math::Quaternion orientation) noexcept
     return x * x + y * y + z * z + w * w;
 }
 
-Status ValidateConvexCast(const ConvexCastInput& input) noexcept
+} // namespace
+
+Status internal::ValidateConvexCast(const ConvexCastInput& input) noexcept
 {
-    if (IsKnownKind(input.Shape.Kind) == false)
+    if (internal::IsKnownKind(input.Shape.Kind) == false)
     {
         return Status::InvalidArgument;
     }
     if (math::IsFinite(input.PositionMesh) == false || math::IsFinite(input.TranslationMesh) == false ||
-        IsOrientationFinite(input.OrientationMesh) == false || AreShapeFieldsFinite(input.Shape) == false)
+        IsOrientationFinite(input.OrientationMesh) == false || internal::AreShapeFieldsFinite(input.Shape) == false)
     {
         return Status::NonFiniteInput;
     }
@@ -183,75 +130,40 @@ Status ValidateConvexCast(const ConvexCastInput& input) noexcept
     const bool isUnitOrientation =
         math::Abs(GetNormSquared(input.OrientationMesh) - 1.0) <= UNIT_QUATERNION_SQUARED_TOLERANCE;
     if (isKnownPolicy == false || isKnownTraversal == false || isUnitOrientation == false ||
-        AreShapeFieldsAdmitted(input.Shape) == false)
+        internal::AreShapeFieldsAdmitted(input.Shape) == false)
     {
         return Status::InvalidArgument;
     }
     if (internal::IsWithinMagnitude(input.PositionMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false ||
         internal::IsWithinMagnitude(input.TranslationMesh, MAX_QUERY_DISTANCE_METERS) == false ||
-        AreShapeFieldsInRange(input.Shape) == false)
+        internal::AreShapeFieldsInRange(input.Shape) == false)
     {
         return Status::OutOfRange;
     }
     return Status::Success;
 }
 
-internal::PosedConvex MakePosedConvex(const ConvexCastInput& input) noexcept
+namespace
 {
-    internal::PosedConvex shape;
-    shape.Kind = input.Shape.Kind;
-    const bool isRotated = internal::TrySetRotation(input.OrientationMesh, shape);
-    LUDUS_ASSERT(isRotated == true);
-    (void)isRotated;
-    switch (input.Shape.Kind)
-    {
-        case ConvexShapeKind::Sphere:
-            shape.MarginMeters = input.Shape.RadiusMeters;
-            break;
-        case ConvexShapeKind::Capsule:
-            shape.MarginMeters = input.Shape.RadiusMeters;
-            shape.HalfHeightMeters = input.Shape.HalfHeightMeters;
-            break;
-        case ConvexShapeKind::Box:
-            shape.HalfExtentsShape = input.Shape.HalfExtentsMeters;
-            break;
-        case ConvexShapeKind::Hull:
-            shape.HullOrNull = input.Shape.HullOrNull;
-            shape.InteriorMesh = internal::ToMeshAxes(shape, input.Shape.HullOrNull->GetInteriorPointShape());
-            break;
-    }
-    return shape;
-}
 
-ConvexCastContext MakeConvexCastContext(const ConvexCastInput& input, const math::Aabb3& boundsMesh) noexcept
+ConvexCastContext MakeConvexCastContext(const internal::PosedConvexCast& request,
+                                        const math::Aabb3& boundsMesh) noexcept
 {
     ConvexCastContext cast;
-    cast.Shape = MakePosedConvex(input);
-    cast.PositionMesh = input.PositionMesh;
-    cast.TranslationMesh = input.TranslationMesh;
-    cast.OverlapPolicy = input.OverlapPolicy;
-    math::Vector3d halfExtentsMesh;
-    const StaticArray<math::Vector3d, internal::AXIS_COUNT> axes{math::Vector3d{1, 0, 0},
-                                                                 math::Vector3d{0, 1, 0},
-                                                                 math::Vector3d{0, 0, 1}};
-    StaticArray<float64, internal::AXIS_COUNT> centers{};
-    StaticArray<float64, internal::AXIS_COUNT> halves{};
-    for (uint32 axis = 0; axis < internal::AXIS_COUNT; ++axis)
-    {
-        const float64 maximum = internal::GetComponent(internal::GetCoreSupport(cast.Shape, axes[axis]), axis);
-        const float64 minimum = internal::GetComponent(internal::GetCoreSupport(cast.Shape, -axes[axis]), axis);
-        centers[axis] = HALF * (maximum + minimum);
-        halves[axis] = HALF * (maximum - minimum) + cast.Shape.MarginMeters;
-    }
-    cast.BoundsCenterMesh = {centers[0], centers[1], centers[internal::Z_AXIS]};
-    halfExtentsMesh = {halves[0], halves[1], halves[internal::Z_AXIS]};
-    const float64 meshScale = math::Max(internal::GetMaxMagnitude(Widen(boundsMesh.Min) - input.PositionMesh),
-                                        internal::GetMaxMagnitude(Widen(boundsMesh.Max) - input.PositionMesh));
-    const float64 scale = meshScale + internal::GetMaxMagnitude(input.TranslationMesh) +
-                          internal::GetMaxMagnitude(halfExtentsMesh) + internal::GetMaxMagnitude(cast.BoundsCenterMesh);
+    cast.Shape = request.Shape;
+    cast.PositionMesh = request.PositionMesh;
+    cast.TranslationMesh = request.TranslationMesh;
+    cast.OverlapPolicy = request.OverlapPolicy;
+    const internal::PosedBounds bounds = internal::GetPosedBounds(cast.Shape);
+    cast.BoundsCenterMesh = bounds.CenterMesh;
+    const float64 meshScale = math::Max(internal::GetMaxMagnitude(Widen(boundsMesh.Min) - request.PositionMesh),
+                                        internal::GetMaxMagnitude(Widen(boundsMesh.Max) - request.PositionMesh));
+    const float64 scale = meshScale + internal::GetMaxMagnitude(request.TranslationMesh) +
+                          internal::GetMaxMagnitude(bounds.HalfExtentsMesh) +
+                          internal::GetMaxMagnitude(bounds.CenterMesh);
     cast.ToleranceMeters = scale * CONVEX_CAST_RELATIVE_TOLERANCE;
     const float64 widening = cast.ToleranceMeters + scale * internal::TRAVERSAL_RELATIVE_ALLOWANCE;
-    cast.ReachMesh = halfExtentsMesh + math::Vector3d{widening, widening, widening};
+    cast.ReachMesh = bounds.HalfExtentsMesh + math::Vector3d{widening, widening, widening};
     return cast;
 }
 
@@ -449,6 +361,8 @@ class TriangleMeshConvexCaster final
 {
 public:
     static Status Cast(const TriangleMesh& mesh, const ConvexCastInput& input, ConvexCastResult& outResult) noexcept;
+    static Status
+    CastPosed(const TriangleMesh& mesh, const internal::PosedConvexCast& request, ConvexCastResult& outResult) noexcept;
 
 private:
     /// Visit outcome: Rejected and NotConverged stop the cast.
@@ -571,15 +485,43 @@ Status TriangleMeshConvexCaster::Cast(const TriangleMesh& mesh,
     {
         return Status::NoGeometry;
     }
-    const Status validation = ValidateConvexCast(input);
+    const Status validation = internal::ValidateConvexCast(input);
     if (validation != Status::Success)
     {
         return validation;
     }
-    const ConvexCastContext cast = MakeConvexCastContext(input, mesh.GetBoundsMesh());
+    internal::PosedConvex rotation;
+    const bool isRotated = internal::TrySetRotation(input.OrientationMesh, rotation);
+    LUDUS_ASSERT(isRotated == true);
+    (void)isRotated;
+    const internal::PosedConvexCast request
+    {
+        .Shape = internal::PoseConvexShape(input.Shape, rotation),
+        .PositionMesh = input.PositionMesh,
+        .TranslationMesh = input.TranslationMesh,
+        .OverlapPolicy = input.OverlapPolicy,
+        .Traversal = input.Traversal,
+    };
+    return CastPosed(mesh, request, outResult);
+}
+
+Status TriangleMeshConvexCaster::CastPosed(const TriangleMesh& mesh,
+                                           const internal::PosedConvexCast& request,
+                                           ConvexCastResult& outResult) noexcept
+{
+    if (mesh.IsCooked() == false)
+    {
+        return Status::NoGeometry;
+    }
+    if (internal::IsWithinMagnitude(request.PositionMesh, static_cast<float64>(MAX_COORDINATE_METERS)) == false ||
+        internal::IsWithinMagnitude(request.TranslationMesh, MAX_QUERY_DISTANCE_METERS) == false)
+    {
+        return Status::OutOfRange;
+    }
+    const ConvexCastContext cast = MakeConvexCastContext(request, mesh.GetBoundsMesh());
     ConvexCandidate best;
     Visit visit = Visit::Continue;
-    if (input.Traversal == QueryTraversal::AllTriangles)
+    if (request.Traversal == QueryTraversal::AllTriangles)
     {
         for (const TriangleMesh::Triangle& triangle : mesh.mTriangles)
         {
@@ -610,4 +552,60 @@ Status TriangleMesh::CastConvexClosest(const ConvexCastInput& input, ConvexCastR
 {
     return TriangleMeshConvexCaster::Cast(*this, input, outResult);
 }
+
+namespace internal
+{
+PosedConvex PoseConvexShape(const ConvexShape& shape, const PosedConvex& rotation) noexcept
+{
+    PosedConvex posed;
+    posed.Kind = shape.Kind;
+    posed.AxisXMesh = rotation.AxisXMesh;
+    posed.AxisYMesh = rotation.AxisYMesh;
+    posed.AxisZMesh = rotation.AxisZMesh;
+    switch (shape.Kind)
+    {
+        case ConvexShapeKind::Sphere:
+            posed.MarginMeters = shape.RadiusMeters;
+            break;
+        case ConvexShapeKind::Capsule:
+            posed.MarginMeters = shape.RadiusMeters;
+            posed.HalfHeightMeters = shape.HalfHeightMeters;
+            break;
+        case ConvexShapeKind::Box:
+            posed.HalfExtentsShape = shape.HalfExtentsMeters;
+            break;
+        case ConvexShapeKind::Hull:
+            posed.HullOrNull = shape.HullOrNull;
+            posed.InteriorMesh = ToMeshAxes(posed, shape.HullOrNull->GetInteriorPointShape());
+            break;
+    }
+    return posed;
+}
+
+PosedBounds GetPosedBounds(const PosedConvex& shape) noexcept
+{
+    const StaticArray<math::Vector3d, AXIS_COUNT> axes{math::Vector3d{1, 0, 0},
+                                                       math::Vector3d{0, 1, 0},
+                                                       math::Vector3d{0, 0, 1}};
+    StaticArray<float64, AXIS_COUNT> centers{};
+    StaticArray<float64, AXIS_COUNT> halves{};
+    for (uint32 axis = 0; axis < AXIS_COUNT; ++axis)
+    {
+        const float64 maximum = GetComponent(GetCoreSupport(shape, axes[axis]), axis);
+        const float64 minimum = GetComponent(GetCoreSupport(shape, -axes[axis]), axis);
+        centers[axis] = HALF * (maximum + minimum);
+        halves[axis] = HALF * (maximum - minimum) + shape.MarginMeters;
+    }
+    return
+    {
+        .CenterMesh = {centers[0], centers[1], centers[Z_AXIS]},
+        .HalfExtentsMesh = {halves[0], halves[1], halves[Z_AXIS]},
+    };
+}
+
+Status CastPosedConvex(const TriangleMesh& mesh, const PosedConvexCast& request, ConvexCastResult& outResult) noexcept
+{
+    return TriangleMeshConvexCaster::CastPosed(mesh, request, outResult);
+}
+} // namespace internal
 } // namespace ludus::physics::collision

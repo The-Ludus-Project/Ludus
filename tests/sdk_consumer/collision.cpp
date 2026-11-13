@@ -1,7 +1,9 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/physics/collision/collision_world.h>
 #include <ludus/physics/collision/convex_shape.h>
+#include <ludus/physics/collision/geometry_store.h>
 #include <ludus/physics/collision/triangle_mesh.h>
 
 bool ExerciseInstalledCollision() noexcept
@@ -79,10 +81,41 @@ bool ExerciseInstalledCollision() noexcept
     // Both land when their lowest point reaches the floor, half way along the translation.
     constexpr float64 CONTACT_FRACTION = 0.5;
     constexpr float64 FRACTION_TOLERANCE = 1.0e-9;
-    return mesh.CastConvexClosest(sphere, sphereContact) == Status::Success && sphereContact.HasHit == true &&
-           sphereContact.Fraction > CONTACT_FRACTION - FRACTION_TOLERANCE &&
-           sphereContact.Fraction < CONTACT_FRACTION + FRACTION_TOLERANCE &&
-           mesh.CastConvexClosest(tetrahedronCast, hullContact) == Status::Success && hullContact.HasHit == true &&
-           hullContact.Fraction > CONTACT_FRACTION - FRACTION_TOLERANCE &&
-           hullContact.Fraction < CONTACT_FRACTION + FRACTION_TOLERANCE;
+    if (mesh.CastConvexClosest(sphere, sphereContact) != Status::Success || sphereContact.HasHit == false ||
+        sphereContact.Fraction < CONTACT_FRACTION - FRACTION_TOLERANCE ||
+        sphereContact.Fraction > CONTACT_FRACTION + FRACTION_TOLERANCE ||
+        mesh.CastConvexClosest(tetrahedronCast, hullContact) != Status::Success || hullContact.HasHit == false ||
+        hullContact.Fraction < CONTACT_FRACTION - FRACTION_TOLERANCE ||
+        hullContact.Fraction > CONTACT_FRACTION + FRACTION_TOLERANCE)
+    {
+        return false;
+    }
+    // A world with one collider that leases the quad, raised by one meter, queried through a read view.
+    GeometryStore store;
+    CollisionWorld world;
+    ShapeHandle shape;
+    ColliderHandle collider;
+    constexpr ludus::foundation::uint64 BINDING = 17;
+    if (store.TryInitialize({ .MaxShapes = 1 }) != Status::Success ||
+        store.TryAddTriangleMesh(ludus::foundation::Move(mesh), shape) != Status::Success ||
+        world.TryInitialize(store, { .MaxColliders = 1 }) != Status::Success ||
+        world.TryCreateCollider({ .Shape = shape, .Pose = { .PositionWorld = {0.0, 1.0, 0.0} }, .Binding = BINDING },
+                                collider) != Status::Success)
+    {
+        return false;
+    }
+    CollisionReadView view;
+    WorldRaycastResult worldHit;
+    const bool isHit = world.TryAcquireReadView(view) == Status::Success &&
+                       view.RaycastClosest(
+                           {
+                               .OriginWorld = {0.25, 3.0, 0.75},
+                               .DirectionWorld = {0.0, -1.0, 0.0},
+                               .MaxDistanceMeters = 5.0,
+                           },
+                           worldHit) == Status::Success &&
+                       worldHit.HasHit == true && worldHit.DistanceMeters == 2.0 && worldHit.Collider == collider &&
+                       worldHit.Binding == BINDING;
+    view.Release();
+    return isHit == true && world.TryDestroyCollider(collider) == Status::Success;
 }
