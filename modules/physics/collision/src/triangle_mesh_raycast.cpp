@@ -235,7 +235,10 @@ Status internal::ValidateRaycast(const RaycastInput& input) noexcept
 class TriangleMeshRaycaster final
 {
 public:
-    static Status Cast(const TriangleMesh& mesh, const RaycastInput& input, RaycastResult& outResult) noexcept;
+    static Status Cast(const TriangleMesh& mesh,
+                       const RaycastInput& input,
+                       bool shouldStopAtFirstHit,
+                       RaycastResult& outResult) noexcept;
 
 private:
     struct PendingNode final
@@ -250,7 +253,10 @@ private:
                          const RayContext& ray,
                          const TriangleMesh::Node& node,
                          RayCandidate& inoutBest) noexcept;
-    static void traverse(const TriangleMesh& mesh, const RayContext& ray, RayCandidate& inoutBest) noexcept;
+    static void traverse(const TriangleMesh& mesh,
+                         const RayContext& ray,
+                         bool shouldStopAtFirstHit,
+                         RayCandidate& inoutBest) noexcept;
     static RaycastResult makeResult(const TriangleMesh& mesh, const RayContext& ray, const RayCandidate& best) noexcept;
 };
 
@@ -293,7 +299,10 @@ void TriangleMeshRaycaster::testLeaf(const TriangleMesh& mesh,
     }
 }
 
-void TriangleMeshRaycaster::traverse(const TriangleMesh& mesh, const RayContext& ray, RayCandidate& inoutBest) noexcept
+void TriangleMeshRaycaster::traverse(const TriangleMesh& mesh,
+                                     const RayContext& ray,
+                                     bool shouldStopAtFirstHit,
+                                     RayCandidate& inoutBest) noexcept
 {
     // Preorder traversal keeps at most one deferred sibling per level.
     StaticArray<PendingNode, MAX_TRIANGLE_MESH_HIERARCHY_DEPTH + 1> pending{};
@@ -316,6 +325,10 @@ void TriangleMeshRaycaster::traverse(const TriangleMesh& mesh, const RayContext&
         if (node.Count > 0)
         {
             testLeaf(mesh, ray, node, inoutBest);
+            if (shouldStopAtFirstHit == true && inoutBest.HasHit == true)
+            {
+                return;
+            }
             continue;
         }
         const uint32 leftNode = visit.Node + 1;
@@ -361,8 +374,10 @@ TriangleMeshRaycaster::makeResult(const TriangleMesh& mesh, const RayContext& ra
     return result;
 }
 
-Status
-TriangleMeshRaycaster::Cast(const TriangleMesh& mesh, const RaycastInput& input, RaycastResult& outResult) noexcept
+Status TriangleMeshRaycaster::Cast(const TriangleMesh& mesh,
+                                   const RaycastInput& input,
+                                   bool shouldStopAtFirstHit,
+                                   RaycastResult& outResult) noexcept
 {
     if (mesh.IsCooked() == false)
     {
@@ -381,11 +396,15 @@ TriangleMeshRaycaster::Cast(const TriangleMesh& mesh, const RaycastInput& input,
         for (uint32 stored = 0; stored < triangleCount; ++stored)
         {
             testTriangle(mesh, ray, stored, best);
+            if (shouldStopAtFirstHit == true && best.HasHit == true)
+            {
+                break;
+            }
         }
     }
     else
     {
-        traverse(mesh, ray, best);
+        traverse(mesh, ray, shouldStopAtFirstHit, best);
     }
     outResult = makeResult(mesh, ray, best);
     return Status::Success;
@@ -393,6 +412,11 @@ TriangleMeshRaycaster::Cast(const TriangleMesh& mesh, const RaycastInput& input,
 
 Status TriangleMesh::RaycastClosest(const RaycastInput& input, RaycastResult& outResult) const noexcept
 {
-    return TriangleMeshRaycaster::Cast(*this, input, outResult);
+    return TriangleMeshRaycaster::Cast(*this, input, false, outResult);
+}
+
+Status internal::RaycastAnyHit(const TriangleMesh& mesh, const RaycastInput& input, RaycastResult& outResult) noexcept
+{
+    return TriangleMeshRaycaster::Cast(mesh, input, true, outResult);
 }
 } // namespace ludus::physics::collision
