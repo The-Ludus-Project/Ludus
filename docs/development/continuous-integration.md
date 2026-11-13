@@ -82,17 +82,17 @@ the batch must reject it before `main` advances. Inspect failed batch diagnostic
 revert through a `develop` PR, as described in [recovery](#recover-a-failed-batch).
 Do not bypass full qualification to clear a backlog.
 
-`batch-wake.yml` requests a run of `batch-ci.yml` on `main` when a push advances
-`develop`. The wake job uses its Actions token to dispatch and does not check out
-code or receive the promotion credential. The coordinator also runs at minutes
-13 and 43 of each hour as a fallback. When `BATCH_CI_ENABLED` is `true`, it
-captures the current `main` and `develop` commit SHAs.
+`.github/workflows/batch-ci.yml` wakes at minutes 13 and 43 of each hour. Merging
+into `develop` does not start a batch; the next tick picks up every change merged
+since the last one. When `BATCH_CI_ENABLED` is `true`, it captures the current
+`main` and `develop` commit SHAs.
 If they differ and `develop` descends from `main`, it records the candidate in
 `ci/last-batch-attempt` and invokes the existing validation workflows with that
 exact SHA. The original workflow definitions come from `main`; source, local
 build actions and tests come from the captured candidate. Changed workflows are
 syntax-checked before admission and take effect as coordinator definitions after
-promotion. GitHub can delay or drop fallback ticks when it is busy.
+promotion. Periodic workflows can start late when GitHub is busy; 30 minutes is
+the intended cadence, not a completion deadline.
 
 A batch that promotes coordinator edits still executes its original workflow
 revision through the last job. Verify changed coordinator behavior with a later
@@ -118,11 +118,9 @@ or rebasing that PR discards the ancestry link; promotion rejects a candidate
 that diverges from `main`, even when the files contain the same repair.
 
 Only one batch is active. New `develop` commits do not cancel it or change its input.
-Concurrent requests coalesce into at most one pending run. If a request starts
-with a stale workflow revision because `main` advanced, it requests a fresh run
-on `main` when an eligible candidate remains. The stale run records no attempt.
-The coordinator still checks the candidate against the attempt marker. An
-explicit infrastructure retry retains its retry flag when handed off.
+Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
+before `main` advanced records no attempt and skips, letting the next tick use the
+new stable revision.
 Native, SDK, Linux wiki, both macOS documentation checks, browser, both
 threading checks and Windows workflows must all succeed. Filesystem block-prefix
 recovery additionally runs when its workflow, persistence implementation, recovery
@@ -245,11 +243,10 @@ Finish them after the migration PR lands, before accepting ordinary PRs into dev
 6. Give `ci/last-batch-attempt` its own ruleset restricting creation, updates and
    deletion to the same App, with non-fast-forward protection. This ref records
    attempts, including failures, not successful qualification. The trusted snapshot
-   job uses the main-only environment to mint its own short-lived App token; the
-   wake and stale-request handoff use Actions write permission to dispatch the
-   coordinator. The App credential remains restricted to snapshot and promotion.
+   job uses the main-only environment to mint its own short-lived App token. The
+   App credential remains restricted to snapshot and promotion.
 7. Set repository variable `BATCH_CI_ENABLED=true`. Retarget remaining feature
-   PRs to develop. The next real develop change requests full validation;
+   PRs to develop. The next real develop change starts full validation at the next tick;
    use **Actions → Batched integration and promotion → Run workflow**, selecting
    main, to start sooner. Confirm the first candidate, all required suites, exact
    promoted SHA and Pages deployment in that run before declaring rollout proven.
