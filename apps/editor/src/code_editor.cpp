@@ -7,7 +7,9 @@
 #include "internal/code_edit_scope.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
+#include "internal/code_structure_view.h"
 #include "internal/code_syntax_highlighter.h"
+#include "internal/code_syntax_service.h"
 #include "internal/editor_commands.h"
 
 #include <QAction>
@@ -75,6 +77,8 @@ constexpr int32 COMPLETION_WIDTH = 420;
 constexpr int32 SIGNATURE_WIDTH = 680;
 constexpr int32 INDENT_GUIDE_ALPHA = 48;
 constexpr int32 GUTTER_MARGIN = 6;
+constexpr int32 FOLD_CONTROL_WIDTH = 17;
+constexpr int32 FOLD_PLACEHOLDER_GAP = 4;
 constexpr int32 DECIMAL_RADIX = 10;
 constexpr int32 MAX_BRACKET_SCAN_CHARACTERS = 32768;
 constexpr int32 CURRENT_LINE_ALPHA = 24;
@@ -144,6 +148,15 @@ private:
     {
         mEditor->paintGutter(event);
     }
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton && mEditor->toggleGutterFold(event->position().toPoint()) == true)
+        {
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
     bool event(QEvent* event) override
     {
         if (event->type() == QEvent::ToolTip)
@@ -186,8 +199,8 @@ bool IsCodeEditorTabMovingFocus() noexcept
 }
 
 CodeEditor::CodeEditor(QWidget* parentOrNull)
-    : QPlainTextEdit(parentOrNull), mGutter(new CodeEditorGutter(this)),
-      mHighlighter(new CodeSyntaxHighlighter(document())),
+    : QPlainTextEdit(parentOrNull), mGutter(new CodeEditorGutter(this)), mSyntax(new CodeSyntaxService(document())),
+      mHighlighter(new CodeSyntaxHighlighter(document(), *mSyntax)), mStructure(new CodeStructureView(this, *mSyntax)),
       mFormatAction(new QAction(QStringLiteral("Format Document"), this)),
       mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this)), mMultiCursor(*this)
 {
@@ -245,18 +258,38 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     SetIndentGuidesVisible(preferences.value(QStringLiteral("codeEditor/indentGuides"), true).toBool());
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * INDENT_WIDTH);
     mHighlighter->SetPalette(palette());
+    connect(mSyntax, &CodeSyntaxService::ResultChanged, this, [this]() {
+        if (mSyntax->GetCurrentResultOrNull() != nullptr)
+        {
+            refreshVisibleSyntax();
+            mHighlighter->ScheduleReapply();
+        }
+    });
+    mVisibleSyntaxUpdate.setSingleShot(true);
+    connect(&mVisibleSyntaxUpdate, &QTimer::timeout, this, &CodeEditor::refreshVisibleSyntax);
     mSelectionUpdate.setSingleShot(true);
     connect(&mSelectionUpdate, &QTimer::timeout, this, &CodeEditor::updateSelections);
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]() { mSelectionUpdate.start(0); });
     connect(document(), &QTextDocument::contentsChanged, this, [this]() { mSelectionUpdate.start(0); });
     connect(document(), &QTextDocument::contentsChange, this, &CodeEditor::markDiagnosticsOutOfDate);
-    connect(this, &QPlainTextEdit::blockCountChanged, this, &CodeEditor::updateGutterWidth);
+    connect(this, &QPlainTextEdit::blockCountChanged, this, [this]() {
+        updateGutterWidth();
+        if (mHighlighter->UsesVisibleFallback() == true)
+        {
+            mVisibleSyntaxUpdate.start(0);
+        }
+    });
     connect(this, &QPlainTextEdit::undoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
     connect(this, &QPlainTextEdit::redoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
     connect(this, &QPlainTextEdit::updateRequest, this, [this](const QRect& rectangle, int32 verticalDelta) {
         if (verticalDelta != 0)
         {
             mGutter->scroll(0, verticalDelta);
+            if (mHighlighter->UsesVisibleFallback() == true)
+            {
+                mVisibleSyntaxUpdate.start(0);
+            }
+            QTimer::singleShot(0, mStructure, &CodeStructureView::UpdateHeader);
         }
         else
         {
@@ -297,21 +330,10 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     addShortcut(QStringLiteral("Previous Diagnostic"), QKeySequence(Qt::SHIFT | Qt::Key_F8), [this]() {
         GoToDiagnostic(true);
     });
-    // Code-editor keymap commands (CE16/CE26): registered as the shell's
-    // catalogue commands so the keymap profiles own their bindings, with a
-    // WidgetWithChildren shortcut context so F9 and the fold chords only fire
-    // while this view has focus. Their gutter and fold-model behavior lands in
-    // M8/M3; here they emit a request the owner will later act on.
-    const auto addKeymapCommand = [this](const EditorCommand& command, void (CodeEditor::*signal)()) {
-        QAction* action = CreateEditorCommand(command, this);
-        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        connect(action, &QAction::triggered, this, signal);
-        addAction(action);
-    };
-    addKeymapCommand(EDITOR_TOGGLE_BREAKPOINT_COMMAND, &CodeEditor::ToggleBreakpointRequested);
-    addKeymapCommand(EDITOR_FOLD_ALL_COMMAND, &CodeEditor::FoldAllRequested);
-    addKeymapCommand(EDITOR_UNFOLD_ALL_COMMAND, &CodeEditor::UnfoldAllRequested);
-    addKeymapCommand(EDITOR_TOGGLE_FOLD_COMMAND, &CodeEditor::ToggleFoldRequested);
+    QAction* breakpoint = CreateEditorCommand(EDITOR_TOGGLE_BREAKPOINT_COMMAND, this);
+    breakpoint->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(breakpoint, &QAction::triggered, this, &CodeEditor::ToggleBreakpointRequested);
+    addAction(breakpoint);
     // Multiple cursors (CE06). Only the collision-free bindings are set here;
     // batch 6's keymap profiles assign the rest (Add Next Occurrence stays
     // unbound because Ctrl+D is Duplicate Lines). The commands are discoverable in
@@ -404,7 +426,7 @@ void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
         }
     }
     mNavigation->RememberCurrent();
-    setTextCursor(mDiagnostics.at(selected < 0 ? boundary : selected).Range);
+    RevealTextCursor(mDiagnostics.at(selected < 0 ? boundary : selected).Range);
     ensureCursorVisible();
     setFocus();
 }
@@ -422,6 +444,7 @@ void CodeEditor::paintEvent(QPaintEvent* event)
         QPainter painter(viewport());
         mMultiCursor.Paint(painter);
     }
+    paintFoldPlaceholders(event);
     paintDiagnosticCallout();
     mLatencyProbe.MarkPainted();
 }
@@ -467,13 +490,53 @@ void CodeEditor::paintIndentGuides(const QPaintEvent* event)
                 painter.drawLine(QPointF(x, rectangle.top()), QPointF(x, rectangle.top() + fontMetrics().height()));
             }
         }
-        block = block.next();
+        const int32 last = mStructure->GetLastCollapsedLine(block.blockNumber());
+        block = last > block.blockNumber() ? document()->findBlockByNumber(last + 1) : block.next();
     }
 }
 
 /// The message of the diagnostics on the caret's line, under that line and pointing at the error.
 /// Painted over the lines below instead of shifting them, so the text never jumps; it goes away
 /// when the caret moves off the line or the line is edited.
+QRect CodeEditor::getFoldPlaceholderRect(const QTextBlock& block) const
+{
+    if (block.isValid() == false || mStructure->GetHiddenLineCount(block.blockNumber()) == 0)
+    {
+        return {};
+    }
+    QTextCursor cursor(block);
+    cursor.movePosition(QTextCursor::EndOfBlock);
+    const QRect caret = cursorRect(cursor);
+    const QString label = mStructure->GetPlaceholder(block.blockNumber());
+    return QRect(caret.right() + FOLD_PLACEHOLDER_GAP,
+                 caret.top(),
+                 fontMetrics().horizontalAdvance(label),
+                 fontMetrics().height());
+}
+
+void CodeEditor::paintFoldPlaceholders(const QPaintEvent* event)
+{
+    QPainter painter(viewport());
+    QTextBlock block = firstVisibleBlock();
+    while (block.isValid() == true)
+    {
+        if (blockBoundingGeometry(block).translated(contentOffset()).top() > event->rect().bottom())
+        {
+            break;
+        }
+        const int32 line = block.blockNumber();
+        const int32 last = mStructure->GetLastCollapsedLine(line);
+        if (last > line)
+        {
+            const QRect rectangle = getFoldPlaceholderRect(block);
+            painter.fillRect(rectangle, palette().color(QPalette::AlternateBase));
+            painter.setPen(palette().color(QPalette::Text));
+            painter.drawText(rectangle, Qt::AlignCenter, mStructure->GetPlaceholder(line));
+        }
+        block = last > line ? document()->findBlockByNumber(last + 1) : block.next();
+    }
+}
+
 void CodeEditor::paintDiagnosticCallout()
 {
     if (mDiagnostics.isEmpty() == true || mHasEditedSinceReport == true)
@@ -564,9 +627,59 @@ void CodeEditor::SetLanguage(CodeLanguage language)
             action->setEnabled(HasCodeLanguageService(language));
         }
     }
+    mSyntax->SetLanguage(language);
     mHighlighter->SetLanguage(language);
+    refreshVisibleSyntax();
     mNavigation->RefreshActions();
     mSelectionUpdate.start(0);
+}
+
+void CodeEditor::SetLargeFileMode(bool isLarge)
+{
+    mSyntax->SetLargeFileMode(isLarge);
+    mHighlighter->SetLargeFileMode(isLarge);
+}
+
+void CodeEditor::RevealTextCursor(const QTextCursor& cursor)
+{
+    if (cursor.document() == document())
+    {
+        mStructure->Reveal(cursor);
+    }
+    QPlainTextEdit::setTextCursor(cursor);
+}
+
+CodeStructureView& CodeEditor::GetStructure() const noexcept
+{
+    return *mStructure;
+}
+
+void CodeEditor::refreshVisibleSyntax()
+{
+    const QTextBlock last = cursorForPosition(viewport()->rect().bottomLeft()).block();
+    mHighlighter->ApplyVisibleBlocks(firstVisibleBlock(), last.blockNumber());
+}
+
+void CodeEditor::updateFoldPresentation()
+{
+    mGutter->update();
+    viewport()->update();
+}
+
+bool CodeEditor::toggleGutterFold(const QPoint& position)
+{
+    const int32 start = getGutterWidth() - FOLD_CONTROL_WIDTH;
+    if (position.x() < start)
+    {
+        return false;
+    }
+    const QTextBlock block = cursorForPosition(QPoint(0, position.y())).block();
+    if (block.isVisible() == false || mStructure->HasFold(block.blockNumber()) == false)
+    {
+        return false;
+    }
+    mStructure->ToggleFold(block.blockNumber());
+    return true;
 }
 
 CodeLatencyProbe& CodeEditor::GetLatencyProbe() const noexcept
@@ -916,7 +1029,9 @@ bool CodeEditor::showGutterToolTip(const QHelpEvent& help)
         const int32 height = static_cast<int32>(blockBoundingRect(block).height());
         if (block.isVisible() == true && position.y() < top + height)
         {
-            const QString text = DescribeLineDiagnostics(block.blockNumber());
+            const QString text = position.x() >= getGutterWidth() - FOLD_CONTROL_WIDTH
+                                     ? mStructure->DescribeFold(block.blockNumber())
+                                     : DescribeLineDiagnostics(block.blockNumber());
             if (text.isEmpty() == true)
             {
                 return false;
@@ -939,7 +1054,10 @@ bool CodeEditor::viewportEvent(QEvent* event)
     if (event->type() == QEvent::ToolTip)
     {
         const QHelpEvent* help = static_cast<QHelpEvent*>(event);
-        const QString text = DescribeDiagnosticsAt(cursorForPosition(help->pos()).position());
+        const QTextCursor cursor = cursorForPosition(help->pos());
+        const QString text = getFoldPlaceholderRect(cursor.block()).contains(help->pos()) == true
+                                 ? mStructure->DescribeFold(cursor.blockNumber())
+                                 : DescribeDiagnosticsAt(cursor.position());
         if (text.isEmpty() == true)
         {
             QToolTip::hideText();
@@ -965,21 +1083,24 @@ int32 CodeEditor::getGutterWidth() const
     }
     // Diagnostic marker space is reserved permanently, so reports never shift the text.
     const int32 marker = fontMetrics().height() / DIAGNOSTIC_MARKER_DIVISOR + GUTTER_MARGIN;
-    return GUTTER_MARGIN * 2 + marker + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    return GUTTER_MARGIN * 2 + marker + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits + FOLD_CONTROL_WIDTH;
 }
 
 void CodeEditor::updateGutterWidth()
 {
     const int32 width = getGutterWidth();
-    setViewportMargins(width, 0, 0, 0);
+    const int32 header = mStructure->GetHeaderHeight();
+    setViewportMargins(width, header, 0, 0);
     const QRect rectangle = contentsRect();
-    mGutter->setGeometry(rectangle.left(), rectangle.top(), width, rectangle.height());
+    mGutter->setGeometry(rectangle.left(), rectangle.top() + header, width, qMax(0, rectangle.height() - header));
+    mStructure->LayoutHeader(rectangle, width);
 }
 
 void CodeEditor::resizeEvent(QResizeEvent* event)
 {
     QPlainTextEdit::resizeEvent(event);
     updateGutterWidth();
+    mVisibleSyntaxUpdate.start(0);
 }
 
 void CodeEditor::changeEvent(QEvent* event)
@@ -1010,11 +1131,13 @@ void CodeEditor::paintGutter(QPaintEvent* event)
         const int32 height = static_cast<int32>(blockBoundingRect(block).height());
         if (block.isVisible() == true && top + height >= event->rect().top())
         {
+            const int32 lastFoldLine = mStructure->GetLastCollapsedLine(block.blockNumber());
             bool hasMarker = false;
             CodeDiagnosticSeverity severity = CodeDiagnosticSeverity::Warning;
             for (const DiagnosticMarker& marker : mDiagnostics)
             {
-                if (document()->findBlock(marker.Range.selectionStart()) == block)
+                const int32 markerLine = document()->findBlock(marker.Range.selectionStart()).blockNumber();
+                if (markerLine >= block.blockNumber() && markerLine <= lastFoldLine)
                 {
                     hasMarker = true;
                     if (marker.Severity == CodeDiagnosticSeverity::Error)
@@ -1035,12 +1158,23 @@ void CodeEditor::paintGutter(QPaintEvent* event)
             painter.setPen(palette().color(QPalette::Text));
             painter.drawText(0,
                              top,
-                             mGutter->width() - GUTTER_MARGIN,
+                             mGutter->width() - GUTTER_MARGIN - FOLD_CONTROL_WIDTH,
                              fontMetrics().height(),
                              Qt::AlignRight,
                              QString::number(block.blockNumber() + 1));
+            if (mStructure->HasFold(block.blockNumber()) == true)
+            {
+                const bool isCollapsed = lastFoldLine > block.blockNumber();
+                painter.drawText(mGutter->width() - FOLD_CONTROL_WIDTH,
+                                 top,
+                                 FOLD_CONTROL_WIDTH,
+                                 fontMetrics().height(),
+                                 Qt::AlignCenter,
+                                 isCollapsed == true ? QStringLiteral("▸") : QStringLiteral("▾"));
+            }
         }
-        block = block.next();
+        const int32 last = mStructure->GetLastCollapsedLine(block.blockNumber());
+        block = last > block.blockNumber() ? document()->findBlockByNumber(last + 1) : block.next();
         top += height;
     }
 }
@@ -1283,6 +1417,11 @@ QTextCursor CodeEditor::getSelectedLines() const
     {
         last = last.previous();
     }
+    const int32 lastLine = mStructure->GetLastCollapsedLine(last.blockNumber());
+    if (lastLine > last.blockNumber())
+    {
+        last = document()->findBlockByNumber(lastLine);
+    }
     QTextCursor result(first);
     result.setPosition(last.position() + last.length() - 1, QTextCursor::KeepAnchor);
     return result;
@@ -1332,7 +1471,7 @@ void CodeEditor::IndentSelection(bool shouldOutdent)
         }
     }
     current.endEditBlock();
-    setTextCursor(current);
+    RevealTextCursor(current);
 }
 
 void CodeEditor::AddCursorAbove()
@@ -1378,7 +1517,9 @@ void CodeEditor::ClearSecondaryCursors()
 
 void CodeEditor::ToggleLineComment()
 {
-    if (isReadOnly() == true || mLanguage == CodeLanguage::PlainText)
+    const BorrowedView<const char> marker = CodeLanguageRegistry::Get().Describe(mLanguage).LineComment;
+    const QLatin1StringView comment(marker.GetDataOrNull(), static_cast<qsizetype>(marker.GetSize()));
+    if (isReadOnly() == true || comment.isEmpty() == true)
     {
         return;
     }
@@ -1392,7 +1533,7 @@ void CodeEditor::ToggleLineComment()
     {
         const QString text = block.text();
         const int32 indentation = GetIndentLength(text);
-        if (indentation < text.size() && QStringView(text).sliced(indentation).startsWith(u"//") == false)
+        if (indentation < text.size() && QStringView(text).sliced(indentation).startsWith(comment) == false)
         {
             shouldRemove = false;
             break;
@@ -1411,7 +1552,7 @@ void CodeEditor::ToggleLineComment()
             edit.setPosition(block.position() + indentation);
             if (shouldRemove == true)
             {
-                int32 count = 2;
+                int32 count = static_cast<int32>(comment.size());
                 if (text.size() > indentation + count && text.at(indentation + count) == QLatin1Char(' '))
                 {
                     ++count;
@@ -1421,13 +1562,13 @@ void CodeEditor::ToggleLineComment()
             }
             else
             {
-                edit.insertText(QStringLiteral("// "));
+                edit.insertText(comment.toString() + QLatin1Char(' '));
             }
         }
         block = block.previous();
     }
     current.endEditBlock();
-    setTextCursor(current);
+    RevealTextCursor(current);
 }
 
 void CodeEditor::DuplicateLines()
@@ -1438,13 +1579,16 @@ void CodeEditor::DuplicateLines()
     }
     const CodeEditScope operation(*this);
     QTextCursor lines = getSelectedLines();
+    const int32 firstLine = document()->findBlock(lines.selectionStart()).blockNumber();
+    const int32 copyLine = document()->findBlock(lines.selectionEnd()).blockNumber() + 1;
     QString text = lines.selectedText();
     text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
     lines.setPosition(lines.selectionEnd());
     lines.beginEditBlock();
     lines.insertText(QLatin1Char('\n') + text);
     lines.endEditBlock();
-    setTextCursor(lines);
+    RevealTextCursor(lines);
+    mStructure->DuplicateFold(firstLine, copyLine);
 }
 
 void CodeEditor::MoveLines(bool shouldMoveDown)
@@ -1457,19 +1601,35 @@ void CodeEditor::MoveLines(bool shouldMoveDown)
     QTextCursor lines = getSelectedLines();
     const int32 start = lines.selectionStart();
     const int32 end = lines.selectionEnd();
-    const QTextBlock adjacent =
-        shouldMoveDown == true ? document()->findBlock(end).next() : document()->findBlock(start).previous();
+    const QTextBlock selectedFirst = document()->findBlock(start);
+    const QTextBlock selectedLast = document()->findBlock(end);
+    QTextBlock adjacent = shouldMoveDown == true ? selectedLast.next() : selectedFirst.previous();
+    while (shouldMoveDown == false && adjacent.isValid() == true && adjacent.isVisible() == false)
+    {
+        adjacent = adjacent.previous();
+    }
     if (adjacent.isValid() == false)
     {
         return;
     }
+    const QTextBlock adjacentLast =
+        document()->findBlockByNumber(mStructure->GetLastCollapsedLine(adjacent.blockNumber()));
+    QTextCursor adjacentLines(adjacent);
+    adjacentLines.setPosition(adjacentLast.position() + adjacentLast.length() - 1, QTextCursor::KeepAnchor);
+    QString adjacentText = adjacentLines.selectedText();
+    adjacentText.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
     QString selected = lines.selectedText();
     selected.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
-    const QString adjacentText = adjacent.text();
     const int32 newStart =
         shouldMoveDown == true ? start + static_cast<int32>(adjacentText.size()) + 1 : adjacent.position();
     const int32 rangeStart = shouldMoveDown == true ? start : adjacent.position();
-    const int32 rangeEnd = shouldMoveDown == true ? adjacent.position() + adjacent.length() - 1 : end;
+    const int32 rangeEnd = shouldMoveDown == true ? adjacentLines.selectionEnd() : end;
+    const QJsonArray movedFolds = shouldMoveDown == true ? mStructure->CaptureMovedFolds(selectedFirst.blockNumber(),
+                                                                                         adjacent.blockNumber(),
+                                                                                         adjacentLast.blockNumber())
+                                                         : mStructure->CaptureMovedFolds(adjacent.blockNumber(),
+                                                                                         selectedFirst.blockNumber(),
+                                                                                         selectedLast.blockNumber());
     lines.setPosition(rangeStart);
     lines.setPosition(rangeEnd, QTextCursor::KeepAnchor);
     lines.beginEditBlock();
@@ -1478,7 +1638,11 @@ void CodeEditor::MoveLines(bool shouldMoveDown)
     lines.endEditBlock();
     lines.setPosition(newStart);
     lines.setPosition(newStart + static_cast<int32>(selected.size()), QTextCursor::KeepAnchor);
-    setTextCursor(lines);
+    RevealTextCursor(lines);
+    if (movedFolds.isEmpty() == false)
+    {
+        mStructure->RestoreFolds(movedFolds);
+    }
 }
 
 void CodeEditor::DeleteLines()
@@ -1503,7 +1667,7 @@ void CodeEditor::DeleteLines()
     lines.beginEditBlock();
     lines.removeSelectedText();
     lines.endEditBlock();
-    setTextCursor(lines);
+    RevealTextCursor(lines);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
@@ -1520,7 +1684,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
     {
         mNavigation->RememberCurrent();
     }
-    setTextCursor(cursor);
+    RevealTextCursor(cursor);
     ensureCursorVisible();
     setFocus();
 }
@@ -1602,11 +1766,18 @@ void CodeEditor::mousePressEvent(QMouseEvent* event)
 {
     const QPoint position = event->position().toPoint();
     mIsDefinitionClick = false;
+    const QTextBlock block = cursorForPosition(position).block();
+    if (event->button() == Qt::LeftButton && getFoldPlaceholderRect(block).contains(position) == true)
+    {
+        mStructure->ToggleFold(block.blockNumber());
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::LeftButton && event->modifiers() == DEFINITION_LINK_MODIFIER &&
         getDefinitionLinkAt(position).hasSelection() == true)
     {
         // Place the caret on the clicked name, then use the same compiler request as F12.
-        setTextCursor(cursorForPosition(position));
+        RevealTextCursor(cursorForPosition(position));
         mIsDefinitionClick = true;
         updateDefinitionLink(position, Qt::NoModifier);
         static_cast<void>(mNavigation->RequestDefinition());
@@ -1618,7 +1789,7 @@ void CodeEditor::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton && event->modifiers() == Qt::AltModifier)
     {
         static_cast<void>(mMultiCursor.Collapse());
-        setTextCursor(cursorForPosition(position));
+        RevealTextCursor(cursorForPosition(position));
         mMultiCursor.ColumnSelectTo(position);
         event->accept();
         return;
@@ -1701,6 +1872,11 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
 
 void CodeEditor::handleKeyPress(QKeyEvent* event)
 {
+    if (mStructure->MoveAcrossFold(event) == true)
+    {
+        event->accept();
+        return;
+    }
     const bool hasPopup = mCompletionList->isVisible() == true || mSignature->isVisible() == true;
     if (event->key() == Qt::Key_Escape)
     {
@@ -1793,7 +1969,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             // Reselect the original text, now between the inserted pair.
             cursor.setPosition(start + 1);
             cursor.setPosition(end + 1, QTextCursor::KeepAnchor);
-            setTextCursor(cursor);
+            RevealTextCursor(cursor);
             return;
         }
     }
@@ -1807,7 +1983,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         QTextCursor cursor = textCursor();
         const int32 position = cursor.positionInBlock();
         // Refresh only this block so a just-typed comment/string is respected before Qt's queued pass.
-        mHighlighter->rehighlightBlock(cursor.block());
+        mHighlighter->ApplyBlock(cursor.block());
         const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(cursor.block().userData());
         bool canPair = dataOrNull != nullptr;
         if (dataOrNull != nullptr)
@@ -1837,7 +2013,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             if (isCloseOfAutoClosingPair(typedChar) == true && next == typedChar)
             {
                 cursor.movePosition(QTextCursor::NextCharacter);
-                setTextCursor(cursor);
+                RevealTextCursor(cursor);
                 Q_EMIT EditBoundary();
                 return;
             }
@@ -1852,7 +2028,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
                 cursor.insertText(typed + openClose);
                 cursor.movePosition(QTextCursor::PreviousCharacter);
                 cursor.endEditBlock();
-                setTextCursor(cursor);
+                RevealTextCursor(cursor);
                 return;
             }
         }
@@ -1866,7 +2042,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             cursor.deletePreviousChar();
             cursor.deleteChar();
             cursor.endEditBlock();
-            setTextCursor(cursor);
+            RevealTextCursor(cursor);
             return;
         }
     }
@@ -1920,7 +2096,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             if (mShouldPairBrackets == true &&
                 document()->characterAt(cursor.position()) == bracketCloseFor(trailingOpen))
             {
-                mHighlighter->rehighlightBlock(cursor.block());
+                mHighlighter->ApplyBlock(cursor.block());
                 const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(cursor.block().userData());
                 if (dataOrNull != nullptr)
                 {
@@ -1940,7 +2116,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             cursor.setPosition(contentPosition);
         }
         cursor.endEditBlock();
-        setTextCursor(cursor);
+        RevealTextCursor(cursor);
         return;
     }
     QPlainTextEdit::keyPressEvent(event);

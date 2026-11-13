@@ -9,11 +9,6 @@
 
 namespace ludus::editor
 {
-/// The maximum file-name suffix patterns one language record declares. A small
-/// fixed bound keeps the compiled-in table flat and lets the registry stay
-/// Qt-free; raise it here, in the single owner, when a language needs more.
-inline constexpr foundation::usize CODE_LANGUAGE_MAX_PATTERNS = 4;
-
 /// One compiled-in bracket or auto-closing pair, stored as single code units.
 /// Both members are ASCII for the first languages; the syntax service owns any
 /// future multi-byte pairs.
@@ -40,7 +35,7 @@ struct CodeLanguageDescriptor final
     /// A human-readable name for the status bar and language picker.
     foundation::BorrowedView<const char> DisplayName;
     /// Lower-case file-name suffixes that select this language (".slang"). The
-    /// first entries fill the view; the array owner is the registry table.
+    /// registry also accepts an exact basename such as CMakeLists.txt.
     foundation::BorrowedView<const foundation::BorrowedView<const char>> SuffixPatterns;
     /// The line-comment token, or empty when the language has none. Plain text
     /// has none, so comment toggling is disabled, exactly as today.
@@ -92,8 +87,7 @@ public:
     [[nodiscard]] const CodeLanguageDescriptor& Describe(CodeLanguage language) const noexcept;
 
     /// The language selected by a UTF-8 file name or path, matching the longest
-    /// declared suffix. Returns PlainText when nothing matches, which preserves
-    /// the current ".slang"-or-plain-text behavior. The comparison is
+    /// declared suffix. Returns PlainText when nothing matches, when no profile recognizes the name. The comparison is
     /// case-insensitive over ASCII only.
     [[nodiscard]] CodeLanguage ClassifyFileName(foundation::BorrowedView<const char> fileName) const noexcept;
 

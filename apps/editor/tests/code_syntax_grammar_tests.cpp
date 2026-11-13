@@ -3,8 +3,11 @@
 // language without ERROR or MISSING nodes.
 
 #include "internal/code_syntax_grammars.h"
+#include "ludus_editor_lusl_queries.h"
 
 #include <ludus/foundation/base/types.h>
+
+#include <ludus/tooling/shader_language/syntax.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -44,6 +47,7 @@ TEST_CASE("The pinned grammars load into the pinned runtime", "[editor][code-edi
     for (const TSLanguage* language : {tree_sitter_c(),
                                        tree_sitter_cpp(),
                                        tree_sitter_slang(),
+                                       tree_sitter_lusl(),
                                        tree_sitter_luau(),
                                        tree_sitter_json(),
                                        tree_sitter_cmake(),
@@ -198,4 +202,45 @@ int main() { return 0; }
 )");
     RequireParsesWithoutErrors(tree_sitter_markdown_inline(),
                                "A paragraph with *emphasis*, `code`, **strong** text and a [link](../code-editor.md).");
+}
+
+TEST_CASE("the LUSL grammar agrees with the compiler keywords and compiles its query pack",
+          "[editor][code-editor][syntax]")
+{
+    const TSLanguage* language = tree_sitter_lusl();
+    REQUIRE(language != nullptr);
+    for (std::string_view keyword : ludus::tooling::shader_language::GetKeywords())
+    {
+        INFO(keyword);
+        CHECK(ts_language_symbol_for_name(language, keyword.data(), static_cast<uint32>(keyword.size()), false) != 0);
+    }
+    for (std::string_view word : {"space", "slang"})
+    {
+        CHECK(ts_language_symbol_for_name(language, word.data(), static_cast<uint32>(word.size()), false) != 0);
+    }
+    using namespace ludus::editor;
+    for (std::string_view source :
+         {LUSL_HIGHLIGHTS_QUERY, LUSL_FOLDS_QUERY, LUSL_INDENTS_QUERY, LUSL_LOCALS_QUERY, LUSL_TEXTOBJECTS_QUERY})
+    {
+        uint32 offset = 0;
+        TSQueryError error = TSQueryErrorNone;
+        TSQuery* queryOrNull =
+            ts_query_new(language, source.data(), static_cast<uint32>(source.size()), &offset, &error);
+        CAPTURE(offset, static_cast<uint32>(error));
+        REQUIRE(queryOrNull != nullptr);
+        ts_query_delete(queryOrNull);
+    }
+    RequireParsesWithoutErrors(language, R"(
+#pragma once
+extern slang "math.slang" { float32 Cos(in float32 angle); };
+struct Surface { float32x3 NormalWorld : Normal; };
+interface Material { float32 Shade(in float32 cosine); };
+concept Opaque<T> = (T : Material) && (T::LOBE_COUNT == 1);
+template <Material M>
+float32 Shade(in M material, in Surface hit)
+{
+    if constexpr (Opaque<M> == true) { return material.Shade(cosine = hit.NormalWorld.z); }
+    return Cos(0.0);
+}
+)");
 }

@@ -238,8 +238,11 @@ TEST_CASE("Slang lexical state crosses lines and excludes strings from bracket m
     CHECK(static_cast<CodeBlockData*>(first.userData())->Brackets.size() == 3);
     CHECK(static_cast<CodeBlockData*>(second.userData())->Brackets.isEmpty() == true);
     CHECK(static_cast<CodeBlockData*>(third.userData())->Brackets.isEmpty() == true);
-    CHECK(first.userState() == 1);
-    CHECK(second.userState() == 0);
+    const int32 commentState = first.userState();
+    const CodeBlockData& firstData = *static_cast<CodeBlockData*>(first.userData());
+    REQUIRE(firstData.ExcludedRanges.isEmpty() == false);
+    CHECK(firstData.ExcludedRanges.constLast().IsOpenEnded);
+    CHECK(second.userState() != commentState);
     CHECK(first.layout()->formats().isEmpty() == false);
     editor.GoToLine(5);
     FinishHighlighting();
@@ -250,10 +253,10 @@ TEST_CASE("Slang lexical state crosses lines and excludes strings from bracket m
     SelectText(editor, 16, 18);
     editor.textCursor().removeSelectedText();
     FinishHighlighting();
-    CHECK(editor.document()->firstBlock().userState() == 0);
+    CHECK(editor.document()->firstBlock().userState() != commentState);
     editor.undo();
     FinishHighlighting();
-    CHECK(editor.document()->firstBlock().userState() == 1);
+    CHECK(editor.document()->firstBlock().userState() == commentState);
 }
 
 TEST_CASE("Slang coloring distinguishes functions, constants and user type names", "[editor][text]")

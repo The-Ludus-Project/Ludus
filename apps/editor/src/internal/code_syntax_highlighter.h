@@ -2,11 +2,14 @@
 
 #include <ludus/foundation/base/types.h>
 
-#include "internal/code_editor.h"
+#include <ludus/foundation/containers/static_array.hpp>
+
+#include "internal/code_syntax_service.h"
 
 #include <QPalette>
 #include <QStringView>
 #include <QSyntaxHighlighter>
+#include <QTextBlock>
 #include <QTextBlockUserData>
 #include <QTextCharFormat>
 #include <QVector>
@@ -47,12 +50,31 @@ struct CodeBlockData final : QTextBlockUserData
 class CodeSyntaxHighlighter final : public QSyntaxHighlighter
 {
 public:
-    explicit CodeSyntaxHighlighter(QTextDocument* document);
+    explicit CodeSyntaxHighlighter(QTextDocument* document, const CodeSyntaxService& syntax);
     void SetLanguage(CodeLanguage language);
     void SetPalette(const QPalette& palette);
+    void SetLargeFileMode(bool isLarge);
+    [[nodiscard]] bool IsLargeDocument() const;
+    void ApplyBlock(QTextBlock block);
+    void ApplyVisibleBlocks(QTextBlock first, foundation::int32 lastLine);
+    [[nodiscard]] bool UsesVisibleFallback() const;
+    void ScheduleReapply();
 
 private:
     void highlightBlock(const QString& text) override;
+    void applySyntaxTokens();
+    void rehighlightEdit(foundation::int32 position, foundation::int32 added);
+    void reapplySlice();
+    const CodeSyntaxService& mSyntax;
+    QTimer mReapply;
+    QTextBlock mNextBlock;
+    foundation::int32 mFirstVisibleLine = 0;
+    foundation::int32 mLastVisibleLine = 0;
+    bool mIsApplyingExplicitly = false;
+    bool mIsLargeFile = false;
+    foundation::int32 mDocumentRevision = 0;
+    foundation::int32 mApplyThroughLine = -1;
+    foundation::StaticArray<QTextCharFormat, static_cast<foundation::usize>(CodeSyntaxRole::Count)> mRoleFormats;
     CodeLanguage mLanguage = CodeLanguage::PlainText;
     QTextCharFormat mKeywordFormat;
     QTextCharFormat mTypeFormat;

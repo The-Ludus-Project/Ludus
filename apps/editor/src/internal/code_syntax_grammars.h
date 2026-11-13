@@ -17,6 +17,8 @@ const TSLanguage* tree_sitter_cpp(void);
 /// The Slang grammar (tree-sitter-grammars/tree-sitter-slang); a static table that lives for the
 /// whole process.
 const TSLanguage* tree_sitter_slang(void);
+/// The repository-owned Ludus Shading Language grammar.
+const TSLanguage* tree_sitter_lusl(void);
 /// The Luau grammar (polychromatist/tree-sitter-luau); a static table that lives for the whole
 /// process.
 const TSLanguage* tree_sitter_luau(void);

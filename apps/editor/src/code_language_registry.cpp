@@ -94,9 +94,43 @@ constexpr CodeLanguagePair SLANG_SURROUNDING[] = {
     { .Open = '\'', .Close = '\'' },
 };
 
-// The table itself, in CodeLanguage enum order. Every field matches the current
-// behavior: plain text has no coloring and no structural editing; Slang colors
-// lexically, toggles "//" comments and pairs brackets.
+constexpr BorrowedView<const char> LUAU_SUFFIXES[] = {
+    Literal(".luau"),
+    Literal(".lua"),
+};
+
+constexpr BorrowedView<const char> C_SUFFIXES[] = {
+    Literal(".c"),
+};
+
+constexpr BorrowedView<const char> CPP_SUFFIXES[] = {
+    Literal(".cpp"),
+    Literal(".cc"),
+    Literal(".cxx"),
+    Literal(".h"),
+    Literal(".hh"),
+    Literal(".hpp"),
+    Literal(".hxx"),
+    Literal(".inl"),
+    Literal(".ipp"),
+};
+
+constexpr BorrowedView<const char> JSON_SUFFIXES[] = {
+    Literal(".json"),
+    Literal(".jsonc"),
+};
+
+constexpr BorrowedView<const char> CMAKE_SUFFIXES[] = {
+    Literal("cmakelists.txt"),
+    Literal(".cmake"),
+};
+
+constexpr BorrowedView<const char> MARKDOWN_SUFFIXES[] = {
+    Literal(".md"),
+    Literal(".markdown"),
+};
+
+// The table is in CodeLanguage enum order.
 const CodeLanguageDescriptor TABLE[] = {
     CodeLanguageDescriptor
     {
@@ -141,6 +175,90 @@ const CodeLanguageDescriptor TABLE[] = {
         .HasStructuralEditing = true,
         .HasLanguageService = true,
     },
+    CodeLanguageDescriptor
+    {
+        .Language = CodeLanguage::Luau,
+        .Identifier = Literal("luau"),
+        .DisplayName = Literal("Luau"),
+        .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(LUAU_SUFFIXES),
+        .LineComment = Literal("--"),
+        .BracketPairs = BorrowedView<const CodeLanguagePair>(SLANG_BRACKETS),
+        .AutoClosingPairs = BorrowedView<const CodeLanguagePair>(SLANG_AUTO_CLOSING),
+        .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
+        .HasLexicalColoring = true,
+        .HasStructuralEditing = true,
+        .HasLanguageService = false,
+    },
+    CodeLanguageDescriptor
+    {
+        .Language = CodeLanguage::C,
+        .Identifier = Literal("c"),
+        .DisplayName = Literal("C"),
+        .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(C_SUFFIXES),
+        .LineComment = Literal("//"),
+        .BracketPairs = BorrowedView<const CodeLanguagePair>(SLANG_BRACKETS),
+        .AutoClosingPairs = BorrowedView<const CodeLanguagePair>(SLANG_AUTO_CLOSING),
+        .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
+        .HasLexicalColoring = true,
+        .HasStructuralEditing = true,
+        .HasLanguageService = false,
+    },
+    CodeLanguageDescriptor
+    {
+        .Language = CodeLanguage::Cpp,
+        .Identifier = Literal("cpp"),
+        .DisplayName = Literal("C++"),
+        .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(CPP_SUFFIXES),
+        .LineComment = Literal("//"),
+        .BracketPairs = BorrowedView<const CodeLanguagePair>(SLANG_BRACKETS),
+        .AutoClosingPairs = BorrowedView<const CodeLanguagePair>(SLANG_AUTO_CLOSING),
+        .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
+        .HasLexicalColoring = true,
+        .HasStructuralEditing = true,
+        .HasLanguageService = false,
+    },
+    CodeLanguageDescriptor
+    {
+        .Language = CodeLanguage::Json,
+        .Identifier = Literal("json"),
+        .DisplayName = Literal("JSON"),
+        .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(JSON_SUFFIXES),
+        .LineComment = {},
+        .BracketPairs = BorrowedView<const CodeLanguagePair>(SLANG_BRACKETS),
+        .AutoClosingPairs = BorrowedView<const CodeLanguagePair>(SLANG_AUTO_CLOSING),
+        .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
+        .HasLexicalColoring = true,
+        .HasStructuralEditing = true,
+        .HasLanguageService = false,
+    },
+    CodeLanguageDescriptor
+    {
+        .Language = CodeLanguage::CMake,
+        .Identifier = Literal("cmake"),
+        .DisplayName = Literal("CMake"),
+        .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(CMAKE_SUFFIXES),
+        .LineComment = Literal("#"),
+        .BracketPairs = BorrowedView<const CodeLanguagePair>(SLANG_BRACKETS),
+        .AutoClosingPairs = BorrowedView<const CodeLanguagePair>(SLANG_AUTO_CLOSING),
+        .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
+        .HasLexicalColoring = true,
+        .HasStructuralEditing = true,
+        .HasLanguageService = false,
+    },
+    CodeLanguageDescriptor
+    {
+        .Language = CodeLanguage::Markdown,
+        .Identifier = Literal("markdown"),
+        .DisplayName = Literal("Markdown"),
+        .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(MARKDOWN_SUFFIXES),
+        .LineComment = {},
+        .BracketPairs = {},
+        .AutoClosingPairs = {},
+        .SurroundingPairs = {},
+        .HasLexicalColoring = true,
+        .HasStructuralEditing = false,
+        .HasLanguageService = false,
+    },
 };
 } // namespace
 
@@ -179,7 +297,14 @@ CodeLanguage CodeLanguageRegistry::ClassifyFileName(BorrowedView<const char> fil
         for (usize pattern = 0; pattern < descriptor.SuffixPatterns.GetSize(); pattern = pattern + 1)
         {
             const BorrowedView<const char> suffix = descriptor.SuffixPatterns[pattern];
-            if (suffix.GetSize() > bestLength && EndsWithAscii(fileName, suffix) == true)
+            if (EndsWithAscii(fileName, suffix) == false)
+            {
+                continue;
+            }
+            const bool hasSuffix = suffix[0] == '.' || fileName.GetSize() == suffix.GetSize() ||
+                                   fileName[fileName.GetSize() - suffix.GetSize() - 1] == '/' ||
+                                   fileName[fileName.GetSize() - suffix.GetSize() - 1] == '\\';
+            if (hasSuffix == true && suffix.GetSize() > bestLength)
             {
                 best = descriptor.Language;
                 bestLength = suffix.GetSize();

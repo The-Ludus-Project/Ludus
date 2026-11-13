@@ -571,6 +571,8 @@ add_library(ludus_editor_code STATIC
     src/internal/script_code_document.h src/script_code_document.cpp
     src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp
     src/internal/code_syntax_grammars.h
+    src/internal/code_syntax_service.h src/code_syntax_service.cpp
+    src/internal/code_structure_view.h src/code_structure_view.cpp
     src/internal/code_document.h src/internal/code_edit_scope.h
     src/internal/code_text.h src/code_text.cpp
     src/internal/code_keymap.h src/code_keymap.cpp
@@ -590,6 +592,12 @@ if(EMSCRIPTEN)
 endif()
 configure_file(src/internal/formatter_config.h.in
     generated/ludus_editor_formatter_config.h @ONLY)
+foreach(query IN ITEMS highlights folds indents locals textobjects)
+    set(query_path "${PROJECT_SOURCE_DIR}/config/code-languages/lusl/${query}.scm")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${query_path}")
+    file(READ "${query_path}" lusl_${query})
+endforeach()
+configure_file(src/internal/lusl_syntax_queries.h.in generated/ludus_editor_lusl_queries.h @ONLY)
 target_include_directories(ludus_editor_code PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set_target_properties(ludus_editor_code PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_code PRIVATE src)
@@ -1203,8 +1211,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_multi_cursor_tests.cpp tests/code_find_overlay_tests.cpp tests/code_search_tests.cpp tests/code_pairs_tests.cpp tests/code_keymap_tests.cpp tests/code_syntax_runtime_tests.cpp tests/code_syntax_grammar_tests.cpp tests/code_editor_benchmark.cpp)
-    target_include_directories(ludus_code_editor_tests PRIVATE src)
+    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_multi_cursor_tests.cpp tests/code_find_overlay_tests.cpp tests/code_search_tests.cpp tests/code_pairs_tests.cpp tests/code_keymap_tests.cpp tests/code_syntax_runtime_tests.cpp tests/code_syntax_grammar_tests.cpp tests/code_syntax_service_tests.cpp tests/code_editor_benchmark.cpp)
+    target_include_directories(ludus_code_editor_tests PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
     configure_file(tests/slang_server_fixture.py generated/slang_server_fixture.py COPYONLY)
@@ -1214,7 +1222,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_code_editor_tests PRIVATE
         "LUDUS_FORMATTER_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/formatter_fixture.py\"")
     target_link_libraries(ludus_code_editor_tests PRIVATE ludus_editor_code Qt6::Test
-        Ludus::FoundationBase Catch2::Catch2 ludus_editor_tree_sitter)
+        Ludus::FoundationBase Ludus::ShaderLanguage Catch2::Catch2 ludus_editor_tree_sitter)
     ludus_apply_project_defaults(ludus_code_editor_tests)
     ludus_enable_test_exceptions(ludus_code_editor_tests)
     add_test(NAME ludus_code_editor_tests COMMAND ludus_code_editor_tests)

@@ -32,6 +32,26 @@
   --ludus-axis-x: #e5645c;
   --ludus-axis-y: #6cc27a;
   --ludus-axis-z: #5b8ee6;
+  --ludus-syntax-keyword: #c5a5e8;
+  --ludus-syntax-control: #e2a7da;
+  --ludus-syntax-type: #78ccd5;
+  --ludus-syntax-function: #dcdcaa;
+  --ludus-syntax-method: #e8d39b;
+  --ludus-syntax-variable: #e9f2f1;
+  --ludus-syntax-parameter: #b3cedf;
+  --ludus-syntax-property: #99d3ea;
+  --ludus-syntax-constant: #f29cb8;
+  --ludus-syntax-number: #94bfef;
+  --ludus-syntax-string: #e4b284;
+  --ludus-syntax-escape: #f3d187;
+  --ludus-syntax-comment: #a0b79a;
+  --ludus-syntax-documentation: #a9cb9d;
+  --ludus-syntax-preprocessor: #c5a5e8;
+  --ludus-syntax-macro: #f2b2bf;
+  --ludus-syntax-namespace: #b4bee7;
+  --ludus-syntax-operator: #c6dce4;
+  --ludus-syntax-punctuation: #b5c5c9;
+  --ludus-syntax-invalid: #ff9ca9;
   --ludus-space-extra-small: 4px;
   --ludus-space-small: 8px;
   --ludus-space-medium: 12px;
@@ -76,6 +96,26 @@
     --ludus-axis-x: #e5645c;
     --ludus-axis-y: #6cc27a;
     --ludus-axis-z: #5b8ee6;
+    --ludus-syntax-keyword: #7041a0;
+    --ludus-syntax-control: #872968;
+    --ludus-syntax-type: #006b78;
+    --ludus-syntax-function: #6b6200;
+    --ludus-syntax-method: #705516;
+    --ludus-syntax-variable: #18232c;
+    --ludus-syntax-parameter: #3b5f74;
+    --ludus-syntax-property: #285c70;
+    --ludus-syntax-constant: #a3195b;
+    --ludus-syntax-number: #265c9b;
+    --ludus-syntax-string: #965019;
+    --ludus-syntax-escape: #794b00;
+    --ludus-syntax-comment: #526650;
+    --ludus-syntax-documentation: #42643d;
+    --ludus-syntax-preprocessor: #7041a0;
+    --ludus-syntax-macro: #943444;
+    --ludus-syntax-namespace: #4a5686;
+    --ludus-syntax-operator: #42575f;
+    --ludus-syntax-punctuation: #4c6267;
+    --ludus-syntax-invalid: #9f2945;
   }
 }
 @media (prefers-contrast: more) {
@@ -102,6 +142,26 @@
     --ludus-status-success-surface: #0b2a18;
     --ludus-status-warning-surface: #2e2400;
     --ludus-status-danger-surface: #3a0f14;
+    --ludus-syntax-keyword: #c5a5e8;
+    --ludus-syntax-control: #e2a7da;
+    --ludus-syntax-type: #78ccd5;
+    --ludus-syntax-function: #dcdcaa;
+    --ludus-syntax-method: #e8d39b;
+    --ludus-syntax-variable: #e9f2f1;
+    --ludus-syntax-parameter: #b3cedf;
+    --ludus-syntax-property: #99d3ea;
+    --ludus-syntax-constant: #f29cb8;
+    --ludus-syntax-number: #94bfef;
+    --ludus-syntax-string: #e4b284;
+    --ludus-syntax-escape: #f3d187;
+    --ludus-syntax-comment: #a0b79a;
+    --ludus-syntax-documentation: #a9cb9d;
+    --ludus-syntax-preprocessor: #c5a5e8;
+    --ludus-syntax-macro: #f2b2bf;
+    --ludus-syntax-namespace: #b4bee7;
+    --ludus-syntax-operator: #c6dce4;
+    --ludus-syntax-punctuation: #b5c5c9;
+    --ludus-syntax-invalid: #ff9ca9;
   }
 }
 @media (prefers-contrast: more) and (prefers-color-scheme: light) {
@@ -128,6 +188,26 @@
     --ludus-status-success-surface: #d8f0df;
     --ludus-status-warning-surface: #f8e8bd;
     --ludus-status-danger-surface: #f8d9d5;
+    --ludus-syntax-keyword: #7041a0;
+    --ludus-syntax-control: #872968;
+    --ludus-syntax-type: #00616d;
+    --ludus-syntax-function: #615900;
+    --ludus-syntax-method: #6f5416;
+    --ludus-syntax-variable: #18232c;
+    --ludus-syntax-parameter: #395c71;
+    --ludus-syntax-property: #285c70;
+    --ludus-syntax-constant: #a3195b;
+    --ludus-syntax-number: #255996;
+    --ludus-syntax-string: #864716;
+    --ludus-syntax-escape: #794b00;
+    --ludus-syntax-comment: #4a5c48;
+    --ludus-syntax-documentation: #3f603b;
+    --ludus-syntax-preprocessor: #7041a0;
+    --ludus-syntax-macro: #943444;
+    --ludus-syntax-namespace: #495585;
+    --ludus-syntax-operator: #42575f;
+    --ludus-syntax-punctuation: #475b60;
+    --ludus-syntax-invalid: #9f2945;
   }
 }
 /* END generated design tokens */

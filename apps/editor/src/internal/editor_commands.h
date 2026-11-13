@@ -12,6 +12,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/static_array.hpp>
+
 #include <QtGlobal>
 
 QT_BEGIN_NAMESPACE
@@ -175,38 +177,145 @@ inline constexpr EditorCommand EDITOR_TAB_MOVES_FOCUS_COMMAND
     .Help = "Make Tab and Shift+Tab move focus out of code editors instead of indenting. Run again to indent.",
     .IsCheckable = true,
 };
-// The fold commands carry no catalogue default: their binding differs between
-// keymap profiles (VS Code uses Ctrl+K chords, which the Ludus profile cannot
-// use because it keeps Ctrl+K for the palette), so the keymap owns it. The
-// binding is reserved in both profiles' tables (code_keymap.cpp) and applied to
-// the code view when the fold commands are wired in M3.
-inline constexpr EditorCommand EDITOR_FOLD_ALL_COMMAND
+// Folding actions share one catalogue across editor views, keymaps and the palette.
+enum class CodeFoldCommand : foundation::uint8
 {
-    .Id = "editor.foldAll",
-    .Text = "&Fold All",
-    .ToolbarText = "",
-    .Shortcut = "",
-    .Help = "Collapse every foldable region in the active code editor.",
-    .IsCheckable = false,
+    Toggle,
+    Fold,
+    Unfold,
+    FoldRecursively,
+    UnfoldRecursively,
+    FoldAll,
+    UnfoldAll,
+    ToggleAll,
+    FoldLevel,
+    FoldComments,
+    FoldRegions,
+    FoldSelection,
+    RemoveManual,
+    GoToParent,
+    GoToNext,
+    GoToPrevious,
 };
-inline constexpr EditorCommand EDITOR_UNFOLD_ALL_COMMAND
+
+struct CodeFoldCommandDescriptor final
 {
-    .Id = "editor.unfoldAll",
-    .Text = "&Unfold All",
-    .ToolbarText = "",
-    .Shortcut = "",
-    .Help = "Expand every folded region in the active code editor.",
-    .IsCheckable = false,
+    EditorCommand Command;
+    CodeFoldCommand Operation;
+    const char* LudusShortcut;
+    const char* VsCodeShortcut;
+    foundation::int32 Level;
 };
-inline constexpr EditorCommand EDITOR_TOGGLE_FOLD_COMMAND
-{
-    .Id = "editor.toggleFold",
-    .Text = "Toggle Fo&ld",
-    .ToolbarText = "",
-    .Shortcut = "",
-    .Help = "Fold or unfold the region at the caret in the active code editor.",
-    .IsCheckable = false,
-};
+
+#if defined(Q_OS_MACOS)
+inline constexpr const char* CODE_FOLD_SHORTCUT = "Ctrl+Alt+[";
+inline constexpr const char* CODE_UNFOLD_SHORTCUT = "Ctrl+Alt+]";
+inline constexpr const char* LUDUS_TOGGLE_FOLD_SHORTCUT = "Meta+M, Meta+M";
+inline constexpr const char* LUDUS_TOGGLE_ALL_FOLDS_SHORTCUT = "Meta+M, Meta+L";
+inline constexpr const char* LUDUS_FOLD_LEVEL_ONE_SHORTCUT = "Meta+M, Meta+O";
+inline constexpr const char* LUDUS_FOLD_SELECTION_SHORTCUT = "Meta+M, Meta+H";
+#else
+inline constexpr const char* CODE_FOLD_SHORTCUT = "Ctrl+Shift+[";
+inline constexpr const char* CODE_UNFOLD_SHORTCUT = "Ctrl+Shift+]";
+inline constexpr const char* LUDUS_TOGGLE_FOLD_SHORTCUT = "Ctrl+Alt+M, Ctrl+Alt+M";
+inline constexpr const char* LUDUS_TOGGLE_ALL_FOLDS_SHORTCUT = "Ctrl+Alt+M, Ctrl+Alt+L";
+inline constexpr const char* LUDUS_FOLD_LEVEL_ONE_SHORTCUT = "Ctrl+Alt+M, Ctrl+Alt+O";
+inline constexpr const char* LUDUS_FOLD_SELECTION_SHORTCUT = "Ctrl+Alt+M, Ctrl+Alt+H";
+#endif
+inline constexpr foundation::int32 CODE_FOLD_LEVEL_3 = 3;
+inline constexpr foundation::int32 CODE_FOLD_LEVEL_4 = 4;
+inline constexpr foundation::int32 CODE_FOLD_LEVEL_5 = 5;
+inline constexpr foundation::int32 CODE_FOLD_LEVEL_6 = 6;
+inline constexpr foundation::int32 CODE_FOLD_LEVEL_7 = 7;
+inline constexpr foundation::usize CODE_FOLD_COMMAND_COUNT = 22;
+inline constexpr foundation::StaticArray<CodeFoldCommandDescriptor, CODE_FOLD_COMMAND_COUNT> CODE_FOLD_COMMANDS = {{
+    {{"editor.toggleFold", "Toggle Fold", "", "", "", false},
+     CodeFoldCommand::Toggle,
+     LUDUS_TOGGLE_FOLD_SHORTCUT,
+     "Ctrl+K, Ctrl+L",
+     0},
+    {{"editor.fold", "Fold", "", "", "", false}, CodeFoldCommand::Fold, CODE_FOLD_SHORTCUT, CODE_FOLD_SHORTCUT, 0},
+    {{"editor.unfold", "Unfold", "", "", "", false},
+     CodeFoldCommand::Unfold,
+     CODE_UNFOLD_SHORTCUT,
+     CODE_UNFOLD_SHORTCUT,
+     0},
+    {{"editor.foldRecursively", "Fold Recursively", "", "", "", false},
+     CodeFoldCommand::FoldRecursively,
+     "",
+     "Ctrl+K, Ctrl+[",
+     0},
+    {{"editor.unfoldRecursively", "Unfold Recursively", "", "", "", false},
+     CodeFoldCommand::UnfoldRecursively,
+     "",
+     "Ctrl+K, Ctrl+]",
+     0},
+    {{"editor.foldAll", "Fold All", "", "", "", false}, CodeFoldCommand::FoldAll, "Ctrl+Shift+-", "Ctrl+K, Ctrl+0", 0},
+    {{"editor.unfoldAll", "Unfold All", "", "", "", false},
+     CodeFoldCommand::UnfoldAll,
+     "Ctrl+Shift+=",
+     "Ctrl+K, Ctrl+J",
+     0},
+    {{"editor.toggleAllFolds", "Toggle All Folds", "", "", "", false},
+     CodeFoldCommand::ToggleAll,
+     LUDUS_TOGGLE_ALL_FOLDS_SHORTCUT,
+     "",
+     0},
+    {{"editor.foldLevel1", "Fold Level 1", "", "", "", false},
+     CodeFoldCommand::FoldLevel,
+     LUDUS_FOLD_LEVEL_ONE_SHORTCUT,
+     "Ctrl+K, Ctrl+1",
+     1},
+    {{"editor.foldLevel2", "Fold Level 2", "", "", "", false}, CodeFoldCommand::FoldLevel, "", "Ctrl+K, Ctrl+2", 2},
+    {{"editor.foldLevel3", "Fold Level 3", "", "", "", false},
+     CodeFoldCommand::FoldLevel,
+     "",
+     "Ctrl+K, Ctrl+3",
+     CODE_FOLD_LEVEL_3},
+    {{"editor.foldLevel4", "Fold Level 4", "", "", "", false},
+     CodeFoldCommand::FoldLevel,
+     "",
+     "Ctrl+K, Ctrl+4",
+     CODE_FOLD_LEVEL_4},
+    {{"editor.foldLevel5", "Fold Level 5", "", "", "", false},
+     CodeFoldCommand::FoldLevel,
+     "",
+     "Ctrl+K, Ctrl+5",
+     CODE_FOLD_LEVEL_5},
+    {{"editor.foldLevel6", "Fold Level 6", "", "", "", false},
+     CodeFoldCommand::FoldLevel,
+     "",
+     "Ctrl+K, Ctrl+6",
+     CODE_FOLD_LEVEL_6},
+    {{"editor.foldLevel7", "Fold Level 7", "", "", "", false},
+     CodeFoldCommand::FoldLevel,
+     "",
+     "Ctrl+K, Ctrl+7",
+     CODE_FOLD_LEVEL_7},
+    {{"editor.foldAllComments", "Fold All Comments", "", "", "", false},
+     CodeFoldCommand::FoldComments,
+     "",
+     "Ctrl+K, Ctrl+/",
+     0},
+    {{"editor.foldAllRegions", "Fold All Regions", "", "", "", false},
+     CodeFoldCommand::FoldRegions,
+     "",
+     "Ctrl+K, Ctrl+8",
+     0},
+    {{"editor.foldSelection", "Fold Selection", "", "", "", false},
+     CodeFoldCommand::FoldSelection,
+     LUDUS_FOLD_SELECTION_SHORTCUT,
+     "Ctrl+K, Ctrl+,",
+     0},
+    {{"editor.removeManualFold", "Remove Manual Fold", "", "", "", false},
+     CodeFoldCommand::RemoveManual,
+     "",
+     "Ctrl+K, Ctrl+.",
+     0},
+    {{"editor.goToParentFold", "Go to Parent Fold", "", "", "", false}, CodeFoldCommand::GoToParent, "", "", 0},
+    {{"editor.goToNextFold", "Go to Next Fold", "", "", "", false}, CodeFoldCommand::GoToNext, "", "", 0},
+    {{"editor.goToPreviousFold", "Go to Previous Fold", "", "", "", false}, CodeFoldCommand::GoToPrevious, "", "", 0},
+}};
 
 // Tool-window commands show and focus one tool window, like Visual Studio's View menu.
 inline constexpr EditorCommand VIEW_PROJECT_EXPLORER_COMMAND

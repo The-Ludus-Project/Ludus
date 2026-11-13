@@ -87,6 +87,7 @@ endfunction()
 
 function(ludus_editor_add_tree_sitter)
     ludus_editor_fetch_tree_sitter_component(tree-sitter source lock)
+    set(runtime_source "${source}")
     add_library(ludus_editor_tree_sitter STATIC "${source}/lib/src/lib.c")
     ludus_editor_apply_tree_sitter_c_options(ludus_editor_tree_sitter)
     # The feature macros upstream's build defines for its POSIX and BSD declarations.
@@ -138,6 +139,30 @@ function(ludus_editor_add_tree_sitter)
             target_sources(ludus_editor_tree_sitter PRIVATE $<TARGET_OBJECTS:${target}>)
         endforeach()
     endforeach()
+
+    # LUSL is a repository-owned grammar. Its generated ABI header is identical
+    # to the pinned runtime's parser.h, so both native and Wasm builds reuse it.
+    set(lusl_grammar "${PROJECT_SOURCE_DIR}/apps/editor/syntax/lusl")
+    set(lusl_parser "${lusl_grammar}/src/parser.c")
+    file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" versions)
+    string(JSON generator_version GET "${versions}" quality tree-sitter)
+    file(READ "${PROJECT_SOURCE_DIR}/third_party/tree-sitter/SOURCE-LOCK.json" runtime_lock)
+    string(JSON runtime_version GET "${runtime_lock}" version)
+    if(NOT generator_version STREQUAL runtime_version)
+        message(FATAL_ERROR "The LUSL generator and tree-sitter runtime pins must agree")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${lusl_grammar}/grammar.js" "${lusl_parser}")
+    file(SHA256 "${lusl_grammar}/grammar.js" lusl_grammar_hash)
+    file(STRINGS "${lusl_parser}" stamp LIMIT_COUNT 1)
+    if(NOT stamp STREQUAL "// Tree-sitter ${generator_version}, grammar.js SHA-256: ${lusl_grammar_hash}")
+        message(FATAL_ERROR "Stale LUSL parser. Run scripts/regenerate-lusl-grammar")
+    endif()
+    set(lusl_headers "${CMAKE_CURRENT_BINARY_DIR}/tree-sitter-lusl")
+    configure_file("${runtime_source}/lib/src/parser.h" "${lusl_headers}/tree_sitter/parser.h" COPYONLY)
+    add_library(ludus_editor_tree_sitter_lusl OBJECT "${lusl_parser}")
+    ludus_editor_apply_tree_sitter_c_options(ludus_editor_tree_sitter_lusl)
+    target_include_directories(ludus_editor_tree_sitter_lusl PRIVATE "${lusl_headers}")
+    target_sources(ludus_editor_tree_sitter PRIVATE $<TARGET_OBJECTS:ludus_editor_tree_sitter_lusl>)
 
     # These scanners define tree_sitter_<name>_external_scanner_create() with an empty parameter list
     # instead of (void), while the runtime calls it through a prototyped `void *(*)(void)` slot. In C11

@@ -1,0 +1,7 @@
+(function_declarator name: (identifier) @function)
+(parameter_declaration name: (identifier) @parameter)
+(field_expression field: (field_identifier) @property)
+(initializer_pair name: (identifier) @property)
+(enum_specifier name: (type_identifier) @type)
+(attribute_declaration "space" @keyword)
+(extern_declaration "slang" @keyword)

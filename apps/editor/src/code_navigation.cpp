@@ -295,7 +295,7 @@ void CodeNavigation::traverse(bool shouldGoForward)
         {
             resolved.Anchor = {};
         }
-        mEditor.setTextCursor(resolve(resolved));
+        mEditor.RevealTextCursor(resolve(resolved));
         mEditor.ensureCursorVisible();
         locations.removeLast();
         appendLocation(shouldGoForward == true ? mPrevious : mNext, origin);
@@ -427,7 +427,14 @@ bool CodeNavigation::Navigate(const CodeNavigationTarget& target)
         QTextCursor cursor(source->document());
         cursor.setPosition(destination.Start);
         cursor.setPosition(destination.End, QTextCursor::KeepAnchor);
-        source->setTextCursor(cursor);
+        if (CodeEditor* editorOrNull = qobject_cast<CodeEditor*>(source); editorOrNull != nullptr)
+        {
+            editorOrNull->RevealTextCursor(cursor);
+        }
+        else
+        {
+            source->setTextCursor(cursor);
+        }
         source->centerCursor();
         layout->addWidget(source, 1);
         QDialogButtonBox* close = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
@@ -466,7 +473,7 @@ bool CodeNavigation::Navigate(const CodeNavigationTarget& target)
         RememberCurrent();
     }
     Dismiss();
-    mEditor.setTextCursor(cursor);
+    mEditor.RevealTextCursor(cursor);
     mEditor.ensureCursorVisible();
     mEditor.setFocus();
     return true;

@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Regenerate the checked-in editor parser with the pinned Tree-sitter CLI."""
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+GRAMMAR = ROOT / "apps/editor/syntax/lusl"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tree-sitter", default="tree-sitter", help="path to the pinned CLI")
+    arguments = parser.parse_args()
+    cli = str(Path(arguments.tree_sitter).resolve()) if Path(arguments.tree_sitter).is_file() else arguments.tree_sitter
+    version = json.loads((ROOT / "config/tool_versions.json").read_text())["quality"]["tree-sitter"]
+    actual = subprocess.check_output([cli, "--version"], text=True).strip()
+    if not re.match(rf"^tree-sitter {re.escape(version)}(?:\s|$)", actual):
+        parser.error(f"expected Tree-sitter {version}, found {actual!r}")
+    grammar_hash = hashlib.sha256((GRAMMAR / "grammar.js").read_bytes()).hexdigest()
+    # The generated ABI table keeps the CLI's formatting.
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory)
+        subprocess.run([cli, "generate", "--js-runtime", "native", "--output", output], cwd=GRAMMAR, check=True)
+        stamp = f"// Tree-sitter {version}, grammar.js SHA-256: {grammar_hash}\n// clang-format off\n"
+        path = GRAMMAR / "src/parser.c"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(stamp.encode() + (output / "parser.c").read_bytes())
+
+
+if __name__ == "__main__":
+    main()

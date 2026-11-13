@@ -130,6 +130,10 @@ closed argument set and an implementation-only parser.
   runtime cost.
 - `<cstdint>`, `<cstddef>` — allowed **only** inside `types.h`, which aliases
   them into the Ludus names. Do not include them elsewhere.
+- `<cstdlib>` (`std::free`) at the editor's private tree-sitter boundary releases
+  the changed-range array that the pinned C API returns from its default
+  allocator. Ludus storage stays under its owning allocator. The same C
+  runtime owns the allocation and release in native and WebAssembly builds.
 - `<new>` (`std::nothrow`), `<cstring>` — low-level, exception-free helpers.
 
 ### Ludus-owned runtime facilities

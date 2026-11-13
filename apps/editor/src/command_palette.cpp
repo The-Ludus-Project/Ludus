@@ -1,5 +1,7 @@
 #include "internal/command_palette.h"
+
 #include "design_tokens.h"
+#include "internal/code_editor.h"
 
 #include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
@@ -293,6 +295,18 @@ QList<PaletteEntry> CollectWindowPaletteEntries(const QMainWindow& window)
     for (QAction* action : window.actions())
     {
         append(action, QString::fromLatin1(WINDOW_GROUP));
+    }
+    for (const QWidget* widgetOrNull = window.focusWidget(); widgetOrNull != nullptr;
+         widgetOrNull = widgetOrNull->parentWidget())
+    {
+        if (const CodeEditor* editorOrNull = qobject_cast<const CodeEditor*>(widgetOrNull); editorOrNull != nullptr)
+        {
+            for (QAction* action : editorOrNull->actions())
+            {
+                append(action, QStringLiteral("Code Editor"));
+            }
+            break;
+        }
     }
     return entries;
 }

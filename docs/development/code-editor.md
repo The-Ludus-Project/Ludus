@@ -2,9 +2,8 @@
 
 The editor opens every project text file as a **code tab** with a shared text
 surface, atomic save, external-change handling, crash recovery and a code status
-bar. This guide covers the behavior delivered in milestone M1; syntax
-highlighting, multiple cursors, the find overlay and language servers arrive in
-later milestones and are noted where they apply.
+bar. Syntax highlighting and navigation are available from the same text
+surface in code tabs, the render-graph Source pane and the Scripts work area.
 
 This page is a user guide for the code editor inside the native
 [editor workspace](editor-workspace.md). The authoritative contract is the
@@ -33,9 +32,34 @@ editor opens read-only or cannot open.
 
 A file opens read-only, with a banner that explains why, when it is not
 well-formed UTF-8 or when it is past a size threshold. A very large file opens
-read-only; a large file opens editable but with syntax and language features
-off. A file too large to open at all is refused with a message pointing at Open
+read-only. Large editable files use visible-line coloring and
+indentation-based folds. A file too large to open at all is refused with a message pointing at Open
 Externally. Only UTF-8 is editable; other encodings are an explicit non-goal.
+
+## Syntax and navigation
+
+The editor recognizes Slang, LUSL, Luau, C, C++, JSON, CMake and Markdown by
+file name. The language item in the code status bar overrides detection for
+the active view.
+
+- **Outline** opens a searchable list of declarations, JSON keys or Markdown
+  headings. Type to filter and press Enter to visit the selected entry.
+- The breadcrumb above the text opens the scopes containing the caret. When
+  the first visible line is inside a scope that began above the viewport, the
+  pinned scope header jumps to its start.
+- **Expand Selection** and **Shrink Selection** are available from the source
+  context menu. The defaults are Alt+Shift+Right and Alt+Shift+Left.
+- The arrow in the line gutter collapses or expands a range. Click the
+  placeholder to reveal the hidden lines. The source context menu also offers
+  folding by level or kind, recursive folding, manual folds, and navigation
+  between folds. The command palette lists the same actions while the editor
+  has focus. Each split remembers its own folds. A restored tab reapplies
+  folds whose opening line still matches.
+
+Collapsed lines are part of the text, including when copied in a selection.
+Going to a hidden line opens the folds that contain it. While the parser
+processes an edit, the current line uses lexical coloring. The outline and
+breadcrumbs become actionable when results for that revision are ready.
 
 ## Editing and saving
 

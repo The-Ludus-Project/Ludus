@@ -1,5 +1,7 @@
 #include "internal/code_document_controller.h"
 
+#include "internal/code_structure_view.h"
+
 #include <ludus/foundation/base/core.h>
 
 #include "internal/code_text.h"
@@ -48,6 +50,7 @@ QByteArray CopyCodeText(BorrowedView<const char> bytes)
 CodeDocumentController::CodeDocumentController(CodeEditor& inoutEditor, QObject* parentOrNull)
     : QObject(parentOrNull), mEditor(inoutEditor)
 {
+    mProjectionRevision = mEditor.document()->revision();
     connect(&mEditor, &QObject::destroyed, this, [this]() { mIsEditorAlive = false; });
     connect(&mEditor, &CodeEditor::EditStarted, this, &CodeDocumentController::beginOperation);
     connect(&mEditor, &CodeEditor::EditFinished, this, &CodeDocumentController::endOperation);
@@ -144,7 +147,7 @@ void CodeDocumentController::RestoreSelection(CodeTextSelection selection)
     QTextCursor cursor(mEditor.document());
     cursor.setPosition(anchor);
     cursor.setPosition(caret, QTextCursor::KeepAnchor);
-    mEditor.setTextCursor(cursor);
+    mEditor.RevealTextCursor(cursor);
     mLastSelection = selection;
     mIsSynchronizing = wasSynchronizing;
 }
@@ -334,6 +337,13 @@ void CodeDocumentController::endOperation()
 
 void CodeDocumentController::captureChange(int32 position, int32 removed, int32 added)
 {
+    // Syntax formats and folding invalidate the layout without changing its text revision.
+    const int32 revision = mEditor.document()->revision();
+    if (revision == mProjectionRevision)
+    {
+        return;
+    }
+    mProjectionRevision = revision;
     if (mIsSynchronizing == true || IsBound() == false)
     {
         return;
@@ -520,7 +530,9 @@ CodeEditStatus CodeDocumentController::ApplyEditSet(const CodeDocumentIdentity& 
     const CodeEditStatus status = mHostOrNull->ApplyEdits(expected, edits, false);
     if (status == CodeEditStatus::Ok)
     {
+        const QList<CodeFoldEditRange> folds = mEditor.GetStructure().MapFolds(mBytes, edits);
         Synchronize();
+        mEditor.GetStructure().RestoreMappedFolds(folds, mBytes);
         RestoreSelectionSet(edits.After.Selections);
         mEditor.verticalScrollBar()->setValue(vertical);
         mEditor.horizontalScrollBar()->setValue(horizontal);

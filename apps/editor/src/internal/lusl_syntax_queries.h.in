@@ -1,0 +1,10 @@
+#pragma once
+
+namespace ludus::editor
+{
+inline constexpr char LUSL_HIGHLIGHTS_QUERY[] = R"lusl(@lusl_highlights@)lusl";
+inline constexpr char LUSL_FOLDS_QUERY[] = R"lusl(@lusl_folds@)lusl";
+inline constexpr char LUSL_INDENTS_QUERY[] = R"lusl(@lusl_indents@)lusl";
+inline constexpr char LUSL_LOCALS_QUERY[] = R"lusl(@lusl_locals@)lusl";
+inline constexpr char LUSL_TEXTOBJECTS_QUERY[] = R"lusl(@lusl_textobjects@)lusl";
+}
