@@ -289,10 +289,31 @@ can change or be destroyed. A view records the world's epoch, which every
 successful mutation advances. Views are move-only and release their protection
 when destroyed or released.
 
-Acquire, move and release views, and mutate the world and store, on one owner
-thread. While a view is active, any number of threads may query through it.
-Store additions and releases on the owner thread never touch a shape another
-lease holds, so they may proceed while other threads query.
+A view also freezes the world's `GeometryStore`. While any view of a world on
+the store is active:
+
+- every addition, lease and release on the store fails with `InvalidPhase`;
+- every other world on the store cannot create or destroy colliders, because
+  those lease from and release to the store; moving and enabling its colliders
+  still work.
+
+No shape a query reads, or names by handle, can therefore change during the
+query. `GeometryStore::GetReaderCount` reports the active views.
+
+Acquire, move and release views, and mutate the worlds and the store, on one
+owner thread. While a view is active, any number of threads may query through
+it.
+
+### Stored query shapes
+
+`WorldConvexCastInput` and `WorldOverlapInput` take the query shape by value in
+`Shape`, which borrows a hull for the call, or by `QueryShape`, a `ShapeHandle`
+of a sphere, box, capsule or hull in the world's store. When `QueryShape` is not
+null it takes precedence, and `Shape` is not read. Because the view freezes the
+store, a stored hull stays valid for the whole query, and a stale or foreign
+handle fails with `InvalidHandle` instead of dangling. A triangle-mesh handle
+fails with `Unsupported`. `GeometryStore::TryGetConvexShape` describes a stored
+shape as a `ConvexShape` value.
 
 ### Filtered world queries
 
@@ -503,6 +524,15 @@ as the brute-force traversal. A regression places boxes, hulls and capsules at
 symmetric points of a triangle's plane, where the search once mistook an
 overlap for touching.
 
+The stored-shape tests check:
+- a view of one world freezes the shared store and the other world's collider
+  creation and destruction, with outputs and lease counts unchanged; that
+  world can still move its colliders, and everything resumes after release;
+- 120 closest, `Any` and `All` casts and overlaps with a stored hull or capsule
+  give exactly the value-shape answers;
+- stale, foreign and triangle-mesh handles fail in every cast mode and in
+  overlaps, leaving the results unchanged.
+
 The query-mode tests cover:
 - `All` rays and casts on stacked floors, with distance order, a short buffer
   (a sorted subset of genuine hits), an empty buffer, a miss, a distance
@@ -629,7 +659,6 @@ envelope and a spawn outside it as separate failures that name the limit.
 ## Remaining P1 work
 
 This slice is not the whole gate. Still to come:
-- retained shape handles for query shapes in place of borrowed hulls;
 - query debug overlays.
 
 Hull faces, volume validation from faces and mass properties belong to the

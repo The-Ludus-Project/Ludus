@@ -547,6 +547,18 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
                                    WorldConvexCastResult& outResult,
                                    WorldHitsResult& outHits) noexcept
 {
+    if (input.QueryShape.IsNull() == false)
+    {
+        // Cast the stored shape: the read view protects the store, so its hull stays valid for the whole query.
+        WorldConvexCastInput resolved = input;
+        const Status shape = world.mStoreOrNull->TryGetConvexShape(input.QueryShape, resolved.Shape);
+        if (shape != Status::Success)
+        {
+            return shape;
+        }
+        resolved.QueryShape = {};
+        return Cast(world, resolved, mode, hitBuffer, outResult, outHits);
+    }
     const ConvexCastInput worldCast
     {
         .Shape = input.Shape,
@@ -737,6 +749,17 @@ Status CollisionWorldQueries::Overlap(const CollisionWorld& world,
                                       foundation::BorrowedView<ColliderOverlap> overlapBuffer,
                                       WorldOverlapResult& outResult) noexcept
 {
+    if (input.QueryShape.IsNull() == false)
+    {
+        WorldOverlapInput resolved = input;
+        const Status shape = world.mStoreOrNull->TryGetConvexShape(input.QueryShape, resolved.Shape);
+        if (shape != Status::Success)
+        {
+            return shape;
+        }
+        resolved.QueryShape = {};
+        return Overlap(world, resolved, overlapBuffer, outResult);
+    }
     const ConvexCastInput stationary
     {
         .Shape = input.Shape,
@@ -1067,8 +1090,9 @@ Status CollisionWorld::checkMutable() const noexcept
 
 void CollisionWorld::releaseReader() noexcept
 {
-    LUDUS_ASSERT(mReaderCount > 0);
+    LUDUS_ASSERT(mReaderCount > 0 && mStoreOrNull->mReaderCount > 0);
     --mReaderCount;
+    --mStoreOrNull->mReaderCount;
 }
 
 const CollisionWorld::Slot* CollisionWorld::findLive(ColliderHandle collider) const noexcept
@@ -1166,6 +1190,11 @@ Status CollisionWorld::TryCreateCollider(const ColliderDescription& description,
     {
         return phase;
     }
+    // A collider leases from the store, which a read view of any world on it protects.
+    if (mStoreOrNull->GetReaderCount() > 0)
+    {
+        return Status::InvalidPhase;
+    }
     ShapeKind kind = ShapeKind::TriangleMesh;
     const Status shape = mStoreOrNull->TryGetKind(description.Shape, kind);
     if (shape != Status::Success)
@@ -1229,6 +1258,10 @@ Status CollisionWorld::TryDestroyCollider(ColliderHandle collider) noexcept
     if (phase != Status::Success)
     {
         return phase;
+    }
+    if (mStoreOrNull->GetReaderCount() > 0)
+    {
+        return Status::InvalidPhase;
     }
     Slot* slotOrNull = findLive(collider);
     if (slotOrNull == nullptr)
@@ -1327,6 +1360,8 @@ Status CollisionWorld::TryAcquireReadView(CollisionReadView& outView) noexcept
         return Status::InvalidArgument;
     }
     ++mReaderCount;
+    // The view also freezes the shared store, so shapes a query names by handle cannot change.
+    ++mStoreOrNull->mReaderCount;
     outView.mWorldOrNull = this;
     outView.mEpoch = mEpoch;
     return Status::Success;

@@ -53,7 +53,7 @@ Status GeometryStore::TryInitialize(const GeometryStoreSettings& settings) noexc
 
 Status GeometryStore::reserveSlot(uint32& outSlot) const noexcept
 {
-    if (IsInitialized() == false)
+    if (IsInitialized() == false || mReaderCount > 0)
     {
         return Status::InvalidPhase;
     }
@@ -160,6 +160,10 @@ const GeometryStore::Slot* GeometryStore::findLive(ShapeHandle shape) const noex
 
 Status GeometryStore::TryRetain(ShapeHandle shape) noexcept
 {
+    if (mReaderCount > 0)
+    {
+        return Status::InvalidPhase;
+    }
     Slot* recordOrNull = findLive(shape);
     if (recordOrNull == nullptr)
     {
@@ -175,6 +179,10 @@ Status GeometryStore::TryRetain(ShapeHandle shape) noexcept
 
 Status GeometryStore::TryRelease(ShapeHandle shape) noexcept
 {
+    if (mReaderCount > 0)
+    {
+        return Status::InvalidPhase;
+    }
     Slot* recordOrNull = findLive(shape);
     if (recordOrNull == nullptr)
     {
