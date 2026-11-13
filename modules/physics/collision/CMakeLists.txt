@@ -2,6 +2,7 @@ add_library(ludus_physics_collision STATIC
     src/collider_hierarchy.cpp
     src/collision_world.cpp
     src/convex_hull_cook.cpp
+    src/debug_overlay.cpp
     src/geometry_store.cpp
     src/gjk_simplex.cpp
     src/triangle_mesh_box_cast.cpp
@@ -13,6 +14,7 @@ set_target_properties(ludus_physics_collision PROPERTIES EXPORT_NAME PhysicsColl
 target_sources(ludus_physics_collision PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
     include/ludus/physics/collision/collision_world.h
     include/ludus/physics/collision/convex_shape.h
+    include/ludus/physics/collision/debug_overlay.h
     include/ludus/physics/collision/geometry_store.h
     include/ludus/physics/collision/queries.h
     include/ludus/physics/collision/status.h
@@ -29,7 +31,8 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_physics_collision_tests tests/triangle_mesh_tests.cpp tests/triangle_mesh_oracle_tests.cpp
         tests/convex_cast_tests.cpp tests/convex_cast_oracle_tests.cpp tests/collision_world_tests.cpp
         tests/collision_world_convex_tests.cpp tests/collision_world_query_mode_tests.cpp
-        tests/collision_world_hierarchy_tests.cpp tests/collision_world_retained_shape_tests.cpp)
+        tests/collision_world_hierarchy_tests.cpp tests/collision_world_retained_shape_tests.cpp
+        tests/collision_debug_overlay_tests.cpp)
     target_link_libraries(ludus_physics_collision_tests PRIVATE Ludus::PhysicsCollision Ludus::FoundationTime
         Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_physics_collision_tests)
