@@ -137,7 +137,10 @@ struct WorldRaycastResult final
 /// @brief Closest world convex cast request. Admitted values follow ConvexCastInput, in world space.
 struct WorldConvexCastInput final
 {
-    ConvexShape Shape{};                             ///< Shape to cast; a hull is borrowed for this call.
+    ConvexShape Shape{}; ///< Shape to cast when QueryShape is null; a hull is borrowed for this call.
+    /// When not null, a live sphere, box, capsule or hull of the world's store, cast instead of Shape. The read view
+    /// protects the store, so the stored shape cannot change during the query.
+    ShapeHandle QueryShape{};
     foundation::math::Vector3d PositionWorld{};      ///< Shape origin at the start of the cast, meters.
     foundation::math::Quaternion OrientationWorld{}; ///< Rotation from shape axes to world axes.
     foundation::math::Vector3d TranslationWorld{};   ///< Full cast displacement, meters.
@@ -185,7 +188,9 @@ enum class OverlapMode : uint8
 /// not overlapping. Broadphase bounds are only candidates.
 struct WorldOverlapInput final
 {
-    ConvexShape Shape{};                                  ///< Shape to test; a hull is borrowed for this call.
+    ConvexShape Shape{}; ///< Shape to test when QueryShape is null; a hull is borrowed for this call.
+    /// When not null, a live sphere, box, capsule or hull of the world's store, tested instead of Shape.
+    ShapeHandle QueryShape{};
     foundation::math::Vector3d PositionWorld{};           ///< Shape origin, meters.
     foundation::math::Quaternion OrientationWorld{};      ///< Rotation from shape axes to world axes.
     OverlapMode Mode = OverlapMode::All;                  ///< Any or All.
@@ -235,9 +240,10 @@ class CollisionWorld;
 
 /// @brief Scoped, protected read access to a CollisionWorld.
 ///
-/// While any view of a world is active, the world refuses every mutation with Status::InvalidPhase, so the colliders
-/// and shapes a query reads cannot change or be destroyed. A view records the world's epoch when it is acquired; the
-/// epoch is the same for every query through the view.
+/// While any view of a world is active, the world refuses every mutation with Status::InvalidPhase, and so does the
+/// world's GeometryStore, together with collider creation and destruction in every other world that shares it. The
+/// colliders and shapes a query reads, or names by handle, therefore cannot change or be destroyed. A view records the
+/// world's epoch when it is acquired; the epoch is the same for every query through the view.
 ///
 /// Thread affinity: acquire, move and release views on the world's owner thread. While a view is active its const
 /// queries may run concurrently on any threads. A view is move-only; destroying or releasing it ends the protection.
@@ -301,8 +307,10 @@ public:
     /// @brief Find the first reported collider a posed convex shape contacts while translating.
     /// @param input Shape, pose, translation, overlap policy, filter and traversal, in world space.
     /// @param outResult Receives the hit or an explicit miss on Success; unchanged on failure.
-    /// @return Success; InvalidPhase for an inactive view; the ConvexCastInput validation failures; InvalidArgument for
-    /// an invalid ignored-collider view; InitialOverlap under InitialOverlapPolicy::Reject; NotConverged; or
+    /// @return Success; InvalidPhase for an inactive view; InvalidHandle for a QueryShape that is not live in the
+    /// world's store, or Unsupported for a triangle-mesh one; the ConvexCastInput validation failures;
+    /// InvalidArgument for an invalid ignored-collider view; InitialOverlap under InitialOverlapPolicy::Reject;
+    /// NotConverged; or
     /// OutOfRange when the shape, expressed in a reached collider's local space, lies outside the coordinate
     /// envelope where its path enters that collider's bounds.
     [[nodiscard]] Status CastConvexClosest(const WorldConvexCastInput& input,
@@ -333,8 +341,9 @@ public:
     /// @param input Shape, pose, mode, filter and traversal, in world space.
     /// @param overlapBuffer Caller storage for the records, borrowed for this call; may be empty.
     /// @param outResult Receives the counts and completion on Success; unchanged on failure.
-    /// @return Success; InvalidPhase for an inactive view; the ConvexCastInput validation failures; InvalidArgument for
-    /// an unknown mode, an invalid buffer view or an invalid ignored-collider view; NotConverged; or OutOfRange when
+    /// @return Success; InvalidPhase for an inactive view; InvalidHandle or Unsupported for the QueryShape, as for
+    /// CastConvexClosest; the ConvexCastInput validation failures; InvalidArgument for an unknown mode, an invalid
+    /// buffer view or an invalid ignored-collider view; NotConverged; or OutOfRange when
     /// the shape reaches a collider's bounds from outside the coordinate envelope of its local space. After a failure
     /// the buffer's contents are unspecified.
     [[nodiscard]] Status Overlap(const WorldOverlapInput& input,
@@ -385,7 +394,8 @@ public:
     /// @brief Create a collider.
     /// @param description Shape, pose, participation, filter, enabled state and binding.
     /// @param outCollider Receives the new handle on success; unchanged on failure.
-    /// @return Success; InvalidPhase when uninitialized or a read view is active; InvalidHandle for a shape that is
+    /// @return Success; InvalidPhase when uninitialized or a read view of this world, or of any world sharing the
+    /// store, is active; InvalidHandle for a shape that is
     /// not live in the store; NonFiniteInput, OutOfRange or
     /// InvalidArgument for the pose; InvalidArgument for a solid sensor or zero category bits; or CapacityExceeded
     /// when no slot is free or the shape's lease count is full.
@@ -393,7 +403,8 @@ public:
                                            ColliderHandle& outCollider) noexcept;
 
     /// @brief Destroy a collider and release its shape lease. Every copy of the handle becomes stale.
-    /// @return Success; InvalidPhase when uninitialized or a read view is active; or InvalidHandle.
+    /// @return Success; InvalidPhase when uninitialized or a read view of this world, or of any world sharing the
+    /// store, is active; or InvalidHandle.
     [[nodiscard]] Status TryDestroyCollider(ColliderHandle collider) noexcept;
 
     /// @brief Move a collider.

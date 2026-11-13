@@ -29,7 +29,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_physics_collision_tests tests/triangle_mesh_tests.cpp tests/triangle_mesh_oracle_tests.cpp
         tests/convex_cast_tests.cpp tests/convex_cast_oracle_tests.cpp tests/collision_world_tests.cpp
         tests/collision_world_convex_tests.cpp tests/collision_world_query_mode_tests.cpp
-        tests/collision_world_hierarchy_tests.cpp)
+        tests/collision_world_hierarchy_tests.cpp tests/collision_world_retained_shape_tests.cpp)
     target_link_libraries(ludus_physics_collision_tests PRIVATE Ludus::PhysicsCollision Ludus::FoundationTime
         Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_physics_collision_tests)

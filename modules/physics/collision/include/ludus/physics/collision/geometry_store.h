@@ -57,8 +57,9 @@ struct GeometryStoreSettings final
 /// handle carries the store's process-unique owner token, so a handle from one store is rejected by another, and slot
 /// generations advance on release and never wrap (a slot released at the terminal generation is retired).
 ///
-/// Thread affinity: initialization, additions, leases and releases happen on one owner thread. They never change a
-/// shape another lease holds, so CollisionWorld queries that read leased shapes may run on other threads meanwhile.
+/// Thread affinity: initialization, additions, leases and releases happen on one owner thread. While a read view of
+/// any CollisionWorld initialized with this store is active, every addition, lease and release fails with
+/// Status::InvalidPhase, so nothing a query can read or name by handle changes while queries run on other threads.
 /// The store is neither copyable nor movable, because each CollisionWorld that uses it keeps its address.
 class GeometryStore final
 {
@@ -86,29 +87,32 @@ public:
     /// @brief Take ownership of a cooked triangle mesh.
     /// @param mesh Moved from only on success.
     /// @param outShape Receives the new handle, carrying one lease, on success. Unchanged on failure.
-    /// @return Success; InvalidPhase when uninitialized; NoGeometry for an uncooked mesh; or CapacityExceeded when
-    /// no slot is free.
+    /// @return Success; InvalidPhase when uninitialized or a read view protects the store; NoGeometry for an uncooked
+    /// mesh; or CapacityExceeded when no slot is free.
     [[nodiscard]] Status TryAddTriangleMesh(TriangleMesh&& mesh, ShapeHandle& outShape) noexcept;
 
     /// @brief Take ownership of a cooked convex hull.
     /// @param hull Moved from only on success.
     /// @param outShape Receives the new handle, carrying one lease, on success. Unchanged on failure.
-    /// @return Success; InvalidPhase when uninitialized; NoGeometry for an uncooked hull; or CapacityExceeded.
+    /// @return Success; InvalidPhase when uninitialized or a read view protects the store; NoGeometry for an uncooked
+    /// hull; or CapacityExceeded.
     [[nodiscard]] Status TryAddConvexHull(ConvexHull&& hull, ShapeHandle& outShape) noexcept;
 
     /// @brief Store a sphere, box or capsule primitive.
     /// @param shape A sphere, box or capsule whose dimensions satisfy ConvexShape's admitted values.
     /// @param outShape Receives the new handle, carrying one lease, on success. Unchanged on failure.
-    /// @return Success; InvalidPhase when uninitialized; NonFiniteInput, InvalidArgument (including a Hull kind,
-    /// which TryAddConvexHull stores) or OutOfRange for the dimensions; or CapacityExceeded.
+    /// @return Success; InvalidPhase when uninitialized or protected; NonFiniteInput, InvalidArgument (including a Hull
+    /// kind, which TryAddConvexHull stores) or OutOfRange for the dimensions; or CapacityExceeded.
     [[nodiscard]] Status TryAddPrimitive(const ConvexShape& shape, ShapeHandle& outShape) noexcept;
 
     /// @brief Add one lease to a live shape.
-    /// @return Success; InvalidHandle; or CapacityExceeded at MAX_SHAPE_LEASES.
+    /// @return Success; InvalidPhase while a read view protects the store; InvalidHandle; or CapacityExceeded at
+    /// MAX_SHAPE_LEASES.
     [[nodiscard]] Status TryRetain(ShapeHandle shape) noexcept;
 
     /// @brief Release one lease. Releasing the last lease frees the shape and makes every copy of the handle stale.
-    /// @return Success, or InvalidHandle for a handle that is not live in this store.
+    /// @return Success; InvalidPhase while a read view protects the store; or InvalidHandle for a handle that is not
+    /// live in this store.
     [[nodiscard]] Status TryRelease(ShapeHandle shape) noexcept;
 
     /// Whether `shape` names a live shape of this store.
@@ -149,6 +153,11 @@ public:
     {
         return mLiveCount;
     }
+    /// Number of active read views of worlds that use this store; mutations fail while it is not zero.
+    [[nodiscard]] LUDUS_INLINE uint32 GetReaderCount() const noexcept
+    {
+        return mReaderCount;
+    }
 
 private:
     /// One shape slot. Only the member that matches Kind holds data.
@@ -174,5 +183,6 @@ private:
     uint64 mOwner = 0;
     usize mLiveCount = 0;
     uint32 mAttachedWorldCount = 0; ///< Initialized CollisionWorlds that use this store.
+    uint32 mReaderCount = 0;        ///< Active read views of those worlds.
 };
 } // namespace ludus::physics::collision
