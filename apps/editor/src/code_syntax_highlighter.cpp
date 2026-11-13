@@ -332,13 +332,13 @@ void CodeSyntaxHighlighter::ApplyVisibleBlocks(QTextBlock first, int32 lastLine)
 
 void CodeSyntaxHighlighter::ScheduleReapply()
 {
-    mNextBlock = document()->begin();
+    mNextBlockNumber = 0;
     mReapply.start(0);
 }
 
 void CodeSyntaxHighlighter::reapplySlice()
 {
-    if (IsLargeDocument() == true)
+    if (document() == nullptr || IsLargeDocument() == true)
     {
         return;
     }
@@ -346,14 +346,17 @@ void CodeSyntaxHighlighter::reapplySlice()
     QElapsedTimer clock;
     clock.start();
     mIsApplyingExplicitly = true;
-    while (mNextBlock.isValid() == true && clock.elapsed() < SLICE_MILLISECONDS)
+    // Find the block again for each slice: the document may have been edited or replaced since the last one.
+    QTextBlock block = document()->findBlockByNumber(mNextBlockNumber);
+    while (block.isValid() == true && clock.elapsed() < SLICE_MILLISECONDS)
     {
-        ApplyBlock(mNextBlock);
-        mNextBlock = mNextBlock.next();
+        ApplyBlock(block);
+        block = block.next();
     }
     mIsApplyingExplicitly = false;
-    if (mNextBlock.isValid() == true)
+    if (block.isValid() == true)
     {
+        mNextBlockNumber = block.blockNumber();
         mReapply.start(0);
     }
 }
