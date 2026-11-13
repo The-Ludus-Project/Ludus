@@ -5,8 +5,10 @@ physics gate P1 in the [physics systems architecture](physics-systems.md#deliver
 It exports an immutable static triangle mesh with a bounded bounding volume
 hierarchy (BVH), a closest raycast, a closest translation-only cast of an
 axis-aligned box, and a general closest cast of a posed sphere, box, capsule or
-convex hull. It depends only on FoundationBase, FoundationContainers and
-FoundationMath, contains no third-party physics code, and builds for native
+convex hull. A geometry store owns cooked shapes behind leased handles, and a
+collision world places colliders that lease them and answers filtered world
+queries through protected read views. It depends only on FoundationBase,
+FoundationContainers, FoundationIdentity and FoundationMath, contains no third-party physics code, and builds for native
 and Emscripten targets. The installed SDK exports it as a component.
 
 Public headers:
@@ -17,6 +19,8 @@ Public headers:
 | `<ludus/physics/collision/convex_shape.h>` | `ConvexShape`, its `Make*Shape` constructors, and `ConvexHull` with its cook source and result |
 | `<ludus/physics/collision/queries.h>` | Raycast, box-cast and convex-cast inputs, results, policies and tolerances |
 | `<ludus/physics/collision/triangle_mesh.h>` | Cook source, settings and result, and `TriangleMesh` |
+| `<ludus/physics/collision/geometry_store.h>` | `ShapeHandle`, `ShapeKind` and `GeometryStore` |
+| `<ludus/physics/collision/collision_world.h>` | `ColliderHandle`, poses, participation, filters, world query inputs and results, `CollisionWorld` and `CollisionReadView` |
 
 The Doxygen comments beside each declaration are the API contract. This page
 explains the model, its limits and how to use it.
@@ -216,6 +220,106 @@ reports a numerical failure and never guesses a contact. No test scene has
 reached it. Because a pruned node is never visited, a failing triangle may
 fail only the traversal that visits it.
 
+## Geometry store and collision world
+
+```cpp
+GeometryStore store;
+CollisionWorld world;
+ShapeHandle floor;
+ColliderHandle collider;
+if (store.TryInitialize({ .MaxShapes = 64 }) == Status::Success &&
+    store.TryAddTriangleMesh(Move(cookedFloor), floor) == Status::Success &&
+    world.TryInitialize(store, { .MaxColliders = 256 }) == Status::Success &&
+    world.TryCreateCollider({ .Shape = floor, .Pose = { .PositionWorld = {0, 1, 0} }, .Binding = entityBits },
+                            collider) == Status::Success)
+{
+    CollisionReadView view;
+    WorldRaycastResult hit;
+    if (world.TryAcquireReadView(view) == Status::Success &&
+        view.RaycastClosest({ .OriginWorld = eye, .DirectionWorld = forward, .MaxDistanceMeters = 50 }, hit) ==
+            Status::Success && hit.HasHit == true)
+    {
+        // hit.Collider and hit.Binding name what was hit.
+    }
+}
+```
+
+### Identities and leases
+
+`ShapeHandle` and `ColliderHandle` are distinct
+[FoundationIdentity handles](object-handles-uuid.md#runtime-handle-representation):
+an owner token, a slot and a generation. Each store and world takes a fresh
+process-unique owner token when it is initialized, so a handle from another
+store or world is rejected with `InvalidHandle`. Releasing a shape or
+destroying a collider advances its slot's generation, so every copy of the old
+handle becomes stale; a slot released at the terminal generation is retired and
+never reused. Generations never wrap.
+
+`GeometryStore` owns cooked triangle meshes, convex hulls and sphere, box and
+capsule primitives. Each `TryAdd*` call moves the shape in only on success and
+returns a handle carrying one lease. `TryRetain` and `TryRelease` add and drop
+leases; the last release frees the shape. A collider takes its own lease when
+it is created and releases it when it is destroyed, so the creator may release
+its lease at once and the shape lives as long as any collider uses it. Stored
+shapes never move.
+
+`CollisionWorld` places colliders. A `ColliderDescription` names a leased shape, a
+`RigidPose` (position and unit orientation), `ColliderParticipation`
+(`IsSolid`, `IsSensor` and `IsQueryable`; solid and sensor are exclusive), a
+`CollisionFilter` (category bits and the categories it collides with, tested
+symmetrically by `ShouldCollide`), an enabled flag and an opaque `Binding`, such
+as an entity, that every hit copies. This slice admits triangle-mesh shapes
+only; a convex shape is rejected with `Unsupported` until overlap queries add
+convex-against-convex tests.
+
+Both objects reserve all their slots when they are initialized. After that,
+adding and releasing shapes and creating, moving, enabling and destroying
+colliders never allocate, and a failure leaves every output and lease count
+unchanged. Neither object is copyable or movable: a world keeps its store's
+address, and a read view keeps its world's. Destroy worlds before their store;
+the store asserts this.
+
+### Read views and phases
+
+Queries run through a `CollisionReadView`. While any view of a world is active,
+every mutation of that world fails with `InvalidPhase`, so nothing a query reads
+can change or be destroyed. A view records the world's epoch, which every
+successful mutation advances. Views are move-only and release their protection
+when destroyed or released.
+
+Acquire, move and release views, and mutate the world and store, on one owner
+thread. While a view is active, any number of threads may query through it.
+Store additions and releases on the owner thread never touch a shape another
+lease holds, so they may proceed while other threads query.
+
+### Filtered world queries
+
+`CollisionReadView::RaycastClosest` and `CastConvexClosest` take world-space
+inputs with the same admitted values and failures as the mesh queries, plus a
+directed `QueryFilter`. A collider is reported only when it is live, enabled
+and queryable; one of its category bits is in `CategoryMask`; it is not a sensor
+unless `ShouldIncludeSensors`; and it is not in `IgnoredColliders` (at most
+`MAX_QUERY_IGNORED_COLLIDERS`, 64).
+
+Each query moves into each candidate collider's local frame, runs that mesh's
+query and maps the answer back: normals and witness points rotate into world
+axes, and distances and fractions are unchanged by the rigid transform. A convex
+shape's rotation is composed with the collider's in `float64`, not through a
+`float32` quaternion. Results add the collider handle and binding. Equal
+distances or fractions resolve to the lower collider slot, then generation, then
+triangle index.
+
+Collider-local coordinates must lie in the 100 km envelope. When a query's
+start lies outside it in a collider's frame, the query starts where its path
+first reaches that collider's bounds, which lie inside the envelope. A convex
+shape that is still outside the envelope there fails with `OutOfRange`.
+
+There is no collider hierarchy yet. Each query tests every reported collider's
+conservative world bounds against the query's path before it traverses that
+mesh, so its cost grows with the collider count. `QueryTraversal::AllTriangles`
+skips that test as well as the mesh hierarchies and is the brute-force oracle
+for both.
+
 ## Determinism and the correctness oracle
 
 Ordering never uses an epsilon comparison: finite values compare strictly, then
@@ -265,9 +369,30 @@ and over a cooked hull. It checks that each failure reports
 and every query, including convex casts of each shape kind, allocate nothing. Sanitizer and MSVC builds skip
 this executable because their runtimes replace the same functions.
 
+The world tests cover:
+- store and world initialization failures;
+- lease counts through shape release and reuse;
+- stale, malformed and foreign handles;
+- every collider creation failure with output and lease preservation, and capacity exhaustion;
+- read-view protection of every mutation, view moves and epochs;
+- rotated colliders with analytic hit distances, normals and witnesses;
+- each query filter rule and the symmetric pair filter;
+- tie ordering by collider slot;
+- colliders whose local start lies 108 km outside the envelope.
+
+On 24 randomly posed colliders with sensors, disabled colliders and category
+masks, world queries equal the brute-force traversal exactly (about half of
+the queries hit). A rotated, translated collider also agrees within 0.1 mm
+with the same triangles baked into a world-space mesh.
+
+The allocation tests also cover store and world initialization under each
+injected allocation failure, and they show that adding a shape, creating,
+moving and destroying a collider and running world queries allocate nothing.
+
 The installed SDK consumer (`tests/sdk_consumer/collision.cpp`) links
-`Ludus::PhysicsCollision`, cooks a quad and a tetrahedral hull, and runs a
-raycast, a box cast and convex casts of a sphere and the hull.
+`Ludus::PhysicsCollision`, cooks a quad and a tetrahedral hull, runs a
+raycast, a box cast and convex casts of a sphere and the hull, and then puts
+the quad in a store and world and casts a ray through a read view.
 
 ## Attribution
 
@@ -329,9 +454,13 @@ envelope and a spawn outside it as separate failures that name the limit.
 
 ## Remaining P1 work
 
-This slice is not the whole gate. Still to come: shape, collider and world
-identities; filters; the geometry store, with retained shape leases in place of
-borrowed hulls, and protected read views; overlap queries and `Any`/`All` query
-modes with completion semantics; query debug overlays; and Emscripten SDK
-consumer evidence. Hull faces, volume validation from faces and mass
-properties belong to the rigid-body gate.
+This slice is not the whole gate. Still to come:
+- convex colliders, with convex-against-convex casts;
+- overlap queries and `Any`/`All` query modes with completion semantics;
+- a collider hierarchy in place of the linear bounds test;
+- retained shape handles for query shapes in place of borrowed hulls;
+- query debug overlays;
+- Emscripten SDK consumer evidence.
+
+Hull faces, volume validation from faces and mass properties belong to the
+rigid-body gate.

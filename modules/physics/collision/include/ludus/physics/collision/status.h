@@ -12,6 +12,7 @@ namespace ludus::physics::collision
 using foundation::float32;
 using foundation::float64;
 using foundation::uint32;
+using foundation::uint64;
 using foundation::uint8;
 using foundation::usize;
 
@@ -33,6 +34,10 @@ enum class Status : uint8
     InitialOverlap,     ///< A cast with the reject initial-overlap policy started overlapping a triangle.
     DegenerateShape,    ///< A convex hull source has fewer than four points or encloses no usable volume.
     NotConverged,       ///< A convex cast exhausted MAX_CONVEX_CAST_ITERATIONS on one triangle without converging.
+    InvalidHandle,      ///< A handle is null, malformed, stale, or was issued by another store or world.
+    InvalidPhase,       ///< The object is uninitialized, already initialized, or protected by a live read view.
+    Unsupported,        ///< The request combines features this gate does not implement yet.
+    IdentityExhausted,  ///< The process ran out of lifetime tokens for new stores and worlds.
 };
 
 /// Largest magnitude, in meters, of any mesh vertex coordinate or query origin/center component.
