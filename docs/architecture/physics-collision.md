@@ -198,8 +198,10 @@ plus the largest translation component and the shape's largest posed extent.
 A 20 m scene therefore resolves contact to about 20 nm.
 
 - A triangle **starts overlapping** when the support search proves it deeper
-  than the tolerance inside the shape, or encloses the origin exactly. `Report`
-  returns it at fraction zero with no normal and no witness, as for the box.
+  than the tolerance inside the shape, encloses the origin exactly, or finds
+  the cores at a separation below a thousandth of the tolerance, where the
+  separating direction is only rounding. `Report` returns it at fraction zero
+  with no normal and no witness, as for the box.
 - A triangle is **touching** at the start when its distance is within the
   tolerance of zero. Moving into it is a hit at fraction zero with a normal;
   moving away or parallel is a miss. Exact touching of two flat faces can
@@ -268,9 +270,9 @@ shapes never move.
 (`IsSolid`, `IsSensor` and `IsQueryable`; solid and sensor are exclusive), a
 `CollisionFilter` (category bits and the categories it collides with, tested
 symmetrically by `ShouldCollide`), an enabled flag and an opaque `Binding`, such
-as an entity, that every hit copies. This slice admits triangle-mesh shapes
-only; a convex shape is rejected with `Unsupported` until overlap queries add
-convex-against-convex tests.
+as an entity, that every hit copies. A collider may use any stored shape:
+a triangle mesh for static environment geometry, or a sphere, box, capsule or
+hull, which queries treat as a closed solid.
 
 Both objects reserve all their slots when they are initialized. After that,
 adding and releasing shapes and creating, moving, enabling and destroying
@@ -301,8 +303,8 @@ and queryable; one of its category bits is in `CategoryMask`; it is not a sensor
 unless `ShouldIncludeSensors`; and it is not in `IgnoredColliders` (at most
 `MAX_QUERY_IGNORED_COLLIDERS`, 64).
 
-Each query moves into each candidate collider's local frame, runs that mesh's
-query and maps the answer back: normals and witness points rotate into world
+Each query moves into each candidate collider's local frame, runs that
+collider's query and maps the answer back: normals and witness points rotate into world
 axes, and distances and fractions are unchanged by the rigid transform. A convex
 shape's rotation is composed with the collider's in `float64`, not through a
 `float32` quaternion. Results add the collider handle and binding. Equal
@@ -314,11 +316,53 @@ start lies outside it in a collider's frame, the query starts where its path
 first reaches that collider's bounds, which lie inside the envelope. A convex
 shape that is still outside the envelope there fails with `OutOfRange`.
 
+Convex colliders use the general convex path, with both shapes rounded: a
+sphere or capsule target adds its radius to the query shape's.
+
+- A ray is cast as a point. It reports the entry point, the outward surface
+  normal and `IsFrontFace`. Its distance uses the convex cast's contact
+  tolerance; it is not the watertight mesh test.
+- A ray that starts inside a convex collider hits it at distance zero with
+  `HasNormal` false. `TriangleFacePolicy::BackFacesOnly` never reports a
+  convex collider, because its exit surface needs a separate query.
+- A convex cast follows the mesh rules. The witness point lies on the target's
+  surface: a rounded target's core witness is moved out by its radius.
+
 There is no collider hierarchy yet. Each query tests every reported collider's
 conservative world bounds against the query's path before it traverses that
-mesh, so its cost grows with the collider count. `QueryTraversal::AllTriangles`
-skips that test as well as the mesh hierarchies and is the brute-force oracle
-for both.
+collider, so its cost grows with the collider count.
+`QueryTraversal::AllTriangles` skips that test as well as the mesh hierarchies
+and is the brute-force oracle for both.
+
+### Overlap queries
+
+`CollisionReadView::Overlap` reports the colliders that a stationary posed
+convex shape overlaps, into a caller-supplied `BorrowedView<ColliderOverlap>`.
+A collider overlaps when the shape is deeper inside it than the contact
+tolerance, by exactly the rule for a cast's initial overlap. Touching is not
+overlapping, and bounds only select candidates.
+
+Each record names the collider and its binding. For a mesh collider it also
+gives the lowest overlapping triangle and the number of overlapping triangles;
+a convex collider leaves both at their defaults.
+
+| Mode | Behavior |
+| --- | --- |
+| `OverlapMode::All` | Visits every candidate and writes records in increasing slot order until the buffer is full |
+| `OverlapMode::Any` | Stops at the first overlapping collider; promises no particular one |
+
+`WorldOverlapResult` separates finding from writing:
+
+- `OverlapCount` is the number of overlapping colliders found: all of them for
+  `All`, at most one for `Any`.
+- `WrittenCount` is the number of records written.
+- `IsComplete` is true exactly when the two are equal.
+
+An `All` query whose buffer was too small still counts every overlap. The caller
+can then retry with a buffer of `OverlapCount` records; the records already
+written are the first ones in slot order, not a nearest subset. A miss is a
+complete, empty result. A failed query leaves the result unchanged; the
+buffer's contents are then unspecified.
 
 ## Determinism and the correctness oracle
 
@@ -380,6 +424,30 @@ The world tests cover:
 - tie ordering by collider slot;
 - colliders whose local start lies 108 km outside the envelope.
 
+The convex-collider tests cover:
+- rays into sphere, rotated box, lying capsule and hull colliders, with
+  analytic distances and normals, starts inside, back-face rays and near misses;
+- convex casts onto sphere and box colliders, including target-surface witnesses
+  and every overlap policy;
+- overlap queries with records, triangle counts, a too-small buffer, an empty
+  buffer, `Any`, filters, a miss, an exactly touching sphere and invalid
+  requests;
+- a translation at the component limit through a collider rotated by 45°.
+
+An independent oracle checks 900 random convex-against-convex pairs. It uses
+exact point and segment distances for sphere and capsule pairs and the
+15-axis separating gap for box pairs, with golden-section and bisection
+searches. The pairs give 383 first contacts, 181 starting overlaps and 336
+misses. Contact distances agree within 1 µm, overlap queries agree with the
+sign of the starting separation, and rays agree with the exact sphere quadratic
+and box slab test (171 hits).
+
+A world of 30 mixed mesh and convex colliders gives exactly the same results
+for rays, casts and `All` overlaps (records, triangle counts and completion)
+as the brute-force traversal. A regression places boxes, hulls and capsules at
+symmetric points of a triangle's plane, where the search once mistook an
+overlap for touching.
+
 On 24 randomly posed colliders with sensors, disabled colliders and category
 masks, world queries equal the brute-force traversal exactly (about half of
 the queries hit). A rotated, translated collider also agrees within 0.1 mm
@@ -387,12 +455,14 @@ with the same triangles baked into a world-space mesh.
 
 The allocation tests also cover store and world initialization under each
 injected allocation failure, and they show that adding a shape, creating,
-moving and destroying a collider and running world queries allocate nothing.
+moving and destroying a collider and running world queries allocate nothing,
+including convex colliders and overlap queries.
 
 The installed SDK consumer (`tests/sdk_consumer/collision.cpp`) links
 `Ludus::PhysicsCollision`, cooks a quad and a tetrahedral hull, runs a
 raycast, a box cast and convex casts of a sphere and the hull, and then puts
-the quad in a store and world and casts a ray through a read view.
+the quad in a store and world, casts a ray and runs an overlap query through a
+read view.
 
 ## Attribution
 
@@ -455,8 +525,7 @@ envelope and a spawn outside it as separate failures that name the limit.
 ## Remaining P1 work
 
 This slice is not the whole gate. Still to come:
-- convex colliders, with convex-against-convex casts;
-- overlap queries and `Any`/`All` query modes with completion semantics;
+- `Any` and `All` modes for rays and convex casts, which need multi-hit mesh traversal;
 - a collider hierarchy in place of the linear bounds test;
 - retained shape handles for query shapes in place of borrowed hulls;
 - query debug overlays;

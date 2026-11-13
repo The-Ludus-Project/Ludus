@@ -438,3 +438,70 @@ TEST_CASE("Collider changes and world queries allocate nothing", "[collision][al
     CHECK(gCounters.Allocations == 0);
     // Releasing the last lease frees the mesh's storage: frees are expected, allocations are not.
 }
+
+TEST_CASE("Convex colliders and overlap queries allocate nothing", "[collision][alloc][world]")
+{
+    GeometryStore store;
+    REQUIRE(store.TryInitialize({ .MaxShapes = 4 }) == Status::Success);
+    CollisionWorld world;
+    REQUIRE(world.TryInitialize(store, { .MaxColliders = 8 }) == Status::Success);
+    ConvexHull hull;
+    REQUIRE(ConvexHull::TryCook(GetHullSource(MakeHullPoints(0.4f)), hull).Result == Status::Success);
+    MeshData floorData;
+    AddFloorQuad(floorData);
+    TriangleMesh floor = CookOrFail(floorData);
+    constexpr usize RECORD_COUNT = 4;
+    StaticArray<ColliderOverlap, RECORD_COUNT> records{};
+    gCounters = {};
+    isTrackingAllocations = true;
+    ShapeHandle sphere;
+    ShapeHandle hullShape;
+    ShapeHandle floorShape;
+    bool isEverySuccess = store.TryAddPrimitive(MakeSphereShape(0.5), sphere) == Status::Success &&
+                          store.TryAddConvexHull(ludus::foundation::Move(hull), hullShape) == Status::Success &&
+                          store.TryAddTriangleMesh(ludus::foundation::Move(floor), floorShape) == Status::Success;
+    ColliderHandle first;
+    ColliderHandle second;
+    ColliderHandle third;
+    isEverySuccess = isEverySuccess == true && world.TryCreateCollider({ .Shape = sphere }, first) == Status::Success &&
+                     world.TryCreateCollider({ .Shape = hullShape, .Pose = { .PositionWorld = {2.0, 0.0, 0.0} } },
+                                             second) == Status::Success &&
+                     world.TryCreateCollider({ .Shape = floorShape }, third) == Status::Success;
+    {
+        CollisionReadView view;
+        isEverySuccess = isEverySuccess == true && world.TryAcquireReadView(view) == Status::Success;
+        constexpr uint32 QUERY_COUNT = 100;
+        for (uint32 query = 0; query < QUERY_COUNT; ++query)
+        {
+            const float64 offset = static_cast<float64>(query) * 0.03;
+            WorldRaycastResult ray;
+            isEverySuccess = isEverySuccess == true && view.RaycastClosest(
+                                                           {
+                                                               .OriginWorld = {offset - 1.0, 0.2, 0.1},
+                                                               .DirectionWorld = {1.0, 0.0, 0.0},
+                                                               .MaxDistanceMeters = 5.0,
+                                                           },
+                                                           ray) == Status::Success;
+            WorldConvexCastResult cast;
+            isEverySuccess = isEverySuccess == true && view.CastConvexClosest(
+                                                           {
+                                                               .Shape = MakeCapsuleShape(0.3, 0.2),
+                                                               .PositionWorld = {offset, 2.0, 0.2},
+                                                               .TranslationWorld = {0.0, -3.0, 0.0},
+                                                           },
+                                                           cast) == Status::Success;
+            WorldOverlapResult overlap;
+            isEverySuccess =
+                isEverySuccess == true && view.Overlap(
+                                              {
+                                                  .Shape = MakeBoxShape({0.4, 0.4, 0.4}),
+                                                  .PositionWorld = {offset, 0.1, 0.3},
+                                              },
+                                              BorrowedView<ColliderOverlap>(records.GetData(), RECORD_COUNT),
+                                              overlap) == Status::Success;
+        }
+    }
+    isTrackingAllocations = false;
+    CHECK(isEverySuccess == true);
+    CHECK(gCounters.Allocations == 0);
+}
