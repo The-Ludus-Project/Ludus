@@ -328,11 +328,37 @@ sphere or capsule target adds its radius to the query shape's.
 - A convex cast follows the mesh rules. The witness point lies on the target's
   surface: a rounded target's core witness is moved out by its radius.
 
-There is no collider hierarchy yet. Each query tests every reported collider's
-conservative world bounds against the query's path before it traverses that
-collider, so its cost grows with the collider count.
-`QueryTraversal::AllTriangles` skips that test as well as the mesh hierarchies
-and is the brute-force oracle for both.
+### Collider hierarchy
+
+A dynamic bounding volume hierarchy over the colliders' conservative world
+bounds selects the candidates of every world query. It follows Erin Catto's
+*Dynamic Bounding Volume Hierarchies* (GDC 2019) and Box2D's `b2DynamicTree`:
+
+- **Insertion** descends from the root toward the sibling that adds the least
+  surface area to the tree, then walks back up refitting bounds.
+- **Balance** is restored with single rotations on that walk: the taller child
+  of an unbalanced node rises into its place. The height stays within about
+  1.44 log2 of the collider count, under 30 at the world's capacity.
+- **Updates:** creating a collider inserts a leaf, destroying it removes the
+  leaf, and moving it removes and reinserts the leaf. Each takes logarithmic
+  time and never allocates: the world reserves two nodes per collider slot
+  when it is initialized. Leaves hold exact bounds, with no fattened margin,
+  so even a small move reinserts its leaf.
+- `GetColliderHierarchyHeight` reports the height as a diagnostic.
+
+Queries descend depth first and prune a subtree only when a conservative test
+proves it cannot hold a reported hit:
+
+- A ray skips nodes it does not enter. Under `Closest`, it also skips nodes
+  it enters only beyond the best distance so far, and keeps ties.
+- A cast does the same with the shape's bounds swept up to the best fraction.
+  Each node is widened by an upper bound on the contact tolerance of every
+  collider below it.
+- An overlap skips nodes the shape's widened bounds miss.
+
+`QueryTraversal::AllTriangles` visits every collider slot in order, with no
+hierarchy, bounds test or mesh hierarchy. It is the brute-force oracle for all
+of them.
 
 ### Overlap queries
 
@@ -348,7 +374,7 @@ a convex collider leaves both at their defaults.
 
 | Mode | Behavior |
 | --- | --- |
-| `OverlapMode::All` | Visits every candidate and writes records in increasing slot order until the buffer is full |
+| `OverlapMode::All` | Visits every candidate, writes records until the buffer is full, then sorts them by slot |
 | `OverlapMode::Any` | Stops at the first overlapping collider; promises no particular one |
 
 `WorldOverlapResult` separates finding from writing:
@@ -360,7 +386,8 @@ a convex collider leaves both at their defaults.
 
 An `All` query whose buffer was too small still counts every overlap. The caller
 can then retry with a buffer of `OverlapCount` records; the records already
-written are the first ones in slot order, not a nearest subset. A miss is a
+written are the first ones the hierarchy search found, sorted by slot, not a
+nearest subset. A miss is a
 complete, empty result. A failed query leaves the result unchanged; the
 buffer's contents are then unspecified.
 
@@ -374,7 +401,7 @@ Rays and convex casts come in three modes on `CollisionReadView`:
 | `RaycastAny`, `CastConvexAny` | Some hit; the search stops at the first one it finds |
 | `RaycastAll`, `CastConvexAll` | Every hit collider, each once, at its own closest hit |
 
-`Any` searches colliders in slot order and lets a mesh stop at the first
+`Any` searches colliders in hierarchy order and lets a mesh stop at the first
 triangle its traversal finds. The answer is a genuine hit within the limit,
 but neither the nearest nor a stable choice. A miss is certified only after
 every candidate was searched, which is the case whenever the answer is a miss.
@@ -386,8 +413,8 @@ completion fields as an overlap query:
 - It keeps counting after the buffer fills.
 - It then sorts the written records by distance or fraction (a starting overlap
   first), collider slot and generation.
-- If the buffer was too small, the written records are the first hits found in
-  slot order, sorted. They are not the nearest ones; retry with `HitCount`
+- If the buffer was too small, the written records are the first hits the
+  search found, sorted. They are not the nearest ones; retry with `HitCount`
   records.
 
 The first record of a complete `All` result equals the `Closest` answer.
@@ -478,9 +505,9 @@ overlap for touching.
 
 The query-mode tests cover:
 - `All` rays and casts on stacked floors, with distance order, a short buffer
-  (first hits in slot order, sorted), an empty buffer, a miss, a distance
+  (a sorted subset of genuine hits), an empty buffer, a miss, a distance
   limit and invalid buffers;
-- `Any` stopping at the first collider in slot order rather than the nearest;
+- `Any` returning a genuine hit that need not be the nearest;
 - every overlap policy for `All` and `Any` casts, including `Reject`, which
   still fails an `Any` cast whose first hit is clean.
 
@@ -490,6 +517,21 @@ On 24 random mesh and convex colliders, over 300 queries:
 - `Any` hits exactly when `Closest` does, on a listed collider, at a distance
   no nearer than that collider's closest hit;
 - short buffers give sorted subsets with the full count.
+
+The hierarchy tests cover:
+- the AVL height bound after every insertion of 1,024 colliders sorted along
+  a line, after removing half and moving the rest, after emptying, and after
+  refilling to capacity;
+- 12 rounds of random creation, moves and destruction. After each round,
+  closest rays, casts, `All` rays and overlaps through the hierarchy equal the
+  brute-force traversal;
+- 60 floors 5 mm apart, created in shuffled order, where pruning by the best
+  distance must never skip a nearer floor.
+
+Disabling the rotations or over-pruning rays by 5 cm fails these tests. A
+hidden `[.benchmark]` case times 2,000 closest rays among 4,000 sphere
+colliders: 12 ms through the hierarchy against 3.6 s brute force in a macOS
+debug build, at height 15.
 
 On 24 randomly posed colliders with sensors, disabled colliders and category
 masks, world queries equal the brute-force traversal exactly (about half of
@@ -534,6 +576,11 @@ ray through a read view.
   and tetrahedron that reduce the GJK simplex, here with explicit fallbacks for
   degenerate simplices. Section 5.1.9 supplies the test oracle's
   segment-segment distance.
+- Erin Catto, *Dynamic Bounding Volume Hierarchies*, Game Developers Conference
+  2019, and the `b2DynamicTree` of [Box2D](https://box2d.org) (MIT licence):
+  surface-area-guided insertion and single-rotation rebalancing of the collider
+  hierarchy. Ludus implements its own float64 tree without fattened bounds;
+  no Box2D code is copied.
 
 ## Explore as Player
 
@@ -568,7 +615,6 @@ envelope and a spawn outside it as separate failures that name the limit.
 ## Remaining P1 work
 
 This slice is not the whole gate. Still to come:
-- a collider hierarchy in place of the linear bounds test;
 - retained shape handles for query shapes in place of borrowed hulls;
 - query debug overlays;
 - Emscripten SDK consumer evidence.

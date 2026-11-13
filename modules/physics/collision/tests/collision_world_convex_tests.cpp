@@ -536,11 +536,12 @@ TEST_CASE("Overlap queries report every overlapping collider with completion", "
     CHECK(records[1].TriangleCount == 0);
     CHECK(records[2].Collider == second);
 
-    // A buffer too small: the first records in slot order and the full count.
+    // A buffer too small: a subset sorted by slot, and the full count.
     REQUIRE(view.Overlap(input, BorrowedView<ColliderOverlap>(records.GetData(), 2), result) == Status::Success);
     CHECK(result.OverlapCount == 3);
     CHECK(result.WrittenCount == 2);
     CHECK(result.IsComplete == false);
+    CHECK(records[0].Collider.Slot < records[1].Collider.Slot);
     REQUIRE(view.Overlap(input, BorrowedView<ColliderOverlap>(), result) == Status::Success);
     CHECK(result.HasOverlap == true);
     CHECK(result.WrittenCount == 0);

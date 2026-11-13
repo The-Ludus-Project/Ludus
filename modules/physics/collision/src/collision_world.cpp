@@ -1,5 +1,6 @@
 #include <ludus/physics/collision/collision_world.h>
 
+#include "internal/collider_hierarchy.h"
 #include "internal/convex_cast.h"
 #include "internal/convex_support.h"
 #include "internal/mesh_arithmetic.h"
@@ -181,6 +182,22 @@ bool IsBetter(const WorldCandidate& candidate, const WorldCandidate& best) noexc
     return candidate.TriangleIndex < best.TriangleIndex;
 }
 } // namespace
+
+/// The brute-force oracle traversal: every slot in order, with no hierarchy pruning.
+template <typename LeafVisit>
+Status VisitEverySlot(usize slotCount, const LeafVisit& visitSlot) noexcept
+{
+    for (uint32 slotIndex = 0; slotIndex < slotCount; ++slotIndex)
+    {
+        HierarchyVisit visit = HierarchyVisit::Continue;
+        const Status status = visitSlot(slotIndex, visit);
+        if (status != Status::Success || visit == HierarchyVisit::Stop)
+        {
+            return status;
+        }
+    }
+    return Status::Success;
+}
 
 /// Which hits a ray or cast query keeps.
 enum class CollectMode : uint8
@@ -366,17 +383,31 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
     WorldCandidate best;
     RaycastResult bestLocal;
     WorldHitsResult hits;
-    for (uint32 slotIndex = 0; slotIndex < world.mSlots.GetSize(); ++slotIndex)
-    {
+    // Prune subtrees the ray cannot reach, and under Closest those beyond the best hit (ties are kept).
+    const auto canReach = [&](const math::Vector3d& minimum, const math::Vector3d& maximum) {
+        const Box node
+        {
+            .Minimum = minimum - math::Vector3d{slack, slack, slack},
+            .Maximum = maximum + math::Vector3d{slack, slack, slack},
+        };
+        if (node.Overlaps(path) == false)
+        {
+            return false;
+        }
+        const ClipInterval clip = ClipToBox({ .Origin = input.OriginWorld, .Direction = input.DirectionWorld }, node);
+        const float64 limit = mode == CollectMode::Closest && best.HasHit == true ? best.Key : input.MaxDistanceMeters;
+        return clip.HasOverlap == true && clip.Exit >= 0.0 && clip.Enter <= limit + slack;
+    };
+    const auto visitSlot = [&](uint32 slotIndex, HierarchyVisit& outVisit) -> Status {
         if (isReported(world, slotIndex, input.Filter) == false)
         {
-            continue;
+            return Status::Success;
         }
         const Slot& slot = world.mSlots[slotIndex];
         const Box bounds{ .Minimum = slot.BoundsMinWorld, .Maximum = slot.BoundsMaxWorld };
         if (input.Traversal == QueryTraversal::Hierarchy && bounds.Overlaps(path) == false)
         {
-            continue;
+            return Status::Success;
         }
         math::Vector3d originLocal = toLocalPoint(slot, input.OriginWorld);
         const math::Vector3d directionLocal = toLocalDirection(slot, input.DirectionWorld);
@@ -389,7 +420,7 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
                                                 { .Minimum = slot.BoundsMinLocal, .Maximum = slot.BoundsMaxLocal });
             if (clip.HasOverlap == false || clip.Exit < 0.0 || clip.Enter >= limit)
             {
-                continue;
+                return Status::Success;
             }
             start = math::Max(0.0, clip.Enter);
             originLocal = ClampToEnvelope(originLocal + directionLocal * start);
@@ -420,7 +451,7 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
         }
         if (local.HasHit == false)
         {
-            continue;
+            return Status::Success;
         }
         const WorldCandidate candidate
         {
@@ -437,7 +468,7 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
             {
                 hitBuffer[hits.WrittenCount++] = makeRayResult(world, input, candidate, local);
             }
-            continue;
+            return Status::Success;
         }
         if (mode == CollectMode::Any || IsBetter(candidate, best) == true)
         {
@@ -446,8 +477,17 @@ Status CollisionWorldQueries::Raycast(const CollisionWorld& world,
         }
         if (mode == CollectMode::Any)
         {
-            break;
+            outVisit = HierarchyVisit::Stop;
+            return Status::Success;
         }
+        return Status::Success;
+    };
+    const Status traversal = input.Traversal == QueryTraversal::AllTriangles
+                                 ? VisitEverySlot(world.mSlots.GetSize(), visitSlot)
+                                 : ColliderHierarchy::Traverse(world, canReach, visitSlot);
+    if (traversal != Status::Success)
+    {
+        return traversal;
     }
     if (mode == CollectMode::All)
     {
@@ -540,11 +580,23 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
     WorldHitsResult hits;
     // Under Reject every candidate must be searched for an overlap, so Any keeps its first hit and continues.
     const bool isAnyStoppingEarly = mode == CollectMode::Any && input.OverlapPolicy != InitialOverlapPolicy::Reject;
-    for (uint32 slotIndex = 0; slotIndex < world.mSlots.GetSize(); ++slotIndex)
-    {
+    // Prune subtrees the swept shape cannot reach, and under Closest those beyond the best fraction. A node's
+    // widening bounds the contact tolerance of every collider below it, since its corners lie farthest away.
+    const auto canReach = [&](const math::Vector3d& minimum, const math::Vector3d& maximum) {
+        const float64 extent =
+            math::Max(math::Length(minimum - input.PositionWorld), math::Length(maximum - input.PositionWorld));
+        const float64 widening = (extent + translationLength + shapeExtent) *
+                                 (COLLIDER_TOLERANCE_ALLOWANCE + internal::TRAVERSAL_RELATIVE_ALLOWANCE);
+        const float64 reach = mode == CollectMode::Closest && best.HasHit == true ? best.Key : 1.0;
+        const Box sweep = MakeSweptBox(startWorld,
+                                       startWorld + input.TranslationWorld * reach,
+                                       boundsWorld.HalfExtentsMesh + math::Vector3d{widening, widening, widening});
+        return Box{ .Minimum = minimum, .Maximum = maximum }.Overlaps(sweep) == true;
+    };
+    const auto visitSlot = [&](uint32 slotIndex, HierarchyVisit& outVisit) -> Status {
         if (isReported(world, slotIndex, input.Filter) == false)
         {
-            continue;
+            return Status::Success;
         }
         const Slot& slot = world.mSlots[slotIndex];
         // The collider's contact tolerance scales with its bounds relative to the shape; bound it for pruning.
@@ -557,7 +609,7 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
         if (input.Traversal == QueryTraversal::Hierarchy &&
             bounds.Overlaps(MakeSweptBox(startWorld, endWorld, reachWorld)) == false)
         {
-            continue;
+            return Status::Success;
         }
         // Compose the shape's rotation into the collider's local axes in float64.
         internal::PosedConvex localAxes;
@@ -579,7 +631,7 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
                           { .Minimum = slot.BoundsMinLocal - reachLocal, .Maximum = slot.BoundsMaxLocal + reachLocal });
             if (clip.HasOverlap == false || clip.Exit < 0.0 || clip.Enter >= 1.0)
             {
-                continue;
+                return Status::Success;
             }
             start = math::Max(0.0, clip.Enter);
             positionLocal = positionLocal + translationLocal * start;
@@ -612,7 +664,7 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
         }
         if (local.HasHit == false)
         {
-            continue;
+            return Status::Success;
         }
         const WorldCandidate candidate
         {
@@ -630,7 +682,7 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
             {
                 hitBuffer[hits.WrittenCount++] = makeCastResult(world, input, candidate, local);
             }
-            continue;
+            return Status::Success;
         }
         const bool isFirstForAny = mode == CollectMode::Any && best.HasHit == false;
         if (isFirstForAny == true || (mode == CollectMode::Closest && IsBetter(candidate, best) == true))
@@ -640,8 +692,17 @@ Status CollisionWorldQueries::Cast(const CollisionWorld& world,
         }
         if (isAnyStoppingEarly == true)
         {
-            break;
+            outVisit = HierarchyVisit::Stop;
+            return Status::Success;
         }
+        return Status::Success;
+    };
+    const Status traversal = input.Traversal == QueryTraversal::AllTriangles
+                                 ? VisitEverySlot(world.mSlots.GetSize(), visitSlot)
+                                 : ColliderHierarchy::Traverse(world, canReach, visitSlot);
+    if (traversal != Status::Success)
+    {
+        return traversal;
     }
     if (mode == CollectMode::All)
     {
@@ -702,11 +763,20 @@ Status CollisionWorldQueries::Overlap(const CollisionWorld& world,
     const math::Vector3d centerWorld = input.PositionWorld + boundsWorld.CenterMesh;
     const float64 shapeExtent = math::Length(boundsWorld.HalfExtentsMesh) + math::Length(boundsWorld.CenterMesh);
     WorldOverlapResult result;
-    for (uint32 slotIndex = 0; slotIndex < world.mSlots.GetSize(); ++slotIndex)
-    {
+    const auto canReach = [&](const math::Vector3d& minimum, const math::Vector3d& maximum) {
+        const float64 extent =
+            math::Max(math::Length(minimum - input.PositionWorld), math::Length(maximum - input.PositionWorld));
+        const float64 widening =
+            (extent + shapeExtent) * (COLLIDER_TOLERANCE_ALLOWANCE + internal::TRAVERSAL_RELATIVE_ALLOWANCE);
+        const Box shape = MakeSweptBox(centerWorld,
+                                       centerWorld,
+                                       boundsWorld.HalfExtentsMesh + math::Vector3d{widening, widening, widening});
+        return Box{ .Minimum = minimum, .Maximum = maximum }.Overlaps(shape) == true;
+    };
+    const auto visitSlot = [&](uint32 slotIndex, HierarchyVisit& outVisit) -> Status {
         if (isReported(world, slotIndex, input.Filter) == false)
         {
-            continue;
+            return Status::Success;
         }
         const Slot& slot = world.mSlots[slotIndex];
         const float64 meshExtent = math::Max(math::Length(slot.BoundsMinWorld - input.PositionWorld),
@@ -720,7 +790,7 @@ Status CollisionWorldQueries::Overlap(const CollisionWorld& world,
                                          boundsWorld.HalfExtentsMesh + math::Vector3d{widening, widening, widening}));
         if (input.Traversal == QueryTraversal::Hierarchy && canReach == false)
         {
-            continue;
+            return Status::Success;
         }
         const math::Vector3d positionLocal = toLocalPoint(slot, input.PositionWorld);
         if (internal::IsWithinMagnitude(positionLocal, static_cast<float64>(MAX_COORDINATE_METERS)) == false)
@@ -730,7 +800,7 @@ Status CollisionWorldQueries::Overlap(const CollisionWorld& world,
             {
                 return Status::OutOfRange;
             }
-            continue;
+            return Status::Success;
         }
         internal::PosedConvex localAxes;
         localAxes.AxisXMesh = toLocalDirection(slot, shapeAxes.AxisXMesh);
@@ -771,7 +841,7 @@ Status CollisionWorldQueries::Overlap(const CollisionWorld& world,
         }
         if (isOverlapping == false)
         {
-            continue;
+            return Status::Success;
         }
         if (result.WrittenCount < overlapBuffer.GetSize())
         {
@@ -780,9 +850,28 @@ Status CollisionWorldQueries::Overlap(const CollisionWorld& world,
         ++result.OverlapCount;
         if (input.Mode == OverlapMode::Any)
         {
-            break;
+            outVisit = HierarchyVisit::Stop;
+            return Status::Success;
         }
+        return Status::Success;
+    };
+    const Status traversal = input.Traversal == QueryTraversal::AllTriangles
+                                 ? VisitEverySlot(world.mSlots.GetSize(), visitSlot)
+                                 : ColliderHierarchy::Traverse(world, canReach, visitSlot);
+    if (traversal != Status::Success)
+    {
+        return traversal;
     }
+    // The hierarchy finds overlaps in tree order; report them in slot order.
+    foundation::Sort(overlapBuffer.GetDataOrNull(),
+                     result.WrittenCount,
+                     [](const ColliderOverlap& first, const ColliderOverlap& second) {
+                         if (first.Collider.Slot != second.Collider.Slot)
+                         {
+                             return first.Collider.Slot < second.Collider.Slot;
+                         }
+                         return first.Collider.Generation < second.Collider.Generation;
+                     });
     result.HasOverlap = result.OverlapCount > 0;
     result.IsComplete = result.WrittenCount == result.OverlapCount;
     outResult = result;
@@ -938,13 +1027,22 @@ Status CollisionWorld::TryInitialize(GeometryStore& inoutStore, const CollisionW
     }
     foundation::Array<Slot> slots;
     foundation::Array<uint32> freeSlots;
-    if (slots.TryResize(settings.MaxColliders) == false || freeSlots.TryResize(settings.MaxColliders) == false)
+    // A hierarchy of n leaves has 2n - 1 nodes.
+    const usize nodeCount = static_cast<usize>(settings.MaxColliders) * 2;
+    foundation::Array<HierarchyNode> nodes;
+    foundation::Array<uint32> freeNodes;
+    if (slots.TryResize(settings.MaxColliders) == false || freeSlots.TryResize(settings.MaxColliders) == false ||
+        nodes.TryResize(nodeCount) == false || freeNodes.TryResize(nodeCount) == false)
     {
         return Status::AllocationFailure;
     }
     for (uint32 index = 0; index < settings.MaxColliders; ++index)
     {
         freeSlots[index] = settings.MaxColliders - 1 - index;
+    }
+    for (usize index = 0; index < nodeCount; ++index)
+    {
+        freeNodes[index] = static_cast<uint32>(nodeCount - 1 - index);
     }
     uint64 owner = 0;
     if (foundation::identity::TryIssueLifetimeId(owner) != foundation::identity::LifetimeIdStatus::Success)
@@ -953,6 +1051,9 @@ Status CollisionWorld::TryInitialize(GeometryStore& inoutStore, const CollisionW
     }
     mSlots = foundation::Move(slots);
     mFreeSlots = foundation::Move(freeSlots);
+    mNodes = foundation::Move(nodes);
+    mFreeNodes = foundation::Move(freeNodes);
+    mRoot = NULL_HIERARCHY_NODE;
     mOwner = owner;
     mStoreOrNull = &inoutStore;
     ++inoutStore.mAttachedWorldCount;
@@ -983,6 +1084,11 @@ const CollisionWorld::Slot* CollisionWorld::findLive(ColliderHandle collider) co
 CollisionWorld::Slot* CollisionWorld::findLive(ColliderHandle collider) noexcept
 {
     return IsAlive(collider) == true ? &mSlots[collider.Slot] : nullptr;
+}
+
+uint32 CollisionWorld::GetColliderHierarchyHeight() const noexcept
+{
+    return IsInitialized() == true ? ColliderHierarchy::GetHeight(*this) : 0;
 }
 
 bool CollisionWorld::IsAlive(ColliderHandle collider) const noexcept
@@ -1110,6 +1216,7 @@ Status CollisionWorld::TryCreateCollider(const ColliderDescription& description,
     slot.BoundsMinWorld = placement.BoundsMinWorld;
     slot.BoundsMaxWorld = placement.BoundsMaxWorld;
     slot.IsLive = true;
+    ColliderHierarchy::Insert(*this, slotIndex);
     ++mLiveCount;
     ++mEpoch;
     outCollider = { .Owner = mOwner, .Slot = slotIndex, .Generation = slot.Generation };
@@ -1131,6 +1238,7 @@ Status CollisionWorld::TryDestroyCollider(ColliderHandle collider) noexcept
     const Status released = mStoreOrNull->TryRelease(slotOrNull->Description.Shape);
     LUDUS_ASSERT(released == Status::Success);
     (void)released;
+    ColliderHierarchy::Remove(*this, collider.Slot);
     const uint32 generation = slotOrNull->Generation;
     *slotOrNull = Slot{};
     slotOrNull->Generation = generation;
@@ -1173,6 +1281,9 @@ Status CollisionWorld::TrySetColliderPose(ColliderHandle collider, const RigidPo
     slotOrNull->AxisZWorld = placement.AxisZWorld;
     slotOrNull->BoundsMinWorld = placement.BoundsMinWorld;
     slotOrNull->BoundsMaxWorld = placement.BoundsMaxWorld;
+    // The leaf's bounds changed: reinsert it so the hierarchy stays tight.
+    ColliderHierarchy::Remove(*this, collider.Slot);
+    ColliderHierarchy::Insert(*this, collider.Slot);
     ++mEpoch;
     return Status::Success;
 }

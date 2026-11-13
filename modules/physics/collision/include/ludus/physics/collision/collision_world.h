@@ -205,10 +205,10 @@ struct ColliderOverlap final
 
 /// @brief Completion of an overlap query.
 ///
-/// Records are written in increasing collider slot order. IsComplete is true exactly when every overlap the mode
-/// looks for was written: an All query whose buffer was too small reports IsComplete false with OverlapCount, the
-/// number it found, so the caller can retry with a larger buffer; the written records are then the first overlaps
-/// in slot order, not a nearest subset. An Any query finds at most one overlap.
+/// Written records are sorted by collider slot and generation. IsComplete is true exactly when every overlap the
+/// mode looks for was written: an All query whose buffer was too small reports IsComplete false with OverlapCount,
+/// the number it found, so the caller can retry with a larger buffer; the written records are then the first
+/// overlaps the hierarchy search found, sorted, not a nearest subset. An Any query finds at most one overlap.
 struct WorldOverlapResult final
 {
     bool HasOverlap = false; ///< Whether any reported collider overlaps the shape.
@@ -222,8 +222,7 @@ struct WorldOverlapResult final
 /// An All query reports each reported collider it hits once, with that collider's closest hit. It writes records
 /// until the buffer is full and keeps counting, then sorts the written records by distance or fraction (an initial
 /// overlap first), collider slot, generation and triangle. When the buffer was too small the written records are the
-/// first hits found in slot order, sorted: a subset, not the nearest ones. Retry with HitCount records for all of
-/// them.
+/// first hits the search found, sorted: a subset, not the nearest ones. Retry with HitCount records for all of them.
 struct WorldHitsResult final
 {
     bool HasHit = false;    ///< Whether any reported collider was hit.
@@ -353,8 +352,9 @@ private:
 ///
 /// The world reserves every collider slot when it is initialized, so creating, changing and destroying colliders
 /// never allocate. Each collider takes its own lease on its shape and releases it when destroyed. Colliders may use
-/// any stored shape: triangle meshes, hulls and sphere, box and capsule primitives. Queries test every collider's
-/// world bounds before its own geometry; there is no collider hierarchy yet.
+/// any stored shape: triangle meshes, hulls and sphere, box and capsule primitives. A dynamic bounding volume
+/// hierarchy over the colliders' world bounds prunes queries; creating, moving and destroying a collider update it
+/// in logarithmic time.
 ///
 /// Thread affinity: initialization and mutation happen on one owner thread, and only while no read view is active.
 /// The world is neither copyable nor movable, because read views keep its address.
@@ -439,6 +439,8 @@ public:
     {
         return mReaderCount;
     }
+    /// Height of the collider hierarchy: zero when empty, one for a single collider. A diagnostic of tree quality.
+    [[nodiscard]] uint32 GetColliderHierarchyHeight() const noexcept;
 
 private:
     /// One collider slot.
@@ -455,11 +457,25 @@ private:
         foundation::math::Vector3d BoundsMinWorld{};                ///< Conservative world bounds of the mesh.
         foundation::math::Vector3d BoundsMaxWorld{};                ///< Upper corner of BoundsMinWorld's box.
         uint32 Generation = foundation::identity::FIRST_GENERATION; ///< Current incarnation of the slot.
+        uint32 Leaf = 0;                                            ///< The slot's hierarchy leaf while live.
         bool IsLive = false;                                        ///< Whether the slot holds a collider.
+    };
+
+    /// One node of the collider hierarchy: a leaf holds one collider slot, an internal node two children.
+    struct HierarchyNode final
+    {
+        foundation::math::Vector3d BoundsMinWorld{}; ///< Lower corner of the bounds of every collider below.
+        foundation::math::Vector3d BoundsMaxWorld{}; ///< Upper corner of BoundsMinWorld's box.
+        uint32 Parent = 0;                           ///< Parent node, or the null node for the root.
+        uint32 Left = 0;                             ///< First child of an internal node.
+        uint32 Right = 0;                            ///< Second child of an internal node.
+        uint32 Slot = 0;                             ///< Collider slot of a leaf.
+        uint32 Height = 0;                           ///< Zero for a leaf; one more than the taller child otherwise.
     };
 
     friend class CollisionReadView;
     friend class CollisionWorldQueries;
+    friend class ColliderHierarchy;
 
     [[nodiscard]] Slot* findLive(ColliderHandle collider) noexcept;
     [[nodiscard]] const Slot* findLive(ColliderHandle collider) const noexcept;
@@ -468,7 +484,10 @@ private:
 
     GeometryStore* mStoreOrNull = nullptr;
     foundation::Array<Slot> mSlots;
-    foundation::Array<uint32> mFreeSlots; ///< LIFO list of reusable slots.
+    foundation::Array<uint32> mFreeSlots;    ///< LIFO list of reusable slots.
+    foundation::Array<HierarchyNode> mNodes; ///< Hierarchy node pool: two per collider slot.
+    foundation::Array<uint32> mFreeNodes;    ///< LIFO list of reusable nodes.
+    uint32 mRoot = 0;                        ///< Root node, or the null node for an empty hierarchy.
     uint64 mOwner = 0;
     uint64 mEpoch = 0;
     usize mLiveCount = 0;
