@@ -248,6 +248,11 @@ GroupBoxLayout
 ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFont, int indicatorSize, int labelSpacing)
 {
     const QRect& rect = groupBox.rect;
+    // The contents always end at the box's bottom edge, even while the box is shorter than its title: QGroupBox
+    // turns this rectangle into its contents margins once, possibly at its default height, and keeps them after
+    // later resizes. A height clamped to zero would leave a negative bottom margin; Qt's common style does not clamp.
+    // Thanks to The Qt Company, Qt 6.8 QGroupBoxPrivate::calculateFrame and QCommonStyle SC_GroupBoxContents:
+    // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qgroupbox.cpp
     const bool isCheckable = groupBox.subControls.testFlag(QStyle::SC_GroupBoxCheckBox);
     const int titleTop = rect.top() + CONTROL_EDGE_WIDTH + GROUP_TITLE_SPACE_ABOVE;
     GroupBoxLayout layout;
@@ -255,7 +260,7 @@ ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFo
     {
         // An untitled section keeps only its rule, with the space a title would leave below it.
         const int contentsTop = rect.top() + CONTROL_EDGE_WIDTH + GROUP_TITLE_SPACE_BELOW;
-        layout.Contents = QRect(rect.left(), contentsTop, rect.width(), std::max(0, rect.bottom() + 1 - contentsTop));
+        layout.Contents = QRect(rect.left(), contentsTop, rect.width(), rect.bottom() + 1 - contentsTop);
         layout.Minimum = QSize(0, contentsTop - rect.top());
         return layout;
     }
@@ -272,7 +277,7 @@ ComputeGroupBoxLayout(const QStyleOptionGroupBox& groupBox, const QFont& titleFo
     layout.Label =
         QRect(labelLeft, titleTop, std::max(0, std::min(textWidth, rect.right() + 1 - labelLeft)), titleHeight);
     const int contentsTop = titleTop + titleHeight + GROUP_TITLE_SPACE_BELOW;
-    layout.Contents = QRect(rect.left(), contentsTop, rect.width(), std::max(0, rect.bottom() + 1 - contentsTop));
+    layout.Contents = QRect(rect.left(), contentsTop, rect.width(), rect.bottom() + 1 - contentsTop);
     layout.Minimum = QSize(labelLeft - rect.left() + textWidth, contentsTop - rect.top());
     return layout;
 }
@@ -1368,14 +1373,20 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
             // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qcombobox.cpp
             // Qt budgets glyph ink bounds, which can omit trailing advance. Preserve its icon/size-policy
             // budget and add the largest advance deficit before reserving our field and arrow padding.
+            // A combo sized to a minimum character count budgets that count, not its text, and cuts longer
+            // choices. Its size must not follow the current choice: QComboBox caches its hints without asking
+            // its layout to update when the choice changes, and a toolbar then lays it out narrower than the
+            // later hint.
             const QStyleOptionComboBox* comboOptionOrNull = qstyleoption_cast<const QStyleOptionComboBox*>(option);
+            const QComboBox* comboWidgetOrNull = qobject_cast<const QComboBox*>(widgetOrNull);
+            const bool isCharacterBudget =
+                comboWidgetOrNull != nullptr &&
+                comboWidgetOrNull->sizeAdjustPolicy() == QComboBox::AdjustToMinimumContentsLengthWithIcon;
             foundation::int32 advancePaddingPixels =
-                comboOptionOrNull != nullptr
+                comboOptionOrNull != nullptr && isCharacterBudget == false
                     ? ComputeTextAdvancePaddingPixels(comboOptionOrNull->fontMetrics, comboOptionOrNull->currentText)
                     : 0;
-            const QComboBox* comboWidgetOrNull = qobject_cast<const QComboBox*>(widgetOrNull);
-            if (comboWidgetOrNull != nullptr &&
-                comboWidgetOrNull->sizeAdjustPolicy() != QComboBox::AdjustToMinimumContentsLengthWithIcon)
+            if (comboWidgetOrNull != nullptr && isCharacterBudget == false)
             {
                 const QFontMetrics fontMetrics = comboWidgetOrNull->fontMetrics();
                 const foundation::int32 itemCount = comboWidgetOrNull->count();

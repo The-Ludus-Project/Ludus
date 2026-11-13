@@ -37,6 +37,14 @@ if(BUILD_TESTING)
     add_test(NAME cornell_materials COMMAND cornell_box --headless --flat --frames=3)
     set_tests_properties(cornell_camera cornell_help cornell_reject_unbounded_headless cornell_render cornell_materials
         PROPERTIES TIMEOUT 30)
+    if(CORNELL_ENABLE_SANITIZERS AND NOT APPLE)
+        # Keep Vulkan drivers loaded until exit, so LeakSanitizer scans their globals and symbolizes their
+        # stacks instead of reporting one-time driver allocations as leaks from unloaded modules.
+        # Thanks to Khronos, "Vulkan Loader Interface Architecture", table of debug environment variables:
+        # https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md#table-of-debug-environment-variables
+        set_tests_properties(cornell_render cornell_materials
+            PROPERTIES ENVIRONMENT "VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1")
+    endif()
 endif()
 
 foreach(target IN LISTS CORNELL_TARGETS)

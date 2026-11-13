@@ -89,6 +89,8 @@ protected:
 
 private:
     void updateHelp();
+    /// Shows or hides "More" after the current layout pass, so the help row lays the button out in full.
+    void queueHelpUpdate();
 
     QString mStateKey;
     QWidget* mHeader;
@@ -103,6 +105,7 @@ private:
     QWidget* mFields;
     bool mIsCollapsed = false;
     bool mIsHelpExpanded = false;
+    bool mIsHelpUpdateQueued = false;
 };
 
 /// Gives every inspector form under one root widget (the Properties dock's content) the same label column, so

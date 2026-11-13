@@ -50,6 +50,8 @@ constexpr int32 COLOUR_WRAP_DOCK_WIDTH = 300;
 /// A light range typed in the round-trip test, in metres.
 constexpr float64 EDITED_RANGE_METRES = 12;
 constexpr int32 WIDE_DOCK_WIDTH = 480;
+/// Wide enough for a section's whole help on one line, so narrowing it brings "More" in during a resize.
+constexpr int32 WIDE_SECTION_WIDTH = 2000;
 
 void WriteFixtureFile(const QString& path, const QByteArray& bytes)
 {
@@ -322,7 +324,7 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
         // Thanks to the Qt contributors for QScrollArea::event's layout-request handling:
         // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qscrollarea.cpp#L252-L267
         CHECK(QTest::qWaitFor(
-                  [&dock, scrollOrNull, width]() {
+                  [&dock, panelOrNull, scrollOrNull, width]() {
                       if (dock.width() != width || scrollOrNull->widget()->width() > scrollOrNull->viewport()->width())
                       {
                           return false;
@@ -331,6 +333,16 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
                       {
                           if (group->isVisible() == true && group->hasHeightForWidth() == true &&
                               group->height() < group->heightForWidth(group->width()))
+                          {
+                              return false;
+                          }
+                      }
+                      // A section decides on "More" after the layout pass that shortened its help, and the button's
+                      // row lays it out on the next pass, so wait until every button has its room.
+                      for (const QAbstractButton* button : panelOrNull->findChildren<QAbstractButton*>())
+                      {
+                          if (button->isVisible() == true && IsInternal(*button, *panelOrNull) == false &&
+                              button->width() < button->minimumSizeHint().width())
                           {
                               return false;
                           }
@@ -610,8 +622,11 @@ TEST_CASE("A Properties section folds away, keeps that state and offers its acti
         QAction& remove = section.AddMenuAction(QStringLiteral("Remove Component"), QStringLiteral("removeIt"));
         QFormLayout* rows = new QFormLayout(&section.GetFields());
         rows->addRow(QStringLiteral("Range"), new QLineEdit(QStringLiteral("10"), &section.GetFields()));
-        section.resize(NARROW_DOCK_WIDTH, DOCK_HEIGHT);
+        // Start wide enough for the whole help, then narrow it: "More" appears from a resize, inside a layout pass.
+        section.resize(WIDE_SECTION_WIDTH, DOCK_HEIGHT);
         section.show();
+        QTest::qWait(0);
+        section.resize(NARROW_DOCK_WIDTH, DOCK_HEIGHT);
         QTest::qWait(0);
         CHECK(section.findChild<QAction*>(QStringLiteral("removeIt")) == &remove);
         const QWidget* menuOrNull = section.findChild<QWidget*>(QStringLiteral("inspectorSectionMenu"));
@@ -624,6 +639,10 @@ TEST_CASE("A Properties section folds away, keeps that state and offers its acti
         QAbstractButton* moreOrNull = section.findChild<QAbstractButton*>(QStringLiteral("inspectorSectionMore"));
         REQUIRE(moreOrNull != nullptr);
         CHECK(moreOrNull->isVisible() == true);
+        // The help row lays "More" out in full rather than leaving it zero pixels wide at the row's end.
+        CHECK(QTest::qWaitFor([moreOrNull]() { return moreOrNull->width() >= moreOrNull->minimumSizeHint().width(); },
+                              SETTLE_TIMEOUT_MILLISECONDS) == true);
+        CHECK(moreOrNull->geometry().right() <= moreOrNull->parentWidget()->width() - 1);
         moreOrNull->click();
         QTest::qWait(0);
         CHECK(section.IsHelpExpanded() == true);

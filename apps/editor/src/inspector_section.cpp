@@ -11,6 +11,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QMenu>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSettings>
@@ -309,7 +310,7 @@ bool InspectorSection::eventFilter(QObject* watched, QEvent* event)
     }
     if (watched == mHelp && event->type() == QEvent::Resize)
     {
-        updateHelp();
+        queueHelpUpdate();
     }
     return QWidget::eventFilter(watched, event);
 }
@@ -326,7 +327,28 @@ void InspectorSection::paintEvent(QPaintEvent* event)
 void InspectorSection::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-    updateHelp();
+    queueHelpUpdate();
+}
+
+void InspectorSection::queueHelpUpdate()
+{
+    // A resize arrives while a layout is placing the help row. Showing "More" then re-runs that row's layout
+    // inside the pass, which resumes with the sizes it measured while "More" was hidden and leaves the button
+    // zero pixels wide. Decide after the pass, once per burst of resizes.
+    // Thanks to The Qt Company, Qt 6.8 QWidgetPrivate::setVisible (activates the parents' layouts) and
+    // QBoxLayout::setGeometry: https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/kernel/qwidget.cpp
+    if (mIsHelpUpdateQueued == true)
+    {
+        return;
+    }
+    mIsHelpUpdateQueued = true;
+    QMetaObject::invokeMethod(
+        this,
+        [this]() {
+            mIsHelpUpdateQueued = false;
+            updateHelp();
+        },
+        Qt::QueuedConnection);
 }
 
 void InspectorSection::updateHelp()

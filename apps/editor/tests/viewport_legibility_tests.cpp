@@ -296,6 +296,7 @@ TEST_CASE("Viewport controls overflow instead of truncating", "[editor][viewport
             continue;
         }
         const QWidget* control = widgetAction->defaultWidget();
+        INFO(control->objectName().toStdString() << " sizeHint " << control->sizeHint().width());
         CHECK(controls->rect().contains(control->geometry()) == true);
         CHECK(control->width() >= control->minimumSizeHint().width());
     }
