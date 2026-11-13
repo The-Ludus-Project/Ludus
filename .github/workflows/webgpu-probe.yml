@@ -67,6 +67,9 @@ on:
       - 'scripts/python/localization_release.py'
       - 'modules/physics/fluid/**'
       - 'tools/web-fluid-probe/**'
+      - 'modules/physics/collision/**'
+      - 'tools/web-collision-probe/**'
+      - 'modules/foundation/identity/**'
       - 'modules/foundation/containers/**'
       - 'modules/foundation/time/**'
       - 'modules/foundation/filesystem/**'
@@ -207,6 +210,17 @@ jobs:
             -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val" \
             -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
           out/host-tools/venv/bin/cmake --build out/build/raster-web-sdk --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+      - name: Build and run the installed Wasm collision SDK consumer
+        run: |
+          out/host-tools/venv/bin/cmake --install out/build/web-emscripten-development --prefix "$PWD/out/install/raster-web-sdk"
+          . out/host-tools/emsdk/emsdk_env.sh
+          out/host-tools/venv/bin/cmake -S tests/sdk_consumer/collision_web -B out/build/collision-web-sdk -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/out/host-tools/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" \
+            -DCMAKE_MAKE_PROGRAM="$PWD/out/host-tools/venv/bin/ninja" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$PWD/out/install/raster-web-sdk" \
+            -DLudus_DIR="$PWD/out/install/raster-web-sdk/lib/cmake/Ludus"
+          out/host-tools/venv/bin/cmake --build out/build/collision-web-sdk --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          "$EMSDK_NODE" out/build/collision-web-sdk/collision.js
       - name: Build installed L0/L1/L2/L3/L4 renderer and RG3 runtime browser SDK consumers
         run: |
           out/host-tools/venv/bin/cmake --install out/build/web-emscripten-development --prefix "$PWD/out/install/raster-web-sdk"
