@@ -149,13 +149,16 @@ TEST_CASE("RaycastAll reports every hit collider in distance order with completi
     REQUIRE(view.RaycastClosest(ray, closest) == Status::Success);
     CHECK(AreEqual(records[0], closest) == true);
 
-    // A short buffer keeps counting; the written records are the first found in slot order, then sorted.
+    // A short buffer keeps counting; the written records are the first hits the search found, sorted.
     REQUIRE(view.RaycastAll(ray, BorrowedView<WorldRaycastResult>(records.GetData(), 2), hits) == Status::Success);
     CHECK(hits.HitCount == FLOOR_COUNT);
     CHECK(hits.WrittenCount == 2);
     CHECK(hits.IsComplete == false);
-    CHECK(records[0].Binding == 1);
-    CHECK(records[1].Binding == 0);
+    CHECK(records[0].DistanceMeters < records[1].DistanceMeters);
+    for (usize index = 0; index < 2; ++index)
+    {
+        CHECK(records[index].DistanceMeters == Catch::Approx(10.0 - static_cast<float64>(records[index].Binding)));
+    }
     REQUIRE(view.RaycastAll(ray, BorrowedView<WorldRaycastResult>(), hits) == Status::Success);
     CHECK(hits.HasHit == true);
     CHECK(hits.WrittenCount == 0);
@@ -193,9 +196,9 @@ TEST_CASE("RaycastAny reports a genuine hit and certifies misses", "[collision][
     WorldRaycastResult any;
     REQUIRE(view.RaycastAny(MakeDownRay(), any) == Status::Success);
     REQUIRE(any.HasHit == true);
-    // Any searches in slot order and stops at the first hit: the lowest floor, not the nearest.
-    CHECK(any.Binding == 0);
-    CHECK(any.DistanceMeters == Catch::Approx(10.0));
+    // Any stops at the first hit the search finds: a genuine floor hit, not necessarily the nearest.
+    CHECK(any.Binding < FLOOR_COUNT);
+    CHECK(any.DistanceMeters == Catch::Approx(10.0 - static_cast<float64>(any.Binding)));
     CHECK(any.HasNormal == true);
     WorldRaycastInput away = MakeDownRay();
     away.DirectionWorld = {0.0, 1.0, 0.0};
@@ -233,7 +236,7 @@ TEST_CASE("Convex cast modes follow the closest-hit rules and the overlap polici
     REQUIRE(view.CastConvexClosest(falling, closest) == Status::Success);
     CHECK(AreEqual(records[0], closest) == true);
 
-    // Starting inside floor 2 and moving up: Closest reports the overlap, Any stops at the first collider found,
+    // Starting inside floor 2 and moving up: Closest reports the overlap, Any reports one of the two hits,
     // Ignore drops the overlapping floor, and Reject fails every mode.
     WorldConvexCastInput rising
     {
@@ -253,7 +256,7 @@ TEST_CASE("Convex cast modes follow the closest-hit rules and the overlap polici
     WorldConvexCastResult any;
     REQUIRE(view.CastConvexAny(rising, any) == Status::Success);
     CHECK(any.HasHit == true);
-    CHECK(any.Binding == 2);
+    CHECK((any.Binding == 2 || any.Binding == 3) == true);
     rising.OverlapPolicy = InitialOverlapPolicy::Ignore;
     REQUIRE(view.CastConvexAll(rising, BorrowedView<WorldConvexCastResult>(records.GetData(), LARGE_BUFFER), hits) ==
             Status::Success);
@@ -271,7 +274,8 @@ TEST_CASE("Convex cast modes follow the closest-hit rules and the overlap polici
 
 TEST_CASE("Under Reject an Any cast still searches every collider", "[collision][world][modes]")
 {
-    // Slot 0 is hit without overlap; slot 1 overlaps the start. Report stops at slot 0, Reject must find slot 1.
+    // One floor is hit without overlap; the other overlaps the start. Report may stop at either, so Reject must
+    // search on and find the overlap whichever it meets first.
     Scene scene;
     InitializeOrFail(scene, { .MaxShapes = 1 }, { .MaxColliders = 2 });
     const ShapeHandle floor = AddFloorOrFail(scene.Store);
@@ -287,9 +291,11 @@ TEST_CASE("Under Reject an Any cast still searches every collider", "[collision]
     };
     WorldConvexCastResult any;
     REQUIRE(view.CastConvexAny(cast, any) == Status::Success);
-    CHECK(any.Binding == 5);
-    CHECK(any.HasStartedOverlapping == false);
+    CHECK(any.HasHit == true);
     cast.OverlapPolicy = InitialOverlapPolicy::Reject;
+    CHECK(view.CastConvexAny(cast, any) == Status::InitialOverlap);
+    // The brute-force traversal visits the clean floor first; it must still reject.
+    cast.Traversal = QueryTraversal::AllTriangles;
     CHECK(view.CastConvexAny(cast, any) == Status::InitialOverlap);
 }
 
