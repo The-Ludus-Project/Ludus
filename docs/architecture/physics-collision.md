@@ -549,6 +549,20 @@ raycast, a box cast and convex casts of a sphere and the hull, and then puts
 the quad in a store and world, and runs a ray, an overlap query and an `All`
 ray through a read view.
 
+The same corpus provides the Emscripten evidence, in two ways:
+
+- `tools/web-collision-probe` compiles `collision.cpp` with the in-tree module
+  into a Node program. The browser presets build it with the other web probes,
+  and `./scripts/test web-emscripten-development` runs it as the
+  `ludus_web_collision_corpus` CTest.
+- The *Browser backends and packages* workflow installs the web SDK, builds
+  `tests/sdk_consumer/collision_web` against the installed
+  `Ludus::PhysicsCollision`, and runs the resulting `collision.js` with the
+  emsdk Node.
+
+Either program exits non-zero if any answer differs. The project also builds
+natively against an installed native SDK.
+
 ## Attribution
 
 - Sven Woop, Carsten Benthin and Ingo Wald,
@@ -616,8 +630,7 @@ envelope and a spawn outside it as separate failures that name the limit.
 
 This slice is not the whole gate. Still to come:
 - retained shape handles for query shapes in place of borrowed hulls;
-- query debug overlays;
-- Emscripten SDK consumer evidence.
+- query debug overlays.
 
 Hull faces, volume validation from faces and mass properties belong to the
 rigid-body gate.
