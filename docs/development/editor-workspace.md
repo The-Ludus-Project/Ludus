@@ -858,6 +858,10 @@ imported geometry. Like the other presets, apertures need a default World.
 
 ## Recording CPU and GPU profiling
 
+For hardware occupancy and barrier analysis on Radeon, see
+[external Radeon GPU profiling](../architecture/graphics-debugging.md#external-radeon-gpu-profiling)
+for standalone capture and target requirements.
+
 In the native editor, choose **Tools > Profiling...** or **View > Profiling**.
 Select **CPU**, **GPU**, or **Both**, then use **Record Profiling** in the tool
 window's toolbar or Tools menu. **Ctrl+Alt+F9** (Cmd+Alt+F9 on macOS) uses the

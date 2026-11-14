@@ -526,7 +526,7 @@ never infer Windows, Android, browser or ray-tracing support from a Mac capture.
 | --- | --- |
 | PIX | D5b uses external GPU capture and optional command-list regions. Programmatic capture control and PIX Timing Capture have separate tool and qualification requirements. |
 | Nsight Graphics | Start with external launch and standard annotations. Optional SDK control for graphics capture/GPU traces remains version-gated while the API is beta; initialize before the graphics context and keep external launch available. |
-| Radeon tools | Standard labels plus tested Radeon Developer Panel/CLI recipes for RGP, RMV and RRA. Driver and activity support are separate capabilities. |
+| Radeon tools | [External RGP profiling](#external-radeon-gpu-profiling) reuses Vulkan pass labels. Qualify the capture route for each driver, API and target. RMV memory traces and RRA ray-tracing captures have separate qualification. |
 | Android APA and AGI | Qualify the Android backend, development packaging, device/layer setup, Vulkan/ATrace annotations and artifact retrieval. APA is recommended for system profiling; its experimental frame profiler is not a universal baseline. Retain tested RenderDoc/AGI recipes. |
 | Browser tools | WebGPU Inspector for WebGPU and Spector.js for WebGL; optional development-only instrumentation before API creation. Qualify workers/iframes and the actual pinned Emscripten port. |
 | Hardware-specific profiling | Arm Performance Studio, Snapdragon Profiler and Intel GPA initially use shared names plus documented supported-device workflows. |
@@ -537,6 +537,61 @@ completion condition or hosted replay support with a small feasibility fixture.
 Record the result in this design's relevant contract or the existing validation
 owner. Do not weaken renderer synchronization, disable a supported backend or
 add an SDK runtime dependency merely to make one debugger attach.
+
+### External Radeon GPU profiling
+
+Radeon GPU Profiler (RGP) shows hardware wavefront occupancy, barrier costs
+and shader instruction timing where the capture contains that data. Ludus
+already emits Vulkan command-buffer labels for executed physical passes when
+`VK_EXT_debug_utils` is available. RGP can display those labels as user events.
+Use the pass names to find the relevant GPU work. Collect representative
+timings in a separate run with Ludus's native timing probes or Perfetto.
+
+#### Linux Vulkan with Mesa RADV
+
+Use a supported Radeon GPU and a Mesa RADV build that provides
+[`MESA_VK_TRACE`](https://docs.mesa3d.org/envvars.html#mesa-vk-trace). AMD's
+25.20-based and newer Linux packages default to RADV. AMD documents RADV's
+driver-side capture separately from Radeon Developer Panel (RDP) capture.
+
+Build the windowed [World reference game](../examples/world-demo.md#run-the-application)
+with the Linux Development preset. From the Ludus checkout, ask RADV to capture
+by frame number during a bounded run:
+
+```bash
+MESA_VK_TRACE=rgp MESA_VK_TRACE_FRAME=30 \
+  out/build/linux-clang-development/apps/world_demo/ludus_world_demo --frames 120
+```
+
+Open the new `.rgp` file in `/tmp` in RGP. Under **Events**, check the user
+event timeline for `Viewport/Scene`, `Viewport/Composite` and
+`Viewport/Present`. Inspect the GPU events within those regions for occupancy
+and stalls. If no profile is written, verify the app is presenting on RADV on
+a supported Radeon adapter and that the installed Mesa version exposes this
+capture mode. If the profile opens without pass names, record label visibility
+separately from capture success. This recipe is source-checked and awaits
+hardware qualification.
+
+For an SDK game, apply the same environment to its standalone native Vulkan
+executable and use a frame number after its draw loop starts presenting.
+To profile the World reference game with editor-authored data, save the World,
+then add `--level /path/to/saved.world.json` to the standalone command. For a
+packaged run, use the sample's [`--level-pack` option](../examples/world-demo.md#windows-direct3d-12),
+which also works on Linux. The native editor can render the World offscreen
+without a Vulkan present, and Hosted Play can submit the scene from a separate
+game producer. Each target needs its own capture evidence. Use the editor's
+[Profiling controls](../development/editor-workspace.md#recording-cpu-and-gpu-profiling)
+for local viewport durations.
+
+#### Windows Direct3D 12
+
+Use the [RDP GPU profiling workflow](https://gpuopen.com/manuals/rdp_manual/)
+on a supported Radeon adapter and driver. Select the standalone D3D12 process that submits the frame. Confirm the
+captured API and GPU in RGP. Assess marker visibility separately. AMD's
+[native PIX3 marker path](https://gpuopen.com/manuals/rgp_manual/user_debug_markers/)
+requires DirectX 12 Agility SDK version 721 or newer. The optional PIX runtime
+described above supplies markers for PIX; RGP visibility for Ludus's Windows
+runtime configuration still needs a hardware check.
 
 ## References and attribution
 
@@ -550,7 +605,8 @@ concise attribution beside the relevant native adapter and link back here.
 - Apple, [Metal developer tools](https://developer.apple.com/metal/tools/): Xcode/Metal inspection and platform tool roles.
 - Microsoft PIX team, [Programmatic Capture](https://devblogs.microsoft.com/pix/programmatic-capture/): startup loading, GPU/timing separation and target-window selection.
 - NVIDIA, [Nsight Graphics SDK User Guide](https://docs.nvidia.com/nsight-graphics/UserGuide/sdk.html): optional beta SDK and context initialization; [Nsight Aftermath](https://developer.nvidia.com/nsight-aftermath): GPU crash dumps.
-- AMD GPUOpen, [Radeon Developer Panel](https://github.com/GPUOpen-Tools/radeon_developer_panel) and [RGP User Debug Markers](https://gpuopen.com/manuals/rgp_manual/user_debug_markers/): activity-specific capture and marker interoperability.
+- AMD GPUOpen, [Radeon GPU Profiler](https://gpuopen.com/rgp/), [Radeon Developer Panel manual](https://gpuopen.com/manuals/rdp_manual/) and [RGP User Debug Markers](https://gpuopen.com/manuals/rgp_manual/user_debug_markers/) document hardware analysis, driver requirements and marker compatibility.
+- Mesa contributors, [Environment Variables](https://docs.mesa3d.org/envvars.html#mesa-vk-trace), document RADV capture selection, triggers and output.
 - Android Developers, [AGI system profiling](https://developer.android.com/agi/sys-trace/system-profiler) and [APA Frame Profiler](https://developer.android.com/android-performance-analyzer/frame-profiler): system/frame distinction and current experimental scope.
 - Brendan Duncan, [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector), and Babylon.js contributors, [Spector.js](https://spector.babylonjs.com/): browser API inspection and capture.
 - Arm, [Performance Studio](https://developer.arm.com/tools-and-software/arm-performance-studio); Qualcomm, [Snapdragon Profiler](https://www.qualcomm.com/developer/software/snapdragon-profiler); Intel, [GPA](https://www.intel.com/content/www/us/en/developer/tools/graphics-performance-analyzers/overview.html): optional hardware-specific investigation.
