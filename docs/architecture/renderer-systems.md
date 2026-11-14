@@ -604,13 +604,27 @@ encode so the rejection test costs no powers. An edge pixel loads its corners, w
 until the brightness pair average departs by a quarter of the gradient (four pixels in Fast, sixteen in
 Balanced, with the 3.11 thresholds and sub-pixel weights of each) and blends toward the neighbour across the
 edge. The taps are exact texel loads, not the half-pixel bilinear taps of the reference algorithm, so the shared
-nearest sampler is unchanged and the pair average costs two loads. The editor starts with Fast and offers Off,
-Fast and Balanced in the View menu; the choice persists with the navigation state and rebuilds the viewport.
-The filter assumes the image maps one to one onto the target, as `RasterViewport`'s does; Off leaves the
-single-sample path and every existing pixel unchanged. Measured on lavapipe at 1080p over 15 runs of 40 frames
+nearest sampler is unchanged and the pair average costs two loads. The editor's
+[built-in raster preview](../development/editor-workspace.md#earlier-built-in-viewport-profile)
+starts with Fast and saves the View menu choice with navigation. A native World
+render graph owns its Final output and any filtering it applies. SDK callers
+select the mode through `LightingOutput` or `RasterViewport::Initialize`, which
+default to Off. The filter assumes the image maps one to one onto the target, as
+`RasterViewport`'s does. Off uses a single source sample per pixel. Measured on
+lavapipe at 1080p over 15 runs of 40 frames
 (a software rasterizer, so pessimistic for the five loads per pixel), the median viewport frame (render to
 acquire) is 6.7 ms with Off, 12.5 ms with Fast and 12.2 ms with Balanced (5.7, 10.7 and 10.4 ms in an earlier run; the two modes cost the same because the rejection test of flat pixels dominates); a hardware
 GPU is not measured.
+
+A display-space filter can smooth a visible edge. A thin feature that falls
+between raster samples can still disappear as the camera moves. Alexander
+Reshetov and Jorge Jimenez discuss the sampling limit and the tradeoffs of
+pattern-based edge blending in their HPG 2017 retrospective.
+[Reshetov, “Pros and cons”](https://www.highperformancegraphics.org/wp-content/uploads/2017/Retrospective/HPG2017_Reshetov_MLAARetrospective.pdf) ·
+[Jimenez, slides 18–20](https://www.iryoku.com/research-impact-retrospective-mlaa-from-2009-to-2017/)
+
+Measure missed coverage, stair steps and corner softening independently in the
+[analytic coverage benchmark](https://github.com/The-Ludus-Project/Ludus/issues/1414).
 
 Default renderer budgets are eight prepared views (four shadow views plus scene/UI
 and overlap), two atlases, two programs, eight materials, four snapshots and four

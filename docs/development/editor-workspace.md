@@ -1698,6 +1698,15 @@ recentering the cursor. Releasing the button, pressing Escape, losing focus or
 hiding the viewport releases capture. If native capture is unavailable, dragging
 continues within the pointer's available screen area.
 
+**View → Antialiasing** controls the [built-in raster preview](#earlier-built-in-viewport-profile).
+**Off** shows the unfiltered raster image, **Fast** uses a short FXAA edge
+search, and **Balanced** searches farther along visible edges. The choice is
+saved with viewport navigation and defaults to **Fast**. To compare the modes
+on a native World, choose a [built-in debug view such as Debug:
+Albedo](render-graph-authoring.md#world-viewport-output-selector). **Final
+output** uses the active render graph's own passes. **Play saved World** uses
+the player's renderer settings.
+
 The editor owns a separate camera controller and publishes a validated C0
 pose/lens sample to the renderer. Navigation never changes an authored camera,
 World Save/Undo history, or simulation state. Starting navigation from an
