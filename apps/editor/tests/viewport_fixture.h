@@ -90,6 +90,10 @@ inline QByteArray ReadTestFile(const QString& path)
     REQUIRE(file.open(QIODevice::ReadOnly) == true);
     return file.readAll();
 }
+
+/// Load a supplied World's authored and cooked scene, including its light switches.
+RenderScene LoadSuppliedWorld(const QString& root, const QString& worldFile);
+
 /// Copies the live-edit sample World into root, adds shadow-casting cube copies and
 /// a row of authored point lamps, so the cooked scene takes the authored-lighting path.
 inline void MakeLitScene(const QString& root, RenderScene& outScene, const LitSceneOptions& options = {})

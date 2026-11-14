@@ -135,6 +135,51 @@ Reference collections and attribution:
 These authors and organizations supply the reference assets and scenario ideas;
 Ludus-specific adaptations should document meaningful departures near the code.
 
+## Compare clustered forward and deferred raster
+
+Use the offscreen Editor benchmark to test whether opaque material work or
+G-buffer traffic warrants a visibility-buffer resolve experiment. Joshua Barczak's
+[*Comments on Future Directions for Compute in Graphics*](https://www.joshbarczak.com/blog/?p=1317)
+(2017, “Visibility Buffers and Shading”) motivates keeping a forward control
+that uses the hardware raster-to-fragment path.
+
+Build the native Editor with render preview and tests, and build
+`ludus_editor_tests` and `ludus_renderer_render_tests`. The renderer test target
+cooks both controls from the [default graph](render-graph-authoring.md#default-clustered-deferred-lighting)
+with shared geometry and material callbacks and tone mapping disabled.
+Run both packages against the same saved World and camera. Choose a small
+control and a representative view with opaque overdraw or costly material
+shading. Use opaque or alpha-masked meshes and shared analytic lighting without
+shadows, atmosphere, or mesh-light illumination. The deferred-only lighting
+work would confound the comparison.
+
+```bash
+build=out/build/macos-clang-development
+graphs="$build/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests"
+mkdir -p out/raster-comparison
+export QT_QPA_PLATFORM=offscreen
+export LUDUS_RASTER_BENCHMARK_PROJECT=/path/to/project
+export LUDUS_RASTER_BENCHMARK_WORLD=example.world.json
+export LUDUS_RASTER_BENCHMARK_NAVIGATION=/path/to/saved-camera.json
+for recipe in rg2_clustered_Default rg2_clustered_forward_control; do
+    LUDUS_RASTER_BENCHMARK_RUNTIME="$graphs/$recipe/$recipe.lurgrt" \
+    LUDUS_RASTER_BENCHMARK_OUTPUT="out/raster-comparison/$recipe.json" \
+    LUDUS_RASTER_BENCHMARK_IMAGE="out/raster-comparison/$recipe.png" \
+        "$build/apps/editor/ludus_editor_tests" '[.raster-mesh-light-benchmark]'
+done
+```
+
+The navigation file is optional when the default framing gives the desired
+view. Use new output paths for subsequent runs, and alternate package order
+across processes. Compare the pass timings and full GPU frame durations at the
+benchmark's fixed 1600×1080 extent. The JSON also records the selected profile,
+logical deferred attachment bytes and CPU time inside `RenderGraph::Render`
+before the completion wait. CPU frame-time tails during interaction or gameplay
+need their own capture. The optional PNG is clamped linear RGBA8 and can flag
+image mismatches between controls. A future visibility resolve still needs its
+own derivative, coverage and raw linear output checks.
+[Qualification issue #1409](https://github.com/The-Ludus-Project/Ludus/issues/1409).
+
 ## SMS Figure 17 rough reflector
 
 `tools/sms-benchmark` reproduces Figure 17 of Tizian Zeltner, Iliyan Georgiev and
