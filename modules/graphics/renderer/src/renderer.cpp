@@ -1771,6 +1771,104 @@ Status Renderer::AppendVisibilityView(PreparedView handle,
                                                 attachment};
     return internal::AppendVisibilityCommands(state.Device, inoutGraph, commands, previous, outWritten);
 }
+Status Renderer::measureOpaqueView(PreparedView handle, uint32& outDrawCount, uint32& outBufferCount) const noexcept
+{
+    const Status status = GetStatus(handle);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    const State& state = *mState;
+    if (state.ViewsSetup != Status::Ready)
+    {
+        return Status::NotReady;
+    }
+    const State::ViewRecord& view = state.ViewRecords[Access::Slot(handle)];
+    if (state.HasVisibilityInputs == true || view.Grid.Get() != nullptr)
+    {
+        return Status::Unsupported;
+    }
+    uint32 buffers = view.DrawCount == 0 ? 0 : 1;
+    for (usize index = 0; index < view.DrawCount; ++index)
+    {
+        const State::Packet& packet = view.Packets[index];
+        if (packet.Pass != Layer::Opaque || packet.MaterialSlot != NO_MATERIAL || packet.UniformSlot != NO_UNIFORM)
+        {
+            return Status::Unsupported;
+        }
+        bool isCounted = false;
+        for (usize earlier = 0; earlier < index && isCounted == false; ++earlier)
+        {
+            isCounted = view.Packets[earlier].MeshSlot == packet.MeshSlot;
+        }
+        // Every distinct mesh imports its vertex and index buffers once.
+        buffers += isCounted == true ? 0 : 2;
+    }
+    outDrawCount = static_cast<uint32>(view.DrawCount);
+    outBufferCount = buffers;
+    return Status::Ready;
+}
+Status Renderer::appendOpaqueView(PreparedView handle,
+                                  rhi::OrderedGraph& inoutGraph,
+                                  const rhi::RasterPassDescription& attachment,
+                                  const char* name,
+                                  rhi::GraphVersion previous,
+                                  rhi::GraphVersion& outWritten) noexcept
+{
+    uint32 drawCount = 0;
+    uint32 bufferCount = 0;
+    const Status admitted = measureOpaqueView(handle, drawCount, bufferCount);
+    if (admitted != Status::Ready)
+    {
+        return admitted;
+    }
+    State& state = *mState;
+    const State::ViewRecord& view = state.ViewRecords[Access::Slot(handle)];
+    // The same target admission as drawView: an offscreen RGBA8 attachment (HDR targets need lit materials).
+    rhi::TextureDescription texture;
+    const Status target = rhi::GetTextureDescription(state.Device, attachment.Color, texture);
+    if (target != Status::Ready)
+    {
+        return target;
+    }
+    if (texture.Attachment == false || texture.Format != rhi::RasterFormat::Rgba8Unorm || attachment.ColorCount != 0 ||
+        attachment.ColorLoad != rhi::RasterLoad::Clear)
+    {
+        return Status::Unsupported;
+    }
+    Array<internal::VisibilityDraw> draws;
+    if (draws.TryResize(view.DrawCount) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    for (usize index = 0; index < view.DrawCount; ++index)
+    {
+        const State::Packet& packet = view.Packets[index];
+        const State::MeshRecord& mesh = state.MeshRecords[packet.MeshSlot];
+        draws[index] = {mesh.Vertices,
+                        mesh.Indices,
+                        mesh.VertexCount,
+                        mesh.IndexCount,
+                        packet.First,
+                        packet.Count,
+                        packet.MeshSlot};
+    }
+    rhi::RasterPassDescription pass = attachment;
+    pass.ClearDepth = view.Depth == DepthConvention::ReverseZ ? 0.0F : 1.0F;
+    internal::VisibilityCommands commands{
+        {draws.GetData(), draws.GetSize()},
+        view.Instances,
+        view.Visible,
+        sizeof(Instance),
+        view.Depth == DepthConvention::ReverseZ ? state.TargetReverse : state.TargetOpaque,
+        state.Bindings,
+        pass,
+    };
+    commands.VertexStride = sizeof(Vertex);
+    commands.Name = name;
+    commands.ShouldClearTransparent = false;
+    return internal::AppendVisibilityCommands(state.Device, inoutGraph, commands, previous, outWritten);
+}
 Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMaterialBindings& outBindings) noexcept
 {
     const Status ready = GetStatus(handle);

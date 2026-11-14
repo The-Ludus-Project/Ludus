@@ -841,6 +841,27 @@ private:
     };
     [[nodiscard]] rhi::RasterStatus
     drawView(PreparedView handle, const rhi::RasterPassDescription& description, DrawMode mode) noexcept;
+    /// Between frames and without graph changes, admit a ready view to appendOpaqueView and count what its pass
+    /// adds: draw packets and imported buffers (the instance table and each distinct mesh's vertex/index pair).
+    /// Unsupported for materials, uniform sets, overlays, a world grid or visibility inputs; outputs preserved.
+    [[nodiscard]] rhi::RasterStatus measureOpaqueView(PreparedView handle,
+                                                      foundation::uint32& outDrawCount,
+                                                      foundation::uint32& outBufferCount) const noexcept;
+    /// Between frames, append a view admitted by measureOpaqueView as one ordered raster pass: the commands
+    /// DrawView records into an RGBA8 offscreen attachment, with the declared uses of every bound buffer.
+    /// @param handle Ready view of this renderer; its packets and instance table are retained by the graph.
+    /// @param inoutGraph Caller-owned uncompiled ordered graph on this renderer's device.
+    /// @param attachment Offscreen RGBA8 attachment clearing color; ClearDepth follows the view's convention.
+    /// @param name Copied RHI pass name, 1..63 bytes.
+    /// @param previous Current version of attachment.Color in inoutGraph.
+    /// @param outWritten Receives the written version; preserved on failure. A partial failure leaves the
+    /// caller responsible for discarding inoutGraph.
+    [[nodiscard]] rhi::RasterStatus appendOpaqueView(PreparedView handle,
+                                                     rhi::OrderedGraph& inoutGraph,
+                                                     const rhi::RasterPassDescription& attachment,
+                                                     const char* name,
+                                                     rhi::GraphVersion previous,
+                                                     rhi::GraphVersion& outWritten) noexcept;
     [[nodiscard]] rhi::RasterStatus getDeferredMaterial(PreparedView handle,
                                                         internal::DeferredMaterialBindings& outBindings) noexcept;
     /// Between frames, build a prepared scene's mesh-light shadow face packets from snapshot, culling its opaque and
