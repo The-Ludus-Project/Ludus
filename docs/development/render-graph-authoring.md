@@ -6846,8 +6846,8 @@ limits above still decide admission.
 The report covers portable shader work only. Recipe keys describe the pipelines
 a Renderer may request; they do not measure device pipeline creation, first-use
 misses or driver memory, and artifact bytes are not a proxy for device residency.
-Device-side preparation is tracked separately in
-[#1253](https://github.com/The-Ludus-Project/Ludus/issues/1253).
+[Device pipeline preparation](#device-pipeline-preparation) reports those on
+the device, keyed by the same recipe keys.
 
 To reduce a cost, find the choice that owns the expensive keys and check which
 keys it shares. Reuse a compatible program, move a value into an existing
@@ -6886,7 +6886,78 @@ half of its recipe keys, and its fragment recompiles on every coverage edit.
 Changing the per-draw `Threshold` changes no build input, so it requests no
 compile; it is a runtime uniform value (see [Masked coverage](#masked-coverage)).
 
+#### Device pipeline preparation
+
+`RenderGraph::GetPipelineReport` reports what the device did with the recipes
+of an initialized graph. It returns one row per used technique, keyed by recipe,
+plus the device totals from `rhi::GetPipelinePreparationReport`
+(`ludus/graphics/rhi/pipeline_preparation.h`). A generated package header
+carries `RECIPE_KEYS`, the bytes of `inventory.recipes[].key` for each routed
+technique and target. The row for the device's target therefore uses the same
+key as `build-report.json`. Runtime generations (`.lurgrt`) and hand-built
+`RenderGraphPrograms` carry no keys. Their rows have `HasRecipeKey == false`.
+
+| Field | Contents |
+| --- | --- |
+| `Recipe`, `HasRecipeKey` | Technique, the device's shader target and, when known, the recipe key |
+| `NativePipelines` / `ReadyPipelines` | Native pipelines compiled from the technique's stages, and how many completed |
+| `DrawnPipelines` | Of those, pipelines that an accepted draw used |
+| `PrewarmSeconds` / `QueueSeconds` | Native creation time, and time spent queued in `RequestPipeline` before creation started |
+| `FirstUseMisses` | Draw requests that found the recipe still preparing: rejected `Render`/`Encode` calls plus RHI draw-time uses of a preparing pipeline |
+| `Device` | Session totals: resident and preparing pipelines, native creations, shared requests, first-use misses, failures, preparation seconds, driver memory |
+
+Times are wall-clock time on the owner thread. A synchronous backend measures
+the creation call. Asynchronous preparation also includes worker queueing and
+the delay until the owner thread polls for completion. Timing never enters
+recipe, pipeline or package identity. The RHI never creates a pipeline inside a
+frame, so a first-use miss is a rejected or skipped draw, not a hidden stall.
+No backend reports driver memory for a pipeline: `HasDriverMemory` is false on
+Metal, Vulkan, Direct3D 12, WebGPU and WebGL 2. Artifact bytes are not used in
+its place.
+
+One recipe becomes several native pipelines. A technique's Renderer context
+prepares surface and offscreen variants, conventional and reverse depth, and an
+overlay. Rows do not include pipelines the Renderer owns, such as composite,
+lighting, deferred resolve, upscale and compute pipelines. Those pipelines count
+only in `Device`. Stage pipelines are created directly for each graph. A second
+graph or activated generation with identical stages therefore prepares its own
+native pipelines. Only `rhi::RequestPipeline` callers with identical stage
+handles and state share one native pipeline (`SharedRequests`).
+
+Masked color and depth fixtures, measured on 14 November 2026 on an Apple M5
+with Metal under a load average of about 17–26. The build was `macos-clang-debug`,
+with three fresh processes per fixture. The Metal driver's own shader cache was
+not cleared or controlled:
+
+| | `masked_color` | `masked_depth` |
+| --- | --- | --- |
+| Device row | `MaskedColorAndDepth`, Metal key `b7286773…` | `MaskedDepthOnly`, Metal key `1a905536…` |
+| Build recipe keys / keys prepared on this device | 4 / 1 | 4 / 1 |
+| Native pipelines / drawn | 6 / 1 | 6 / 1 |
+| Recipe prewarm, 3 runs | 1.9–2.3 ms | 0.46–0.63 ms |
+| Device creations after `Initialize`, including the composite | 7 | 7 |
+| First-use misses | 0 | 0 |
+| Creations added by a `Threshold` edit and a moved item | 0 | 0 |
+
+The device prepares only the routed technique on its own target. The unrouted
+technique and the WGSL keys in the build inventory cost the Metal device
+nothing. Of the six native pipelines prepared for the routed recipe, one is
+drawn by a single-pass offscreen graph. The surface, reverse-depth and overlay
+variants are prepared but unused here. Vulkan and WebGPU records come from CI.
+The cold native consumer journeys and the correlation of a shader edit with its
+first presented frame remain open in
+[#1253](https://github.com/The-Ludus-Project/Ludus/issues/1253).
+
 ### Acceptance evidence
+
+The `[pipeline-preparation]` cases cover the device report. In
+`ludus_rhi_render_tests` they check direct creation, two compatible requests
+sharing one native pipeline and a first-use miss with paused native preparation.
+In `ludus_renderer_render_tests` they check that the masked color and depth rows
+carry the generated recipe keys and are fully prewarmed. They also check that a
+`Threshold` edit or a moved item creates no native pipeline, and that a second
+identical graph prepares its own. `test_render_graph_execution` checks that the
+generated `RECIPE_KEYS` match `inventory.recipes` for the routed technique only.
 
 `test_render_graph_build` covers deterministic clean/warm builds, transitive
 invalidation, the variant cost inventory (cold/warm builds, shared-include and

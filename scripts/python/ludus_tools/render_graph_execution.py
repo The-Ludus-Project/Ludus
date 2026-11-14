@@ -606,11 +606,57 @@ def _runtime_contents(path, configuration):
     build.require(not has_light_transformer or (persistent and ray_pass_count == 1 and
                   ray_passes[0]['Traversal'] == 'ComputeBvh' and ray_passes[0]['Buffer0'] != ABSENT),
                   'Capability', 'light_transformer', 'use one ComputeBvh scene compute pass wired to an embedding Buffer')
-    return {'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    recipe_keys = _routed_recipe_keys(package, configuration, selected_techniques, ray_recipes, roles)
+    return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
             'interface_identity': build.identity(interface), 'generation': path.name}
+
+
+def _routed_recipe_keys(package, configuration, selected_techniques, ray_recipes, roles):
+    """Recipe keys of the selected techniques, one per (technique, profile) when it is unambiguous.
+
+    The keys are the same digests as build-report.json inventory.recipes[].key, so the Renderer's device
+    pipeline report can be joined with the offline cost inventory (#1253). Routes narrow a technique to
+    the recipe IDs its raster nodes admit; a technique/profile with several remaining recipes emits no
+    key rather than guessing which one the device prepared.
+    """
+    routed = {}
+    for route in package.get('routes', []):
+        if route['configuration'] == configuration:
+            routed.setdefault(route['technique'], set()).update(route['recipe_ids'])
+    keys = []
+    for technique in sorted(selected_techniques):
+        candidates = ray_recipes if technique == ray.TECHNIQUE else [r for r in package['recipes'] if r['technique'] == technique]
+        if technique in routed:
+            candidates = [r for r in candidates if r['state'].get('id') in routed[technique]]
+        for profile in sorted({r['profile'] for r in candidates}, key=lambda target: TARGET_CODES[target]):
+            unique = sorted({r['key'] for r in candidates if r['profile'] == profile})
+            if len(unique) == 1:
+                keys.append({'program': roles[technique], 'profile': profile, 'key': unique[0]})
+    return keys
+
+
+def _recipe_key_lines(contents):
+    """Generated RECIPE_KEYS table; empty when no routed technique has an unambiguous key."""
+    keys = contents.get('recipe_keys', [])
+    if not keys:
+        return []
+    lines = [f'inline constexpr foundation::usize RECIPE_KEY_COUNT = {len(keys)};',
+             '/// Pipeline recipe keys of the routed techniques; build-report.json inventory.recipes[].key in bytes.',
+             'inline constexpr foundation::StaticArray<renderer::RenderGraphRecipeKey, RECIPE_KEY_COUNT> RECIPE_KEYS',
+             '{', '    {']
+    for entry in keys:
+        code = PROGRAM_CODES[entry['program']]
+        technique = ('static_cast<format::Technique>(' + str(code) + ')' if code >= LEGACY_PROGRAM_COUNT
+                     else 'format::Technique::' + entry['program'])
+        digest = bytes.fromhex(entry['key'])
+        build.require(len(digest) == IDENTITY_BYTES, 'Package', entry['key'], 'recipe key is not a SHA-256 digest')
+        lines.append('        {' + technique + ', format::ShaderTarget::' + TARGET_NAMES[entry['profile']] +
+                     ', {{' + ', '.join(hex(b) for b in digest) + '}}},')
+    lines += ['    },', '};']
+    return lines
 
 
 def _uniform_constants(contents):
@@ -741,6 +787,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                                        for start in range(0, len(characters), 32)) + '\n};')
             else:
                 lines.append('inline constexpr char ' + label + '[] = R"' + delimiter + '(' + text + ')' + delimiter + '";')
+    lines += _recipe_key_lines(contents)
     lines += ['/// Return cooked stage descriptions backed by immutable static storage.',
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPrograms MakePrograms(',
               '    const rhi::RasterShaderDescription& compositeVertex,',
@@ -748,6 +795,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
     for index, count in enumerate(contents.get('capture_warmup_samples', [])):
         if count:
             lines.append(f'    result.CaptureWarmupSamples[{index}] = {count};')
+    if contents.get('recipe_keys'):
+        lines.append('    result.RecipeKeys = {RECIPE_KEYS.GetData(), RECIPE_KEYS.GetSize()};')
     if contents.get('clustered_deferred', False):
         lines.append('    result.HasClusteredDeferred = true;')
     if contents.get('clustered_forward', False):

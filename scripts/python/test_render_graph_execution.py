@@ -557,6 +557,29 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn('result.MaskedColorFragment.Artifact.Wgsl', text)
         self.assertNotIn('result.ColorFragment', text)
 
+    def test_generated_recipe_keys_match_the_build_inventory_for_routed_techniques(self):
+        # The Renderer's device pipeline report joins these bytes with inventory.recipes[].key (#1253).
+        self.edit(self.mask_techniques)
+        report = self.run_build()
+        destination = self.root / 'masked_keys.h'
+        execution.emit_runtime(self.output, destination)
+        text = destination.read_text()
+        routed = [recipe for recipe in report['inventory']['recipes']
+                  if recipe['technique'] == 'DefaultStaticMasked.ColorAndDepth']
+        self.assertEqual(sorted(recipe['profile'] for recipe in routed), ['metal', 'wgsl'])
+        self.assertIn(f'RECIPE_KEY_COUNT = {len(routed)};', text)
+        for recipe in routed:
+            digest = ', '.join(hex(byte) for byte in bytes.fromhex(recipe['key']))
+            target = execution.TARGET_NAMES[recipe['profile']]
+            self.assertIn('{format::Technique::MaskedColorAndDepth, format::ShaderTarget::' + target +
+                          ', {{' + digest + '}}},', text)
+        # The unrouted masked depth technique is not part of this configuration and carries no key.
+        unrouted = [recipe['key'] for recipe in report['inventory']['recipes']
+                    if recipe['technique'] == 'DefaultStaticMasked.DepthOnly']
+        for key in unrouted:
+            self.assertNotIn(', '.join(hex(byte) for byte in bytes.fromhex(key)), text)
+        self.assertIn('result.RecipeKeys = {RECIPE_KEYS.GetData(), RECIPE_KEYS.GetSize()};', text)
+
     def test_masked_depth_requires_its_own_authored_coverage_function(self):
         def declare_both(value):
             masked = copy.deepcopy(value['techniques'])
