@@ -1,17 +1,72 @@
-# Terrain fields, drainage, rivers and material rules
+# Tiled terrain and generation kernels
 
 `Ludus::ContentTerrain` (`modules/content/terrain`, headers under
-`ludus/content/terrain/`) holds the headless serial reference kernels of terrain
-slice T1 from the [terrain generation architecture](../../architecture/terrain-generation.md#ordered-pipeline).
+`ludus/content/terrain/`) holds the canonical tiled surface and the serial reference kernels from the [terrain generation architecture](../../architecture/terrain-generation.md#ordered-pipeline).
 It is Foundation-only (`FoundationBase`, `FoundationContainers`, `FoundationMath`),
 builds for native and browser targets, and is in-tree until an SDK consumer
 needs it. The World editor's default terrain samples its elevation through this
 module, so a cooker, a test and the editor agree on every height, and it carves
 rivers and bakes its surface colour with the kernels below.
 
-The module computes fields; it owns no file format, streaming or rendering.
-Those stay with the [terrain systems](../../architecture/terrain.md) proposal,
-and material rendering is a later slice.
+## Canonical tiled terrain
+
+The T0 surface uses square tiles of 1 through 256 cells per side, with one
+extra sample on each axis. Heights are row-major with columns along +X, rows
+along +Z and elevations along +Y. All tiles in a revision share the same cell
+count, horizontal spacing, height origin and quantum. The caller owns revision
+identity and keeps the tiles alive for the duration of queries. The bounded
+World editor terrain keeps its existing topology and file representation.
+
+1. Import a square window with `TryCookTerrainTile` (`terrain_tile.h`). Supply
+   one bounded elevation field in metres, its `TerrainFieldGrid`, and the
+   source column and row of the tile's first sample. Fields can come from
+   imported height data or the generation kernels below. The complete source
+   field uses the tile's spacing on both axes. Adjacent windows overlap by one
+   sample. Use one source value per global coordinate.
+2. Keep the tile's description alongside its height bytes. Version
+   `TERRAIN_TILE_HEIGHT_LAYOUT_VERSION` is a raw sequence of unsigned 16-bit
+   or signed two's-complement 32-bit codes in little-endian order. Code zero
+   is at the declared origin. The decoder multiplies by the quantum and adds
+   the origin in binary64. The cook rounds to the nearest code with ties toward
+   positive infinity and rejects heights outside the closed codec range.
+   Quantization contributes at most half a quantum in exact arithmetic.
+   Binary32 input and metadata conversion and binary64 arithmetic contribute
+   additional rounding error. When cooking reports `HeightOutOfRange`, correct
+   the source or choose a common origin and quantum that cover the revision.
+3. Restore one payload with `TryLoadTerrainTile`. It requires the exact byte
+   count, valid metadata, and tile endpoints that fit signed 64-bit lattice
+   coordinates. Validate the saved layout version before calling it. Use
+   `CheckTerrainTileSeam` before composing neighbouring tiles, including
+   diagonal neighbours. It compares all duplicated codes and rejects revision,
+   layout or codec mismatches.
+
+`TryLocateTerrainCell` uses floor division. With two cells per side, global
+cell X = -1 belongs to tile X = -1 at local column 1. Cell ownership is
+half-open. `TrySampleTerrainTile` (`terrain_surface.h`) also permits the
+duplicated endpoints for explicit per-tile queries. It takes tile-local XZ in
+cell units and returns height in metres and an upward unit contact normal.
+Height is piecewise planar on the upward-wound triangles of the fixed
+(0,0)–(1,1) diagonal. Equal codes yield equal shared-edge heights. The normal
+belongs to the selected triangle and can change across a cell or tile edge.
+
+`TryRaycastTerrainTile` uses tile-local XZ in metres and the same vertical
+frame as the height codec. It returns the nearest triangle contact within a
+finite segment, testing both sides of each triangle. The headless reference
+scan restricts constant horizontal axes and covers the full tile along moving
+axes. Supply a cell budget. `BudgetExceeded` means the scan could not establish
+a result within that budget, while `Miss` means no triangle intersected.
+Point and ray queries do no allocation, loading or graphics work.
+
+Use `GetTerrainTileMeshCounts` to size the position and index buffers for
+`TryExportTerrainTileMesh`. The export subtracts the caller's global lattice
+origin before scaling XZ to metres in binary64. Use a common nearby origin
+across tiles for identical shared positions. Positions and indices use the
+same decoded triangles as the queries. Every non-success status preserves
+the tile, contact or mesh buffers supplied to the operation.
+
+This slice covers solid height tiles and the raw height payload. Cook manifests,
+holes, physical materials, residency and renderer/physics adapters are governed
+by the [terrain architecture](../../architecture/terrain.md#performance-and-delivery-gates).
 
 ## Elevation recipe (`terrain_noise.h`)
 
@@ -118,16 +173,17 @@ surface before deriving slope, wetness or materials from it.
 | Limit | Value |
 | --- | --- |
 | Samples per grid axis | 2 through 4097 |
+| Cells per tile edge | 1 through 256 |
 | Rules per rule set | 16 |
 | Cells per patch edge | 1 through 256 |
 | Halo samples | 0 through 4 |
 | River profile reach | 16 samples from the channel centre |
 
-Implemented: elevation recipe, slope, drainage, wetness, rules and palettes,
-river networks and carving, with regression tests in
-`modules/content/terrain/tests`. Not yet implemented from the pipeline: imports
-and stamps as module operations, thermal and hydraulic erosion, cooked pages
-and tiling material textures blended in the renderer. The World editor uses
+The tiled codec, queries and mesh export, elevation recipe, slope, drainage,
+wetness, rules and palettes, river networks and carving have regression tests in
+`modules/content/terrain/tests`. File imports, stamps, thermal and hydraulic
+erosion, cook manifests and blended material textures remain future pipeline work.
+The World editor uses
 these kernels to carve rivers and bake its terrain surface; see
 [World authoring](../../development/editor-workspace.md#s4-scene-authoring).
 

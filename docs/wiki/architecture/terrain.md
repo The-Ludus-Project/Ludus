@@ -1,16 +1,17 @@
 ---
-description: Understand the proposed terrain surface, generation, editing and streaming boundaries.
+description: Understand the tiled terrain core, generation, editing and planned streaming boundaries.
 ---
 
 # Terrain and generation
 
-Terrain is a proposed Ludus subsystem. Use the canonical engineering documents
-below when planning its implementation or reviewing a terrain change. They
+Use the canonical engineering documents below to work with the tiled terrain
+core or plan its generation, editing and streaming extensions. They
 contain the contracts, implementation gates and reference attribution; this page
 provides a reading path.
 
 | Your task | Read |
 | --- | --- |
+| Cook tiles from height fields, query the surface or export meshes | [Canonical tiled terrain](../../modules/content/terrain.md#canonical-tiled-terrain) |
 | Choose the terrain representation and integration boundaries | [Terrain systems architecture](../../architecture/terrain.md) |
 | Implement coordinates, queries, LOD, materials, editing or residency | [Terrain contracts](../../architecture/terrain.md#coordinates-and-canonical-surface) |
 | Design the World viewport workflow for adding and editing terrain | [Terrain authoring in the World viewport](../../architecture/terrain.md#terrain-authoring-in-the-world-viewport) |
