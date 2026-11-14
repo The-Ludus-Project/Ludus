@@ -858,6 +858,8 @@ imported geometry. Like the other presets, apertures need a default World.
 
 ## Recording CPU and GPU profiling
 
+For a scene-to-package performance check, see
+[Check a GPU budget on target hardware](runtime-profiling.md#check-a-gpu-budget-on-target-hardware).
 For hardware occupancy and barrier analysis on Radeon, see
 [external Radeon GPU profiling](../architecture/graphics-debugging.md#external-radeon-gpu-profiling)
 for standalone capture and target requirements.
