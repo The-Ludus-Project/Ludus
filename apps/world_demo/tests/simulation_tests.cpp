@@ -640,6 +640,64 @@ TEST_CASE("Camera follow shares fixed tick presentation cadence across rates and
     }
 }
 
+// Thanks to Huw Bowles, "jitternator", Preparation and Debugging Experiments / Tests,
+// for the uneven-cadence and constant-velocity probes. Drive the clock directly
+// so the hitch is repeatable and the expected trajectory is independent of GetAlpha.
+// https://github.com/huwb/jitternator/blob/8830f3734d4bf8ff97b27132fbd8ef5c251b1232/README.md#debugging-experiments--tests
+TEST_CASE("Follow camera and player draw stay aligned through uneven frames", "[world-demo][camera][frame]")
+{
+    constexpr float32 PLAYER_SPEED_METRES_PER_SECOND = 6.0F;
+    constexpr float64 POSITION_TOLERANCE_METRES = 1.0e-6;
+    constexpr float64 TICK_SECONDS = 1.0 / static_cast<float64>(TICKS_PER_SECOND);
+    // Includes callbacks with zero ticks and a 52 ms hitch that runs three ticks without losing time.
+    constexpr uint64 FRAME_TIMES_MILLISECONDS[] = {0, 5, 19, 24, 76, 79, 96, 112};
+    const Recipe player
+    {
+        .Id = { .Text = "player" },
+        .Type = Kind::Player,
+        .Speed = PLAYER_SPEED_METRES_PER_SECOND,
+        .Health = 1,
+        .Sprite = { .Text = "player" },
+    };
+    const Level level
+    {
+        .Id = { .Text = "camera-cadence" },
+        .Minimum = {-2, -2},
+        .Maximum = {2, 2},
+        .VerticalExtent = 2,
+        .Entities = {player},
+        .EntityCount = 1,
+    };
+    GameWorld world;
+    REQUIRE(world.Prepare(level) == Status::Success);
+    REQUIRE(world.BuildNext() == Status::Success);
+    TickDriver driver;
+    const TickInput input{ .Axis = {1, 0} };
+    RenderFrame frame;
+    uint64 presentationSequence = 0;
+    for (const uint64 elapsedMilliseconds : FRAME_TIMES_MILLISECONDS)
+    {
+        CAPTURE(elapsedMilliseconds);
+        const uint64 elapsedNanoseconds = elapsedMilliseconds * MILLISECOND;
+        REQUIRE(driver.Advance(world, At(elapsedNanoseconds), input) == Status::Success);
+        REQUIRE(driver.GetDiscardedTicks() == 0);
+        REQUIRE(driver.GetClampedTime() == Duration{});
+        REQUIRE(world.Extract(driver.GetAlpha(), frame, true, ++presentationSequence));
+        REQUIRE(frame.Count == ROOM_FLOOR_DRAWS + 1);
+        const Vec2 drawnPositionWorld = frame.Draws[ROOM_FLOOR_DRAWS].Position;
+        const float64 elapsedSeconds =
+            static_cast<float64>(elapsedNanoseconds) / static_cast<float64>(NANOSECONDS_PER_SECOND);
+        // Both previous and current equal the spawn pose until the first tick completes.
+        const float64 sampledSeconds = elapsedSeconds < TICK_SECONDS ? 0.0 : elapsedSeconds - TICK_SECONDS;
+        const float64 expectedPositionXWorld = static_cast<float64>(PLAYER_SPEED_METRES_PER_SECOND) * sampledSeconds;
+        REQUIRE(frame.Camera.PresentationSequence == presentationSequence);
+        REQUIRE(frame.Camera.Pose.Position.X == static_cast<float64>(drawnPositionWorld.X));
+        REQUIRE(frame.Camera.Pose.Position.Y == static_cast<float64>(drawnPositionWorld.Y));
+        REQUIRE(static_cast<float64>(drawnPositionWorld.X) ==
+                Catch::Approx(expectedPositionXWorld).epsilon(0).margin(POSITION_TOLERANCE_METRES));
+    }
+}
+
 TEST_CASE("Commit preflight faults without publishing spawns or presentation", "[world-demo]")
 {
     auto world = Build(3);

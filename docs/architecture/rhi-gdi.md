@@ -646,6 +646,13 @@ duplication of two unmeasured implementations is a maintenance cost.
 
 ### Synchronization evidence
 
+The Vulkan backend maps graph buffer uses to legacy stage and access masks in a
+[private mapper](../../modules/graphics/rhi/src/internal/buffer_access_vulkan.h).
+Tobias Hector's [*Simplified Vulkan Synchronization*, alpha.9](https://github.com/Tobski/simple_vulkan_synchronization/blob/a4c7ede63d29e2612d5ae1545d3b507c506fc5ed/thsvs_simpler_vulkan_synchronization.h#L866-L899)
+informed the mapping boundary. Ludus supplies its own graph uses. The encoder
+combines the destination scope with the resource's prior accesses and last writer
+when recording the whole-buffer dependency.
+
 `GraphReport` describes logical dependencies. The current encoder walks live
 passes and asks backend helpers to lower their uses against native state. One
 dependency can need several native operations, share an operation with other

@@ -76,6 +76,8 @@ struct TransferRecord final : LifetimeRecord
 struct PipelineLease final : LifetimeRecord
 {
     usize Pipeline = 0;
+    /// The request joined a native pipeline an earlier request had already queued or created.
+    bool IsShared = false;
 };
 StorageTable<BatchRecord> gBatches;
 TransferRecord gUploads[LIFETIME_TRANSFERS];
@@ -692,6 +694,7 @@ RasterStatus PollLifetime(DeviceHandle device) noexcept
             continue;
         }
         pipeline.QueuedPipeline = false;
+        BeginPipelinePreparation(pipeline);
         const auto status = backend::RasterCreatePipeline(slot, pipeline.Pipeline, pipeline.Request);
         if (pipeline.Owner == 0)
         {
@@ -701,6 +704,7 @@ RasterStatus PollLifetime(DeviceHandle device) noexcept
         {
             pipeline.Status = status;
         }
+        FinishPipelinePreparation(pipeline, pipeline.Status);
         break;
     }
     Collect();
@@ -738,7 +742,12 @@ RequestPipeline(DeviceHandle device, const RasterPipelineDescription& descriptio
             break;
         }
     }
-    if (pipelineSlot == RASTER_INVALID)
+    const bool isShared = pipelineSlot != RASTER_INVALID;
+    if (isShared == true)
+    {
+        ++gPipelinePreparation.SharedRequests;
+    }
+    else
     {
         const auto reserved = Reserve(RasterKind::Pipeline, pipelineSlot);
         if (reserved != RasterStatus::Ready)
@@ -750,12 +759,15 @@ RequestPipeline(DeviceHandle device, const RasterPipelineDescription& descriptio
         record.Published = true;
         record.ServiceOwned = true;
         record.QueuedPipeline = true;
+        record.Preparation.RequestedNanoseconds = time::NowTicks();
+        record.Preparation.IsRequested = true;
         Dependencies(record, RasterKind::Pipeline, true);
     }
     auto& lease = gPipelineLeases[leaseSlot];
     lease.Owner = DeviceOwner();
     lease.Published = true;
     lease.Pipeline = pipelineSlot;
+    lease.IsShared = isShared;
     LifetimeAccess::Set(output, {DeviceOwner(), leaseSlot, lease.Generation});
     return At(RasterKind::Pipeline, pipelineSlot).Status == RasterStatus::Ready ? RasterStatus::Ready
                                                                                 : RasterStatus::Pending;
@@ -791,6 +803,12 @@ RasterStatus GetRequestedPipeline(DeviceHandle device, PipelineRequest request, 
     const auto status = GetStatus(device, request);
     if (status != RasterStatus::Ready)
     {
+        // Inside a frame no creation can launch, so a still-preparing pipeline misses this draw.
+        const PipelineLease* pendingLeaseOrNull = ResolveLifetime(gPipelineLeases, request);
+        if (status == RasterStatus::Pending && pendingLeaseOrNull != nullptr && FrameOpen() == true)
+        {
+            NoteFirstUseMiss(At(RasterKind::Pipeline, pendingLeaseOrNull->Pipeline));
+        }
         return status;
     }
     const auto* lease = ResolveLifetime(gPipelineLeases, request);
@@ -834,6 +852,93 @@ RasterStatus Release(DeviceHandle device, PipelineRequest& request) noexcept
         }
     }
     Collect();
+    return RasterStatus::Ready;
+}
+namespace
+{
+/// Count owned leases sharing one native pipeline slot.
+uint32 CountPipelineRequests(usize pipelineSlot) noexcept
+{
+    uint32 count = 0;
+    for (const PipelineLease& lease : gPipelineLeases)
+    {
+        if (lease.Owner == DeviceOwner() && lease.Published == true && lease.Pipeline == pipelineSlot)
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+} // namespace
+RasterStatus
+GetPipelinePreparation(DeviceHandle device, RasterPipelineHandle pipeline, PipelinePreparation& outPreparation) noexcept
+{
+    const RasterStatus admission = Admission(device, false);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    const Record* recordOrNull = Resolve(pipeline, RasterKind::Pipeline);
+    if (recordOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    PipelinePreparation preparation;
+    DescribePipelinePreparation(*recordOrNull, preparation);
+    preparation.Requests = recordOrNull->ServiceOwned == true ? CountPipelineRequests(RasterAccess::Slot(pipeline)) : 0;
+    outPreparation = preparation;
+    return RasterStatus::Ready;
+}
+RasterStatus
+GetPipelinePreparation(DeviceHandle device, PipelineRequest request, PipelinePreparation& outPreparation) noexcept
+{
+    const RasterStatus admission = Admission(device, false);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    const PipelineLease* leaseOrNull = ResolveLifetime(gPipelineLeases, request);
+    if (leaseOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    PipelinePreparation preparation;
+    DescribePipelinePreparation(At(RasterKind::Pipeline, leaseOrNull->Pipeline), preparation);
+    preparation.Requests = CountPipelineRequests(leaseOrNull->Pipeline);
+    preparation.IsShared = leaseOrNull->IsShared;
+    outPreparation = preparation;
+    return RasterStatus::Ready;
+}
+RasterStatus GetPipelinePreparationReport(DeviceHandle device, PipelinePreparationReport& outReport) noexcept
+{
+    const RasterStatus admission = Admission(device, false);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    PipelinePreparationReport report;
+    report.SelectedBackend = GetStartup().SelectedBackend;
+    for (const Record& record : gRecords[static_cast<usize>(RasterKind::Pipeline)])
+    {
+        if (record.Owner != DeviceOwner())
+        {
+            continue;
+        }
+        if (record.Status == RasterStatus::Ready)
+        {
+            ++report.ResidentPipelines;
+        }
+        else if (record.Status == RasterStatus::Pending)
+        {
+            ++report.PreparingPipelines;
+        }
+    }
+    report.NativeCreations = gPipelinePreparation.NativeCreations;
+    report.SharedRequests = gPipelinePreparation.SharedRequests;
+    report.FirstUseMisses = gPipelinePreparation.FirstUseMisses;
+    report.FailedPreparations = gPipelinePreparation.FailedPreparations;
+    report.PreparationSeconds = time::ToSeconds(time::Duration{gPipelinePreparation.PreparationNanoseconds});
+    outReport = report;
     return RasterStatus::Ready;
 }
 RasterStatus RequestBufferUpload(DeviceHandle device,

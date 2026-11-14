@@ -453,6 +453,51 @@ class VisibilityTemplateTests(unittest.TestCase):
             self.assertEqual(arguments.template, identity)
 
 
+class HybridShadowsTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'spirv')):
+        return graph.new_workspace(Path(self.directory.name) / 'HybridShadows', output='offscreen',
+                                   renderer_static=True, profiles=profiles, template='hybrid-shadows')
+
+    def test_raster_visibility_feeds_one_shadow_ray_pass_without_history(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual(len(rays), 1)
+        ray_pass = rays[0]
+        self.assertEqual(ray_pass['visibility']['resource'], raster['attachments']['color']['resource'])
+        self.assertEqual(ray_pass['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+        # The deterministic shadowed signal is tone mapped directly; no Accumulate history is kept.
+        self.assertFalse(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
+        exported = [operation['resource'] for operation in plan['passes'] if operation['kind'] == 'Export']
+        self.assertIn(raster['attachments']['depth']['resource'], exported)
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        interface = next(technique['scene_interface'] for technique in manifest['techniques']
+                         if 'scene_interface' in technique)
+        self.assertTrue(interface['visibility_buffer'])
+        self.assertEqual(interface['surface_queries'], 1)
+        # The shader's MAXIMUM_SHADOW_RAYS equals the technique budget, the interactive ceiling.
+        self.assertEqual(interface['visibility_queries'], ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'])
+        shade = root.with_name('main_shaders') / 'shade.slang'
+        self.assertIn(f"MAXIMUM_SHADOW_RAYS = {interface['visibility_queries']};", shade.read_text())
+
+    def test_shadow_rays_require_a_native_target_and_create_nothing_otherwise(self):
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',))
+        self.assertFalse((Path(self.directory.name) / 'HybridShadows').exists())
+
+    def test_cli_exposes_the_template(self):
+        from ludus_tools.cli import build_parser
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Main', '--template', 'hybrid-shadows',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'hybrid-shadows')
+
+
 class TiledVbufferNeeTemplateTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -481,6 +526,10 @@ class TiledVbufferNeeTemplateTests(unittest.TestCase):
         self.assertIn("    Main/lighting/visibility [ColorTexture] 000..003 | Export Main/visibilityOutput reads @1", report)
         self.assertIn("    Main/lighting/depth [DepthTexture] 000..003 | Export Main/depthOutput reads @1", report)
         self.assertIn("    Main/lighting/table [Buffer] 001..003", report)
+        uses = {row['resource']: row['uses'] for row in graph.describe_resource_uses(plan)}
+        self.assertEqual([{'operation': 1, 'read': 0, 'write': 1, 'defined': True},
+                          {'operation': 2, 'read': 1, 'write': 2, 'defined': True},
+                          {'operation': 3, 'read': 2, 'write': 3, 'defined': True}], uses['Main/lighting/table'])
         final = rays[-1]
         self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
         self.assertEqual(1, final['tone_mapping']['exposure'])

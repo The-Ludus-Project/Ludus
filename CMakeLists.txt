@@ -725,7 +725,8 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_upscale.py scripts/python/ludus_tools/render_graph_sizes.py
     scripts/python/ludus_tools/render_graph_quality.py
     scripts/python/ludus_tools/render_graph_diagnostics.py
-    scripts/python/ludus_tools/render_graph_build.py scripts/python/ludus_tools/render_graph_execution.py
+    scripts/python/ludus_tools/render_graph_build.py scripts/python/ludus_tools/render_graph_build_inventory.py
+    scripts/python/ludus_tools/render_graph_execution.py
     scripts/python/ludus_tools/render_graph_pipeline.py scripts/python/ludus_tools/render_graph_options.py scripts/python/ludus_tools/render_graph_ray.py
     scripts/python/ludus_tools/render_graph_ray_invocation.py
     scripts/python/ludus_tools/render_graph_metal_ray.py
@@ -735,8 +736,8 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_settings.py scripts/python/ludus_tools/render_graph_templates.py
     scripts/python/ludus_tools/render_graph_template_update.py
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/ludus_tools")
-foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buffer visibility_secondary_rays tiled_vbuffer_nee
-        compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle
+foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buffer visibility_secondary_rays hybrid_shadows
+        tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle
         salesin_jarosz_lines polygonal_light_sampling slice_sampling_luminaire rough_pair_slice steinberg_plt
         steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
     install(DIRECTORY "modules/graphics/renderer/render_graphs/${template_directory}/"

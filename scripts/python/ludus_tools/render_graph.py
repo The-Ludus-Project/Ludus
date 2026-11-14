@@ -799,16 +799,20 @@ class _Value:
     scene_data: int = scene_bundle.ALL_DATA
 
 
-def _operation_resources(operation):
-    """Yield the logical resources referenced by a lowered pass record."""
-    for field in ('attachments', 'buffers'):
-        for use in operation.get(field, {}).values():
-            yield use['resource']
+def _operation_resource_uses(operation):
+    """Yield resource ID, read version, write version and write definedness."""
+    for use in operation.get('attachments', {}).values():
+        read = use['input_version'] if use['load'] == 'Load' else None
+        yield use['resource'], read, use['output_version'], use['defined']
+    for use in operation.get('buffers', {}).values():
+        writes = use['access'] == 'ReadWrite'
+        yield use['resource'], use['input_version'], use['output_version'] if writes else None, True if writes else None
     for use in operation.get('persistent_buffers', ()):
-        yield use['resource']
+        yield use['resource'], use['input_version'], use['output_version'], True
     for field in ('visibility', 'visibility_depth', 'source_color'):
         if field in operation:
-            yield operation[field]['resource']
+            use = operation[field]
+            yield use['resource'], use['input_version'], None, None
 
 
 class _Compiler:
@@ -1220,7 +1224,8 @@ class _Compiler:
                  repair='Enable a disabled Export node, or add and connect an Export node.')
         # A target consulted only for sizing supplies metadata, not a GPU allocation.
         used_resources = {root['resource'] for root in self.roots}
-        used_resources.update(resource for operation in self.passes for resource in _operation_resources(operation))
+        used_resources.update(resource for operation in self.passes
+                              for resource, _, _, _ in _operation_resource_uses(operation))
         self.resources = {identity: resource for identity, resource in self.resources.items() if identity in used_resources}
 
 
@@ -1312,29 +1317,54 @@ def compile_graph(path, *, configuration=None, root=None):
 # Frostbite", GDC 2017, PDF pp. 17-18 and 26-27, for reporting first and last
 # uses from ordered passes, and to Zhenglong Zhou and Huabin Ling, "Render Graph,
 # a Data Oriented Approach", GDC 2023, slides 15-19, for deriving a dependency
-# view from rendering data. The report describes offline logical uses. RHI owns
-# physical allocation and retirement.
+# view from rendering data. Thanks also to Hans-Kristian Arntzen, "Render graphs
+# and Vulkan — a deep dive", Render target aliasing, for tracking reads and
+# writes separately. Unlike Granite, this report stops at offline logical uses;
+# RHI owns physical allocation and retirement.
 # https://www.gdcvault.com/play/1024045/FrameGraph-Extensible-Rendering-Architecture-in
 # https://forum.cocos.org/uploads/short-url/sw7bwJFORQLAJ2p5ezFZQJwOgs3.pdf
-def _dump_resource_uses(plan):
-    first_use = {}
-    last_use = {}
+# https://themaister.net/blog/2017/08/15/render-graphs-and-vulkan-a-deep-dive/#render-target-aliasing
+def describe_resource_uses(plan):
+    """Group declared version reads/writes by resource in serial plan order.
+
+    Operation numbers are zero-based indexes into plan['passes']. Roots are
+    separate observations, including direct roots with no producer pass.
+    """
+    uses = {resource: [] for resource in plan['resources']}
     for ordinal, operation in enumerate(plan['passes']):
-        for resource in _operation_resources(operation):
-            first_use.setdefault(resource, ordinal)
-            last_use[resource] = ordinal
+        for resource, read, write, defined in _operation_resource_uses(operation):
+            record = {'operation': ordinal}
+            if read is not None:
+                record['read'] = read
+            if write is not None:
+                record.update(write=write, defined=defined)
+            uses[resource].append(record)
 
     roots = {}
     for root in plan['roots']:
-        roots.setdefault(root['resource'], []).append(f"{root['kind']} {root['id']} reads @{root['version']}")
+        roots.setdefault(root['resource'], []).append({key: root[key] for key in ('id', 'kind', 'version')})
+    return [{'resource': resource, 'type': description['type'], 'uses': uses[resource],
+             'roots': roots.get(resource, [])} for resource, description in sorted(plan['resources'].items())]
 
+
+def _dump_resource_uses(plan):
     yield "Logical resource uses (serial operation numbers):"
-    for resource, description in sorted(plan['resources'].items()):
-        span = f"{first_use[resource]:03}..{last_use[resource]:03}" if resource in first_use else "no pass use"
-        use = f"    {resource} [{description['type']}] {span}"
-        if resource in roots:
-            use += " | " + ", ".join(roots[resource])
-        yield use
+    for row in describe_resource_uses(plan):
+        uses = row['uses']
+        span = f"{uses[0]['operation']:03}..{uses[-1]['operation']:03}" if uses else "no pass use"
+        summary = f"    {row['resource']} [{row['type']}] {span}"
+        if row['roots']:
+            summary += " | " + ", ".join(f"{root['kind']} {root['id']} reads @{root['version']}" for root in row['roots'])
+        yield summary
+        for use in uses:
+            ordinal = use['operation']
+            access = []
+            if 'read' in use:
+                access.append(f"reads @{use['read']}")
+            if 'write' in use:
+                defined = "" if use['defined'] else " (undefined)"
+                access.append(f"writes @{use['write']}{defined}")
+            yield f"        {ordinal:03} {plan['passes'][ordinal]['id']}: " + ", ".join(access)
 
 
 def dump_plan(plan):
@@ -1428,7 +1458,7 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     """Publish an editable built-in render graph template in a new directory.
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
-    visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
+    visibility-secondary-rays, hybrid-shadows, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
     veach-guibas-mis, line-sampling, ris-projected-solid-angle, salesin-jarosz-lines,
     polygonal-light-sampling, slice-sampling-luminaire, rough-pair-slice, steinberg-plt, steinberg-physical-optics, wave-tracing, restir-gi,
     rao-blackwell-mh, conditional-restir or one-more-vertex-nee. Offscreen
