@@ -159,6 +159,7 @@ if(LUDUS_BUILD_TESTS)
         tests/compute_tests.cpp
         tests/compute_workload_tests.cpp
         tests/raster_storage_tests.cpp
+        tests/indirect_tests.cpp
         tests/hosted_ring_tests.cpp
         tests/hosted_adapter_tests.cpp
         tests/dxil_container_tests.cpp
@@ -443,6 +444,14 @@ foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests
             SOURCE "${ordered_compute_shader}" COMPUTE PrepareDraw)
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_draw RASTER
             SOURCE "${ordered_compute_shader}" VERTEX DrawVertex FRAGMENT DrawFragment)
+        # R12a GPU-written indexed/non-indexed draws with offsets, counts and strides, and indirect dispatch.
+        set(indirect_commands_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/indirect_commands.slang")
+        ludus_compile_shader(TARGET ${conformance_target} NAME indirect_prepare
+            SOURCE "${indirect_commands_shader}" COMPUTE PrepareCommands)
+        ludus_compile_shader(TARGET ${conformance_target} NAME indirect_mark
+            SOURCE "${indirect_commands_shader}" COMPUTE MarkGroups)
+        ludus_compile_shader(TARGET ${conformance_target} NAME indirect_draw RASTER
+            SOURCE "${indirect_commands_shader}" VERTEX CommandVertex FRAGMENT CommandFragment)
         # R12b raster storage: vertex storage reads, fragment buffer/texture writes, compute texture writes.
         set(raster_storage_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/raster_storage.slang")
         ludus_compile_shader(TARGET ${conformance_target} NAME raster_storage_write RASTER RASTER_STORAGE

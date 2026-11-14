@@ -63,6 +63,9 @@ inline bool ComputeAvailable = true;
 /// Replaces the default R12b raster-storage profile when HasRasterStorageOverride is true.
 inline bool HasRasterStorageOverride = false;
 inline RasterStorageCapabilities RasterStorageOverride;
+/// Replaces the default R12a indirect profile when HasIndirectOverride is true.
+inline bool HasIndirectOverride = false;
+inline IndirectCapabilities IndirectOverride;
 /// Most recent texture state requested from the backend barrier hook.
 inline RasterTextureUse LastTextureUse = RasterTextureUse::Undefined;
 inline bool IsSpatialUpscaleAvailable = false;

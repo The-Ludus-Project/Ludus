@@ -769,7 +769,7 @@ struct RasterVertexSlice final
     /// Byte length of the accessible slice; no implicit access to the remaining buffer.
     ludus::foundation::usize Size = 0;
 };
-/// Complete indexed/instanced draw packet. First instance and base vertex are zero.
+/// Complete indexed/instanced draw packet. Direct draws use zero first instance and base vertex.
 /// Validation precedes native calls; previous accepted draws are not rolled back
 /// by a later rejected packet. Mesh-local indices must address VertexCount records.
 struct RasterDraw final
@@ -780,21 +780,31 @@ struct RasterDraw final
     BindingSetHandle Bindings{};
     /// One slice for every pipeline stream, in stream order.
     ludus::foundation::BorrowedView<const RasterVertexSlice> Vertices;
-    /// Index16/Index32 buffer.
+    /// Index16/Index32 buffer. Null only for a non-indexed indirect draw (R12a), which
+    /// requires Indirect, zero IndexOffset/IndexCount and IndirectCapabilities::HasNonIndexedDraws.
     BufferHandle Indices{};
     /// Byte offset into the index buffer, aligned to its element width.
     ludus::foundation::usize IndexOffset = 0;
-    /// Number of indices, positive and a multiple of three.
+    /// Number of indices, positive and a multiple of three; zero for a non-indexed draw.
     ludus::foundation::uint32 IndexCount = 0;
     /// Number of accessible vertex records; each index is checked at buffer creation/draw.
     ludus::foundation::uint32 VertexCount = 0;
     /// Number of instances, positive; instance streams need this many records.
     ludus::foundation::uint32 InstanceCount = 1;
-    /// Optional StorageIndirect buffer. Non-null selects one indirect command;
-    /// counts above are conservative bounds, not CPU copies of GPU arguments.
+    /// Optional StorageIndirect buffer. Non-null selects GPU-written commands: IndexedIndirectArguments
+    /// with Indices, DrawIndirectArguments without. Counts above are conservative bounds that every
+    /// command must respect, not CPU copies of GPU arguments.
     BufferHandle Indirect{};
-    /// Four-byte-aligned command offset, covering IndexedIndirectArguments.
+    /// Offset of the first command, a multiple of IndirectCapabilities::ArgumentAlignment (four bytes).
     ludus::foundation::usize IndirectOffset = 0;
+    /// Number of consecutive indirect commands issued in order (R12a), 1..IndirectCapabilities::
+    /// MaxCommandsPerDraw. Commands beyond the first are ordered native single-command calls, not
+    /// native multi-draw; a GPU-provided count is not read. Must be one without Indirect.
+    ludus::foundation::uint32 IndirectCount = 1;
+    /// Bytes between consecutive commands; zero selects the tightly packed argument size. A nonzero
+    /// stride is a multiple of ArgumentAlignment and at least the argument size. Graph uses declare
+    /// the whole span: (IndirectCount - 1) * stride + argument size bytes from IndirectOffset.
+    ludus::foundation::usize IndirectStride = 0;
     /// Per-binding additional buffer offsets; copied for batches/graphs and submission.
     RasterBindingOffsets BindingOffsets{};
     /// Exhaustive reachable index declarations for every NonUniform array element.

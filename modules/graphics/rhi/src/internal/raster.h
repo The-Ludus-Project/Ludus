@@ -21,6 +21,11 @@ inline constexpr foundation::usize LIFETIME_TRANSFERS = 4;
 inline constexpr foundation::usize LIFETIME_TRANSFER_BYTES = foundation::usize{256} * 1024;
 /// Buffer slice offsets and sizes are whole 32-bit words.
 inline constexpr foundation::usize BUFFER_ALIGNMENT_BYTES = 4;
+/// R12a indirect command offsets/strides: the four-byte alignment Vulkan, Metal, WebGPU and
+/// Direct3D 12 all require for argument buffers.
+inline constexpr foundation::usize INDIRECT_ARGUMENT_ALIGNMENT_BYTES = 4;
+/// R12a ordered single-command calls per indirect RasterDraw; bounds per-packet native work.
+inline constexpr foundation::uint32 MAX_INDIRECT_COMMANDS_PER_DRAW = 64;
 // Shared by callback requests and submission ordinals; zero stays exhausted.
 template <typename T>
 struct RasterSequence final
@@ -204,6 +209,9 @@ struct ComputePacket final
     RasterBindingOffsets BindingOffsets{};
     foundation::uint32 DynamicOffsets[RASTER_BINDINGS]{};
     foundation::uint32 DynamicOffsetCount = 0;
+    // R12a: StorageIndirect slot holding DispatchIndirectArguments, or RASTER_INVALID.
+    foundation::usize Indirect = RASTER_INVALID;
+    foundation::usize IndirectOffset = 0;
 };
 struct RasterPacket final
 {
@@ -212,6 +220,7 @@ struct RasterPacket final
     foundation::usize Vertices[2]{};
     foundation::usize Offsets[2]{};
     foundation::usize Sizes[2]{};
+    // RASTER_INVALID for an R12a non-indexed indirect packet.
     foundation::usize Indices = 0;
     foundation::usize IndexOffset = 0;
     foundation::uint32 IndexCount = 0;
@@ -219,10 +228,43 @@ struct RasterPacket final
     bool Index32 = false;
     foundation::usize Indirect = RASTER_INVALID;
     foundation::usize IndirectOffset = 0;
+    // Consecutive commands and their resolved nonzero stride; one command without Indirect.
+    foundation::uint32 IndirectCount = 1;
+    foundation::usize IndirectStride = 0;
     RasterBindingOffsets BindingOffsets{};
     foundation::uint32 DynamicOffsets[RASTER_BINDINGS]{};
     foundation::uint32 DynamicOffsetCount = 0;
 };
+// R12a command layout: consecutive commands, the bytes between them and one command's size.
+// Grouped so call sites cannot swap the two byte quantities.
+struct IndirectCommandLayout final
+{
+    foundation::uint32 Count = 0;
+    foundation::usize Stride = 0;
+    foundation::usize ArgumentBytes = 0;
+};
+// Bytes from the first command's offset through the last command's arguments,
+// (Count - 1) * Stride + ArgumentBytes. False on overflow or a zero count.
+[[nodiscard]] inline bool ComputeIndirectSpan(const IndirectCommandLayout& layout, foundation::usize& outSpan) noexcept
+{
+    if (layout.Count == 0)
+    {
+        return false;
+    }
+    const foundation::usize gaps = layout.Count - 1;
+    const foundation::usize maximum = ~foundation::usize{0};
+    if (gaps != 0 && layout.Stride > (maximum - layout.ArgumentBytes) / gaps)
+    {
+        return false;
+    }
+    outSpan = gaps * layout.Stride + layout.ArgumentBytes;
+    return true;
+}
+// Argument size of one command in a validated indirect raster packet.
+[[nodiscard]] inline foundation::usize GetIndirectArgumentBytes(const RasterPacket& packet) noexcept
+{
+    return packet.Indices == RASTER_INVALID ? sizeof(DrawIndirectArguments) : sizeof(IndexedIndirectArguments);
+}
 struct RasterAttachmentInfo final
 {
     foundation::usize View = RASTER_INVALID, Texture = RASTER_INVALID;
@@ -352,6 +394,8 @@ ludus::foundation::uint32 RasterVertexStrideLimit() noexcept;
 FormatCapabilities FormatLimits(RasterFormat) noexcept;
 ComputeCapabilities ComputeLimits() noexcept;
 RasterStorageCapabilities RasterStorageLimits() noexcept;
+// R12a indirect profile; zero when indirect rendering is unavailable.
+IndirectCapabilities IndirectLimits() noexcept;
 RasterStatus
 ComputeCreatePipeline(foundation::usize, const internal::ComputePipelineInfo&, foundation::uint32) noexcept;
 RasterStatus ComputeEncode(const internal::ComputePacket&) noexcept;

@@ -25,6 +25,7 @@ void ResetBufferStates() noexcept;
 void InitializeCompute() noexcept;
 void ReleaseCompute() noexcept;
 [[nodiscard]] ID3D12CommandSignature* GetIndexedIndirectSignature() noexcept;
+[[nodiscard]] ID3D12CommandSignature* GetDrawIndirectSignature() noexcept;
 [[nodiscard]] RasterStatus GrowComputePipelines(usize count) noexcept;
 void DestroyComputePipeline(usize slot) noexcept;
 [[nodiscard]] Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept;

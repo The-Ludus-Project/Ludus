@@ -1280,26 +1280,38 @@ CheckDeclaredPacket(const GraphRecord& graph, const GraphPassRecord& pass, const
             return RasterStatus::InvalidDescription;
         }
     }
-    const auto indexSize = static_cast<usize>(packet.IndexCount) * (packet.Index32 ? 4 : 2);
-    if (FindUse(graph,
-                pass,
-                RasterKind::Buffer,
-                packet.Indices,
-                GraphAccessMode::Index,
-                packet.IndexOffset,
-                indexSize) == nullptr)
+    const usize indexSize =
+        static_cast<usize>(packet.IndexCount) * (packet.Index32 == true ? sizeof(uint32) : sizeof(uint16));
+    if (packet.Indices != RASTER_INVALID && FindUse(graph,
+                                                    pass,
+                                                    RasterKind::Buffer,
+                                                    packet.Indices,
+                                                    GraphAccessMode::Index,
+                                                    packet.IndexOffset,
+                                                    indexSize) == nullptr)
     {
         return RasterStatus::InvalidDescription;
     }
-    if (packet.Indirect != RASTER_INVALID && FindUse(graph,
-                                                     pass,
-                                                     RasterKind::Buffer,
-                                                     packet.Indirect,
-                                                     GraphAccessMode::Indirect,
-                                                     packet.IndirectOffset,
-                                                     sizeof(IndexedIndirectArguments)) == nullptr)
+    if (packet.Indirect != RASTER_INVALID)
     {
-        return RasterStatus::InvalidDescription;
+        // R12a: one declaration covers every command of the packet, including stride gaps.
+        usize span = 0;
+        const IndirectCommandLayout commandLayout
+        {
+            .Count = packet.IndirectCount,
+            .Stride = packet.IndirectStride,
+            .ArgumentBytes = GetIndirectArgumentBytes(packet),
+        };
+        if (ComputeIndirectSpan(commandLayout, span) == false || FindUse(graph,
+                                                                         pass,
+                                                                         RasterKind::Buffer,
+                                                                         packet.Indirect,
+                                                                         GraphAccessMode::Indirect,
+                                                                         packet.IndirectOffset,
+                                                                         span) == nullptr)
+        {
+            return RasterStatus::InvalidDescription;
+        }
     }
     const auto& set = At(RasterKind::Set, packet.Set).Set;
     const RasterLayout& layout = set.Description;
@@ -1508,7 +1520,8 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                        : use.Access == GraphAccessMode::StorageRead ? use.Visibility == RasterVisibility::Compute
                                                                     : use.Visibility != RasterVisibility::Fragment))) ||
                     (pass.IsCompute && use.Access != GraphAccessMode::Uniform &&
-                     use.Access != GraphAccessMode::StorageRead && use.Access != GraphAccessMode::StorageReadWrite) ||
+                     use.Access != GraphAccessMode::StorageRead && use.Access != GraphAccessMode::StorageReadWrite &&
+                     (use.Access != GraphAccessMode::Indirect || pass.Dispatch.Indirect == RASTER_INVALID)) ||
                     (use.Access == GraphAccessMode::Sampled || use.Access == GraphAccessMode::ColorWrite ||
                      use.Access == GraphAccessMode::ColorReadWrite ||
                      use.Access == GraphAccessMode::StorageTextureWrite))
@@ -1808,6 +1821,17 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                 {
                     return RasterStatus::InvalidDescription;
                 }
+            }
+            // R12a: the dispatch reads its GPU-written group counts through a declared Indirect use.
+            if (pass.Dispatch.Indirect != RASTER_INVALID && FindUse(graph,
+                                                                    pass,
+                                                                    RasterKind::Buffer,
+                                                                    pass.Dispatch.Indirect,
+                                                                    GraphAccessMode::Indirect,
+                                                                    pass.Dispatch.IndirectOffset,
+                                                                    sizeof(DispatchIndirectArguments)) == nullptr)
+            {
+                return RasterStatus::InvalidDescription;
             }
         }
         for (usize i = 0; i < pass.DrawCount; ++i)

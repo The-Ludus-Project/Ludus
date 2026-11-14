@@ -954,6 +954,28 @@ ComputeCapabilities ComputeLimits() noexcept
     }
     return result;
 }
+// Thanks to Khronos Group, Vulkan Specification, "Drawing Commands" and "Dispatching Commands"
+// (vkCmdDrawIndirect, vkCmdDrawIndexedIndirect, vkCmdDispatchIndirect) and "Features"
+// (drawIndirectFirstInstance): offsets are four-byte aligned, firstIndex/vertexOffset/firstVertex
+// are core, and a nonzero firstInstance needs the feature. Imported devices do not declare it.
+IndirectCapabilities IndirectLimits() noexcept
+{
+    if (ComputeLimits().MaxStorageRange == 0)
+    {
+        return {};
+    }
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(gPhysical, &features);
+    return
+    {
+        .ArgumentAlignment = internal::INDIRECT_ARGUMENT_ALIGNMENT_BYTES,
+        .MaxCommandsPerDraw = internal::MAX_INDIRECT_COMMANDS_PER_DRAW,
+        .HasNonIndexedDraws = true,
+        .HasDrawOffsets = true,
+        .HasFirstInstance = features.drawIndirectFirstInstance == VK_TRUE && internal::NativeDeviceRequest() == nullptr,
+        .HasIndirectDispatch = true,
+    };
+}
 // Thanks to Khronos Group, Vulkan Specification, "Features" (fragmentStoresAndAtomics)
 // and "Required Format Support" (storage images): read-only vertex storage needs no
 // feature because Slang decorates it NonWritable; fragment writes and storage images do.
@@ -1171,7 +1193,14 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
                             packet.DynamicOffsetCount,
                             packet.DynamicOffsets);
     BeginPhysicalPassTiming(GpuPassKind::Compute);
-    vkCmdDispatch(command, packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    if (packet.Indirect != internal::RASTER_INVALID)
+    {
+        vkCmdDispatchIndirect(command, gRasterBuffers[packet.Indirect].Object, packet.IndirectOffset);
+    }
+    else
+    {
+        vkCmdDispatch(command, packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    }
     EndPhysicalPassTiming();
     return RasterStatus::Ready;
 }
@@ -2196,17 +2225,37 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
         const VkDeviceSize offset = packet.Offsets[i];
         vkCmdBindVertexBuffers(command, static_cast<uint32>(i), 1, &gRasterBuffers[packet.Vertices[i]].Object, &offset);
     }
-    vkCmdBindIndexBuffer(command,
-                         gRasterBuffers[packet.Indices].Object,
-                         packet.IndexOffset,
-                         packet.Index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+    const bool isIndexed = packet.Indices != internal::RASTER_INVALID;
+    if (isIndexed == true)
+    {
+        vkCmdBindIndexBuffer(command,
+                             gRasterBuffers[packet.Indices].Object,
+                             packet.IndexOffset,
+                             packet.Index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+    }
     if (packet.Indirect != internal::RASTER_INVALID)
     {
-        vkCmdDrawIndexedIndirect(command,
-                                 gRasterBuffers[packet.Indirect].Object,
-                                 packet.IndirectOffset,
-                                 1,
-                                 sizeof(IndexedIndirectArguments));
+        // R12a: ordered single commands (drawCount 1 needs no multiDrawIndirect feature).
+        for (uint32 indirectCommand = 0; indirectCommand < packet.IndirectCount; ++indirectCommand)
+        {
+            const VkDeviceSize offset = packet.IndirectOffset + usize{indirectCommand} * packet.IndirectStride;
+            if (isIndexed == true)
+            {
+                vkCmdDrawIndexedIndirect(command,
+                                         gRasterBuffers[packet.Indirect].Object,
+                                         offset,
+                                         1,
+                                         sizeof(IndexedIndirectArguments));
+            }
+            else
+            {
+                vkCmdDrawIndirect(command,
+                                  gRasterBuffers[packet.Indirect].Object,
+                                  offset,
+                                  1,
+                                  sizeof(DrawIndirectArguments));
+            }
+        }
     }
     else
     {

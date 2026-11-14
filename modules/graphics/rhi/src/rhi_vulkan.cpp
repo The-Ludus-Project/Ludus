@@ -1057,6 +1057,8 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         vkGetPhysicalDeviceFeatures(gPhysical, &supported);
         const VkPhysicalDeviceFeatures enabled
         {
+            // R12a GPU-written nonzero firstInstance; reported only when enabled here.
+            .drawIndirectFirstInstance = supported.drawIndirectFirstInstance,
             .fillModeNonSolid = supported.fillModeNonSolid,
             .textureCompressionBC = supported.textureCompressionBC,
             // R12b fragment storage writes; reported only when enabled here.

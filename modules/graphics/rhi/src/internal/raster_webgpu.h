@@ -291,6 +291,26 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
         .MaxComputeStorageTextures = textures,
     };
 }
+// Thanks to W3C GPU for the Web Working Group, "WebGPU", drawIndirect, drawIndexedIndirect,
+// dispatchWorkgroupsIndirect and the "indirect-first-instance" feature: argument offsets are
+// four-byte aligned, firstIndex/baseVertex/firstVertex are core and a nonzero firstInstance
+// without the feature turns the command into a no-op. https://www.w3.org/TR/webgpu/#indirect-first-instance
+IndirectCapabilities IndirectLimits() noexcept
+{
+    if (ComputeLimits().MaxStorageRange == 0)
+    {
+        return {};
+    }
+    return
+    {
+        .ArgumentAlignment = internal::INDIRECT_ARGUMENT_ALIGNMENT_BYTES,
+        .MaxCommandsPerDraw = internal::MAX_INDIRECT_COMMANDS_PER_DRAW,
+        .HasNonIndexedDraws = true,
+        .HasDrawOffsets = true,
+        .HasFirstInstance = wgpuDeviceHasFeature(gDevice, WGPUFeatureName_IndirectFirstInstance) == true,
+        .HasIndirectDispatch = true,
+    };
+}
 ComputeCapabilities ComputeLimits() noexcept
 {
     WGPULimits limits = WGPU_LIMITS_INIT;
@@ -350,7 +370,14 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
                                        gRasterSets[packet.Set],
                                        packet.DynamicOffsetCount,
                                        packet.DynamicOffsets);
-    wgpuComputePassEncoderDispatchWorkgroups(pass, packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    if (packet.Indirect != internal::RASTER_INVALID)
+    {
+        wgpuComputePassEncoderDispatchWorkgroupsIndirect(pass, gRasterBuffers[packet.Indirect], packet.IndirectOffset);
+    }
+    else
+    {
+        wgpuComputePassEncoderDispatchWorkgroups(pass, packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    }
     wgpuComputePassEncoderEnd(pass);
     wgpuComputePassEncoderRelease(pass);
     return RasterStatus::Ready;
@@ -900,14 +927,30 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
                                              packet.Offsets[i],
                                              WGPU_WHOLE_SIZE);
     }
-    wgpuRenderPassEncoderSetIndexBuffer(gPass,
-                                        gRasterBuffers[packet.Indices],
-                                        packet.Index32 ? WGPUIndexFormat_Uint32 : WGPUIndexFormat_Uint16,
-                                        packet.IndexOffset,
-                                        WGPU_WHOLE_SIZE);
+    const bool isIndexed = packet.Indices != internal::RASTER_INVALID;
+    if (isIndexed == true)
+    {
+        wgpuRenderPassEncoderSetIndexBuffer(gPass,
+                                            gRasterBuffers[packet.Indices],
+                                            packet.Index32 ? WGPUIndexFormat_Uint32 : WGPUIndexFormat_Uint16,
+                                            packet.IndexOffset,
+                                            WGPU_WHOLE_SIZE);
+    }
     if (packet.Indirect != internal::RASTER_INVALID)
     {
-        wgpuRenderPassEncoderDrawIndexedIndirect(gPass, gRasterBuffers[packet.Indirect], packet.IndirectOffset);
+        // R12a: ordered single commands; native multi-draw is outside this profile.
+        for (uint32 command = 0; command < packet.IndirectCount; ++command)
+        {
+            const uint64 offset = packet.IndirectOffset + usize{command} * packet.IndirectStride;
+            if (isIndexed == true)
+            {
+                wgpuRenderPassEncoderDrawIndexedIndirect(gPass, gRasterBuffers[packet.Indirect], offset);
+            }
+            else
+            {
+                wgpuRenderPassEncoderDrawIndirect(gPass, gRasterBuffers[packet.Indirect], offset);
+            }
+        }
     }
     else
     {
