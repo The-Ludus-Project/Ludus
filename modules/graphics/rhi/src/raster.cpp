@@ -2159,8 +2159,17 @@ ValidatePipeline(DeviceHandle device, const RasterPipelineDescription& descripti
     {
         return RasterStatus::InvalidDescription;
     }
+    // Thanks to Ben Golus, “Anti-aliased Alpha Test: The Esoteric Alpha To Coverage”, “Alpha to Coverage”,
+    // for showing how cutout silhouettes use MSAA coverage while retaining depth tests.
+    // https://bgolus.medium.com/anti-aliased-alpha-test-the-esoteric-alpha-to-coverage-8b177335ae4f
+    if (description.ShouldUseAlphaToCoverage == true &&
+        (description.SampleCount == 1 || description.ShouldWriteColor == false || description.Blend == true))
+    {
+        return RasterStatus::InvalidDescription;
+    }
     info.ColorCount = description.ColorFormats.GetSize();
     info.SampleCount = description.SampleCount;
+    info.ShouldUseAlphaToCoverage = description.ShouldUseAlphaToCoverage;
     info.Stencil = description.Stencil;
     info.StencilFront = description.StencilFront;
     info.StencilBack = description.StencilBack;
@@ -2184,8 +2193,11 @@ ValidatePipeline(DeviceHandle device, const RasterPipelineDescription& descripti
             return RasterStatus::InvalidDescription;
         }
         const auto caps = internal::CurrentDeviceProfile().Formats[static_cast<usize>(format)];
+        const bool shouldRequireBlendableFormat =
+            info.Blend == true || (i == 0 && info.ShouldUseAlphaToCoverage == true);
         if (caps.Uses.ColorAttachment == false || (caps.SampleCounts & info.SampleCount) == 0 ||
-            (info.Blend && caps.Uses.Blendable == false) || (info.Stencil && caps.StencilAttachment == false))
+            (shouldRequireBlendableFormat == true && caps.Uses.Blendable == false) ||
+            (info.Stencil == true && caps.StencilAttachment == false))
         {
             return RasterStatus::Unsupported;
         }

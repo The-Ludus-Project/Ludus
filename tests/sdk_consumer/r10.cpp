@@ -1,3 +1,4 @@
+#include "r10coverage.h"
 #include "r10depth.h"
 #include "r10mask.h"
 #include "r10sample.h"
@@ -19,6 +20,13 @@ namespace
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
 constexpr logging::LogCategory LOG_R10{"R10-Fixture"};
+constexpr usize COVERAGE_FRAGMENT_INDEX = 5;
+constexpr usize COVERAGE_PIPELINE_INDEX = 7;
+constexpr usize COVERAGE_CONTROL_PIPELINE_INDEX = COVERAGE_PIPELINE_INDEX + 1;
+constexpr uint32 COVERAGE_FIRST_CASE = 16;
+constexpr uint32 COVERAGE_CONTROL_FIRST_CASE = COVERAGE_FIRST_CASE + 2;
+constexpr uint32 DETACHED_OWNER_CASE = COVERAGE_CONTROL_FIRST_CASE + 2;
+constexpr uint32 CASE_COUNT = DETACHED_OWNER_CASE + 1;
 rhi::DeviceHandle gDevice;
 rhi::SurfaceHandle gSurface;
 rhi::DeviceProfile gProfile;
@@ -29,8 +37,9 @@ rhi::BindingLayoutHandle gLayouts[4];
 rhi::BindingSetHandle gEmpty;
 rhi::TextureViewHandle gStencilView;
 rhi::BindingSetHandle gSets[8];
-rhi::RasterShaderHandle gVertex, gFragments[5];
-rhi::RasterPipelineHandle gPipelines[7];
+rhi::RasterShaderHandle gVertex;
+rhi::RasterShaderHandle gFragments[COVERAGE_FRAGMENT_INDEX + 1];
+rhi::RasterPipelineHandle gPipelines[COVERAGE_CONTROL_PIPELINE_INDEX + 1];
 rhi::SamplerHandle gSampler;
 rhi::ReadbackTicket gRead;
 rhi::OrderedGraph gGraph;
@@ -202,8 +211,9 @@ bool ViewsAndShaders() noexcept
                                                    ludus::shaders::r10mask::Fragment(),
                                                    ludus::shaders::r10sample::Fragment(),
                                                    ludus::shaders::r10depth::Fragment(),
-                                                   ludus::shaders::r10stencil::Fragment()};
-    for (usize i = 0; i < 5; ++i)
+                                                   ludus::shaders::r10stencil::Fragment(),
+                                                   ludus::shaders::r10coverage::Fragment()};
+    for (usize i = 0; i <= COVERAGE_FRAGMENT_INDEX; ++i)
     {
         if ((i == 3 && gDepth == false) || (i == 4 && gStencilSample == false))
         {
@@ -325,17 +335,75 @@ bool PipelinesAndSets() noexcept
             return false;
         }
     }
+    rhi::RasterPipelineDescription coveragePipeline
+    {
+        .Vertex = gVertex,
+        .Fragment = gFragments[COVERAGE_FRAGMENT_INDEX],
+        .Layout = gLayouts[0],
+        .Streams = {&stream, 1},
+        .Attributes = attributes,
+        .Depth = true,
+        .Target = rhi::RasterTarget::Rgba8Unorm,
+        .ColorFormats = colors,
+        .SampleCount = gMsaa == true ? 4U : 1U,
+        .Stencil = true,
+        .ShouldUseAlphaToCoverage = gMsaa,
+    };
+    if (Accepted(rhi::CreateRasterPipeline(gDevice, coveragePipeline, gPipelines[COVERAGE_PIPELINE_INDEX])) == false)
+    {
+        return false;
+    }
+    coveragePipeline.ShouldUseAlphaToCoverage = false;
+    if (Accepted(rhi::CreateRasterPipeline(gDevice, coveragePipeline, gPipelines[COVERAGE_CONTROL_PIPELINE_INDEX])) ==
+        false)
+    {
+        return false;
+    }
     // Preserve the empty binding snapshot in a distinct global slot.
     gEmpty = empty;
     return true;
 }
-bool DrawCase(bool graph) noexcept;
+bool IsCoverageCase() noexcept
+{
+    return gCase >= COVERAGE_FIRST_CASE && gCase < DETACHED_OWNER_CASE;
+}
+bool VerifyCoveragePixel(usize x, const uint8* pixel) noexcept
+{
+    constexpr usize UNCOVERED_COLUMNS = 2;
+    constexpr usize FULL_COVERAGE_START = 6;
+    constexpr uint8 FULL_RED = 255;
+    const uint8 red = pixel[0];
+    if (pixel[1] != 0 || pixel[2] != 0)
+    {
+        return false;
+    }
+    if (gMsaa == false || gCase >= COVERAGE_CONTROL_FIRST_CASE || x >= FULL_COVERAGE_START)
+    {
+        return red == FULL_RED;
+    }
+    // Endpoint coverage is guaranteed. Intermediate masks are implementation-dependent.
+    return x < UNCOVERED_COLUMNS ? red == 0 : red > 0 && red < FULL_RED;
+}
 bool Verify() noexcept
 {
     uint8 pixels[256]{};
     if (rhi::CopyReadback(gDevice, gRead, pixels, sizeof(pixels)) != rhi::RasterStatus::Ready)
     {
         return false;
+    }
+    if (IsCoverageCase() == true)
+    {
+        constexpr usize WIDTH = 8;
+        constexpr usize CHANNELS = 4;
+        for (usize i = 0; i < sizeof(pixels); i += CHANNELS)
+        {
+            if (VerifyCoveragePixel((i / CHANNELS) % WIDTH, &pixels[i]) == false)
+            {
+                LUDUS_LOG_ERROR(LOG_R10, "R10 alpha-to-coverage byte {} has red {}", i, pixels[i]);
+                return false;
+            }
+        }
+        return true;
     }
     for (usize i = 0; i < sizeof(pixels); ++i)
     {
@@ -387,16 +455,17 @@ bool DrawCase(bool graph) noexcept
 {
     const bool cube = gCase == 14 || gCase == 15;
     const bool partial = gCase == 6 || gCase == 7 || cube;
-    const bool msaa = (gCase == 4 || gCase == 5) && gMsaa;
+    const bool isCoverageCase = IsCoverageCase();
+    const bool isMultisampled = (gCase == 4 || gCase == 5 || isCoverageCase == true) && gMsaa == true;
     const bool masked = gCase == 12 || gCase == 13;
     rhi::RasterColorAttachment colors[2]{
     {
-        .View = gAttachments[msaa ? 2 : 0],
+        .View = gAttachments[isMultisampled ? 2 : 0],
     },
                                          {
-                                             .View = gAttachments[msaa ? 3 : 1],
+                                             .View = gAttachments[isMultisampled ? 3 : 1],
                                          }};
-    if (msaa)
+    if (isMultisampled)
     {
         colors[0].Resolve = gAttachments[4];
         colors[1].Resolve = gAttachments[5];
@@ -421,21 +490,18 @@ bool DrawCase(bool graph) noexcept
         pass.StencilReadOnly = true;
     }
     const rhi::RasterVertexSlice slice{gVertices, 0, 64};
-    const rhi::RasterDraw write{gPipelines[masked ? (gCase == 12 ? 2 : 3)
-                                           : msaa ? 1
-                                                  : 0],
-                                gEmpty,
-                                {&slice, 1},
-                                gIndices,
-                                0,
-                                6,
-                                4,
-                                1};
+    const usize coveragePipeline =
+        gCase < COVERAGE_CONTROL_FIRST_CASE ? COVERAGE_PIPELINE_INDEX : COVERAGE_CONTROL_PIPELINE_INDEX;
+    const usize writePipeline = isCoverageCase == true   ? coveragePipeline
+                                : masked == true         ? (gCase == 12 ? 2 : 3)
+                                : isMultisampled == true ? 1
+                                                         : 0;
+    const rhi::RasterDraw write{gPipelines[writePipeline], gEmpty, {&slice, 1}, gIndices, 0, 6, 4, 1};
     const usize set = partial                                          ? (cube ? 7 : 4)
                       : (gCase == 8 || gCase == 9) && gDepth           ? 5
                       : (gCase == 10 || gCase == 11) && gStencilSample ? 6
-                      : gCase == 2 || gCase == 3 || gCase == 5         ? (msaa ? 3 : 1)
-                                                                       : (msaa ? 2 : 0);
+                      : gCase == 2 || gCase == 3 || gCase == 5         ? (isMultisampled ? 3 : 1)
+                                                                       : (isMultisampled ? 2 : 0);
     const rhi::RasterDraw sample{gPipelines[set == 5   ? 5
                                             : set == 6 ? 6
                                                        : 4],
@@ -483,8 +549,8 @@ bool DrawCase(bool graph) noexcept
     rhi::GraphUse uses[6]{{imports[0], rhi::GraphAccessMode::Vertex, 0, 64},
                           {imports[1], rhi::GraphAccessMode::Index, 0, 12}};
     usize count = 2;
-    const usize targets[4]{partial ? (cube ? 8U : 6U) : msaa ? 2U : 0U, msaa ? 3U : 1U, 4U, 5U};
-    const usize targetCount = partial ? 1 : msaa ? 4 : 2;
+    const usize targets[4]{partial ? (cube ? 8U : 6U) : isMultisampled ? 2U : 0U, isMultisampled ? 3U : 1U, 4U, 5U};
+    const usize targetCount = partial ? 1 : isMultisampled ? 4 : 2;
     for (usize t = 0; t < targetCount; ++t)
     {
         const auto i = targets[t];
@@ -548,7 +614,7 @@ bool DrawCase(bool graph) noexcept
                         report.ErrorResource);
         return false;
     }
-    if (gCase == 16)
+    if (gCase == DETACHED_OWNER_CASE)
     {
         for (usize i = 0; i < 2; ++i)
         {
@@ -633,7 +699,7 @@ void Tick() noexcept
                 return;
             }
         }
-        for (usize i = 0; i < 5; ++i)
+        for (usize i = 0; i <= COVERAGE_FRAGMENT_INDEX; ++i)
         {
             if ((i != 3 || gDepth) && (i != 4 || gStencilSample) && Ready(gFragments[i]) == false)
             {
@@ -672,7 +738,8 @@ void Tick() noexcept
                 return;
             }
         }
-        if (Ready(gSets[7]) == false)
+        if (Ready(gSets[7]) == false || Ready(gPipelines[COVERAGE_PIPELINE_INDEX]) == false ||
+            Ready(gPipelines[COVERAGE_CONTROL_PIPELINE_INDEX]) == false)
         {
             return;
         }
@@ -685,7 +752,7 @@ void Tick() noexcept
     if (gStage == 4)
     {
         if (rhi::SetFrameTarget(gDevice, gSurface, {96, 64, 0, 0, 0, 1}) != rhi::DeviceStatus::Ready ||
-            DrawCase((gCase & 1) != 0 || gCase == 16) == false ||
+            DrawCase((gCase & 1) != 0 || gCase == DETACHED_OWNER_CASE) == false ||
             rhi::RequestTextureReadback(gDevice, gTextures[7], {0, 0, 0, 8, 8}, 32, gRead) !=
                 rhi::RasterStatus::Pending)
         {
@@ -704,7 +771,7 @@ void Tick() noexcept
         ++gFrames;
         ++gCase;
         Report(gStage, gFrames, 0, 0);
-        if (gCase == 17)
+        if (gCase == CASE_COUNT)
         {
             Stop(false);
             return;

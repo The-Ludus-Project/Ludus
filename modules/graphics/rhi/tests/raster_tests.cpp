@@ -1076,6 +1076,12 @@ TEST_CASE("Pipeline requests distinguish explicit attachment and stencil state",
     {
         changed.SampleCount = 4;
     }
+    SECTION("alpha-to-coverage")
+    {
+        original.SampleCount = 4;
+        changed.SampleCount = original.SampleCount;
+        changed.ShouldUseAlphaToCoverage = true;
+    }
     SECTION("stencil enabled")
     {
         changed.Stencil = true;
@@ -1140,6 +1146,41 @@ TEST_CASE("Pipeline requests distinguish explicit attachment and stencil state",
     REQUIRE(Release(session.Device, duplicate) == RasterStatus::Ready);
     REQUIRE(Release(session.Device, second) == RasterStatus::Ready);
     REQUIRE(Release(session.Device, first) == RasterStatus::Ready);
+}
+TEST_CASE("Alpha-to-coverage rejects incompatible pipelines before native creation", "[rhi][raster][r10]")
+{
+    Session session;
+    Scene scene(session.Device);
+    const RasterVertexStream stream{12, false};
+    const RasterVertexAttribute attribute{0, 0, 0, RasterVertexFormat::Float3};
+    const RasterFormat format = RasterFormat::Rgba8Unorm;
+    RasterPipelineDescription description{scene.Vertex, scene.Fragment, scene.Layout, {&stream, 1}, {&attribute, 1}};
+    description.ColorFormats = {&format, 1};
+    description.SampleCount = 4;
+    description.ShouldUseAlphaToCoverage = true;
+    SECTION("Single sample")
+    {
+        description.SampleCount = 1;
+    }
+    SECTION("Legacy target")
+    {
+        description.ColorFormats = {};
+    }
+    SECTION("Disabled color writes")
+    {
+        description.ShouldWriteColor = false;
+    }
+    SECTION("Blending")
+    {
+        description.Blend = true;
+    }
+    constexpr usize PIPELINE_KIND = static_cast<usize>(internal::RasterKind::Pipeline);
+    const usize created = reference::Creates[PIPELINE_KIND];
+    RasterPipelineHandle pipeline;
+    CHECK(CreateRasterPipeline(session.Device, description, pipeline) == RasterStatus::InvalidDescription);
+    PipelineRequest request;
+    CHECK(RequestPipeline(session.Device, description, request) == RasterStatus::InvalidDescription);
+    CHECK(reference::Creates[PIPELINE_KIND] == created);
 }
 TEST_CASE("Cancelled pipeline callbacks retain detached shader and layout dependencies", "[rhi][lifetime]")
 {

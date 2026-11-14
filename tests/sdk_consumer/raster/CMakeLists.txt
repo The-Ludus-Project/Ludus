@@ -54,6 +54,9 @@ target_compile_options(ludus_sdk_r10_consumer PRIVATE -Wall -Wextra -Wpedantic -
 foreach(entry write mask sample depth stencil)
     ludus_compile_shader(TARGET ludus_sdk_r10_consumer NAME r10${entry} RASTER SOURCE ../shaders/r10.slang VERTEX vertexMain FRAGMENT ${entry}Main)
 endforeach()
+ludus_compile_shader(TARGET ludus_sdk_r10_consumer NAME r10coverage RASTER
+    SOURCE ../shaders/r10_coverage.slang VERTEX vertexMain FRAGMENT CoverageMain
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../shaders/r10.slang")
 if(EMSCRIPTEN)
     target_link_options(ludus_sdk_r10_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
     set_target_properties(ludus_sdk_r10_consumer PROPERTIES OUTPUT_NAME r10 SUFFIX ".js")

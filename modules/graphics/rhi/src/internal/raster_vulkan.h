@@ -1896,6 +1896,7 @@ VkResult VulkanRasterPreparation::Build() noexcept
     VkPipelineMultisampleStateCreateInfo samples{ .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
     samples.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     samples.rasterizationSamples = static_cast<VkSampleCountFlagBits>(info.SampleCount);
+    samples.alphaToCoverageEnable = info.ShouldUseAlphaToCoverage == true ? VK_TRUE : VK_FALSE;
     VkPipelineDepthStencilStateCreateInfo depth{};
     depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depth.depthTestEnable = info.Depth;
