@@ -110,3 +110,37 @@ shader, RHI, lifecycle, SDK consumer, header, sanitizer, format, and tidy gates
 for any engine change. Gameplay tests belong in Sandbox. Record actual rendering,
 device, packaging, and touch evidence without converting compilation or historical
 chat progress into acceptance.
+
+## Filter cosmetic ripples by pixel footprint
+
+Thanks to **Huw Bowles, Daniel Zimmermann, Chino Noris and Beibei Wang**,
+*Crest: Novel Ocean Rendering Techniques in an Open Source Framework*,
+SIGGRAPH 2017, slides 29–30 and 44, for tying wave frequencies and normal detail
+to sampling resolution. Drift's top-down fullscreen shader reconstructs the
+solver's slope and adds three cosmetic sinusoidal terms. The shader already
+computes metres per pixel from the view height and acquired target height. At
+a 100 m view height, 360 framebuffer rows and the minimum 3 m wave-scale setting,
+the finest cosmetic term has about one pixel per wavelength. Its vertical phase
+step exceeds the Nyquist limit, so the shader can sample the term as a false
+lower frequency. The calculation establishes a sampling risk. The visibility
+of that artifact still depends on the scene and display.
+[SIGGRAPH course slides](https://www.advances.realtimerendering.com/s2017/Ocean_SIGGRAPH17_Final.pptx) ·
+[Sandbox shader at the reviewed revision](https://github.com/Alegruz/Ludus-Sandbox/blob/09f3d0b35781ab37f5eed247b176e88d4d73132b/shaders/ocean.slang#L265-L288)
+
+For a sinusoid over an unwarped square pixel, the exact box average multiplies
+its amplitude by `sinc(phaseStepX / 2) * sinc(phaseStepY / 2)`, with `sinc(x)`
+defined as `sin(x)/x` and continuous at zero. Averaging 32 × 32 equal-area
+subpixel samples agreed with this formula to within 0.0002 RMS in normalized
+mode amplitude over the sampled phases at 360, 720 and 1080 rows with the 3 m
+setting. Box averaging alone leaves residual energy above Nyquist. A prototype
+can compare it with a smooth frequency cutoff before treating either as an
+image-quality improvement. The measured scalar check excludes advection and
+the final nonlinear shading.
+
+Validate an app-owned filter against a supersampled image of the cosmetic
+terms. Use a fixed-time size sweep and an animated run with the minimum wave
+scale on the packaged WebGPU and WebGL 2 app. Keep the unfiltered shader as the
+control. Check that the filter reduces aliasing where the wave is undersampled
+and retains the resolved detail at larger frame sizes. Scope the change to the
+cosmetic slope contribution. Solver heights, transported foam and boat response
+come from the CPU field and need to agree across presentation resolutions.
