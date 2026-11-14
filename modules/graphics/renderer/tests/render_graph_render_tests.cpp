@@ -722,6 +722,118 @@ TEST_CASE("RG2 masked techniques keep rejecting opaque and transparent items", "
     }
 }
 
+namespace
+{
+/// Recipe key the generated header carries for one technique on the device's target, or nullptr.
+template <usize N>
+const renderer::RenderGraphRecipeKey* FindRecipeKey(const StaticArray<renderer::RenderGraphRecipeKey, N>& keys,
+                                                    format::Technique technique,
+                                                    format::ShaderTarget target)
+{
+    for (const renderer::RenderGraphRecipeKey& key : keys)
+    {
+        if (key.Technique == technique && key.Target == target)
+        {
+            return &key;
+        }
+    }
+    return nullptr;
+}
+/// The one used-technique row of a single-pass graph's pipeline report.
+renderer::RenderGraphPipelineRecipe GetOnlyRecipe(const renderer::RenderGraph& graph,
+                                                  renderer::RenderGraphPipelineReport& outReport)
+{
+    REQUIRE(graph.GetPipelineReport(outReport) == rhi::RasterStatus::Ready);
+    REQUIRE(outReport.RecipeCount == 1);
+    return outReport.Recipes[0];
+}
+} // namespace
+TEST_CASE("RG2 masked recipes report device preparation; value edits and scene reuse create no pipeline",
+          "[render-graph][gpu][pipeline-preparation]")
+{
+    struct Fixture final
+    {
+        renderer::RenderGraphPlan Plan;
+        renderer::RenderGraphPrograms Programs;
+        format::Technique Technique;
+        const renderer::RenderGraphRecipeKey* (*FindKey)(format::Technique, format::ShaderTarget);
+    };
+    const Fixture fixtures[]{
+        {packages::rg2_masked_color::MakePlan(),
+         packages::rg2_masked_color::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                  shaders::renderer_composite::Fragment()),
+         format::Technique::MaskedColorAndDepth,
+         [](format::Technique technique, format::ShaderTarget target) {
+             return FindRecipeKey(packages::rg2_masked_color::RECIPE_KEYS, technique, target);
+         }},
+        {packages::rg2_masked_depth::MakePlan(),
+         packages::rg2_masked_depth::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                  shaders::renderer_composite::Fragment()),
+         format::Technique::MaskedDepthOnly,
+         [](format::Technique technique, format::ShaderTarget target) {
+             return FindRecipeKey(packages::rg2_masked_depth::RECIPE_KEYS, technique, target);
+         }},
+    };
+    for (const Fixture& cooked : fixtures)
+    {
+        GraphGpuFixture fixture;
+        StaticArray<float32, MASK_VALUE_COUNT> mask{};
+        fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Masked;
+        fixture.Items[0].Uniforms = {mask.GetData(), mask.GetSize()};
+        REQUIRE(fixture.Graph.Initialize(fixture.Device, cooked.Plan, cooked.Programs) == rhi::RasterStatus::Ready);
+        renderer::RenderGraphPipelineReport report;
+        renderer::RenderGraphPipelineRecipe recipe = GetOnlyRecipe(fixture.Graph, report);
+        // The row carries the build report's recipe key for this device's target.
+        CHECK(recipe.Recipe.Technique == cooked.Technique);
+        CHECK(recipe.Recipe.Target == report.Target);
+        const renderer::RenderGraphRecipeKey* expectedOrNull = cooked.FindKey(cooked.Technique, report.Target);
+        REQUIRE(expectedOrNull != nullptr);
+        REQUIRE(recipe.HasRecipeKey == true);
+        for (usize i = 0; i < format::IDENTITY_BYTES; ++i)
+        {
+            CHECK(recipe.Recipe.Key[i] == expectedOrNull->Key[i]);
+        }
+        // Prewarm completed every native pipeline before the first frame.
+        CHECK(recipe.NativePipelines > 0);
+        CHECK(recipe.ReadyPipelines == recipe.NativePipelines);
+        CHECK(recipe.DrawnPipelines == 0);
+        CHECK(recipe.FirstUseMisses == 0);
+        CHECK(recipe.PrewarmSeconds > 0);
+        CHECK(report.Device.HasDriverMemory == false);
+        CHECK(report.Device.FirstUseMisses == 0);
+        fixture.Update(1);
+        fixture.Render();
+        recipe = GetOnlyRecipe(fixture.Graph, report);
+        CHECK(recipe.DrawnPipelines >= 1);
+        const uint64 creations = report.Device.NativeCreations;
+        const uint32 resident = report.Device.ResidentPipelines;
+        const uint32 nativePipelines = recipe.NativePipelines;
+        // A parameter-only edit: the per-draw Threshold is a uniform value, not a pipeline input.
+        mask[packages::rg2_masked_depth::UNIFORM_VALUE_MASK_THRESHOLD] = 1;
+        fixture.Update(2);
+        fixture.Render();
+        // A compatible scene replacement: moved geometry with the same coverage reuses the prepared pipelines.
+        fixture.Items[0].MeshToWorld.Translation.X = .25F;
+        fixture.Update(3);
+        fixture.Render();
+        recipe = GetOnlyRecipe(fixture.Graph, report);
+        CHECK(report.Device.NativeCreations == creations);
+        CHECK(report.Device.ResidentPipelines == resident);
+        CHECK(recipe.NativePipelines == nativePipelines);
+        CHECK(recipe.FirstUseMisses == 0);
+        CHECK(report.Device.FirstUseMisses == 0);
+        // A second graph with identical stages prepares its own native pipelines: stage pipelines are not shared.
+        renderer::RenderGraph twin;
+        REQUIRE(twin.Initialize(fixture.Device, cooked.Plan, cooked.Programs) == rhi::RasterStatus::Ready);
+        renderer::RenderGraphPipelineReport twinReport;
+        const renderer::RenderGraphPipelineRecipe twinRecipe = GetOnlyRecipe(twin, twinReport);
+        CHECK(twinRecipe.NativePipelines == nativePipelines);
+        CHECK(twinReport.Device.NativeCreations >= creations + nativePipelines);
+        twin.Reset();
+        fixture.Graph.Reset();
+    }
+}
+
 TEST_CASE("independent entry points render different colors in one graph", "[render-graph][gpu][independent]")
 {
     GraphGpuFixture fixture;

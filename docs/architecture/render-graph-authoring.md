@@ -714,7 +714,11 @@ observations alone cannot prove the completeness of all runtime choices.
 **Status.** The host-tool inventory below is delivered in `build-report.json`;
 see [Attribute shader variant costs](../development/render-graph-authoring.md#attribute-shader-variant-costs)
 for its fields and the masked color and depth fixture record. The
-Renderer/RHI device preparation report remains proposed.
+Renderer/RHI device preparation report is delivered as
+`RenderGraph::GetPipelineReport`, keyed by the same recipe keys; see
+[Device pipeline preparation](../development/render-graph-authoring.md#device-pipeline-preparation).
+The cold native consumer journeys and the correlation of a shader edit with
+its first presented frame remain proposed.
 
 Today the graph build report records aggregate cache hits/misses, elapsed time,
 counts and LUSL lowering details. The authored budget counts bound admission

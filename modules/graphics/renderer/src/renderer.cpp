@@ -2820,6 +2820,67 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     outProgram = handle;
     return status;
 }
+namespace
+{
+/// Append a pipeline handle, null when not yet created, while capacity remains.
+void AppendPipeline(rhi::RasterPipelineHandle pipeline,
+                    BorrowedView<rhi::RasterPipelineHandle> outPipelines,
+                    usize& inoutCount) noexcept
+{
+    if (inoutCount < outPipelines.GetSize())
+    {
+        outPipelines[inoutCount++] = pipeline;
+    }
+}
+} // namespace
+usize Renderer::getStagePipelines(BorrowedView<rhi::RasterPipelineHandle> outPipelines) const noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    const State& s = *mState;
+    usize count = 0;
+    for (const rhi::RasterPipelineHandle pipeline :
+         {s.Opaque, s.Overlay, s.SurfaceReverse, s.TargetOpaque, s.TargetReverse, s.TargetOverlay})
+    {
+        AppendPipeline(pipeline, outPipelines, count);
+    }
+    return count;
+}
+usize Renderer::getProgramPipelines(MaterialProgram program,
+                                    BorrowedView<rhi::RasterPipelineHandle> outPipelines) const noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    State& s = *mState;
+    const State::ProgramRecord* recordOrNull = Resolve(s.Programs, s.Owner, program);
+    if (recordOrNull == nullptr)
+    {
+        return 0;
+    }
+    usize count = 0;
+    for (const rhi::RasterPipelineHandle pipeline : recordOrNull->Pipelines)
+    {
+        AppendPipeline(pipeline, outPipelines, count);
+    }
+    AppendPipeline(recordOrNull->ShadowPipeline, outPipelines, count);
+    for (const rhi::RasterPipelineHandle pipeline : recordOrNull->DepthPipelines)
+    {
+        AppendPipeline(pipeline, outPipelines, count);
+    }
+    for (const rhi::RasterPipelineHandle pipeline : recordOrNull->GBufferPipelines)
+    {
+        AppendPipeline(pipeline, outPipelines, count);
+    }
+    for (const rhi::RasterPipelineHandle pipeline : recordOrNull->OpaqueGBufferPipelines)
+    {
+        AppendPipeline(pipeline, outPipelines, count);
+    }
+    return count;
+}
 Status Renderer::GetStatus(MaterialProgram handle) noexcept
 {
     if (mState.Get() == nullptr)
