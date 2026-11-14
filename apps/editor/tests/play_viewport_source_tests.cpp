@@ -312,11 +312,12 @@ int32 CountSamplesOfRecording(const QJsonObject& trace, uint64 recording, int32&
     return count;
 }
 
+#    if defined(LUDUS_WORLD_DEMO_PLAYER) && (defined(Q_OS_MACOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN))
 /// The pass names of the GPU samples a trace attributes to `recording`.
 QSet<QString> CollectPassNamesOfRecording(const QJsonObject& trace, uint64 recording)
 {
     QSet<QString> names;
-    for (const QJsonValue& value : trace.value(QStringLiteral("traceEvents")).toArray())
+    for (const QJsonValue value : trace.value(QStringLiteral("traceEvents")).toArray())
     {
         const QJsonObject event = value.toObject();
         const QJsonObject arguments = event.value(QStringLiteral("args")).toObject();
@@ -328,6 +329,7 @@ QSet<QString> CollectPassNamesOfRecording(const QJsonObject& trace, uint64 recor
     }
     return names;
 }
+#    endif
 } // namespace
 #endif
 
