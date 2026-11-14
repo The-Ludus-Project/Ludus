@@ -58,6 +58,22 @@ class BilinearTests(unittest.TestCase):
         self.assertEqual('Main/color', plan['passes'][1]['source_color']['resource'])
         self.assertIn("    Main/color [ColorTexture] 000..001", graph.dump_plan(plan).splitlines())
 
+    def test_use_report_distinguishes_sampled_versions_from_undefined_depth(self):
+        raster_library = self.path.with_name('rasterize.lurender.json')
+        document = json.loads(raster_library.read_text())
+        document['configurations'][0]['nodes'][0]['depth_store'] = 'Discard'
+        raster_library.write_text(json.dumps(document))
+
+        plan = graph.compile_graph(self.path)
+        rows = {row['resource']: row for row in graph.describe_resource_uses(plan)}
+        self.assertEqual([{'operation': 0, 'write': 1, 'defined': True}, {'operation': 1, 'read': 1}],
+                         rows['Main/color']['uses'])
+        self.assertEqual([{'operation': 0, 'write': 1, 'defined': False}], rows['Main/depth']['uses'])
+        self.assertEqual([{'operation': 1, 'write': 1, 'defined': True}], rows['Main/destination']['uses'])
+        self.assertEqual([{'id': 'Main/output', 'kind': 'Export', 'version': 1}], rows['Main/destination']['roots'])
+        self.assertIn('001 Main/upscale: reads @1', graph.dump_plan(plan))
+        self.assertIn('000 Main/raster/draw: writes @1 (undefined)', graph.dump_plan(plan))
+
     def test_invalid_alias_undefined_input_and_multisample_reject(self):
         for mutation in ('alias', 'undefined', 'samples'):
             document = copy.deepcopy(self.document)

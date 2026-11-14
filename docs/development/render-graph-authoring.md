@@ -4841,6 +4841,7 @@ node editor to resize them together.
 | --- | --- |
 | **Visibility buffer + depth** (`visibility-buffer`) | One raster pass exports the exact RGBA8 identity image and its Depth32Float attachment. The identity image is the camera output; its alpha channel encodes identity rather than transparency. No ray-tracing capability is needed. |
 | **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
+| **Hybrid shadows — ray-traced analytic light shadows** (`hybrid-shadows`) | The same raster producer feeds one ray pass that lights the first surface with the World's directional, point and spot lights, each shadowed by a ray, then ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Shadow analytic lights with rays](#shadow-analytic-lights-with-rays). |
 | **Tiled vbuffer NEE — many-light direct lighting** (`tiled-vbuffer-nee`) | The same raster producer feeds three ray passes that build one emitter-selection table per 16 × 16 tile and shade direct mesh-emitter lighting with MIS, then Accumulate. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Select emitters per screen tile](#select-emitters-per-screen-tile). |
 
 Create the same packages through the CLI:
@@ -4850,6 +4851,8 @@ ludus render-graph new graphs/Visibility --template visibility-buffer --output o
   --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/Reflections --template visibility-secondary-rays --output offscreen \
   --renderer-static --profiles metal wgsl
+ludus render-graph new graphs/Shadows --template hybrid-shadows --output offscreen \
+  --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/DirectLighting --template tiled-vbuffer-nee --output offscreen \
   --renderer-static --profiles metal wgsl
 ```
@@ -4857,7 +4860,8 @@ ludus render-graph new graphs/DirectLighting --template tiled-vbuffer-nee --outp
 Use `spirv wgsl` for Vulkan. The raster-only template also accepts `wgsl` alone.
 The canonical packages are shipped with the SDK:
 [visibility and depth](../../modules/graphics/renderer/render_graphs/visibility_buffer/main.lurender.json),
-[secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json)
+[secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json),
+[hybrid shadows](../../modules/graphics/renderer/render_graphs/hybrid_shadows/main.lurender.json)
 and [tiled vbuffer NEE](../../modules/graphics/renderer/render_graphs/tiled_vbuffer_nee/main.lurender.json).
 Existing graph folders are never overwritten; cancelling creation writes nothing.
 
@@ -4870,6 +4874,56 @@ It uses one surface-query slot and no visibility queries: reconstruction consume
 neither. The starter has no recursive bounce, roughness/metallic BRDF, direct-light
 sampling, accumulation or denoising. A scene without emission or environment
 lighting produces black. These are editable transport choices, not engine lights.
+
+#### Shadow analytic lights with rays
+
+The **Hybrid shadows** starter is the first RT2 effect: raster primary visibility
+with ray-traced visibility for the World's directional, point and spot lights.
+`main_shaders/shade.slang` calls `LoadVisibilitySurface`, evaluates the resolved
+material and emission, and visits the analytic lights in scene catalog order.
+Each light that can reach the receiver adds the standard BSDF times its
+incident coefficient and receiver cosine, and `TestVisibility` traces one shadow
+ray towards it. A ray starts at the reconstructed first hit, so a blocker outside
+the camera frustum, or behind the near plane, still casts its shadow; the
+whole-scene shadow map of the [default graph](#directional-shadows) also keeps it.
+Shadow rays are `TestVisibility` queries from the scene's offset surface point, and
+alpha-masked materials occlude as the scene's visibility traversal tests them. No
+shadow map, receiver bias or filter is involved.
+
+The ray technique grants 16 visibility queries, the interactive maximum, and the
+shader's `MAXIMUM_SHADOW_RAYS` matches it. The first 16 contributing lights at a
+pixel are ray shadowed. Any further contributing light is added unshadowed,
+like the default graph's point and spot lights. Each light is counted once.
+Lights do not use the raster **Raster Shadows** flag; every analytic light is a
+ray-shadow candidate. Mesh emitters and the environment light no surface here,
+so the template does not double light what [tiled vbuffer NEE](#select-emitters-per-screen-tile)
+or ReSTIR DI estimate. Misses show the environment. Glass shows only its emission
+because no analytic light reaches its delta lobes.
+
+Punctual lights cast hard shadows, and one deterministic ray per light gives a
+noise-free signal, so the graph keeps no history and applies no reconstruction
+filter: its raw and displayed images differ only by ToneMap. Area-light soft
+shadows, roughness-aware reflections and indirect diffuse remain the later RT2
+effects, with their reconstruction and history contracts. Devices without native
+ray tracing reject preparation; the default raster graph is their shadow route.
+
+The `[hybrid-shadows]` GPU regression renders one closed box blocker over a planar
+receiver under a directional light, from a camera window that contains the blocker
+and from one that excludes it. A float64 slab test projects the blocker along the
+light ray of each pixel centre. The template, the default graph's shadow map and the
+RT1 reference (CPU oracle and GPU compute, centre rays, first-surface direct output)
+must classify every pixel away from the boundary as lit or shadowed like that
+oracle, with no false occlusion, and place the measured left shadow edge within half
+a pixel of the projected edge. Lit pixels must match the RT1 CPU BSDF value, and the
+template must match the GPU RT1 image within one RGBA8 code plus 1%. The template's
+and default graph's copies for this test disable ToneMap and read clamped linear
+colour. On an Apple M5 with Metal, all four routes classify every interior pixel
+correctly in both windows. The template's and the shadow map's lit radiance lie within
+0.0019 and 0.0020 of the RT1 CPU BSDF value of 0.445. The template lies within 0.0019
+of the GPU RT1 image, and both graphs measure the edge 0.2 and 0.4 pixels from the
+projection, the pixel-centre quantization. This fixture does not separate the two
+graphs: the default graph's whole-scene shadow fit also keeps the offscreen shadow.
+Curved receivers, bias and timing comparisons remain open in issue 1248.
 
 Extend the manifest's `RendererStatic` vertex schema with these two fields:
 
@@ -6533,7 +6587,19 @@ last serial operation numbers for each logical texture or buffer. For example,
 `000..001` on an upscale source means operation 000 writes it and operation 001
 samples it. Export and Present roots appear alongside the resource with the
 version they read. An initialized import passed directly to Export can show
-`no pass use`. The range describes the selected plan's declared operations.
+`no pass use`. Under each range, the dump lists the expanded operation ID and
+which version it reads or writes. A clear writes a new version without reading
+the previous one. A discarded store marks the written version undefined.
+
+To use the same report in a script, run `ludus --json render-graph dump
+main.lurender.json --resource-uses`. The `resource_uses` array beside `plan` lists the qualified
+`resource`, its `type`, ordered `uses`, and `roots` for the selected configuration.
+Each use's zero-based `operation` indexes `plan.passes`; `read` and `write` are
+version numbers, including version zero. Only writes carry `defined`. Each root
+has an `id`, `kind`, and the `version` it reads. The Editor's Execution Plan
+still displays serial operations and raw plan JSON; the resource list is
+currently available through the CLI.
+
 For physical memory and completion, see
 [logical resource uses and submitted work](../architecture/render-graph-authoring.md#logical-resource-uses-and-submitted-work).
 
@@ -6750,8 +6816,9 @@ paths are relative to that package root, not the manifest directory.
 ### Generated layouts and publication
 
 `current.json` names a content-addressed directory under `generations/`.
-`build-report.json` contains candidate job timing and cache hit/miss counts outside
-the immutable generation. Only `current.json` determines activation; a failure
+`build-report.json` contains candidate job timing, cache hit/miss counts and the
+[variant cost inventory](#attribute-shader-variant-costs) outside the immutable
+generation. Only `current.json` determines activation; a failure
 after reporting can leave an unactivated candidate report. Inspect the report's package path:
 
 ```bash
@@ -6801,10 +6868,84 @@ before the pointer is atomically replaced, and old generations remain available.
 This guarantees process-level publication, not power-loss durability across all
 filesystems; raw edits to cache/generation/build trees are unsupported.
 
+### Attribute shader variant costs
+
+The `inventory` object in `build-report.json` shows which authored choice
+produced each stage artifact and pipeline recipe. The JSON CLI prints the same
+report under `build`:
+
+```bash
+ludus --json render-graph build graph.lushader.json /path/to/raster-build \
+    --helper "$LUDUS_SDK/lib/cmake/Ludus/shaders" --compiler "$SLANGC"
+```
+
+| Field | Contents |
+| --- | --- |
+| `choices` | One entry per root configuration and qualified graph node that selects a technique, with its pass kind, admitted recipe IDs and, per profile, the stage artifact keys and recipe keys it uses |
+| `techniques` | Every cooked technique, including manifest techniques with no root route (`routed: false`), with the routes that select it |
+| `artifacts` | One entry per unique stage key: profile, stage, programs, bytes, the techniques and choices that share it, its number of requests, `cache` (`miss`, `hit` or `reuse`) and `compile_seconds` when this build compiled it |
+| `recipes` | One entry per unique recipe key, with its technique, profile, recipe ID, stage keys and the choices that use it |
+| `programs_without_artifacts` | Registered programs that emitted no stage, such as unfinished callbacks |
+| `counts` | Distinct authored choices, techniques, unrouted techniques, stage requests, unique artifacts, compiled stages, local cache hits, reuses within the build, recipe keys and total artifact bytes |
+
+A `hit` comes from the local artifact cache. A `reuse` is a stage key that an
+earlier request in the same build already resolved, such as two programs with
+identical definitions. Artifact bytes are charged once per key, however many
+techniques or choices share it. `compile_seconds` measures one compiler request
+after it acquires a worker lane; concurrent stages overlap, so their sum is not
+the build's elapsed time. Timing, cache outcomes and host paths never enter
+stage, recipe or generation identity. The inventory adds no budget: the authored
+limits above still decide admission.
+
+The report covers portable shader work only. Recipe keys describe the pipelines
+a Renderer may request; they do not measure device pipeline creation, first-use
+misses or driver memory, and artifact bytes are not a proxy for device residency.
+Device-side preparation is tracked separately in
+[#1253](https://github.com/The-Ludus-Project/Ludus/issues/1253).
+
+To reduce a cost, find the choice that owns the expensive keys and check which
+keys it shares. Reuse a compatible program, move a value into an existing
+parameter, or split an explicitly chosen technique. Dropping a profile or
+silently selecting another technique is not a repair.
+
+#### Masked color and depth fixture record
+
+Measured on 14 November 2026 on an Apple M5 (10 CPUs) under a load average of
+about 37, with pinned Slang 2026.1.2, Metal and WGSL profiles, an empty local
+artifact cache for cold builds and concurrent stage compilation. Timings are
+noisy under that load; the counts and bytes are deterministic. Each fixture
+routes one technique from its root and cooks the other manifest technique
+unrouted.
+
+| | `masked_color` | `masked_depth` |
+| --- | --- | --- |
+| Routed choice | `Default` / `Main/raster/draw` → `DefaultStaticMasked.ColorAndDepth` | `Default` / `Main/raster/draw` → `DefaultStaticMasked.DepthOnly` |
+| Unrouted technique | `DefaultStaticMasked.DepthOnly` | `DefaultStaticMasked.ColorAndDepth` |
+| Stage requests / unique artifacts / recipe keys | 6 / 6 / 4 | 6 / 6 / 4 |
+| Artifact bytes (all profiles) | 48,708 | 48,708 |
+| Cold build elapsed, 3 runs | 2.2–3.9 s | 3.3–4.6 s |
+| Warm build: compiled / hits / elapsed | 0 / 6 / 0.7 s | 0 / 6 / 1.4 s |
+| Shared coverage edit: compiled / hits | 4 / 2 | 4 / 2 |
+
+| Stage | Bytes, Metal / WGSL | Cold compile seconds, Metal / WGSL (range of the two fixtures' 3-run medians) | Shared by |
+| --- | --- | --- | --- |
+| `Geometry` vertex | 10,748 / 10,134 | 1.8–2.1 / 1.6–1.7 | both techniques |
+| `MaskedColor` fragment | 7,527 / 6,988 | 1.8–1.9 / 1.7–1.9 | ColorAndDepth |
+| `MaskedDepth` fragment | 6,946 / 6,365 | 1.6–1.8 / 0.7–1.4 | DepthOnly |
+
+The coverage edit charges compile time only to the two fragment stages in each
+profile, and each fragment keeps its reflected uniform layout and stage links.
+The unrouted technique accounts for one third of each fixture's artifacts and
+half of its recipe keys, and its fragment recompiles on every coverage edit.
+Changing the per-draw `Threshold` changes no build input, so it requests no
+compile; it is a runtime uniform value (see [Masked coverage](#masked-coverage)).
+
 ### Acceptance evidence
 
 `test_render_graph_build` covers deterministic clean/warm builds, transitive
-invalidation, independent target packing, budgets, strict source boundaries,
+invalidation, the variant cost inventory (cold/warm builds, shared-include and
+isolated stage edits, a pass-order change, two configurations sharing a stage
+and reuse within one build), independent target packing, budgets, strict source boundaries,
 corrupt artifacts/descriptors, cancellation/staleness/compiler failures, Busy,
 CLI/backend equivalence and unchanged prior publication. Pinned Slang acceptance
 can be enabled with `LUDUS_RG1_SLANG`; optional `LUDUS_RG1_CXX` compiles/runs the
@@ -8908,22 +9049,20 @@ pipelines on every backend, which is outside this slice.
 
 ### Which graphs benefit
 
-None of the admitted cooked graphs. In the RG2 profile no pass samples a graph
-resource, and lowering never approves repeated camera coverage. A scene pass into
-an unexported target is therefore `Conflicting`, and every cooked fixture's
-backings are exports or the surface. A GPU test checks that each cooked RG2
-fixture leases nothing from the pool.
+In a cooked [bilinear upscale](#run-a-bilinear-upscale), the smaller scene color
+and its private depth share a backing. The upscale pass samples the color and
+writes a separate destination. When neither aspect of the scene backing is
+exported, activation can pool it. The destination follows its own Export or
+Present contract.
 
-To qualify the mechanism, `tests/sdk_consumer/render_graph_scratch.h` rewrites
-the cooked offscreen `.lurgrt` into a numeric plan the Renderer does admit:
+The original RG2 fixtures in the pooling suite lease nothing from the pool.
+For the RG4a measurements below, `tests/sdk_consumer/render_graph_scratch.h`
+rewrites one such offscreen `.lurgrt`:
 
 - every pass approves repeated coverage;
 - unexported scratch color + depth backings follow, each drawn by one more pass;
 - all resources take a chosen extent, so a resize is a reload of a generation with
   another extent, as a re-cooked graph would be.
-
-Pooling becomes useful for cooked graphs only once a later profile admits sampled
-graph reads or approved pre-Z passes.
 
 ### RG4a acceptance evidence
 
@@ -9053,7 +9192,8 @@ Platform status:
 
 Unsupported or not established:
 
-- No admitted cooked graph benefits (see above). Exports are never pooled.
+- Pooling parity and retained memory for an authored sampled intermediate still
+  need a serial-control run.
 - The depth-only compatibility RGBA8 image remains.
 - Physical heap aliasing, pass merging, parallel recording and async queues are
   separate RG4 slices with their own controls.

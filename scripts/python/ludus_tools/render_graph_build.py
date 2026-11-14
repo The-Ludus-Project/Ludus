@@ -28,6 +28,7 @@ from .buildlock import BuildTreeLock
 from .errors import ToolingError
 from . import render_graph as graph
 from . import render_graph_diagnostics as diagnostics
+from . import render_graph_build_inventory
 from . import render_graph_ray as ray
 from . import render_graph_compute as compute
 from . import render_graph_forward as forward
@@ -986,8 +987,9 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
 
     jobs holds (program, closure, target) in build order. Each stage writes only its own
     work directory below stage, so stages are independent. An outcome is either
-    (artifacts, result, file digests) or the exception that stopped that stage; the
-    caller publishes outcomes in job order and raises the first exception. A failure
+    (artifacts, result, file digests, compile seconds) or the exception that stopped that
+    stage; the caller publishes outcomes in job order and raises the first exception.
+    Compile seconds exclude any wait for a worker lane. A failure
     stops only the stages after it, while earlier stages finish, so the first exception
     is the first failing stage in build order, exactly as for a serial build. Stages
     sent to the native worker never exceed its advertised lanes, so a queued request
@@ -1014,10 +1016,12 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
                 # Short stage names keep deep Windows build trees under the path limit.
                 work = stage / (program['id'] + '-' + target)
                 work.mkdir()
+                compile_started = time.monotonic()
                 artifacts, result = compile_program(program, schemas, closure, snapshot, work, helper, tools, target,
                                                     stopped, worker_socket, worker_identity)
+                seconds = time.monotonic() - compile_started
             files = {p.name: digest(read(p, 2 * 1024 * 1024)) for p in artifacts.iterdir() if p.is_file()}
-            return artifacts, result, files
+            return artifacts, result, files, seconds
         except BaseException:
             with failure_lock:
                 first_failure[0] = min(first_failure[0], index)
@@ -1288,6 +1292,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             stage = Path(stage)
             compiled, entries, hits, misses = {}, {}, 0, 0
             pending, pending_keys = [], set()
+            # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
+            requests, loaded_keys, compile_seconds = {}, set(), {}
             for pid, program in sorted(programs.items()):
                 for target in sorted(value['profiles']):
                     if program.get('native_ray_pipeline') and target != 'metal':
@@ -1312,13 +1318,17 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                     if key in pending_keys:
                         # An identical stage earlier in this build compiles once; later uses hit it.
                         hits += 1
+                        requests[(pid, target)] = 'reuse'
                         continue
                     result = checked_cache(cache / key, key_data)
                     if result is None:
                         pending_keys.add(key)
                         pending.append((program, closures[pid], target, key, key_data))
+                        requests[(pid, target)] = 'miss'
                         continue
                     hits += 1
+                    requests[(pid, target)] = 'reuse' if key in loaded_keys else 'hit'
+                    loaded_keys.add(key)
                     require(result['target'] == target and result['stage'] == program['stage'], 'Cache', key, 'cached stage identity mismatch')
                     compiled[(pid, target)] = result
             # Cache misses compile concurrently, then publish in build order like a serial build.
@@ -1328,7 +1338,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             for (program, _, target, key, key_data), outcome in zip(pending, outcomes):
                 if isinstance(outcome, BaseException):
                     raise outcome
-                artifacts, result, files = outcome
+                artifacts, result, files, seconds = outcome
+                compile_seconds[key] = seconds
                 (artifacts / 'cache.json').write_bytes(encoded({'identity': key_data, 'files': files, 'result': result}))
                 checkpoint(cancel)
                 saved = cache / key
@@ -1428,6 +1439,11 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 saved_source.write_bytes(data)
             for key in sorted(set(entries.values())):
                 shutil.copytree(cache / key, package / 'programs' / key, ignore=shutil.ignore_patterns('cache.json'))
+            build_inventory = render_graph_build_inventory.describe(
+                plans=plans, routes=routes, techniques=techniques, recipes=recipes, entries=entries, requests=requests,
+                compile_seconds=compile_seconds, compiled=compiled,
+                program_ids={program['id'] for program in value['programs']} | set(programs),
+                artifact_directory=lambda key: package / 'programs' / key)
             normalized_plans = [{**{k: v for k, v in p.items() if k != 'dependencies'},
                                  'checks_pending': [c for c in p['checks_pending'] if c != 'ShaderBuild']} for p in plans]
             payload = {'version': VERSION, 'stage': 'RG1', 'execution': 'OfflinePackage', 'id': value['id'], 'plans': normalized_plans,
@@ -1463,7 +1479,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 os.replace(package, generation)
             checkpoint(cancel)
             report = {'package': str(generation), 'generation': generation_key, 'cache_hits': hits, 'cache_misses': misses,
-                      'elapsed_seconds': time.monotonic() - started, 'counts': counts}
+                      'elapsed_seconds': time.monotonic() - started, 'counts': counts, 'inventory': build_inventory}
             # Warnings that do not reject the build; recomputed from sources, so cache hits report them too.
             warnings = reasonless_failure_diagnostics(closures, snapshot)
             if warnings:

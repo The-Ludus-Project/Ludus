@@ -247,11 +247,13 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     set_source_files_properties(tests/render_graph_ray_tests.cpp tests/wave_tracing_parity_tests.cpp
         tests/wave_tracing_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
-    set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+    set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp
+        tests/hybrid_shadow_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_reference_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/wave_scene_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_scene_cold_gpu_timeout_seconds}")
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp
+        tests/hybrid_shadow_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
@@ -498,12 +500,8 @@ function(ludus_add_render_graph_pixel_fixtures target)
     target_link_libraries(${target} PRIVATE Ludus::FoundationFilesystem)
 endfunction()
 
-# The default graph ends in a ToneMap that only a clustered deferred resolve can apply. The parity tests compare
-# linear radiance, so their copies of the default graph disable it, which exports clamped linear colour.
-function(ludus_stage_linear_default_render_graph staged)
-    foreach(file IN LISTS default_render_graph_files)
-        configure_file("${default_render_graph}/${file}" "${staged}/${file}" COPYONLY)
-    endforeach()
+# Disable every ToneMap node of a staged root graph, so the graph exports clamped linear colour.
+function(ludus_disable_staged_tone_maps staged)
     file(READ "${staged}/main.lurender.json" graph)
     string(JSON configuration_count LENGTH "${graph}" configurations)
     math(EXPR last_configuration "${configuration_count} - 1")
@@ -518,6 +516,15 @@ function(ludus_stage_linear_default_render_graph staged)
         endforeach()
     endforeach()
     file(WRITE "${staged}/main.lurender.json" "${graph}\n")
+endfunction()
+
+# The default graph ends in a ToneMap that only a clustered deferred resolve can apply. The parity tests compare
+# linear radiance, so their copies of the default graph disable it, which exports clamped linear colour.
+function(ludus_stage_linear_default_render_graph staged)
+    foreach(file IN LISTS default_render_graph_files)
+        configure_file("${default_render_graph}/${file}" "${staged}/${file}" COPYONLY)
+    endforeach()
+    ludus_disable_staged_tone_maps("${staged}")
 endfunction()
 
 # The default-graph pixel suite (tests/render_graph_default_render_tests.cpp) draws the forward-lit
@@ -604,6 +611,16 @@ if(TARGET ludus_renderer_render_tests)
     endif()
     ludus_add_render_graph_pixel_fixtures(ludus_renderer_render_tests)
     ludus_add_default_render_graph_fixtures(ludus_renderer_render_tests)
+    # RT2 hybrid shadows (tests/hybrid_shadow_tests.cpp) compare the built-in template's radiance with the default
+    # graph and the RT1 reference, so this copy disables its ToneMap and exports clamped linear colour.
+    set(hybrid_shadows_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/hybrid_shadows_linear")
+    ludus_stage_render_graph_fixture("${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/hybrid_shadows" "${hybrid_shadows_staged}")
+    ludus_disable_staged_tone_maps("${hybrid_shadows_staged}")
+    ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_hybrid_shadows_linear
+        MANIFEST "${hybrid_shadows_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_hybrid_shadows_linear_RUNTIME_PACKAGE PARENT_PATH hybrid_shadows_package_directory)
+    target_compile_definitions(ludus_renderer_render_tests PRIVATE
+        LUDUS_RG3_HYBRID_SHADOWS_LINEAR_DIRECTORY="${hybrid_shadows_package_directory}")
     if(TARGET ludus-shader-worker AND NOT WIN32)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
