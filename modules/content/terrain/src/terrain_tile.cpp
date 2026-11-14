@@ -141,22 +141,19 @@ struct SharedAxis final
     uint32 Count = 0;
 };
 
-bool TryGetSharedAxis(int64 first, int64 second, uint32 cellsPerSide, SharedAxis& outAxis) noexcept
+SharedAxis GetSharedAxis(const TerrainTileDescription& description, int64 first, int64 second) noexcept
 {
     int64 offset = 0;
     if (foundation::TrySubtract(second, first, offset) == false || offset < -1 || offset > 1)
     {
-        return false;
+        return {};
     }
+    const uint32 cellsPerSide = description.CellsPerSide;
     if (offset == 0)
     {
-        outAxis = {0, 0, cellsPerSide + 1};
+        return {0, 0, cellsPerSide + 1};
     }
-    else
-    {
-        outAxis = {offset > 0 ? cellsPerSide : 0, offset < 0 ? cellsPerSide : 0, 1};
-    }
-    return true;
+    return {offset > 0 ? cellsPerSide : 0, offset < 0 ? cellsPerSide : 0, 1};
 }
 } // namespace
 
@@ -288,12 +285,9 @@ TerrainTileStatus CheckTerrainTileSeam(const TerrainTile& first, const TerrainTi
         return TerrainTileStatus::InvalidArgument;
     }
 
-    const uint32 cellsPerSide = firstDescription.CellsPerSide;
-    SharedAxis x;
-    SharedAxis z;
-    if (TryGetSharedAxis(firstDescription.Address.X, secondDescription.Address.X, cellsPerSide, x) == false ||
-        TryGetSharedAxis(firstDescription.Address.Z, secondDescription.Address.Z, cellsPerSide, z) == false ||
-        (x.Count > 1 && z.Count > 1))
+    const SharedAxis x = GetSharedAxis(firstDescription, firstDescription.Address.X, secondDescription.Address.X);
+    const SharedAxis z = GetSharedAxis(firstDescription, firstDescription.Address.Z, secondDescription.Address.Z);
+    if (x.Count == 0 || z.Count == 0 || (x.Count > 1 && z.Count > 1))
     {
         return TerrainTileStatus::InvalidArgument;
     }

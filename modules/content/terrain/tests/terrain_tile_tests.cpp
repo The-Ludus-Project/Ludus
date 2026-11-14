@@ -26,7 +26,7 @@ using terrain::TerrainTileStatus;
 constexpr uint32 ONE_CELL = 1;
 constexpr uint32 TWO_CELLS = 2;
 constexpr uint32 SMALL_AXIS = ONE_CELL + 1;
-constexpr usize SMALL_SAMPLE_COUNT = SMALL_AXIS * SMALL_AXIS;
+constexpr usize SMALL_SAMPLE_COUNT = static_cast<usize>(SMALL_AXIS) * SMALL_AXIS;
 constexpr usize SMALL_INDEX_COUNT = 6;
 using SmallHeights = StaticArray<float32, SMALL_SAMPLE_COUNT>;
 using SmallPositions = StaticArray<math::Vector3d, SMALL_SAMPLE_COUNT>;
@@ -140,7 +140,7 @@ TEST_CASE("Terrain quantizes with a shared origin and round-half-up little-endia
 TEST_CASE("Four terrain tiles agree on their duplicated negative-address edges and centre corner", "[terrain][tile]")
 {
     constexpr uint32 AXIS = 5;
-    constexpr usize SAMPLE_COUNT = AXIS * AXIS;
+    constexpr usize SAMPLE_COUNT = static_cast<usize>(AXIS) * AXIS;
     constexpr terrain::TerrainFieldGrid GRID{ .Columns = AXIS, .Rows = AXIS };
     StaticArray<float32, SAMPLE_COUNT> heights{};
     for (usize index = 0; index < SAMPLE_COUNT; ++index)
@@ -190,7 +190,7 @@ TEST_CASE("Four terrain tiles agree on their duplicated negative-address edges a
     REQUIRE(terrain::TryExportTerrainTileMesh(northEast, meshOrigin, northEastPositions, indices) ==
             TerrainTileStatus::Success);
     constexpr uint32 TILE_SAMPLE_AXIS = TWO_CELLS + 1;
-    for (uint32 row = 0; row < TILE_SAMPLE_AXIS; ++row)
+    for (usize row = 0; row < TILE_SAMPLE_AXIS; ++row)
     {
         CHECK(northWestPositions[row * TILE_SAMPLE_AXIS + TWO_CELLS] == northEastPositions[row * TILE_SAMPLE_AXIS]);
     }
@@ -267,7 +267,7 @@ TEST_CASE("Headless queries and indexed mesh export use the same saddle triangle
 TEST_CASE("A ray with multiple intersections returns the nearest hit in either direction", "[terrain][tile]")
 {
     constexpr uint32 AXIS = TWO_CELLS + 1;
-    constexpr usize SAMPLES = AXIS * AXIS;
+    constexpr usize SAMPLES = static_cast<usize>(AXIS) * AXIS;
     constexpr StaticArray<float32, SAMPLES> RIDGE{0, 4, 0, 0, 4, 0, 0, 4, 0};
     terrain::TerrainTile tile;
     REQUIRE(terrain::TryCookTerrainTile({ .CellsPerSide = TWO_CELLS }, {AXIS, AXIS}, RIDGE, 0, 0, tile) ==
@@ -352,7 +352,7 @@ TEST_CASE("The largest terrain tile keeps metre spacing after rebasing large sig
 {
     constexpr uint32 CELLS = terrain::MAX_TERRAIN_TILE_AXIS_CELLS;
     constexpr uint32 AXIS = CELLS + 1;
-    constexpr usize SAMPLES = AXIS * AXIS;
+    constexpr usize SAMPLES = static_cast<usize>(AXIS) * AXIS;
     constexpr int64 TILE_X = -(int64{1} << 53);
     constexpr int64 TILE_Z = int64{1} << 53;
     constexpr terrain::TerrainTileDescription DESCRIPTION

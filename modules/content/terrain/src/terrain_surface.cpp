@@ -149,10 +149,19 @@ struct CellRange final
     uint32 End = 0;
 };
 
-// A constant axis can be restricted without a rounded segment endpoint. Include both cells of a grid line.
-CellRange GetRayCellRange(float64 originMetres, float64 direction, float64 spacingMetres, uint32 cellsPerSide) noexcept
+struct RayAxis final
 {
-    if (direction != 0)
+    float64 OriginMetres = 0;
+    float64 Direction = 0;
+};
+
+// A constant axis can be restricted without a rounded segment endpoint. Include both cells of a grid line.
+CellRange GetRayCellRange(RayAxis ray, const TerrainTileDescription& description) noexcept
+{
+    const uint32 cellsPerSide = description.CellsPerSide;
+    const float64 spacingMetres = static_cast<float64>(description.SpacingMetres);
+    const float64 originMetres = ray.OriginMetres;
+    if (ray.Direction != 0)
     {
         return {0, cellsPerSide};
     }
@@ -249,9 +258,9 @@ TerrainTileStatus TryRaycastTerrainTile(const TerrainTile& tile,
     const TerrainTileDescription description = tile.GetDescription();
     const float64 spacingMetres = static_cast<float64>(description.SpacingMetres);
     const CellRange columns =
-        GetRayCellRange(ray.OriginTile.X, directionTerrain.X, spacingMetres, description.CellsPerSide);
+        GetRayCellRange({ .OriginMetres = ray.OriginTile.X, .Direction = directionTerrain.X }, description);
     const CellRange rows =
-        GetRayCellRange(ray.OriginTile.Z, directionTerrain.Z, spacingMetres, description.CellsPerSide);
+        GetRayCellRange({ .OriginMetres = ray.OriginTile.Z, .Direction = directionTerrain.Z }, description);
     const usize requiredCells = static_cast<usize>(columns.End - columns.Begin) * (rows.End - rows.Begin);
     if (requiredCells > cellBudget)
     {
