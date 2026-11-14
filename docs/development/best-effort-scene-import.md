@@ -131,12 +131,18 @@ names only, because JSON values carry no line numbers.
 | Images | PNG and JPEG by URI, data URI or buffer view |
 | Cameras | the first perspective camera in scene order (`yfov`, `aspectRatio`, `znear`, `zfar`); orthographic is approximated |
 | Lights | `KHR_lights_punctual` directional (lux), point and spot (candela) with colour, intensity and cone angles; `range` reported |
-| Extensions | implemented: `KHR_lights_punctual`, `KHR_materials_emissive_strength`, `KHR_mesh_quantization`. Any other *required* extension fails with `EXTENSION_REQUIRED`; optional ones are ignored per the specification with `EXTENSION_IGNORED` (and `KHR_texture_transform` with `TEXTURE_APPROXIMATED`) |
+| Extensions | `KHR_lights_punctual`, `KHR_materials_emissive_strength` and `KHR_mesh_quantization` are implemented. The importer rejects other required extensions with `EXTENSION_REQUIRED` and reports ignored optional extensions with `EXTENSION_IGNORED`. It also reports approximated texture transforms with `TEXTURE_APPROXIMATED`. |
 | Not imported (reported) | skins and animation (`ANIMATION_IGNORED`, rest pose), morph targets, sparse accessors, Draco/meshopt without an uncompressed fallback, `KHR_texture_basisu`/WebP images, `KHR_materials_*` other than emissive strength |
 
 glTF is right-handed with +Y up and metres, matching the engine's world
 convention, so nodes are not converted. glTF texture coordinates already have a
 top-left origin.
+
+If a material uses optional [`KHR_materials_iridescence`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_iridescence),
+the World Import Report shows `MATERIAL_APPROXIMATED`. The cooked scene
+retains the base metallic-roughness material, so both the viewport and a game
+that loads the bundle show the base appearance without the film's angle-dependent
+colour. Review that appearance before using the cooked asset.
 
 ### Export static 3D art for Ludus
 
