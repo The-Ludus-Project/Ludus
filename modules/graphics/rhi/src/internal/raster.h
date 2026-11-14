@@ -235,24 +235,29 @@ struct RasterPacket final
     foundation::uint32 DynamicOffsets[RASTER_BINDINGS]{};
     foundation::uint32 DynamicOffsetCount = 0;
 };
-// R12a: bytes from the first command's offset through the last command's arguments,
-// (count - 1) * stride + argument bytes. False on overflow or a zero count.
-[[nodiscard]] inline bool ComputeIndirectSpan(foundation::uint32 count,
-                                              foundation::usize stride,
-                                              foundation::usize argumentBytes,
-                                              foundation::usize& outSpan) noexcept
+// R12a command layout: consecutive commands, the bytes between them and one command's size.
+// Grouped so call sites cannot swap the two byte quantities.
+struct IndirectCommandLayout final
 {
-    if (count == 0)
+    foundation::uint32 Count = 0;
+    foundation::usize Stride = 0;
+    foundation::usize ArgumentBytes = 0;
+};
+// Bytes from the first command's offset through the last command's arguments,
+// (Count - 1) * Stride + ArgumentBytes. False on overflow or a zero count.
+[[nodiscard]] inline bool ComputeIndirectSpan(const IndirectCommandLayout& layout, foundation::usize& outSpan) noexcept
+{
+    if (layout.Count == 0)
     {
         return false;
     }
-    const foundation::usize gaps = count - 1;
+    const foundation::usize gaps = layout.Count - 1;
     const foundation::usize maximum = ~foundation::usize{0};
-    if (gaps != 0 && stride > (maximum - argumentBytes) / gaps)
+    if (gaps != 0 && layout.Stride > (maximum - layout.ArgumentBytes) / gaps)
     {
         return false;
     }
-    outSpan = gaps * stride + argumentBytes;
+    outSpan = gaps * layout.Stride + layout.ArgumentBytes;
     return true;
 }
 // Argument size of one command in a validated indirect raster packet.

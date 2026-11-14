@@ -302,15 +302,26 @@ TEST_CASE("R12a indirect draws validate non-indexed packets, counts, strides and
 TEST_CASE("R12a span arithmetic rejects zero counts and overflow", "[rhi][indirect]")
 {
     usize span = 0;
-    CHECK(internal::ComputeIndirectSpan(0, sizeof(DrawIndirectArguments), sizeof(DrawIndirectArguments), span) ==
-          false);
-    REQUIRE(internal::ComputeIndirectSpan(1, ~usize{0}, sizeof(DrawIndirectArguments), span));
+    CHECK(internal::ComputeIndirectSpan(
+              { .Count = 0, .Stride = sizeof(DrawIndirectArguments), .ArgumentBytes = sizeof(DrawIndirectArguments) },
+              span) == false);
+    REQUIRE(internal::ComputeIndirectSpan(
+        {
+            .Count = 1,
+            .Stride = ~usize{0},
+            .ArgumentBytes = sizeof(DrawIndirectArguments),
+        },
+        span));
     CHECK(span == sizeof(DrawIndirectArguments));
     constexpr uint32 COMMANDS = 4;
     constexpr usize STRIDE = 32;
-    REQUIRE(internal::ComputeIndirectSpan(COMMANDS, STRIDE, sizeof(IndexedIndirectArguments), span));
+    REQUIRE(internal::ComputeIndirectSpan(
+        { .Count = COMMANDS, .Stride = STRIDE, .ArgumentBytes = sizeof(IndexedIndirectArguments) },
+        span));
     CHECK(span == (COMMANDS - 1) * STRIDE + sizeof(IndexedIndirectArguments));
-    CHECK(internal::ComputeIndirectSpan(2, ~usize{0} - 2, sizeof(DrawIndirectArguments), span) == false);
+    CHECK(internal::ComputeIndirectSpan(
+              { .Count = 2, .Stride = ~usize{0} - 2, .ArgumentBytes = sizeof(DrawIndirectArguments) },
+              span) == false);
 }
 
 TEST_CASE("R12a disabled indirect features reject before native work", "[rhi][indirect]")

@@ -1296,15 +1296,19 @@ CheckDeclaredPacket(const GraphRecord& graph, const GraphPassRecord& pass, const
     {
         // R12a: one declaration covers every command of the packet, including stride gaps.
         usize span = 0;
-        if (ComputeIndirectSpan(packet.IndirectCount, packet.IndirectStride, GetIndirectArgumentBytes(packet), span) ==
-                false ||
-            FindUse(graph,
-                    pass,
-                    RasterKind::Buffer,
-                    packet.Indirect,
-                    GraphAccessMode::Indirect,
-                    packet.IndirectOffset,
-                    span) == nullptr)
+        const IndirectCommandLayout commandLayout
+        {
+            .Count = packet.IndirectCount,
+            .Stride = packet.IndirectStride,
+            .ArgumentBytes = GetIndirectArgumentBytes(packet),
+        };
+        if (ComputeIndirectSpan(commandLayout, span) == false || FindUse(graph,
+                                                                         pass,
+                                                                         RasterKind::Buffer,
+                                                                         packet.Indirect,
+                                                                         GraphAccessMode::Indirect,
+                                                                         packet.IndirectOffset,
+                                                                         span) == nullptr)
         {
             return RasterStatus::InvalidDescription;
         }

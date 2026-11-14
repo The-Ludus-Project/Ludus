@@ -2519,7 +2519,8 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
             draw.IndirectCount > limits.MaxCommandsPerDraw ||
             draw.IndirectOffset % INDIRECT_ARGUMENT_ALIGNMENT_BYTES != 0 ||
             stride % INDIRECT_ARGUMENT_ALIGNMENT_BYTES != 0 || stride < argumentBytes ||
-            ComputeIndirectSpan(draw.IndirectCount, stride, argumentBytes, span) == false ||
+            ComputeIndirectSpan({ .Count = draw.IndirectCount, .Stride = stride, .ArgumentBytes = argumentBytes },
+                                span) == false ||
             Fits(draw.IndirectOffset, span, indirect->Buffer.Size) == false)
         {
             return RasterStatus::InvalidDescription;
