@@ -1061,19 +1061,18 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
     reopened.SetScene(litRoom);
     const QSharedPointer<const WorldSurfaceBake> saved = reopened.GetReady();
     REQUIRE(saved.isNull() == false);
-    CHECK(saved->ProbeAtlas.Pixels.isEmpty() == true);
+    // Save World retains the probe atlas beside the charts, so reopening reuses the whole bake.
+    REQUIRE(preview.GetSurfaceBake().isNull() == false);
+    CHECK(saved->ProbeAtlas.Pixels.isEmpty() == false);
+    CHECK(saved->ProbeAtlas.Pixels == preview.GetSurfaceBake()->ProbeAtlas.Pixels);
     RenderGraphExtraction extraction;
     QString error;
     REQUIRE(MakeRenderGraphExtraction(litRoom, {}, 1, extraction, error, saved) == true);
     REQUIRE(extraction.SurfaceCharts.size() == litRoom.Objects.size());
     CHECK(extraction.SurfaceCharts.first().SourceId == extraction.Items.first().SourceId);
     CHECK(extraction.SurfaceCharts.last().SourceId == 0);
-    REQUIRE(QTest::qWaitFor(
-                [&]() {
-                    reopened.Poll(litRoom);
-                    return reopened.GetReady()->ProbeAtlas.Pixels.isEmpty() == false;
-                },
-                BAKE_DEADLINE_MILLISECONDS) == true);
+    reopened.Poll(litRoom);
+    CHECK(reopened.GetReady() == saved);
     // Keep the receiver and geometry in place; move only the volume away from them.
     ludus::graphics::renderer::GiProbeGrid movedGrid = litRoom.ProbeGrid;
     constexpr float32 MOVED_GRID_ORIGIN_X_METRES = 10;

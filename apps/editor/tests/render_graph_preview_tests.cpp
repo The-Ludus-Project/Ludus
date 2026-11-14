@@ -4477,9 +4477,12 @@ TEST_CASE("Live graph viewport presents GPU images through navigation and resize
     graph.SetOutputTarget({});
     REQUIRE(waitFor([&]() { return graph.HasGpuFrame() == true && viewport.PresentedFrames() > beforeColor; }) == true);
     source.SetStatisticsVisible(true);
-    constexpr int32 IDLE_STATISTICS_MILLISECONDS = 1'250;
-    QTest::qWait(IDLE_STATISTICS_MILLISECONDS);
-    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Updates: idle")) == true);
+    // Showing statistics can trigger one more frame; the overlay reports idle a second after the last one.
+    // Sanitized builds draw slowly, so poll for idle instead of sleeping a fixed interval past that second.
+    const bool isIdle =
+        waitFor([&]() { return viewport.GetStatisticsText().contains(QStringLiteral("Updates: idle")) == true; });
+    INFO(viewport.GetStatisticsText().toStdString());
+    CHECK(isIdle == true);
     const uint64 lastGeneration = graph.GetPresentedGeneration();
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
