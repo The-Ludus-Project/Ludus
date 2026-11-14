@@ -913,19 +913,27 @@ raster producer when required. `RenderGraph::State::EncodePasses` also issues
 standalone raster and upscale commands through their own renderer paths. The
 offline plan therefore covers more than any single runtime `GraphReport`.
 
-**Next execution slice (proposed).** Try one cooked static opaque offscreen
-ColorAndDepth pass with an Export using the existing RHI ordered graph.
-Build retained draw packets from the prepared Renderer view and declare the
-uses of the actual bound resources. Keep the mapping from expanded pass ID and
-cooked index to the RHI pass ordinal in Renderer. Account for RHI packet and use
-limits before encoding, and retain the direct path for comparison. Qualify the
-same extraction and pipelines with color/depth readback parity, deterministic
-source-mapped reporting, and rejection before any command is recorded. Exercise
-same-frame and delayed export consumers, frames in flight, resize, and a failed
-candidate with the last drawable view still available. Measure CPU preparation
-and recording cost before widening to more profiles. Use the existing RHI
-state and completion ledger across both paths. Native aliasing still requires
-physical lifetime and memory evidence under the RHI contract.
+**Ordered-graph pilot.** `RenderGraphExecution::OrderedGraph` lowers one
+cooked static opaque offscreen ColorAndDepth pass with an Export to the existing
+RHI ordered graph; the direct path stays the default comparison control.
+Renderer builds the pass from the prepared view's retained draw packets and
+declares the uses of the actual bound attachment, instance and mesh buffers.
+`RenderGraphExecutionReport` keeps the mapping from cooked pass index to RHI pass
+ordinal, and from each logical resource to its physical RHI resource and the
+cooked passes of its lifetime. Packet and use limits are checked against the
+device's storage limits between frames, before the graph exists, so a rejection
+records nothing and the last drawable output remains. The plan is rebuilt for each
+frame and uses the existing RHI state and completion ledger with the direct path.
+GPU tests qualify color/depth readback parity, the source-mapped report, the
+capacity rejection and repair, same-frame and delayed export consumers, frames in
+flight and resized generations. See
+[the pilot guide](../development/render-graph-authoring.md#lower-an-offscreen-pass-to-the-ordered-graph-pilot).
+
+Widening it to further passes, materials and uniform values needs cross-pass
+import deduplication and declared uses for every material texture and uniform
+range. Measure CPU preparation and recording cost before widening. Native
+aliasing still requires physical lifetime and memory evidence under the RHI
+contract.
 
 ## Editor interaction, diagnostics and hot reload
 

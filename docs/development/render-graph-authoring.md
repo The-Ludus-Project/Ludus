@@ -9274,6 +9274,96 @@ Unsupported or not established:
 - Idle entries are bounded by count, not bytes: a large-extent workload retains
   correspondingly more memory until it is trimmed.
 
+## Lower an offscreen pass to the ordered graph (pilot)
+
+The RG2 runtime normally records each raster pass through its Renderer path.
+`RenderGraph::SetExecution(RenderGraphExecution::OrderedGraph)` instead lowers
+the drawable scene to one RHI ordered graph per frame. It is a pilot for the
+[execution boundary](../architecture/render-graph-authoring.md#logical-resource-uses-and-submitted-work)
+and records the same commands; `Direct` stays the default and the comparison
+control.
+
+### What it admits
+
+`SetExecution` checks the cooked plan and returns `Unsupported` for anything else,
+keeping the current mode:
+
+- exactly one `ColorAndDepth` pass;
+- outside the forward, clustered deferred, visibility-buffer and light-transformer
+  profiles;
+- one offscreen RGBA8 allocation holding the pass's color and depth, with both
+  aspects cleared.
+
+`PrepareEncoding`, which `Render` calls, then checks the drawable scene between
+frames, before the graph is created:
+
+- the view holds only flat opaque packets: no materials, per-draw uniform values,
+  overlays or world grid (`Unsupported` otherwise);
+- the draw packets fit the device's `StorageLimits::DrawsPerPlan`;
+- the attachment, the view's instance table and each distinct mesh's vertex and
+  index buffers fit `StorageLimits::ResourcesPerGraph`, which also bounds one
+  pass's declared uses (`CapacityExceeded` otherwise).
+
+A rejection records no command. The last output, its export and
+`GetOutputSceneRevision` stay valid, and the next `Render` retries. To repair a
+capacity rejection, draw fewer distinct meshes or request larger storage limits
+before device creation. Switch back to `Direct` to keep rendering the scene
+meanwhile.
+
+### Read the lowering report
+
+`GetExecutionReport` copies the latest lowering, kept after encoding consumes the
+graph:
+
+| Field | Meaning |
+| --- | --- |
+| `Result`, `FailedPass` | `Ready`, or the rejection and the cooked pass that raised it. |
+| `DrawCount` / `DrawLimit` | Required draw packets and the device's plan limit. |
+| `ResourceCount` / `ResourceLimit` | Required RHI resources and the device's graph limit. |
+| `GraphPasses[pass]` | RHI pass ordinal of each cooked pass, or `ABSENT`. |
+| `GraphResources[resource]` | RHI resource of each logical resource's physical backing, or `ABSENT`. |
+| `FirstPass`, `LastPass` | Cooked passes of the backing's RHI lifetime. |
+| `RasterPasses`, `DependencyCount` | Planned raster passes and semantic dependencies. |
+
+Pass indices are cooked serial operations, so they compare with the intervals of
+the [plan dump](#initialization-versions-and-order). Logical color and depth
+share one backing and therefore one RHI resource, which reports the union of their
+intervals. An export stays in use after its last pass, until its consumers finish.
+
+### Consumers and lifetime
+
+The export is imported with its exact RHI state and ends ready for fragment
+sampling. Both paths share the RHI state and completion ledger:
+
+- a consumer encoded after `Encode` in the same frame samples the written image;
+- a consumer in a later frame reads the completed export, and the next graph frame
+  overwrites it only after that read;
+- `Render` refuses with `NotReady` while the previous frame is in flight, so the
+  graph never rewrites a pending export.
+
+Each frame builds a new graph between frames. A published scene, camera or
+resized generation discards a prepared, unencoded graph, and so does a mode change.
+
+### Pilot acceptance evidence
+
+`[render-graph][gpu][ordered-graph]` in `ludus_renderer_render_tests` runs the
+cooked `rg2_offscreen` fixture on the host GPU:
+
+- Direct and ordered frames export identical color bytes and stored depth bits,
+  before and after a moved triangle, and report one pass, one raster pass, four
+  RHI resources and the shared color/depth backing.
+- On a device limited to four graph resources, a second mesh is rejected with
+  `CapacityExceeded` and the required and limit counts. The previous export and
+  scene revision stay valid, and removing the mesh renders again.
+- Same-frame and later-frame compositor consumers, and back-to-back renders with
+  frames in flight, give identical pixels in both modes.
+- Generations alternating two extents, some retired with frames in flight, export
+  identical bytes in both modes.
+
+Only this one-pass profile is admitted. Widening it to more passes, materials or
+uniform values needs cross-pass import deduplication and the declared uses of
+material textures and uniform ranges.
+
 ## Programs written in LUSL
 
 A program's `source` may name a `.lusl` file instead of a `.slang` one. The build
