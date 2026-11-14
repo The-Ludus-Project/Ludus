@@ -163,6 +163,10 @@ foreach(rg3_fixture offscreen masked_color)
     set(rg3_input "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/${rg3_fixture}")
     set(rg3_staged "${CMAKE_CURRENT_BINARY_DIR}/rg3-inputs/${rg3_fixture}")
     file(COPY "${rg3_input}/" DESTINATION "${rg3_staged}" PATTERN "*.in" EXCLUDE)
+    if(rg3_fixture STREQUAL "masked_color")
+        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/../rg2/masked_coverage.slang"
+            "${rg3_staged}/main_shaders/coverage.slang" COPYONLY)
+    endif()
     configure_file("${rg3_input}/main.lushader.json.in" "${rg3_staged}/main.lushader.json" @ONLY)
     ludus_compile_render_graph(TARGET ludus_sdk_render_graph_runtime_consumer NAME ${rg3_name}
         MANIFEST "${rg3_staged}/main.lushader.json" RUNTIME_PACKAGE)

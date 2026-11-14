@@ -476,6 +476,10 @@ function(ludus_add_render_graph_pixel_fixtures target)
     foreach(kind surface offscreen depth bound bound_lusl masked_color masked_depth independent)
         set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${kind}")
         ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}" "${staged}")
+        if(kind STREQUAL "masked_color" OR kind STREQUAL "masked_depth")
+            configure_file("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/masked_coverage.slang"
+                "${staged}/main_shaders/coverage.slang" COPYONLY)
+        endif()
         ludus_compile_render_graph(TARGET ${target} NAME rg2_${kind}
             MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
         cmake_path(GET rg2_${kind}_RUNTIME_PACKAGE PARENT_PATH directory)

@@ -1082,20 +1082,72 @@ class BuildTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG'), 'set LUDUS_RG1_SLANG for pinned compiler acceptance')
 class CompilerAcceptance(unittest.TestCase):
+    def test_shared_masked_coverage_invalidates_both_fragment_stages(self):
+        fixtures = ROOT / 'tests/sdk_consumer/rg2'
+        profiles = os.environ.get('LUDUS_RG1_TARGETS', 'metal,wgsl').split(',')
+        shared_source = (fixtures / 'masked_coverage.slang').read_text()
+        coverage_test = 'value.PositionMesh.x < mask.Threshold'
+        self.assertIn(coverage_test, shared_source)
+        changed_source = shared_source.replace(coverage_test, 'value.PositionMesh.x > mask.Threshold')
+        broken_source = shared_source.replace('mask.Threshold', 'mask.UnknownThreshold')
+        broken_line = next(line for line, value in enumerate(broken_source.splitlines(), 1)
+                           if 'mask.UnknownThreshold' in value)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            options = self._compiler_options(root)
+            for fixture in ('masked_color', 'masked_depth'):
+                with self.subTest(fixture=fixture):
+                    source = root / fixture
+                    shutil.copytree(fixtures / fixture, source)
+                    template = (source / 'main.lushader.json.in').read_text()
+                    manifest = source / 'main.lushader.json'
+                    manifest.write_text(template.replace('@RG2_TEST_PROFILES@', json.dumps(profiles)))
+                    coverage = source / 'main_shaders/coverage.slang'
+                    coverage.write_text(shared_source)
+                    output = root / (fixture + '-build')
+
+                    first = build.build_package(manifest, output, **options)
+                    warm = build.build_package(manifest, output, **options)
+                    self.assertEqual(first['generation'], warm['generation'])
+                    self.assertEqual(0, warm['cache_misses'])
+
+                    coverage.write_text(changed_source)
+                    edited = build.build_package(manifest, output, **options)
+                    self.assertEqual(len(profiles), edited['cache_hits'])
+                    self.assertEqual(2 * len(profiles), edited['cache_misses'])
+                    before = build.verify_package(Path(first['package']))
+                    after = build.verify_package(Path(edited['package']))
+                    keys = {(entry['id'], entry['profile']): entry['key'] for entry in before['programs']}
+                    for entry in after['programs']:
+                        self.assertEqual(entry['id'] == 'Geometry',
+                                         entry['key'] == keys[entry['id'], entry['profile']])
+
+                    pointer = (output / 'current.json').read_bytes()
+                    coverage.write_text(broken_source)
+                    with self.assertRaises(ToolingError) as caught:
+                        build.build_package(manifest, output, **options)
+                    location = caught.exception.location
+                    self.assertIsNotNone(location)
+                    self.assertEqual('main_shaders/coverage.slang', location['source'])
+                    self.assertEqual(broken_line, location['line'])
+                    self.assertEqual(pointer, (output / 'current.json').read_bytes())
+
+    def _compiler_options(self, root):
+        helper = Path(os.environ['LUDUS_RG1_HELPER']) if os.environ.get('LUDUS_RG1_HELPER') else root / 'sdk'
+        if not os.environ.get('LUDUS_RG1_HELPER'):
+            helper.mkdir()
+            for name in build.HELPERS:
+                shutil.copy(ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name, helper / name)
+        return dict(helper=helper, compiler=os.environ['LUDUS_RG1_SLANG'], validator=os.environ.get('LUDUS_RG1_VALIDATOR'),
+                    spirv_cross=os.environ.get('LUDUS_RG1_CROSS'))
+
     def test_real_target_entries_layouts_determinism_and_generated_cpp(self):
-        compiler = os.environ['LUDUS_RG1_SLANG']
         profiles = os.environ.get('LUDUS_RG1_TARGETS', 'metal,wgsl').split(',')
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
-            helper = Path(os.environ['LUDUS_RG1_HELPER']) if os.environ.get('LUDUS_RG1_HELPER') else temp / 'sdk'
-            if not os.environ.get('LUDUS_RG1_HELPER'):
-                helper.mkdir()
-                for name in build.HELPERS:
-                    shutil.copy(ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name, helper / name)
+            options = self._compiler_options(temp)
             root = graph.new_workspace(temp / 'source')
             manifest = build.new_build_sources(root, profiles=profiles)
-            options = dict(helper=helper, compiler=compiler, validator=os.environ.get('LUDUS_RG1_VALIDATOR'),
-                           spirv_cross=os.environ.get('LUDUS_RG1_CROSS'))
             first = build.build_package(manifest, temp / 'one', **options)
             second = build.build_package(manifest, temp / 'two', **options)
             self.assertEqual(first['generation'], second['generation'])
