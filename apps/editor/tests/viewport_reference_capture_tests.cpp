@@ -629,9 +629,9 @@ TEST_CASE("Reference capture window offers the render graph source only with a p
     CHECK(window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"))->isEnabled() == false);
 }
 
-namespace
+namespace ludus::editor::tests
 {
-RenderScene LoadSuppliedReferenceWorld(const QString& root, const QString& worldName)
+RenderScene LoadSuppliedWorld(const QString& root, const QString& worldFile)
 {
     WorldDocument world;
     QString error;
@@ -646,8 +646,7 @@ RenderScene LoadSuppliedReferenceWorld(const QString& root, const QString& world
         REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
     }
     REQUIRE(world.LoadSchema(schema, error) == true);
-    const QByteArray worldBytes =
-        tests::ReadTestFile(QDir(root).filePath(QStringLiteral("assets/%1.world.json").arg(worldName)));
+    const QByteArray worldBytes = ReadTestFile(QDir(root).filePath(QStringLiteral("assets/") + worldFile));
     const bool hasLoadedWorld = world.Load(worldBytes, error);
     INFO(error.toStdString());
     REQUIRE(hasLoadedWorld == true);
@@ -686,7 +685,7 @@ RenderScene LoadSuppliedReferenceWorld(const QString& root, const QString& world
     CHECK(switchReport.MissingSources.isEmpty() == true);
     return scene;
 }
-} // namespace
+} // namespace ludus::editor::tests
 
 TEST_CASE("Supplied World completes reference capture with all reference modes", "[.supplied-reference-capture]")
 {
@@ -696,7 +695,7 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         SKIP("Set LUDUS_REFERENCE_TEST_PROJECT to a project with assets/staircase2.world.json.");
     }
     const QString worldName = qEnvironmentVariable("LUDUS_REFERENCE_TEST_WORLD", QStringLiteral("staircase2"));
-    const RenderScene scene = LoadSuppliedReferenceWorld(root, worldName);
+    const RenderScene scene = tests::LoadSuppliedWorld(root, worldName + QStringLiteral(".world.json"));
     // LUDUS_REFERENCE_TEST_EXTENT=<width>x<height> captures another size, for example a source film's 720x1280.
     QSize extent(512, 225);
     const QStringList requestedExtent = qEnvironmentVariable("LUDUS_REFERENCE_TEST_EXTENT").split(QLatin1Char('x'));

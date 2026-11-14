@@ -1,24 +1,21 @@
-// Explicit supplied-project benchmark of the default raster graph's mesh-light resolve. Reads assets and the runtime
-// package; writes only the requested report and, optionally, the last frame's exported colour as a PNG. Compare
-// builds by running each binary in alternation and comparing per-pass ratios within one run: Apple GPU clocks vary
-// several-fold between runs. Compare images of two runtimes of the same World to measure an approximation's error.
+// Opt-in benchmark of a supplied World with a clustered raster graph.
+// Thanks to Joshua Barczak, "Comments on Future Directions for Compute in Graphics", The Burning Basis Vector
+// (2017), "Visibility Buffers and Shading", https://www.joshbarczak.com/blog/?p=1317, for motivating a matched
+// clustered-forward control before testing an opaque visibility resolve.
 #include "internal/offscreen_frame_reader.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_device_description.h"
-#include "internal/world_document.h"
 #include "renderer_composite.h"
+#include "viewport_fixture.h"
 
-#include <ludus/content/scene_cook/scene_assets.h>
 #include <ludus/foundation/base/types.h>
-#include <ludus/foundation/containers/array.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
 
-#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
@@ -43,16 +40,9 @@ constexpr uint32 MEASURED_FRAMES = 20;
 constexpr uint32 MAX_SHADOW_FILL_FRAMES = 4096;
 constexpr int32 PREPARATION_TIMEOUT_MILLISECONDS = 120000;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1000000;
-
-QByteArray ReadBenchmarkFile(const QString& path)
-{
-    QFile file(path);
-    REQUIRE(file.open(QIODevice::ReadOnly) == true);
-    return file.readAll();
-}
 } // namespace
 
-TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-mesh-light-benchmark]")
+TEST_CASE("Supplied World times clustered raster passes", "[.raster-mesh-light-benchmark]")
 {
     const QString root = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_PROJECT");
     // A World under the project's assets folder; the reported Staircase2 capture by default.
@@ -78,35 +68,13 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
              "LUDUS_RASTER_BENCHMARK_RUNTIME overrides the build's default graph and LUDUS_RASTER_BENCHMARK_WORLD "
              "selects another World under the project's assets folder.");
     }
-    WorldDocument world;
+    const RenderScene scene = tests::LoadSuppliedWorld(root, worldName);
     QString error;
-    REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\",\"label\":\"World\","
-                                               "\"components\":[],\"assets\":[]}"),
-                             error) == true);
-    REQUIRE(world.Load(ReadBenchmarkFile(QDir(root).filePath(QStringLiteral("assets/") + worldName)), error) == true);
-    const QJsonObject level = world.SceneLevel();
-    const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
-    const QByteArray rootBytes = root.toUtf8();
-    Array<uint8> bundle;
-    ludus::content::scene_cook::AssetError assetError;
-    REQUIRE(ludus::content::scene_cook::AssembleLevel(
-                {rootBytes.constData(), static_cast<usize>(rootBytes.size())},
-                {reinterpret_cast<const uint8*>(levelBytes.constData()), static_cast<usize>(levelBytes.size())},
-                {},
-                bundle,
-                assetError) == true);
-    RenderScene scene;
-    REQUIRE(RenderScene::LoadCooked(
-                QByteArray(reinterpret_cast<const char*>(bundle.GetData()), static_cast<qsizetype>(bundle.GetSize())),
-                level,
-                scene,
-                error,
-                {}) == true);
     RenderPreview viewport;
     REQUIRE(viewport.SetScene(scene) == true);
     if (navigationPath.isEmpty() == false)
     {
-        const QJsonDocument navigation = QJsonDocument::fromJson(ReadBenchmarkFile(navigationPath));
+        const QJsonDocument navigation = QJsonDocument::fromJson(tests::ReadTestFile(navigationPath));
         REQUIRE(navigation.isObject() == true);
         viewport.RestoreNavigation(navigation.object());
     }
@@ -128,13 +96,14 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
     REQUIRE(rhi::GetMeasurementAdapter(device, adapter) == rhi::RasterStatus::Ready);
     QJsonObject result;
     {
-        const QByteArray bytes = ReadBenchmarkFile(runtime);
+        const QByteArray bytes = tests::ReadTestFile(runtime);
         renderer::RenderGraphPackage package;
         REQUIRE(package.Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())}) ==
                 renderer::RenderGraphPackageStatus::Ready);
         const renderer::RenderGraphPrograms programs =
             package.GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
-        REQUIRE(programs.HasClusteredDeferred == true);
+        INFO("Supply a cooked ClusteredForward or ClusteredDeferred runtime package.");
+        REQUIRE(programs.HasClusteredForward == true);
         renderer::RenderGraph graph;
         rhi::RasterStatus status =
             graph.Initialize(device, package.GetPlan(), programs, nullptr, BENCHMARK_WIDTH, BENCHMARK_HEIGHT);
@@ -188,6 +157,7 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
         }
         REQUIRE(graph.GetReport().PendingMeshLightShadowFaces == 0);
         QJsonArray frames;
+        QJsonArray cpuRenderMilliseconds;
         QJsonArray passFrames;
         QJsonArray passNames;
         for (uint32 frame = 0; frame < WARMUP_FRAMES + MEASURED_FRAMES; ++frame)
@@ -195,7 +165,10 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
             REQUIRE(rhi::ArmGpuTiming(device) == rhi::RasterStatus::Ready);
             REQUIRE(rhi::ArmGpuPassTimings(device) == rhi::RasterStatus::Ready);
             rhi::SubmissionToken completion;
-            REQUIRE(graph.Render(surface, BENCHMARK_WIDTH, BENCHMARK_HEIGHT, completion) == rhi::RasterStatus::Ready);
+            timer.restart();
+            status = graph.Render(surface, BENCHMARK_WIDTH, BENCHMARK_HEIGHT, completion);
+            const float64 cpuMilliseconds = static_cast<float64>(timer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND;
+            REQUIRE(status == rhi::RasterStatus::Ready);
             timer.restart();
             status = rhi::GetStatus(device, completion);
             while (status == rhi::RasterStatus::Pending && timer.elapsed() < PREPARATION_TIMEOUT_MILLISECONDS)
@@ -215,6 +188,7 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
                 continue;
             }
             frames.append(static_cast<float64>(timing.DurationNanoseconds) / NANOSECONDS_PER_MILLISECOND);
+            cpuRenderMilliseconds.append(cpuMilliseconds);
             if (passNames.isEmpty() == true)
             {
                 for (usize pass = 0; pass < passes.Count; ++pass)
@@ -261,12 +235,17 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
             REQUIRE(read == OffscreenReadStatus::Complete);
             REQUIRE(reader.TakeImage().save(imagePath, "PNG") == true);
         }
+        const renderer::RenderGraphAllocationReport allocations = graph.GetAllocationReport();
         result = {
             {QStringLiteral("adapter"), QString::fromUtf8(adapter.Name)},
             {QStringLiteral("world"), worldName},
             {QStringLiteral("runtime"), runtime},
+            {QStringLiteral("profile"),
+             programs.HasClusteredDeferred == true ? QStringLiteral("ClusteredDeferred")
+                                                   : QStringLiteral("ClusteredForward")},
             {QStringLiteral("width"), static_cast<int32>(BENCHMARK_WIDTH)},
             {QStringLiteral("height"), static_cast<int32>(BENCHMARK_HEIGHT)},
+            {QStringLiteral("deferred_attachment_bytes"), static_cast<qint64>(allocations.DeferredAttachmentBytes)},
             {QStringLiteral("mesh_light_polygons"), static_cast<qint64>(graph.GetReport().Resources.MeshLightPolygons)},
             {QStringLiteral("mesh_light_bytes"), static_cast<qint64>(graph.GetReport().Resources.MeshLightBytes)},
             {QStringLiteral("mesh_light_shadow_casters"),
@@ -277,6 +256,7 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
              static_cast<qint64>(graph.GetReport().Resources.MeshLightShadowFaces)},
             {QStringLiteral("preparation_ms"), preparationMilliseconds},
             {QStringLiteral("shadow_fill_gpu_frame_ms"), fillFrames},
+            {QStringLiteral("cpu_render_ms"), cpuRenderMilliseconds},
             {QStringLiteral("gpu_frame_ms"), frames},
             {QStringLiteral("pass_names"), passNames},
             {QStringLiteral("pass_ms"), passFrames}};
