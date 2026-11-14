@@ -5,8 +5,9 @@ generates bounded heightfield meshes for default Worlds. The
 [viewport authoring slices](#delivery-and-review-gates) add docked source
 editing, native grayscale heightmap import, and three sculpt brushes.
 [`Ludus::ContentTerrain`](../modules/content/terrain.md) provides the headless
-slope, drainage, wetness and material-rule kernels. The tiled
-terrain module, streaming renderer, and physics adapter remain proposed. Sizes
+canonical tiled codec, CPU queries and mesh export alongside slope, drainage,
+wetness and material-rule kernels. The separate runtime module, streaming
+renderer and physics adapter remain proposed. Sizes
 and performance budgets are starting profiles and require measurements on the
 selected targets.
 
@@ -124,6 +125,11 @@ providers; no arrow permits a link cycle or a worker to mutate the world.
 | Consumer-private render adapter initially | Visibility, detail cuts, draw descriptions, GPU pages and retirement | Terrain, graphics public API |
 | Consumer-private physics adapter initially | Collision shapes, physical demand and tick-safe replacement | Terrain, selected physics API |
 | Editor-private terrain controller | Brush transactions, layers, undo, import UI and previews | TerrainContent, editor document/UI facilities |
+
+The [T0 in-tree implementation](../modules/content/terrain.md#canonical-tiled-terrain)
+extends the existing Foundation-only `Ludus::ContentTerrain` target. It accepts
+bounded elevation fields and reads or writes raw height payloads with caller-owned
+revision metadata. Queries operate on one all-solid tile at a time.
 
 Promote adapters only when reuse justifies a module. Large cooker/erosion
 implementations can later split into a tools target without changing runtime
@@ -702,7 +708,7 @@ Implementation slices require pinned warning-clean builds, meaningful unit tests
 ASan/UBSan, format/tidy, header/include/build-budget gates, installed SDK consumers
 and applicable browser checks. New public declarations require Doxygen coverage
 and wiki guidance in the same slice. Record measured acceptance separately from
-the design; the present change is documentation only.
+the design.
 
 ### Raster index order
 
