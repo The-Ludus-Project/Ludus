@@ -45,6 +45,7 @@ bool ExerciseInstalledCollision() noexcept;
 bool ExerciseInstalledCurves() noexcept;
 bool ExerciseInstalledGeometry() noexcept;
 bool ExerciseInstalledCamera() noexcept;
+bool ExerciseInstalledCameraDirector() noexcept;
 bool ExerciseInstalledSequencer() noexcept;
 bool ExerciseInstalledAnimation() noexcept;
 bool ExerciseInstalledDenoiser() noexcept;
@@ -250,6 +251,10 @@ int main()
     if (ExerciseInstalledCamera() == false)
     {
         return 41;
+    }
+    if (ExerciseInstalledCameraDirector() == false)
+    {
+        return 108;
     }
     if (ExerciseInstalledSequencer() == false)
     {
