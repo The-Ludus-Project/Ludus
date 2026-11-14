@@ -725,7 +725,8 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_upscale.py scripts/python/ludus_tools/render_graph_sizes.py
     scripts/python/ludus_tools/render_graph_quality.py
     scripts/python/ludus_tools/render_graph_diagnostics.py
-    scripts/python/ludus_tools/render_graph_build.py scripts/python/ludus_tools/render_graph_execution.py
+    scripts/python/ludus_tools/render_graph_build.py scripts/python/ludus_tools/render_graph_build_inventory.py
+    scripts/python/ludus_tools/render_graph_execution.py
     scripts/python/ludus_tools/render_graph_pipeline.py scripts/python/ludus_tools/render_graph_options.py scripts/python/ludus_tools/render_graph_ray.py
     scripts/python/ludus_tools/render_graph_ray_invocation.py
     scripts/python/ludus_tools/render_graph_metal_ray.py

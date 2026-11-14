@@ -711,6 +711,11 @@ observations alone cannot prove the completeness of all runtime choices.
 
 ### Attribute variant cost before optimizing (proposed)
 
+**Status.** The host-tool inventory below is delivered in `build-report.json`;
+see [Attribute shader variant costs](../development/render-graph-authoring.md#attribute-shader-variant-costs)
+for its fields and the masked color and depth fixture record. The
+Renderer/RHI device preparation report remains proposed.
+
 Today the graph build report records aggregate cache hits/misses, elapsed time,
 counts and LUSL lowering details. The authored budget counts bound admission
 before cooking; they do not say which root choice caused a costly emitted stage,
