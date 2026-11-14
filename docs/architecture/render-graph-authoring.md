@@ -756,6 +756,39 @@ combine all expressions also produced oversized, unstable shaders. Compare a
 data-driven version and a bounded specialized version when the choice affects
 GPU work; neither a larger shared shader nor more variants wins by default.
 
+### Particle parameter iteration
+
+Brandon Whitley’s
+[*The Destiny Particle Architecture*](https://advances.realtimerendering.com/s2017/Destiny_Particle_Architecture_Siggraph_Advances_2017.pptx)
+(SIGGRAPH 2017, slides 62–74, 82–85, 96–106, 109–124 and 153) separates
+simulation state from appearance. Bungie hot-reloaded valid parameter
+expressions as bytecode and baked costly expressions into shaders offline.
+Adding or removing nodes still incurred shader compilation, and baking
+increased shader count. On Bungie’s GPU, evaluating eight splines for 10,000
+particles took 0.620 ms through the interpreter and 0.023 ms with baked HLSL
+(slides 106 and 119). Those figures measure expression evaluation only.
+Thanks to Whitley and the Bungie FX and graphics teams for documenting the
+distinction between edit latency and execution cost.
+
+For Ludus, keep emitter lifetime and motion state with the particle consumer
+and evaluate appearance from explicit inputs. The
+[World demo’s first burst](https://github.com/The-Ludus-Project/Ludus/issues/1427)
+will establish a bounded CPU and direct-raster baseline using presentation
+events from completed ticks under the
+[gameplay presentation contract](gameplay-foundations.md#calls-commands-events-and-asynchronous-results).
+
+A value edit stays on the existing parameter path. If a named effect needs live
+expression edits beyond typed values or curves, or evaluation has a measured
+frame cost, compare a bounded data evaluator for one appearance parameter with
+the direct path. Use the same typed expression and inputs if a cooked Slang
+version is justified. Keep structural edits on the existing graph build and
+publication path. Measure edit-to-visible latency in the selected World
+viewport, then check the same saved effect independently through Play and a
+Release app built with the [installed SDK](../development/project-sdk-workflow.md#configure-build-run).
+For shader specialization, apply the cook, artifact and prewarm measures above.
+The [particle expression experiment](https://github.com/The-Ludus-Project/Ludus/issues/1514)
+owns the acceptance criteria.
+
 ## Pipeline readiness and execution
 
 Separate shader configurations from pipeline recipes and device pipeline objects.
