@@ -128,6 +128,8 @@ public:
         std::memcpy(event.Acknowledgement.ProducerName.GetData(), "scripted game", 13);
         mSinkOrNull->AcceptRecordingEvent(event);
     }
+    // Recording then frame, as in HostedRecordingSample.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void SendSample(uint64 recording, uint64 frame)
     {
         REQUIRE(mSinkOrNull != nullptr);

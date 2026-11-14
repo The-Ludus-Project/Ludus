@@ -29,9 +29,9 @@ using HostedProducerName = foundation::StaticArray<char, HOSTED_RECORDING_PRODUC
 enum class HostedRecordingRequestKind : foundation::uint8
 {
     /// Begin measuring the frames submitted after the acknowledgement.
-    Start = 1,
+    Start = 0,
     /// Stop measuring, deliver what has resolved and report coverage.
-    Stop = 2,
+    Stop = 1,
 };
 
 /// @brief One recording request.
