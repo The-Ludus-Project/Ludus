@@ -641,8 +641,8 @@ def build_parser() -> argparse.ArgumentParser:
     new_graph = graphs.add_parser("new", help="create an editable render graph package in a new directory")
     new_graph.add_argument("destination")
     new_graph.add_argument("--template", choices=("raster", "forward-lit", "restir-di", "visibility-buffer",
-                                                   "visibility-secondary-rays", "tiled-vbuffer-nee", "compute-ray-tracing",
-                                                   "simple-compute-ray-tracing", "veach-guibas-mis", "line-sampling",
+                                                   "visibility-secondary-rays", "hybrid-shadows", "tiled-vbuffer-nee",
+                                                   "compute-ray-tracing", "simple-compute-ray-tracing", "veach-guibas-mis", "line-sampling",
                                                    "ris-projected-solid-angle", "salesin-jarosz-lines",
                                                    "polygonal-light-sampling", "slice-sampling-luminaire", "rough-pair-slice",
                                                    "steinberg-plt", "steinberg-physical-optics", "wave-tracing",

@@ -8,6 +8,7 @@
 #include "internal/native_interop.h"
 
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/pipeline_preparation.h>
 
 #include "internal/lifecycle.h"
 #include "internal/profile.h"
@@ -21,6 +22,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <new>
 
@@ -158,6 +160,32 @@ struct RayRecordInfo final
     usize Scene = 0, Program = 0, Count = 0;
     RayAllocation Allocation;
 };
+/// Owner-thread wall-clock history of one native raster pipeline creation (issue #1253). Diagnostic only;
+/// it never enters the field-wise pipeline key, and other record kinds leave it zero.
+struct PipelinePreparationHistory final
+{
+    /// Monotonic reading when RequestPipeline queued the native creation; zero for direct creation.
+    uint64 RequestedNanoseconds = 0;
+    /// Monotonic reading when native creation launched.
+    uint64 LaunchedNanoseconds = 0;
+    /// Monotonic reading when the owner thread observed the creation outcome.
+    uint64 FinishedNanoseconds = 0;
+    bool IsRequested = false;
+    bool IsLaunched = false;
+    bool IsFinished = false;
+    bool IsReady = false;
+    bool HasFirstUseMiss = false;
+    bool HasBeenDrawn = false;
+};
+/// Device-session totals behind GetPipelinePreparationReport, reset with the raster registry.
+struct PipelinePreparationTotals final
+{
+    uint64 NativeCreations = 0;
+    uint64 SharedRequests = 0;
+    uint64 FirstUseMisses = 0;
+    uint64 FailedPreparations = 0;
+    uint64 PreparationNanoseconds = 0;
+};
 struct Record final
 {
     core::UniquePtr<RayRecordInfo> Ray;
@@ -204,12 +232,15 @@ struct Record final
     usize AuxiliaryHostBytes = 0;
     /// Diagnostic only; reset with the record, so a recycled slot starts unnamed.
     GpuDebugName DebugName;
+    /// Raster pipeline preparation history; reset with the record.
+    PipelinePreparationHistory Preparation;
 };
 constexpr usize RASTER_KINDS = static_cast<usize>(RasterKind::RayGeometry);
 StorageTable<Record> gRecords[KINDS];
 RasterSequence<uint32> gRequests;
 RasterSequence<uint64> gSubmissions;
 uint64 gFrameSubmission = 0;
+PipelinePreparationTotals gPipelinePreparation;
 uint64 gFirstAcceptedSubmission = 0;
 uint64 gLastAcceptedSubmission = 0;
 usize gDrawCount = 0;
@@ -236,6 +267,66 @@ void RetainPacketTextures(const RasterPacket&) noexcept;
 Record& At(RasterKind kind, usize slot) noexcept
 {
     return gRecords[static_cast<usize>(kind)][slot];
+}
+/// Stamp the launch of one native raster pipeline creation on the owner thread.
+void BeginPipelinePreparation(Record& inoutRecord) noexcept
+{
+    inoutRecord.Preparation.LaunchedNanoseconds = time::NowTicks();
+    inoutRecord.Preparation.IsLaunched = true;
+    ++gPipelinePreparation.NativeCreations;
+}
+/// Stamp the first observed final outcome of a launched creation; Pending and later outcomes are ignored.
+void FinishPipelinePreparation(Record& inoutRecord, RasterStatus status) noexcept
+{
+    PipelinePreparationHistory& history = inoutRecord.Preparation;
+    if (history.IsLaunched == false || history.IsFinished == true || status == RasterStatus::Pending)
+    {
+        return;
+    }
+    const uint64 now = time::NowTicks();
+    history.FinishedNanoseconds = now < history.LaunchedNanoseconds ? history.LaunchedNanoseconds : now;
+    history.IsFinished = true;
+    history.IsReady = status == RasterStatus::Ready;
+    if (history.IsReady == true)
+    {
+        gPipelinePreparation.PreparationNanoseconds += history.FinishedNanoseconds - history.LaunchedNanoseconds;
+    }
+    else
+    {
+        ++gPipelinePreparation.FailedPreparations;
+    }
+}
+/// Record that a draw-time use found a pipeline still preparing; each pipeline counts once.
+void NoteFirstUseMiss(Record& inoutPipeline) noexcept
+{
+    if (inoutPipeline.Status == RasterStatus::Pending && inoutPipeline.Preparation.HasFirstUseMiss == false)
+    {
+        inoutPipeline.Preparation.HasFirstUseMiss = true;
+        ++gPipelinePreparation.FirstUseMisses;
+    }
+}
+/// Copy one pipeline record's history into the public report shape.
+void DescribePipelinePreparation(const Record& pipeline, PipelinePreparation& outPreparation) noexcept
+{
+    const PipelinePreparationHistory& history = pipeline.Preparation;
+    PipelinePreparation preparation;
+    preparation.IsLaunched = history.IsLaunched;
+    preparation.IsReady = history.IsReady;
+    preparation.HasFailed = history.IsFinished == true && history.IsReady == false;
+    preparation.HasFirstUseMiss = history.HasFirstUseMiss;
+    preparation.HasBeenDrawn = history.HasBeenDrawn;
+    if (history.IsRequested == true && history.IsLaunched == true &&
+        history.LaunchedNanoseconds >= history.RequestedNanoseconds)
+    {
+        preparation.QueueSeconds =
+            time::ToSeconds(time::Duration{history.LaunchedNanoseconds - history.RequestedNanoseconds});
+    }
+    if (history.IsFinished == true)
+    {
+        preparation.PreparationSeconds =
+            time::ToSeconds(time::Duration{history.FinishedNanoseconds - history.LaunchedNanoseconds});
+    }
+    outPreparation = preparation;
 }
 RasterStatus Admission(DeviceHandle device, bool mutation = true) noexcept
 {
@@ -2309,7 +2400,11 @@ RasterStatus CreateRasterPipeline(DeviceHandle device,
     }
     return Publish(RasterKind::Pipeline, output, [&](usize slot, Record& record) noexcept {
         record.Pipeline = info;
-        return backend::RasterCreatePipeline(slot, info, record.Request);
+        BeginPipelinePreparation(record);
+        const RasterStatus created = backend::RasterCreatePipeline(slot, info, record.Request);
+        // A synchronous completion callback may already have finished the record inside the call.
+        FinishPipelinePreparation(record, record.Status != RasterStatus::Pending ? record.Status : created);
+        return created;
     });
 }
 namespace
@@ -2325,7 +2420,7 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
     {
         return RasterStatus::InvalidDescription;
     }
-    const auto* pipeline = Resolve(draw.Pipeline, RasterKind::Pipeline);
+    Record* pipeline = Resolve(draw.Pipeline, RasterKind::Pipeline);
     const auto* set = Resolve(draw.Bindings, RasterKind::Set);
     // R12a: only an indirect packet may omit its index buffer and select non-indexed commands.
     const bool hasIndirect = RasterAccess::Owner(draw.Indirect) != 0;
@@ -2335,6 +2430,7 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
     {
         return RasterStatus::InvalidHandle;
     }
+    NoteFirstUseMiss(*pipeline);
     const Record* dependencies[]{pipeline, set, isIndexed == true ? indicesOrNull : set};
     for (const auto* dependency : dependencies)
     {
@@ -2467,6 +2563,7 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
         packet.Offsets[i] = slice.Offset;
         packet.Sizes[i] = slice.Size;
     }
+    pipeline->Preparation.HasBeenDrawn = true;
     return RasterStatus::Ready;
 }
 RasterStatus ReserveFrameSubmission() noexcept
@@ -2584,6 +2681,7 @@ void RasterComplete(uint32 request, RasterStatus status) noexcept
                 {
                     record.Status = RasterStatus::Ready;
                 }
+                FinishPipelinePreparation(record, record.Status);
                 return;
             }
         }
@@ -2598,6 +2696,7 @@ void RasterFail(uint32 request, RasterStatus status) noexcept
             if (record.Owner != 0 && record.Request == request)
             {
                 record.Status = status;
+                FinishPipelinePreparation(record, status);
                 return;
             }
         }
@@ -2708,6 +2807,7 @@ void ReleaseRasterResources() noexcept
         }
     }
     backend::RasterShutdown();
+    gPipelinePreparation = {};
     gFirstAcceptedSubmission = 0;
     gLastAcceptedSubmission = 0;
     gFrameSubmission = 0;

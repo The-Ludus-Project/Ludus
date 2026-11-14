@@ -11,6 +11,7 @@
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
+#include <ludus/graphics/rhi/pipeline_preparation.h>
 
 #include "cull.h"
 #include "internal/gpu_scope_backend.h"
@@ -733,5 +734,126 @@ TEST_CASE("Native asynchronous compute preparation retains detached dependencies
         rhi::Shutdown();
     }
     REQUIRE(rhi::GetStatus(device, pipeline) == rhi::RasterStatus::InvalidHandle);
+}
+TEST_CASE("Raster pipeline preparation reports creations, shared requests and first-use misses",
+          "[rhi][gpu][pipeline-preparation]")
+{
+    struct SessionGuard final
+    {
+        ~SessionGuard()
+        {
+            rhi::backend::SetNativePipelinePreparationPaused(false);
+            rhi::Shutdown();
+        }
+    } session;
+    rhi::Shutdown();
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    constexpr uint32 EXTENT = 16;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = EXTENT, .Height = EXTENT }, description, device, surface, &failure);
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No native GPU adapter on this host");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    const rhi::RasterShaderDescription vertex = ludus::shaders::raster::Vertex();
+    const rhi::RasterShaderDescription fragment = ludus::shaders::raster::Fragment();
+    rhi::RasterShaderHandle vs;
+    rhi::RasterShaderHandle fs;
+    REQUIRE(rhi::CreateRasterShader(device, vertex, vs) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateRasterShader(device, fragment, fs) == rhi::RasterStatus::Ready);
+    rhi::BindingLayoutHandle layout;
+    REQUIRE(rhi::CreateBindingLayout(device, fragment.Bindings, layout) == rhi::RasterStatus::Ready);
+    rhi::PipelinePreparationReport report;
+    REQUIRE(rhi::GetPipelinePreparationReport(device, report) == rhi::RasterStatus::Ready);
+    CHECK(report.NativeCreations == 0);
+    CHECK(report.ResidentPipelines == 0);
+    // No backend measures pipeline driver memory; artifact bytes are never reported in its place.
+    CHECK(report.HasDriverMemory == false);
+    CHECK(report.DriverMemoryBytes == 0);
+    const rhi::RasterVertexStream streams[2]{{20, false}, {8, true}};
+    const rhi::RasterVertexAttribute attributes[3]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
+                                                   {1, 0, 12, rhi::RasterVertexFormat::Float2},
+                                                   {2, 1, 0, rhi::RasterVertexFormat::Float2}};
+    rhi::RasterPipelineDescription
+        pipelineDescription{vs, fs, layout, streams, attributes, true, false, rhi::RasterTarget::Rgba8Unorm};
+    // Direct creation launches immediately; it never waits in the request queue.
+    rhi::RasterPipelineHandle direct;
+    REQUIRE(rhi::CreateRasterPipeline(device, pipelineDescription, direct) == rhi::RasterStatus::Ready);
+    rhi::PipelinePreparation preparation;
+    REQUIRE(rhi::GetPipelinePreparation(device, direct, preparation) == rhi::RasterStatus::Ready);
+    CHECK(preparation.IsLaunched == true);
+    CHECK(preparation.IsReady == true);
+    CHECK(preparation.Requests == 0);
+    CHECK(preparation.IsShared == false);
+    CHECK(preparation.QueueSeconds == 0);
+    CHECK(preparation.PreparationSeconds >= 0);
+    CHECK(preparation.HasFirstUseMiss == false);
+    // A compatible second request shares the first request's native pipeline.
+    pipelineDescription.DepthCompare = rhi::RasterDepthCompare::LessEqual;
+    rhi::PipelineRequest first;
+    rhi::PipelineRequest second;
+    REQUIRE(rhi::RequestPipeline(device, pipelineDescription, first) == rhi::RasterStatus::Pending);
+    REQUIRE(rhi::PollLifetime(device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetStatus(device, first) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::RequestPipeline(device, pipelineDescription, second) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetPipelinePreparation(device, first, preparation) == rhi::RasterStatus::Ready);
+    CHECK(preparation.IsShared == false);
+    CHECK(preparation.Requests == 2);
+    CHECK(preparation.IsReady == true);
+    CHECK(preparation.QueueSeconds >= 0);
+    REQUIRE(rhi::GetPipelinePreparation(device, second, preparation) == rhi::RasterStatus::Ready);
+    CHECK(preparation.IsShared == true);
+    CHECK(preparation.Requests == 2);
+    REQUIRE(rhi::GetPipelinePreparationReport(device, report) == rhi::RasterStatus::Ready);
+    CHECK(report.NativeCreations == 2);
+    CHECK(report.SharedRequests == 1);
+    CHECK(report.ResidentPipelines == 2);
+    CHECK(report.FirstUseMisses == 0);
+    // A pipeline still preparing when the frame asks for it is a first-use miss, never a draw-time creation.
+    pipelineDescription.DepthCompare = rhi::RasterDepthCompare::Greater;
+    pipelineDescription.ShouldPrepareAsynchronously = true;
+    rhi::PipelineRequest late;
+    rhi::backend::SetNativePipelinePreparationPaused(true);
+    REQUIRE(rhi::RequestPipeline(device, pipelineDescription, late) == rhi::RasterStatus::Pending);
+    REQUIRE(rhi::PollLifetime(device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::SetFrameTarget(device, surface, {EXTENT, EXTENT, 0, 0, 0, 1}) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    rhi::RasterPipelineHandle borrowed;
+    CHECK(rhi::GetRequestedPipeline(device, late, borrowed) == rhi::RasterStatus::Pending);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetPipelinePreparationReport(device, report) == rhi::RasterStatus::Ready);
+    CHECK(report.FirstUseMisses == 1);
+    CHECK(report.PreparingPipelines == 1);
+    rhi::backend::SetNativePipelinePreparationPaused(false);
+    timing::Deadline deadline;
+    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(5)) == timing::TimeStatus::Ok);
+    rhi::RasterStatus status = rhi::GetStatus(device, late);
+    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
+    {
+        threading::SleepFor(timing::Milliseconds(1));
+        status = rhi::GetStatus(device, late);
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetPipelinePreparation(device, late, preparation) == rhi::RasterStatus::Ready);
+    CHECK(preparation.HasFirstUseMiss == true);
+    CHECK(preparation.IsReady == true);
+    CHECK(preparation.PreparationSeconds > 0);
+    REQUIRE(rhi::GetPipelinePreparationReport(device, report) == rhi::RasterStatus::Ready);
+    CHECK(report.NativeCreations == 3);
+    CHECK(report.FirstUseMisses == 1);
+    CHECK(report.PreparingPipelines == 0);
+    CHECK(report.ResidentPipelines == 3);
+    CHECK(report.PreparationSeconds > 0);
+    REQUIRE(rhi::Release(device, late) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Release(device, second) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Release(device, first) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, direct) == rhi::RasterStatus::Ready);
+    CHECK(rhi::GetPipelinePreparation(device, direct, preparation) == rhi::RasterStatus::InvalidHandle);
 }
 #endif
