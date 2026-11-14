@@ -2,9 +2,10 @@
 
 Status: Proposed design, originally recorded on October 5, 2026 against
 repository HEAD `144a708`, and reconciled with `216083e` on October 6, 2026.
-C0 now has an initial runtime implementation, described under
-[C0 runtime and usage](#c0-runtime-and-usage). C1–C5 remain proposed; no general
-3D renderer, collision system or temporal history is claimed.
+C0 and C1 have initial runtime implementations, described under
+[C0 runtime and usage](#c0-runtime-and-usage) and
+[C1 runtime and usage](#c1-runtime-and-usage). C2–C5 remain proposed; no camera
+collision, effects or renderer temporal history is claimed.
 
 Build a small camera system around one owner per output view, immutable rig
 definitions, explicit mutable state, and a fixed sequence of ordinary functions.
@@ -82,8 +83,8 @@ as a modern engine API.
 ## Ownership and dependencies
 
 The reusable target is `Ludus::GameplayCamera` under
-`modules/gameplay/camera/`. C0 depends on FoundationBase and FoundationMath;
-FoundationContainers becomes a dependency when reserved state is required.
+`modules/gameplay/camera/`. It depends on FoundationBase, FoundationMath and,
+since the C1 director reserves its override slots, FoundationContainers.
 The planned subsystem owns camera evaluation, rig state, bounded transitions,
 constraints and cosmetic impulses. It does not import GameplayWorld, Input,
 Platform, RHI, Audio, an editor, or a physics backend. Games adapt those services
@@ -898,8 +899,9 @@ preserves both output and optional trace; the returned status explains rejection
 Follow requires an orthographic lens and XY identity rotation (either quaternion
 sign), adds an explicit planar offset, and retains the authored eye Z. Dead zones,
 look-ahead, bounds, damping, selection, overrides, transitions, constraints and
-effects are not part of this first runtime slice. C1 introduces state and timing;
-the later phases retain their acceptance requirements above.
+effects are not part of this first runtime slice. [C1](#c1-runtime-and-usage)
+adds state, timing, selection and transitions; the later phases retain their
+acceptance requirements above.
 
 world_demo extracts `CameraSample` and `CameraTrace` alongside its draws with the
 same previous/current tick pair and alpha. Its existing JSON camera schema and
@@ -928,6 +930,118 @@ traces, successful view construction and missing-target rejection. world_demo
 integration tests check interpolation, pause/step, target loss and unchanged
 authoritative state. The parser/demo remains deferred on macOS as before;
 the camera module and renderer adapter are built and tested there independently.
+
+## C1 runtime and usage
+
+C1 adds third-person orbit placement, authoritative control aim, damping and a
+per-output director with bounded transitions. Its contracts live in `control.hpp`,
+`evaluation.hpp` and `director.hpp` beside the C0 headers. C0 evaluation keeps its
+behavior; the C0 consumers (world_demo, the Cornell box sample and the editor's
+fixed samples) are unchanged and do not use the director yet.
+
+**Control aim.** `CameraControlView` is game-owned yaw/pitch: yaw about world +Y
+(positive turns left), pitch about the yawed +X (positive looks up), zero looking
+along -Z. `TryAdvanceControlView` applies a pointer displacement once, without the
+tick duration, and integrates stick deflection over the tick; it wraps yaw into
+[-pi, pi) by a floor rule and clamps pitch to `CameraPitchLimits` strictly inside
+(-pi/2, pi/2). `TryComputeMovementForward` derives the ground heading from yaw
+alone, so a near-vertical view never normalizes a zero vector. Cameras read the
+view through `CameraUpdateContext::Control` and never write it back.
+
+**Orbit.** `CameraRecipe::Orbit` places the pivot at the target plus a world
+`PivotOffset`, orients from the control view with the rig's own pitch clamp, and
+puts the eye at `pivot + Rotate(look, ShoulderOffset + (0, 0, ArmLength))`. With a
+zero shoulder offset the pivot stays on the view axis. `TryEvaluateCamera` returns
+the undamped shot; `TryAdvanceCameraRig` advances a plain `CameraRigState`: the
+pivot through the exact critical spring (`PivotSmoothTimeSeconds`) and the orbit
+look through exponential half-life damping with `SlerpShortest`
+(`LookHalfLifeSeconds`, normally zero for aiming). Orthographic follow uses the
+same pivot spring. A new state, a different binding or a changed
+`CameraTargetSample::DiscontinuityRevision` (teleport) snaps the history. A zero
+delta advances nothing. Both kernels are documented in
+[dynamics kernels](../development/dynamics-kernels.md#presentation-damping-kernels).
+
+```cpp
+#include <ludus/gameplay/camera/director.hpp>
+
+using namespace ludus::gameplay::camera;
+CameraDirector director; // one per logical output; TryConfigure sets its OutputId
+const CameraRigRequest explore
+{
+    .Definition =
+    {
+        .Recipe = CameraRecipe::Orbit,
+        .Lens = { .Projection = CameraProjection::PerspectiveInfinite, .VerticalFov = 1, .NearPlane = 0.1F },
+        .Orbit = { .PivotOffset = {0, 1.5F, 0}, .ArmLength = 6 },
+        .Damping = { .PivotSmoothTimeSeconds = 0.15F },
+    },
+    .BindingId = playerBinding,
+    .Transition = { .DurationSeconds = 0.4F, .Path = CameraBlendPath::AroundPivot },
+};
+director.SetBaseRig(explore);           // aiming would AcquireOverride a closer shoulder rig
+const CameraTargetSample targets[] = {{ .Position = playerChest, .BindingId = playerBinding }};
+CameraSample sample;
+CameraDirectorTrace trace;
+if (director.TryUpdate({ .PreviousTick = previous, .CurrentTick = current, .RenderAlpha = alpha,
+                         .PresentationSequence = sequence, .DeltaSeconds = presentationSeconds,
+                         .Control = controlView, .Targets = targets },
+                       sample, &trace) == CameraStatus::Success)
+{
+    // Publish sample; reject renderer history when sample.DiscontinuityRevision changed.
+}
+```
+
+**Selection.** The game sets a base rig and acquires overrides with a priority and
+owner. An active override beats the base, higher priority wins, equal priority keeps
+the incumbent, and otherwise the most recent acquisition wins. Re-sending an
+identical request does not restart its blend. `CameraOverrideToken` carries the
+output, slot and generation: releasing a released, retired or foreign token returns
+`StaleHandle`, `RevokeOverridesOwnedBy` releases a destroyed owner's overrides, and
+`Reset` revokes everything on world replacement. The director reserves
+`MAX_CAMERA_OVERRIDES` (8) slots; a slot retires after
+`MAX_CAMERA_OVERRIDE_GENERATION` acquisitions instead of wrapping. A new request
+enters with its own `CameraTransition`; a rig revealed by a release enters with the
+release's transition.
+
+**Transitions.** A blend advances the previous rig and the new one, eases the
+normalized time (linear or smoothstep), slerps orientation and interpolates the eye
+linearly or `AroundPivot` (the eye's offset from the pivot is interpolated in camera
+space, so a shared pivot keeps its place on screen). Lens magnification is linear in
+log projection scale. If the selection changes during a blend, the last published
+sample becomes a frozen outgoing endpoint, so the new blend starts exactly from what
+was shown; at most two rigs are ever evaluated. An outgoing rig that loses or
+teleports its target also freezes. Changing projection kind or clip planes cannot
+blend and cuts, as does a zero duration. C1 promises pose continuity at interruption,
+not velocity continuity.
+
+**Cuts and timing.** Each update consumes at most
+`CameraDirectorSettings::MaximumDeltaSeconds` (0.1 s by default); a longer hitch is
+clamped and the excess reported in `CameraDirectorTrace::DiscardedDeltaSeconds`. A
+zero delta pauses blends and damping. Cuts re-prime histories and increment the
+published `DiscontinuityRevision`, which the director owns; the trace's
+`CameraCutReason` says why (first publication, request, zero duration, incompatible
+lens, world revision, target teleport or recovery). Updates are transactional: a
+failure (invalid input, no selection, a missing selected target) publishes nothing,
+keeps pending requests, and makes the next accepted update a `Recovery` cut. On
+target loss the game selects a validated fallback; the director never substitutes
+the world origin.
+
+The module tests cover control input at several tick rates, yaw wrapping, orbit
+placement and pitch clamps, held-target damping at 30, 60, 120 and 240 Hz (equal to
+1e-9), moving-target lag, look half-life, pause, teleports, selection and override
+lifecycles, capacity and generation exhaustion, blends that complete together at
+every rate, mid-blend reversal, projection cuts, hitches, target loss and transactional
+failures. The installed SDK consumer (`tests/sdk_consumer/camera.cpp`) projects one
+World target through the renderer's `BuildViewDescription` at the same four rates:
+reversing an explore-to-inspect blend halfway moves the target by well under one
+blend frame's motion (0.3 px against up to 8.7 px at 30 Hz on a 1280 x 720 view),
+and overview (orthographic) to inspect (perspective) cuts both ways with an
+incremented revision. No 3D player camera is visually validated by these checks.
+
+C1 omits collision (C2), effects and comfort (C3), dead zones, look-ahead,
+auto-recentering, a first-person or free-flight recipe, trace rings, and director
+integration in world_demo or the editor. Pause entry, hidden-tab resume and replay
+remain the game's clock policy: it passes a zero delta, clamps or primes explicitly.
 
 ## Decisions changed by the article review
 

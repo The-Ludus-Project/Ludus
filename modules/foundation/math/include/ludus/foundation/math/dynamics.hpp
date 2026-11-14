@@ -23,6 +23,62 @@ struct LinearDragStep final
 /// allocation.
 [[nodiscard]] MathStatus TryComputeLinearDragStep(float64 rate, float64 dt, LinearDragStep& out) noexcept;
 
+/// @brief Interpolation weight of one exponential-damping step with a half-life.
+///
+/// Computes `1 - exp(-ln(2) * deltaSeconds / halfLifeSeconds)` through `expm1`, so very small steps keep their
+/// precision. A zero half-life is an explicit snap (weight 1), and a zero delta advances nothing (weight 0, even with
+/// a zero half-life). Repeated steps compose exactly in real arithmetic: two half steps leave the same remaining
+/// fraction as one full step.
+/// @param halfLifeSeconds Finite nonnegative seconds after which half of a held error remains.
+/// @param deltaSeconds Finite nonnegative elapsed seconds.
+/// @param outWeight Receives a weight in [0, 1] on Success; unchanged on failure.
+/// @return NonFiniteInput or InvalidArgument (negative input); outputs are preserved. No allocation.
+[[nodiscard]] MathStatus
+TryComputeExponentialDampingWeight(float64 halfLifeSeconds, float64 deltaSeconds, float64& outWeight) noexcept;
+
+/// @brief Coefficients of one exact critically damped step toward a held target.
+///
+/// With displacement `e = x - target`, velocity `v`, `omega = 2 / smoothTimeSeconds`, `c = v + omega * e` and
+/// `b = exp(-omega * dt)`, the step is `eNext = (e + c * dt) * b` and `vNext = (v - omega * c * dt) * b`.
+/// The smooth time is a response convention, not a deadline at which the target is reached.
+struct CriticalSpringStep final
+{
+    /// Angular frequency `2 / smoothTimeSeconds` in 1/seconds; zero for a snap.
+    float64 Omega = 0.0;
+    /// Elapsed seconds of this step.
+    float64 DeltaSeconds = 0.0;
+    /// `exp(-Omega * DeltaSeconds)`, in [0, 1].
+    float64 Decay = 1.0;
+    /// True when the smooth time was zero: the step clears displacement and velocity.
+    bool IsSnap = false;
+};
+
+/// @brief Prepare one critically damped step, shared by every channel with the same frequency and delta.
+/// @param smoothTimeSeconds Finite nonnegative response time; zero snaps.
+/// @param deltaSeconds Finite nonnegative elapsed seconds; zero advances nothing, even for a snap.
+/// @param outStep Replaced only on Success.
+/// @return NonFiniteInput, InvalidArgument (negative input) or OutOfRange (a smooth time so small that its frequency
+/// is not representable); failure preserves output. No allocation.
+[[nodiscard]] MathStatus
+TryComputeCriticalSpringStep(float64 smoothTimeSeconds, float64 deltaSeconds, CriticalSpringStep& outStep) noexcept;
+
+/// @brief Advance a displacement from a held target and its velocity by one prepared critical step.
+/// @param step Coefficients from TryComputeCriticalSpringStep.
+/// @param displacement Finite current position minus target, in world units.
+/// @param velocity Finite current velocity in world units per second.
+/// @param outDisplacement Receives the next displacement on Success.
+/// @param outVelocity Receives the next velocity on Success.
+/// @return NonFiniteInput for nonfinite inputs, OutOfRange when a product overflows; both outputs are preserved on
+/// failure. A zero delta returns the inputs unchanged. No allocation.
+/// @note Thanks to Thomas Lowe, "Critically Damped Ease-In/Ease-Out Smoothing", Game Programming Gems 4,
+/// section 1.10, pp. 95-101, for the analytic step; Ludus evaluates exact exponentials rather than Lowe's rational
+/// approximation. See "Damping and continuity" in docs/architecture/camera-systems.md.
+[[nodiscard]] MathStatus TryAdvanceCriticalSpring(const CriticalSpringStep& step,
+                                                  Vector3d displacement,
+                                                  Vector3d velocity,
+                                                  Vector3d& outDisplacement,
+                                                  Vector3d& outVelocity) noexcept;
+
 struct RadialSweepContact final
 {
     bool Hit = false;

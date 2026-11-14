@@ -43,6 +43,33 @@ use this linear sweep. Do not silently interpret its fraction as an exact time
 on a nonlinear path. See the [simulation design](../architecture/physics-fluid-simulation.md)
 and [reference review](../architecture/physics-fluid-reference-review.md).
 
+## Presentation damping kernels
+
+The same header provides the two damping kernels used by
+[gameplay cameras](../architecture/camera-systems.md#damping-and-continuity).
+`TryComputeExponentialDampingWeight(halfLife, dt, weight)` returns
+`1 - exp(-ln(2) dt / halfLife)` through `expm1`; a zero half-life snaps
+(weight 1) and a zero delta advances nothing (weight 0). Use the weight with
+vector interpolation or `SlerpShortest`.
+
+```cpp
+math::CriticalSpringStep step;
+math::Vector3d displacement;
+if (math::IsSuccess(math::TryComputeCriticalSpringStep(smoothTimeSeconds, dt, step)) &&
+    math::IsSuccess(math::TryAdvanceCriticalSpring(step, position - target, velocity, displacement, velocity)))
+{
+    position = target + displacement;
+}
+```
+
+The critical spring is the exact step toward a held target, with
+`omega = 2 / smoothTimeSeconds`. Steps subdivide exactly in real arithmetic, so
+different render rates reach the same state for a held target; a moving target
+sampled per frame differs by its sampling. A zero smooth time snaps and clears
+velocity. Inputs are finite and nonnegative; overflowing products return
+OutOfRange and preserve both outputs. One step can be shared by every channel
+with the same frequency and delta.
+
 ## Validation record
 
 On October 3, 2026, native Development completed 47 CTest entries: 45 passed and two
