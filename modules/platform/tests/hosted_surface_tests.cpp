@@ -752,6 +752,8 @@ void CopyName(const char* text, ludus::foundation::StaticArray<char, Size>& outN
     std::memcpy(outName.GetData(), text, std::strlen(text));
 }
 
+// Recording then frame, as in HostedRecordingSample.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 HostedRecordingSample MakeSample(uint64 recording, uint64 frame)
 {
     HostedRecordingSample sample;
@@ -802,6 +804,8 @@ bool TakeRecordingEvent(SurfacePair& inoutPair, HostedRecordingEvent& outEvent)
 }
 
 /// Start `recording` and answer it Ok from frame `frame` as an attached recorder.
+// Recording, request, then frame, as in HostedRecordingAcknowledgement.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void StartRecording(SurfacePair& inoutPair, uint64 recording, uint64 request, uint64 frame)
 {
     REQUIRE(inoutPair.Session.SendRecordingRequest(

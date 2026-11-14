@@ -1,5 +1,6 @@
 #include <ludus/graphics/rhi/hosted_recorder.h>
 
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/measurement.h>
@@ -242,7 +243,8 @@ void HostedGpuRecorder::deliverBatch(const GpuPassTimings& batch) noexcept
         sample.Frame = mBatchFrame;
         sample.SubmissionTicks = mBatchTicks;
         sample.CollectionTicks = collected >= mBatchTicks ? collected : mBatchTicks;
-        sample.DurationNanoseconds = static_cast<uint64>(duration + 0.5);
+        // Round to the nearest nanosecond; the duration is nonnegative and below the limit above.
+        sample.DurationNanoseconds = static_cast<uint64>(foundation::math::Floor(duration + 0.5));
         sample.ScopeIdentity = pass.Scope.Identity;
         sample.ScopePassIndex = pass.ScopePassIndex;
         sample.LogicalPassCount = pass.Scope.LogicalPassCount;
