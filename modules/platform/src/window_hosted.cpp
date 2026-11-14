@@ -34,7 +34,7 @@ namespace
 constexpr usize MAX_RECEIVE_ROUNDS = 16;
 constexpr foundation::uint64 NANOSECONDS_PER_MILLISECOND = 1'000'000;
 
-class WindowHosted final : public WindowBase, public HostedSurfaceChannel
+class WindowHosted final : public WindowBase, public HostedSurfaceChannel, public HostedRecordingChannel
 {
 public:
     WindowHosted(const CreateInfo& info, SocketDescriptor&& connection, const Token& token) noexcept
@@ -42,6 +42,7 @@ public:
     {
         mNativeWindowInfo.System = WindowSystem::Hosted;
         mNativeWindowInfo.HostedSurfaceOrNull = this;
+        mNativeWindowInfo.HostedRecordingOrNull = this;
     }
     ~WindowHosted() noexcept override
     {
@@ -78,6 +79,10 @@ public:
             }
             mReceivedSize += received;
             isChannelLost = processBuffered() == false;
+        }
+        if (isChannelLost == false && mIsClosed == false)
+        {
+            isChannelLost = answerUnattachedRequests() == false;
         }
         if (isChannelLost == true)
         {
@@ -208,16 +213,87 @@ private:
 #else
                 return false;
 #endif
+            case MessageKind::RecordingRequest:
+                return queueRecordingRequest(message.RecordingRequest);
             case MessageKind::Hello:
             case MessageKind::Welcome:
             case MessageKind::Refused:
             case MessageKind::Images:
             case MessageKind::Present:
+            case MessageKind::RecordingAcknowledgement:
+            case MessageKind::RecordingSample:
                 break;
         }
         // Handshake messages after the handshake, and window-to-endpoint messages,
         // violate the protocol.
         return false;
+    }
+
+    [[nodiscard]] bool queueRecordingRequest(const HostedRecordingRequest& request) noexcept
+    {
+        // A conforming endpoint keeps at most MAX_HOSTED_RECORDING_REQUESTS unanswered.
+        if (mRequestCount == MAX_HOSTED_RECORDING_REQUESTS)
+        {
+            return false;
+        }
+        mRequests[(mRequestFirst + mRequestCount) % MAX_HOSTED_RECORDING_REQUESTS] = request;
+        ++mRequestCount;
+        return true;
+    }
+
+    /// @brief Answer queued requests while no recorder is attached.
+    ///
+    /// A Start is Unsupported and a Stop names no running recording. Requests that do not
+    /// fit the recording send room stay queued for the next HandleEvent().
+    /// @return false when the channel is lost.
+    [[nodiscard]] bool answerUnattachedRequests() noexcept
+    {
+        while (mIsRecorderAttached == false && mRequestCount > 0)
+        {
+            const HostedRecordingRequest& request = mRequests[mRequestFirst];
+            HostedRecordingAcknowledgement acknowledgement;
+            acknowledgement.Kind = request.Kind;
+            acknowledgement.Result = request.Kind == HostedRecordingRequestKind::Start
+                                         ? HostedRecordingResult::Unsupported
+                                         : HostedRecordingResult::UnknownRecording;
+            acknowledgement.Recording = request.Recording;
+            acknowledgement.Request = request.Request;
+            acknowledgement.Ticks = foundation::time::NowTicks();
+            const HostedSurfaceStatus status = Acknowledge(acknowledgement);
+            if (status == HostedSurfaceStatus::Busy)
+            {
+                return true;
+            }
+            if (status == HostedSurfaceStatus::Disconnected)
+            {
+                return false;
+            }
+            mRequestFirst = (mRequestFirst + 1) % MAX_HOSTED_RECORDING_REQUESTS;
+            --mRequestCount;
+        }
+        return true;
+    }
+
+    /// @brief Queue one recording message without taking the surface send room.
+    [[nodiscard]] HostedSurfaceStatus sendRecording(const Message& message) noexcept
+    {
+        if (isSurfaceUsable() == false || flushSend() == false)
+        {
+            return HostedSurfaceStatus::Disconnected;
+        }
+        foundation::StaticArray<uint8, MAX_MESSAGE_BYTES> encoded{};
+        usize size = 0;
+        if (TryEncodeMessage(message, {encoded.GetData(), encoded.GetSize()}, size) == false)
+        {
+            return HostedSurfaceStatus::InvalidArgument;
+        }
+        if (mSendSize + size + SURFACE_SEND_RESERVE_BYTES > mSend.GetSize())
+        {
+            return HostedSurfaceStatus::Busy;
+        }
+        std::memcpy(mSend.GetData() + mSendSize, encoded.GetData(), size);
+        mSendSize += size;
+        return flushSend() == true ? HostedSurfaceStatus::Ok : HostedSurfaceStatus::Disconnected;
     }
 
     [[nodiscard]] bool queueRelease(const Message& message) noexcept
@@ -591,6 +667,52 @@ public:
         return true;
     }
 
+    void AttachRecorder() noexcept override
+    {
+        mIsRecorderAttached = true;
+    }
+
+    void DetachRecorder() noexcept override
+    {
+        mIsRecorderAttached = false;
+    }
+
+    bool TryTakeRecordingRequest(HostedRecordingRequest& outRequest) noexcept override
+    {
+        if (mIsRecorderAttached == false || mRequestCount == 0)
+        {
+            return false;
+        }
+        outRequest = mRequests[mRequestFirst];
+        mRequestFirst = (mRequestFirst + 1) % MAX_HOSTED_RECORDING_REQUESTS;
+        --mRequestCount;
+        return true;
+    }
+
+    HostedSurfaceStatus Acknowledge(const HostedRecordingAcknowledgement& acknowledgement) noexcept override
+    {
+        if (IsValidRecordingAcknowledgement(acknowledgement) == false)
+        {
+            return HostedSurfaceStatus::InvalidArgument;
+        }
+        Message message;
+        message.Kind = MessageKind::RecordingAcknowledgement;
+        message.RecordingAcknowledgement = acknowledgement;
+        return sendRecording(message);
+    }
+
+    HostedSurfaceStatus SendSample(const HostedRecordingSample& sample) noexcept override
+    {
+        if (IsValidRecordingSample(sample) == false)
+        {
+            return HostedSurfaceStatus::InvalidArgument;
+        }
+        Message message;
+        message.Kind = MessageKind::RecordingSample;
+        message.RecordingSample = sample;
+        return sendRecording(message);
+    }
+
 private:
     void applyReset(input::ResetReason reason, const input::FocusBaseline& baseline) noexcept
     {
@@ -703,6 +825,10 @@ private:
     foundation::StaticArray<HostedImageRelease, MAX_QUEUED_RELEASES> mReleases = {};
     usize mReleaseFirst = 0;
     usize mReleaseCount = 0;
+    foundation::StaticArray<HostedRecordingRequest, MAX_HOSTED_RECORDING_REQUESTS> mRequests = {};
+    usize mRequestFirst = 0;
+    usize mRequestCount = 0;
+    bool mIsRecorderAttached = false;
     uint32 mLastGeneration = 0;
     foundation::uint64 mLastSequence = 0;
     bool mHasPresented = false;

@@ -204,6 +204,11 @@ PeerProcess OpenPipePeer(NativeStream descriptor, bool isServer) noexcept
     return peer;
 }
 
+uint64 GetPeerProcessIdentifier(const PeerProcess& peer) noexcept
+{
+    return peer.Get() == nullptr ? 0 : static_cast<uint64>(::GetProcessId(peer.Get()));
+}
+
 HostedImageHandle DuplicateImageHandle(const PeerProcess& peer, uint64 value) noexcept
 {
     // DuplicateHandle accepts pseudo handles for the process and thread. Admit only

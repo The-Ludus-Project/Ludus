@@ -20,4 +20,6 @@ using PeerProcess = foundation::UniquePtr<PeerProcessHandle, ClosePeerProcess>;
 [[nodiscard]] SocketDescriptor ConnectToPipe(const SocketPath& path) noexcept;
 [[nodiscard]] PeerProcess OpenPipePeer(NativeStream descriptor, bool isServer) noexcept;
 [[nodiscard]] HostedImageHandle DuplicateImageHandle(const PeerProcess& peer, uint64 value) noexcept;
+/// Process identifier of an opened peer, or zero when there is none.
+[[nodiscard]] uint64 GetPeerProcessIdentifier(const PeerProcess& peer) noexcept;
 } // namespace ludus::platform::hosted

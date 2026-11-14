@@ -359,6 +359,26 @@ HostedEndpointStatus HostedWindowEndpoint::SendRelease(foundation::uint32 genera
     return mState.Get() == nullptr ? HostedEndpointStatus::InvalidState
                                    : mState->Session.SendRelease(generation, image);
 }
+
+HostedEndpointStatus HostedWindowEndpoint::SendRecordingRequest(const HostedRecordingRequest& request) noexcept
+{
+    return mState.Get() == nullptr ? HostedEndpointStatus::InvalidState : mState->Session.SendRecordingRequest(request);
+}
+
+bool HostedWindowEndpoint::TryTakeRecordingEvent(HostedRecordingEvent& outEvent) noexcept
+{
+    return mState.Get() != nullptr && mState->Session.TryTakeRecordingEvent(outEvent) == true;
+}
+
+foundation::uint64 HostedWindowEndpoint::GetDroppedRecordingEvents() const noexcept
+{
+    return mState.Get() == nullptr ? 0 : mState->Session.GetDroppedRecordingEvents();
+}
+
+foundation::uint64 HostedWindowEndpoint::GetPeerProcessId() const noexcept
+{
+    return mState.Get() == nullptr ? 0 : mState->Session.GetPeerProcessId();
+}
 #else
 // Targets without POSIX Unix sockets have no hosted-window channel.
 HostedEndpointStatus HostedWindowEndpoint::Start([[maybe_unused]] const StartInfo& info) noexcept
@@ -424,6 +444,23 @@ bool HostedWindowEndpoint::TryTakeSurfaceEvent([[maybe_unused]] HostedSurfaceEve
 HostedEndpointStatus HostedWindowEndpoint::SendRelease(foundation::uint32, foundation::uint32) noexcept
 {
     return HostedEndpointStatus::InvalidState;
+}
+HostedEndpointStatus
+HostedWindowEndpoint::SendRecordingRequest([[maybe_unused]] const HostedRecordingRequest& request) noexcept
+{
+    return HostedEndpointStatus::InvalidState;
+}
+bool HostedWindowEndpoint::TryTakeRecordingEvent([[maybe_unused]] HostedRecordingEvent& outEvent) noexcept
+{
+    return false;
+}
+foundation::uint64 HostedWindowEndpoint::GetDroppedRecordingEvents() const noexcept
+{
+    return 0;
+}
+foundation::uint64 HostedWindowEndpoint::GetPeerProcessId() const noexcept
+{
+    return 0;
 }
 #endif
 } // namespace ludus::platform

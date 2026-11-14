@@ -22,11 +22,12 @@ target_sources(ludus_graphics_rhi
         src/compute_workload.cpp
         src/compute_cache.cpp
         src/hosted_consumer.cpp
+        src/hosted_recorder.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi

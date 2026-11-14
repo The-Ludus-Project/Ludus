@@ -70,6 +70,8 @@ public:
     void RequestPlayClose() noexcept;
     /// Whether a Play-in-the-viewport session is open.
     [[nodiscard]] bool IsPlaying() const noexcept;
+    /// The game playing in this viewport, for hosted recording; null while none plays.
+    [[nodiscard]] PlayViewportSource* GetPlaySourceOrNull() const noexcept;
     /// Why the last Play-in-the-viewport session ended because the game's images were refused
     /// after launch; empty otherwise. Cleared by the next BeginPlay.
     [[nodiscard]] QString GetPlayUnavailableReason() const;

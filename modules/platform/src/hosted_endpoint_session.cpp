@@ -47,6 +47,18 @@ void EndpointSession::Configure(const Token& token, uint32 expectedUserId, const
     mRendezvous.Stop();
 #endif
     clearSurfaceState();
+    mAdmittedProcessId = 0;
+    mOutstandingRequests = {};
+    mOutstandingRequestCount = 0;
+    mLastRequest = 0;
+    mLastStartedRecording = 0;
+    for (HostedRecordingEvent& event : mRecordingEvents)
+    {
+        event = {};
+    }
+    mRecordingFirst = 0;
+    mRecordingCount = 0;
+    mDroppedRecordingEvents = 0;
 }
 
 void EndpointSession::SetConsumerAdapter(const HostedAdapterIdentity& adapter) noexcept
@@ -100,6 +112,31 @@ bool EndpointSession::TryTakeSurfaceEvent(HostedSurfaceEvent& outEvent) noexcept
     return true;
 }
 
+bool EndpointSession::TryTakeRecordingEvent(HostedRecordingEvent& outEvent) noexcept
+{
+    if (mRecordingCount == 0)
+    {
+        return false;
+    }
+    outEvent = mRecordingEvents[mRecordingFirst];
+    mRecordingFirst = (mRecordingFirst + 1) % MAX_RECORDING_EVENTS;
+    --mRecordingCount;
+    return true;
+}
+
+void EndpointSession::pushRecordingEvent(const HostedRecordingEvent& event, bool isAcknowledgement) noexcept
+{
+    const usize capacity =
+        isAcknowledgement == true ? MAX_RECORDING_EVENTS : MAX_RECORDING_EVENTS - RECORDING_ACKNOWLEDGEMENT_RESERVE;
+    if (mRecordingCount >= capacity)
+    {
+        ++mDroppedRecordingEvents;
+        return;
+    }
+    mRecordingEvents[(mRecordingFirst + mRecordingCount) % MAX_RECORDING_EVENTS] = event;
+    ++mRecordingCount;
+}
+
 void EndpointSession::pushEvent(HostedSurfaceEvent&& event) noexcept
 {
     mEvents[(mEventFirst + mEventCount) % MAX_SURFACE_EVENTS] = foundation::Move(event);
@@ -121,6 +158,7 @@ void EndpointSession::Admit(SocketDescriptor&& connection, foundation::time::Tim
         refuse(HostedRefusal::WrongUser);
         return;
     }
+    mAdmittedProcessId = GetPeerProcessIdentifier(mPeerProcess);
 #else
     uint32 peerUserId = 0;
     int32 peerProcessId = -1;
@@ -131,6 +169,7 @@ void EndpointSession::Admit(SocketDescriptor&& connection, foundation::time::Tim
         return;
     }
     mPeerProcessId = peerProcessId;
+    mAdmittedProcessId = peerProcessId > 0 ? static_cast<foundation::uint64>(peerProcessId) : 0;
 #endif
     mPhase = SessionPhase::Handshaking;
     mConnectedAt = now;
@@ -330,8 +369,51 @@ void EndpointSession::receiveFromWindow() noexcept
     }
 }
 
+bool EndpointSession::applyRecordingMessage(const Message& message) noexcept
+{
+    HostedRecordingEvent event;
+    if (message.Kind == MessageKind::RecordingSample)
+    {
+        // A sample names a recording started on this channel; an earlier one is delayed
+        // data the editor rejects, a later one was never requested.
+        if (message.RecordingSample.Recording > mLastStartedRecording)
+        {
+            return false;
+        }
+        event.Kind = HostedRecordingEventKind::Sample;
+        event.Sample = message.RecordingSample;
+        pushRecordingEvent(event, false);
+        return true;
+    }
+    const HostedRecordingAcknowledgement& acknowledgement = message.RecordingAcknowledgement;
+    usize index = 0;
+    while (index < mOutstandingRequestCount && mOutstandingRequests[index].Request != acknowledgement.Request)
+    {
+        ++index;
+    }
+    // Every acknowledgement answers exactly one outstanding request of the same kind and recording.
+    if (index == mOutstandingRequestCount || mOutstandingRequests[index].Kind != acknowledgement.Kind ||
+        mOutstandingRequests[index].Recording != acknowledgement.Recording)
+    {
+        return false;
+    }
+    for (usize i = index + 1; i < mOutstandingRequestCount; ++i)
+    {
+        mOutstandingRequests[i - 1] = mOutstandingRequests[i];
+    }
+    --mOutstandingRequestCount;
+    event.Kind = HostedRecordingEventKind::Acknowledgement;
+    event.Acknowledgement = acknowledgement;
+    pushRecordingEvent(event, true);
+    return true;
+}
+
 bool EndpointSession::applyWindowMessage(const Message& message) noexcept
 {
+    if (message.Kind == MessageKind::RecordingSample || message.Kind == MessageKind::RecordingAcknowledgement)
+    {
+        return applyRecordingMessage(message);
+    }
     if (message.Kind == MessageKind::Present)
     {
         // A frame of a later generation than any published one violates the protocol.
@@ -349,7 +431,7 @@ bool EndpointSession::applyWindowMessage(const Message& message) noexcept
     }
     if (message.Kind != MessageKind::Images || message.Generation <= mLastGeneration)
     {
-        // A window sends only Images and Present after its Hello.
+        // A window sends only Images, Present and recording messages after its Hello.
         return false;
     }
     HostedSurfaceEvent event;
@@ -742,5 +824,41 @@ HostedEndpointStatus EndpointSession::SendRelease(uint32 generation, uint32 imag
     }
     flush();
     return mPhase == SessionPhase::Connected ? HostedEndpointStatus::Ok : HostedEndpointStatus::NotConnected;
+}
+
+HostedEndpointStatus EndpointSession::SendRecordingRequest(const HostedRecordingRequest& request) noexcept
+{
+    if (IsValidRecordingRequest(request) == false || request.Request <= mLastRequest ||
+        (request.Kind == HostedRecordingRequestKind::Start && request.Recording <= mLastStartedRecording) ||
+        (request.Kind == HostedRecordingRequestKind::Stop && request.Recording > mLastStartedRecording))
+    {
+        return HostedEndpointStatus::InvalidArgument;
+    }
+    if (mPhase != SessionPhase::Connected)
+    {
+        return HostedEndpointStatus::NotConnected;
+    }
+    if (mIsCloseRequested == true || mOutstandingRequestCount == MAX_HOSTED_RECORDING_REQUESTS)
+    {
+        return HostedEndpointStatus::InvalidState;
+    }
+    Message message;
+    message.Kind = MessageKind::RecordingRequest;
+    message.RecordingRequest = request;
+    // A request is never dropped silently: without room it is refused, not queued, and
+    // the window's state is resynchronized as for any other dropped message.
+    const HostedEndpointStatus status = send(message);
+    if (status != HostedEndpointStatus::Ok)
+    {
+        return status;
+    }
+    mLastRequest = request.Request;
+    if (request.Kind == HostedRecordingRequestKind::Start)
+    {
+        mLastStartedRecording = request.Recording;
+    }
+    mOutstandingRequests[mOutstandingRequestCount] = request;
+    ++mOutstandingRequestCount;
+    return HostedEndpointStatus::Ok;
 }
 } // namespace ludus::platform::hosted

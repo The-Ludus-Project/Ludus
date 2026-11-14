@@ -889,10 +889,23 @@ these scopes when navigation stalls. Texture inspection and readback conversion
 appear as `EditorTextureValueRange` and `EditorTextureDisplayConversion`.
 CPU recording is not a statistical sampler or a viewport-only CPU filter.
 GPU requires an admitted scene viewport with timing support. Both
-requires both sources and never silently falls back to CPU. The first delivery
-targets the local editor and its viewport; hosted-game recording and browser
-editor recording remain separate work. Release builds with profiling disabled
-report that recording is unavailable.
+requires both sources and never silently falls back to CPU. Release builds with
+profiling disabled report that recording is unavailable. Browser editor recording
+remains separate work.
+
+While a game plays in the World viewport, the window's **Target** row names it
+and its process, and **GPU** records the game instead of the editor viewport.
+The game measures its own passes, so it must render through a
+`rhi::HostedGpuRecorder` with GPU timing enabled and name its passes with
+`GpuScope`. A game without a recorder fails the recording with that reason.
+**CPU** still records the editor; **Both** is refused while a game plays. The
+saved trace belongs to the game: Perfetto names its GPU process after the game
+and its process ID, and `ludusHostedProducer` in the JSON lists the recorded
+frames, skipped and dropped counts and clock notes. Its timestamps use the
+game's clock, so open it as a separate trace. If the game closes or crashes
+first, the samples it already sent are saved and the status and trace say the
+recording is incomplete. See
+[Hosted recording](../architecture/editor-gui-systems.md#hosted-recording).
 
 By default the trace is written to a unique file in the project's ignored
 `out/profiling/` folder (the current directory's `out/profiling/` without a

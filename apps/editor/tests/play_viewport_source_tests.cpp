@@ -4,6 +4,7 @@
 // (modules/graphics/rhi/tests/hosted_producer.cpp).
 #include "internal/play_viewport_source.h"
 #include "internal/preview_viewport.h"
+#include "internal/profiling_controller.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/world_workspace.h"
@@ -12,6 +13,8 @@
 #    include "internal/level.h"
 #endif
 
+#include <ludus/foundation/base/config.h>
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/platform/hosted_window.h>
@@ -28,6 +31,8 @@
 #include <QFocusEvent>
 #include <QGuiApplication>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QProcess>
@@ -268,6 +273,178 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
     preview.Stop();
 #else
     SKIP("Needs Windows, macOS or Linux, the native GPU preview and the RHI hosted test producer");
+#endif
+}
+
+#if defined(LUDUS_HOSTED_PRODUCER) && LUDUS_PROFILING_ENABLED
+namespace
+{
+QJsonObject ReadRecordedTrace(const QString& path)
+{
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) == true ? QJsonDocument::fromJson(file.readAll()).object() : QJsonObject{};
+}
+
+/// Every GPU sample identity in a trace belongs to `recording`; returns how many there are.
+int32 CountSamplesOfRecording(const QJsonObject& trace, uint64 recording, int32& outOthers)
+{
+    int32 count = 0;
+    outOthers = 0;
+    for (const QJsonValue& value : trace.value(QStringLiteral("traceEvents")).toArray())
+    {
+        const QJsonObject event = value.toObject();
+        if (event.value(QStringLiteral("name")).toString() != QStringLiteral("GPU sample identity"))
+        {
+            continue;
+        }
+        const QJsonObject arguments = event.value(QStringLiteral("args")).toObject();
+        if (static_cast<uint64>(arguments.value(QStringLiteral("deviceSession")).toDouble()) == recording)
+        {
+            ++count;
+        }
+        else
+        {
+            ++outOthers;
+        }
+    }
+    return count;
+}
+} // namespace
+#endif
+
+TEST_CASE("A hosted game's GPU recording names its producer across a disconnect and a reconnect",
+          "[editor][play][viewport][gpu][native-hosted-frames][profiling]")
+{
+#if defined(LUDUS_HOSTED_PRODUCER) && LUDUS_PROFILING_ENABLED &&                                                       \
+    (defined(Q_OS_MACOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN))
+    if (IsSharedDisplay() == false)
+    {
+        SKIP("Play in the viewport presents through the shared GPU device (run with QT_QPA_PLATFORM=cocoa on macOS, "
+             "xcb or wayland on Linux, windows on Windows)");
+    }
+    rhi::Shutdown();
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    viewport.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&viewport) == true);
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("play-recording");
+    scene.AssetsIdentity = scene.Identity;
+    PreviewMesh mesh;
+    mesh.Positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+    mesh.Uvs = {{0, 0}, {1, 0}, {.5F, 1}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    scene.Objects.append(PreviewObject{});
+    REQUIRE(preview.SetScene(scene) == true);
+    if (preview.Start() == false)
+    {
+        SKIP("No shared GPU device for the viewport: " << preview.Status().toStdString());
+    }
+    REQUIRE(AwaitCondition([&viewport]() { return viewport.PresentedFrames() >= 1; }));
+    if (viewport.CanImportHostedImages() == false)
+    {
+        SKIP("The viewport's device cannot import hosted images");
+    }
+    rhi::NativeDeviceLease lease;
+    REQUIRE(preview.PinDevice(lease) == rhi::RasterStatus::Ready);
+    rhi::NativeDeviceInfo device;
+    REQUIRE(rhi::GetNativeDeviceInfo(lease, device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ReleaseNativeDevice(lease) == rhi::RasterStatus::Ready);
+    namespace hosted_test = ludus::graphics::rhi::hosted_test;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    PlayViewportSource play;
+    ProfilingController controller(&preview);
+    const auto launch = [&](QProcess& outGame) {
+        REQUIRE(play.Start(SOCKET_PARENT, device.Identity, 64, 48, 1));
+        QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE),
+                           play.GetChannelAddress());
+        outGame.setProcessEnvironment(environment);
+        outGame.start(QStringLiteral(LUDUS_HOSTED_PRODUCER), {QStringLiteral("record")});
+        REQUIRE(outGame.waitForStarted() == true);
+        REQUIRE(AwaitCondition([&play]() { return play.GetState() == PlaySourceState::Playing; }));
+        viewport.SetFrameSource(&play);
+        REQUIRE(controller.SetHostedTarget(&play, &play) == true);
+        REQUIRE(controller.GetTargetDescription().contains(QString::number(outGame.processId())) == true);
+    };
+
+    // First game: start recording, then lose the game after a sample and before Stop.
+    QProcess first;
+    launch(first);
+    const QString firstPath = directory.filePath(QStringLiteral("first.json"));
+    const uint64 takenAtStart = play.GetTakenFrames();
+    REQUIRE(controller.Start(ProfilingMode::Gpu, firstPath) == true);
+    REQUIRE(AwaitCondition([&controller]() { return controller.GetRecordedSampleCount() >= 1; }));
+    const HostedProducerRecord started = controller.GetHostedProducer();
+    REQUIRE(started.StartFrame != 0);
+    CHECK(started.ProducerName.toStdString() == hosted_test::HOSTED_TEST_PRODUCER_NAME);
+    // While recording, more frames than the game's three images were shown and returned.
+    REQUIRE(AwaitCondition(
+        [&]() { return play.GetTakenFrames() > takenAtStart + ludus::platform::HOSTED_SURFACE_IMAGE_COUNT; }));
+    const qint64 firstProcess = first.processId();
+    first.kill();
+    REQUIRE(first.waitForFinished(TIMEOUT_MILLISECONDS) == true);
+    REQUIRE(AwaitCondition([&controller]() { return controller.GetState() == ProfilingState::Complete; }));
+    CHECK(controller.GetStatus().contains(QStringLiteral("Incomplete")) == true);
+    CHECK(play.GetState() == PlaySourceState::Disconnected);
+    // The edit image returns; the lost game's images are released with its session.
+    viewport.SetFrameSource(nullptr);
+    const uint64 edited = viewport.PresentedFrames();
+    CHECK(AwaitCondition([&]() { return viewport.PresentedFrames() >= edited + PRESENTED_FRAMES; }));
+    play.Stop();
+    const QJsonObject firstTrace = ReadRecordedTrace(firstPath);
+    REQUIRE(firstTrace.isEmpty() == false);
+    const QJsonObject firstProducer = firstTrace.value(QStringLiteral("ludusHostedProducer")).toObject();
+    CHECK(firstProducer.value(QStringLiteral("processId")).toString() == QString::number(firstProcess));
+    CHECK(firstProducer.value(QStringLiteral("producerName")).toString() ==
+          QString::fromUtf8(hosted_test::HOSTED_TEST_PRODUCER_NAME.data(),
+                            static_cast<qsizetype>(hosted_test::HOSTED_TEST_PRODUCER_NAME.size())));
+    CHECK(firstProducer.value(QStringLiteral("startFrame")).toString() == QString::number(started.StartFrame));
+    CHECK(firstProducer.value(QStringLiteral("firstSampleFrame")).toString().toULongLong() >= started.StartFrame);
+    CHECK(firstProducer.value(QStringLiteral("complete")).toBool() == false);
+    CHECK(firstProducer.value(QStringLiteral("disconnected")).toBool() == true);
+    CHECK(firstProducer.value(QStringLiteral("stopAcknowledged")).toBool() == false);
+    CHECK(firstProducer.value(QStringLiteral("consumedFrames")).toString().toULongLong() >
+          ludus::platform::HOSTED_SURFACE_IMAGE_COUNT);
+    // Process-local clocks stay explicit: editor ticks bracket the game's acknowledgement.
+    CHECK(firstProducer.value(QStringLiteral("startRequestEditorTicks")).toString().toULongLong() <=
+          firstProducer.value(QStringLiteral("startReceivedEditorTicks")).toString().toULongLong());
+    CHECK(firstProducer.value(QStringLiteral("startAcknowledgedGameTicks")).toString().toULongLong() != 0);
+    CHECK(QJsonDocument(firstTrace).toJson().contains(hosted_test::HOSTED_TEST_PASS_NAME.data()) == true);
+    int32 others = 0;
+    CHECK(CountSamplesOfRecording(firstTrace, started.Recording, others) >= 1);
+    CHECK(others == 0);
+
+    // Second game: a new process restarts its frame numbers; only its own recording is admitted.
+    QProcess second;
+    launch(second);
+    const QString secondPath = directory.filePath(QStringLiteral("second.json"));
+    REQUIRE(controller.Start(ProfilingMode::Gpu, secondPath) == true);
+    REQUIRE(AwaitCondition([&controller]() { return controller.GetRecordedSampleCount() >= 1; }));
+    const HostedProducerRecord restarted = controller.GetHostedProducer();
+    CHECK(restarted.Recording > started.Recording);
+    controller.Stop();
+    REQUIRE(AwaitCondition([&controller]() { return controller.GetState() == ProfilingState::Complete; }));
+    const QJsonObject secondTrace = ReadRecordedTrace(secondPath);
+    const QJsonObject secondProducer = secondTrace.value(QStringLiteral("ludusHostedProducer")).toObject();
+    CHECK(secondProducer.value(QStringLiteral("processId")).toString() == QString::number(second.processId()));
+    CHECK(secondProducer.value(QStringLiteral("complete")).toBool() == true);
+    CHECK(secondProducer.value(QStringLiteral("stopAcknowledged")).toBool() == true);
+    CHECK(secondProducer.value(QStringLiteral("stopFrame")).toString().toULongLong() >= restarted.StartFrame);
+    CHECK(secondProducer.value(QStringLiteral("submittedFrames")).toString().toULongLong() >= 1);
+    CHECK(CountSamplesOfRecording(secondTrace, restarted.Recording, others) >= 1);
+    CHECK(others == 0);
+    viewport.SetFrameSource(nullptr);
+    play.Stop();
+    REQUIRE(second.waitForFinished(TIMEOUT_MILLISECONDS) == true);
+    CHECK(second.exitStatus() == QProcess::NormalExit);
+    CHECK(second.exitCode() == 0);
+    preview.Stop();
+#else
+    SKIP("Needs Windows, macOS or Linux, a profiling build, the native GPU preview and the RHI hosted test producer");
 #endif
 }
 

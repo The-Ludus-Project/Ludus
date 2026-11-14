@@ -3,8 +3,9 @@
 Status: implementation contract, 2026-10-20. Native local-editor P0/P1 recording
 and local P2 pass-duration counters are implemented: CPU/GPU/Both controls,
 the Record Profiling shortcut (Ctrl+Alt+F9), frame timing and shared pass scopes.
-G0 resource names and nested GPU scopes are implemented; hosted transport, P3 and
-native Metal/RenderDoc debugger capture remain planned.
+G0 resource names and nested GPU scopes are implemented, and P2 hosted recording
+returns a hosted game's own pass durations to the editor. P3 and native
+Metal/RenderDoc debugger capture remain planned.
 Implementation availability is distinct from platform/hardware qualification.
 
 Shader and renderer developers should be able to run the selected project in
@@ -452,6 +453,8 @@ export a separate trace per process with shared session/frame identity. Combine
 process traces on one time axis only after explicit clock-offset/error validation
 and unique process/track identities; identical synthetic process IDs or nearby
 timestamps are not evidence of alignment. Report disconnect and partial results.
+The delivered GPU path, its identities and its disconnect behavior are specified
+in [Hosted recording](editor-gui-systems.md#hosted-recording).
 
 Vendor capture and Perfetto recording initially exclude one another per target
 with a clear Busy reason. Simultaneous operation is a later qualified option
@@ -492,9 +495,10 @@ native Metal backend. PIX GPU capture requires Windows/D3D12.
 
 ## Phased implementation and acceptance
 
-P0/P1 and local P2 physical-pass counters are implemented for the native editor.
-G0 buffer/texture names and nested scopes are implemented. Hosted recording
-transport and capture adapters remain pending. Implement changes in isolated reviewable branches targeting
+P0/P1 and P2 physical-pass counters are implemented for the native editor, for
+its own viewport and for a game playing in it ([hosted recording](editor-gui-systems.md#hosted-recording)).
+G0 buffer/texture names and nested scopes are implemented. Capture adapters
+remain pending. Implement changes in isolated reviewable branches targeting
 `develop`, following [CI qualification](../development/continuous-integration.md).
 Acceptance into `develop` is distinct from full batch/platform qualification.
 
@@ -505,7 +509,7 @@ adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
 | --- | --- | --- |
 | P0 Editor CPU recording | Shared profiling controller, tool window, CPU mode, Record/Stop action and its Ctrl+Alt+F9 shortcut; reuse the current CPU tracer/exporter. | Menu/toolbar/shortcut share availability; bounded capture exports and opens in Perfetto; Busy, disabled build and export-retry behavior preserve data and editor responsiveness. |
 | P1 Coarse GPU Perfetto recording | GPU and Both modes; shared viewport probe ownership, typed frame-duration samples, coverage and single-trace export. Reuse existing RHI measurement support; no vendor debugger prerequisite. | Metal and Vulkan recordings show validated duration counters and CPU scope filtering; delayed/skipped/disjoint samples, Stats on/off, cancellation and finalization produce honest coverage without GPU waits. |
-| P2 Pass durations and hosted recording | Local Metal/Vulkan bounded native queries and shared physical-pass scopes implemented; producer-side hosted transport remains pending. | Named pass counters survive pass merging, query pressure and restart; unsupported precision remains explicit; hosted traces identify their producer and preserve image leases. |
+| P2 Pass durations and hosted recording | Local Metal/Vulkan bounded native queries and shared physical-pass scopes implemented; hosted games record their own named passes through `HostedGpuRecorder` and the hosted-window channel. Hosted CPU scopes remain later work. | Named pass counters survive pass merging, query pressure and restart; unsupported precision remains explicit; hosted traces identify their producer and preserve image leases. |
 | P3 Correlated GPU execution lanes | Backend CPU/GPU clock mapping with uncertainty, queue tracks and submission correlation. Metal per-batch calibration, Vulkan calibrated timestamps and overlap lanes implemented. | Actual GPU slices align within the stated measured error, nest legally in Perfetto, preserve overlap on separate queues and degrade to duration-only data if calibration fails. |
 
 | Phase | Deliverable and dependency | Exit gate |

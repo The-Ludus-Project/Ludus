@@ -1,4 +1,4 @@
-// Hosted surface channel tests (protocol version 3). An EndpointSession and a
+// Hosted surface and recording channel tests (protocol version 4). An EndpointSession and a
 // hosted window are connected over a socketpair, as in hosted_window_tests.cpp,
 // and exchange Images, Present and Release through the production codec. The
 // file-descriptor transport runs on every host (Linux uses it in production); on
@@ -12,6 +12,7 @@
 #include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/entropy.h>
+#include <ludus/platform/hosted_recording.h>
 #include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/hosted_window.h>
 #include <ludus/platform/native_window.h>
@@ -405,9 +406,10 @@ TEST_CASE("The hosted codec rejects invalid surface references and generations",
     CHECK_FALSE(hosted::TryEncodeMessage(images, {bytes.GetData(), bytes.GetSize()}, size));
 }
 
-TEST_CASE("A version-1 or version-2 window is refused as incompatible", "[platform][hosted][surface]")
+TEST_CASE("A window of an earlier protocol version is refused as incompatible", "[platform][hosted][surface]")
 {
-    const ludus::foundation::uint16 version = GENERATE(ludus::foundation::uint16{1}, ludus::foundation::uint16{2});
+    const ludus::foundation::uint16 version =
+        GENERATE(ludus::foundation::uint16{1}, ludus::foundation::uint16{2}, ludus::foundation::uint16{3});
     const hosted::Token token = MakeToken(2);
     hosted::EndpointSession session;
     session.Configure(token, hosted::GetCurrentUserId(), MakeInitialState());
@@ -717,4 +719,350 @@ TEST_CASE("A window refuses endpoint-bound surface messages from the endpoint", 
     CHECK_FALSE(window->HandleEvent({}));
     HostedImageRelease release;
     CHECK(window->GetNativeWindowInfo().HostedSurfaceOrNull->TakeRelease(release) == HostedSurfaceStatus::Disconnected);
+}
+
+namespace
+{
+using ludus::platform::HostedPassKind;
+using ludus::platform::HostedRecordingAcknowledgement;
+using ludus::platform::HostedRecordingChannel;
+using ludus::platform::HostedRecordingEvent;
+using ludus::platform::HostedRecordingEventKind;
+using ludus::platform::HostedRecordingRequest;
+using ludus::platform::HostedRecordingRequestKind;
+using ludus::platform::HostedRecordingResult;
+using ludus::platform::HostedRecordingSample;
+
+HostedRecordingChannel& GetRecordingChannel(const SurfacePair& pair)
+{
+    HostedRecordingChannel* channelOrNull = pair.HostedWindow->GetNativeWindowInfo().HostedRecordingOrNull;
+    REQUIRE(channelOrNull != nullptr);
+    return *channelOrNull;
+}
+
+HostedRecordingRequest MakeRequest(HostedRecordingRequestKind kind, uint64 recording, uint64 request)
+{
+    return { .Kind = kind, .Recording = recording, .Request = request };
+}
+
+template <ludus::foundation::usize Size>
+void CopyName(const char* text, ludus::foundation::StaticArray<char, Size>& outName)
+{
+    outName = {};
+    std::memcpy(outName.GetData(), text, std::strlen(text));
+}
+
+HostedRecordingSample MakeSample(uint64 recording, uint64 frame)
+{
+    HostedRecordingSample sample;
+    sample.Recording = recording;
+    sample.Frame = frame;
+    sample.SubmissionTicks = 100;
+    sample.CollectionTicks = 250;
+    sample.DurationNanoseconds = 42;
+    sample.ScopeIdentity = 7;
+    sample.ScopePassIndex = 1;
+    sample.LogicalPassCount = 2;
+    sample.Kind = HostedPassKind::Compute;
+    sample.HasCpuInterval = true;
+    sample.StartTicks = 120;
+    sample.EndTicks = 162;
+    sample.ClockUncertaintyNanoseconds = 3;
+    CopyName("Scene/Opaque", sample.Name);
+    return sample;
+}
+
+/// Pump the window until it has received `request`, then take it as an attached recorder.
+bool TakeRequest(SurfacePair& inoutPair, HostedRecordingRequest& outRequest)
+{
+    for (usize i = 0; i < PUMP_ROUNDS; ++i)
+    {
+        inoutPair.Session.Pump(At(2));
+        static_cast<void>(inoutPair.HostedWindow->HandleEvent({}));
+        if (GetRecordingChannel(inoutPair).TryTakeRecordingRequest(outRequest) == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TakeRecordingEvent(SurfacePair& inoutPair, HostedRecordingEvent& outEvent)
+{
+    for (usize i = 0; i < PUMP_ROUNDS; ++i)
+    {
+        if (inoutPair.Session.TryTakeRecordingEvent(outEvent) == true)
+        {
+            return true;
+        }
+        static_cast<void>(inoutPair.HostedWindow->HandleEvent({}));
+        inoutPair.Session.Pump(At(2));
+    }
+    return false;
+}
+
+/// Start `recording` and answer it Ok from frame `frame` as an attached recorder.
+void StartRecording(SurfacePair& inoutPair, uint64 recording, uint64 request, uint64 frame)
+{
+    REQUIRE(inoutPair.Session.SendRecordingRequest(
+                MakeRequest(HostedRecordingRequestKind::Start, recording, request)) == HostedEndpointStatus::Ok);
+    HostedRecordingRequest taken;
+    REQUIRE(TakeRequest(inoutPair, taken));
+    HostedRecordingAcknowledgement acknowledgement;
+    acknowledgement.Kind = taken.Kind;
+    acknowledgement.Recording = taken.Recording;
+    acknowledgement.Request = taken.Request;
+    acknowledgement.Frame = frame;
+    acknowledgement.Ticks = 1;
+    REQUIRE(GetRecordingChannel(inoutPair).Acknowledge(acknowledgement) == HostedSurfaceStatus::Ok);
+    HostedRecordingEvent event;
+    REQUIRE(TakeRecordingEvent(inoutPair, event));
+    REQUIRE(event.Kind == HostedRecordingEventKind::Acknowledgement);
+}
+} // namespace
+
+TEST_CASE("Hosted recording messages round-trip through the version-4 codec", "[platform][hosted][recording]")
+{
+    ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
+    usize size = 0;
+    hosted::Message request;
+    request.Kind = hosted::MessageKind::RecordingRequest;
+    request.RecordingRequest = MakeRequest(HostedRecordingRequestKind::Stop, 3, 9);
+    REQUIRE(hosted::TryEncodeMessage(request, {bytes.GetData(), bytes.GetSize()}, size));
+    CHECK(size == hosted::HEADER_BYTES + hosted::RECORDING_REQUEST_PAYLOAD_BYTES);
+    hosted::Message decoded;
+    usize consumed = 0;
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+    CHECK(decoded.RecordingRequest.Kind == HostedRecordingRequestKind::Stop);
+    CHECK(decoded.RecordingRequest.Recording == 3);
+    CHECK(decoded.RecordingRequest.Request == 9);
+
+    hosted::Message acknowledgement;
+    acknowledgement.Kind = hosted::MessageKind::RecordingAcknowledgement;
+    HostedRecordingAcknowledgement& sent = acknowledgement.RecordingAcknowledgement;
+    sent.Kind = HostedRecordingRequestKind::Stop;
+    sent.Result = HostedRecordingResult::Ok;
+    sent.Recording = 3;
+    sent.Request = 9;
+    sent.Frame = 120;
+    sent.Ticks = 555;
+    sent.Coverage =
+    {
+        .SubmittedFrames = 10,
+        .MeasuredFrames = 6,
+        .SkippedFrames = 4,
+        .DeliveredSamples = 5,
+        .DroppedSamples = 1,
+        .InvalidSamples = 2,
+        .QueryDroppedPasses = 3,
+        .UnresolvedBatches = 1,
+    };
+    CopyName("game \xc3\xa9", sent.ProducerName);
+    REQUIRE(hosted::TryEncodeMessage(acknowledgement, {bytes.GetData(), bytes.GetSize()}, size));
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+    CHECK(decoded.RecordingAcknowledgement.Frame == 120);
+    CHECK(decoded.RecordingAcknowledgement.Ticks == 555);
+    CHECK(decoded.RecordingAcknowledgement.Coverage.SkippedFrames == 4);
+    CHECK(decoded.RecordingAcknowledgement.Coverage.UnresolvedBatches == 1);
+    CHECK(std::strcmp(decoded.RecordingAcknowledgement.ProducerName.GetData(), "game \xc3\xa9") == 0);
+
+    hosted::Message sample;
+    sample.Kind = hosted::MessageKind::RecordingSample;
+    sample.RecordingSample = MakeSample(3, 17);
+    REQUIRE(hosted::TryEncodeMessage(sample, {bytes.GetData(), bytes.GetSize()}, size));
+    CHECK(size == hosted::MAX_MESSAGE_BYTES);
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+    const HostedRecordingSample& received = decoded.RecordingSample;
+    CHECK(received.Frame == 17);
+    CHECK(received.DurationNanoseconds == 42);
+    CHECK(received.ScopePassIndex == 1);
+    CHECK(received.LogicalPassCount == 2);
+    CHECK(received.Kind == HostedPassKind::Compute);
+    CHECK(received.HasCpuInterval);
+    CHECK(received.EndTicks == 162);
+    CHECK(std::strcmp(received.Name.GetData(), "Scene/Opaque") == 0);
+
+    // Name padding past the terminator is reserved.
+    ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> padded = bytes;
+    padded[size - 1] = 'x';
+    CHECK(hosted::TryDecodeMessage({padded.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Malformed);
+    // Invalid UTF-8, an empty name, zero identities and inverted intervals are refused.
+    HostedRecordingSample invalid = MakeSample(3, 17);
+    invalid.Name[0] = static_cast<char>(0xFF);
+    sample.RecordingSample = invalid;
+    CHECK_FALSE(hosted::TryEncodeMessage(sample, {bytes.GetData(), bytes.GetSize()}, size));
+    invalid = MakeSample(3, 17);
+    invalid.Name = {};
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    invalid = MakeSample(0, 17);
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    invalid = MakeSample(3, 0);
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    invalid = MakeSample(3, 17);
+    invalid.EndTicks = invalid.StartTicks - 1;
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    CHECK_FALSE(hosted::IsValidRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 0, 1)));
+    CHECK_FALSE(hosted::IsValidRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 1, 0)));
+}
+
+TEST_CASE("A window without a recorder answers recording requests itself", "[platform][hosted][recording]")
+{
+    SurfacePair pair;
+    Connect(pair, false);
+    REQUIRE(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 1, 1)) ==
+            HostedEndpointStatus::Ok);
+    HostedRecordingEvent event;
+    REQUIRE(TakeRecordingEvent(pair, event));
+    REQUIRE(event.Kind == HostedRecordingEventKind::Acknowledgement);
+    CHECK(event.Acknowledgement.Kind == HostedRecordingRequestKind::Start);
+    CHECK(event.Acknowledgement.Result == HostedRecordingResult::Unsupported);
+    CHECK(event.Acknowledgement.Recording == 1);
+    CHECK(event.Acknowledgement.Request == 1);
+    REQUIRE(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Stop, 1, 2)) ==
+            HostedEndpointStatus::Ok);
+    REQUIRE(TakeRecordingEvent(pair, event));
+    CHECK(event.Acknowledgement.Result == HostedRecordingResult::UnknownRecording);
+    // No recorder takes the requests the window answered.
+    HostedRecordingRequest request;
+    CHECK_FALSE(GetRecordingChannel(pair).TryTakeRecordingRequest(request));
+}
+
+TEST_CASE("Recording events reach the endpoint and outlive the window's disconnection", "[platform][hosted][recording]")
+{
+    SurfacePair pair;
+    Connect(pair, false);
+    CHECK(pair.Session.GetPeerProcessId() == static_cast<uint64>(::getpid()));
+    HostedRecordingChannel& channel = GetRecordingChannel(pair);
+    channel.AttachRecorder();
+    StartRecording(pair, 4, 1, 1);
+    for (uint64 frame = 1; frame <= 3; ++frame)
+    {
+        REQUIRE(channel.SendSample(MakeSample(4, frame)) == HostedSurfaceStatus::Ok);
+    }
+    CHECK(channel.SendSample(MakeSample(4, 0)) == HostedSurfaceStatus::InvalidArgument);
+    // The game goes away before it acknowledges a Stop.
+    pair.HostedWindow.Reset();
+    for (usize i = 0; i < PUMP_ROUNDS && pair.Session.GetPhase() != hosted::SessionPhase::Disconnected; ++i)
+    {
+        pair.Session.Pump(At(3));
+    }
+    REQUIRE(pair.Session.GetPhase() == hosted::SessionPhase::Disconnected);
+    for (uint64 frame = 1; frame <= 3; ++frame)
+    {
+        HostedRecordingEvent event;
+        REQUIRE(pair.Session.TryTakeRecordingEvent(event));
+        REQUIRE(event.Kind == HostedRecordingEventKind::Sample);
+        CHECK(event.Sample.Recording == 4);
+        CHECK(event.Sample.Frame == frame);
+    }
+    HostedRecordingEvent none;
+    CHECK_FALSE(pair.Session.TryTakeRecordingEvent(none));
+    // The admitted process stays known after the loss; requests no longer go out.
+    CHECK(pair.Session.GetPeerProcessId() == static_cast<uint64>(::getpid()));
+    CHECK(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Stop, 4, 2)) ==
+          HostedEndpointStatus::NotConnected);
+}
+
+TEST_CASE("An earlier recording's delayed samples arrive tagged with that recording", "[platform][hosted][recording]")
+{
+    SurfacePair pair;
+    Connect(pair, false);
+    HostedRecordingChannel& channel = GetRecordingChannel(pair);
+    channel.AttachRecorder();
+    StartRecording(pair, 1, 1, 1);
+    StartRecording(pair, 2, 2, 1);
+    // Frame 1 repeats; only the recording identity tells the two apart.
+    REQUIRE(channel.SendSample(MakeSample(1, 1)) == HostedSurfaceStatus::Ok);
+    REQUIRE(channel.SendSample(MakeSample(2, 1)) == HostedSurfaceStatus::Ok);
+    HostedRecordingEvent event;
+    REQUIRE(TakeRecordingEvent(pair, event));
+    CHECK(event.Sample.Recording == 1);
+    REQUIRE(TakeRecordingEvent(pair, event));
+    CHECK(event.Sample.Recording == 2);
+    // A sample of a recording that was never started breaks the protocol.
+    REQUIRE(channel.SendSample(MakeSample(3, 1)) == HostedSurfaceStatus::Ok);
+    for (usize i = 0; i < PUMP_ROUNDS && pair.Session.GetPhase() == hosted::SessionPhase::Connected; ++i)
+    {
+        pair.Session.Pump(At(3));
+    }
+    CHECK(pair.Session.GetPhase() == hosted::SessionPhase::Disconnected);
+}
+
+TEST_CASE("The endpoint admits only ordered requests and their own acknowledgements", "[platform][hosted][recording]")
+{
+    SurfacePair pair;
+    Connect(pair, false);
+    HostedRecordingChannel& channel = GetRecordingChannel(pair);
+    channel.AttachRecorder();
+    CHECK(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Stop, 1, 1)) ==
+          HostedEndpointStatus::InvalidArgument);
+    REQUIRE(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 5, 3)) ==
+            HostedEndpointStatus::Ok);
+    // Request numbers increase and a recording identity starts once.
+    CHECK(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Stop, 5, 3)) ==
+          HostedEndpointStatus::InvalidArgument);
+    CHECK(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 5, 4)) ==
+          HostedEndpointStatus::InvalidArgument);
+    REQUIRE(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Stop, 5, 4)) ==
+            HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 6, 5)) ==
+            HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Stop, 6, 6)) ==
+            HostedEndpointStatus::Ok);
+    // At most MAX_HOSTED_RECORDING_REQUESTS stay unanswered.
+    CHECK(pair.Session.SendRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 7, 7)) ==
+          HostedEndpointStatus::InvalidState);
+    // An acknowledgement must answer an outstanding request of the same kind and recording.
+    HostedRecordingAcknowledgement forged;
+    forged.Kind = HostedRecordingRequestKind::Start;
+    forged.Recording = 5;
+    forged.Request = 4;
+    REQUIRE(channel.Acknowledge(forged) == HostedSurfaceStatus::Ok);
+    for (usize i = 0; i < PUMP_ROUNDS && pair.Session.GetPhase() == hosted::SessionPhase::Connected; ++i)
+    {
+        pair.Session.Pump(At(3));
+    }
+    CHECK(pair.Session.GetPhase() == hosted::SessionPhase::Disconnected);
+}
+
+TEST_CASE("Recording samples never take the send room of the window's frames", "[platform][hosted][recording]")
+{
+    SurfacePair pair;
+    Connect(pair, false);
+    PublishDescriptorGeneration(pair, 1);
+    HostedRecordingChannel& channel = GetRecordingChannel(pair);
+    channel.AttachRecorder();
+    StartRecording(pair, 1, 1, 1);
+    // The endpoint stops reading: its socket and the window's queue fill with samples.
+    HostedSurfaceStatus status = HostedSurfaceStatus::Ok;
+    usize sent = 0;
+    for (usize i = 0; i < FLOOD_LIMIT && status == HostedSurfaceStatus::Ok; ++i)
+    {
+        status = channel.SendSample(MakeSample(1, i + 1));
+        sent += status == HostedSurfaceStatus::Ok ? 1 : 0;
+    }
+    REQUIRE(status == HostedSurfaceStatus::Busy);
+    // A frame still fits; the consumer receives it after the samples queued before it.
+    CHECK(pair.GetChannel().Present(1, 0, 1) == HostedSurfaceStatus::Ok);
+    HostedSurfaceEvent event;
+    bool hasEvent = false;
+    for (usize i = 0; i < PUMP_ROUNDS && hasEvent == false; ++i)
+    {
+        // The window flushes its queue as it is pumped; the endpoint drains it.
+        static_cast<void>(pair.HostedWindow->HandleEvent({}));
+        pair.Session.Pump(At(2));
+        hasEvent = pair.Session.TryTakeSurfaceEvent(event);
+    }
+    REQUIRE(hasEvent);
+    CHECK(event.Kind == HostedSurfaceEventKind::Present);
+    CHECK(event.Sequence == 1);
+    // The endpoint's bounded queue kept what fit and counted the rest.
+    usize received = 0;
+    HostedRecordingEvent recording;
+    while (pair.Session.TryTakeRecordingEvent(recording) == true)
+    {
+        ++received;
+    }
+    CHECK(received + pair.Session.GetDroppedRecordingEvents() <= sent);
+    CHECK(received > 0);
 }

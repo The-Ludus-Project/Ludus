@@ -1,4 +1,5 @@
 #include "internal/editor_commands.h"
+#include "internal/hosted_profiling_session.h"
 #include "internal/main_window.h"
 #include "internal/profiling_panel.h"
 #include "internal/render_graph_preview.h"
@@ -18,16 +19,20 @@
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QMenu>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
+
+#include <cstring>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -66,6 +71,105 @@ RenderScene MakeProfilingScene()
     return scene;
 }
 #    endif
+/// A hosted game's recording channel, scripted by the test.
+class ScriptedRecordingTarget final : public QObject, public HostedRecordingTarget
+{
+public:
+    static constexpr uint64 PROCESS_ID = 4321;
+    QList<ludus::platform::HostedRecordingRequest> Requests;
+    bool IsConnected = true;
+    uint64 ConsumedFrames = 0;
+
+    [[nodiscard]] bool IsRecordingConnected() const noexcept override
+    {
+        return IsConnected;
+    }
+    [[nodiscard]] ludus::platform::HostedEndpointStatus
+    SendRecordingRequest(const ludus::platform::HostedRecordingRequest& request) noexcept override
+    {
+        if (IsConnected == false)
+        {
+            return ludus::platform::HostedEndpointStatus::NotConnected;
+        }
+        Requests.append(request);
+        return ludus::platform::HostedEndpointStatus::Ok;
+    }
+    [[nodiscard]] uint64 GetProducerProcessId() const noexcept override
+    {
+        return PROCESS_ID;
+    }
+    [[nodiscard]] uint64 GetConsumedFrames() const noexcept override
+    {
+        return ConsumedFrames;
+    }
+    [[nodiscard]] uint64 GetDroppedRecordingEvents() const noexcept override
+    {
+        return 0;
+    }
+    void SetRecordingSink(HostedRecordingSink* sinkOrNull) noexcept override
+    {
+        mSinkOrNull = sinkOrNull;
+    }
+    void Acknowledge(const ludus::platform::HostedRecordingRequest& request,
+                     ludus::platform::HostedRecordingResult result,
+                     uint64 frame,
+                     const ludus::platform::HostedRecordingCoverage& coverage = {})
+    {
+        REQUIRE(mSinkOrNull != nullptr);
+        ludus::platform::HostedRecordingEvent event;
+        event.Kind = ludus::platform::HostedRecordingEventKind::Acknowledgement;
+        event.Acknowledgement.Kind = request.Kind;
+        event.Acknowledgement.Result = result;
+        event.Acknowledgement.Recording = request.Recording;
+        event.Acknowledgement.Request = request.Request;
+        event.Acknowledgement.Frame = frame;
+        event.Acknowledgement.Ticks = frame * 1000;
+        event.Acknowledgement.Coverage = coverage;
+        std::memcpy(event.Acknowledgement.ProducerName.GetData(), "scripted game", 13);
+        mSinkOrNull->AcceptRecordingEvent(event);
+    }
+    void SendSample(uint64 recording, uint64 frame)
+    {
+        REQUIRE(mSinkOrNull != nullptr);
+        ludus::platform::HostedRecordingEvent event;
+        event.Kind = ludus::platform::HostedRecordingEventKind::Sample;
+        ludus::platform::HostedRecordingSample& sample = event.Sample;
+        sample.Recording = recording;
+        sample.Frame = frame;
+        sample.SubmissionTicks = frame * 1000;
+        sample.CollectionTicks = frame * 1000 + 10;
+        sample.DurationNanoseconds = 500;
+        sample.ScopeIdentity = 9;
+        sample.LogicalPassCount = 1;
+        std::memcpy(sample.Name.GetData(), "Game/Surface", 12);
+        mSinkOrNull->AcceptRecordingEvent(event);
+    }
+    void Disconnect()
+    {
+        IsConnected = false;
+        HostedRecordingSink* sinkOrNull = mSinkOrNull;
+        mSinkOrNull = nullptr;
+        if (sinkOrNull != nullptr)
+        {
+            sinkOrNull->EndRecordingChannel();
+        }
+    }
+
+private:
+    HostedRecordingSink* mSinkOrNull = nullptr;
+};
+
+bool AwaitState(ProfilingController& inoutController, ProfilingState state)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (inoutController.GetState() != state && timer.elapsed() < 10000)
+    {
+        QTest::qWait(1);
+    }
+    return inoutController.GetState() == state;
+}
+
 QJsonObject ReadTrace(const QString& path)
 {
     QFile file(path);
@@ -482,5 +586,109 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
     CHECK(workspace.GetPreviewOrNull()->GetStatistics().GetReadbackMilliseconds().GetCount() > 0);
     preview.Stop();
     workspace.SetPreviewSource(nullptr);
+}
+
+TEST_CASE("a hosted recording keeps the game's identity across a disconnect and refuses earlier samples",
+          "[profiling][editor][hosted]")
+{
+    namespace platform = ludus::platform;
+    QTemporaryDir directory;
+    RenderPreview preview;
+    ProfilingController controller(&preview);
+    ScriptedRecordingTarget game;
+    REQUIRE(controller.SetHostedTarget(&game, &game) == true);
+    CHECK(controller.GetTargetDescription().contains(QStringLiteral("process 4321")) == true);
+    CHECK(controller.Start(ProfilingMode::Both, directory.filePath(QStringLiteral("both.json"))) == false);
+    CHECK(controller.GetStatus().contains(QStringLiteral("Both is unavailable")) == true);
+    CHECK(game.Requests.isEmpty() == true);
+
+    const QString firstPath = directory.filePath(QStringLiteral("first.json"));
+    REQUIRE(controller.Start(ProfilingMode::Gpu, firstPath) == true);
+    REQUIRE(game.Requests.size() == 1);
+    const platform::HostedRecordingRequest start = game.Requests[0];
+    CHECK(start.Kind == platform::HostedRecordingRequestKind::Start);
+    // The game's acknowledged start frame bounds what is admitted.
+    game.Acknowledge(start, platform::HostedRecordingResult::Ok, 5);
+    game.SendSample(start.Recording + 1, 5);
+    game.SendSample(start.Recording, 4);
+    game.SendSample(start.Recording, 5);
+    game.SendSample(start.Recording, 6);
+    CHECK(controller.SetHostedTarget(nullptr, nullptr) == false);
+    // The game goes away after samples and before acknowledging Stop.
+    game.Disconnect();
+    REQUIRE(AwaitState(controller, ProfilingState::Complete) == true);
+    CHECK(controller.GetStatus().contains(QStringLiteral("disconnected before acknowledging Stop")) == true);
+    const QJsonObject first = ReadTrace(firstPath);
+    REQUIRE(first.isEmpty() == false);
+    const QJsonObject producer = first.value(QStringLiteral("ludusHostedProducer")).toObject();
+    CHECK(producer.value(QStringLiteral("processId")).toString() == QStringLiteral("4321"));
+    CHECK(producer.value(QStringLiteral("producerName")).toString() == QStringLiteral("scripted game"));
+    CHECK(producer.value(QStringLiteral("recording")).toString() == QString::number(start.Recording));
+    CHECK(producer.value(QStringLiteral("startFrame")).toString() == QStringLiteral("5"));
+    CHECK(producer.value(QStringLiteral("lastSampleFrame")).toString() == QStringLiteral("6"));
+    CHECK(producer.value(QStringLiteral("complete")).toBool() == false);
+    CHECK(producer.value(QStringLiteral("disconnected")).toBool() == true);
+    CHECK(producer.value(QStringLiteral("stopAcknowledged")).toBool() == false);
+    CHECK(producer.value(QStringLiteral("rejectedSamples")).toString() == QStringLiteral("2"));
+    CHECK(producer.value(QStringLiteral("clockRelationship")).toString().contains(QStringLiteral("game's")) == true);
+    CHECK(first.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("sampleCount")).toInt() == 2);
+    CHECK(QJsonDocument(first).toJson().contains("hosted game scripted game (pid 4321)") == true);
+    CHECK(QJsonDocument(first).toJson().contains("Game/Surface") == true);
+
+    // Reconnected: the next recording refuses the earlier recording's delayed samples even
+    // though the new game process numbers its frames from one again.
+    game.IsConnected = true;
+    const QString secondPath = directory.filePath(QStringLiteral("second.json"));
+    REQUIRE(controller.Start(ProfilingMode::Gpu, secondPath) == true);
+    REQUIRE(game.Requests.size() == 2);
+    const platform::HostedRecordingRequest restart = game.Requests[1];
+    CHECK(restart.Recording > start.Recording);
+    CHECK(restart.Request > start.Request);
+    game.SendSample(start.Recording, 1);
+    game.Acknowledge(restart, platform::HostedRecordingResult::Ok, 1);
+    game.SendSample(start.Recording, 1);
+    game.SendSample(restart.Recording, 1);
+    controller.Stop();
+    REQUIRE(game.Requests.size() == 3);
+    const platform::HostedRecordingRequest stop = game.Requests[2];
+    CHECK(stop.Kind == platform::HostedRecordingRequestKind::Stop);
+    CHECK(stop.Recording == restart.Recording);
+    game.Acknowledge(stop,
+                     platform::HostedRecordingResult::Ok,
+                     3,
+                     { .SubmittedFrames = 3, .MeasuredFrames = 2, .SkippedFrames = 1, .DeliveredSamples = 1 });
+    REQUIRE(AwaitState(controller, ProfilingState::Complete) == true);
+    const QJsonObject second = ReadTrace(secondPath);
+    const QJsonObject restarted = second.value(QStringLiteral("ludusHostedProducer")).toObject();
+    CHECK(restarted.value(QStringLiteral("complete")).toBool() == true);
+    CHECK(restarted.value(QStringLiteral("stopFrame")).toString() == QStringLiteral("3"));
+    CHECK(restarted.value(QStringLiteral("skippedFrames")).toString() == QStringLiteral("1"));
+    CHECK(restarted.value(QStringLiteral("rejectedSamples")).toString() == QStringLiteral("2"));
+    CHECK(second.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("sampleCount")).toInt() == 1);
+    CHECK(second.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("eligibleFrames")).toInt() ==
+          3);
+}
+
+TEST_CASE("a hosted game without a recorder fails the recording with its reason", "[profiling][editor][hosted]")
+{
+    namespace platform = ludus::platform;
+    QTemporaryDir directory;
+    RenderPreview preview;
+    ProfilingController controller(&preview);
+    ScriptedRecordingTarget game;
+    REQUIRE(controller.SetHostedTarget(&game, &game) == true);
+    REQUIRE(controller.Start(ProfilingMode::Gpu, directory.filePath(QStringLiteral("refused.json"))) == true);
+    REQUIRE(game.Requests.size() == 1);
+    game.Acknowledge(game.Requests[0], platform::HostedRecordingResult::Unsupported, 0);
+    REQUIRE(AwaitState(controller, ProfilingState::Failed) == true);
+    CHECK(controller.GetStatus().contains(QStringLiteral("cannot record GPU passes")) == true);
+    CHECK(controller.HasUnsavedSnapshot() == false);
+    CHECK(QFileInfo::exists(directory.filePath(QStringLiteral("refused.json"))) == false);
+    // A game that goes away takes the target with it; the editor viewport is targeted again.
+    {
+        ScriptedRecordingTarget transient;
+        REQUIRE(controller.SetHostedTarget(&transient, &transient) == true);
+    }
+    CHECK(controller.GetTargetDescription().contains(QStringLiteral("World viewport's scene device")) == true);
 }
 #endif

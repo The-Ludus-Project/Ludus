@@ -534,6 +534,7 @@ target_link_libraries(ludus_editor_viewport_trace
 ludus_apply_project_defaults(ludus_editor_viewport_trace)
 
 set(editor_profiling_sources
+    src/internal/hosted_profiling_session.h src/hosted_profiling_session.cpp
     src/internal/profiling_controller.h src/profiling_controller.cpp
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
