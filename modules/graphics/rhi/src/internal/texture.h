@@ -18,6 +18,16 @@ inline bool TextureBinding(RasterBindingKind kind) noexcept
            kind == RasterBindingKind::Texture2D || kind == RasterBindingKind::Texture2DArray ||
            kind == RasterBindingKind::TextureCube || kind == RasterBindingKind::Texture3D;
 }
+// Sampled kinds above; write-only storage views are a separate R12b kind.
+inline bool StorageTextureBinding(RasterBindingKind kind) noexcept
+{
+    return kind == RasterBindingKind::StorageTexture2D;
+}
+// Any binding whose snapshot slot names a texture view, sampled or storage.
+inline bool ViewBinding(RasterBindingKind kind) noexcept
+{
+    return TextureBinding(kind) == true || StorageTextureBinding(kind) == true;
+}
 inline RasterBindingKind TextureBindingType(TextureDimension dimension) noexcept
 {
     return dimension == TextureDimension::D2Array ? RasterBindingKind::Texture2DArray

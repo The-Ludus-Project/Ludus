@@ -18,6 +18,9 @@ void Reset() noexcept
     HdrAvailable = true;
     HasLineFill = true;
     ComputeAvailable = true;
+    HasRasterStorageOverride = false;
+    RasterStorageOverride = {};
+    LastTextureUse = RasterTextureUse::Undefined;
     IsSpatialUpscaleAvailable = false;
     SpatialUpscaleEncodes = 0;
     FormatBlendUnavailable = false;
@@ -136,6 +139,18 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     return reference::ComputeResult;
 }
 void ComputeBufferBarrier(usize, GraphAccessMode) noexcept {}
+RasterStorageCapabilities RasterStorageLimits() noexcept
+{
+    if (reference::HasRasterStorageOverride == true)
+    {
+        return reference::RasterStorageOverride;
+    }
+    constexpr uint32 STORAGE_BUFFERS = 8;
+    constexpr uint32 STORAGE_TEXTURES = 4;
+    return ComputeLimits().MaxStorageRange == 0
+               ? RasterStorageCapabilities{}
+               : RasterStorageCapabilities{STORAGE_BUFFERS, STORAGE_BUFFERS, true, STORAGE_TEXTURES, STORAGE_TEXTURES};
+}
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
     if (static_cast<uint8>(format) > static_cast<uint8>(RasterFormat::Bc5RgUnorm) ||
@@ -335,9 +350,10 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& pass) noexcept
     ++reference::Passes;
     return reference::PassStart;
 }
-void RasterTextureBarrier(usize, RasterTextureUse) noexcept
+void RasterTextureBarrier(usize, RasterTextureUse use) noexcept
 {
     ++reference::Barriers;
+    reference::LastTextureUse = use;
 }
 RasterStatus RasterReserveSubmission() noexcept
 {

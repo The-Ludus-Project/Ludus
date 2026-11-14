@@ -54,7 +54,7 @@ struct RasterVulkanShader final
     VkShaderModule Object = VK_NULL_HANDLE;
     char Entry[64]{};
 };
-inline constexpr usize DESCRIPTOR_KINDS = 7;
+inline constexpr usize DESCRIPTOR_KINDS = 8;
 inline constexpr uint32 DESCRIPTOR_SETS_PER_ARENA = 16;
 struct RasterDescriptorArena final
 {
@@ -502,9 +502,10 @@ VkDescriptorType RasterDescriptor(RasterBindingKind kind, bool hasDynamicOffset 
            : kind == RasterBindingKind::StorageRead || kind == RasterBindingKind::StorageReadWrite
                ? (hasDynamicOffset == true ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
                                            : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-           : kind == RasterBindingKind::RayScene ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
-           : internal::TextureBinding(kind)      ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                                                 : VK_DESCRIPTOR_TYPE_SAMPLER;
+           : kind == RasterBindingKind::RayScene   ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+           : internal::StorageTextureBinding(kind) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+           : internal::TextureBinding(kind)        ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                                                   : VK_DESCRIPTOR_TYPE_SAMPLER;
 }
 VkFormat RasterPixelFormat(RasterFormat format) noexcept
 {
@@ -952,6 +953,47 @@ ComputeCapabilities ComputeLimits() noexcept
     }
     return result;
 }
+// Thanks to Khronos Group, Vulkan Specification, "Features" (fragmentStoresAndAtomics)
+// and "Required Format Support" (storage images): read-only vertex storage needs no
+// feature because Slang decorates it NonWritable; fragment writes and storage images do.
+// Imported devices do not declare that feature, so they expose compute textures only.
+RasterStorageCapabilities RasterStorageLimits() noexcept
+{
+    const ComputeCapabilities compute = ComputeLimits();
+    if (compute.MaxStorageRange == 0)
+    {
+        return {};
+    }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(gPhysical, &features);
+    const bool hasFragmentStores =
+        features.fragmentStoresAndAtomics == VK_TRUE && internal::NativeDeviceRequest() == nullptr;
+    bool hasStorageFormats = true;
+    for (const RasterFormat format : {RasterFormat::Rgba8Unorm, RasterFormat::Rgba16Float})
+    {
+        VkFormatProperties formatProperties{};
+        vkGetPhysicalDeviceFormatProperties(gPhysical, RasterPixelFormat(format), &formatProperties);
+        hasStorageFormats = hasStorageFormats == true &&
+                            (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+    }
+    const VkPhysicalDeviceLimits& limits = properties.limits;
+    const uint32 images = limits.maxPerStageDescriptorStorageImages < limits.maxDescriptorSetStorageImages
+                              ? limits.maxPerStageDescriptorStorageImages
+                              : limits.maxDescriptorSetStorageImages;
+    const uint32 textures = hasStorageFormats == false           ? 0U
+                            : images < internal::RASTER_BINDINGS ? images
+                                                                 : static_cast<uint32>(internal::RASTER_BINDINGS);
+    return
+    {
+        .MaxVertexStorageBuffers = compute.MaxStorageBindings,
+        .MaxFragmentStorageBuffers = compute.MaxStorageBindings,
+        .HasFragmentStorageWrites = hasFragmentStores,
+        .MaxFragmentStorageTextures = hasFragmentStores == true ? textures : 0U,
+        .MaxComputeStorageTextures = textures,
+    };
+}
 // Thanks to Khronos Group, Vulkan Specification, "Pipelines" and
 // vkCreateGraphicsPipelines host-synchronization rules:
 // https://docs.vulkan.org/spec/latest/chapters/pipelines.html.
@@ -1160,12 +1202,15 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
             stage = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
             access = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
             break;
+        // R12b storage uses carry no stage here: synchronize the conservative union of
+        // every stage that may read (vertex/fragment/compute) or write (fragment/compute).
         case GraphAccessMode::StorageRead:
-            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             access = VK_ACCESS_SHADER_READ_BIT;
             break;
         case GraphAccessMode::StorageReadWrite:
-            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
             break;
         default:
@@ -1251,7 +1296,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
     image.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                   (info.Format == RasterFormat::Rgba8Unorm ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0U) |
-                  (info.Attachment ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0U);
+                  (info.Attachment ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0U) |
+                  (info.IsStorage ? VK_IMAGE_USAGE_STORAGE_BIT : 0U);
     VmaAllocationCreateInfo allocation{};
     allocation.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     result = vmaCreateImage(gRasterAllocator, &image, &allocation, &texture.Object, &texture.Allocation, nullptr);
@@ -1649,6 +1695,7 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
             VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
         },
     };
     foundation::StaticArray<uint32, DESCRIPTOR_KINDS> counts{};
@@ -1809,12 +1856,16 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
         }
         else
         {
-            const bool isTexture = internal::TextureBinding(entry.Kind);
+            const bool isTexture = internal::ViewBinding(entry.Kind);
+            // Storage images are written in GENERAL; graph barriers transition before each use.
+            const VkImageLayout textureLayout = internal::StorageTextureBinding(entry.Kind) == true
+                                                    ? VK_IMAGE_LAYOUT_GENERAL
+                                                    : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             images[index] =
             {
                 .sampler = isTexture == false ? gRasterSamplers[info.Slots[index]] : VK_NULL_HANDLE,
                 .imageView = isTexture == true ? gRasterViews[info.Slots[index]] : VK_NULL_HANDLE,
-                .imageLayout = isTexture == true ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                .imageLayout = isTexture == true ? textureLayout : VK_IMAGE_LAYOUT_UNDEFINED,
             };
         }
         writes[index] =
@@ -2248,6 +2299,40 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
                              1,
                              &depth.Image);
         texture.DepthLayout = depth.Image.newLayout;
+    }
+    const bool isStorageUse = use == RasterTextureUse::StorageFragment || use == RasterTextureUse::StorageCompute;
+    if (isStorageUse == true)
+    {
+        // Thanks to Khronos Group, Vulkan Specification, "Image Layouts": storage images
+        // require GENERAL. Every write is ordered after earlier reads/writes (WAR/WAW).
+        const VkPipelineStageFlags storageStage = use == RasterTextureUse::StorageCompute
+                                                      ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                                      : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        VkImageMemoryBarrier storage{};
+        storage.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        storage.oldLayout = texture.ColorLayout;
+        storage.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        storage.srcQueueFamilyIndex = storage.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        storage.srcAccessMask = texture.ColorWriterAccess | texture.ColorAccess;
+        storage.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        storage.image = texture.Object;
+        storage.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, texture.Info.MipLevels, 0, 1};
+        vkCmdPipelineBarrier(gFrames[gFrame].Command,
+                             texture.ColorStage | texture.ColorWriterStage,
+                             storageStage,
+                             0,
+                             0,
+                             nullptr,
+                             0,
+                             nullptr,
+                             1,
+                             &storage);
+        texture.ColorLayout = VK_IMAGE_LAYOUT_GENERAL;
+        texture.ColorStage = texture.ColorWriterStage = storageStage;
+        texture.ColorAccess = 0;
+        texture.ColorWriterAccess = VK_ACCESS_SHADER_WRITE_BIT;
+        texture.SampleVisibility = 0;
+        return;
     }
     const VkPipelineStageFlags stage =
         isAttachmentUse == true                   ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT

@@ -496,7 +496,9 @@ RasterStatus RasterCreateTexture(usize slot,
     native.MipLevels = static_cast<uint16>(description.MipLevels);
     native.Format = GetFormat(description.Format);
     native.SampleDesc.Count = description.SampleCount;
-    native.Flags = description.Attachment == true ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE;
+    native.Flags =
+        (description.Attachment == true ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE) |
+        (description.IsStorage == true ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE);
     const D3D12_RESOURCE_STATES initialState =
         description.Attachment == true ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST;
     RasterStatus status = CreateResource(native, D3D12_HEAP_TYPE_DEFAULT, initialState, texture.Resource);
@@ -807,26 +809,24 @@ RasterStatus RasterCreateLayout(usize slot, const RasterLayout& layout, uint32) 
         const RasterBinding& binding = layout.Entries[entry];
         const bool isStorage =
             binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite;
-        // Structured reads also serve fragment stages as SRVs (the deferred lighting resolve reads
-        // its light and LTC tables there); structured writes stay in compute, as the portable
-        // contract requires (D6c).
-        const bool isStorageVisible =
-            binding.Visibility == RasterVisibility::Compute ||
-            (binding.Kind == RasterBindingKind::StorageRead && binding.Visibility == RasterVisibility::Fragment);
+        // Structured reads serve every stage as SRVs; R12b structured writes and storage
+        // textures are UAVs in compute or pixel shaders only (common admission enforces this).
         constexpr usize MAX_PORTABLE_STORAGE_STRIDE = sizeof(uint32) * 4;
         if (binding.Count != 1 || binding.HasDynamicOffset == true ||
-            (isStorage == true && (isStorageVisible == false || binding.MinSize > MAX_PORTABLE_STORAGE_STRIDE ||
-                                   (MAX_PORTABLE_STORAGE_STRIDE % binding.MinSize) != 0)) ||
+            (isStorage == true &&
+             (binding.MinSize > MAX_PORTABLE_STORAGE_STRIDE || (MAX_PORTABLE_STORAGE_STRIDE % binding.MinSize) != 0)) ||
             (binding.Kind != RasterBindingKind::UniformBuffer && binding.Kind != RasterBindingKind::Sampler &&
-             TextureBinding(binding.Kind) == false && isStorage == false))
+             ViewBinding(binding.Kind) == false && isStorage == false))
         {
             return RasterStatus::Unsupported;
         }
+        const bool isUnorderedAccess =
+            binding.Kind == RasterBindingKind::StorageReadWrite || StorageTextureBinding(binding.Kind) == true;
         D3D12_DESCRIPTOR_RANGE& range = ranges[entry];
-        range.RangeType = binding.Kind == RasterBindingKind::UniformBuffer      ? D3D12_DESCRIPTOR_RANGE_TYPE_CBV
-                          : binding.Kind == RasterBindingKind::Sampler          ? D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER
-                          : binding.Kind == RasterBindingKind::StorageReadWrite ? D3D12_DESCRIPTOR_RANGE_TYPE_UAV
-                                                                                : D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        range.RangeType = binding.Kind == RasterBindingKind::UniformBuffer ? D3D12_DESCRIPTOR_RANGE_TYPE_CBV
+                          : binding.Kind == RasterBindingKind::Sampler     ? D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER
+                          : isUnorderedAccess == true                      ? D3D12_DESCRIPTOR_RANGE_TYPE_UAV
+                                                                           : D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         range.NumDescriptors = 1;
         range.BaseShaderRegister = binding.Binding;
         range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -951,6 +951,19 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
                 storage.Buffer.StructureByteStride = elementStride;
                 GetDeviceOrNull()->CreateShaderResourceView(resource, &storage, descriptor);
             }
+        }
+        else if (StorageTextureBinding(binding.Kind) == true)
+        {
+            // Thanks to Microsoft, "Typed unordered access view (UAV) loads", for typed UAV
+            // stores of RGBA8/RGBA16F; write-only access needs no additional load support.
+            const View& view = gViews[resourceSlot];
+            D3D12_UNORDERED_ACCESS_VIEW_DESC storage{};
+            storage.Format = GetFormat(binding.StorageFormat);
+            storage.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            GetDeviceOrNull()->CreateUnorderedAccessView(gTextures[view.TextureSlot].Resource.Get(),
+                                                         nullptr,
+                                                         &storage,
+                                                         descriptor);
         }
         else
         {
@@ -1109,6 +1122,20 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
     constexpr D3D12_RESOURCE_STATES SAMPLED =
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     const bool isAttachment = use == RasterTextureUse::ColorAttachment;
+    if (use == RasterTextureUse::StorageFragment || use == RasterTextureUse::StorageCompute)
+    {
+        // Consecutive storage writes stay in UNORDERED_ACCESS and need a UAV barrier (WAW).
+        if (texture.State == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            barrier.UAV.pResource = texture.Resource.Get();
+            GetCommandsOrNull()->ResourceBarrier(1, &barrier);
+            return;
+        }
+        TransitionWholeResource(texture.Resource.Get(), texture.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        return;
+    }
     TransitionWholeResource(texture.Resource.Get(),
                             texture.State,
                             isAttachment == true ? D3D12_RESOURCE_STATE_RENDER_TARGET : SAMPLED);

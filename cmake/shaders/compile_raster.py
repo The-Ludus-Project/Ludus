@@ -12,10 +12,15 @@ from compile_shader import relative_line_directives, restore_metal_noinline
 # Reflect each target independently. No cross-target CPU packing is inferred.
 # Raster admits read-only fragment storage; compute also admits writable structured buffers. Both reject
 # extra groups and unsupported inputs. Native descriptor arrays use explicit profiles.
+# The explicit R12b raster-storage profile additionally admits read-only vertex storage, writable
+# fragment storage and write-only 2D storage textures (also in compute), with no GLSL ES fallback.
 # Must match rhi::RASTER_BINDING_COUNT in profile.h; regression-checked.
 RASTER_BINDING_COUNT = 16
 RUNTIME_BINDING_LENGTH_SLOT = RASTER_BINDING_COUNT - 2
 RUNTIME_BINDING_ARRAY_SLOT = RASTER_BINDING_COUNT - 1
+# Slang [format(...)] spellings of the R12b write-only storage texture formats (rhi::RasterFormat).
+STORAGE_TEXTURE_FORMATS = {'rgba8': 'Rgba8Unorm', 'rgba16f': 'Rgba16Float'}
+WGSL_STORAGE_TEXTURE_FORMATS = {'Rgba8Unorm': 'rgba8unorm', 'Rgba16Float': 'rgba16float'}
 
 def uniform_shape(value):
     kind = value.get('kind')
@@ -136,7 +141,25 @@ def storage_record_layout(record):
     return (offset + alignment - 1) // alignment * alignment, members
 
 
-def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False, structured_records=False, dxil=False):
+def raster_interface_usage(document, stage):
+    """Names of the resources the selected entry uses, from occupied binding categories."""
+    names = set()
+    for point in document['entryPoints']:
+        if point['stage'] != stage:
+            continue
+        for resource in point.get('bindings', []):
+            bindings = resource.get('bindings', [resource.get('binding', {})])
+            if any(b.get('used') for b in bindings if b.get('count', 1) != 0):
+                names.add(resource['name'])
+    return names
+
+
+def is_storage_texture(resource):
+    shape = resource.get('type', {})
+    return shape.get('kind') == 'resource' and shape.get('baseShape') == 'texture2D' and shape.get('access') in ('write', 'readWrite')
+
+
+def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False, structured_records=False, dxil=False, raster_storage=False, storage_slots=None):
     points = [x for x in document['entryPoints'] if x['stage'] == stage]
     if len(points) != 1:
         raise RuntimeError('Expected one entry per raster stage')
@@ -146,7 +169,9 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         bindings = resource.get('bindings', [resource.get('binding', {})])
         if any('used' not in b for b in bindings):
             raise RuntimeError('Raster stage usage is missing; compile stages separately')
-        used[resource['name']] = any(b['used'] for b in bindings)
+        # Metal also lists zero-count categories whose usage flag follows another resource at the
+        # same native index (a write texture and a buffer at texture 0); only occupied ones count.
+        used[resource['name']] = any(b['used'] for b in bindings if b.get('count', 1) != 0)
     if 'nativeEntryPointResourceUsage' in document:
         usage = document['nativeEntryPointResourceUsage']
         names = [resource['name'] for resource in document.get('parameters', [])]
@@ -161,7 +186,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         descriptors = [b for b in bindings if b.get('kind') == 'descriptorTableSlot']
         if (metal or dxil) and not descriptors:
             native_kinds = ('constantBuffer', 'shaderResource') if stage == 'compute' else ('constantBuffer', 'shaderResource', 'samplerState')
-            if dxil and stage == 'compute':
+            if dxil and (stage == 'compute' or raster_storage):
                 native_kinds += ('unorderedAccess',)
             # Metal buffers also carry zero-count shaderResource metadata.
             # Only the occupied native category identifies their descriptor.
@@ -170,6 +195,12 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         if len(descriptors) != 1 or descriptors[0].get('space', 0) != 0:
             raise RuntimeError('Raster resources require one descriptor in group/set zero')
         index = descriptors[0]['index']
+        if metal and is_storage_texture(resource):
+            # Metal numbers write-only textures itself; the authored slot comes from a
+            # reflection-only SPIR-V pass of the same source (metal_storage_texture_slots).
+            if storage_slots is None or resource['name'] not in storage_slots:
+                raise RuntimeError('Metal storage textures require their authored descriptor slot')
+            index = storage_slots[resource['name']]
         if not 0 <= index < RASTER_BINDING_COUNT or any(e['binding'] == index for e in entries):
             raise RuntimeError('Raster binding is duplicated or outside the bounded profile')
         resource_type = resource['type']
@@ -193,7 +224,9 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             size = resource_type['elementVarLayout']['binding']['size']
             if not 0 < size <= 16384:
                 raise RuntimeError('Uniform occupied range exceeds the raster profile')
-        elif (stage == 'compute' or (stage == 'fragment' and resource_type.get('access', 'read') == 'read')) and kind == 'resource' and resource_type.get('baseShape') == 'structuredBuffer':
+        elif (stage == 'compute' or (stage == 'fragment' and resource_type.get('access', 'read') == 'read') or
+              (raster_storage and (stage == 'fragment' or resource_type.get('access', 'read') == 'read'))) and \
+                kind == 'resource' and resource_type.get('baseShape') == 'structuredBuffer':
             result = resource_type.get('resultType', {})
             scalar = result if result.get('kind') == 'scalar' else result.get('elementType', {})
             width = 1 if result.get('kind') == 'scalar' else result.get('elementCount')
@@ -214,6 +247,20 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             if resource_type.get('isComparison', False) or 'comparison' in str(resource_type.get('flavor', '')).lower():
                 raise RuntimeError('Comparison samplers are outside the raster profile')
             kind = 'Sampler'
+        elif kind == 'resource' and resource_type.get('baseShape') == 'texture2D' and resource_type.get('access') in ('write', 'readWrite'):
+            # R12b write-only storage textures: one 2D image, float4 texels, explicit [format].
+            if resource_type.get('access') != 'write':
+                raise RuntimeError('Read/write storage textures are outside the R12b write-only profile')
+            if not (stage == 'compute' or (stage == 'fragment' and raster_storage)):
+                raise RuntimeError('Storage textures require compute or the raster-storage fragment profile')
+            result = resource_type.get('resultType', {})
+            if (count != 1 or is_runtime or resource_type.get('array', False) or resource_type.get('multisample', False) or
+                    result.get('kind') != 'vector' or result.get('elementCount') != 4 or
+                    result.get('elementType', {}).get('scalarType') != 'float32'):
+                raise RuntimeError('Storage textures require one non-arrayed float4 2D image')
+            if resource.get('format') not in STORAGE_TEXTURE_FORMATS:
+                raise RuntimeError('Storage textures require [format("rgba8")] or [format("rgba16f")]')
+            kind = 'StorageTexture2D'
         elif kind == 'resource' and resource_type.get('baseShape') in ('texture2D', 'textureCube', 'texture3D'):
             if resource_type.get('access', 'read') not in ('read', 'readOnly') or resource_type.get('multisample', False):
                 raise RuntimeError('Raster textures require non-multisampled read-only sampling')
@@ -233,25 +280,30 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                 kind = 'TextureDepth2D' if scalar == 'float32' else 'TextureStencil2D'
         else:
             raise RuntimeError('Unsupported raster resource shape: ' + kind)
-        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene', 'Texture2D', 'TextureDepth2D'):
-            raise RuntimeError('Compute profile accepts buffers, native scenes and unfiltered 2D color/depth textures only')
+        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene', 'Texture2D', 'TextureDepth2D', 'StorageTexture2D'):
+            raise RuntimeError('Compute profile accepts buffers, native scenes, unfiltered 2D color/depth textures and storage textures only')
         if metal or dxil:
-            native_kind = {'StorageRead': 'constantBuffer', 'StorageReadWrite': 'constantBuffer', 'UniformBuffer': 'constantBuffer', 'Texture2D': 'shaderResource', 'Texture2DArray': 'shaderResource', 'TextureCube': 'shaderResource', 'Texture3D': 'shaderResource', 'TextureDepth2D': 'shaderResource', 'TextureStencil2D': 'shaderResource', 'Sampler': 'samplerState'}[kind]
-            if dxil and kind in ('StorageRead', 'StorageReadWrite'):
+            native_kind = {'StorageRead': 'constantBuffer', 'StorageReadWrite': 'constantBuffer', 'UniformBuffer': 'constantBuffer', 'Texture2D': 'shaderResource', 'Texture2DArray': 'shaderResource', 'TextureCube': 'shaderResource', 'Texture3D': 'shaderResource', 'TextureDepth2D': 'shaderResource', 'TextureStencil2D': 'shaderResource', 'Sampler': 'samplerState', 'StorageTexture2D': 'shaderResource'}[kind]
+            if dxil and kind in ('StorageRead', 'StorageReadWrite', 'StorageTexture2D'):
                 native_kind = 'shaderResource' if kind == 'StorageRead' else 'unorderedAccess'
             native = [b for b in bindings if b.get('kind') == native_kind and b.get('count', 1) != 0]
-            if len(native) != 1 or native[0]['index'] != index:
+            # Slang numbers Metal write-only textures after the register-assigned sampled ones;
+            # normalize_metal_storage_textures rebinds the emitted MSL argument to the binding number.
+            if len(native) != 1 or (native[0]['index'] != index and not (metal and kind == 'StorageTexture2D')):
                 raise RuntimeError('Native binding remapping is outside this raster profile')
         if dxil:
             # Direct3D 12 raster stages read a depth aspect as R32_FLOAT and structured buffers as
-            # SRVs (fragment storage reads); stencil loads, compute depth reads and raster storage
-            # writes are not in its profile (docs/architecture/windows-direct3d12.md).
-            supported = (('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'Texture2D') if stage == 'compute'
+            # SRVs; stencil loads and compute depth reads are not in its profile
+            # (docs/architecture/windows-direct3d12.md). R12b fragment writes and storage textures are UAVs.
+            supported = (('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'Texture2D', 'StorageTexture2D') if stage == 'compute'
                          else ('UniformBuffer', 'Sampler', 'Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D',
-                               'TextureDepth2D', 'StorageRead'))
+                               'TextureDepth2D', 'StorageRead') +
+                         (('StorageReadWrite', 'StorageTexture2D') if raster_storage and stage == 'fragment' else ()))
             if count != 1 or is_runtime or kind not in supported:
                 raise RuntimeError(f'DXIL {stage} requires scalar bindings of kinds: {", ".join(supported)}')
         value = {'binding': index, 'kind': kind, 'size': size, 'name': resource['name']}
+        if kind == 'StorageTexture2D':
+            value['storage_format'] = STORAGE_TEXTURE_FORMATS[resource['format']]
         if is_runtime and kind not in ('Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D'):
             raise RuntimeError('Runtime arrays require sampled color texture descriptors')
         if count > 1 or is_runtime:
@@ -709,6 +761,36 @@ def verify_native_metal_arrays(code, interface):
                 raise RuntimeError('MSL scalar register differs from target reflection')
 
 
+def metal_storage_texture_slots(document):
+    """Authored group-zero slots of write textures from a SPIR-V reflection of the same source."""
+    slots = {}
+    for resource in document.get('parameters', []):
+        binding = resource.get('binding', {})
+        if is_storage_texture(resource):
+            if binding.get('kind') != 'descriptorTableSlot' or binding.get('space', 0) != 0:
+                raise RuntimeError('Storage textures require one descriptor in group/set zero')
+            slots[resource['name']] = binding['index']
+    return slots
+
+
+def normalize_metal_storage_textures(code, interface, document):
+    """Rebind each emitted write-only MSL texture argument to its authored binding number."""
+    emitted = {resource['name']: [b for b in resource.get('bindings', []) if b.get('kind') == 'shaderResource' and b.get('count', 1) != 0]
+               for resource in document.get('parameters', []) if is_storage_texture(resource)}
+    for binding in interface['entries']:
+        if binding['kind'] != 'StorageTexture2D':
+            continue
+        native = emitted.get(binding['name'], [])
+        if len(native) != 1:
+            raise RuntimeError('Metal emitted storage texture reflection is missing')
+        pattern = (r'(texture2d<\s*float\s*,\s*access::write\s*>\s+' + re.escape(binding['name']) +
+                   r'(?:_\d+)?\s*\[\[texture\()' + str(native[0]['index']) + r'(\)\]\])')
+        code, count = re.subn(pattern, lambda match: match[1] + str(binding['binding']) + match[2], code)
+        if count != 1:
+            raise RuntimeError('Metal emitted storage texture argument is missing or ambiguous')
+    return code
+
+
 def normalize_metal_storage(code, interface):
     # Slang emits non-const device pointers for StructuredBuffer.
     # Preserve the independently reflected read-only contract in MSL,
@@ -719,8 +801,9 @@ def normalize_metal_storage(code, interface):
         scalar = {'float32': 'float', 'uint32': 'uint', 'int32': 'int'}[binding['scalar']]
         element = scalar if binding['width'] == 1 else scalar + str(binding['width'])
         pattern = r'(?<!const )\b' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b'
-        code, count = re.subn(pattern, lambda match: 'const ' + match[0], code)
-        if count < 1:
+        code = re.sub(pattern, lambda match: 'const ' + match[0], code)
+        # Slang already emits vertex-stage storage reads as const device pointers.
+        if re.search(r'\bconst\s+' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b', code) is None:
             raise RuntimeError('Metal emitted read-only storage parameter is missing')
     return code
 
@@ -744,6 +827,9 @@ def compile_raster(args, lock):
         raise RuntimeError('Native ray queries require compute stages')
     native_arrays = getattr(args, 'native_binding_arrays', False)
     runtime_arrays = getattr(args, 'runtime_binding_arrays', False)
+    raster_storage = getattr(args, 'raster_storage', False)
+    if raster_storage and (compute or native_arrays or translated_compute):
+        raise RuntimeError('The R12b raster-storage profile requires scalar raster stages')
     if runtime_arrays and (not native_arrays or args.metal or compute):
         raise RuntimeError('Runtime descriptor arrays require the native Vulkan raster profile')
     if runtime_arrays:
@@ -777,7 +863,18 @@ def compile_raster(args, lock):
             commands.append(command)
             run(command)
         dependencies.append(depfile.read_text().split(':', 1)[1].strip())
-        interfaces[(target, stage)] = raster_interface(json.loads(reflection.read_text()), stage, target == 'metal', native_arrays, runtime_arrays, structured_records=translated_compute)
+        document = json.loads(reflection.read_text())
+        storage_slots = None
+        if target == 'metal' and any(is_storage_texture(resource) and resource['name'] in raster_interface_usage(document, stage)
+                                     for resource in document.get('parameters', [])):
+            slots_reflection = output / f'{stage}.slots.reflection.json'
+            command = [args.compiler, args.source, '-target', 'spirv', '-profile', 'spirv_1_3', '-entry', name, '-stage', stage,
+                       '-o', str(output / f'{stage}.slots.spv'), '-reflection-json', str(slots_reflection), *extra]
+            commands.append(command)
+            run(command)
+            storage_slots = metal_storage_texture_slots(json.loads(slots_reflection.read_text()))
+        interfaces[(target, stage)] = raster_interface(document, stage, target == 'metal', native_arrays, runtime_arrays, structured_records=translated_compute,
+                                                       raster_storage=raster_storage, storage_slots=storage_slots)
         if translated_compute:
             verify_storage_record_strides(artifact.read_bytes(), interfaces[(target, stage)])
         if native_arrays:
@@ -816,8 +913,8 @@ def compile_raster(args, lock):
                     variable = re.escape(binding['name']) + r'(?:_\d+)?'
                     if re.search(r'\b' + variable + r'\s*\)?\s*\.\s*(?:sample|gather)\b', code):
                         raise RuntimeError('Depth/stencil views require unfiltered loads')
-            if compute or stage == 'fragment':
-                code = normalize_metal_storage(code, interfaces[(target, stage)])
+            code = normalize_metal_storage(code, interfaces[(target, stage)])
+            code = normalize_metal_storage_textures(code, interfaces[(target, stage)], document)
             artifact.write_text(code)
             names = re.findall(r'\[\[' + ('kernel' if compute else stage) + r'\]\]\s+\w+\s+(\w+)\s*\(', code)
             if len(names) != 1:
@@ -853,14 +950,20 @@ def compile_raster(args, lock):
                 commands.append(command)
                 run(command)
             dependencies.append(depfile.read_text().split(':', 1)[1].strip())
-            interface = raster_interface(json.loads(reflection.read_text()), stage)
+            interface = raster_interface(json.loads(reflection.read_text()), stage, raster_storage=raster_storage)
             code = wgsl_contract(artifact.read_text(), interface, stage)
+            for binding in interface['entries']:
+                if binding['kind'] == 'StorageTexture2D':
+                    texel = WGSL_STORAGE_TEXTURE_FORMATS[binding['storage_format']]
+                    pattern = r'@binding\(' + str(binding['binding']) + r'\)\s+@group\(0\)\s+var\s+\w+\s*:\s*texture_storage_2d<' + texel + r',\s*write>\s*;'
+                    if re.search(pattern, code) is None:
+                        raise RuntimeError('WGSL emitted storage texture format/access differs from reflection')
             if compute:
                 local = re.search(r'@workgroup_size\((\d+),\s*(\d+),\s*(\d+)\)', code)
                 if local is None or [int(x) for x in local.groups()] != interface['workgroup']:
                     raise RuntimeError('WGSL emitted workgroup differs from reflection')
                 for binding in interface['entries']:
-                    if not binding['kind'].startswith('Storage'):
+                    if binding['kind'] not in ('StorageRead', 'StorageReadWrite'):
                         continue
                     scalar = {'float32': 'f32', 'uint32': 'u32', 'int32': 'i32'}[binding['scalar']]
                     element = scalar if binding['width'] == 1 else f'vec{binding["width"]}<{scalar}>'
@@ -892,7 +995,8 @@ def compile_raster(args, lock):
         if interface['entries']:
             header += f'inline constexpr graphics::rhi::RasterBinding {label}_BINDINGS[] = {{\n'
             for binding in interface['entries']:
-                header += '{' + f'.Binding={binding["binding"]},.Kind=graphics::rhi::RasterBindingKind::{binding["kind"]},.Visibility=graphics::rhi::RasterVisibility::{stage.title()},.MinSize={binding["size"]},.Count={binding.get("count",1)},.Indexing=graphics::rhi::RasterBindingIndexing::{binding.get("indexing","Constant")},.IsRuntimeSized={str(binding.get("runtime_sized",False)).lower()}' + '},\n'
+                storage_format = f',.StorageFormat=graphics::rhi::RasterFormat::{binding["storage_format"]}' if 'storage_format' in binding else ''
+                header += '{' + f'.Binding={binding["binding"]},.Kind=graphics::rhi::RasterBindingKind::{binding["kind"]},.Visibility=graphics::rhi::RasterVisibility::{stage.title()},.MinSize={binding["size"]},.Count={binding.get("count",1)},.Indexing=graphics::rhi::RasterBindingIndexing::{binding.get("indexing","Constant")},.IsRuntimeSized={str(binding.get("runtime_sized",False)).lower()}{storage_format}' + '},\n'
             header += '};\n'
         members = [(entry['binding'], name, offset, entry['shapes'][name]) for entry in interface['entries']
                    for name, offset in entry.get('offsets', {}).items()]

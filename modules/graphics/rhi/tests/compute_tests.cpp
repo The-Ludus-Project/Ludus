@@ -165,13 +165,17 @@ TEST_CASE("Compute layouts and workgroup limits reject unsupported contracts wit
     BindingLayoutHandle layout;
     REQUIRE(CreateBindingLayout(session.Device, bindings, layout) == RasterStatus::Ready);
     REQUIRE(Destroy(session.Device, layout) == RasterStatus::Ready);
+    // R12b: fragment shaders may also write, vertex shaders only read.
     bindings[0].Visibility = RasterVisibility::Fragment;
-    CHECK(CreateBindingLayout(session.Device, {bindings, 1}, layout) == RasterStatus::InvalidDescription);
-    bindings[0].Kind = RasterBindingKind::StorageRead;
     REQUIRE(CreateBindingLayout(session.Device, {bindings, 1}, layout) == RasterStatus::Ready);
     REQUIRE(Destroy(session.Device, layout) == RasterStatus::Ready);
     bindings[0].Visibility = RasterVisibility::Vertex;
     CHECK(CreateBindingLayout(session.Device, {bindings, 1}, layout) == RasterStatus::InvalidDescription);
+    bindings[0].Visibility = RasterVisibility::Both;
+    CHECK(CreateBindingLayout(session.Device, {bindings, 1}, layout) == RasterStatus::InvalidDescription);
+    bindings[0].Kind = RasterBindingKind::StorageRead;
+    REQUIRE(CreateBindingLayout(session.Device, {bindings, 1}, layout) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, layout) == RasterStatus::Ready);
     Kernel kernel(session.Device);
     const RasterBindingResource wrong{ .Buffer = kernel.Buffer, .Offset = 4, .Size = 4 };
     BindingSetHandle set;

@@ -267,6 +267,30 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     return result;
 }
 
+// Thanks to W3C GPU for the Web Working Group, "WebGPU", Limits and "Texture Format
+// Capabilities": core devices admit read-only vertex storage, fragment storage writes and
+// write-only rgba8unorm/rgba16float storage textures in fragment and compute stages.
+// https://www.w3.org/TR/webgpu/#limits
+RasterStorageCapabilities RasterStorageLimits() noexcept
+{
+    const ComputeCapabilities compute = ComputeLimits();
+    WGPULimits limits = WGPU_LIMITS_INIT;
+    if (compute.MaxStorageRange == 0 || wgpuDeviceGetLimits(gDevice, &limits) != WGPUStatus_Success)
+    {
+        return {};
+    }
+    const uint32 textures = limits.maxStorageTexturesPerShaderStage < internal::RASTER_BINDINGS
+                                ? limits.maxStorageTexturesPerShaderStage
+                                : static_cast<uint32>(internal::RASTER_BINDINGS);
+    return
+    {
+        .MaxVertexStorageBuffers = compute.MaxStorageBindings,
+        .MaxFragmentStorageBuffers = compute.MaxStorageBindings,
+        .HasFragmentStorageWrites = true,
+        .MaxFragmentStorageTextures = textures,
+        .MaxComputeStorageTextures = textures,
+    };
+}
 ComputeCapabilities ComputeLimits() noexcept
 {
     WGPULimits limits = WGPU_LIMITS_INIT;
@@ -390,7 +414,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                                                                     : WGPUTextureFormat_RGBA8UnormSrgb;
     descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst |
                        (info.Format == RasterFormat::Rgba8Unorm ? WGPUTextureUsage_CopySrc : WGPUTextureUsage_None) |
-                       (info.Attachment ? WGPUTextureUsage_RenderAttachment : WGPUTextureUsage_None);
+                       (info.Attachment ? WGPUTextureUsage_RenderAttachment : WGPUTextureUsage_None) |
+                       (info.IsStorage ? WGPUTextureUsage_StorageBinding : WGPUTextureUsage_None);
     if (info.SampleCount > 1)
     {
         descriptor.usage = WGPUTextureUsage_RenderAttachment;
@@ -527,6 +552,15 @@ RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, 
             entry.buffer.minBindingSize = source.MinSize;
             entry.buffer.hasDynamicOffset = source.HasDynamicOffset;
         }
+        else if (internal::StorageTextureBinding(source.Kind))
+        {
+            // Core WebGPU write-only storage formats; read_write access needs a language feature.
+            entry.storageTexture.access = WGPUStorageTextureAccess_WriteOnly;
+            entry.storageTexture.format = source.StorageFormat == RasterFormat::Rgba16Float
+                                              ? WGPUTextureFormat_RGBA16Float
+                                              : WGPUTextureFormat_RGBA8Unorm;
+            entry.storageTexture.viewDimension = WGPUTextureViewDimension_2D;
+        }
         else if (internal::TextureBinding(source.Kind))
         {
             entry.texture.sampleType =
@@ -570,7 +604,7 @@ RasterStatus RasterCreateSet(usize slot,
             entry.offset = info.Offsets[i];
             entry.size = info.Sizes[i];
         }
-        else if (internal::TextureBinding(source.Kind))
+        else if (internal::ViewBinding(source.Kind))
         {
             entry.textureView = gRasterViews[info.Slots[i]];
         }

@@ -172,8 +172,17 @@ TEST_CASE("Required profile limits and formats fail before resource creation wit
         request.RequiredProfile.Formats[0] = { .Format = RasterFormat::R8Unorm, .Uses = { .ColorAttachment = true } };
         expected = ProfileRequirement::ColorAttachment;
     }
-    SECTION("driver capabilities do not enable storage textures")
+    SECTION("R12b storage textures exclude formats outside the RGBA8/RGBA16F pair")
     {
+        request.RequiredProfile.FormatCount = 1;
+        request.RequiredProfile.Formats[0].Format = RasterFormat::Rgba8Srgb;
+        request.RequiredProfile.Formats[0].Uses.Storage = true;
+        expected = ProfileRequirement::Storage;
+    }
+    SECTION("storage textures require an enabled storage stage")
+    {
+        reference::HasRasterStorageOverride = true;
+        reference::RasterStorageOverride = { .MaxFragmentStorageBuffers = 1 };
         request.RequiredProfile.FormatCount = 1;
         request.RequiredProfile.Formats[0].Uses.Storage = true;
         expected = ProfileRequirement::Storage;
@@ -396,7 +405,11 @@ TEST_CASE("Unavailable preferred format uses remain optional", "[rhi][profile]")
     ProfileFixture fixture;
     DeviceDescription request;
     request.PreferredProfile.FormatCount = 1;
-    request.PreferredProfile.Formats[0] = { .Uses = { .Sampled = true, .Storage = true } };
+    request.PreferredProfile.Formats[0] =
+    {
+        .Format = RasterFormat::Rgba8Srgb,
+        .Uses = { .Sampled = true, .Storage = true },
+    };
     REQUIRE(fixture.Start(request) == DeviceStatus::Pending);
     fixture.Complete();
     DeviceInfo info;
@@ -404,8 +417,11 @@ TEST_CASE("Unavailable preferred format uses remain optional", "[rhi][profile]")
     CHECK(info.UnmetProfilePreference.Requirement == ProfileRequirement::Storage);
     CHECK(info.UnmetProfilePreference.Requested == 1);
     CHECK(info.UnmetProfilePreference.Available == 0);
-    CHECK(info.Profile.Formats[0].Uses.Sampled);
-    CHECK_FALSE(info.Profile.Formats[0].Uses.Storage);
+    const ludus::foundation::usize srgb = static_cast<ludus::foundation::usize>(RasterFormat::Rgba8Srgb);
+    CHECK(info.Profile.Formats[srgb].Uses.Sampled);
+    CHECK_FALSE(info.Profile.Formats[srgb].Uses.Storage);
+    CHECK(info.Profile.Formats[static_cast<ludus::foundation::usize>(RasterFormat::Rgba8Unorm)].Uses.Storage);
+    CHECK(info.Profile.Formats[static_cast<ludus::foundation::usize>(RasterFormat::Rgba16Float)].Uses.Storage);
 }
 
 TEST_CASE("Stride admission honors the enabled backend's aligned boundary", "[rhi][profile]")
