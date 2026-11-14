@@ -62,22 +62,27 @@ struct CriticalSpringStep final
 [[nodiscard]] MathStatus
 TryComputeCriticalSpringStep(float64 smoothTimeSeconds, float64 deltaSeconds, CriticalSpringStep& outStep) noexcept;
 
+/// @brief Position and velocity of a critically damped channel, relative to its held target.
+struct CriticalSpringState final
+{
+    /// Current position minus target, in world units.
+    Vector3d Displacement{};
+    /// Current velocity in world units per second.
+    Vector3d Velocity{};
+};
+
 /// @brief Advance a displacement from a held target and its velocity by one prepared critical step.
 /// @param step Coefficients from TryComputeCriticalSpringStep.
-/// @param displacement Finite current position minus target, in world units.
-/// @param velocity Finite current velocity in world units per second.
-/// @param outDisplacement Receives the next displacement on Success.
-/// @param outVelocity Receives the next velocity on Success.
-/// @return NonFiniteInput for nonfinite inputs, OutOfRange when a product overflows; both outputs are preserved on
-/// failure. A zero delta returns the inputs unchanged. No allocation.
+/// @param current Finite displacement and velocity before the step.
+/// @param outState Receives the state after the step on Success; may alias the caller's current state.
+/// @return NonFiniteInput for nonfinite inputs, OutOfRange when a product overflows; the output is preserved on
+/// failure. A zero delta returns the input unchanged. No allocation.
 /// @note Thanks to Thomas Lowe, "Critically Damped Ease-In/Ease-Out Smoothing", Game Programming Gems 4,
 /// section 1.10, pp. 95-101, for the analytic step; Ludus evaluates exact exponentials rather than Lowe's rational
 /// approximation. See "Damping and continuity" in docs/architecture/camera-systems.md.
 [[nodiscard]] MathStatus TryAdvanceCriticalSpring(const CriticalSpringStep& step,
-                                                  Vector3d displacement,
-                                                  Vector3d velocity,
-                                                  Vector3d& outDisplacement,
-                                                  Vector3d& outVelocity) noexcept;
+                                                  CriticalSpringState current,
+                                                  CriticalSpringState& outState) noexcept;
 
 struct RadialSweepContact final
 {

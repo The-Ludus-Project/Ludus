@@ -367,17 +367,17 @@ TEST_CASE("Overrides select by priority and reveal the base with a transition", 
     const uint64 base = frame.Trace.SelectedRequest;
     CameraOverrideToken aim;
     CameraOverrideToken cinematic;
-    REQUIRE(director.AcquireOverride(MakeAim(), 1, 100, aim) == CameraStatus::Success);
+    REQUIRE(director.AcquireOverride(100, MakeAim(), 1, aim) == CameraStatus::Success);
     REQUIRE(frame.Step(0.1) == CameraStatus::Success);
     REQUIRE(frame.Trace.IsOverrideSelected);
     REQUIRE(frame.Trace.OverrideSlot == aim.Slot);
     const uint64 aimRequest = frame.Trace.SelectedRequest;
     // An equal-priority newcomer does not displace the incumbent; a higher priority does.
     CameraOverrideToken peer;
-    REQUIRE(director.AcquireOverride(MakeOrbitRequest(3, 0.8F, -0.6F, 1), 1, 101, peer) == CameraStatus::Success);
+    REQUIRE(director.AcquireOverride(101, MakeOrbitRequest(3, 0.8F, -0.6F, 1), 1, peer) == CameraStatus::Success);
     REQUIRE(frame.Step(0.1) == CameraStatus::Success);
     REQUIRE(frame.Trace.SelectedRequest == aimRequest);
-    REQUIRE(director.AcquireOverride(MakeOrbitRequest(8, 1.0F, 0, 0.5F), 5, 200, cinematic) == CameraStatus::Success);
+    REQUIRE(director.AcquireOverride(200, MakeOrbitRequest(8, 1.0F, 0, 0.5F), 5, cinematic) == CameraStatus::Success);
     REQUIRE(frame.Step(0.1) == CameraStatus::Success);
     REQUIRE(frame.Trace.OverrideSlot == cinematic.Slot);
     // A destroyed cinematic owner revokes its override. Neither remaining equal-priority override is the
@@ -425,7 +425,7 @@ TEST_CASE("Repeated requests keep their blend and invalid requests change nothin
     invalid.Transition.DurationSeconds = -1;
     REQUIRE(director.SetBaseRig(invalid) == CameraStatus::InvalidInput);
     CameraOverrideToken token{ .OutputId = 5 };
-    REQUIRE(director.AcquireOverride(MakeAim(), 0, 0, token) == CameraStatus::InvalidInput);
+    REQUIRE(director.AcquireOverride(0, MakeAim(), 0, token) == CameraStatus::InvalidInput);
     REQUIRE(token.OutputId == 5);
     REQUIRE(frame.Step(0) == CameraStatus::Success);
     REQUIRE(frame.Trace.BlendWeight == weight);
@@ -437,16 +437,16 @@ TEST_CASE("Override capacity and generations are bounded", "[camera][director][s
     CameraOverrideToken tokens[MAX_CAMERA_OVERRIDES];
     for (CameraOverrideToken& token : tokens)
     {
-        REQUIRE(director.AcquireOverride(MakeAim(), 0, 1, token) == CameraStatus::Success);
+        REQUIRE(director.AcquireOverride(1, MakeAim(), 0, token) == CameraStatus::Success);
     }
     CameraOverrideToken extra{ .Slot = 77 };
-    REQUIRE(director.AcquireOverride(MakeAim(), 0, 1, extra) == CameraStatus::CapacityExceeded);
+    REQUIRE(director.AcquireOverride(1, MakeAim(), 0, extra) == CameraStatus::CapacityExceeded);
     REQUIRE(extra.Slot == 77);
     REQUIRE(director.RevokeOverridesOwnedBy(1, {}) == MAX_CAMERA_OVERRIDES);
     // Cycle every slot to its last generation; slots then retire instead of wrapping into old tokens.
     CameraOverrideToken token;
     usize acquisitions = 0;
-    while (director.AcquireOverride(MakeAim(), 0, 1, token) == CameraStatus::Success)
+    while (director.AcquireOverride(1, MakeAim(), 0, token) == CameraStatus::Success)
     {
         REQUIRE(director.ReleaseOverride(token, {}) == CameraStatus::Success);
         ++acquisitions;
@@ -457,7 +457,7 @@ TEST_CASE("Override capacity and generations are bounded", "[camera][director][s
     CameraDirector replaced;
     Frame frame{ .Director = replaced };
     REQUIRE(replaced.SetBaseRig(MakeExplore()) == CameraStatus::Success);
-    REQUIRE(replaced.AcquireOverride(MakeAim(), 0, 1, token) == CameraStatus::Success);
+    REQUIRE(replaced.AcquireOverride(1, MakeAim(), 0, token) == CameraStatus::Success);
     REQUIRE(frame.Step(0) == CameraStatus::Success);
     replaced.Reset();
     REQUIRE(replaced.HasPublished() == false);

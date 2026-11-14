@@ -198,9 +198,9 @@ CameraStatus CameraDirector::SetBaseRig(const CameraRigRequest& request) noexcep
     return CameraStatus::Success;
 }
 
-CameraStatus CameraDirector::AcquireOverride(const CameraRigRequest& request,
+CameraStatus CameraDirector::AcquireOverride(uint64 ownerId,
+                                             const CameraRigRequest& request,
                                              int32 priority,
-                                             uint64 ownerId,
                                              CameraOverrideToken& outToken) noexcept
 {
     if (ValidateRequest(request) != CameraStatus::Success || ownerId == 0)

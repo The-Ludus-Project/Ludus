@@ -116,11 +116,11 @@ TryComputeCriticalSpringStep(float64 smoothTimeSeconds, float64 deltaSeconds, Cr
 }
 
 MathStatus TryAdvanceCriticalSpring(const CriticalSpringStep& step,
-                                    Vector3d displacement,
-                                    Vector3d velocity,
-                                    Vector3d& outDisplacement,
-                                    Vector3d& outVelocity) noexcept
+                                    CriticalSpringState current,
+                                    CriticalSpringState& outState) noexcept
 {
+    const Vector3d displacement = current.Displacement;
+    const Vector3d velocity = current.Velocity;
     if (IsFinite(displacement) == false || IsFinite(velocity) == false || IsFinite(step.Omega) == false ||
         IsFinite(step.DeltaSeconds) == false || IsFinite(step.Decay) == false)
     {
@@ -128,14 +128,12 @@ MathStatus TryAdvanceCriticalSpring(const CriticalSpringStep& step,
     }
     if (step.DeltaSeconds == 0.0)
     {
-        outDisplacement = displacement;
-        outVelocity = velocity;
+        outState = current;
         return MathStatus::Success;
     }
     if (step.IsSnap == true)
     {
-        outDisplacement = {};
-        outVelocity = {};
+        outState = {};
         return MathStatus::Success;
     }
     // Thanks to Thomas Lowe, "Critically Damped Ease-In/Ease-Out Smoothing", Game Programming Gems 4, section 1.10,
@@ -149,8 +147,7 @@ MathStatus TryAdvanceCriticalSpring(const CriticalSpringStep& step,
     {
         return MathStatus::OutOfRange;
     }
-    outDisplacement = nextDisplacement;
-    outVelocity = nextVelocity;
+    outState = { .Displacement = nextDisplacement, .Velocity = nextVelocity };
     return MathStatus::Success;
 }
 

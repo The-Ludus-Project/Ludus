@@ -302,19 +302,21 @@ CameraStatus TryAdvanceCameraRig(const CameraRigDefinition& definition,
             // The spring target is the desired pivot from this presentation's target sample; the held-target
             // step is exact, and a moving target is followed sample by sample.
             math::CriticalSpringStep step;
-            math::Vector3d displacement;
+            math::CriticalSpringState spring;
             if (math::TryComputeCriticalSpringStep(static_cast<float64>(definition.Damping.PivotSmoothTimeSeconds),
                                                    deltaSeconds,
                                                    step) != math::MathStatus::Success ||
                 math::TryAdvanceCriticalSpring(step,
-                                               state.Pivot - checkpoint.Pivot,
-                                               state.PivotVelocity,
-                                               displacement,
-                                               state.PivotVelocity) != math::MathStatus::Success)
+                                               {
+                                                   .Displacement = state.Pivot - checkpoint.Pivot,
+                                                   .Velocity = state.PivotVelocity,
+                                               },
+                                               spring) != math::MathStatus::Success)
             {
                 return CameraStatus::OutOfRange;
             }
-            state.Pivot = checkpoint.Pivot + displacement;
+            state.Pivot = checkpoint.Pivot + spring.Displacement;
+            state.PivotVelocity = spring.Velocity;
             if (definition.Recipe == CameraRecipe::Orbit)
             {
                 float64 weight = 0;

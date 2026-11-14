@@ -197,30 +197,29 @@ TEST_CASE("Critical spring steps are exact for a held target", "[math][dynamics]
     REQUIRE(IsSuccess(TryComputeCriticalSpringStep(SMOOTH_TIME, 0.5, full)));
     REQUIRE(IsSuccess(TryComputeCriticalSpringStep(SMOOTH_TIME, 0.25, half)));
     REQUIRE(full.Omega == 2.0 / SMOOTH_TIME);
-    Vector3d displacement;
-    Vector3d velocity;
-    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(full, start, startVelocity, displacement, velocity)));
-    Vector3d halfDisplacement;
-    Vector3d halfVelocity;
-    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(half, start, startVelocity, halfDisplacement, halfVelocity)));
-    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(half, halfDisplacement, halfVelocity, halfDisplacement, halfVelocity)));
-    REQUIRE(Length(displacement - halfDisplacement) < 1e-14);
-    REQUIRE(Length(velocity - halfVelocity) < 1e-13);
+    const CriticalSpringState initial{ .Displacement = start, .Velocity = startVelocity };
+    CriticalSpringState spring;
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(full, initial, spring)));
+    CriticalSpringState halves;
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(half, initial, halves)));
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(half, halves, halves)));
+    REQUIRE(Length(spring.Displacement - halves.Displacement) < 1e-14);
+    REQUIRE(Length(spring.Velocity - halves.Velocity) < 1e-13);
     // Closed form x(t) = (e0 + (v0 + omega e0) t) exp(-omega t) for one channel.
     const float64 omega = full.Omega;
     const float64 expected = (start.X + (startVelocity.X + omega * start.X) * 0.5) * std::exp(-omega * 0.5);
-    REQUIRE(NearlyEqual(displacement.X, expected, 1e-15, 1e-14));
+    REQUIRE(NearlyEqual(spring.Displacement.X, expected, 1e-15, 1e-14));
     // Zero delta advances nothing; a zero smooth time snaps and clears velocity.
     CriticalSpringStep step;
     REQUIRE(IsSuccess(TryComputeCriticalSpringStep(SMOOTH_TIME, 0.0, step)));
-    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(step, start, startVelocity, displacement, velocity)));
-    REQUIRE(displacement == start);
-    REQUIRE(velocity == startVelocity);
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(step, initial, spring)));
+    REQUIRE(spring.Displacement == start);
+    REQUIRE(spring.Velocity == startVelocity);
     REQUIRE(IsSuccess(TryComputeCriticalSpringStep(0.0, 0.1, step)));
     REQUIRE(step.IsSnap);
-    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(step, start, startVelocity, displacement, velocity)));
-    REQUIRE(displacement == Vector3d{});
-    REQUIRE(velocity == Vector3d{});
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(step, initial, spring)));
+    REQUIRE(spring.Displacement == Vector3d{});
+    REQUIRE(spring.Velocity == Vector3d{});
 }
 
 TEST_CASE("Invalid critical springs preserve caller output", "[math][dynamics]")
@@ -234,15 +233,13 @@ TEST_CASE("Invalid critical springs preserve caller output", "[math][dynamics]")
             MathStatus::OutOfRange);
     REQUIRE(step.Omega == 7.0);
     REQUIRE(IsSuccess(TryComputeCriticalSpringStep(1.0, 1.0, step)));
-    Vector3d displacement{1.0, 2.0, 3.0};
-    Vector3d velocity{4.0, 5.0, 6.0};
+    CriticalSpringState spring{ .Displacement = {1.0, 2.0, 3.0}, .Velocity = {4.0, 5.0, 6.0} };
     REQUIRE(TryAdvanceCriticalSpring(step,
-                                     {std::numeric_limits<float64>::quiet_NaN(), 0.0, 0.0},
-                                     {},
-                                     displacement,
-                                     velocity) == MathStatus::NonFiniteInput);
-    REQUIRE(TryAdvanceCriticalSpring(step, {1e308, 0.0, 0.0}, {1e308, 0.0, 0.0}, displacement, velocity) ==
-            MathStatus::OutOfRange);
-    REQUIRE(displacement == Vector3d{1.0, 2.0, 3.0});
-    REQUIRE(velocity == Vector3d{4.0, 5.0, 6.0});
+                                     { .Displacement = {std::numeric_limits<float64>::quiet_NaN(), 0.0, 0.0} },
+                                     spring) == MathStatus::NonFiniteInput);
+    REQUIRE(TryAdvanceCriticalSpring(step,
+                                     { .Displacement = {1e308, 0.0, 0.0}, .Velocity = {1e308, 0.0, 0.0} },
+                                     spring) == MathStatus::OutOfRange);
+    REQUIRE(spring.Displacement == Vector3d{1.0, 2.0, 3.0});
+    REQUIRE(spring.Velocity == Vector3d{4.0, 5.0, 6.0});
 }

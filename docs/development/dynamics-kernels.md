@@ -54,11 +54,13 @@ vector interpolation or `SlerpShortest`.
 
 ```cpp
 math::CriticalSpringStep step;
-math::Vector3d displacement;
+math::CriticalSpringState spring;
 if (math::IsSuccess(math::TryComputeCriticalSpringStep(smoothTimeSeconds, dt, step)) &&
-    math::IsSuccess(math::TryAdvanceCriticalSpring(step, position - target, velocity, displacement, velocity)))
+    math::IsSuccess(math::TryAdvanceCriticalSpring(
+        step, { .Displacement = position - target, .Velocity = velocity }, spring)))
 {
-    position = target + displacement;
+    position = target + spring.Displacement;
+    velocity = spring.Velocity;
 }
 ```
 

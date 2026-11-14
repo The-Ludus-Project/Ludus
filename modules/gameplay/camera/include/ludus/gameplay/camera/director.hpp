@@ -125,7 +125,7 @@ struct CameraFrameInput final
     /// Authoritative aim from the completed ticks.
     CameraControlView Control{};
     /// Interpolated targets with unique binding identities, borrowed for this call.
-    foundation::BorrowedView<const CameraTargetSample> Targets{};
+    foundation::BorrowedView<const CameraTargetSample> Targets{nullptr, 0};
 };
 
 /// Copied checkpoint of one director update.
@@ -190,14 +190,14 @@ public:
     [[nodiscard]] CameraStatus SetBaseRig(const CameraRigRequest& request) noexcept;
 
     /// Acquire an override that competes by priority with the other active overrides.
+    /// @param ownerId Nonzero game identity of the requester, for RevokeOverridesOwnedBy.
     /// @param request Rig to show while this override wins; copied.
     /// @param priority Higher values win; ties keep the incumbent, then prefer the most recent acquisition.
-    /// @param ownerId Nonzero game identity of the requester, for RevokeOverridesOwnedBy.
     /// @param outToken Replaced only on Success.
     /// @return InvalidInput or CapacityExceeded (every slot active or retired); failure changes nothing.
-    [[nodiscard]] CameraStatus AcquireOverride(const CameraRigRequest& request,
+    [[nodiscard]] CameraStatus AcquireOverride(foundation::uint64 ownerId,
+                                               const CameraRigRequest& request,
                                                foundation::int32 priority,
-                                               foundation::uint64 ownerId,
                                                CameraOverrideToken& outToken) noexcept;
 
     /// Release an override. If it was selected, the revealed rig is entered with `transition`.
