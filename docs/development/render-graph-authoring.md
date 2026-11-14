@@ -6750,8 +6750,9 @@ paths are relative to that package root, not the manifest directory.
 ### Generated layouts and publication
 
 `current.json` names a content-addressed directory under `generations/`.
-`build-report.json` contains candidate job timing and cache hit/miss counts outside
-the immutable generation. Only `current.json` determines activation; a failure
+`build-report.json` contains candidate job timing, cache hit/miss counts and the
+[variant cost inventory](#attribute-shader-variant-costs) outside the immutable
+generation. Only `current.json` determines activation; a failure
 after reporting can leave an unactivated candidate report. Inspect the report's package path:
 
 ```bash
@@ -6801,10 +6802,84 @@ before the pointer is atomically replaced, and old generations remain available.
 This guarantees process-level publication, not power-loss durability across all
 filesystems; raw edits to cache/generation/build trees are unsupported.
 
+### Attribute shader variant costs
+
+The `inventory` object in `build-report.json` shows which authored choice
+produced each stage artifact and pipeline recipe. The JSON CLI prints the same
+report under `build`:
+
+```bash
+ludus --json render-graph build graph.lushader.json /path/to/raster-build \
+    --helper "$LUDUS_SDK/lib/cmake/Ludus/shaders" --compiler "$SLANGC"
+```
+
+| Field | Contents |
+| --- | --- |
+| `choices` | One entry per root configuration and qualified graph node that selects a technique, with its pass kind, admitted recipe IDs and, per profile, the stage artifact keys and recipe keys it uses |
+| `techniques` | Every cooked technique, including manifest techniques with no root route (`routed: false`), with the routes that select it |
+| `artifacts` | One entry per unique stage key: profile, stage, programs, bytes, the techniques and choices that share it, its number of requests, `cache` (`miss`, `hit` or `reuse`) and `compile_seconds` when this build compiled it |
+| `recipes` | One entry per unique recipe key, with its technique, profile, recipe ID, stage keys and the choices that use it |
+| `programs_without_artifacts` | Registered programs that emitted no stage, such as unfinished callbacks |
+| `counts` | Distinct authored choices, techniques, unrouted techniques, stage requests, unique artifacts, compiled stages, local cache hits, reuses within the build, recipe keys and total artifact bytes |
+
+A `hit` comes from the local artifact cache. A `reuse` is a stage key that an
+earlier request in the same build already resolved, such as two programs with
+identical definitions. Artifact bytes are charged once per key, however many
+techniques or choices share it. `compile_seconds` measures one compiler request
+after it acquires a worker lane; concurrent stages overlap, so their sum is not
+the build's elapsed time. Timing, cache outcomes and host paths never enter
+stage, recipe or generation identity. The inventory adds no budget: the authored
+limits above still decide admission.
+
+The report covers portable shader work only. Recipe keys describe the pipelines
+a Renderer may request; they do not measure device pipeline creation, first-use
+misses or driver memory, and artifact bytes are not a proxy for device residency.
+Device-side preparation is tracked separately in
+[#1253](https://github.com/The-Ludus-Project/Ludus/issues/1253).
+
+To reduce a cost, find the choice that owns the expensive keys and check which
+keys it shares. Reuse a compatible program, move a value into an existing
+parameter, or split an explicitly chosen technique. Dropping a profile or
+silently selecting another technique is not a repair.
+
+#### Masked color and depth fixture record
+
+Measured on 14 November 2026 on an Apple M5 (10 CPUs) under a load average of
+about 37, with pinned Slang 2026.1.2, Metal and WGSL profiles, an empty local
+artifact cache for cold builds and concurrent stage compilation. Timings are
+noisy under that load; the counts and bytes are deterministic. Each fixture
+routes one technique from its root and cooks the other manifest technique
+unrouted.
+
+| | `masked_color` | `masked_depth` |
+| --- | --- | --- |
+| Routed choice | `Default` / `Main/raster/draw` → `DefaultStaticMasked.ColorAndDepth` | `Default` / `Main/raster/draw` → `DefaultStaticMasked.DepthOnly` |
+| Unrouted technique | `DefaultStaticMasked.DepthOnly` | `DefaultStaticMasked.ColorAndDepth` |
+| Stage requests / unique artifacts / recipe keys | 6 / 6 / 4 | 6 / 6 / 4 |
+| Artifact bytes (all profiles) | 48,708 | 48,708 |
+| Cold build elapsed, 3 runs | 2.2–3.9 s | 3.3–4.6 s |
+| Warm build: compiled / hits / elapsed | 0 / 6 / 0.7 s | 0 / 6 / 1.4 s |
+| Shared coverage edit: compiled / hits | 4 / 2 | 4 / 2 |
+
+| Stage | Bytes, Metal / WGSL | Cold compile seconds, Metal / WGSL (range of the two fixtures' 3-run medians) | Shared by |
+| --- | --- | --- | --- |
+| `Geometry` vertex | 10,748 / 10,134 | 1.8–2.1 / 1.6–1.7 | both techniques |
+| `MaskedColor` fragment | 7,527 / 6,988 | 1.8–1.9 / 1.7–1.9 | ColorAndDepth |
+| `MaskedDepth` fragment | 6,946 / 6,365 | 1.6–1.8 / 0.7–1.4 | DepthOnly |
+
+The coverage edit charges compile time only to the two fragment stages in each
+profile, and each fragment keeps its reflected uniform layout and stage links.
+The unrouted technique accounts for one third of each fixture's artifacts and
+half of its recipe keys, and its fragment recompiles on every coverage edit.
+Changing the per-draw `Threshold` changes no build input, so it requests no
+compile; it is a runtime uniform value (see [Masked coverage](#masked-coverage)).
+
 ### Acceptance evidence
 
 `test_render_graph_build` covers deterministic clean/warm builds, transitive
-invalidation, independent target packing, budgets, strict source boundaries,
+invalidation, the variant cost inventory (cold/warm builds, shared-include and
+isolated stage edits, a pass-order change, two configurations sharing a stage
+and reuse within one build), independent target packing, budgets, strict source boundaries,
 corrupt artifacts/descriptors, cancellation/staleness/compiler failures, Busy,
 CLI/backend equivalence and unchanged prior publication. Pinned Slang acceptance
 can be enabled with `LUDUS_RG1_SLANG`; optional `LUDUS_RG1_CXX` compiles/runs the
