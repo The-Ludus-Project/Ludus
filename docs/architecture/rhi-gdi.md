@@ -358,6 +358,27 @@ must not wait for callbacks that require that thread. Preserve existing
 `Shutdown` behavior while adding the new lifecycle, and keep the canvas/window
 alive until the relevant teardown contract finishes.
 
+### Reading native Vulkan object relationships
+
+Thanks to Adam Sawicki's [Understanding Vulkan® Objects](https://gpuopen.com/learn/understanding-vulkan-objects/)
+(GPUOpen, August 7, 2017) for distinguishing objects created or allocated by
+the application, objects retrieved from a parent, and references recorded in a
+command buffer. Use those distinctions when reviewing the Vulkan backend:
+
+| Relationship | What to check in Ludus |
+| --- | --- |
+| A swapchain supplies its images; the backend creates their image views. | Destroy the views before the swapchain. Never destroy images returned by `vkGetSwapchainImagesKHR` individually. The headless frame image is created and owned by the backend, so it is destroyed explicitly. |
+| An image view or descriptor refers to another resource. | A public handle can be invalidated while a retained view, binding set, or accepted batch still needs the backing record. Check the RHI retention chain and the relevant completion before release. |
+| A command buffer comes from a command pool and can record references to resources. | Check command pool reuse and recorded resource lifetime against submission completion. For swapchain retirement also check the separate presentation obligation above. |
+
+The [Vulkan object lifetime rules](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-objectmodel-lifetime)
+and [swapchain rules](https://docs.vulkan.org/spec/latest/chapters/VK_KHR_surface/wsi.html)
+are authoritative. The article shows the traditional render pass and framebuffer
+objects used by Ludus's Vulkan lowering. Vulkan 1.3
+[dynamic rendering](https://docs.vulkan.org/samples/latest/samples/extensions/dynamic_rendering/README.html)
+can specify attachments at recording time without either object; it does not
+remove resource lifetime or synchronization obligations.
+
 ## Memory uploads and readbacks
 
 CPU allocation follows [Foundation memory policy](memory-management.md), using
@@ -472,6 +493,14 @@ samples, and specializations. Hash collisions compare the complete key. Do not
 hash object pointers, padding, or a backend struct dump. A renderer draw packet
 already holds a ready pipeline handle; it does not rebuild a key and create a
 pipeline during draw encoding.
+
+Request deduplication shares live pipeline objects within an RHI owner. A Vulkan
+[`VkPipelineCache`](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineCache.html)
+instead lets the driver reuse work across native pipeline creations and can be
+seeded from a previous run. Ludus currently passes `VK_NULL_HANDLE` for that
+argument. When investigating cold startup, measure native pipeline creation
+separately from shader artifact loading and request queueing before trialing a
+driver cache.
 
 Prewarm the finite technique variants required by installed content and graphics
 settings, with a manifest of missing variants. Vulkan creation can run in
