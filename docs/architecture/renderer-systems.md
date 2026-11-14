@@ -4601,3 +4601,49 @@ painting another sample of the old view cannot satisfy it.
 Framebuffer capture remains optional and follows interaction, so it cannot drive the
 paint waits itself. These checks qualify presentation separately from the historical
 transport timings and CPU/GPU parity above.
+
+#### Qualify workgroup shapes on AMD Vulkan
+
+On Vega, scalar operations work on wave-uniform values and the execute mask
+selects the lanes that perform vector work. Register and local data share
+allocations are rounded in hardware units. A 64×1 and an 8×8 workgroup each contain
+64 invocations, but can group different pixels into the same wave. Use emitted
+instructions to investigate divergent paths, register allocation, spills and
+memory waits. Use the target's ISA reference and record the compiled wave size
+when available. RDNA 2, for example, supports both wave32 and wave64.
+Thanks to AMD for the [Vega Shader Instruction Set Architecture reference guide, §§2, 3.3, 3.6 and 4.3–4.4 (January 2020)](https://docs.amd.com/api/khub/documents/7wRUzLpZ~JcaXrupC32ZVA/content#page=7).
+See also the [RDNA 2 ISA, §2.1](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna2-shader-instruction-set-architecture.pdf#page=7).
+
+1. Use a physical AMD adapter whose Vulkan driver exposes Ludus's native ray
+   queries and frame/pass timestamps. Record the GPU model, graphics IP, Vulkan
+   driver/version, revision, optimized build and shader tool versions. Use the
+   existing workgroup fixture and its even/odd pixel checks, paired timings and
+   64×1/64×1 control above. A capability skip leaves the target unqualified.
+2. Collect native compute disassembly and available resource statistics in a
+   separate run of the same build and fixture. On a Mesa RADV build that supports
+   these flags, run `ludus_graph_workgroup_tests '[graph-workgroups]'` with
+   `RADV_DEBUG=cs,asm,shaderstats MESA_SHADER_CACHE_DISABLE=true` and retain the
+   output. Associate each result with its compiled stage, workgroup shape and
+   SPIR-V hash. Report unavailable statistics explicitly. Radeon GPU Analyzer
+   can examine the same SPIR-V with matching pipeline state as an offline
+   comparison. Label it with the RGA version and target.
+   [Mesa RADV environment variables](https://docs.mesa3d.org/envvars.html#radv-driver-environment-variables) ·
+   [AMD RGA Vulkan manual](https://gpuopen.com/manuals/rga_manual/help_manual/).
+3. Time both shapes with shader dumping and capture flags disabled. Evaluate
+   native pass and frame durations against the A/A control and retain the raw
+   linear and displayed-image checks. Static register counts and wait
+   instructions help explain generated code. Claims about runtime occupancy,
+   active lanes or stall time need corresponding measurements. Consider a shader
+   or policy change only after a repeatable workload benefit with matching output.
+
+The editor's group-size override is authored in the graph and follows the normal
+build and preview path. Check the selected renderer in the World viewport because
+it offers a raster fallback on devices without the required ray capabilities.
+When checking an editor or app result, match the graph configuration and stage
+artifacts to the benchmark. Verify and launch an independently extracted Linux
+Release app built with the SDK. Confirm that the target graph executes and that
+unsupported hardware follows the app's explicit capability error or its documented
+fallback. The Release package uses the ordinary cooked artifact and the target
+driver. Keep shader dumps with the profiling record.
+[Editor group-size control](../development/render-graph-authoring.md#author-scene-compute-passes) ·
+[Native release packaging](../development/game-packaging-publishing.md#build-and-inspect-the-package).
