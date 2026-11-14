@@ -2990,6 +2990,22 @@ The report flags partial or failed captures and differences in recorded cameras.
 For comparisons across capture formats, verify that both captures used the same
 World. The formats record different kinds of scene identity.
 
+For a regression check, add `--max-rmse` with a finite, nonnegative tolerance
+chosen for the fixture. RMSE is measured in raw scene-linear RGB for captures
+and in normalized sRGB (0 to 1) for display images. Use `--max-rmse 0` for an
+exact comparison of the decoded RGB values. Keep the World, camera, output
+route, sampling budget and display transform matched as applicable. Metadata
+differences appear as diagnostic warnings.
+
+```bash
+python scripts/compare-render expected.png actual.png --max-rmse 0.002 -o regression.html
+```
+
+The command exits with 0 when every candidate meets the bound, and with 1 if
+any exceeds it or an HDR capture is partial or failed. Both outcomes write JSON
+and an HTML report with each candidate's verdict. Input and usage errors, including
+a pair with no jointly sampled pixels, exit with 2.
+
 ## S4 scene authoring
 
 World owns the world-demo adapter as well as 3D scene placement. Its sample

@@ -212,13 +212,19 @@ def write_report(path, report, baseline, results, np, Image):
     for index, (candidate_path, comparison, preview, heatmap) in enumerate(results):
         label = escape(candidate_path.name)
         options.append(f'<option value="{index}">{label}</option>')
-        notes = ''.join(f'<li>{escape(note)}</li>' for note in comparison['warnings'])
+        notes = list(comparison['warnings'])
+        if 'regression' in comparison:
+            regression = comparison['regression']
+            verdict = 'passed' if regression['passed'] else 'failed'
+            notes.append(f'Image regression check {verdict} (maximum RMSE {regression["max_rmse"]:.9g}).')
+            notes.extend(regression['failures'])
+        notes_html = ''.join(f'<li>{escape(note)}</li>' for note in notes)
         metrics = format_metrics(comparison['metrics'], baseline.is_linear)
         entries.append(
             f'<template id="candidate-{index}"><span>{label}</span>'
             f'<img class="candidate-source" src="{preview}" alt="">'
             f'<img class="error-source" src="{heatmap}" alt="">'
-            f'<ul>{notes}</ul><dl>{metrics}</dl></template>'
+            f'<ul>{notes_html}</ul><dl>{metrics}</dl></template>'
         )
     html = template.substitute(
         baseline=escape(baseline.path.name),
@@ -250,6 +256,21 @@ def analyze(baseline, candidate, scale, np):
     }, heatmap
 
 
+def check_regression(comparison, baseline, maximum_rmse):
+    # Thanks to the NVIDIA Falcor team for the per-image tolerance and retained
+    # error evidence in Falcor 9.0, tests/testing/run_image_tests.py, compare_images:
+    # https://github.com/NVIDIAGameWorks/Falcor/blob/9.0/tests/testing/run_image_tests.py#L246-L318
+    # Ludus uses its own RMSE and requires complete captures for the check.
+    failures = []
+    for role, metadata in (('Baseline', baseline.metadata), ('Candidate', comparison['candidate'])):
+        if metadata.get('failed') or metadata.get('partial'):
+            failures.append(f'{role} capture is incomplete. Render it to completion and save again.')
+    rmse = comparison['metrics']['rmse']
+    if rmse > maximum_rmse:
+        failures.append(f'RMSE {rmse:.9g} exceeds the limit {maximum_rmse:.9g}. Inspect the error heatmap.')
+    return {'max_rmse': maximum_rmse, 'passed': not failures, 'failures': failures}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('baseline', type=Path, help='expected image or reference capture')
@@ -257,9 +278,13 @@ def main():
     parser.add_argument('-o', '--output', required=True, type=Path, help='path for a new HTML report')
     parser.add_argument('--diff-scale', type=float, default=0.25,
                         help='absolute channel error that saturates the heatmap (default: 0.25)')
+    parser.add_argument('--max-rmse', type=float,
+                        help='fail if any candidate exceeds this RMSE or a capture is incomplete')
     args = parser.parse_intermixed_args()
     if not math.isfinite(args.diff_scale) or args.diff_scale <= 0:
         parser.error('--diff-scale must be finite and positive')
+    if args.max_rmse is not None and (not math.isfinite(args.max_rmse) or args.max_rmse < 0):
+        parser.error('--max-rmse must be finite and nonnegative')
     if args.output.suffix.lower() != '.html':
         parser.error('--output must end in .html')
     try:
@@ -270,9 +295,13 @@ def main():
     try:
         baseline = read_image(args.baseline, np, Image, ImageCms, ImageOps)
         results = []
+        passed = True
         for path in args.candidates:
             candidate = read_image(path, np, Image, ImageCms, ImageOps)
             comparison, heatmap = analyze(baseline, candidate, args.diff_scale, np)
+            if args.max_rmse is not None:
+                comparison['regression'] = check_regression(comparison, baseline, args.max_rmse)
+                passed = passed and comparison['regression']['passed']
             results.append((path, comparison, png_uri(make_preview(candidate, np), Image), png_uri(heatmap, Image)))
         report = {
             'comparison_space': 'scene-linear RGB' if baseline.is_linear else 'sRGB display values',
@@ -289,7 +318,10 @@ def main():
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(json.dumps(report, indent=2, allow_nan=False))
+    if not passed:
+        print(f'Image regression check failed. See {args.output} for candidate details.', file=sys.stderr)
+    return 0 if passed else 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
