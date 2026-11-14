@@ -361,6 +361,10 @@ runner. The [GPU Perfetto contract](../architecture/profiling-final.md#basic-gpu
 starts with duration counters and explicit sampling coverage; benchmark output
 does not establish calibrated GPU execution lanes or pass-level timing.
 
+For an AMD Vulkan compute workload, see
+[Qualify workgroup shapes on AMD Vulkan](../architecture/renderer-systems.md#qualify-workgroup-shapes-on-amd-vulkan)
+for the paired renderer benchmark and separate native shader inspection.
+
 ### Editor workloads
 
 Prepare an optimized editor before comparing editor workloads:
