@@ -109,15 +109,14 @@ Status AppendVisibilityCommands(rhi::DeviceHandle device,
             {
                 return result;
             }
-            if (uses.TryAdd(
-                    {vertices, rhi::GraphAccessMode::Vertex, 0, packet.VertexCount * sizeof(VisibilityVertex)}) ==
+            if (uses.TryAdd({vertices, rhi::GraphAccessMode::Vertex, 0, packet.VertexCount * commands.VertexStride}) ==
                     false ||
                 uses.TryAdd({indices, rhi::GraphAccessMode::Index, 0, packet.IndexCount * sizeof(uint32)}) == false)
             {
                 return Status::OutOfMemory;
             }
         }
-        slices[index][0] = {packet.Vertices, 0, packet.VertexCount * sizeof(VisibilityVertex)};
+        slices[index][0] = {packet.Vertices, 0, packet.VertexCount * commands.VertexStride};
         slices[index][1] = {commands.Instances,
                             packet.FirstInstance * commands.InstanceStride,
                             packet.InstanceCount * commands.InstanceStride};
@@ -131,10 +130,13 @@ Status AppendVisibilityCommands(rhi::DeviceHandle device,
                         packet.InstanceCount};
     }
     rhi::GraphPassDescription pass;
-    pass.Name = "Visibility raster";
+    pass.Name = commands.Name;
     pass.Attachment = commands.Attachment;
-    constexpr usize ALPHA_CHANNEL = 3;
-    pass.Attachment.Clear[ALPHA_CHANNEL] = 0;
+    if (commands.ShouldClearTransparent == true)
+    {
+        constexpr usize ALPHA_CHANNEL = 3;
+        pass.Attachment.Clear[ALPHA_CHANNEL] = 0;
+    }
     pass.Uses = uses.GetData();
     pass.UseCount = uses.GetSize();
     pass.Draws = draws.GetData();

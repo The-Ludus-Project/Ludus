@@ -3,9 +3,9 @@
 Status: implementation contract, 2026-10-20. Native local-editor P0/P1 recording
 and local P2 pass-duration counters are implemented: CPU/GPU/Both controls,
 the Record Profiling shortcut (Ctrl+Alt+F9), frame timing and shared pass scopes.
-G0 resource names and nested GPU scopes are implemented, and P2 hosted recording
-returns a hosted game's own pass durations to the editor. P3 and native
-Metal/RenderDoc debugger capture remain planned.
+G0 resource names and nested GPU scopes and the G1 capture request owner are
+implemented, and P2 hosted recording returns a hosted game's own pass durations
+to the editor. P3 and the native Metal/RenderDoc capture adapters remain planned.
 Implementation availability is distinct from platform/hardware qualification.
 
 Shader and renderer developers should be able to run the selected project in
@@ -41,8 +41,9 @@ process supervisor or viewport publication transaction.
 
 Graph pass descriptions carry authored diagnostic names, and G0 adds buffer
 and texture names and nested GPU scopes ([delivered contract](#delivered-g0-names-and-nested-scopes)).
-Naming the remaining object kinds, a graphics-capture request service and editor
-capture controls remain work in this plan. Finding an
+G1 adds the capture request owner ([delivered contract](#delivered-g1-capture-session-contract)).
+Naming the remaining object kinds, native capture adapters and editor capture
+controls remain work in this plan. Finding an
 installed tool or a single existing Metal label does not establish support.
 The RHI already exposes an optional single-sample, nonblocking frame-duration
 probe, and viewport Stats already consumes it. Those durations are device-local;
@@ -223,8 +224,8 @@ per-frame GPU wait or synchronous timestamp readback.
 
 Errors distinguish UnsupportedBackend, ToolUnavailable, RestartRequired,
 Busy, InvalidTarget, InvalidDestination, DeadlineExceeded, DeviceLost and
-NativeCaptureFailed, with native details in bounded diagnostics. Names are
-design vocabulary, not declarations of an existing SDK API. Failed/cancelled
+NativeCaptureFailed, with native details in bounded diagnostics. G1 declares
+them, with a few more, as `GraphicsCaptureError`. Failed/cancelled
 captures preserve the last drawable viewport and do not publish a pending or
 failed replacement view.
 
@@ -242,6 +243,68 @@ frame IDs, world/view identity, renderer profile, shader artifact hashes,
 validation/debug/optimization settings and relative artifact locations. Copy
 only the relevant launch settings; do not serialize credentials or the process
 environment wholesale. Packaging and deletion are explicit user actions.
+
+### Delivered G1 capture session contract
+
+`ludus/graphics/rhi/graphics_capture.h` declares the request vocabulary, and a
+narrow owner beside the RHI session implements it. Only one request can be active
+in a process. It runs on the RHI owner thread and is driven by the facade's real frame
+boundaries, so every backend and the editor share one state machine.
+
+- `GetGraphicsCaptureCapabilities` reports the session's adapter. It returns
+  the tool, whether it is attached, whether a restart is required, whether an
+  external capture is active, offscreen support, and the first reason a capture
+  is unavailable. It never searches for installed tools.
+- `RequestGraphicsCapture` arms a capture between frames. The caller passes an
+  existing directory and a deadline of at most ten minutes. It returns
+  UnsupportedBackend without an adapter, ToolUnavailable, RestartRequired, or
+  Busy for a competing request or an external capture. It returns
+  InvalidDestination for a missing or unwritable directory, or when the
+  request's manifest name is already taken. The destination is checked when
+  the request is made, and nothing is written then. The caller chooses a fresh
+  directory under the ignored `out/` tree; the editor does this in G4.
+- `CancelGraphicsCapture` and `GetGraphicsCaptureReport` take a
+  `GraphicsCaptureIdentity` (device-session generation and process request
+  sequence). A stale identity returns StaleIdentity and leaves the output
+  unchanged. Terminal reports stay readable after the device is destroyed.
+
+The facade starts an armed capture before backend acquisition, so the frame's
+command buffers are created inside the native interval. If acquisition skips the
+frame, the adapter discards the empty capture and the request stays armed.
+Zero-size targets never start one. The report counts skipped frames, and it
+records the session frame sequence of the requested and captured frames. After
+submission, the adapter stops the capture and the request is Finalizing. A frame
+that fails to submit gives FrameFailed. A tool that cannot capture offscreen
+frames fails the request with InvalidTarget, rather than waiting silently.
+
+The deadline is checked at frame start and on every poll. It applies to an armed
+request that never sees an eligible frame and to a tool that never finishes.
+Every cleanup path (a skipped frame, a failure, cancellation, the deadline,
+device loss, and destroying the device) goes through the adapter's synchronous
+`Abandon`. It runs before the backend releases the native objects the capture
+borrows. Device loss reports DeviceLost and other session ends report
+SessionEnded. An artifact that the adapter has already verified no longer
+needs the device, so its manifest is still published.
+
+`GetGraphicsCaptureReport` polls the adapter and publishes the manifest, so
+file I/O stays out of frame recording. The adapter names its artifact
+`ludus-capture-<session>-<request>.<extension>` and verifies it. The owner then
+publishes `<stem>.manifest.json` atomically, without replacing an existing
+entry. Manifest version 1 records the session and request, the build flavor,
+backend, tool and version, GPU adapter name, vendor, device and driver, the
+requested, captured and skipped frames, and the artifact name. If publication
+fails, the request reports ManifestFailed, keeps the artifact and claims no
+manifest. A cancelled request never gets a manifest. A partial artifact named
+by the adapter's cleanup is reported as preserved.
+
+The adapter interface and its frame hooks are private:
+`src/internal/graphics_capture.h`. No backend registers an adapter yet, so a
+capture request returns UnsupportedBackend everywhere until G2 (Metal) and G3
+(RenderDoc). The `[graphics-capture]` cases in `ludus_rhi_lifecycle_tests`
+cover the lifecycle with a controlled adapter that writes real files. They
+drive the real device frame and session path. Engine revision, world/view,
+renderer profile, shader hashes and validation settings belong to the
+renderer, editor and shader artifact owners, and enter the manifest in G4/G5.
 
 ## Initial native adapters
 
@@ -497,8 +560,8 @@ native Metal backend. PIX GPU capture requires Windows/D3D12.
 
 P0/P1 and P2 physical-pass counters are implemented for the native editor, for
 its own viewport and for a game playing in it ([hosted recording](editor-gui-systems.md#hosted-recording)).
-G0 buffer/texture names and nested scopes are implemented. Capture adapters
-remain pending. Implement changes in isolated reviewable branches targeting
+G0 buffer/texture names and nested scopes and the G1 capture session contract are
+implemented. Capture adapters remain pending. Implement changes in isolated reviewable branches targeting
 `develop`, following [CI qualification](../development/continuous-integration.md).
 Acceptance into `develop` is distinct from full batch/platform qualification.
 
@@ -515,7 +578,7 @@ adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
 | Phase | Deliverable and dependency | Exit gate |
 | --- | --- | --- |
 | G0 Shared GPU annotations | Implemented: owned RHI names, buffer/texture names, nested scopes and merged logical-pass labels. Scopes use Metal, optional Vulkan and optional D3D12 PIX regions; object names also reach WebGPU labels. Shader and pipeline names remain pending. | Native captures show useful resource and logical/physical pass names; disabled/missing annotation paths preserve rendering. |
-| G1 Capture contract | Session/request ownership, bounded state machine, capabilities, destinations and manifest publication. Depends on G0 identities. | Production-path tests cover admission, skipped frames, deadlines, cancellation, stale replies, shutdown and output preservation. |
+| G1 Capture contract | Implemented: session/request ownership, bounded state machine, capabilities, destinations and manifest publication, with private adapter hooks; no native adapter is registered yet. Depends on G0 identities. | Production-path tests cover admission, skipped frames, deadlines, cancellation, stale replies, shutdown and output preservation. |
 | G2 Metal capture | Programmatic `.gputrace`, startup enablement and standalone SDK fixture. Depends on G1; first local platform adapter. | A real Mac capture opens in Xcode, contains the intended frame and exposes named resources/passes and recorded shader-source capability. |
 | G3 RenderDoc capture | Linux/Vulkan launch attachment, version negotiation and explicit frame capture. Depends on G1; can follow the same contract independently of G2. | A real `.rdc` replays in the tested RenderDoc version with named resources/passes, correct offscreen boundaries and explicit feature limits. |
 | G4 Editor and hosted target control | Shared launch/request controls, IPC identities, target selection and standalone fallback. Depends on qualified G2/G3 adapters. | Selected-world viewport and hosted-game captures target the correct process through edits/navigation/resize; failed capture retains the last drawable view. |

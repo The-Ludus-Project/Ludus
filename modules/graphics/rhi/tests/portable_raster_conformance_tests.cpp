@@ -1,6 +1,9 @@
 #include "conformance_mask.h"
 #include "conformance_sample.h"
 #include "conformance_write.h"
+#include "indirect_draw.h"
+#include "indirect_mark.h"
+#include "indirect_prepare.h"
 #include "internal/readback.h"
 #include "ordered_advance.h"
 #include "ordered_draw.h"
@@ -961,6 +964,330 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
         CHECK(std::string_view(timing.Scope.Name.GetData()) == expectedName);
     }
 #endif
+    owner.CheckDebugMessages();
+}
+
+// R12a: one kernel writes indexed commands with FirstIndex/BaseVertex/FirstInstance, a
+// stride-separated zero-instance command, a non-indexed command and two dispatch argument
+// records. Indirect dispatches mark groups; the raster pass consumes every command without a
+// CPU readback of the arguments. The image must match the direct-draw oracle: green left
+// half, blue right half. A wrong stride, ignored offset or executed empty command shows red
+// or black pixels; a wrong dispatch count shows in the marks.
+TEST_CASE("Portable R12a indirect commands honor offsets, counts, strides and dispatch arguments",
+          "[rhi][gpu][indirect]")
+{
+    DeviceOwner owner(true);
+    const rhi::DeviceHandle device = owner.Device;
+#if defined(_WIN32)
+    REQUIRE(rhi::SetFrameTarget(device,
+                                owner.Surface,
+                                { .Width = WIDTH, .Height = HEIGHT, .ShouldPresentToSurface = false }) ==
+            rhi::DeviceStatus::Ready);
+#endif
+    rhi::DeviceInfo info;
+    REQUIRE(rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready);
+    const rhi::IndirectCapabilities& indirect = info.Profile.Indirect;
+    REQUIRE(indirect.ArgumentAlignment == sizeof(uint32));
+    REQUIRE(indirect.MaxCommandsPerDraw >= 2);
+    if (indirect.HasNonIndexedDraws == false || indirect.HasDrawOffsets == false ||
+        indirect.HasFirstInstance == false || indirect.HasIndirectDispatch == false)
+    {
+        SKIP("The enabled device profile does not admit every R12a indirect operation");
+    }
+
+    // Byte layout written by indirect_commands.slang.
+    constexpr usize ARGUMENT_BYTES = 112;
+    constexpr usize INDEXED_STRIDE = 40;
+    constexpr uint32 INDEXED_COMMANDS = 2;
+    constexpr usize NON_INDEXED_OFFSET = 64;
+    constexpr usize DISPATCH_OFFSET = 80;
+    constexpr usize EMPTY_DISPATCH_OFFSET = 96;
+    constexpr usize DRAW_ARGUMENT_SPAN = NON_INDEXED_OFFSET + sizeof(rhi::DrawIndirectArguments);
+    constexpr uint32 MARK_COUNT = 4;
+    constexpr uint32 MARKED_GROUPS = 3;
+    constexpr uint32 MARK_BASE = 100;
+    constexpr usize MARK_BYTES = MARK_COUNT * sizeof(uint32);
+
+    // Positions: 0..3 off-image (reached only if BaseVertex were ignored), 4..7 left quad,
+    // 8..13 right quad as two non-indexed triangles, 14..17 a red full-image quad.
+    constexpr float32 OFF = 4;
+    constexpr usize POSITION_VALUES = 36;
+    const StaticArray<float32, POSITION_VALUES> positionValues{
+        OFF, OFF, OFF, OFF, OFF, OFF, OFF, OFF,             // off-image
+        -1,  -1,  0,   -1,  0,   1,   -1,  1,               // left quad
+        0,   -1,  1,   -1,  1,   1,   0,   -1,  1, 1, 0, 1, // right triangles
+        -1,  -1,  1,   -1,  1,   1,   -1,  1,               // full image
+    };
+    constexpr uint32 VERTEX_COUNT = POSITION_VALUES / FLOAT2_VALUES;
+    constexpr usize COLOR_VALUES = 12;
+    const StaticArray<float32, COLOR_VALUES> colorValues{1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1};
+    constexpr uint32 INSTANCE_COUNT = COLOR_VALUES / CHANNELS;
+    // The first three indices are skipped by FirstIndex.
+    constexpr usize INDEX_VALUES = 9;
+    const StaticArray<uint32, INDEX_VALUES> indexValues{0, 0, 0, 0, 1, 2, 0, 2, 3};
+
+    Array<uint8> zeroArguments;
+    REQUIRE(zeroArguments.TryResize(ARGUMENT_BYTES) == true);
+    const StaticArray<uint32, MARK_COUNT> zeroMarks{};
+    rhi::BufferHandle arguments;
+    rhi::BufferHandle marks;
+    rhi::BufferHandle emptyMarks;
+    rhi::BufferHandle positions;
+    rhi::BufferHandle colors;
+    rhi::BufferHandle indices;
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::StorageIndirect, ARGUMENT_BYTES},
+                              {zeroArguments.GetData(), zeroArguments.GetSize()},
+                              arguments) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device, {rhi::BufferRole::Storage, MARK_BYTES}, GetBytes(zeroMarks), marks) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device, {rhi::BufferRole::Storage, MARK_BYTES}, GetBytes(zeroMarks), emptyMarks) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Vertex, sizeof(positionValues)},
+                              GetBytes(positionValues),
+                              positions) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device, {rhi::BufferRole::Vertex, sizeof(colorValues)}, GetBytes(colorValues), colors) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(
+        rhi::CreateBuffer(device, {rhi::BufferRole::Index32, sizeof(indexValues)}, GetBytes(indexValues), indices) ==
+        rhi::RasterStatus::Ready);
+
+    const auto makeDispatch = [&](const rhi::RasterShaderDescription& description,
+                                  rhi::BufferHandle buffer,
+                                  usize size) {
+        rhi::RasterShaderHandle shader;
+        rhi::BindingLayoutHandle layout;
+        rhi::ComputeDispatch dispatch;
+        REQUIRE(description.Bindings.GetSize() == 1);
+        const rhi::RasterBindingResource resource{description.Bindings[0].Binding, buffer, 0, size};
+        REQUIRE(rhi::CreateRasterShader(device, description, shader) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateBindingLayout(device, description.Bindings, layout) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateBindingSet(device, layout, {&resource, 1}, dispatch.Bindings) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateComputePipeline(device, {shader, layout}, dispatch.Pipeline) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, shader) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, layout) == rhi::RasterStatus::Ready);
+        return dispatch;
+    };
+    const rhi::ComputeDispatch prepare =
+        makeDispatch(ludus::shaders::indirect_prepare::Compute(), arguments, ARGUMENT_BYTES);
+    rhi::ComputeDispatch mark = makeDispatch(ludus::shaders::indirect_mark::Compute(), marks, MARK_BYTES);
+    rhi::ComputeDispatch emptyMark = makeDispatch(ludus::shaders::indirect_mark::Compute(), emptyMarks, MARK_BYTES);
+    for (rhi::ComputeDispatch* dispatch : {&mark, &emptyMark})
+    {
+        dispatch->Groups[0] = MARK_COUNT;
+        dispatch->Indirect = arguments;
+    }
+    mark.IndirectOffset = DISPATCH_OFFSET;
+    emptyMark.IndirectOffset = EMPTY_DISPATCH_OFFSET;
+
+    rhi::RasterShaderHandle vertex;
+    rhi::RasterShaderHandle fragment;
+    rhi::BindingLayoutHandle rasterLayout;
+    rhi::BindingSetHandle rasterSet;
+    rhi::RasterPipelineHandle rasterPipeline;
+    REQUIRE(rhi::CreateRasterShader(device, ludus::shaders::indirect_draw::Vertex(), vertex) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateRasterShader(device, ludus::shaders::indirect_draw::Fragment(), fragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingLayout(device, {}, rasterLayout) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingSet(device, rasterLayout, {}, rasterSet) == rhi::RasterStatus::Ready);
+    constexpr uint32 POSITION_STRIDE = sizeof(float32) * FLOAT2_VALUES;
+    constexpr uint32 COLOR_STRIDE = sizeof(float32) * CHANNELS;
+    const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{POSITION_STRIDE, false}, {COLOR_STRIDE, true}}};
+    const StaticArray<rhi::RasterVertexAttribute, STREAM_COUNT> attributes{
+        {{0, 0, 0, rhi::RasterVertexFormat::Float2}, {1, 1, 0, rhi::RasterVertexFormat::Float4}}};
+    REQUIRE(rhi::CreateRasterPipeline(device,
+                                      {vertex,
+                                       fragment,
+                                       rasterLayout,
+                                       {streams.GetData(), streams.GetSize()},
+                                       {attributes.GetData(), attributes.GetSize()},
+                                       false,
+                                       false,
+                                       rhi::RasterTarget::Rgba8Unorm},
+                                      rasterPipeline) == rhi::RasterStatus::Ready);
+    rhi::TextureHandle target;
+    REQUIRE(rhi::CreateTexture(device, { .Width = WIDTH, .Height = HEIGHT, .Attachment = true }, {}, target) ==
+            rhi::RasterStatus::Ready);
+    rhi::RasterTextureState targetState;
+    REQUIRE(rhi::GetTextureState(device, target, targetState) == rhi::RasterStatus::Ready);
+
+    rhi::OrderedGraph graph;
+    rhi::GraphVersion argumentsInput;
+    rhi::GraphVersion marksInput;
+    rhi::GraphVersion emptyMarksInput;
+    rhi::GraphVersion positionsInput;
+    rhi::GraphVersion colorsInput;
+    rhi::GraphVersion indicesInput;
+    rhi::GraphVersion targetInput;
+    REQUIRE(rhi::CreateOrderedGraph(device, graph) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, arguments, argumentsInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, marks, marksInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, emptyMarks, emptyMarksInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, positions, positionsInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, colors, colorsInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, indices, indicesInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphTexture(device,
+                                    graph,
+                                    target,
+                                    targetState,
+                                    rhi::RasterTextureUse::ColorAttachment,
+                                    targetInput) == rhi::RasterStatus::Ready);
+
+    rhi::GraphVersion argumentsOutput;
+    REQUIRE(rhi::NextGraphVersion(device, graph, argumentsInput, argumentsOutput) == rhi::RasterStatus::Ready);
+    const rhi::GraphUse prepareUse{argumentsOutput,
+                                   rhi::GraphAccessMode::StorageReadWrite,
+                                   0,
+                                   ARGUMENT_BYTES,
+                                   rhi::RasterVisibility::Compute};
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "write indirect commands",
+                                  .Attachment = {},
+                                  .Uses = &prepareUse,
+                                  .UseCount = 1,
+                                  .Dispatch = &prepare,
+                              }) == rhi::RasterStatus::Ready);
+    rhi::GraphVersion marksOutput;
+    rhi::GraphVersion emptyMarksOutput;
+    REQUIRE(rhi::NextGraphVersion(device, graph, marksInput, marksOutput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::NextGraphVersion(device, graph, emptyMarksInput, emptyMarksOutput) == rhi::RasterStatus::Ready);
+    const StaticArray<rhi::GraphUse, 2> markUses{{
+        {marksOutput, rhi::GraphAccessMode::StorageReadWrite, 0, MARK_BYTES, rhi::RasterVisibility::Compute},
+        {argumentsOutput, rhi::GraphAccessMode::Indirect, DISPATCH_OFFSET, sizeof(rhi::DispatchIndirectArguments)},
+    }};
+    const StaticArray<rhi::GraphUse, 2> emptyMarkUses{{
+        {emptyMarksOutput, rhi::GraphAccessMode::StorageReadWrite, 0, MARK_BYTES, rhi::RasterVisibility::Compute},
+        {argumentsOutput,
+         rhi::GraphAccessMode::Indirect,
+         EMPTY_DISPATCH_OFFSET,
+         sizeof(rhi::DispatchIndirectArguments)},
+    }};
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "indirect dispatch",
+                                  .Attachment = {},
+                                  .Uses = markUses.GetData(),
+                                  .UseCount = markUses.GetSize(),
+                                  .Dispatch = &mark,
+                              }) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "empty indirect dispatch",
+                                  .Attachment = {},
+                                  .Uses = emptyMarkUses.GetData(),
+                                  .UseCount = emptyMarkUses.GetSize(),
+                                  .Dispatch = &emptyMark,
+                              }) == rhi::RasterStatus::Ready);
+
+    rhi::GraphVersion targetOutput;
+    REQUIRE(rhi::NextGraphVersion(device, graph, targetInput, targetOutput) == rhi::RasterStatus::Ready);
+    constexpr usize DRAW_USE_COUNT = 5;
+    const StaticArray<rhi::GraphUse, DRAW_USE_COUNT> drawUses{{
+        {positionsInput, rhi::GraphAccessMode::Vertex, 0, sizeof(positionValues)},
+        {colorsInput, rhi::GraphAccessMode::Vertex, 0, sizeof(colorValues)},
+        {indicesInput, rhi::GraphAccessMode::Index, 0, sizeof(indexValues)},
+        // One declaration covers both packets: indexed commands at 0 and 40, non-indexed at 64.
+        {argumentsOutput, rhi::GraphAccessMode::Indirect, 0, DRAW_ARGUMENT_SPAN},
+        {targetOutput, rhi::GraphAccessMode::ColorWrite},
+    }};
+    const StaticArray<rhi::RasterVertexSlice, STREAM_COUNT> slices{{
+        {positions, 0, sizeof(positionValues)},
+        {colors, 0, sizeof(colorValues)},
+    }};
+    const rhi::RasterDraw indexedDraw
+    {
+        .Pipeline = rasterPipeline,
+        .Bindings = rasterSet,
+        .Vertices = {slices.GetData(), slices.GetSize()},
+        .Indices = indices,
+        .IndexCount = static_cast<uint32>(INDEX_VALUES),
+        .VertexCount = VERTEX_COUNT,
+        .InstanceCount = INSTANCE_COUNT,
+        .Indirect = arguments,
+        .IndirectCount = INDEXED_COMMANDS,
+        .IndirectStride = INDEXED_STRIDE,
+    };
+    rhi::RasterDraw nonIndexedDraw = indexedDraw;
+    nonIndexedDraw.Indices = {};
+    nonIndexedDraw.IndexCount = 0;
+    nonIndexedDraw.IndirectOffset = NON_INDEXED_OFFSET;
+    nonIndexedDraw.IndirectCount = 1;
+    nonIndexedDraw.IndirectStride = 0;
+    const StaticArray<rhi::RasterDraw, 2> draws{{indexedDraw, nonIndexedDraw}};
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "draw indirect commands",
+                                  .Attachment = { .Color = target },
+                                  .Uses = drawUses.GetData(),
+                                  .UseCount = drawUses.GetSize(),
+                                  .Draws = draws.GetData(),
+                                  .DrawCount = draws.GetSize(),
+                              }) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::AddGraphRoot(device, graph, targetOutput, rhi::GraphRoot::Readback) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::AddGraphRoot(device, graph, marksOutput, rhi::GraphRoot::Readback) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::AddGraphRoot(device, graph, emptyMarksOutput, rhi::GraphRoot::Readback) == rhi::RasterStatus::Ready);
+    rhi::GraphReport report;
+    REQUIRE(rhi::CompileOrderedGraph(device, graph, report) == rhi::RasterStatus::Ready);
+    REQUIRE(report.ComputePasses == 3);
+    REQUIRE(report.RasterPasses == 1);
+    REQUIRE(report.DrawCount == draws.GetSize());
+
+    // The compiled graph retains every pipeline and binding snapshot through submission.
+    const StaticArray<rhi::ComputeDispatch, 3> owners{{prepare, mark, emptyMark}};
+    for (rhi::ComputeDispatch owned : owners)
+    {
+        REQUIRE(rhi::Destroy(device, owned.Pipeline) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, owned.Bindings) == rhi::RasterStatus::Ready);
+    }
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::ExecuteOrderedGraph(device, owner.Surface, graph, completion) == rhi::RasterStatus::Ready);
+
+    for (const bool isEmpty : {false, true})
+    {
+        rhi::ReadbackTicket ticket;
+        REQUIRE(rhi::RequestBufferReadback(device, isEmpty == true ? emptyMarks : marks, 0, MARK_BYTES, ticket) ==
+                rhi::RasterStatus::Pending);
+        RequireReady(device, ticket);
+        StaticArray<uint32, MARK_COUNT> actual{};
+        REQUIRE(rhi::CopyReadback(device, ticket, reinterpret_cast<uint8*>(actual.GetData()), MARK_BYTES) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(device, ticket) == rhi::RasterStatus::Ready);
+        for (uint32 group = 0; group < MARK_COUNT; ++group)
+        {
+            CAPTURE(isEmpty, group);
+            const uint32 expected = isEmpty == false && group < MARKED_GROUPS ? MARK_BASE + group : 0;
+            CHECK(actual[group] == expected);
+        }
+    }
+
+    constexpr usize ROW_BYTES = WIDTH * CHANNELS;
+    rhi::ReadbackTicket imageReadback;
+    REQUIRE(rhi::RequestTextureReadback(device, target, {0, 0, 0, WIDTH, HEIGHT}, ROW_BYTES, imageReadback) ==
+            rhi::RasterStatus::Pending);
+    RequireReady(device, imageReadback);
+    StaticArray<uint8, PIXEL_BYTES> pixels{};
+    REQUIRE(rhi::CopyReadback(device, imageReadback, pixels.GetData(), pixels.GetSize()) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Release(device, imageReadback) == rhi::RasterStatus::Ready);
+    const StaticArray<uint8, CHANNELS> left{0, 255, 0, 255};
+    const StaticArray<uint8, CHANNELS> right{0, 0, 255, 255};
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        const usize column = (index / CHANNELS) % WIDTH;
+        const StaticArray<uint8, CHANNELS>& expected = column < WIDTH / 2 ? left : right;
+        if (pixels[index] != expected[index % CHANNELS])
+        {
+            CAPTURE(index, column);
+            FAIL("R12a indirect image differs from the direct-draw oracle");
+        }
+    }
+    REQUIRE(rhi::GetStatus(device, completion) == rhi::RasterStatus::Ready);
     owner.CheckDebugMessages();
 }
 

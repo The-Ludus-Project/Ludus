@@ -50,7 +50,8 @@ struct DeviceFeatures final
     bool PortableRaster = false;
     /// Bounded single-queue buffer compute operations (R4); unavailable on WebGL2.
     bool Compute = false;
-    /// One indexed indirect draw per packet (R4); indirect dispatch is deferred.
+    /// GPU-written indirect draws (R4) and the R12a profile reported by
+    /// DeviceProfile::Indirect: non-indexed draws, offsets, command counts and indirect dispatch.
     bool IndirectRendering = false;
     /// Optional static native triangle structures and inline queries (RT0).
     /// Vulkan negotiates this only when Required/Preferred explicitly requests it.

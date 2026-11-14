@@ -154,8 +154,8 @@ struct RasterCapabilities final
     bool HasLineFill = false;
 };
 /// Bounded single-queue buffer compute profile; zero fields mean unavailable.
-/// Compute storage textures are reported by RasterStorageCapabilities; atomics between
-/// queues and indirect dispatch are deferred.
+/// Compute storage textures are reported by RasterStorageCapabilities and indirect dispatch
+/// by IndirectCapabilities; atomics between queues are deferred.
 /// Layouts obey enabled MaxStorageBindings and Interface.MaxBindings independently.
 struct ComputeCapabilities final
 {
@@ -312,6 +312,27 @@ struct RasterStorageCapabilities final
     /// Maximum write-only storage texture descriptors visible to the compute stage.
     ludus::foundation::uint32 MaxComputeStorageTextures = 0;
 };
+/// Enabled R12a indirect command profile; zero/false fields mean unavailable. Present only
+/// with DeviceFeatures::IndirectRendering, so WebGL 2 reports zero and keeps its authored
+/// CPU/direct alternative. Every field describes engine operations validated before native
+/// work; GPU-written argument values remain kernel obligations and are never read back.
+struct IndirectCapabilities final
+{
+    /// Required byte alignment of command offsets and nonzero strides; zero when unavailable.
+    ludus::foundation::usize ArgumentAlignment = 0;
+    /// Maximum consecutive commands one RasterDraw issues, as ordered native single-command
+    /// calls. Native multi-draw and GPU-provided draw counts are not part of this profile.
+    ludus::foundation::uint32 MaxCommandsPerDraw = 0;
+    /// Non-indexed DrawIndirectArguments packets (RasterDraw with Indirect and no Indices).
+    bool HasNonIndexedDraws = false;
+    /// GPU-written nonzero FirstIndex, BaseVertex and FirstVertex values are honored.
+    bool HasDrawOffsets = false;
+    /// GPU-written nonzero FirstInstance values are honored. Vulkan requires the enabled
+    /// drawIndirectFirstInstance feature; WebGPU requires the indirect-first-instance feature.
+    bool HasFirstInstance = false;
+    /// ComputeDispatch::Indirect reads DispatchIndirectArguments on the GPU.
+    bool HasIndirectDispatch = false;
+};
 /// Immutable effective profile snapshot while the device is ready; zero otherwise.
 /// Formats are indexed by RasterFormat's underlying value, in declaration order.
 /// This describes enabled engine operations, not an unbounded raw adapter catalog.
@@ -327,6 +348,8 @@ struct DeviceProfile final
     BindingCapabilities Binding;
     /// Raster-stage storage buffers and storage textures (R12b); zero if unavailable.
     RasterStorageCapabilities RasterStorage;
+    /// Indirect draw/dispatch arguments, offsets and command counts (R12a); zero if unavailable.
+    IndirectCapabilities Indirect;
     /// Immutable configured resource/plan/staging maxima and budgets; all zero outside Ready.
     StorageLimits Storage
     {

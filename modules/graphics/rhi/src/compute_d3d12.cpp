@@ -20,6 +20,29 @@ struct ComputePipeline final
 };
 StorageTable<ComputePipeline> gComputePipelines;
 ComOwner<ID3D12CommandSignature> gIndexedIndirectSignature;
+ComOwner<ID3D12CommandSignature> gDrawIndirectSignature;
+ComOwner<ID3D12CommandSignature> gDispatchIndirectSignature;
+
+// One-argument signatures change no root arguments, so they need no root signature.
+ComOwner<ID3D12CommandSignature>
+CreateIndirectSignature(ID3D12Device* device, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT byteStride) noexcept
+{
+    const D3D12_INDIRECT_ARGUMENT_DESC argument{ .Type = type };
+    const D3D12_COMMAND_SIGNATURE_DESC description
+    {
+        .ByteStride = byteStride,
+        .NumArgumentDescs = 1,
+        .pArgumentDescs = &argument,
+    };
+    ID3D12CommandSignature* signatureOrNull = nullptr;
+    LUDUS_ASSERT(device != nullptr);
+    const HRESULT result = device->CreateCommandSignature(&description,
+                                                          nullptr,
+                                                          GetInterfaceId(signatureOrNull),
+                                                          GetInterfaceOutput(signatureOrNull));
+    return SUCCEEDED(result) == true ? ComOwner<ID3D12CommandSignature>(signatureOrNull)
+                                     : ComOwner<ID3D12CommandSignature>();
+}
 } // namespace
 
 ComputeCapabilities ComputeLimits() noexcept
@@ -62,6 +85,28 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
     };
 }
 
+// Thanks to Microsoft, "Indirect drawing" (Direct3D 12 programming guide) and
+// ID3D12GraphicsCommandList::ExecuteIndirect: D3D12_DRAW_ARGUMENTS, D3D12_DRAW_INDEXED_ARGUMENTS
+// and D3D12_DISPATCH_ARGUMENTS match the engine ABI, offsets are four-byte aligned and every
+// start location is core. SV_InstanceID excludes StartInstanceLocation, unlike other backends.
+// https://learn.microsoft.com/windows/win32/direct3d12/indirect-drawing
+IndirectCapabilities IndirectLimits() noexcept
+{
+    if (ComputeLimits().MaxStorageRange == 0)
+    {
+        return {};
+    }
+    return
+    {
+        .ArgumentAlignment = INDIRECT_ARGUMENT_ALIGNMENT_BYTES,
+        .MaxCommandsPerDraw = MAX_INDIRECT_COMMANDS_PER_DRAW,
+        .HasNonIndexedDraws = gDrawIndirectSignature.Get() != nullptr,
+        .HasDrawOffsets = true,
+        .HasFirstInstance = true,
+        .HasIndirectDispatch = gDispatchIndirectSignature.Get() != nullptr,
+    };
+}
+
 RasterStatus ComputeCreatePipeline(usize slot, const ComputePipelineInfo& info, uint32) noexcept
 {
     ID3D12Device* device = GetDeviceOrNull();
@@ -91,7 +136,20 @@ RasterStatus ComputeEncode(const ComputePacket& packet) noexcept
     commands->SetPipelineState(pipeline.State.Get());
     commands->SetComputeRootSignature(GetSignature(pipeline.Layout));
     BindSet(commands, packet.Set, ShaderStage::Compute);
-    commands->Dispatch(packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    if (packet.Indirect != RASTER_INVALID)
+    {
+        ComputeBufferBarrier(packet.Indirect, GraphAccessMode::Indirect);
+        commands->ExecuteIndirect(gDispatchIndirectSignature.Get(),
+                                  1,
+                                  GetBuffer(packet.Indirect),
+                                  packet.IndirectOffset,
+                                  nullptr,
+                                  0);
+    }
+    else
+    {
+        commands->Dispatch(packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    }
     EndPhysicalPassTiming(*commands);
     return RasterStatus::Ready;
 }
@@ -110,32 +168,38 @@ void InitializeCompute() noexcept
     }
 
     static_assert(sizeof(IndexedIndirectArguments) == sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
-    const D3D12_INDIRECT_ARGUMENT_DESC argument{ .Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED };
-    const D3D12_COMMAND_SIGNATURE_DESC description
+    static_assert(sizeof(DrawIndirectArguments) == sizeof(D3D12_DRAW_ARGUMENTS));
+    static_assert(sizeof(DispatchIndirectArguments) == sizeof(D3D12_DISPATCH_ARGUMENTS));
+    gIndexedIndirectSignature = CreateIndirectSignature(device,
+                                                        D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
+                                                        sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+    if (gIndexedIndirectSignature.Get() == nullptr)
     {
-        .ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
-        .NumArgumentDescs = 1,
-        .pArgumentDescs = &argument,
-    };
-    ID3D12CommandSignature* signatureOrNull = nullptr;
-    const HRESULT result = device->CreateCommandSignature(&description,
-                                                          nullptr,
-                                                          GetInterfaceId(signatureOrNull),
-                                                          GetInterfaceOutput(signatureOrNull));
-    if (SUCCEEDED(result) == true)
-    {
-        gIndexedIndirectSignature = ComOwner<ID3D12CommandSignature>(signatureOrNull);
+        return;
     }
+    gDrawIndirectSignature =
+        CreateIndirectSignature(device, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW, sizeof(D3D12_DRAW_ARGUMENTS));
+    gDispatchIndirectSignature =
+        CreateIndirectSignature(device, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, sizeof(D3D12_DISPATCH_ARGUMENTS));
 }
 
 void ReleaseCompute() noexcept
 {
+    gDispatchIndirectSignature.Reset();
+    gDrawIndirectSignature.Reset();
     gIndexedIndirectSignature.Reset();
 }
 
 ID3D12CommandSignature* GetIndexedIndirectSignature() noexcept
 {
     ID3D12CommandSignature* signature = gIndexedIndirectSignature.Get();
+    LUDUS_ASSERT(signature != nullptr);
+    return signature;
+}
+
+ID3D12CommandSignature* GetDrawIndirectSignature() noexcept
+{
+    ID3D12CommandSignature* signature = gDrawIndirectSignature.Get();
     LUDUS_ASSERT(signature != nullptr);
     return signature;
 }

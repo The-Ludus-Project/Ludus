@@ -342,6 +342,11 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
 {
     return gActive == Backend::WebGL2 ? RasterStorageCapabilities{} : webgpu::RasterStorageLimits();
 }
+// WebGL 2 has no indirect commands; applications keep their authored CPU/direct draws.
+IndirectCapabilities IndirectLimits() noexcept
+{
+    return gActive == Backend::WebGL2 ? IndirectCapabilities{} : webgpu::IndirectLimits();
+}
 RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineInfo& info, uint32 request) noexcept
 {
     return gActive == Backend::WebGL2 ? RasterStatus::Unsupported : webgpu::ComputeCreatePipeline(slot, info, request);

@@ -309,13 +309,19 @@ void AdapterReady(WGPURequestAdapterStatus status,
                                                    : static_cast<uint32>(RASTER_BINDING_COUNT);
     descriptor.requiredLimits = &requiredLimits;
     // Optional timestamps are requested only for an opted-in measurement session.
-    constexpr usize OPTIONAL_FEATURE_COUNT = 2;
+    constexpr usize OPTIONAL_FEATURE_COUNT = 3;
     StaticArray<WGPUFeatureName, OPTIONAL_FEATURE_COUNT> features{
-        {WGPUFeatureName_TextureCompressionBC, WGPUFeatureName_TimestampQuery},
+        {WGPUFeatureName_TextureCompressionBC, WGPUFeatureName_TimestampQuery, WGPUFeatureName_IndirectFirstInstance},
     };
     if (wgpuAdapterHasFeature(adapter, WGPUFeatureName_TextureCompressionBC))
     {
         features[descriptor.requiredFeatureCount++] = WGPUFeatureName_TextureCompressionBC;
+    }
+    // R12a: nonzero GPU-written firstInstance needs indirect-first-instance; without it the
+    // profile reports HasFirstInstance false and kernels must write zero.
+    if (wgpuAdapterHasFeature(adapter, WGPUFeatureName_IndirectFirstInstance))
+    {
+        features[descriptor.requiredFeatureCount++] = WGPUFeatureName_IndirectFirstInstance;
     }
     const WGPUFeatureName timestamp = WGPUFeatureName_TimestampQuery;
     if (internal::GpuTimingRequested() && wgpuAdapterHasFeature(adapter, timestamp))

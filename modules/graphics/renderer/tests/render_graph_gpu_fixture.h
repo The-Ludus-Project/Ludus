@@ -61,10 +61,12 @@ struct GraphGpuFixture final
     StaticArray<RenderGraphItem, TABLE_COUNT> Items{};
     StaticArray<ViewDescription, TABLE_COUNT> Cameras{};
     StaticArray<uint8, PIXEL_BYTES> Pixels{};
-    GraphGpuFixture()
+    /// @param storage Device storage maxima; a suite lowers one to exercise a capacity rejection.
+    explicit GraphGpuFixture(const rhi::StorageLimits& storage = {})
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
+        description.Storage = storage;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);

@@ -20,6 +20,8 @@ void Reset() noexcept
     ComputeAvailable = true;
     HasRasterStorageOverride = false;
     RasterStorageOverride = {};
+    HasIndirectOverride = false;
+    IndirectOverride = {};
     LastTextureUse = RasterTextureUse::Undefined;
     IsSpatialUpscaleAvailable = false;
     SpatialUpscaleEncodes = 0;
@@ -154,6 +156,26 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
     return ComputeLimits().MaxStorageRange == 0
                ? RasterStorageCapabilities{}
                : RasterStorageCapabilities{STORAGE_BUFFERS, STORAGE_BUFFERS, true, STORAGE_TEXTURES, STORAGE_TEXTURES};
+}
+IndirectCapabilities IndirectLimits() noexcept
+{
+    if (reference::HasIndirectOverride == true)
+    {
+        return reference::IndirectOverride;
+    }
+    if (ComputeLimits().MaxStorageRange == 0)
+    {
+        return {};
+    }
+    return
+    {
+        .ArgumentAlignment = internal::INDIRECT_ARGUMENT_ALIGNMENT_BYTES,
+        .MaxCommandsPerDraw = internal::MAX_INDIRECT_COMMANDS_PER_DRAW,
+        .HasNonIndexedDraws = true,
+        .HasDrawOffsets = true,
+        .HasFirstInstance = true,
+        .HasIndirectDispatch = true,
+    };
 }
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {

@@ -33,6 +33,7 @@ struct VisibilityDraw final
     foundation::usize MeshIndex;
 };
 /// Synchronous graph-append inputs; borrowed resources become graph-retained on success.
+/// The defaulted tail selects the visibility producer; the flat opaque raster pilot overrides it.
 struct VisibilityCommands final
 {
     foundation::BorrowedView<const VisibilityDraw> Draws;
@@ -42,9 +43,16 @@ struct VisibilityCommands final
     rhi::RasterPipelineHandle Pipeline;
     rhi::BindingSetHandle Bindings;
     rhi::RasterPassDescription Attachment;
+    /// Byte stride of every draw's vertex stream.
+    foundation::usize VertexStride = sizeof(VisibilityVertex);
+    /// Copied RHI pass name, 1..63 bytes.
+    const char* Name = "Visibility raster";
+    /// Clear alpha to zero, the visibility codec's background; false keeps Attachment.Clear.
+    bool ShouldClearTransparent = true;
 };
-/// Append one Clear/Store visibility producer; partial failure requires discarding the caller's graph.
-/// outWritten is preserved on failure. Caller validates the view's opaque, unbound visibility ABI.
+/// Append one ordered raster producer of a whole new attachment version; partial failure requires
+/// discarding the caller's graph. outWritten is preserved on failure. Caller validates the view's
+/// opaque, unbound packet ABI and an attachment that clears color, so the pass writes no prior contents.
 [[nodiscard]] rhi::RasterStatus AppendVisibilityCommands(rhi::DeviceHandle device,
                                                          rhi::OrderedGraph& inoutGraph,
                                                          const VisibilityCommands& commands,
