@@ -1866,6 +1866,9 @@ bool SameGraphRectangle(const RasterRectangle& a, const RasterRectangle& b) noex
 // WebGPU, "Resource Usages" (https://www.w3.org/TR/webgpu/#resource-usages).
 // Only ordinary attachment operations combine; identical read scopes avoid new
 // cross-pass resource hazards. No barrier is issued inside the merged scope.
+// Thanks to Angelo Pesce, C0DE517E, "Tiled hardware (speculations)", Pros
+// (https://c0de517e.blogspot.com/2017/08/tiled-hardware-speculations.html),
+// for motivating attachment reuse within a single physical pass on tile GPUs.
 // See docs/architecture/rhi-gdi.md, "Backend lowering and optional optimization".
 bool CanMergeRaster(const GraphPassRecord& before, const GraphPassRecord& after) noexcept
 {
@@ -1874,15 +1877,18 @@ bool CanMergeRaster(const GraphPassRecord& before, const GraphPassRecord& after)
         return false;
     }
 
-    const auto& a = before.Info.Description;
-    const auto& b = after.Info.Description;
-    if (before.IsCompute || after.IsCompute || before.SideEffect || after.SideEffect ||
-        before.Info.Texture != after.Info.Texture || b.ColorLoad != RasterLoad::Load ||
-        b.DepthLoad != RasterLoad::Load || a.ColorStore != RasterStore::Store || b.ColorStore != RasterStore::Store ||
-        a.DepthStore != RasterStore::Store || b.DepthStore != RasterStore::Store ||
-        a.DepthReadOnly != b.DepthReadOnly || a.UseViewport != b.UseViewport || a.UseScissor != b.UseScissor ||
-        (a.UseViewport && SameGraphRectangle(a.Viewport, b.Viewport) == false) ||
-        (a.UseScissor && SameGraphRectangle(a.Scissor, b.Scissor) == false) || before.UseCount != after.UseCount)
+    const RasterPassDescription& first = before.Info.Description;
+    const RasterPassDescription& second = after.Info.Description;
+    if (before.IsCompute == true || after.IsCompute == true || before.SideEffect == true || after.SideEffect == true ||
+        before.Info.Texture != after.Info.Texture || second.ColorLoad != RasterLoad::Load ||
+        second.DepthLoad != RasterLoad::Load || first.ColorStore != RasterStore::Store ||
+        second.ColorStore != RasterStore::Store || first.DepthStore != RasterStore::Store ||
+        (after.Info.Texture == RASTER_INVALID && second.DepthStore != RasterStore::Store) ||
+        first.DepthReadOnly != second.DepthReadOnly || first.UseViewport != second.UseViewport ||
+        first.UseScissor != second.UseScissor ||
+        (first.UseViewport == true && SameGraphRectangle(first.Viewport, second.Viewport) == false) ||
+        (first.UseScissor == true && SameGraphRectangle(first.Scissor, second.Scissor) == false) ||
+        before.UseCount != after.UseCount)
     {
         return false;
     }
@@ -1906,6 +1912,18 @@ bool CanMergeRaster(const GraphPassRecord& before, const GraphPassRecord& after)
         }
     }
     return true;
+}
+RasterPassInfo DescribeRasterGroup(const GraphRecord& graph, usize first, uint32& outLogicalPassCount) noexcept
+{
+    usize last = first;
+    while (last + 1 < graph.PassCount && graph.Report.Passes[last + 1].RasterGroup == first)
+    {
+        ++last;
+    }
+    outLogicalPassCount = static_cast<uint32>(last - first + 1);
+    RasterPassInfo physical = graph.Passes[first].Info;
+    physical.Description.DepthStore = graph.Passes[last].Info.Description.DepthStore;
+    return physical;
 }
 void CopyGraphSummary(const GraphRecord& graph, GraphReport& output) noexcept
 {
@@ -2218,8 +2236,14 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 return status;
             }
         }
-        const auto prepared =
-            pass.IsCompute ? ComputePacketStatus(pass.Dispatch) : backend::RasterPreparePass(pass.Info);
+        if (pass.IsCompute == false && graph->Report.Passes[p].RasterGroup != p)
+        {
+            continue;
+        }
+        uint32 logicalPassCount = 1;
+        const RasterStatus prepared =
+            pass.IsCompute == true ? ComputePacketStatus(pass.Dispatch)
+                                   : backend::RasterPreparePass(DescribeRasterGroup(*graph, p, logicalPassCount));
         const auto currentPrepare = Admission(device, false);
         if (currentPrepare != RasterStatus::Ready)
         {
@@ -2349,19 +2373,15 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 ++nameLength;
             }
             uint32 logicalPassCount = 1;
-            for (usize member = p + 1; member < graph->PassCount; ++member)
-            {
-                if (graph->Report.Passes[member].Culled == false && graph->Report.Passes[member].RasterGroup == p)
-                {
-                    ++logicalPassCount;
-                }
-            }
+            const RasterPassInfo physical =
+                pass.IsCompute == true ? RasterPassInfo{} : DescribeRasterGroup(*graph, p, logicalPassCount);
             GpuScopeDescription description;
             if (MakeGpuScope(p + 1, {diagnostic.Name, nameLength}, description, logicalPassCount) == true)
             {
                 gpuScope.Begin(description);
             }
-            const auto started = pass.IsCompute ? EncodeCompute(pass.Dispatch) : backend::RasterBeginPass(pass.Info);
+            const RasterStatus started =
+                pass.IsCompute == true ? EncodeCompute(pass.Dispatch) : backend::RasterBeginPass(physical);
             if (started != RasterStatus::Ready)
             {
                 internal::FaultRasterSession();

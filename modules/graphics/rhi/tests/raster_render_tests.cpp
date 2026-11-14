@@ -40,6 +40,7 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
     int32 mode = 0;
     bool shouldWriteColor = true;
     bool forceTiming = false;
+    bool shouldDiscardFinalDepth = false;
     SECTION("Linear RGBA8 sampling and depth") {}
     SECTION("Disabled color writes retain the frame clear")
     {
@@ -77,6 +78,11 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
     {
         mode = 7;
         forceTiming = true;
+    }
+    SECTION("R5 final depth discard preserves depth tests and matches the unmerged image")
+    {
+        mode = 7;
+        shouldDiscardFinalDepth = true;
     }
     const bool graphMode = mode >= 3;
     const bool computeMode = mode == 5;
@@ -323,7 +329,11 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                 std::printf("R5BACKEND,%u\n", static_cast<uint32>(rhi::GetStartup().SelectedBackend));
             }
             const uint32 counts[]{1, 8, 16, 31};
-            for (const auto layers : counts)
+            const uint32 discardCounts[]{2};
+            const BorrowedView<const uint32> layerCounts = shouldDiscardFinalDepth == true
+                                                               ? BorrowedView<const uint32>{discardCounts}
+                                                               : BorrowedView<const uint32>{counts};
+            for (const uint32 layers : layerCounts)
             {
                 const uint32 iterations = benchmark ? 144 : 1;
                 for (uint32 iteration = 0; iteration < iterations; ++iteration)
@@ -332,8 +342,13 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                     {
                         const bool merge = (turn + iteration) % 2 != 0;
                         const timing::Timestamp setupStart = timing::Now();
-                        REQUIRE(ludus::qa::BuildMergedFrame(device, inputs, graph, report, merge, layers) ==
-                                rhi::RasterStatus::Ready);
+                        REQUIRE(ludus::qa::BuildMergedFrame(device,
+                                                            inputs,
+                                                            graph,
+                                                            report,
+                                                            merge,
+                                                            layers,
+                                                            shouldDiscardFinalDepth) == rhi::RasterStatus::Ready);
                         const timing::Timestamp armStart = timing::Now();
                         const auto armed =
                             description.EnableGpuTiming ? rhi::ArmGpuTiming(device) : rhi::RasterStatus::Unsupported;
@@ -389,6 +404,13 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                         CHECK(report.RasterPasses == (merge ? 2 : layers + 1));
                         CHECK(report.MergedPasses == (merge ? layers - 1 : 0));
                         CHECK(report.DrawCount == layers + 2);
+                        if (shouldDiscardFinalDepth == true)
+                        {
+                            rhi::RasterTextureState state;
+                            REQUIRE(rhi::GetTextureState(device, offscreen, state) == rhi::RasterStatus::Ready);
+                            CHECK(state.ColorDefined);
+                            CHECK_FALSE(state.DepthDefined);
+                        }
                         if (benchmark && iteration >= 16)
                         {
                             const auto ns = [](timing::Timestamp from, timing::Timestamp to) {
@@ -426,7 +448,14 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                         }
                     }
                     REQUIRE(std::memcmp(baseline, merged, sizeof(baseline)) == 0);
-                    if (layers > 1)
+                    if (shouldDiscardFinalDepth == true)
+                    {
+                        const usize centerRed = (usize{16} * 96 + 12) * 4;
+                        const usize backgroundRed = (usize{16} * 96 + 4) * 4;
+                        CHECK(baseline[centerRed] == 255);
+                        CHECK(baseline[backgroundRed] == 64);
+                    }
+                    else if (layers > 1)
                     {
                         // Different hues make painter-order reversal observable;
                         // equal images alone would allow two identically empty results.

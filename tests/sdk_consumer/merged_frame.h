@@ -11,7 +11,8 @@ inline rhi::RasterStatus BuildMergedFrame(rhi::DeviceHandle device,
                                           rhi::OrderedGraph& graph,
                                           rhi::GraphReport& report,
                                           bool merge,
-                                          uint32 layers = 16) noexcept
+                                          uint32 layers = 16,
+                                          bool shouldDiscardFinalDepth = false) noexcept
 {
     if (layers == 0 || layers > 31)
     {
@@ -82,8 +83,9 @@ inline rhi::RasterStatus BuildMergedFrame(rhi::DeviceHandle device,
             return status;
         }
         uses[8] = {output, layer == 0 ? rhi::GraphAccessMode::ColorWrite : rhi::GraphAccessMode::ColorReadWrite};
-        const rhi::RasterDraw overlay{inputs.Ui,
-                                      layer % 2 == 0 ? inputs.SceneSet : inputs.BackgroundSet,
+        const rhi::RasterDraw overlay{shouldDiscardFinalDepth == true ? inputs.Scene : inputs.Ui,
+                                      shouldDiscardFinalDepth == true || layer % 2 == 0 ? inputs.SceneSet
+                                                                                        : inputs.BackgroundSet,
                                       back,
                                       inputs.Indices,
                                       0,
@@ -96,7 +98,8 @@ inline rhi::RasterStatus BuildMergedFrame(rhi::DeviceHandle device,
         pass.Attachment.Color = inputs.Offscreen;
         pass.Attachment.ColorLoad = pass.Attachment.DepthLoad =
             layer == 0 ? rhi::RasterLoad::Clear : rhi::RasterLoad::Load;
-        pass.Attachment.DepthStore = rhi::RasterStore::Store;
+        pass.Attachment.DepthStore = shouldDiscardFinalDepth == true && layer + 1 == layers ? rhi::RasterStore::Discard
+                                                                                            : rhi::RasterStore::Store;
         pass.Uses = uses;
         pass.UseCount = 9;
         pass.Draws = layer == 0 ? scene : &overlay;
