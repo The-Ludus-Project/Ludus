@@ -449,6 +449,11 @@ class RenderGraphTests(unittest.TestCase):
         self.assertIn("Main/second/b [ColorTexture] no pass use | Export Main/out_b reads @0", resource_report)
         self.assertNotIn("Main/first/b", resource_report)
         self.assertNotIn("Main/second/a", resource_report)
+        self.assertEqual([
+            {'resource': f'Main/{instance}/{name}', 'type': 'ColorTexture', 'uses': [],
+             'roots': [{'id': f'Main/out_{name}', 'kind': 'Export', 'version': 0}]}
+            for instance, name in [('first', 'a'), ('second', 'b')]
+        ], graph.describe_resource_uses(plan))
 
     def test_plan_is_deterministic_after_relocation_and_repeat(self):
         before = graph.compile_graph(self.path)
@@ -539,6 +544,10 @@ class RenderGraphTests(unittest.TestCase):
         self.assertEqual(["Main/camera", "Main/second_camera"], plan["roots"][0]["cameras"])
         self.assertEqual(1, len(plan["techniques"]))
         self.assertEqual("Load", plan["passes"][1]["attachments"]["color"]["load"])
+        color = next(row for row in graph.describe_resource_uses(plan) if row['resource'] == 'Main/color')
+        self.assertEqual([{'operation': 0, 'write': 1, 'defined': True},
+                          {'operation': 1, 'read': 1, 'write': 2, 'defined': True}], color['uses'])
+        self.assertEqual([{'id': 'Main/output', 'kind': 'Present', 'version': 2}], color['roots'])
 
     def test_root_interface_outputs_are_explicit_export_roots(self):
         path = graph.new_workspace(self.directory.parent / "export", output="offscreen")
@@ -638,7 +647,9 @@ class RenderGraphTests(unittest.TestCase):
                 with redirect_stdout(output):
                     result = cli.main(["--json", "render-graph", action, str(self.path), *extra])
                 self.assertEqual(0, result)
-                self.assertIn(field, json.loads(output.getvalue()))
+                payload = json.loads(output.getvalue())
+                self.assertIn(field, payload)
+                self.assertNotIn('resource_uses', payload)
         output = io.StringIO()
         with redirect_stdout(output), redirect_stderr(io.StringIO()):
             result = cli.main(["--json", "render-graph", "validate", str(self.path), "--configuration", "Undeclared"])
@@ -648,12 +659,20 @@ class RenderGraphTests(unittest.TestCase):
     def test_cli_runs_as_module_without_qt_or_engine(self):
         script = "from ludus_tools import render_graph; import sys; assert not any(n.startswith(('PyQt', 'PySide')) or n == 'engine' for n in sys.modules)"
         subprocess.run([sys.executable, "-c", script], check=True, capture_output=True)
-        result = subprocess.run([sys.executable, "-m", "ludus_tools", "--json", "render-graph", "dump", str(self.path)],
+        result = subprocess.run([sys.executable, "-m", "ludus_tools", "--json", "render-graph", "dump", str(self.path),
+                                 "--resource-uses"],
                                 check=True, text=True, capture_output=True)
-        self.assertEqual("ContractOnly", json.loads(result.stdout)["plan"]["execution"])
+        payload = json.loads(result.stdout)
+        self.assertEqual("ContractOnly", payload["plan"]["execution"])
+        rows = {row['resource']: row for row in payload['resource_uses']}
+        self.assertEqual({'resource': 'Main/color', 'type': 'ColorTexture',
+                          'uses': [{'operation': 0, 'write': 1, 'defined': True}],
+                          'roots': [{'id': 'Main/output', 'kind': 'Present', 'version': 1}]}, rows['Main/color'])
+        self.assertEqual('Main/raster/draw', payload['plan']['passes'][0]['id'])
         result = subprocess.run([sys.executable, "-m", "ludus_tools", "render-graph", "dump", str(self.path)],
                                 check=True, text=True, capture_output=True)
         self.assertIn("Main/color [ColorTexture] 000..000 | Present Main/output reads @1", result.stdout)
+        self.assertIn("000 Main/raster/draw: writes @1", result.stdout)
 
 
 if __name__ == "__main__":

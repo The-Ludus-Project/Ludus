@@ -6533,7 +6533,19 @@ last serial operation numbers for each logical texture or buffer. For example,
 `000..001` on an upscale source means operation 000 writes it and operation 001
 samples it. Export and Present roots appear alongside the resource with the
 version they read. An initialized import passed directly to Export can show
-`no pass use`. The range describes the selected plan's declared operations.
+`no pass use`. Under each range, the dump lists the expanded operation ID and
+which version it reads or writes. A clear writes a new version without reading
+the previous one. A discarded store marks the written version undefined.
+
+To use the same report in a script, run `ludus --json render-graph dump
+main.lurender.json --resource-uses`. The `resource_uses` array beside `plan` lists the qualified
+`resource`, its `type`, ordered `uses`, and `roots` for the selected configuration.
+Each use's zero-based `operation` indexes `plan.passes`; `read` and `write` are
+version numbers, including version zero. Only writes carry `defined`. Each root
+has an `id`, `kind`, and the `version` it reads. The Editor's Execution Plan
+still displays serial operations and raw plan JSON; the resource list is
+currently available through the CLI.
+
 For physical memory and completion, see
 [logical resource uses and submitted work](../architecture/render-graph-authoring.md#logical-resource-uses-and-submitted-work).
 
