@@ -117,6 +117,48 @@ check that a lane measured what it claims:
 GPU scenarios fail if the engine selects a known software adapter, or if the
 adapter, enabled profile or backend changes between runs.
 
+## Check a GPU budget on target hardware
+
+Choose a minimum supported device, a renderer profile, an internal render
+resolution and a presentation target before tuning a representative scene.
+At 60 FPS the presentation interval is about 16.67 ms (`1000 / 60`). Choose a
+rendering budget below that interval and state the intended headroom. Record
+the actual adapter, backend, OS and driver, internal and output pixel extents,
+scene and camera route, build profile, and refresh or frame cap. Keep power
+mode and measurement conditions comparable. On thermally constrained hardware,
+warm up with representative play and check sustained performance as well as
+short captures.
+
+1. In the [native World viewport](editor-workspace.md#recording-cpu-and-gpu-profiling),
+   record **Both** while exercising the scene. In Perfetto, use completed frame
+   samples for the GPU budget and named physical pass samples to investigate
+   where time went. Keep the sample count and coverage beside the duration
+   distribution. Report unavailable or incomplete timings explicitly. Pass
+   intervals can overlap and may omit work outside the measured submissions.
+2. Use **Play saved World** in a separate window for the [World demo adapter](editor-workspace.md#save-recovery-and-play)
+   if the scene uses that adapter. The game's render path can differ from the
+   editor's. The demo's native [`--pacing-report`](../examples/world-demo.md#run-the-application)
+   measures frame-loop intervals. An SDK app can opt into the
+   [RHI timing probe](../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
+   to measure its own GPU submissions.
+3. Repeat the same workload with the [verified Release package](editor-game-releases.md)
+   on the physical target. Record the archive hash and the measurement scope.
+   Report available GPU durations and observed frame intervals independently.
+   When app telemetry is unavailable, use a supported external profiler such
+   as [Metal System Trace in Instruments](https://developer.apple.com/metal/tools/)
+   for a macOS Metal app.
+   When testing a lower render resolution or cheaper rendering profile, change
+   one setting at a time and repeat the route to compare cost and image quality.
+
+Thanks to Roberto Lopez Mendez, [*GPU Processing Budget Approach to Game
+Development*](https://developer.arm.com/community/arm-community-blogs/b/mobile-graphics-and-gaming-blog/posts/gpu-processing-budget-approach-to-game-development)
+(Arm, 2017), for the device, frame-rate and resolution budgeting method. The
+article's shader-core frequency calculation gives a theoretical throughput
+estimate for the selected GPU. Ludus uses measured elapsed time on the target
+for workload evidence. On Mali, offline compiler estimates for the exact
+shader variant can help investigate register spills and pipeline cost, with
+application measurements from [Arm Performance Studio](https://developer.arm.com/tools-and-software/arm-performance-studio).
+
 ## Scheduled workflow
 
 [`.github/workflows/performance.yml`](../../.github/workflows/performance.yml)
