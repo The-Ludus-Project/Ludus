@@ -1,0 +1,50 @@
+name: Kanban dependency fields
+
+# Derives Ludus Kanban's Actionable and Unlocks fields from GitHub's Blocked by
+# relationships (scripts/python/kanban_dependencies.py). Schedule and issue
+# events run the default branch's definition; manual dispatch runs the chosen ref.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  issues:
+    types: [closed, reopened]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report differences without writing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kanban-dependencies
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync Actionable and Unlocks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The repository GITHUB_TOKEN cannot write organization projects. The
+      # secret is a fine-grained token with organization Projects read/write
+      # and repository Issues read access.
+      - name: Sync fields from issue dependencies
+        env:
+          LUDUS_PROJECT_TOKEN: ${{ secrets.LUDUS_PROJECT_TOKEN }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if [ -z "$LUDUS_PROJECT_TOKEN" ]; then
+            echo "::warning title=Kanban fields not synced::Add the LUDUS_PROJECT_TOKEN repository secret (organization Projects read/write, Issues read) to keep Actionable and Unlocks current."
+            exit 0
+          fi
+          arguments=(sync)
+          if [ "$DRY_RUN" = "true" ]; then
+            arguments+=(--dry-run)
+          fi
+          python3 scripts/python/kanban_dependencies.py "${arguments[@]}"

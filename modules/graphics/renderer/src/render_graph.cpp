@@ -916,6 +916,13 @@ struct RenderGraph::State final
     StaticArray<Renderer, format::TECHNIQUE_COUNT> Contexts{};
     StaticArray<bool, format::TECHNIQUE_COUNT> IsUsed{};
     StaticArray<bool, format::TECHNIQUE_COUNT> HasViews{};
+    /// Recipe keys copied from Programs for this device's target; Programs.RecipeKeys is cleared after the copy.
+    StaticArray<RenderGraphRecipeKey, format::TECHNIQUE_COUNT> RecipeKeys{};
+    StaticArray<bool, format::TECHNIQUE_COUNT> HasRecipeKey{};
+    /// Poll reached Ready for every pipeline compiled from the technique's stages.
+    StaticArray<bool, format::TECHNIQUE_COUNT> IsRecipePrepared{};
+    /// Render/Encode calls rejected while the technique's pipelines were still preparing.
+    StaticArray<uint64, format::TECHNIQUE_COUNT> RecipeMisses{};
     bool HasRaySetup = false;
     StaticArray<bool, format::TECHNIQUE_COUNT> IsBound{};
     RenderGraphPrograms Programs{};
@@ -993,6 +1000,17 @@ struct RenderGraph::State final
     [[nodiscard]] LUDUS_INLINE bool HasForwardProfile() const noexcept
     {
         return Programs.ForwardVertex.Inputs.IsEmpty() == false;
+    }
+    /// Count one draw request against every used technique whose pipelines are still preparing.
+    void NoteRecipeMisses() noexcept
+    {
+        for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
+        {
+            if (IsUsed[i] == true && IsRecipePrepared[i] == false)
+            {
+                ++RecipeMisses[i];
+            }
+        }
     }
     struct Scene final
     {
@@ -2409,6 +2427,31 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         }
     }
     candidate->Programs = programs;
+    candidate->Programs.RecipeKeys = {};
+    if (programs.RecipeKeys.IsValid() == false)
+    {
+        return Status::InvalidDescription;
+    }
+    for (usize i = 0; i < programs.RecipeKeys.GetSize(); ++i)
+    {
+        const RenderGraphRecipeKey& recipe = programs.RecipeKeys[i];
+        const usize technique = static_cast<usize>(recipe.Technique);
+        if (technique >= format::TECHNIQUE_COUNT || static_cast<uint32>(recipe.Target) > MAX_TARGET)
+        {
+            return Status::InvalidDescription;
+        }
+        if (recipe.Target != target)
+        {
+            continue;
+        }
+        // One recipe per technique and target keeps each device row's attribution exact.
+        if (candidate->HasRecipeKey[technique] == true)
+        {
+            return Status::InvalidDescription;
+        }
+        candidate->RecipeKeys[technique] = recipe;
+        candidate->HasRecipeKey[technique] = true;
+    }
     if (programs.HasRayPathCapture == true)
     {
         // Runtime-package stage metadata never names the diagnostic slot; generated headers reflect it.
@@ -2807,6 +2850,7 @@ Status RenderGraph::Poll() noexcept
             {
                 return status;
             }
+            state.IsRecipePrepared[i] = true;
             continue;
         }
         if (state.HasViews[i] == false)
@@ -2824,6 +2868,9 @@ Status RenderGraph::Poll() noexcept
         {
             return status;
         }
+        // A forward ColorAndDepth recipe also needs its material program below.
+        state.IsRecipePrepared[i] =
+            i != static_cast<usize>(format::Technique::ColorAndDepth) || state.HasForwardProfile() == false;
     }
     if (state.HasForwardProfile() == true)
     {
@@ -2888,6 +2935,7 @@ Status RenderGraph::Poll() noexcept
                 return status;
             }
         }
+        state.IsRecipePrepared[COLOR_CONTEXT] = true;
         if (state.HasForwardResources == false)
         {
             status = state.ForwardResources.Initialize(state.Device,
@@ -3565,6 +3613,71 @@ RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
     }
     return report;
 }
+namespace
+{
+/// Pipelines one technique row can enumerate: the context's stage variants plus two material programs.
+constexpr usize RECIPE_PIPELINE_CAPACITY = 48;
+/// Handles enumerated per Renderer call; covers its stage variants or one material program.
+constexpr usize RENDERER_PIPELINE_CAPACITY = 16;
+} // namespace
+Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) const noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    const State& state = *mState;
+    RenderGraphPipelineReport report;
+    const Status device = rhi::GetPipelinePreparationReport(state.Device, report.Device);
+    if (device != Status::Ready)
+    {
+        return device;
+    }
+    report.Target = state.Target;
+    for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
+    {
+        if (state.IsUsed[i] == false)
+        {
+            continue;
+        }
+        StaticArray<rhi::RasterPipelineHandle, RECIPE_PIPELINE_CAPACITY> pipelines{};
+        usize count = state.Contexts[i].getStagePipelines({pipelines.GetData(), RENDERER_PIPELINE_CAPACITY});
+        if (i == static_cast<usize>(format::Technique::ColorAndDepth) && state.HasForwardProfile() == true)
+        {
+            const Renderer& context = state.Contexts[i];
+            count += context.getProgramPipelines(state.ForwardProgram,
+                                                 {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
+            count += context.getProgramPipelines(state.ForwardSurfaceChartProgram,
+                                                 {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
+        }
+        RenderGraphPipelineRecipe& row = report.Recipes[report.RecipeCount++];
+        row.Recipe.Technique = static_cast<format::Technique>(i);
+        row.Recipe.Target = state.Target;
+        row.HasRecipeKey = state.HasRecipeKey[i];
+        if (row.HasRecipeKey == true)
+        {
+            row.Recipe.Key = state.RecipeKeys[i].Key;
+        }
+        row.FirstUseMisses = state.RecipeMisses[i];
+        for (usize pipeline = 0; pipeline < count; ++pipeline)
+        {
+            rhi::PipelinePreparation preparation;
+            // Null handles name variants not created yet; they are not native pipelines.
+            if (rhi::GetPipelinePreparation(state.Device, pipelines[pipeline], preparation) != Status::Ready)
+            {
+                continue;
+            }
+            ++row.NativePipelines;
+            row.ReadyPipelines += preparation.IsReady == true ? 1 : 0;
+            row.DrawnPipelines += preparation.HasBeenDrawn == true ? 1 : 0;
+            row.FirstUseMisses += preparation.HasFirstUseMiss == true ? 1 : 0;
+            row.PrewarmSeconds += preparation.PreparationSeconds;
+            row.QueueSeconds += preparation.QueueSeconds;
+        }
+    }
+    outReport = report;
+    return Status::Ready;
+}
 bool RenderGraph::CanUseReverseDepth() const noexcept
 {
     return mState.Get() != nullptr && mState->CanUseReverseDepth() == true;
@@ -3734,6 +3847,7 @@ Status RenderGraph::Render(rhi::SurfaceHandle surface,
     }
     if (state.IsReady == false || state.Current.Get() == nullptr)
     {
+        state.NoteRecipeMisses();
         return Status::NotReady;
     }
     if (state.Producer.IsNull() == false)
@@ -3785,6 +3899,7 @@ Status RenderGraph::Encode(rhi::SurfaceHandle surface) noexcept
     }
     if (state.IsReady == false || state.Current.Get() == nullptr)
     {
+        state.NoteRecipeMisses();
         return Status::NotReady;
     }
     if (state.Producer.IsNull() == false)

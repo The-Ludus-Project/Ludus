@@ -432,6 +432,149 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(changed['cache_misses'], 0)
         self.assertNotEqual(first['recipes'][0]['key'], second['recipes'][0]['key'])
 
+    def inventory_without_timing(self, report):
+        value = json.loads(json.dumps(report['inventory']))
+        for artifact in value['artifacts']:
+            artifact.pop('cache')
+            artifact.pop('compile_seconds', None)
+        for name in ('compiled', 'cache_hits', 'build_reuses'):
+            value['counts'].pop(name)
+        return value
+
+    def test_inventory_links_root_choices_to_stage_artifacts_and_recipes(self):
+        cold = self.run_build()
+        package = build.verify_package(Path(cold['package']))
+        inventory = cold['inventory']
+        self.assertEqual({'authored_choices': 1, 'techniques': 2, 'unrouted_techniques': 1, 'stage_requests': 6,
+                          'unique_artifacts': 6, 'compiled': 6, 'cache_hits': 0, 'build_reuses': 0, 'recipe_keys': 4,
+                          'artifact_bytes': inventory['counts']['artifact_bytes']}, inventory['counts'])
+        keys = {(entry['id'], entry['profile']): entry['key'] for entry in package['programs']}
+        [choice] = inventory['choices']
+        self.assertEqual(('Default', 'Main/raster/draw', 'Raster', 'DefaultStaticOpaque.ColorAndDepth', ['Default']),
+                         (choice['configuration'], choice['node'], choice['kind'], choice['technique'], choice['recipe_ids']))
+        for profile in ('metal', 'wgsl'):
+            self.assertEqual({'vertex': keys['Geometry', profile], 'fragment': keys['Color', profile]},
+                             choice['profiles'][profile]['stages'])
+            self.assertEqual(sorted(r['key'] for r in package['recipes']
+                                    if r['profile'] == profile and r['technique'] == choice['technique']),
+                             choice['profiles'][profile]['recipes'])
+        # A manifest technique without a root route is still cooked and visible.
+        depth = next(t for t in inventory['techniques'] if t['id'] == 'DefaultStaticOpaque.DepthOnly')
+        self.assertEqual((False, []), (depth['routed'], depth['choices']))
+        self.assertEqual(keys['Depth', 'metal'], depth['profiles']['metal']['stages']['fragment'])
+        # The vertex stage serves both techniques; only the color technique has a root route.
+        vertex = next(a for a in inventory['artifacts'] if a['key'] == keys['Geometry', 'metal'])
+        self.assertEqual(['DefaultStaticOpaque.ColorAndDepth', 'DefaultStaticOpaque.DepthOnly'], vertex['techniques'])
+        self.assertEqual([{'configuration': 'Default', 'node': 'Main/raster/draw'}], vertex['choices'])
+        programs = Path(cold['package']) / 'programs'
+        for artifact in inventory['artifacts']:
+            self.assertEqual(('miss', 1), (artifact['cache'], artifact['requests']))
+            self.assertGreaterEqual(artifact['compile_seconds'], 0)
+            self.assertEqual(sum(p.stat().st_size for p in (programs / artifact['key']).iterdir()), artifact['bytes'])
+        self.assertEqual(sum(a['bytes'] for a in inventory['artifacts']), inventory['counts']['artifact_bytes'])
+        self.assertEqual([], inventory['programs_without_artifacts'])
+        # Report data, including timing and cache outcomes, stays out of the package and its identity.
+        self.assertNotIn('inventory', package)
+        warm = self.run_build()
+        self.assertEqual(cold['generation'], warm['generation'])
+        self.assertEqual((0, 6, 0), tuple(warm['inventory']['counts'][name] for name in ('compiled', 'cache_hits', 'build_reuses')))
+        self.assertTrue(all(a['cache'] == 'hit' and 'compile_seconds' not in a for a in warm['inventory']['artifacts']))
+        self.assertEqual(self.inventory_without_timing(cold), self.inventory_without_timing(warm))
+        written = json.loads((self.output / 'build-report.json').read_text())
+        self.assertEqual(warm['inventory'], written['inventory'])
+
+    def test_inventory_charges_a_stage_shared_by_two_configurations_once(self):
+        single = self.run_build()['inventory']
+        value = json.loads(self.graph.read_text())
+        value['configurations'].append({**value['configurations'][0], 'id': 'Second'})
+        self.graph.write_text(json.dumps(value))
+        self.edit(lambda v: v['budgets'].update(configurations=2))
+        report = self.run_build()
+        inventory = report['inventory']
+        self.assertEqual(0, report['cache_misses'])
+        self.assertEqual(2, inventory['counts']['authored_choices'])
+        self.assertEqual([('Default', 'Main/raster/draw'), ('Second', 'Main/raster/draw')],
+                         [(c['configuration'], c['node']) for c in inventory['choices']])
+        self.assertEqual(inventory['choices'][0]['profiles'], inventory['choices'][1]['profiles'])
+        both = [{'configuration': 'Default', 'node': 'Main/raster/draw'}, {'configuration': 'Second', 'node': 'Main/raster/draw'}]
+        fragment = inventory['choices'][0]['profiles']['metal']['stages']['fragment']
+        shared = next(a for a in inventory['artifacts'] if a['key'] == fragment)
+        self.assertEqual((1, both), (shared['requests'], shared['choices']))
+        for name in ('stage_requests', 'unique_artifacts', 'recipe_keys', 'artifact_bytes'):
+            self.assertEqual(single['counts'][name], inventory['counts'][name])
+        recipe = next(r for r in inventory['recipes'] if r['key'] in inventory['choices'][0]['profiles']['metal']['recipes'])
+        self.assertEqual(both, recipe['choices'])
+
+    def test_inventory_separates_cache_hits_from_reuse_within_one_build(self):
+        def share_vertex(value):
+            value['programs'].append({**value['programs'][0], 'id': 'GeometryCopy'})
+            value['techniques'][1]['vertex'] = 'GeometryCopy'
+        self.edit(share_vertex)
+        cold = self.run_build()
+        self.assertEqual(6, cold['cache_misses'])
+        self.assertEqual((8, 6, 6, 0, 2), tuple(cold['inventory']['counts'][name] for name in (
+            'stage_requests', 'unique_artifacts', 'compiled', 'cache_hits', 'build_reuses')))
+        warm = self.run_build()
+        self.assertEqual((8, 6, 0, 6, 2), tuple(warm['inventory']['counts'][name] for name in (
+            'stage_requests', 'unique_artifacts', 'compiled', 'cache_hits', 'build_reuses')))
+        for report, cache in ((cold, 'miss'), (warm, 'hit')):
+            [vertex] = [a for a in report['inventory']['artifacts'] if a['profile'] == 'metal' and a['stage'] == 'vertex']
+            self.assertEqual((['Geometry', 'GeometryCopy'], 2, cache), (vertex['programs'], vertex['requests'], vertex['cache']))
+
+    def test_inventory_charges_compile_time_only_to_stages_an_edit_rebuilds(self):
+        sources = self.graph.parent / 'main_shaders'
+        include = sources / 'shared.slang'
+        include.write_text('float SharedFactor() { return 1; }\n')
+        for name in ('color.slang', 'depth.slang'):
+            (sources / name).write_text('#include "shared.slang"\n' + (sources / name).read_text())
+        first = build.verify_package(Path(self.run_build()['package']))
+        before = {(p['id'], p['profile']): p['key'] for p in first['programs']}
+
+        def rebuilt(report):
+            package = build.verify_package(Path(report['package']))
+            keys = {(p['id'], p['profile']): p['key'] for p in package['programs']}
+            charged = {a['key'] for a in report['inventory']['artifacts'] if 'compile_seconds' in a}
+            return {pair for pair, key in keys.items() if key in charged}, keys
+
+        include.write_text('float SharedFactor() { return 2; }\n')
+        charged, after = rebuilt(self.run_build())
+        self.assertEqual({(p, t) for p in ('Color', 'Depth') for t in ('metal', 'wgsl')}, charged)
+        self.assertEqual(before['Geometry', 'metal'], after['Geometry', 'metal'])
+        depth = sources / 'depth.slang'
+        depth.write_text(depth.read_text() + '// isolated edit\n')
+        report = self.run_build()
+        charged, _ = rebuilt(report)
+        self.assertEqual({('Depth', 'metal'), ('Depth', 'wgsl')}, charged)
+        self.assertEqual((2, 4), (report['inventory']['counts']['compiled'], report['inventory']['counts']['cache_hits']))
+
+    def test_inventory_is_unchanged_by_a_pass_order_change(self):
+        value = graph._root_asset('offscreen')
+        configuration = value['configurations'][0]
+        configuration['nodes'] += [
+            {'id': 'prepass_depth', 'kind': 'Target', 'type': 'DepthTexture', 'format': 'Depth32Float', 'extent': [640, 480],
+             'samples': 1, 'imported': False, 'initialized': False, 'presentation': False},
+            {'id': 'prepass', 'kind': 'Subgraph', 'asset': 'rasterize.lurender.json', 'configuration': 'DepthOnly'},
+            {'id': 'depth_output', 'kind': 'Export', 'type': 'DepthTexture'}]
+        configuration['edges'] += [{'from': 'scene.scene', 'to': 'prepass.scene'}, {'from': 'camera.view', 'to': 'prepass.view'},
+                                   {'from': 'prepass_depth.texture', 'to': 'prepass.depth'},
+                                   {'from': 'prepass.depth', 'to': 'depth_output.texture'}]
+        self.graph.write_bytes(graph.canonical_asset(value))
+        first = self.run_build()
+        prepass = ('prepass', 'prepass_depth', 'depth_output')
+        configuration['nodes'] = ([node for node in configuration['nodes'] if node['id'] in prepass] +
+                                  [node for node in configuration['nodes'] if node['id'] not in prepass])
+        configuration['edges'].reverse()
+        self.graph.write_bytes(graph.canonical_asset(value))
+        second = self.run_build()
+        passes = [[p['id'] for p in build.verify_package(Path(r['package']))['plans'][0]['passes'] if p['kind'] == 'Raster']
+                  for r in (first, second)]
+        self.assertEqual(['Main/raster/draw', 'Main/prepass/draw'], passes[0])
+        self.assertEqual(['Main/prepass/draw', 'Main/raster/draw'], passes[1])
+        self.assertEqual(0, second['cache_misses'])
+        self.assertEqual(2, second['inventory']['counts']['authored_choices'])
+        self.assertEqual(0, second['inventory']['counts']['unrouted_techniques'])
+        self.assertEqual(self.inventory_without_timing(first), self.inventory_without_timing(second))
+
     def test_disconnected_color_never_creates_an_implicit_technique(self):
         self.graph = graph.new_workspace(self.root / 'depth_sources', output='depth')
         self.manifest = build.new_build_sources(self.graph, profiles=('metal', 'wgsl'))
@@ -724,6 +867,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(result['cache_misses'], 6)
         self.assertEqual(len(self.calls), 6)
         self.assertTrue(all('unfinished authoring draft' not in code for _, _, code in self.calls))
+        self.assertEqual(['DraftMiss'], result['inventory']['programs_without_artifacts'])
 
     def test_incomplete_pipeline_reports_missing_stages_instead_of_unused_programs(self):
         fixture = ROOT / 'tests/sdk_consumer/rg2/raytracing/main.lurender.json'
@@ -1110,6 +1254,14 @@ class CompilerAcceptance(unittest.TestCase):
                     warm = build.build_package(manifest, output, **options)
                     self.assertEqual(first['generation'], warm['generation'])
                     self.assertEqual(0, warm['cache_misses'])
+                    routed = 'DefaultStaticMasked.' + ('ColorAndDepth' if fixture == 'masked_color' else 'DepthOnly')
+                    for report, compiled in ((first, 3 * len(profiles)), (warm, 0)):
+                        inventory = report['inventory']
+                        self.assertEqual((1, 2, 1, compiled, 2 * len(profiles)), tuple(inventory['counts'][name] for name in (
+                            'authored_choices', 'techniques', 'unrouted_techniques', 'compiled', 'recipe_keys')))
+                        self.assertEqual(routed, inventory['choices'][0]['technique'])
+                        self.assertTrue(all(artifact['bytes'] > 0 for artifact in inventory['artifacts']))
+                        self.assertEqual(compiled, sum('compile_seconds' in a for a in inventory['artifacts']))
 
                     coverage.write_text(changed_source)
                     edited = build.build_package(manifest, output, **options)
@@ -1118,9 +1270,15 @@ class CompilerAcceptance(unittest.TestCase):
                     before = build.verify_package(Path(first['package']))
                     after = build.verify_package(Path(edited['package']))
                     keys = {(entry['id'], entry['profile']): entry['key'] for entry in before['programs']}
+                    descriptors = {(entry['id'], entry['profile']): entry['descriptor'] for entry in before['programs']}
+                    charged = {a['key'] for a in edited['inventory']['artifacts'] if 'compile_seconds' in a}
                     for entry in after['programs']:
                         self.assertEqual(entry['id'] == 'Geometry',
                                          entry['key'] == keys[entry['id'], entry['profile']])
+                        self.assertEqual(entry['id'] != 'Geometry', entry['key'] in charged)
+                        # A coverage edit keeps the reflected uniform layout and stage links.
+                        for field in ('layouts', 'links'):
+                            self.assertEqual(descriptors[entry['id'], entry['profile']].get(field), entry['descriptor'].get(field))
 
                     pointer = (output / 'current.json').read_bytes()
                     coverage.write_text(broken_source)

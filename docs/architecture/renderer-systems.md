@@ -2873,6 +2873,15 @@ incompatible material/light/geometry versions. Reflection motion may require hit
 surface motion in addition to the primary surface. A stable camera alone does not
 make a lighting history valid. Bound history memory separately for each view.
 
+The first RT2 effect is the [hybrid shadows template](../development/render-graph-authoring.md#shadow-analytic-lights-with-rays):
+raster first hits and one shadow ray for each of up to 16 contributing analytic
+lights per pixel. Its regression compares an offscreen blocker's shadow with a
+geometric projection, the default graph's shadow map and the paired RT1 direct
+output. Hard punctual shadows need no history or filter, so this step does not yet
+qualify reconstruction, temporal behavior, area-light penumbrae, reflections or
+indirect diffuse. [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248)
+tracks those fixtures.
+
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)
 are different upgrades. Reservoir reuse requires specified target densities,

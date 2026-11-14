@@ -32,6 +32,10 @@ read the issue, its acceptance criteria and dependencies, its current **Status**
 and any linked pull requests. If the task did not name an issue, check for an
 existing item that covers the work.
 
+- When choosing unassigned work, take it from **Ready** in board order, then
+  from the **Next up** view. Do not start a card whose derived **Actionable**
+  field is *Blocked*. Record real prerequisites with GitHub's **Blocked by**,
+  not with Priority. See [Prioritize roadmap work](docs/wiki/contribute/index.md#prioritize-roadmap-work).
 - Move the item to **In Progress** when implementation starts. Link the issue
   from the PR and move the item to **In Review** when the PR is ready for human
   review.

@@ -82,6 +82,9 @@ class StructuredBufferTests(unittest.TestCase):
         plan = self.compile()
         self.assertEqual('Read', plan['passes'][0]['buffers']['ReservoirB']['access'])
         self.assertEqual(0, plan['passes'][0]['buffers']['ReservoirB']['output_version'])
+        uses = {row['resource']: row['uses'] for row in graph.describe_resource_uses(plan)}
+        self.assertEqual([{'operation': 0, 'read': 0, 'write': 1, 'defined': True}], uses['Main/ReservoirA'])
+        self.assertEqual([{'operation': 0, 'read': 0}], uses['Main/ReservoirB'])
         entries = [{'name': name, 'binding': slot, 'kind': kind, 'size': 32}
                    for name, slot, kind in (('ReservoirA', 6, 'StorageReadWrite'), ('ReservoirB', 7, 'StorageRead'))]
         stages = {('RayTracing', 'compute', target): {'descriptor': {'interface': {'entries': deepcopy(entries)}}}

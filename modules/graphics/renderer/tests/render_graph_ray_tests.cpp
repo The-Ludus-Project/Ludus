@@ -10939,6 +10939,10 @@ TEST_CASE("Guided FG transports reflected photons and agrees with independent sa
         material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
     }
     constexpr usize FRAME_COUNT = 64;
+    // Both templates render at half the view extent. Keep every temporal sample while
+    // bounding per-frame software rendering cost for the image-mean comparison.
+    constexpr ExportExtent VIEW_EXTENT{WIDTH, HEIGHT};
+    constexpr ExportExtent SAMPLE_EXTENT{VIEW_EXTENT.Width / 2, VIEW_EXTENT.Height / 2};
     Array<math::Vector3> guided;
     {
         PreparedGraph graph(
@@ -10946,8 +10950,8 @@ TEST_CASE("Guided FG transports reflected photons and agrees with independent sa
             {LUDUS_RG3_GUIDED_RESTIR_FG_PLUS_TEMPLATE_DIRECTORY, "rg2_guided_restir_fg_plus_template.lurgrt"},
             room,
             1,
-            {WIDTH * 2, HEIGHT * 2});
-        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, guided);
+            VIEW_EXTENT);
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, guided, SAMPLE_EXTENT);
     }
     Array<math::Vector3> independent;
     {
@@ -10955,8 +10959,8 @@ TEST_CASE("Guided FG transports reflected photons and agrees with independent sa
                             {LUDUS_RG3_GUIDED_FG_INDEPENDENT_DIRECTORY, "rg2_guided_fg_independent.lurgrt"},
                             room,
                             1,
-                            {WIDTH * 2, HEIGHT * 2});
-        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, independent);
+                            VIEW_EXTENT);
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, independent, SAMPLE_EXTENT);
     }
     const math::Vector3 expected = ComputeImageMean(independent);
     const math::Vector3 measured = ComputeImageMean(guided);

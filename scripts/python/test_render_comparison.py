@@ -16,11 +16,12 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'compare-render'
 HAS_IMAGE_TOOLS = all(importlib.util.find_spec(module) is not None for module in ('numpy', 'PIL'))
 
 
-def make_capture(path, pixels, *, graph=False, partial=False):
+def make_capture(path, pixels, *, graph=False, partial=False, failed=False):
     header = bytearray(256)
     if graph:
         header[:8] = b'LURGCAP\0'
-        struct.pack_into('<12I', header, 8, 1, 256, 16, int(partial), len(pixels), 1, 1, 1, 0, 2, 3, 1)
+        flags = int(partial) | (2 if failed else 0)
+        struct.pack_into('<12I', header, 8, 1, 256, 16, flags, len(pixels), 1, 1, 1, int(failed), 2, 3, 1)
     else:
         header[:8] = b'LUHDR01\0'
         struct.pack_into('<10I', header, 8, 1, 1, 1, 256, len(pixels), 1, 1, 3, 2, 3 | (32 if partial else 0))
@@ -104,6 +105,66 @@ class RenderComparisonTests(unittest.TestCase):
         html = self.output.read_text(encoding='utf-8')
         self.assertIn('<option value="1">second.lurgcap</option>', html)
         self.assertEqual(html.count('data:image/png;base64,'), 5)
+
+    def test_regression_checks_every_candidate_and_keeps_failure_reports(self):
+        baseline = self.root / 'baseline.lurgcap'
+        first = self.root / 'at-limit.lurgcap'
+        second = self.root / 'above-limit.lurgcap'
+        make_capture(baseline, [(2, 2, 2, 1)], graph=True)
+        make_capture(first, [(2.5, 2.5, 2.5, 1)], graph=True)
+        make_capture(second, [(3, 3, 3, 1)], graph=True)
+
+        passing = self.compare(baseline, first, '--max-rmse', '0.5')
+        self.assertEqual(json.loads(passing.stdout)['regression'],
+                         {'max_rmse': 0.5, 'passed': True, 'failures': []})
+        self.output.unlink()
+
+        failing = self.compare(baseline, first, str(second), '--max-rmse', '0.5', check=False)
+        self.assertEqual(failing.returncode, 1)
+        comparisons = json.loads(failing.stdout)['comparisons']
+        self.assertTrue(comparisons[0]['regression']['passed'])
+        self.assertFalse(comparisons[1]['regression']['passed'])
+        self.assertEqual(comparisons[1]['metrics']['rmse'], 1)
+        self.assertIn('RMSE 1 exceeds the limit 0.5', comparisons[1]['regression']['failures'][0])
+        html = self.output.read_text(encoding='utf-8')
+        self.assertIn('Image regression check passed', html)
+        self.assertIn('Image regression check failed', html)
+
+    def test_regression_rejects_incomplete_hdr_with_matching_pixels(self):
+        baseline = self.root / 'baseline.luhdr'
+        candidate = self.root / 'candidate.lurgcap'
+        pixels = [(2, 2, 2, 1)]
+        make_capture(baseline, pixels, partial=True)
+        make_capture(candidate, pixels, graph=True, failed=True)
+
+        result = self.compare(baseline, candidate, '--max-rmse', '0', check=False)
+        self.assertEqual(result.returncode, 1)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['metrics']['rmse'], 0)
+        self.assertEqual(report['metrics']['coverage'], 1)
+        self.assertFalse(report['regression']['passed'])
+        self.assertEqual(len(report['regression']['failures']), 2)
+        self.assertIn('Baseline capture is incomplete', report['regression']['failures'][0])
+        self.assertIn('Candidate capture is incomplete', report['regression']['failures'][1])
+
+    def test_display_regression_uses_normalized_srgb_and_validates_tolerance(self):
+        from PIL import Image
+
+        baseline = self.root / 'baseline.png'
+        candidate = self.root / 'candidate.png'
+        Image.new('RGB', (1, 1), (0, 0, 0)).save(baseline)
+        Image.new('RGB', (1, 1), (1, 1, 1)).save(candidate)
+        for tolerance in ('-1', 'nan', 'inf'):
+            with self.subTest(tolerance=tolerance):
+                result = self.compare(baseline, candidate, '--max-rmse', tolerance, check=False)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('--max-rmse must be finite and nonnegative', result.stderr)
+                self.assertFalse(self.output.exists())
+
+        result = self.compare(baseline, candidate, '--max-rmse', '0.004')
+        report = json.loads(result.stdout)
+        self.assertTrue(report['regression']['passed'])
+        self.assertAlmostEqual(report['metrics']['rmse'], 1 / 255)
 
     def test_incompatible_inputs_return_actionable_errors_without_output(self):
         from PIL import Image

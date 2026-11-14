@@ -711,6 +711,15 @@ observations alone cannot prove the completeness of all runtime choices.
 
 ### Attribute variant cost before optimizing (proposed)
 
+**Status.** The host-tool inventory below is delivered in `build-report.json`;
+see [Attribute shader variant costs](../development/render-graph-authoring.md#attribute-shader-variant-costs)
+for its fields and the masked color and depth fixture record. The
+Renderer/RHI device preparation report is delivered as
+`RenderGraph::GetPipelineReport`, keyed by the same recipe keys; see
+[Device pipeline preparation](../development/render-graph-authoring.md#device-pipeline-preparation).
+The cold native consumer journeys and the correlation of a shader edit with
+its first presented frame remain proposed.
+
 Today the graph build report records aggregate cache hits/misses, elapsed time,
 counts and LUSL lowering details. The authored budget counts bound admission
 before cooking; they do not say which root choice caused a costly emitted stage,
@@ -755,6 +764,39 @@ memory. Enshrouded's numbers are workload- and device-specific. Its attempt to
 combine all expressions also produced oversized, unstable shaders. Compare a
 data-driven version and a bounded specialized version when the choice affects
 GPU work; neither a larger shared shader nor more variants wins by default.
+
+### Particle parameter iteration
+
+Brandon Whitley’s
+[*The Destiny Particle Architecture*](https://advances.realtimerendering.com/s2017/Destiny_Particle_Architecture_Siggraph_Advances_2017.pptx)
+(SIGGRAPH 2017, slides 62–74, 82–85, 96–106, 109–124 and 153) separates
+simulation state from appearance. Bungie hot-reloaded valid parameter
+expressions as bytecode and baked costly expressions into shaders offline.
+Adding or removing nodes still incurred shader compilation, and baking
+increased shader count. On Bungie’s GPU, evaluating eight splines for 10,000
+particles took 0.620 ms through the interpreter and 0.023 ms with baked HLSL
+(slides 106 and 119). Those figures measure expression evaluation only.
+Thanks to Whitley and the Bungie FX and graphics teams for documenting the
+distinction between edit latency and execution cost.
+
+For Ludus, keep emitter lifetime and motion state with the particle consumer
+and evaluate appearance from explicit inputs. The
+[World demo’s first burst](https://github.com/The-Ludus-Project/Ludus/issues/1427)
+will establish a bounded CPU and direct-raster baseline using presentation
+events from completed ticks under the
+[gameplay presentation contract](gameplay-foundations.md#calls-commands-events-and-asynchronous-results).
+
+A value edit stays on the existing parameter path. If a named effect needs live
+expression edits beyond typed values or curves, or evaluation has a measured
+frame cost, compare a bounded data evaluator for one appearance parameter with
+the direct path. Use the same typed expression and inputs if a cooked Slang
+version is justified. Keep structural edits on the existing graph build and
+publication path. Measure edit-to-visible latency in the selected World
+viewport, then check the same saved effect independently through Play and a
+Release app built with the [installed SDK](../development/project-sdk-workflow.md#configure-build-run).
+For shader specialization, apply the cook, artifact and prewarm measures above.
+The [particle expression experiment](https://github.com/The-Ludus-Project/Ludus/issues/1514)
+owns the acceptance criteria.
 
 ## Pipeline readiness and execution
 
@@ -830,11 +872,17 @@ The compatibility RGBA8 image of a depth-only backing is kept. RHI attachment
 textures always pair a color image with private depth, `RasterPassDescription`
 has no depth-only form, and every raster pipeline targets one to four color
 formats. Removing it needs a depth-only RHI attachment and color-less pipelines
-on every backend, which is RHI work outside this slice. The admitted RG2 profile
-has no pass that samples a graph resource, and lowering never approves repeated
-camera coverage, so no cooked graph has a transient backing today. Pooling is
-therefore qualified on generations rewritten with unexported scratch backings, and
-is idle for every cooked fixture. See
+on every backend, which is RHI work outside this slice. The original RG4a
+measurement used cooked generations rewritten with unexported scratch backings.
+A cooked [bilinear upscale](../development/render-graph-authoring.md#run-a-bilinear-upscale)
+now has a sampled intermediate. Its color and private depth share a backing
+that can enter the pool when both aspects stay internal.
+
+Hans-Kristian Arntzen's [“Render graphs and Vulkan — a deep dive,” August 2017, “Render target aliasing”](https://themaister.net/blog/2017/08/15/render-graphs-and-vulkan-a-deep-dive/#render-target-aliasing)
+describes reusing an image within a frame when logical lifetimes do not overlap.
+Ludus's current pool returns a backing when its graph releases it and checks
+submission completion before reuse. An authored sampled intermediate gives a
+workload for measuring that path with the serial control. See
 [RG4 usage, evidence and limits](../development/render-graph-authoring.md#pool-transient-attachments-rg4).
 
 ### Logical resource uses and submitted work
@@ -1020,6 +1068,17 @@ architecture fits Ludus or that current features exist on our pinned tools.
   its intervals from a per-frame setup. Ludus derives the offline spans from
   a saved configuration and checks physical uses at execution.
   [GDC session](https://www.gdcvault.com/play/1024045/FrameGraph-Extensible-Rendering-Architecture-in)
+- Thanks to Natalya Tatarchuk, **Evolution of Programmable Models for Graphics
+  Engines**, HPG 2017, PDF pp. 67–71, 107–128 and 139–150, for placing pass-level
+  iteration in project space while retaining native culling, batching and
+  command generation. Ludus uses typed graphs and offline shader packages for
+  this boundary. A host-tool regression reorders two independent raster passes
+  and checks that the cooked plan changes while stage artifacts, recipe keys
+  and CPU interface identity stay stable. The Destiny examples also motivate
+  measuring whether skipping an empty skin diffusion pass saves GPU time on a
+  representative scene. Any prototype must define which initialized resource
+  version later passes read on the skipped route.
+  [HPG slides and speaker notes](https://www.highperformancegraphics.org/wp-content/uploads/2017/Special-Session/HPG2017_EvolutionProgrammableModels.pdf#page=67)
 - Thanks to Zhenglong Zhou and Huabin Ling, **Render Graph, a Data Oriented
   Approach**, GDC 2023, slides 15–19, 22 and 27–29. The command/dependency
   layers and debug-copy example show how an inspectable description can support
