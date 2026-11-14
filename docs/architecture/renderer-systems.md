@@ -1121,6 +1121,42 @@ history, keep recreatable CPU descriptions, and explicitly restart/rebuild.
 Use fallback textures/materials only if ready and compatible. An invalid shader
 or surface cannot trigger an undocumented backend switch.
 
+### View-dependent ocean rendering
+
+Consider a bounded raster prototype when a 3D World needs moving water across
+the horizon. Thanks to **Huw Bowles, Daniel Zimmermann, Chino Noris and Beibei
+Wang**, *Crest: Novel Ocean Rendering Techniques in an Open Source Framework*,
+SIGGRAPH 2017, slides 7–25 and 27–33, for matching nested displacement textures
+to camera-centered mesh rings and using one blend weight for the mesh and the
+sampled shape at each transition. Filter out wavelengths each level cannot
+resolve. Keep these moving grids in the renderer's per-view state. World water
+level and gameplay queries should stay independent of camera position and LOD.
+[SIGGRAPH course slides](https://www.advances.realtimerendering.com/s2017/Ocean_SIGGRAPH17_Final.pptx)
+
+Start with a fixed grid rendering the same waves as a control. Compare it with
+snapped, morphing rings at matched near-field detail. Sweep across tile edges,
+altitude scale changes and grazing horizon views. Record visible seams, shape
+or normal discontinuities, CPU/GPU frame time and peak GPU memory. An initial
+prototype can evaluate waves analytically on the mesh. If a measured workload
+needs textures, exercise the ordered raster graph with a render-to-texture pass
+and subsequent vertex-stage sampling on the target. The compute storage texture
+profile remains [R12b follow-up work](rhi-gdi.md#follow-up-milestones-r6r17).
+
+The [Terrain tool](terrain.md#add-terrain) already generates a river mesh from
+the terrain recipe and publishes it with the selected World. For an ocean tool,
+first prove that the same authored sea level and wave settings work in a
+standalone raster scene. Then verify viewport navigation, resize and failed
+reload behavior, followed by Play and an installed-SDK build on the chosen
+target. The [terrain LOD roadmap](terrain.md#performance-and-delivery-gates)
+and [Drift's top-down water](drift-game-integration.md#filter-cosmetic-ripples-by-pixel-footprint)
+have their own baselines.
+
+Crest's depth-peeling example is a separate experiment for views that cross
+multiple water surfaces. The one- and five-layer images in slides 55–56 show
+why rear surfaces affect the water path length. Revisit it with a named scene
+requiring that effect and a layer budget measured against the existing ordered
+raster path. The slide 69 measurement is for a 720p GTX 980M setup.
+
 ## Materials, shaders and pipeline control
 
 The [render graph architecture](render-graph-authoring.md) owns reusable
