@@ -21,6 +21,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include <cstring>
@@ -734,6 +735,30 @@ Status CreateZeroedGraphBuffer(rhi::DeviceHandle device, uint32 capacity, rhi::B
                              {rhi::BufferRole::Storage, capacity},
                              {zeros.GetData(), zeros.GetSize()},
                              outBuffer);
+}
+/// Name a prepared graph texture "RenderGraph/Resource/<index>" after its plan resource, so
+/// native captures correlate it with graph diagnostics. Diagnostic only: rejection, such as
+/// renaming a pooled texture inside a recording frame, never changes preparation.
+void NameGraphTexture(rhi::DeviceHandle device, rhi::TextureHandle texture, usize index) noexcept
+{
+    constexpr char PREFIX[] = "RenderGraph/Resource/";
+    constexpr usize DECIMAL_BASE = 10;
+    constexpr usize MAX_DECIMAL_DIGITS = 20;
+    StaticArray<char, MAX_DECIMAL_DIGITS> digits{};
+    usize digitCount = 0;
+    do
+    {
+        digits[digitCount++] = static_cast<char>('0' + index % DECIMAL_BASE);
+        index /= DECIMAL_BASE;
+    } while (index != 0);
+    StaticArray<char, rhi::GPU_SCOPE_NAME_BYTES> text{};
+    usize length = sizeof(PREFIX) - 1;
+    std::memcpy(text.GetData(), PREFIX, length);
+    while (digitCount != 0)
+    {
+        text[length++] = digits[--digitCount];
+    }
+    static_cast<void>(rhi::SetDebugName(device, texture, {text.GetData(), length}));
 }
 } // namespace
 Status ResolveRenderGraphResource(const format::Resource& resource,
@@ -2532,6 +2557,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
                 return status;
             }
             candidate->IsPooled[i] = true;
+            NameGraphTexture(device, candidate->Textures[i], i);
             if (isReused == true)
             {
                 ++candidate->Allocation.ReusedAllocations;
@@ -2547,6 +2573,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             return status;
         }
+        NameGraphTexture(device, candidate->Textures[i], i);
         ++candidate->Allocation.CreatedAllocations;
     }
     mState.Swap(candidate);
@@ -2658,6 +2685,7 @@ Status RenderGraph::Resize(uint32 referenceWidth, uint32 referenceHeight) noexce
         {
             return allocated;
         }
+        NameGraphTexture(state.Device, candidate->Textures[i], i);
     }
     state.Resizing.Swap(candidate);
     return Status::Pending;

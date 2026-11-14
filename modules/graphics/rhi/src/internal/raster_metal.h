@@ -525,10 +525,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         const uint64 producerValue = pipeline.NativeEventValue + 1;
         const uint64 completionValue = pipeline.NativeEventValue + EVENT_STEPS;
         pipeline.NativeEventValue = completionValue;
-        if (gPassLabelOrNull != nil)
-        {
-            [gCommand popDebugGroup];
-        }
+        PopScopeGroups();
         // The private queue can initialize models off-thread without submitting on
         // a borrowed framework queue. Native events order access to the shared data.
         [gCommand encodeSignalEvent:pipeline.NativeEventOrNull value:producerValue];
@@ -551,9 +548,9 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
             gSubmitted[gSlot] = gCommand;
             gCommand = nil;
         }
-        else if (gPassLabelOrNull != nil)
+        else
         {
-            [gCommand pushDebugGroup:gPassLabelOrNull];
+            PushScopeGroups();
         }
         return status;
     }
@@ -983,6 +980,25 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     task->Request = request;
     return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
+// Thanks to Apple, "label", MTLResource documentation:
+// https://developer.apple.com/documentation/metal/mtlresource/label
+// Labels are copied strings; they never extend or alter the labelled object's lifetime.
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+{
+    @autoreleasepool
+    {
+        NSString* labelOrNull = name[0] == '\0' ? nil : [NSString stringWithUTF8String:name];
+        if (kind == internal::RasterKind::Buffer)
+        {
+            gRasterBuffers[slot].label = labelOrNull;
+        }
+        else if (kind == internal::RasterKind::Texture)
+        {
+            gRasterTextures[slot].label = labelOrNull;
+            gRasterDepths[slot].label = labelOrNull;
+        }
+    }
+}
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 {
     switch (kind)
@@ -1142,6 +1158,7 @@ void RasterEndPass() noexcept
 {
     if (gEncoder != nil)
     {
+        ClosePassLabels();
         [gEncoder endEncoding];
         gEncoder = nil;
     }
@@ -1259,12 +1276,10 @@ void RasterReset() noexcept
     // Submit the trailing RHI buffer before waiting/releasing any retained context.
     if (hasNativeComputeSplit == true && gCommand != nil)
     {
+        ClosePassLabels();
         [gEncoder endEncoding];
         gEncoder = nil;
-        if (gPassLabelOrNull != nil)
-        {
-            [gCommand popDebugGroup];
-        }
+        PopScopeGroups();
         [gCommand commit];
         gSubmitted[gSlot] = gCommand;
         gCommand = nil;

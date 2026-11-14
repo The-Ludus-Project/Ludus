@@ -165,6 +165,11 @@ Status RasterViewport::Initialize(Renderer& renderer,
     {
         return status;
     }
+    // Capture names only; naming failures never reject preparation.
+    constexpr char SCENE_COLOR_NAME[] = "Viewport/SceneColor";
+    constexpr char IMAGE_NAME[] = "Viewport/Image";
+    static_cast<void>(
+        rhi::SetDebugName(device, candidate->SceneColor, {SCENE_COLOR_NAME, sizeof(SCENE_COLOR_NAME) - 1}));
     texture.Format = rhi::RasterFormat::Rgba8Unorm;
     for (rhi::TextureHandle& image : candidate->Images)
     {
@@ -173,6 +178,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
         {
             return status;
         }
+        static_cast<void>(rhi::SetDebugName(device, image, {IMAGE_NAME, sizeof(IMAGE_NAME) - 1}));
     }
     // Creation can be asynchronous. Poll prepares display only after the source is Ready.
     ViewMapping mapping;

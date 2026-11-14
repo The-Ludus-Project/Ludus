@@ -376,6 +376,9 @@ RasterStatus RasterCreateSet(foundation::usize,
                              foundation::uint32) noexcept;
 RasterStatus RasterCreatePipeline(foundation::usize, const internal::RasterPipelineInfo&, foundation::uint32) noexcept;
 void RasterDestroy(internal::RasterKind, foundation::usize) noexcept;
+/// Apply a validated, terminated debug name to a live Buffer or Texture slot's native objects;
+/// an empty name clears it. Best effort: backends without object labels ignore the call.
+void RasterSetDebugName(internal::RasterKind kind, foundation::usize slot, const char* name) noexcept;
 RasterStatus RasterDraw(const internal::RasterPacket&) noexcept;
 RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept;
 RasterStatus RasterBeginPass(const internal::RasterPassInfo&) noexcept;

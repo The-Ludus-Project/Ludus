@@ -13,21 +13,32 @@
 namespace ludus::graphics::rhi
 {
 using namespace foundation;
-bool MakeGpuScope(uint64 identity,
-                  BorrowedView<const char> name,
-                  GpuScopeDescription& outScope,
-                  uint32 logicalPassCount) noexcept
+namespace
 {
-    if (identity == 0 || logicalPassCount == 0 || name.IsValid() == false || name.IsEmpty() == true ||
-        name.GetSize() >= GPU_SCOPE_NAME_BYTES)
+/// Shared validation for scope and object names: storage, UTF-8, no zero, bounded length.
+bool IsAnnotationText(BorrowedView<const char> name) noexcept
+{
+    if (name.IsValid() == false || name.GetSize() >= GPU_SCOPE_NAME_BYTES)
     {
         return false;
+    }
+    if (name.IsEmpty() == true)
+    {
+        return true;
     }
     // Adapt to the existing FoundationStrings validation boundary; no owning STL text.
     const std::string_view text(name.GetDataOrNull(), name.GetSize());
     Utf8View validated;
     usize errorOffset = 0;
-    if (ValidateUtf8(text, validated, errorOffset) != StringStatus::Ok || ValidateCString(text) != StringStatus::Ok)
+    return ValidateUtf8(text, validated, errorOffset) == StringStatus::Ok && ValidateCString(text) == StringStatus::Ok;
+}
+} // namespace
+bool MakeGpuScope(uint64 identity,
+                  BorrowedView<const char> name,
+                  GpuScopeDescription& outScope,
+                  uint32 logicalPassCount) noexcept
+{
+    if (identity == 0 || logicalPassCount == 0 || name.IsEmpty() == true || IsAnnotationText(name) == false)
     {
         return false;
     }
@@ -36,6 +47,20 @@ bool MakeGpuScope(uint64 identity,
     candidate.LogicalPassCount = logicalPassCount;
     std::memcpy(candidate.Name.GetData(), name.GetDataOrNull(), name.GetSize());
     outScope = candidate;
+    return true;
+}
+bool MakeGpuDebugName(BorrowedView<const char> name, GpuDebugName& outName) noexcept
+{
+    if (IsAnnotationText(name) == false)
+    {
+        return false;
+    }
+    GpuDebugName candidate;
+    if (name.IsEmpty() == false)
+    {
+        std::memcpy(candidate.Text.GetData(), name.GetDataOrNull(), name.GetSize());
+    }
+    outName = candidate;
     return true;
 }
 RasterStatus ArmGpuPassTimings(DeviceHandle device) noexcept
@@ -105,11 +130,24 @@ RasterStatus EndGpuScope(DeviceHandle device) noexcept
 }
 GpuScope::GpuScope(DeviceHandle device, const GpuScopeDescription& scope) noexcept : mDevice(device)
 {
-    mIsActive = BeginGpuScope(device, scope) == RasterStatus::Ready;
+    if (BeginGpuScope(device, scope) == RasterStatus::Ready)
+    {
+        const internal::GpuScopePosition position = backend::GetScopePosition();
+        mEpoch = position.Epoch;
+        mDepth = position.Depth;
+        mIsActive = true;
+    }
 }
 GpuScope::~GpuScope() noexcept
 {
-    if (mIsActive == true)
+    if (mIsActive == false || internal::ValidateMeasurementDevice(mDevice) != RasterStatus::Ready)
+    {
+        return;
+    }
+    // Submission, reset or an inner scope left open make this scope's native region not the
+    // innermost one; closing anyway would end a region this instance does not own.
+    const internal::GpuScopePosition position = backend::GetScopePosition();
+    if (position.Epoch == mEpoch && position.Depth == mDepth)
     {
         static_cast<void>(EndGpuScope(mDevice));
     }
@@ -135,6 +173,12 @@ RasterStatus EndScope() noexcept
 {
     return RasterStatus::Unsupported;
 }
+internal::GpuScopePosition GetScopePosition() noexcept
+{
+    return {};
+}
+void BeginPassLabel(const char*) noexcept {}
+void EndPassLabel() noexcept {}
 void ResetPassTimings() noexcept {}
 } // namespace ludus::graphics::rhi::backend
 #endif

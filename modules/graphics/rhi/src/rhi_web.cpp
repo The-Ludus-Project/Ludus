@@ -424,6 +424,17 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     return gActive == Backend::WebGL2 ? webgl::RasterCreatePipeline(slot, info, id)
                                       : webgpu::RasterCreatePipeline(slot, info, id);
 }
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+{
+    if (gActive == Backend::WebGL2)
+    {
+        webgl::RasterSetDebugName(kind, slot, name);
+    }
+    else
+    {
+        webgpu::RasterSetDebugName(kind, slot, name);
+    }
+}
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 {
     if (gActive == Backend::WebGL2)

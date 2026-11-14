@@ -6,11 +6,14 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
+#include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/spatial_upscale.h>
 
 #include <cstring>
+#include <initializer_list>
+#include <optional>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -1915,6 +1918,263 @@ TEST_CASE("R5 merges only compatible raster scopes and retains completion leases
     reference::Completed = reference::Submitted;
     REQUIRE(PollLifetime(session.Device) == RasterStatus::Ready);
     CHECK(reference::Destroys[7] == 1);
+}
+
+namespace
+{
+using reference::AnnotationEvent;
+/// One expected native annotation call; nameOrNull is unchecked for end events.
+struct ExpectedAnnotation final
+{
+    AnnotationEvent Event;
+    const char* NameOrNull = nullptr;
+};
+void CheckAnnotations(std::initializer_list<ExpectedAnnotation> expected)
+{
+    REQUIRE(reference::AnnotationCount == expected.size());
+    usize index = 0;
+    for (const ExpectedAnnotation& entry : expected)
+    {
+        INFO("annotation " << index);
+        CHECK(reference::Annotations[index].Event == entry.Event);
+        if (entry.NameOrNull != nullptr)
+        {
+            CHECK(std::strcmp(reference::Annotations[index].Name.GetData(), entry.NameOrNull) == 0);
+        }
+        ++index;
+    }
+}
+GpuScopeDescription MakeTestScope(uint64 identity, const char* name)
+{
+    GpuScopeDescription scope;
+    REQUIRE(MakeGpuScope(identity, {name, std::strlen(name)}, scope) == true);
+    return scope;
+}
+/// "first" clears and "second" loads the same surface attachments, so R5 may merge them.
+void AddMergeablePasses(DeviceHandle device, GraphScene& inoutGraph, const RasterDraw& draw)
+{
+    const GraphUse uses[]{{inoutGraph.Vertex, GraphAccessMode::Vertex, 0, 36},
+                          {inoutGraph.Index, GraphAccessMode::Index, 0, 6},
+                          {inoutGraph.Uniform, GraphAccessMode::Uniform, 0, 16}};
+    GraphPassDescription pass;
+    pass.Name = "first";
+    pass.Attachment.DepthStore = RasterStore::Store;
+    pass.Uses = uses;
+    pass.UseCount = 3;
+    pass.Draws = &draw;
+    pass.DrawCount = 1;
+    REQUIRE(AddGraphPass(device, inoutGraph.Graph, pass) == RasterStatus::Ready);
+    pass.Name = "second";
+    pass.Attachment.ColorLoad = pass.Attachment.DepthLoad = RasterLoad::Load;
+    REQUIRE(AddGraphPass(device, inoutGraph.Graph, pass) == RasterStatus::Ready);
+}
+} // namespace
+TEST_CASE("G0 GPU scopes nest in a frame and close at submission without closing newer scopes",
+          "[rhi][gpu-scope][annotation]")
+{
+    Session session;
+    const GpuScopeDescription view = MakeTestScope(1, "Viewport/Scene");
+    const GpuScopeDescription graph = MakeTestScope(2, "Graph/Opaque");
+    const GpuScopeDescription level = MakeTestScope(3, "Level");
+    CHECK(BeginGpuScope(session.Device, view) == RasterStatus::InvalidState);
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    REQUIRE(BeginGpuScope(session.Device, view) == RasterStatus::Ready);
+    REQUIRE(BeginGpuScope(session.Device, graph) == RasterStatus::Ready);
+    for (uint32 depth = 2; depth < MAX_GPU_SCOPE_DEPTH; ++depth)
+    {
+        REQUIRE(BeginGpuScope(session.Device, level) == RasterStatus::Ready);
+    }
+    // A full stack is an annotation limit, not a rendering failure.
+    CHECK(BeginGpuScope(session.Device, level) == RasterStatus::CapacityExceeded);
+    for (uint32 depth = 2; depth < MAX_GPU_SCOPE_DEPTH; ++depth)
+    {
+        REQUIRE(EndGpuScope(session.Device) == RasterStatus::Ready);
+    }
+    REQUIRE(EndGpuScope(session.Device) == RasterStatus::Ready);
+    // "Viewport/Scene" stays open; submission must end its native region.
+    SubmissionToken completion;
+    REQUIRE(EndFrame(session.Device, completion) == RasterStatus::Ready);
+    CHECK(EndGpuScope(session.Device) == RasterStatus::InvalidState);
+    REQUIRE(reference::AnnotationCount == 2 * MAX_GPU_SCOPE_DEPTH);
+    CHECK(reference::Annotations[0].Event == AnnotationEvent::BeginScope);
+    CHECK(std::strcmp(reference::Annotations[0].Name.GetData(), "Viewport/Scene") == 0);
+    CHECK(std::strcmp(reference::Annotations[1].Name.GetData(), "Graph/Opaque") == 0);
+    CHECK(reference::Annotations[MAX_GPU_SCOPE_DEPTH - 1].Event == AnnotationEvent::BeginScope);
+    CHECK(reference::Annotations[MAX_GPU_SCOPE_DEPTH].Event == AnnotationEvent::EndScope);
+    CHECK(reference::Annotations[2 * MAX_GPU_SCOPE_DEPTH - 2].Event == AnnotationEvent::EndScope);
+    CHECK(reference::Annotations[2 * MAX_GPU_SCOPE_DEPTH - 1].Event == AnnotationEvent::CloseScope);
+
+    reference::AnnotationCount = 0;
+    std::optional<GpuScope> stale;
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    stale.emplace(session.Device, view);
+    SubmissionToken staleCompletion;
+    REQUIRE(EndFrame(session.Device, staleCompletion) == RasterStatus::Ready);
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    REQUIRE(BeginGpuScope(session.Device, graph) == RasterStatus::Ready);
+    // The earlier frame's lexical scope must not end the newer frame's region.
+    stale.reset();
+    {
+        const GpuScope outer(session.Device, view);
+        // An inner scope left open keeps the outer one from closing a region it does not own.
+        REQUIRE(BeginGpuScope(session.Device, level) == RasterStatus::Ready);
+    }
+    REQUIRE(EndGpuScope(session.Device) == RasterStatus::Ready);
+    REQUIRE(EndGpuScope(session.Device) == RasterStatus::Ready);
+    REQUIRE(EndGpuScope(session.Device) == RasterStatus::Ready);
+    CHECK(EndGpuScope(session.Device) == RasterStatus::InvalidState);
+    SubmissionToken finalCompletion;
+    REQUIRE(EndFrame(session.Device, finalCompletion) == RasterStatus::Ready);
+    CheckAnnotations({
+        {AnnotationEvent::BeginScope, "Viewport/Scene"},
+        {AnnotationEvent::CloseScope},
+        {AnnotationEvent::BeginScope, "Graph/Opaque"},
+        {AnnotationEvent::BeginScope, "Viewport/Scene"},
+        {AnnotationEvent::BeginScope, "Level"},
+        {AnnotationEvent::EndScope},
+        {AnnotationEvent::EndScope},
+        {AnnotationEvent::EndScope},
+    });
+}
+TEST_CASE("G0 merged graph passes label logical members and culled passes stay unlabelled",
+          "[rhi][graph][merge][annotation]")
+{
+    Session session;
+    Scene scene(session.Device);
+    GraphScene graph(session.Device, scene);
+    const bool shouldMerge = GENERATE(true, false);
+    const RasterDraw draw = scene.Draw();
+    AddMergeablePasses(session.Device, graph, draw);
+    GraphTexture unused(session.Device, graph.Graph);
+    unused.Add(session.Device, graph.Graph);
+    GraphReport report;
+    REQUIRE(CompileOrderedGraph(session.Device, graph.Graph, report, GraphCompileOptions{true, shouldMerge}) ==
+            RasterStatus::Ready);
+    REQUIRE(report.Culled[2] == true);
+    REQUIRE(report.MergedPasses == (shouldMerge == true ? 1U : 0U));
+    const GpuScopeDescription view = MakeTestScope(1, "Viewport/Scene");
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    {
+        const GpuScope scope(session.Device, view);
+        REQUIRE(EncodeOrderedGraph(session.Device, session.Surface, graph.Graph) == RasterStatus::Ready);
+    }
+    SubmissionToken completion;
+    REQUIRE(EndFrame(session.Device, completion) == RasterStatus::Ready);
+    CHECK(reference::PassLabelsOpenAtPassEnd == 0);
+    CHECK(reference::OpenPassLabels == 0);
+    if (shouldMerge == true)
+    {
+        // One physical region keeps the leading name; each logical member keeps its own label.
+        CheckAnnotations({
+            {AnnotationEvent::BeginScope, "Viewport/Scene"},
+            {AnnotationEvent::BeginScope, "first"},
+            {AnnotationEvent::BeginPassLabel, "first"},
+            {AnnotationEvent::EndPassLabel},
+            {AnnotationEvent::BeginPassLabel, "second"},
+            {AnnotationEvent::EndPassLabel},
+            {AnnotationEvent::EndScope},
+            {AnnotationEvent::EndScope},
+        });
+    }
+    else
+    {
+        CheckAnnotations({
+            {AnnotationEvent::BeginScope, "Viewport/Scene"},
+            {AnnotationEvent::BeginScope, "first"},
+            {AnnotationEvent::EndScope},
+            {AnnotationEvent::BeginScope, "second"},
+            {AnnotationEvent::EndScope},
+            {AnnotationEvent::EndScope},
+        });
+    }
+}
+TEST_CASE("G0 graph draw failures discard logical labels and physical scopes", "[rhi][graph][merge][annotation]")
+{
+    Session session;
+    Scene scene(session.Device);
+    GraphScene graph(session.Device, scene);
+    const RasterDraw draw = scene.Draw();
+    AddMergeablePasses(session.Device, graph, draw);
+    GraphReport report;
+    REQUIRE(CompileOrderedGraph(session.Device, graph.Graph, report, GraphCompileOptions{true, true}) ==
+            RasterStatus::Ready);
+    REQUIRE(report.MergedPasses == 1);
+    reference::DrawResult = RasterStatus::Failed;
+    SubmissionToken completion;
+    CHECK(ExecuteOrderedGraph(session.Device, session.Surface, graph.Graph, completion) == RasterStatus::Failed);
+    CHECK(GetStartup().State == StartupState::Failed);
+    // The fault discards the frame's commands with their open region and label, and the
+    // lexical owners closed afterwards neither reopen nor double-close them.
+    CHECK(reference::OpenPassLabels == 0);
+    CheckAnnotations({
+        {AnnotationEvent::BeginScope, "first"},
+        {AnnotationEvent::BeginPassLabel, "first"},
+        {AnnotationEvent::CloseScope},
+    });
+}
+TEST_CASE("G0 debug names are validated, applied natively and discarded with their resource",
+          "[rhi][raster][debug-name]")
+{
+    Session session;
+    const uint8 bytes[16]{};
+    BufferHandle buffer;
+    REQUIRE(CreateBuffer(session.Device, {BufferRole::Uniform, 16}, bytes, buffer) == RasterStatus::Ready);
+    TextureHandle texture;
+    REQUIRE(CreateTexture(session.Device, {16, 8, RasterFormat::Rgba8Unorm, true}, {}, texture) == RasterStatus::Ready);
+    GpuDebugName name;
+    REQUIRE(GetDebugName(session.Device, texture, name) == RasterStatus::Ready);
+    CHECK(name.Text[0] == '\0');
+    constexpr char TEXTURE_NAME[] = "World/MainView/Opaque";
+    constexpr char BUFFER_NAME[] = "Frame/7/Upload";
+    REQUIRE(SetDebugName(session.Device, texture, {TEXTURE_NAME, sizeof(TEXTURE_NAME) - 1}) == RasterStatus::Ready);
+    REQUIRE(SetDebugName(session.Device, buffer, {BUFFER_NAME, sizeof(BUFFER_NAME) - 1}) == RasterStatus::Ready);
+    REQUIRE(reference::AnnotationCount == 2);
+    CHECK(reference::Annotations[0].Event == AnnotationEvent::NameObject);
+    CHECK(reference::Annotations[0].Kind == internal::RasterKind::Texture);
+    CHECK(std::strcmp(reference::Annotations[0].Name.GetData(), TEXTURE_NAME) == 0);
+    CHECK(reference::Annotations[1].Kind == internal::RasterKind::Buffer);
+    REQUIRE(GetDebugName(session.Device, texture, name) == RasterStatus::Ready);
+    CHECK(std::strcmp(name.Text.GetData(), TEXTURE_NAME) == 0);
+    REQUIRE(GetDebugName(session.Device, buffer, name) == RasterStatus::Ready);
+    CHECK(std::strcmp(name.Text.GetData(), BUFFER_NAME) == 0);
+
+    // Invalid text is rejected before any native call and keeps the previous name.
+    constexpr char INVALID_UTF8[] = "\xC0\xAF";
+    CHECK(SetDebugName(session.Device, texture, {INVALID_UTF8, sizeof(INVALID_UTF8) - 1}) ==
+          RasterStatus::InvalidDescription);
+    CHECK(SetDebugName(session.Device, texture, {nullptr, 1}) == RasterStatus::InvalidDescription);
+    CHECK(SetDebugName({}, texture, {TEXTURE_NAME, 1}) == RasterStatus::InvalidHandle);
+    CHECK(reference::AnnotationCount == 2);
+    REQUIRE(GetDebugName(session.Device, texture, name) == RasterStatus::Ready);
+    CHECK(std::strcmp(name.Text.GetData(), TEXTURE_NAME) == 0);
+
+    // Renaming is a between-frame mutation; reading stays available while recording.
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    CHECK(SetDebugName(session.Device, texture, {TEXTURE_NAME, 1}) == RasterStatus::InvalidState);
+    CHECK(GetDebugName(session.Device, texture, name) == RasterStatus::Ready);
+    SubmissionToken completion;
+    REQUIRE(EndFrame(session.Device, completion) == RasterStatus::Ready);
+
+    REQUIRE(SetDebugName(session.Device, buffer, {}) == RasterStatus::Ready);
+    REQUIRE(GetDebugName(session.Device, buffer, name) == RasterStatus::Ready);
+    CHECK(name.Text[0] == '\0');
+    CHECK(reference::Annotations[reference::AnnotationCount - 1].Name[0] == '\0');
+
+    const TextureHandle stale = texture;
+    REQUIRE(Destroy(session.Device, texture) == RasterStatus::Ready);
+    reference::Completed = reference::Submitted;
+    REQUIRE(PollLifetime(session.Device) == RasterStatus::Ready);
+    REQUIRE(reference::Destroys[static_cast<usize>(internal::RasterKind::Texture)] == 1);
+    const GpuDebugName preserved = name;
+    CHECK(GetDebugName(session.Device, stale, name) == RasterStatus::InvalidHandle);
+    CHECK(SetDebugName(session.Device, stale, {TEXTURE_NAME, 1}) == RasterStatus::InvalidHandle);
+    CHECK(std::strcmp(name.Text.GetData(), preserved.Text.GetData()) == 0);
+    // The recycled slot starts unnamed.
+    TextureHandle replacement;
+    REQUIRE(CreateTexture(session.Device, {16, 8, RasterFormat::Rgba8Unorm, true}, {}, replacement) ==
+            RasterStatus::Ready);
+    REQUIRE(GetDebugName(session.Device, replacement, name) == RasterStatus::Ready);
+    CHECK(name.Text[0] == '\0');
 }
 
 TEST_CASE("R5 attachment chains keep versions, barriers and final depth validity", "[rhi][graph][merge]")
