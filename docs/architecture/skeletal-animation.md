@@ -3,8 +3,10 @@
 Status: proposed architecture for Ludus, October 11, 2026, against checkout
 `ab49fe8`. Repository capability descriptions below refer to that historical
 snapshot; implementation must reconcile them with the current module contracts.
-This proposal defines runtime and content contracts; it does not add an
-animation module, codec dependency, mesh renderer, or editor. The
+This proposal defines runtime and content contracts. Slice A0 is implemented as
+`Ludus::Animation` in `modules/animation`; see
+[A0 skeleton and pose foundation](#a0-skeleton-and-pose-foundation). There is
+still no codec dependency, clip sampler, mesh renderer, or editor. The
 [Gems review](skeletal-animation-gems-review.md) records the initial design,
 consulted chapters, and revisions incorporated here.
 
@@ -935,6 +937,100 @@ acceptance uses the pinned web tools and actual supported browser execution.
 SDK consumers and a new demo project must pass the repository's selectable
 configure/build/test preset checks. This documentation-only proposal requires no
 project repair or tool/dependency download.
+
+### A0 skeleton and pose foundation
+
+`Ludus::Animation` (`modules/animation`, public headers under
+`ludus/animation/`) implements A0 as a native and browser library. It depends
+only on FoundationBase, Containers, Hash and Math. Every fallible operation
+returns `AnimationStatus` and is `noexcept`. Preparation allocates fallibly.
+Pose edits, forward kinematics, skinning palettes and inspection never allocate.
+
+Use it in this order:
+
+1. Fill a `SkeletonPackage` with an authoring identity, `MetersPerUnit` and
+   borrowed `SkeletonJointRecord`s. Then call `TryPrepareSkeleton`. A record
+   holds the joint ID, parent index, exclusive subtree end and rest transform.
+2. Call `TryPrepareLocalPose` and `TryPrepareComponentPose` for that skeleton.
+   A new local pose holds the rest pose. Edit joints with `LocalPose::TrySetJoint`
+   or restore them with `TryResetToRest`.
+3. Call `TryEvaluateComponentPose` to run scalar forward kinematics.
+4. Optionally, call `TryPrepareSkinBinding` with a mesh's palette and inverse
+   bind transforms. Then call `TryComputeSkinningPalette` for the evaluated pose.
+5. Call `TryInspectSkeleton` and `TryInspectJoint` to read the state headlessly.
+
+`TryPrepareSkeleton` validates the package before it publishes anything. It
+rejects these inputs:
+
+- An empty package, a zero authoring identity, or nonpositive or nonfinite
+  units. These return `InvalidArgument`.
+- A hierarchy that is not one tree in depth-first, parent-before-child order,
+  with joint 0 as the only root. A cooked subtree end that does not match the
+  derived one is also rejected. These return `InvalidHierarchy`. Add an
+  explicit synthetic identity root for a multi-root import.
+- A zero or duplicated joint ID. These return `InvalidJointId`.
+- A nonfinite translation or rotation, or a rotation whose squared norm is
+  outside `JOINT_ROTATION_UNIT_TOLERANCE`. These return `InvalidTransform`.
+  Accepted rotations are normalized in the owned copy only.
+- A scale component outside `[MIN_JOINT_SCALE, MAX_JOINT_SCALE]`, which
+  includes zero, negative and near-singular values. This returns
+  `UnsupportedScale`. Positive nonuniform scale is supported.
+- More joints than `SkeletonLimits::MaxJoints` (default 4,096). This returns
+  `BudgetExceeded`.
+
+`Skeleton::GetCompatibility` is an XXH3-128 fingerprint of a versioned
+canonical byte layout. It covers units, joint order, IDs, hierarchy and
+normalized rest transforms. It excludes the authoring identity and revision, so
+a recook with the same structure stays compatible. Poses and skin bindings
+record the fingerprint and reject other skeletons with `IncompatibleSkeleton`.
+This includes a skeleton with the same joint count but a different hierarchy.
+
+Forward kinematics computes `component[j] = Compose(component[parent[j]],
+ToAffine3(local[j]))` in skeleton order with FoundationMath `Affine3`. Shear
+from nonuniform parent scale is kept. Component transforms are never decomposed
+back to TRS. A `ComponentPose` owns a published buffer and a private candidate
+buffer. Evaluation writes the candidate and publishes it only when every joint is
+finite. A failure (`OutOfRange`, `IncompatibleSkeleton` or an invalid input)
+leaves the published transforms and source revision unchanged. Until the first
+success, `GetJoints` is empty, so unevaluated values are never read as joints.
+
+A skeleton's rest pose is not a mesh bind pose. A `SkinBinding` belongs to a
+mesh. It maps palette entries to skeleton joints by stable ID and owns that
+mesh's inverse bind transforms, including any mesh-to-skeleton unit conversion.
+Modular meshes can share a skeleton with different inverse bind data. The
+palette oracle is `Compose(component[joint], inverseBind)`. It is identity at
+the mesh bind pose, but not at a rest pose that differs from that bind pose. It
+computes and checks every entry before it writes the caller's palette.
+
+`JointInspection` copies one joint's index, ID, parent, depth, child count,
+subtree end, rest value and current local value. When a component pose is
+evaluated, it also copies the component transform and the local revision it
+came from. `IsComponentCurrent` shows whether that pose is stale. Inspection only
+reads, so it cannot advance pose history.
+
+The fixtures in `modules/animation/tests` cover these cases:
+
+- Each rejection class above.
+- Rest and bind distinctions in a branching hierarchy (an A-pose rest and a
+  T-pose bind), and a second modular binding.
+- Forward kinematics on a four-joint chain with nonuniform scale. The fixture
+  checks bitwise equality with FoundationMath composition, compares against
+  `Matrix4` products and requires a measurable shear.
+- Overflow, incompatible inputs and unprepared inputs, each of which preserves
+  published output.
+
+`ludus_animation_allocation_tests` fails each preparation allocation in turn.
+It verifies that the previous generation survives each failure and that the
+evaluation paths allocate nothing.
+
+A0 limits:
+
+- The package is an in-memory cooked record view. A serialized package format,
+  `Ludus::AnimationContent`, a cook tool and debug joint names come with the cook
+  pipeline (A2).
+- Component validity covers the whole pose. Subtree invalidation comes with
+  modifiers (A3 and A4).
+- Clips, sampling and time stamps begin in A1.
 
 ## Research venues and adoption policy
 

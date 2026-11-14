@@ -44,6 +44,7 @@ modules/foundation/math/include/ludus/foundation/math/random_domains.hpp
 modules/foundation/math/tests/random_domains_tests.cpp
 modules/foundation/geometry
 modules/gameplay/sequencer
+modules/animation
 modules/foundation/memory/include/ludus/foundation/memory/shared_ptr.hpp
 modules/foundation/memory/include/ludus/foundation/memory/detail/shared_controller.hpp
 modules/foundation/memory/src/shared_controller.cpp
