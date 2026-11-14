@@ -481,6 +481,10 @@ class TiledVbufferNeeTemplateTests(unittest.TestCase):
         self.assertIn("    Main/lighting/visibility [ColorTexture] 000..003 | Export Main/visibilityOutput reads @1", report)
         self.assertIn("    Main/lighting/depth [DepthTexture] 000..003 | Export Main/depthOutput reads @1", report)
         self.assertIn("    Main/lighting/table [Buffer] 001..003", report)
+        uses = {row['resource']: row['uses'] for row in graph.describe_resource_uses(plan)}
+        self.assertEqual([{'operation': 1, 'read': 0, 'write': 1, 'defined': True},
+                          {'operation': 2, 'read': 1, 'write': 2, 'defined': True},
+                          {'operation': 3, 'read': 2, 'write': 3, 'defined': True}], uses['Main/lighting/table'])
         final = rays[-1]
         self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
         self.assertEqual(1, final['tone_mapping']['exposure'])

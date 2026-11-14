@@ -590,7 +590,9 @@ def cmd_render_graph(args) -> int:
     else:
         plan = render_graph.compile_graph(Path(args.graph), configuration=args.configuration, root=args.root)
         payload = {"plan": plan}
-        if not args.json:
+        if args.json and getattr(args, "resource_uses", False):
+            payload["resource_uses"] = render_graph.describe_resource_uses(plan)
+        elif not args.json:
             human = render_graph.dump_plan(plan) if args.graph_action == "dump" else (
                 f"Validated {plan['asset']}#{plan['configuration']}: {len(plan['passes'])} serial operations; "
                 f"{len(plan['techniques'])} authored techniques. RG0 contract only.")
@@ -668,6 +670,9 @@ def build_parser() -> argparse.ArgumentParser:
         graph.add_argument("--configuration", help="select an explicitly declared root configuration")
         if action == "validate":
             graph.add_argument("--library", action="store_true", help="inspect all library interfaces; bindings require a containing graph")
+        else:
+            graph.add_argument("--resource-uses", action="store_true",
+                               help="include the logical resource-use summary in JSON output (always shown in text)")
         graph.set_defaults(func=cmd_render_graph)
     new_build = graphs.add_parser("new-build", help="save explicit RG1 build sources next to a root graph")
     new_build.add_argument("graph")
