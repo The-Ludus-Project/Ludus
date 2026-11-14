@@ -8908,22 +8908,20 @@ pipelines on every backend, which is outside this slice.
 
 ### Which graphs benefit
 
-None of the admitted cooked graphs. In the RG2 profile no pass samples a graph
-resource, and lowering never approves repeated camera coverage. A scene pass into
-an unexported target is therefore `Conflicting`, and every cooked fixture's
-backings are exports or the surface. A GPU test checks that each cooked RG2
-fixture leases nothing from the pool.
+In a cooked [bilinear upscale](#run-a-bilinear-upscale), the smaller scene color
+and its private depth share a backing. The upscale pass samples the color and
+writes a separate destination. When neither aspect of the scene backing is
+exported, activation can pool it. The destination follows its own Export or
+Present contract.
 
-To qualify the mechanism, `tests/sdk_consumer/render_graph_scratch.h` rewrites
-the cooked offscreen `.lurgrt` into a numeric plan the Renderer does admit:
+The original RG2 fixtures in the pooling suite lease nothing from the pool.
+For the RG4a measurements below, `tests/sdk_consumer/render_graph_scratch.h`
+rewrites one such offscreen `.lurgrt`:
 
 - every pass approves repeated coverage;
 - unexported scratch color + depth backings follow, each drawn by one more pass;
 - all resources take a chosen extent, so a resize is a reload of a generation with
   another extent, as a re-cooked graph would be.
-
-Pooling becomes useful for cooked graphs only once a later profile admits sampled
-graph reads or approved pre-Z passes.
 
 ### RG4a acceptance evidence
 
@@ -9053,7 +9051,8 @@ Platform status:
 
 Unsupported or not established:
 
-- No admitted cooked graph benefits (see above). Exports are never pooled.
+- Pooling parity and retained memory for an authored sampled intermediate still
+  need a serial-control run.
 - The depth-only compatibility RGBA8 image remains.
 - Physical heap aliasing, pass merging, parallel recording and async queues are
   separate RG4 slices with their own controls.

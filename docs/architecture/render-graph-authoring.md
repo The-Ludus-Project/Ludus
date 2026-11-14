@@ -830,11 +830,17 @@ The compatibility RGBA8 image of a depth-only backing is kept. RHI attachment
 textures always pair a color image with private depth, `RasterPassDescription`
 has no depth-only form, and every raster pipeline targets one to four color
 formats. Removing it needs a depth-only RHI attachment and color-less pipelines
-on every backend, which is RHI work outside this slice. The admitted RG2 profile
-has no pass that samples a graph resource, and lowering never approves repeated
-camera coverage, so no cooked graph has a transient backing today. Pooling is
-therefore qualified on generations rewritten with unexported scratch backings, and
-is idle for every cooked fixture. See
+on every backend, which is RHI work outside this slice. The original RG4a
+measurement used cooked generations rewritten with unexported scratch backings.
+A cooked [bilinear upscale](../development/render-graph-authoring.md#run-a-bilinear-upscale)
+now has a sampled intermediate. Its color and private depth share a backing
+that can enter the pool when both aspects stay internal.
+
+Hans-Kristian Arntzen's [“Render graphs and Vulkan — a deep dive,” August 2017, “Render target aliasing”](https://themaister.net/blog/2017/08/15/render-graphs-and-vulkan-a-deep-dive/#render-target-aliasing)
+describes reusing an image within a frame when logical lifetimes do not overlap.
+Ludus's current pool returns a backing when its graph releases it and checks
+submission completion before reuse. An authored sampled intermediate gives a
+workload for measuring that path with the serial control. See
 [RG4 usage, evidence and limits](../development/render-graph-authoring.md#pool-transient-attachments-rg4).
 
 ### Logical resource uses and submitted work
