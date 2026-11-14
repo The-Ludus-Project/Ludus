@@ -191,7 +191,8 @@ enum class GraphAccessMode : ludus::foundation::uint8
     StorageRead,
     /// Read/write storage range in a compute or fragment shader, writing the next in-place version.
     StorageReadWrite,
-    /// Indexed indirect argument range.
+    /// Indirect argument range read by a raster draw (every command of the packet) or by an
+    /// indirect compute dispatch (R12a); requires a StorageIndirect buffer.
     Indirect,
     /// Write-only shader storage of a complete Storage texture in a fragment or compute pass.
     /// Texels the shader does not write keep the preceding version, so the use reads that

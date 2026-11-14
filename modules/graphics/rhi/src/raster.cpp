@@ -2327,12 +2327,15 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
     }
     const auto* pipeline = Resolve(draw.Pipeline, RasterKind::Pipeline);
     const auto* set = Resolve(draw.Bindings, RasterKind::Set);
-    const auto* indices = Resolve(draw.Indices, RasterKind::Buffer);
-    if (pipeline == nullptr || set == nullptr || indices == nullptr)
+    // R12a: only an indirect packet may omit its index buffer and select non-indexed commands.
+    const bool hasIndirect = RasterAccess::Owner(draw.Indirect) != 0;
+    const bool isIndexed = hasIndirect == false || RasterAccess::Owner(draw.Indices) != 0;
+    const Record* indicesOrNull = isIndexed == true ? Resolve(draw.Indices, RasterKind::Buffer) : nullptr;
+    if (pipeline == nullptr || set == nullptr || (isIndexed == true && indicesOrNull == nullptr))
     {
         return RasterStatus::InvalidHandle;
     }
-    const Record* dependencies[]{pipeline, set, indices};
+    const Record* dependencies[]{pipeline, set, isIndexed == true ? indicesOrNull : set};
     for (const auto* dependency : dependencies)
     {
         if (dependency->Status != RasterStatus::Ready)
@@ -2358,29 +2361,40 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
     if (set->Set.Layout != info.Layout ||
         ShaderFits(At(RasterKind::Shader, info.Vertex).Shader, set->Set.Description) == false ||
         ShaderFits(At(RasterKind::Shader, info.Fragment).Shader, set->Set.Description) == false ||
-        draw.Vertices.GetSize() != info.StreamCount || draw.IndexCount == 0 ||
-        draw.IndexCount % TRIANGLE_VERTEX_COUNT != 0 || draw.VertexCount == 0 || draw.InstanceCount == 0 ||
-        draw.InstanceCount > MAX_DRAW_INSTANCES ||
-        (indices->Buffer.Role != BufferRole::Index16 && indices->Buffer.Role != BufferRole::Index32))
+        draw.Vertices.GetSize() != info.StreamCount || draw.VertexCount == 0 || draw.InstanceCount == 0 ||
+        draw.InstanceCount > MAX_DRAW_INSTANCES)
     {
         return RasterStatus::InvalidDescription;
     }
-    const usize width = indices->Buffer.Role == BufferRole::Index16 ? 2 : 4;
-    if (draw.IndexOffset % width != 0 || draw.IndexCount > ~usize{0} / width ||
-        Fits(draw.IndexOffset, static_cast<usize>(draw.IndexCount) * width, indices->Buffer.Size) == false)
+    usize width = 0;
+    if (isIndexed == true)
+    {
+        if (draw.IndexCount == 0 || draw.IndexCount % TRIANGLE_VERTEX_COUNT != 0 ||
+            (indicesOrNull->Buffer.Role != BufferRole::Index16 && indicesOrNull->Buffer.Role != BufferRole::Index32))
+        {
+            return RasterStatus::InvalidDescription;
+        }
+        width = indicesOrNull->Buffer.Role == BufferRole::Index16 ? sizeof(uint16) : sizeof(uint32);
+        if (draw.IndexOffset % width != 0 || draw.IndexCount > ~usize{0} / width ||
+            Fits(draw.IndexOffset, static_cast<usize>(draw.IndexCount) * width, indicesOrNull->Buffer.Size) == false)
+        {
+            return RasterStatus::InvalidDescription;
+        }
+        // Every index must address a vertex and none may be a restart value (mapped to RESTART_INDEX_MAXIMUM).
+        if (ComputeIndexRangeMaximum(indicesOrNull->Indices,
+                                     indicesOrNull->IndexBlockMaxima,
+                                     width,
+                                     draw.IndexOffset / width,
+                                     draw.IndexCount) >= draw.VertexCount)
+        {
+            return RasterStatus::InvalidDescription;
+        }
+    }
+    else if (draw.IndexOffset != 0 || draw.IndexCount != 0)
     {
         return RasterStatus::InvalidDescription;
     }
-    // Every index must address a vertex and none may be a restart value (mapped to RESTART_INDEX_MAXIMUM).
-    if (ComputeIndexRangeMaximum(indices->Indices,
-                                 indices->IndexBlockMaxima,
-                                 width,
-                                 draw.IndexOffset / width,
-                                 draw.IndexCount) >= draw.VertexCount)
-    {
-        return RasterStatus::InvalidDescription;
-    }
-    if (RasterAccess::Owner(draw.Indirect) != 0)
+    if (hasIndirect == true)
     {
         const auto compute = ComputeAdmission(device, false);
         if (compute != RasterStatus::Ready)
@@ -2396,25 +2410,40 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
         {
             return indirect->Status == RasterStatus::Pending ? RasterStatus::NotReady : indirect->Status;
         }
-        if (indirect->Buffer.Role != BufferRole::StorageIndirect || draw.IndirectOffset % 4 != 0 ||
-            Fits(draw.IndirectOffset, sizeof(IndexedIndirectArguments), indirect->Buffer.Size) == false)
+        const IndirectCapabilities limits = CurrentDeviceProfile().Indirect;
+        if (isIndexed == false && limits.HasNonIndexedDraws == false)
+        {
+            return RasterStatus::Unsupported;
+        }
+        const usize argumentBytes =
+            isIndexed == true ? sizeof(IndexedIndirectArguments) : sizeof(DrawIndirectArguments);
+        const usize stride = draw.IndirectStride == 0 ? argumentBytes : draw.IndirectStride;
+        usize span = 0;
+        if (indirect->Buffer.Role != BufferRole::StorageIndirect || draw.IndirectCount == 0 ||
+            draw.IndirectCount > limits.MaxCommandsPerDraw ||
+            draw.IndirectOffset % INDIRECT_ARGUMENT_ALIGNMENT_BYTES != 0 ||
+            stride % INDIRECT_ARGUMENT_ALIGNMENT_BYTES != 0 || stride < argumentBytes ||
+            ComputeIndirectSpan(draw.IndirectCount, stride, argumentBytes, span) == false ||
+            Fits(draw.IndirectOffset, span, indirect->Buffer.Size) == false)
         {
             return RasterStatus::InvalidDescription;
         }
         packet.Indirect = RasterAccess::Slot(draw.Indirect);
         packet.IndirectOffset = draw.IndirectOffset;
+        packet.IndirectCount = draw.IndirectCount;
+        packet.IndirectStride = stride;
     }
-    else if (draw.IndirectOffset != 0)
+    else if (draw.IndirectOffset != 0 || draw.IndirectCount != 1 || draw.IndirectStride != 0)
     {
         return RasterStatus::InvalidDescription;
     }
     packet.Pipeline = RasterAccess::Slot(draw.Pipeline);
     packet.Set = RasterAccess::Slot(draw.Bindings);
-    packet.Indices = RasterAccess::Slot(draw.Indices);
+    packet.Indices = isIndexed == true ? RasterAccess::Slot(draw.Indices) : RASTER_INVALID;
     packet.IndexOffset = draw.IndexOffset;
     packet.IndexCount = draw.IndexCount;
     packet.InstanceCount = draw.InstanceCount;
-    packet.Index32 = width == 4;
+    packet.Index32 = width == sizeof(uint32);
     for (usize i = 0; i < info.StreamCount; ++i)
     {
         const auto& slice = draw.Vertices[i];
@@ -2478,7 +2507,10 @@ RasterStatus EncodePacket(const RasterPacket& packet) noexcept
     }
     FrameRetain(RasterKind::Pipeline, packet.Pipeline);
     FrameRetain(RasterKind::Set, packet.Set);
-    FrameRetain(RasterKind::Buffer, packet.Indices);
+    if (packet.Indices != RASTER_INVALID)
+    {
+        FrameRetain(RasterKind::Buffer, packet.Indices);
+    }
     if (packet.Indirect != RASTER_INVALID)
     {
         FrameRetain(RasterKind::Buffer, packet.Indirect);

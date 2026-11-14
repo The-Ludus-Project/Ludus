@@ -492,6 +492,8 @@ DeviceProfile QueryDeviceProfile() noexcept
                         1};
     result.Compute = backend::ComputeLimits();
     result.RasterStorage = backend::RasterStorageLimits();
+    // R12a commands extend the R4 indirect path, so they exist only with compute storage.
+    result.Indirect = result.Compute.MaxStorageRange != 0 ? backend::IndirectLimits() : IndirectCapabilities{};
     const bool hasStorageTextures =
         result.RasterStorage.MaxFragmentStorageTextures != 0 || result.RasterStorage.MaxComputeStorageTextures != 0;
     for (usize i = 0; i < RASTER_FORMAT_COUNT; ++i)

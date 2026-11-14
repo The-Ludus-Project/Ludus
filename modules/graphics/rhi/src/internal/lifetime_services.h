@@ -180,7 +180,10 @@ void PacketReferences(const RasterPacket& packet, bool retain) noexcept
     };
     reference(RasterKind::Pipeline, packet.Pipeline);
     reference(RasterKind::Set, packet.Set);
-    reference(RasterKind::Buffer, packet.Indices);
+    if (packet.Indices != RASTER_INVALID)
+    {
+        reference(RasterKind::Buffer, packet.Indices);
+    }
     if (packet.Indirect != RASTER_INVALID)
     {
         reference(RasterKind::Buffer, packet.Indirect);
@@ -200,9 +203,11 @@ void DropBatch(BatchRecord& record) noexcept
 }
 RasterStatus PacketStatus(const RasterPacket& packet) noexcept
 {
+    // An R12a non-indexed packet has no index record; its set stands in for the third entry.
     const Record* records[]{&At(RasterKind::Pipeline, packet.Pipeline),
                             &At(RasterKind::Set, packet.Set),
-                            &At(RasterKind::Buffer, packet.Indices)};
+                            packet.Indices != RASTER_INVALID ? &At(RasterKind::Buffer, packet.Indices)
+                                                             : &At(RasterKind::Set, packet.Set)};
     for (const auto* record : records)
     {
         if (record->Status != RasterStatus::Ready)

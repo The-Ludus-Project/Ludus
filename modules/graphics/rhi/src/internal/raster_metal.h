@@ -291,6 +291,28 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
         .MaxComputeStorageTextures = slots,
     };
 }
+// Thanks to Apple, "Metal Feature Set Tables" (base vertex/instance drawing and indirect
+// draws/dispatches, Apple3+/Mac2) and "MTLDrawIndexedPrimitivesIndirectArguments",
+// "MTLDrawPrimitivesIndirectArguments" and "MTLDispatchThreadgroupsIndirectArguments", whose
+// layouts match the engine ABI. https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+IndirectCapabilities IndirectLimits() noexcept
+{
+    if (gDevice == nil)
+    {
+        return {};
+    }
+    const bool hasBaseVertexInstance =
+        [gDevice supportsFamily:MTLGPUFamilyApple3] == YES || [gDevice supportsFamily:MTLGPUFamilyMac2] == YES;
+    return
+    {
+        .ArgumentAlignment = internal::INDIRECT_ARGUMENT_ALIGNMENT_BYTES,
+        .MaxCommandsPerDraw = internal::MAX_INDIRECT_COMMANDS_PER_DRAW,
+        .HasNonIndexedDraws = true,
+        .HasDrawOffsets = hasBaseVertexInstance,
+        .HasFirstInstance = hasBaseVertexInstance,
+        .HasIndirectDispatch = true,
+    };
+}
 // Thanks to Apple, "MTLComputeCommandEncoder" and Metal's tracked-resource
 // synchronization: encoder boundaries order storage writes before raster reads.
 // https://developer.apple.com/documentation/metal/mtlcomputecommandencoder
@@ -657,8 +679,18 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         [encoder setIntersectionFunctionTable:intersectionsOrNull
                                 atBufferIndex:LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING];
     }
-    [encoder dispatchThreadgroups:MTLSizeMake(packet.Groups[0], packet.Groups[1], packet.Groups[2])
-            threadsPerThreadgroup:MTLSizeMake(info.WorkgroupSize[0], info.WorkgroupSize[1], info.WorkgroupSize[2])];
+    const MTLSize threads = MTLSizeMake(info.WorkgroupSize[0], info.WorkgroupSize[1], info.WorkgroupSize[2]);
+    if (packet.Indirect != internal::RASTER_INVALID)
+    {
+        [encoder dispatchThreadgroupsWithIndirectBuffer:gRasterBuffers[packet.Indirect]
+                                   indirectBufferOffset:packet.IndirectOffset
+                                  threadsPerThreadgroup:threads];
+    }
+    else
+    {
+        [encoder dispatchThreadgroups:MTLSizeMake(packet.Groups[0], packet.Groups[1], packet.Groups[2])
+                threadsPerThreadgroup:threads];
+    }
     [encoder endEncoding];
     return RasterStatus::Ready;
 }
@@ -1163,12 +1195,26 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     [gEncoder setScissorRect:MTLScissorRect{c.X, c.Y, c.Width, c.Height}];
     if (packet.Indirect != internal::RASTER_INVALID)
     {
-        [gEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                              indexType:packet.Index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
-                            indexBuffer:gRasterBuffers[packet.Indices]
-                      indexBufferOffset:packet.IndexOffset
-                         indirectBuffer:gRasterBuffers[packet.Indirect]
-                   indirectBufferOffset:packet.IndirectOffset];
+        // R12a: ordered single commands; native multi-draw is outside this profile.
+        for (uint32 command = 0; command < packet.IndirectCount; ++command)
+        {
+            const usize offset = packet.IndirectOffset + usize{command} * packet.IndirectStride;
+            if (packet.Indices == internal::RASTER_INVALID)
+            {
+                [gEncoder drawPrimitives:MTLPrimitiveTypeTriangle
+                          indirectBuffer:gRasterBuffers[packet.Indirect]
+                    indirectBufferOffset:offset];
+            }
+            else
+            {
+                [gEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                                      indexType:packet.Index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
+                                    indexBuffer:gRasterBuffers[packet.Indices]
+                              indexBufferOffset:packet.IndexOffset
+                                 indirectBuffer:gRasterBuffers[packet.Indirect]
+                           indirectBufferOffset:offset];
+            }
+        }
     }
     else
     {

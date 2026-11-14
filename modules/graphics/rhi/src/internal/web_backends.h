@@ -74,6 +74,7 @@ ludus::foundation::uint32 RasterVertexStrideLimit() noexcept;
 FormatCapabilities FormatLimits(RasterFormat) noexcept;
 ComputeCapabilities ComputeLimits() noexcept;
 RasterStorageCapabilities RasterStorageLimits() noexcept;
+IndirectCapabilities IndirectLimits() noexcept;
 RasterStatus
 ComputeCreatePipeline(foundation::usize, const internal::ComputePipelineInfo&, foundation::uint32) noexcept;
 RasterStatus ComputeEncode(const internal::ComputePacket&) noexcept;
