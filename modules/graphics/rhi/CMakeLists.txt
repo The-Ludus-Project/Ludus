@@ -27,7 +27,7 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
@@ -120,7 +120,10 @@ install(TARGETS ludus_graphics_rhi
 
 if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_graphics_rhi_tests tests/rhi_tests.cpp tests/depth_barrier_vulkan_tests.cpp)
+    add_executable(ludus_graphics_rhi_tests
+        tests/rhi_tests.cpp
+        tests/buffer_access_vulkan_tests.cpp
+        tests/depth_barrier_vulkan_tests.cpp)
     target_include_directories(ludus_graphics_rhi_tests PRIVATE src)
     target_link_libraries(ludus_graphics_rhi_tests PRIVATE
         Ludus::GraphicsRhi Ludus::FoundationLogging volk::volk_headers Catch2::Catch2WithMain)

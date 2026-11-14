@@ -855,6 +855,17 @@ private:
     /// as unoccluded.
     [[nodiscard]] rhi::RasterStatus drawDeferredShadows(PreparedView frameView,
                                                         internal::DeferredShadowAtlas& inoutAtlas) noexcept;
+    /// Copy the raster pipeline handles compiled from this context's Initialize stages (its default and
+    /// InitializeViews variants; the renderer-owned composite pipeline is excluded) into outPipelines.
+    /// Pipelines not yet created are null handles, which RHI queries reject as InvalidHandle.
+    /// @return Number written, at most outPipelines.GetSize(); zero before Initialize. No allocation or GPU work.
+    [[nodiscard]] foundation::usize
+    getStagePipelines(foundation::BorrowedView<rhi::RasterPipelineHandle> outPipelines) const noexcept;
+    /// Copy the raster pipeline handles of one owned material program, null when not yet created, into outPipelines.
+    /// @return Number written, at most outPipelines.GetSize(); zero for an invalid program. No allocation.
+    [[nodiscard]] foundation::usize
+    getProgramPipelines(MaterialProgram program,
+                        foundation::BorrowedView<rhi::RasterPipelineHandle> outPipelines) const noexcept;
     [[nodiscard]] rhi::RasterStatus prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                                    const rhi::RasterShaderDescription& fragment,
                                                    const rhi::RasterShaderDescription* shadowOrNull,

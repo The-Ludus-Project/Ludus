@@ -1,5 +1,6 @@
 #pragma once
 
+#include "buffer_access_vulkan.h"
 #include "depth_barrier_vulkan.h"
 #include "resources.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -1180,52 +1181,23 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 // https://docs.vulkan.org/guide/latest/synchronization_examples.html
 void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
 {
-    auto& buffer = gRasterBuffers[slot];
-    VkPipelineStageFlags stage = 0;
-    VkAccessFlags access = 0;
-    switch (use)
+    const VulkanBufferAccess access = GetVulkanBufferAccess(use, gQueueCompute);
+    if (access.Stages == 0)
     {
-        case GraphAccessMode::Vertex:
-            stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-            access = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-            break;
-        case GraphAccessMode::Index:
-            stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-            access = VK_ACCESS_INDEX_READ_BIT;
-            break;
-        case GraphAccessMode::Uniform:
-            stage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                    (gQueueCompute ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0U);
-            access = VK_ACCESS_UNIFORM_READ_BIT;
-            break;
-        case GraphAccessMode::Indirect:
-            stage = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-            access = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-            break;
-        // R12b storage uses carry no stage here: synchronize the conservative union of
-        // every stage that may read (vertex/fragment/compute) or write (fragment/compute).
-        case GraphAccessMode::StorageRead:
-            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            access = VK_ACCESS_SHADER_READ_BIT;
-            break;
-        case GraphAccessMode::StorageReadWrite:
-            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            break;
-        default:
-            return;
+        return;
     }
+    RasterVulkanBuffer& buffer = gRasterBuffers[slot];
+    const VkAccessFlags destinationAccess = access.ReadAccess | access.WriteAccess;
     VkBufferMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     barrier.buffer = buffer.Object;
     barrier.size = VK_WHOLE_SIZE;
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.srcAccessMask = buffer.Access | buffer.WriterAccess;
-    barrier.dstAccessMask = access;
+    barrier.dstAccessMask = destinationAccess;
     vkCmdPipelineBarrier(gFrames[gFrame].Command,
                          buffer.Stage | buffer.WriterStage,
-                         stage,
+                         access.Stages,
                          0,
                          0,
                          nullptr,
@@ -1233,16 +1205,16 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
                          &barrier,
                          0,
                          nullptr);
-    if (use == GraphAccessMode::StorageReadWrite)
+    if (access.WriteAccess != 0)
     {
-        buffer.Stage = buffer.WriterStage = stage;
-        buffer.Access = access;
-        buffer.WriterAccess = VK_ACCESS_SHADER_WRITE_BIT;
+        buffer.Stage = buffer.WriterStage = access.Stages;
+        buffer.Access = destinationAccess;
+        buffer.WriterAccess = access.WriteAccess;
     }
     else
     {
-        buffer.Stage |= stage;
-        buffer.Access |= access;
+        buffer.Stage |= access.Stages;
+        buffer.Access |= destinationAccess;
     }
 }
 RasterStatus RasterCreateBuffer(usize slot,

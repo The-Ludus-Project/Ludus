@@ -57,6 +57,17 @@ each tick iteration without changing the ticks run or the replay hash.
 intervals at exit; it requires `--frames`. The browser build rejects both
 options, because its presentation callbacks already pace the page.
 
+To investigate uneven motion, run the native player with `--follow-camera` and
+hold a movement key in an open part of the room. The player should stay centered
+while the room moves around it. If the player shifts relative to the center,
+compare its draw position with the follow camera from the same extracted frame.
+If the player stays centered but the whole image holds, compare frame-start and
+EndFrame-return intervals with `--frames N --pacing-report`. EndFrame-return
+time measures the CPU boundary and can differ from when an image appears on
+screen. The Editor's Timing panel measures the separate live-reload game host.
+For this demo launched via **Play saved World**, use the player's own report.
+[Huw Bowles, Jitternator debugging experiments](https://github.com/huwb/jitternator/blob/8830f3734d4bf8ff97b27132fbd8ef5c251b1232/README.md#debugging-experiments--tests).
+
 For the browser, prepare `./init.sh --cli web-emscripten-development --preset-only`,
 enable `LUDUS_BUILD_WORLD_DEMO=ON` in that preset's local CMake cache, and run
 `./scripts/build web-emscripten-development`. Serve
@@ -353,7 +364,13 @@ contract describes coverage, disconnection and the export.
 Native tests cover identity retirement, stale/foreign handles, sparse removal,
 compiled and JSON definitions, canonical round trips, candidate ownership,
 input/catch-up/pause, commands, combat/contacts, completions and replay. The
-scatter tests pin the first room's placement digest, and check presentation
+follow-camera regression drives the real tick and extraction paths with an
+uneven schedule, including a 52 ms interval within the catch-up budget. It
+checks both the player's draw and camera against the constant-velocity trajectory
+sampled one simulation tick behind elapsed time, with the spawn pose held until
+the first tick completes.
+
+The scatter tests pin the first room's placement digest, and check presentation
 isolation (rendering, pacing, interpolation and extra cosmetic draws leave the
 replay hash), content isolation (another room's recipe, a new layer and changed
 transform ranges leave existing placements), catalog and manifest rejection, and

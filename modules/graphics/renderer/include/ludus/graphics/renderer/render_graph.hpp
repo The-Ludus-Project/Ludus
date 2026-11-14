@@ -13,6 +13,7 @@
 #include <ludus/graphics/renderer/scene_shader.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/pipeline_preparation.h>
 
 namespace ludus::graphics::renderer
 {
@@ -78,6 +79,17 @@ ResolveRenderGraphResource(const content::render_graph_format::Resource& resourc
                            foundation::uint32 referenceWidth,
                            foundation::uint32 referenceHeight,
                            content::render_graph_format::Resource& outResource) noexcept;
+/// Cooked pipeline recipe identity of one technique on one shader target. Key holds the SHA-256 digest that the
+/// graph build spells in hexadecimal as `inventory.recipes[].key` in `build-report.json` and `recipes[].key` in the
+/// package, so device preparation can be joined with the offline cost inventory. Diagnostic identity only: it
+/// never selects a technique, stage or pipeline.
+struct RenderGraphRecipeKey final
+{
+    content::render_graph_format::Technique Technique{}; ///< Numeric technique role that uses the recipe.
+    content::render_graph_format::ShaderTarget Target{}; ///< Shader profile the recipe was cooked for.
+    /// Recipe digest bytes, most significant hexadecimal pair first.
+    foundation::StaticArray<foundation::uint8, content::render_graph_format::IDENTITY_BYTES> Key{};
+};
 /// Cooked static raster stage pairs and linked triangle ray compute/image stages.
 /// No compiler or shader-source discovery. Ray plans also carry ColorVertex/ColorFragment
 /// for shared static mesh ownership; that pair never rasterizes the ray scene.
@@ -172,6 +184,12 @@ struct RenderGraphPrograms final
     bool HasRayTiles = false;
     bool HasLightTransformer =
         false; ///< Requires a trained model description; prepares a view-independent GPU encoder.
+    /// Recipe keys of the routed techniques, at most one per technique and target; copied during Initialize.
+    /// Generated package headers fill it; runtime generations and hand-built programs leave it empty, and
+    /// RenderGraph::GetPipelineReport then reports those techniques without a key.
+    // Keep partial aggregate callers warning-clean when this optional field is omitted.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const RenderGraphRecipeKey> RecipeKeys{};
 };
 /// Why a graph ray invocation failed: the scene interface's reasons, recorded by the shader function
 /// FailSceneQuery (scene_shader_layout.h, LUDUS_SCENE_FAILURE_*). Authored shaders may report their own reasons from
@@ -584,6 +602,47 @@ struct RenderGraphAllocationReport final
     /// Logical color plus private depth bytes of those allocations; excludes native padding and per-view bindings.
     foundation::uint64 DeferredAttachmentBytes = 0;
 };
+/// Device preparation of the native raster pipelines compiled from one used technique's cooked stages.
+/// A recipe is prepared as several fixed-function native pipelines (surface and offscreen targets,
+/// conventional and reverse depth, overlay), so NativePipelines can exceed one for one recipe key.
+/// Renderer-owned composite, lighting, deferred-resolve, upscale and compute pipelines are not
+/// attributed to a recipe; they appear only in RenderGraphPipelineReport::Device. Stage pipelines are
+/// created directly for each graph, so another graph or generation with identical stages prepares its own
+/// native pipelines; only RHI RequestPipeline callers share them (rhi::PipelinePreparationReport::SharedRequests).
+struct RenderGraphPipelineRecipe final
+{
+    /// Recipe identity; Recipe.Target is the device's shader target and Recipe.Key is valid when HasRecipeKey.
+    RenderGraphRecipeKey Recipe{};
+    /// The programs carried a key for this technique and target.
+    bool HasRecipeKey = false;
+    /// Native pipelines created from the technique's stages, including ones still preparing.
+    foundation::uint32 NativePipelines = 0;
+    /// Of those, pipelines whose creation completed with Ready.
+    foundation::uint32 ReadyPipelines = 0;
+    /// Of those, pipelines used by at least one accepted draw. Prepared variants that this graph never draws
+    /// (for example surface variants of a graph that renders offscreen) remain counted in NativePipelines.
+    foundation::uint32 DrawnPipelines = 0;
+    /// Draw requests that found this recipe still preparing: Render or Encode calls rejected before all of its
+    /// pipelines were Ready, plus RHI draw-time uses of its pipelines while preparing (each pipeline once).
+    /// Render never creates a pipeline, so a miss is a skipped frame, never a hidden creation stall.
+    foundation::uint64 FirstUseMisses = 0;
+    /// Sum of the native preparation seconds of the ready pipelines (rhi::PipelinePreparation::PreparationSeconds).
+    foundation::float64 PrewarmSeconds = 0;
+    /// Sum of the seconds those pipelines waited in the request queue before native creation launched.
+    foundation::float64 QueueSeconds = 0;
+};
+/// Device pipeline preparation of one graph, keyed by recipe and the qualified device's backend and target.
+struct RenderGraphPipelineReport final
+{
+    /// Totals of the whole device session, including pipelines owned by other graphs and renderers.
+    rhi::PipelinePreparationReport Device{};
+    /// Shader target this graph's device consumes; RenderGraphPipelineRecipe rows use it.
+    content::render_graph_format::ShaderTarget Target = content::render_graph_format::ShaderTarget::Spirv;
+    /// One row per used technique in numeric technique order; RecipeCount rows are valid.
+    foundation::StaticArray<RenderGraphPipelineRecipe, content::render_graph_format::TECHNIQUE_COUNT> Recipes{};
+    /// Number of valid Recipes rows.
+    foundation::uint32 RecipeCount = 0;
+};
 /// Renderer integration of one immutable cooked graph configuration.
 /// All calls use the RHI owner thread; Encode requires an acquired frame,
 /// metadata queries may inspect that encoding, and other operations are between
@@ -658,6 +717,12 @@ public:
                                                         foundation::usize& outBytes) const noexcept;
     /// Copy attachment ownership counters; an empty graph reports zeros.
     [[nodiscard]] RenderGraphAllocationReport GetAllocationReport() const noexcept;
+    /// Report device pipeline preparation for each used technique and the device totals.
+    /// Diagnostic and owner-thread only; performs no allocation, GPU work or completion polling, and changes
+    /// no graph state. Timing is wall time on the owner thread and never enters any identity.
+    /// @param outReport Written on Ready; preserved on failure.
+    /// @return Ready after Initialize was accepted; NotReady for an empty graph; device admission failures.
+    [[nodiscard]] rhi::RasterStatus GetPipelineReport(RenderGraphPipelineReport& outReport) const noexcept;
     /// Poll prewarming and pending replacement; publish only a complete Ready candidate.
     /// Returns a candidate failure once while preserving the prior drawable scene.
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;

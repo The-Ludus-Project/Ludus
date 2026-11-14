@@ -23,10 +23,17 @@ compare work across engine milestones. When adding a backlog item, look for an
 existing issue, link the owning roadmap and acceptance criteria, and use
 GitHub's **Blocked by** relationship for actual prerequisites.
 
-Set the card's **Priority** and a one-sentence **Priority rationale** when
-adding it. State the evidence that drives the decision, such as a failed
-integration job, a committed milestone, or the work that can start once this
-issue closes. Apply the same rule to new issues and reused cards.
+The board answers two separate questions. **Priority** says how much an
+outcome matters. **Blocked by** says what must finish first. Do not use
+Priority to express order inside a dependency chain.
+
+Set **Priority** per milestone outcome: every phase of a milestone (for
+example Mobile M0 to M6) carries the milestone's priority, and **Blocked by**
+orders the phases. Standalone follow-ups take their own priority. Set a
+one-sentence **Priority rationale** that says why the outcome matters now,
+such as a failed integration job, a committed milestone, or a named consumer.
+The prerequisites are already recorded by **Blocked by**, so do not restate
+them. Apply the same rule to new issues and reused cards.
 
 | Priority | Use when |
 | --- | --- |
@@ -35,11 +42,38 @@ issue closes. Apply the same rule to new issues and reused cards.
 | P2 | A scoped roadmap deliverable has acceptance criteria and can wait for its milestone or prerequisites. |
 | P3 | Work is conditional on a measured benefit, named consumer, or platform capability. Record the condition for reconsideration. |
 
-Compare work within a priority by the next committed outcome, the open tasks
-that can start immediately after it closes, and rough effort when known. Count
-distinct downstream issues once. Indirect dependencies help show the size of a
-chain. Keep using **Status** for execution state, including **In Validation**
-while required evidence is pending.
+Keep P1 for the current focus, at most a few milestones at once. When most
+of the backlog shares one priority, Priority no longer distinguishes work.
+
+Two derived fields show what can start. The
+[Kanban dependency fields](https://github.com/The-Ludus-Project/Ludus/blob/develop/.github/workflows/kanban-dependencies.yml)
+workflow recomputes them hourly and when an issue closes or reopens. Do not
+edit them by hand.
+
+| Field | Meaning |
+| --- | --- |
+| **Actionable** | *Actionable*: no open blocker. *Waiting on validation*: every open blocker is on the board in **In Validation**, so the work can usually start. *Blocked*: another open blocker remains. Closed issues are cleared. |
+| **Unlocks** | Distinct open issues that transitively wait on this one, counted once each. |
+
+The **Next up** view lists **Backlog** cards with **Actionable** set to
+*Actionable* or *Waiting on validation*, sorted by **Priority** and then
+**Unlocks**. Compare candidates within a priority by the next committed
+outcome, **Unlocks**, and rough effort when known.
+
+Treat **Ready** as a short, deliberately ordered queue of about ten cards,
+drawn from **Next up**. Drag cards to order them; the top card is the most
+important work to start. Move a card back to **Backlog** when it becomes
+*Blocked*. Keep using **Status** for execution state, including
+**In Validation** while required evidence is pending.
+
+To see the same ranking locally, or after editing dependencies, run:
+
+```bash
+python3 scripts/python/kanban_dependencies.py sync --dry-run
+```
+
+Omit `--dry-run` to write the fields. The tool uses `LUDUS_PROJECT_TOKEN`,
+`GH_TOKEN`, or the signed-in `gh` account, which needs the `project` scope.
 
 If the evidence is incomplete, record the missing input in the rationale and
 leave **Priority** empty so the card appears in **Priority triage**. Resolve
