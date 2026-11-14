@@ -1383,7 +1383,7 @@ bool RenderPreview::HasOpenViewportSubmission() const noexcept
     return false;
 #endif
 }
-void RenderPreview::Resize(int32 width, int32 height)
+void RenderPreview::Resize(int32 width, int32 height, float32)
 {
     const QSize size(width, height);
     if (mDrawableSize != size)

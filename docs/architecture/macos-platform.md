@@ -36,8 +36,10 @@ for another; routing always follows the native event's owning window.
 
 Window delegate notifications track focus, close, resize, backing-scale changes
 and minimization. Cocoa native descriptors report content dimensions in backing
-pixels, using the view's backing conversion rather than assuming a Retina scale.
-Minimized windows publish zero drawable dimensions; restoration refreshes them.
+pixels using the view's backing conversion. `NativeWindowInfo::Scale` reports
+the window's current AppKit backing pixels per logical point. Minimized windows
+publish zero drawable dimensions and keep reporting the backing scale.
+Restoration refreshes both values, and closing resets the scale to 1.
 `GetVisibility()` reports `Minimized` for a miniaturized window and `Occluded`
 while AppKit's window occlusion state has no visible part (fully covered by
 opaque windows, ordered out, a hidden application or another Space); the occlusion

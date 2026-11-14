@@ -97,7 +97,6 @@ bool PlayViewportSource::Start(const QString& parentDirectory,
         return false;
     }
     mDevice = device;
-    mScale = scale;
     mTakenFrames = 0;
     setState(PlaySourceState::Listening);
     mPumpTimer.start();
@@ -168,11 +167,6 @@ void PlayViewportSource::Pump()
     }
 }
 
-void PlayViewportSource::SetScale(float32 scale) noexcept
-{
-    mScale = scale;
-}
-
 bool PlayViewportSource::HasPendingFrame() const noexcept
 {
     return (mState == PlaySourceState::Connected || mState == PlaySourceState::Playing) && mConsumer.HasFrame();
@@ -186,14 +180,14 @@ bool PlayViewportSource::TakeFrame([[maybe_unused]] rr::ViewportFrame& outFrame,
 
 void PlayViewportSource::ReleaseFrame([[maybe_unused]] rr::ViewportFrame& inoutFrame) noexcept {}
 
-void PlayViewportSource::Resize(int32 width, int32 height)
+void PlayViewportSource::Resize(int32 width, int32 height, float32 pixelRatio)
 {
     if (width <= 0 || height <= 0 || mState == PlaySourceState::Stopped)
     {
         return;
     }
     // Before admission the endpoint records the extent and sends it in its Welcome.
-    static_cast<void>(mEndpoint.SendResize(static_cast<uint32>(width), static_cast<uint32>(height), mScale));
+    static_cast<void>(mEndpoint.SendResize(static_cast<uint32>(width), static_cast<uint32>(height), pixelRatio));
 }
 
 rhi::RasterStatus PlayViewportSource::TakeFrameRead(rhi::NativeDeviceLease device,

@@ -189,7 +189,7 @@ public:
     {
         return mShaders;
     }
-    void Resize(foundation::int32 width, foundation::int32 height) override;
+    void Resize(foundation::int32 width, foundation::int32 height, foundation::float32 pixelRatio = 1) override;
     /// Track whether a viewport can display new frames.
     void SetPresentationVisible(bool isVisible) noexcept;
     [[nodiscard]] bool ShouldRenderPresentation() const noexcept;

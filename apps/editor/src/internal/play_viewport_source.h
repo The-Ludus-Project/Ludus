@@ -95,16 +95,14 @@ public:
     }
     /// Pump the endpoint and consumer now (the timer also does this).
     void Pump();
-    /// Physical pixels per logical pixel sent with the next Resize().
-    void SetScale(foundation::float32 scale) noexcept;
 
     [[nodiscard]] bool HasPendingFrame() const noexcept override;
     /// Game frames are not RHI images: readback presentation is not offered.
     [[nodiscard]] bool TakeFrame(graphics::renderer::ViewportFrame& outFrame,
                                  graphics::renderer::ViewportImage& outImage) noexcept override;
     void ReleaseFrame(graphics::renderer::ViewportFrame& inoutFrame) noexcept override;
-    /// Resize the game's window to this many physical pixels.
-    void Resize(foundation::int32 width, foundation::int32 height) override;
+    /// Publish the game's physical extent and current display pixels per logical pixel together.
+    void Resize(foundation::int32 width, foundation::int32 height, foundation::float32 pixelRatio) override;
     [[nodiscard]] graphics::rhi::RasterStatus TakeFrameRead(graphics::rhi::NativeDeviceLease device,
                                                             const graphics::rhi::NativeDeviceIdentity& consumer,
                                                             ViewportFrameRead& outRead) noexcept override;
@@ -135,6 +133,5 @@ private:
     PlaySourceState mState = PlaySourceState::Stopped;
     foundation::uint64 mNextToken = 1;
     foundation::uint64 mTakenFrames = 0;
-    foundation::float32 mScale = 1;
 };
 } // namespace ludus::editor

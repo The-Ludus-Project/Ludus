@@ -411,6 +411,11 @@ void CocoaWindow::RefreshExtent() noexcept
     const bool minimized = mWindow.miniaturized;
     mNativeWindowInfo.Width = minimized ? 0 : PixelExtent(backing.size.width);
     mNativeWindowInfo.Height = minimized ? 0 : PixelExtent(backing.size.height);
+    // Thanks to Tobias Persson, "DPI-aware IMGUI", Our Machinery, "Windows API":
+    // publish the current per-window scale beside the backing extent. AppKit
+    // still converts the view bounds for the exact drawable dimensions.
+    // https://ruby0x1.github.io/machinery_blog_archive/post/dpi-aware-imgui/index.html#windows-api
+    mNativeWindowInfo.Scale = static_cast<foundation::float32>(mWindow.backingScaleFactor);
     RefreshVisibility();
 }
 
@@ -481,6 +486,7 @@ void CocoaWindow::Closed() noexcept
         mNativeWindowInfo.CocoaView = nullptr;
         mNativeWindowInfo.Width = 0;
         mNativeWindowInfo.Height = 0;
+        mNativeWindowInfo.Scale = 1;
         mVisibility = WindowVisibility::Occluded;
         Reset(input::ResetReason::WindowClosed, false);
     }

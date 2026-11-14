@@ -80,10 +80,10 @@ public:
     /// End a read during teardown, waiting for submitted sampling if necessary; never call while
     /// presenting. Clears inoutRead.
     virtual void DrainFrameRead(ViewportFrameRead& inoutRead) noexcept;
-    /// Request images of this physical size in pixels for subsequent frames. A source may
-    /// produce smaller images (RenderPreview caps edit previews at 1024 pixels) and ignores
-    /// non-positive sizes.
-    virtual void Resize(foundation::int32 width, foundation::int32 height) = 0;
+    /// Request images of this physical size in pixels for subsequent frames. The display
+    /// pixel ratio is independent of the requested size, which may be a fixed pixel preset.
+    /// A source may produce smaller images and ignores non-positive sizes.
+    virtual void Resize(foundation::int32 width, foundation::int32 height, foundation::float32 pixelRatio) = 0;
 Q_SIGNALS:
     /// A new image became pending.
     void FrameReady();

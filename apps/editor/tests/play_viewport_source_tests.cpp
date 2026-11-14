@@ -37,6 +37,7 @@
 #include <QTest>
 
 #include <cstdlib>
+#include <cstring>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -204,8 +205,21 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
     REQUIRE(rhi::GetNativeDeviceInfo(lease, device) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::ReleaseNativeDevice(lease) == rhi::RasterStatus::Ready);
 
+    QQuickWindow* windowOrNull = nullptr;
+    for (QWindow* window : QGuiApplication::allWindows())
+    {
+        if (window->objectName() == QStringLiteral("LudusGpuViewport"))
+        {
+            windowOrNull = static_cast<QQuickWindow*>(window);
+            break;
+        }
+    }
+    REQUIRE(windowOrNull != nullptr);
+    const float32 viewportScale = static_cast<float32>(windowOrNull->devicePixelRatio());
+    // The Welcome and the viewport resize must supply independent scale snapshots.
+    const float32 launchScale = viewportScale == 1 ? 2.0F : 1.0F;
     PlayViewportSource play;
-    REQUIRE(play.Start(SOCKET_PARENT, device.Identity, 64, 48, 1));
+    REQUIRE(play.Start(SOCKET_PARENT, device.Identity, 64, 48, launchScale));
     QProcess game;
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE),
@@ -222,15 +236,6 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
     REQUIRE(AwaitCondition([&]() { return viewport.PresentedFrames() >= switched + PRESENTED_FRAMES; }));
     // More frames than the game's three images: every shown image was returned to it.
     CHECK(play.GetTakenFrames() > ludus::platform::HOSTED_SURFACE_IMAGE_COUNT);
-    QQuickWindow* windowOrNull = nullptr;
-    for (QWindow* window : QGuiApplication::allWindows())
-    {
-        if (window->objectName() == QStringLiteral("LudusGpuViewport"))
-        {
-            windowOrNull = static_cast<QQuickWindow*>(window);
-        }
-    }
-    REQUIRE(windowOrNull != nullptr);
     const QImage shown = windowOrNull->grabWindow();
     REQUIRE(shown.isNull() == false);
     const QColor center = shown.pixelColor(shown.width() / 2, shown.height() / 2);
@@ -255,6 +260,11 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
     REQUIRE(game.waitForFinished(TIMEOUT_MILLISECONDS) == true);
     CHECK(game.exitStatus() == QProcess::NormalExit);
     CHECK(game.exitCode() == 0);
+    const QByteArray output = game.readAllStandardOutput();
+    hosted_test::ProducerStatistics statistics;
+    REQUIRE(output.size() == static_cast<qsizetype>(sizeof(statistics)));
+    std::memcpy(&statistics, output.constData(), sizeof(statistics));
+    CHECK(statistics.LastRenderedScale == viewportScale);
     preview.Stop();
 #else
     SKIP("Needs Windows, macOS or Linux, the native GPU preview and the RHI hosted test producer");
