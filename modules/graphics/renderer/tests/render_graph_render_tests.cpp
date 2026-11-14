@@ -613,7 +613,7 @@ TEST_CASE("RG2 masked color and separately authored masked depth agree on author
     mask[packages::rg2_masked_depth::UNIFORM_VALUE_MASK_THRESHOLD] = 0;
     fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Masked;
     fixture.Items[0].Uniforms = {mask.GetData(), mask.GetSize()};
-    DepthDisplay display{fixture.Device};
+    DepthDisplay display{fixture.Device, shaders::rg2_depth_bits::Vertex(), shaders::rg2_depth_bits::Fragment()};
     // Masked depth-only export, the pre-Z technique's authored coverage.
     REQUIRE(fixture.Graph.Initialize(fixture.Device,
                                      packages::rg2_masked_depth::MakePlan(),
@@ -629,12 +629,12 @@ TEST_CASE("RG2 masked color and separately authored masked depth agree on author
     StaticArray<uint8, PIXEL_BYTES> depthOnly{};
     display.Show(fixture.Surface, texture, depthOnly);
     // Mesh x >= threshold keeps the right half of the triangle at its 0.5 depth.
-    const usize kept = GetPixel(55, 32);
-    const usize discarded = GetPixel(40, 32);
-    CHECK(depthOnly[kept] >= 127);
-    CHECK(depthOnly[kept] <= 128);
-    CHECK(depthOnly[discarded] == 255);
-    CHECK(depthOnly[0] == 255);
+    constexpr usize PROBE_ROW = 32;
+    constexpr usize KEPT_COLUMN = 55;
+    constexpr usize DISCARDED_COLUMN = 40;
+    CHECK(ReadDepthBits(depthOnly, KEPT_COLUMN, PROBE_ROW) == 0.5F);
+    CHECK(ReadDepthBits(depthOnly, DISCARDED_COLUMN, PROBE_ROW) == 1.0F);
+    CHECK(ReadDepthBits(depthOnly, 0, 0) == 1.0F);
     fixture.Graph.Reset();
     // Masked color technique, exporting its color and its depth aspect.
     REQUIRE(fixture.Graph.Initialize(fixture.Device,
@@ -682,26 +682,20 @@ TEST_CASE("RG2 masked color and separately authored masked depth agree on author
         for (usize column = 0; column < WIDTH; ++column)
         {
             const usize pixel = GetPixel(column, row);
-            const bool hasGeometry = depthOnly[pixel] != 255;
+            const bool hasGeometry = ReadDepthBits(depthOnly, column, row) != 1.0F;
             const bool isRed = fixture.Pixels[pixel] == 255 && fixture.Pixels[pixel + 1] == 0;
             REQUIRE(hasGeometry == isRed);
         }
     }
     static_cast<void>(compositor.Release(presentation));
     compositor.Reset();
-    fixture.Graph.Reset();
-    // A per-draw threshold beyond the mesh removes all coverage; no program is rebuilt.
-    REQUIRE(fixture.Graph.Initialize(fixture.Device,
-                                     packages::rg2_masked_depth::MakePlan(),
-                                     packages::rg2_masked_depth::MakePrograms(
-                                         shaders::renderer_composite::Vertex(),
-                                         shaders::renderer_composite::Fragment())) == rhi::RasterStatus::Ready);
+    // Update only the per-draw threshold on the active graph.
     mask[packages::rg2_masked_depth::UNIFORM_VALUE_MASK_THRESHOLD] = 1;
     fixture.Update(3);
     fixture.Render();
-    REQUIRE(fixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
-    display.Show(fixture.Surface, texture, depthOnly);
-    CHECK(depthOnly[kept] == 255);
+    REQUIRE(fixture.Graph.GetExport(1, texture, aspect) == rhi::RasterStatus::Ready);
+    display.Show(fixture.Surface, texture, colorDepth);
+    CHECK(ReadDepthBits(colorDepth, KEPT_COLUMN, PROBE_ROW) == 1.0F);
 }
 TEST_CASE("RG2 masked techniques keep rejecting opaque and transparent items", "[render-graph][gpu]")
 {
