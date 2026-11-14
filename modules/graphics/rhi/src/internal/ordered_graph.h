@@ -2160,6 +2160,40 @@ public:
 private:
     bool mIsActive = false;
 };
+/// Untimed label for one logical member of a merged raster group, closed on every exit path
+/// before the group's physical pass ends.
+class GraphPassLabel final
+{
+public:
+    GraphPassLabel() noexcept = default;
+    GraphPassLabel(const GraphPassLabel&) = delete;
+    GraphPassLabel& operator=(const GraphPassLabel&) = delete;
+    ~GraphPassLabel() noexcept
+    {
+        if (mIsActive == true)
+        {
+            backend::EndPassLabel();
+        }
+    }
+    void Begin(const char* name) noexcept
+    {
+        backend::BeginPassLabel(name);
+        mIsActive = true;
+    }
+
+private:
+    bool mIsActive = false;
+};
+/// Authored name bytes before the terminator of a fixed diagnostic name.
+usize GetDiagnosticNameLength(const GraphPassDiagnostic& diagnostic) noexcept
+{
+    usize length = 0;
+    while (length < sizeof(diagnostic.Name) && diagnostic.Name[length] != '\0')
+    {
+        ++length;
+    }
+    return length;
+}
 RasterStatus ExecuteGraphCommands(DeviceHandle device,
                                   SurfaceHandle surface,
                                   OrderedGraph& inoutHandle,
@@ -2314,6 +2348,8 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
         inoutHandle = {};
         return RasterStatus::Failed;
     }
+    // Culled passes stay in graph diagnostics and never become native regions.
+    uint32 groupLogicalPassCount = 1;
     for (usize p = 0; p < graph->PassCount; ++p)
     {
         if (graph->Report.Passes[p].Culled)
@@ -2367,16 +2403,15 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 At(RasterKind::Texture, resource.Slot).FrameTextureUse = sampled;
             }
             const GraphPassDiagnostic& diagnostic = graph->Report.Passes[p];
-            usize nameLength = 0;
-            while (nameLength < sizeof(diagnostic.Name) && diagnostic.Name[nameLength] != '\0')
-            {
-                ++nameLength;
-            }
             uint32 logicalPassCount = 1;
             const RasterPassInfo physical =
                 pass.IsCompute == true ? RasterPassInfo{} : DescribeRasterGroup(*graph, p, logicalPassCount);
+            groupLogicalPassCount = logicalPassCount;
             GpuScopeDescription description;
-            if (MakeGpuScope(p + 1, {diagnostic.Name, nameLength}, description, logicalPassCount) == true)
+            if (MakeGpuScope(p + 1,
+                             {diagnostic.Name, GetDiagnosticNameLength(diagnostic)},
+                             description,
+                             logicalPassCount) == true)
             {
                 gpuScope.Begin(description);
             }
@@ -2394,6 +2429,15 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 inoutHandle = {};
                 return current;
             }
+        }
+        // The physical scope keeps the group's leading name; each merged member keeps its own.
+        GraphPassLabel logicalLabel;
+        const GraphPassDiagnostic& logical = graph->Report.Passes[p];
+        const usize logicalNameLength = GetDiagnosticNameLength(logical);
+        if (pass.IsCompute == false && groupLogicalPassCount > 1 && logicalNameLength != 0 &&
+            logicalNameLength < sizeof(logical.Name))
+        {
+            logicalLabel.Begin(logical.Name);
         }
         if (pass.IsCompute == false)
         {

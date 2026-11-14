@@ -202,6 +202,8 @@ struct Record final
     StorageArray<uint32> IndexBlockMaxima;
     uint64 StorageBytes = 0;
     usize AuxiliaryHostBytes = 0;
+    /// Diagnostic only; reset with the record, so a recycled slot starts unnamed.
+    GpuDebugName DebugName;
 };
 constexpr usize RASTER_KINDS = static_cast<usize>(RasterKind::RayGeometry);
 StorageTable<Record> gRecords[KINDS];
@@ -2784,6 +2786,64 @@ RasterStatus Destroy(DeviceHandle device, BufferHandle& handle) noexcept
     handle = {};
     Collect();
     return RasterStatus::Ready;
+}
+namespace
+{
+template <typename T>
+RasterStatus
+SetResourceDebugName(DeviceHandle device, T handle, RasterKind kind, BorrowedView<const char> name) noexcept
+{
+    const RasterStatus admission = Admission(device);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    GpuDebugName validated;
+    if (MakeGpuDebugName(name, validated) == false)
+    {
+        return RasterStatus::InvalidDescription;
+    }
+    Record* recordOrNull = Resolve(handle, kind);
+    if (recordOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    recordOrNull->DebugName = validated;
+    backend::RasterSetDebugName(kind, RasterAccess::Slot(handle), validated.Text.GetData());
+    return RasterStatus::Ready;
+}
+template <typename T>
+RasterStatus GetResourceDebugName(DeviceHandle device, T handle, RasterKind kind, GpuDebugName& outName) noexcept
+{
+    const RasterStatus admission = Admission(device, false);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    const Record* recordOrNull = Resolve(handle, kind);
+    if (recordOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    outName = recordOrNull->DebugName;
+    return RasterStatus::Ready;
+}
+} // namespace
+RasterStatus SetDebugName(DeviceHandle device, BufferHandle buffer, BorrowedView<const char> name) noexcept
+{
+    return SetResourceDebugName(device, buffer, RasterKind::Buffer, name);
+}
+RasterStatus SetDebugName(DeviceHandle device, TextureHandle texture, BorrowedView<const char> name) noexcept
+{
+    return SetResourceDebugName(device, texture, RasterKind::Texture, name);
+}
+RasterStatus GetDebugName(DeviceHandle device, BufferHandle buffer, GpuDebugName& outName) noexcept
+{
+    return GetResourceDebugName(device, buffer, RasterKind::Buffer, outName);
+}
+RasterStatus GetDebugName(DeviceHandle device, TextureHandle texture, GpuDebugName& outName) noexcept
+{
+    return GetResourceDebugName(device, texture, RasterKind::Texture, outName);
 }
 RasterStatus GetStatus(DeviceHandle device, TextureHandle handle) noexcept
 {

@@ -1,6 +1,7 @@
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
+#include "reference_raster.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
@@ -66,6 +67,7 @@ FrameStatus Begin() noexcept
 }
 FrameStatus End() noexcept
 {
+    reference::CloseAnnotationScopes();
     return FrameStatus::Ready;
 }
 } // namespace ludus::graphics::rhi::backend

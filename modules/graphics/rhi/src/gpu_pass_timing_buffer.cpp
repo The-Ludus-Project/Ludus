@@ -22,34 +22,47 @@ void GpuPassTimingBuffer::Submit() noexcept
         mReport.State = mReport.Count == 0 ? GpuTimingState::Available : GpuTimingState::Pending;
     }
     mIsCapturingFrame = false;
-    mHasScope = false;
+    static_cast<void>(CloseScopes());
 }
 void GpuPassTimingBuffer::Reset() noexcept
 {
     mReport = {};
-    mHasScope = false;
     mIsCapturingFrame = false;
+    static_cast<void>(CloseScopes());
 }
 bool GpuPassTimingBuffer::BeginScope(const GpuScopeDescription& scope) noexcept
 {
-    if (mHasScope == true)
+    if (mDepth == MAX_GPU_SCOPE_DEPTH)
     {
         return false;
     }
-    mScope = scope;
-    mScopePassIndex = 0;
-    mHasScope = true;
+    if (mDepth == 0)
+    {
+        mScopePassIndex = 0;
+    }
+    mScopes[mDepth++] = scope;
     return true;
 }
 bool GpuPassTimingBuffer::EndScope() noexcept
 {
-    const bool hasScope = mHasScope;
-    mHasScope = false;
-    return hasScope;
+    if (mDepth == 0)
+    {
+        return false;
+    }
+    --mDepth;
+    return true;
+}
+foundation::uint32 GpuPassTimingBuffer::CloseScopes() noexcept
+{
+    const foundation::uint32 closed = mDepth;
+    mDepth = 0;
+    // Zero is never a live epoch, so wrapping skips it.
+    mEpoch = mEpoch == ~foundation::uint64{0} ? 1 : mEpoch + 1;
+    return closed;
 }
 foundation::usize GpuPassTimingBuffer::AddPass(GpuPassKind kind) noexcept
 {
-    if (mIsCapturingFrame == false || mHasScope == false)
+    if (mIsCapturingFrame == false || mDepth == 0)
     {
         return MAX_GPU_TIMED_PASSES;
     }
@@ -60,7 +73,7 @@ foundation::usize GpuPassTimingBuffer::AddPass(GpuPassKind kind) noexcept
         return MAX_GPU_TIMED_PASSES;
     }
     const foundation::usize index = mReport.Count++;
-    mReport.Passes[index] = { .Scope = mScope, .Kind = kind, .ScopePassIndex = mScopePassIndex++ };
+    mReport.Passes[index] = { .Scope = mScopes[0], .Kind = kind, .ScopePassIndex = mScopePassIndex++ };
     return index;
 }
 } // namespace ludus::graphics::rhi::internal

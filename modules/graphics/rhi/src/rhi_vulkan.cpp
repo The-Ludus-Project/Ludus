@@ -35,6 +35,10 @@ void TimingEnd() noexcept;
 void TimingSubmitted() noexcept;
 void BeginPassTimingFrame() noexcept;
 void SubmitPassTimings() noexcept;
+void ClosePassLabels() noexcept;
+void CloseScopeLabels() noexcept;
+/// Best-effort VK_EXT_debug_utils object name; ignored without the extension or a device.
+void SetVulkanObjectName(VkObjectType type, foundation::uint64 object, const char* name) noexcept;
 /// Extension name when the adapter supports it with the device and NowTicks host time domains.
 const char* AdmitClockCalibrationExtensionOrNull(VkPhysicalDevice physical,
                                                  NativeCalibratedTimestamps extension) noexcept;
@@ -1075,6 +1079,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         volkLoadDevice(gDevice);
         ConnectClockCalibration(clockCalibrationExtensionOrNull);
         vkGetDeviceQueue(gDevice, gFamily, 0, &gQueue);
+        SetVulkanObjectName(VK_OBJECT_TYPE_QUEUE, reinterpret_cast<uint64>(gQueue), "Ludus/Queue");
         if (IsHostedWindow() == true)
         {
             gHostedProducer.Connect({ .PhysicalDevice = gPhysical, .Device = gDevice, .QueueFamily = gFamily },
@@ -1179,6 +1184,24 @@ bool ConnectWindow(const WindowInfo& window) noexcept
     return false;
 }
 
+// Thanks to Khronos, Vulkan Specification, vkSetDebugUtilsObjectNameEXT:
+// https://docs.vulkan.org/refpages/latest/refpages/source/vkSetDebugUtilsObjectNameEXT.html
+// An empty name removes the object's name. Absent VK_EXT_debug_utils keeps objects unnamed.
+void SetVulkanObjectName(VkObjectType type, uint64 object, const char* name) noexcept
+{
+    if (object == 0 || gDevice == VK_NULL_HANDLE || hasDebugLabels == false || vkSetDebugUtilsObjectNameEXT == nullptr)
+    {
+        return;
+    }
+    const VkDebugUtilsObjectNameInfoEXT information
+    {
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+        .objectType = type,
+        .objectHandle = object,
+        .pObjectName = name,
+    };
+    static_cast<void>(vkSetDebugUtilsObjectNameEXT(gDevice, &information));
+}
 bool InitializeRendering() noexcept
 {
     if (gDevice == VK_NULL_HANDLE)
@@ -1208,6 +1231,7 @@ bool InitializeRendering() noexcept
         {
             return false;
         }
+        SetVulkanObjectName(VK_OBJECT_TYPE_COMMAND_BUFFER, reinterpret_cast<uint64>(frame.Command), "Ludus/Frame");
         VkFenceCreateInfo fence{};
         fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
@@ -1482,9 +1506,12 @@ FrameStatus End() noexcept
     auto& frame = gFrames[gFrame];
     if (gEncoding)
     {
+        ClosePassLabels();
         vkCmdEndRenderPass(frame.Command);
     }
     gEncoding = false;
+    // Scopes never span submission: end every label region an early return left open.
+    CloseScopeLabels();
     TimingEnd();
     if (gHostedProducer.IsConnected() == true)
     {

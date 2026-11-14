@@ -12,6 +12,8 @@ namespace ludus::graphics::rhi::backend::d3d12
 void BeginTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept;
 void DiscardRecording() noexcept;
 void CloseTimingScopes(ID3D12GraphicsCommandList& inoutCommands) noexcept;
+/// End logical-pass events before their raster pass closes.
+void ClosePassLabels(ID3D12GraphicsCommandList& inoutCommands) noexcept;
 void EndTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept;
 void MarkTimingsQueued() noexcept;
 void SubmitTimings(foundation::uint64 fence) noexcept;

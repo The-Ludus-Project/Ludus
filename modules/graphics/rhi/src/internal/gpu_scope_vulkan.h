@@ -39,6 +39,8 @@ VkFence gPassFence = VK_NULL_HANDLE;
 uint64 gPassCpuStart = 0;
 internal::TimestampCounter gPassClock{};
 usize gActiveTimedPass = MAX_GPU_TIMED_PASSES;
+/// Untimed logical-pass labels open inside the current render pass.
+uint32 gPassLabelDepth = 0;
 /// Admitted at owned-device creation or from a borrowed device's declaration; null stays duration-only.
 PFN_vkGetCalibratedTimestampsKHR gGetCalibratedTimestampsOrNull = nullptr;
 ClockSample gPassBeginClock;
@@ -192,6 +194,7 @@ void ResetPassTimings() noexcept
     gPassQueryPool = VK_NULL_HANDLE;
     gPassFence = VK_NULL_HANDLE;
     gActiveTimedPass = MAX_GPU_TIMED_PASSES;
+    gPassLabelDepth = 0;
     hasPassBeginClock = false;
     gPassTimings.Reset();
 }
@@ -332,21 +335,31 @@ RasterStatus ArmPassTimings() noexcept
 }
 // Thanks to Khronos, Vulkan Guide, "VK_EXT_debug_utils", command-buffer labels:
 // https://docs.vulkan.org/guide/latest/extensions/VK_EXT_debug_utils.html
-// Optional labels share scope text; extension absence never changes rendering.
+// Optional labels share scope text; extension absence never changes rendering. Scopes nest
+// as command-buffer label regions, logical passes as labels inside their render pass, and
+// every region still open is ended before the frame's command buffer is.
+bool HasCommandLabels() noexcept
+{
+    return hasDebugLabels == true && vkCmdBeginDebugUtilsLabelEXT != nullptr && vkCmdEndDebugUtilsLabelEXT != nullptr;
+}
+void BeginCommandLabel(const char* name) noexcept
+{
+    const VkDebugUtilsLabelEXT label
+    {
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+        .pLabelName = name,
+    };
+    vkCmdBeginDebugUtilsLabelEXT(gFrames[gFrame].Command, &label);
+}
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
     if (gPassTimings.BeginScope(scope) == false)
     {
-        return RasterStatus::InvalidState;
+        return RasterStatus::CapacityExceeded;
     }
-    if (hasDebugLabels == true && vkCmdBeginDebugUtilsLabelEXT != nullptr)
+    if (HasCommandLabels() == true)
     {
-        const VkDebugUtilsLabelEXT label
-        {
-            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-            .pLabelName = scope.Name.GetData(),
-        };
-        vkCmdBeginDebugUtilsLabelEXT(gFrames[gFrame].Command, &label);
+        BeginCommandLabel(scope.Name.GetData());
     }
     return RasterStatus::Ready;
 }
@@ -356,16 +369,53 @@ RasterStatus EndScope() noexcept
     {
         return RasterStatus::InvalidState;
     }
-    if (hasDebugLabels == true && vkCmdEndDebugUtilsLabelEXT != nullptr)
+    if (HasCommandLabels() == true)
     {
         vkCmdEndDebugUtilsLabelEXT(gFrames[gFrame].Command);
     }
     return RasterStatus::Ready;
 }
+internal::GpuScopePosition GetScopePosition() noexcept
+{
+    return gPassTimings.GetPosition();
+}
+void BeginPassLabel(const char* name) noexcept
+{
+    if (gEncoding == true && HasCommandLabels() == true)
+    {
+        BeginCommandLabel(name);
+        ++gPassLabelDepth;
+    }
+}
+void EndPassLabel() noexcept
+{
+    if (gPassLabelDepth != 0)
+    {
+        --gPassLabelDepth;
+        vkCmdEndDebugUtilsLabelEXT(gFrames[gFrame].Command);
+    }
+}
+void ClosePassLabels() noexcept
+{
+    while (gPassLabelDepth != 0)
+    {
+        EndPassLabel();
+    }
+}
+void CloseScopeLabels() noexcept
+{
+    ClosePassLabels();
+    const uint32 closed = gPassTimings.CloseScopes();
+    for (uint32 index = 0; index < closed && HasCommandLabels() == true; ++index)
+    {
+        vkCmdEndDebugUtilsLabelEXT(gFrames[gFrame].Command);
+    }
+}
 void BeginPassTimingFrame() noexcept
 {
     gPassTimings.BeginFrame();
     gActiveTimedPass = MAX_GPU_TIMED_PASSES;
+    gPassLabelDepth = 0;
     if (gPassTimings.GetReport().State == GpuTimingState::Armed)
     {
         gPassCpuStart = time::NowTicks();

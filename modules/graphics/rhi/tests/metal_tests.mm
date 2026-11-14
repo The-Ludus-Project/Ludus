@@ -1,6 +1,9 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/graphics/rhi/gpu_scope.h>
+#include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/graphics/rhi/render.h>
@@ -11,10 +14,12 @@
 #include "internal/readback.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 #include <string_view>
 
 #import <AppKit/AppKit.h>
+#import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -320,4 +325,91 @@ TEST_CASE("R7 optional Metal probe survives skipped acquisition, resize and pend
         CHECK(timing.State == rhi::GpuTimingState::Empty);
         REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
     }
+}
+
+namespace
+{
+struct BorrowedMetal final
+{
+    id<MTLDevice> Device = nil;
+    id<MTLCommandQueue> Queue = nil;
+    usize Retained = 0;
+    usize Released = 0;
+    static bool Retain(void* context) noexcept
+    {
+        ++static_cast<BorrowedMetal*>(context)->Retained;
+        return true;
+    }
+    static void Release(void* context) noexcept
+    {
+        ++static_cast<BorrowedMetal*>(context)->Released;
+    }
+};
+} // namespace
+
+TEST_CASE("Metal labels named textures and balances nested scopes across submission", "[rhi][macos][gpu][annotation]")
+{
+    Guard guard;
+    BorrowedMetal source;
+    source.Device = MTLCreateSystemDefaultDevice();
+    if (source.Device == nil)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    source.Queue = [source.Device newCommandQueue];
+    REQUIRE(source.Queue != nil);
+    const rhi::NativeDeviceDescription native
+    {
+        .Identity =
+        {
+            .Api = rhi::Backend::Metal,
+            .Device = rhi::NativeLogicalDevice{(__bridge void*)source.Device},
+            .CommandQueue = rhi::NativeCommandQueue{(__bridge void*)source.Queue},
+        },
+        .Lifetime = { .Context = &source, .Retain = BorrowedMetal::Retain, .Release = BorrowedMetal::Release },
+        .SerializedOwnerQueue = true,
+    };
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    constexpr uint32 EXTENT = 4;
+    REQUIRE(rhi::CreateNativeDevice({}, native, description, EXTENT, EXTENT, device, surface) ==
+            rhi::DeviceStatus::Ready);
+    rhi::TextureHandle texture;
+    REQUIRE(rhi::CreateTexture(device, { .Width = EXTENT, .Height = EXTENT, .Attachment = true }, {}, texture) ==
+            rhi::RasterStatus::Ready);
+    constexpr char NAME[] = "World/MainView/Opaque";
+    REQUIRE(rhi::SetDebugName(device, texture, {NAME, sizeof(NAME) - 1}) == rhi::RasterStatus::Ready);
+    rhi::GpuScopeDescription view;
+    rhi::GpuScopeDescription pass;
+    REQUIRE(rhi::MakeGpuScope(1, {"Viewport/Scene", sizeof("Viewport/Scene") - 1}, view) == true);
+    REQUIRE(rhi::MakeGpuScope(2, {"Graph/Opaque", sizeof("Graph/Opaque") - 1}, pass) == true);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginGpuScope(device, view) == rhi::RasterStatus::Ready);
+    {
+        const rhi::GpuScope scope(device, pass);
+        REQUIRE(rhi::BeginRasterPass(device, { .Color = texture }) == rhi::RasterStatus::Ready);
+    }
+    // "Viewport/Scene" stays open; committing the frame must close its debug group.
+    rhi::SubmissionToken producer;
+    REQUIRE(rhi::EndFrame(device, producer) == rhi::RasterStatus::Ready);
+    CHECK(rhi::EndGpuScope(device) == rhi::RasterStatus::InvalidState);
+    rhi::NativeDeviceLease lease;
+    REQUIRE(rhi::AcquireNativeDevice(device, lease) == rhi::RasterStatus::Ready);
+    rhi::NativeTextureRead read;
+    rhi::NativeTextureInfo exported;
+    REQUIRE(rhi::AcquireNativeTextureRead(lease, native.Identity, texture, producer, read, exported) ==
+            rhi::RasterStatus::Ready);
+    id<MTLTexture> nativeTexture = (__bridge id<MTLTexture>)exported.MetalTexture.GetObject();
+    REQUIRE(nativeTexture != nil);
+    CHECK([nativeTexture.label isEqualToString:@"World/MainView/Opaque"] == YES);
+    REQUIRE(rhi::DrainNativeTextureRead(read) == rhi::RasterStatus::Ready);
+    // Clearing the name clears the native label.
+    REQUIRE(rhi::SetDebugName(device, texture, {}) == rhi::RasterStatus::Ready);
+    CHECK(nativeTexture.label == nil);
+    REQUIRE(rhi::ReleaseNativeDevice(lease) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
+    rhi::Shutdown();
+    CHECK(source.Retained == source.Released);
 }

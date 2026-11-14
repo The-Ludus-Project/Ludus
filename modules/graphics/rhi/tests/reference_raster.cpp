@@ -39,8 +39,12 @@ void Reset() noexcept
     CompletionPolls = 0;
     Draws = Passes = Barriers = 0;
     PassStart = PassPrepare = RasterStatus::Ready;
+    DrawResult = RasterStatus::Ready;
     Discards = 0;
     Copies = 0;
+    AnnotationCount = 0;
+    OpenPassLabels = 0;
+    PassLabelsOpenAtPassEnd = 0;
     TransferStart = ReadbackCopy = RasterStatus::Ready;
     RetainTransfersOnReset = false;
     for (auto& direction : TransferOccupied)
@@ -314,6 +318,10 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     reference::Pipelines[slot] = info;
     return Created(internal::RasterKind::Pipeline, request);
 }
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+{
+    reference::RecordAnnotation(reference::AnnotationEvent::NameObject, name, kind, slot);
+}
 void RasterDestroy(internal::RasterKind kind, usize) noexcept
 {
     ++reference::Destroys[static_cast<usize>(kind)];
@@ -322,13 +330,16 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 {
     reference::Packet = packet;
     ++reference::Draws;
-    return RasterStatus::Ready;
+    return reference::DrawResult;
 }
 RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept
 {
     return reference::PassPrepare;
 }
-void RasterEndPass() noexcept {}
+void RasterEndPass() noexcept
+{
+    reference::PassLabelsOpenAtPassEnd += reference::OpenPassLabels != 0 ? 1U : 0U;
+}
 RasterStatus RasterBeginPass(const internal::RasterPassInfo& pass) noexcept
 {
     reference::Pass = pass;
@@ -640,6 +651,41 @@ namespace
 {
 internal::GpuPassTimingBuffer gReferenceScopes;
 }
+} // namespace ludus::graphics::rhi::backend
+namespace ludus::graphics::rhi::reference
+{
+void RecordAnnotation(AnnotationEvent event,
+                      const char* nameOrNull,
+                      internal::RasterKind kind,
+                      foundation::usize slot) noexcept
+{
+    if (AnnotationCount == ANNOTATION_JOURNAL_CAPACITY)
+    {
+        return;
+    }
+    Annotation& entry = Annotations[AnnotationCount++];
+    entry = { .Event = event, .Kind = kind, .Slot = slot };
+    for (foundation::usize index = 0;
+         nameOrNull != nullptr && index + 1 < entry.Name.GetSize() && nameOrNull[index] != '\0';
+         ++index)
+    {
+        entry.Name[index] = nameOrNull[index];
+    }
+}
+void RecordAnnotation(AnnotationEvent event, const char* nameOrNull) noexcept
+{
+    RecordAnnotation(event, nameOrNull, internal::RasterKind::Buffer, 0);
+}
+void CloseAnnotationScopes() noexcept
+{
+    for (foundation::uint32 closed = backend::gReferenceScopes.CloseScopes(); closed != 0; --closed)
+    {
+        RecordAnnotation(AnnotationEvent::CloseScope, nullptr);
+    }
+}
+} // namespace ludus::graphics::rhi::reference
+namespace ludus::graphics::rhi::backend
+{
 RasterStatus ArmPassTimings() noexcept
 {
     return RasterStatus::Unsupported;
@@ -650,14 +696,44 @@ GpuPassTimings PollPassTimings() noexcept
 }
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
-    return gReferenceScopes.BeginScope(scope) == true ? RasterStatus::Ready : RasterStatus::InvalidState;
+    if (gReferenceScopes.BeginScope(scope) == false)
+    {
+        return RasterStatus::CapacityExceeded;
+    }
+    reference::RecordAnnotation(reference::AnnotationEvent::BeginScope, scope.Name.GetData());
+    return RasterStatus::Ready;
 }
 RasterStatus EndScope() noexcept
 {
-    return gReferenceScopes.EndScope() == true ? RasterStatus::Ready : RasterStatus::InvalidState;
+    if (gReferenceScopes.EndScope() == false)
+    {
+        return RasterStatus::InvalidState;
+    }
+    reference::RecordAnnotation(reference::AnnotationEvent::EndScope, nullptr);
+    return RasterStatus::Ready;
+}
+internal::GpuScopePosition GetScopePosition() noexcept
+{
+    return gReferenceScopes.GetPosition();
+}
+void BeginPassLabel(const char* name) noexcept
+{
+    ++reference::OpenPassLabels;
+    reference::RecordAnnotation(reference::AnnotationEvent::BeginPassLabel, name);
+}
+void EndPassLabel() noexcept
+{
+    if (reference::OpenPassLabels != 0)
+    {
+        --reference::OpenPassLabels;
+        reference::RecordAnnotation(reference::AnnotationEvent::EndPassLabel, nullptr);
+    }
 }
 void ResetPassTimings() noexcept
 {
+    // A reset discards the frame's commands, and with them every open region and label.
+    reference::CloseAnnotationScopes();
+    reference::OpenPassLabels = 0;
     gReferenceScopes.Reset();
 }
 } // namespace ludus::graphics::rhi::backend

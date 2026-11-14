@@ -32,7 +32,20 @@ struct ClockSample final
 internal::GpuPassTimingBuffer gPassTimings;
 id<MTLCounterSampleBuffer> gPassSamplesOrNull = nil;
 id<MTLCommandBuffer> gPassCommandOrNull = nil;
+/// Innermost open scope name, which labels each new encoder; nil without a scope.
 NSString* gPassLabelOrNull = nil;
+/// Command-buffer debug group per open scope, outermost first; entries past the depth are nil.
+StaticArray<NSString*, MAX_GPU_SCOPE_DEPTH> gScopeLabels;
+/// Untimed logical-pass groups pushed on gEncoder; closed before the encoder ends.
+uint32 gPassLabelDepth = 0;
+void ClearScopeLabels() noexcept
+{
+    for (usize index = 0; index < gScopeLabels.GetSize(); ++index)
+    {
+        gScopeLabels[index] = nil;
+    }
+    gPassLabelOrNull = nil;
+}
 ClockSample gPassSubmitClock;
 bool hasPassSubmitClock = false;
 bool SampleClocks(ClockSample& outSample) noexcept
@@ -88,6 +101,8 @@ void ResetPassTimings() noexcept
     gPassSamplesOrNull = nil;
     gPassCommandOrNull = nil;
     gPassLabelOrNull = nil;
+    ClearScopeLabels();
+    gPassLabelDepth = 0;
     hasPassSubmitClock = false;
     gPassTimings.Reset();
 }
@@ -217,20 +232,23 @@ RasterStatus ArmPassTimings() noexcept
 }
 // Thanks to Apple, "pushDebugGroup(_:)" and "label", Metal command-buffer/encoder
 // documentation: https://developer.apple.com/documentation/metal/mtlcommandbuffer/pushdebuggroup(_:)
-// The command group and encoder labels share the copied timing identity's name.
+// Each open scope is one nested command-buffer group; encoders take the innermost name.
+// Logical passes inside one render encoder use that encoder's own debug groups.
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
     if (gPassTimings.BeginScope(scope) == false)
     {
-        return RasterStatus::InvalidState;
+        return RasterStatus::CapacityExceeded;
     }
-    gPassLabelOrNull = [NSString stringWithUTF8String:scope.Name.GetData()];
-    if (gPassLabelOrNull == nil)
+    NSString* labelOrNull = [NSString stringWithUTF8String:scope.Name.GetData()];
+    if (labelOrNull == nil)
     {
         static_cast<void>(gPassTimings.EndScope());
         return RasterStatus::OutOfMemory;
     }
-    [gCommand pushDebugGroup:gPassLabelOrNull];
+    gScopeLabels[gPassTimings.GetDepth() - 1] = labelOrNull;
+    gPassLabelOrNull = labelOrNull;
+    [gCommand pushDebugGroup:labelOrNull];
     return RasterStatus::Ready;
 }
 RasterStatus EndScope() noexcept
@@ -239,9 +257,55 @@ RasterStatus EndScope() noexcept
     {
         return RasterStatus::InvalidState;
     }
+    const uint32 depth = gPassTimings.GetDepth();
+    gScopeLabels[depth] = nil;
+    gPassLabelOrNull = depth == 0 ? nil : gScopeLabels[depth - 1];
     [gCommand popDebugGroup];
-    gPassLabelOrNull = nil;
     return RasterStatus::Ready;
+}
+internal::GpuScopePosition GetScopePosition() noexcept
+{
+    return gPassTimings.GetPosition();
+}
+/// Close the open scopes' groups on gCommand before it is committed mid-frame; the scopes
+/// stay open and PushScopeGroups reopens them on the replacement command buffer.
+void PopScopeGroups() noexcept
+{
+    for (uint32 index = 0; index < gPassTimings.GetDepth(); ++index)
+    {
+        [gCommand popDebugGroup];
+    }
+}
+void PushScopeGroups() noexcept
+{
+    for (uint32 index = 0; index < gPassTimings.GetDepth(); ++index)
+    {
+        [gCommand pushDebugGroup:gScopeLabels[index]];
+    }
+}
+void BeginPassLabel(const char* name) noexcept
+{
+    NSString* labelOrNull = gEncoder != nil ? [NSString stringWithUTF8String:name] : nil;
+    if (labelOrNull != nil)
+    {
+        [gEncoder pushDebugGroup:labelOrNull];
+        ++gPassLabelDepth;
+    }
+}
+void EndPassLabel() noexcept
+{
+    if (gPassLabelDepth != 0)
+    {
+        --gPassLabelDepth;
+        [gEncoder popDebugGroup];
+    }
+}
+void ClosePassLabels() noexcept
+{
+    while (gPassLabelDepth != 0)
+    {
+        EndPassLabel();
+    }
 }
 void BeginPassTimingFrame() noexcept
 {
@@ -249,6 +313,10 @@ void BeginPassTimingFrame() noexcept
 }
 void SubmitPassTimings() noexcept
 {
+    // Scopes never span submission: close every region an early return left open.
+    PopScopeGroups();
+    static_cast<void>(gPassTimings.CloseScopes());
+    ClearScopeLabels();
     gPassTimings.Submit();
     if (gPassTimings.GetReport().State == GpuTimingState::Pending && gPassCommandOrNull == nil)
     {

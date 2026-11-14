@@ -965,6 +965,35 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
     gSets[slot] = Move(candidate);
     return RasterStatus::Ready;
 }
+// Thanks to Microsoft, "ID3D12Object::SetName", Direct3D 12 documentation:
+// https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-id3d12object-setname
+// Names are copied as UTF-16; conversion failure leaves the native name unchanged.
+void SetD3d12Name(ID3D12Object* objectOrNull, const char* name) noexcept
+{
+    StaticArray<wchar_t, GPU_SCOPE_NAME_BYTES> wide{};
+    if (objectOrNull == nullptr || (name[0] != '\0' && MultiByteToWideChar(CP_UTF8,
+                                                                           MB_ERR_INVALID_CHARS,
+                                                                           name,
+                                                                           -1,
+                                                                           wide.GetData(),
+                                                                           static_cast<int>(wide.GetSize())) == 0))
+    {
+        return;
+    }
+    static_cast<void>(objectOrNull->SetName(wide.GetData()));
+}
+void RasterSetDebugName(RasterKind kind, usize slot, const char* name) noexcept
+{
+    if (kind == RasterKind::Buffer)
+    {
+        SetD3d12Name(gBuffers[slot].Resource.Get(), name);
+    }
+    else if (kind == RasterKind::Texture)
+    {
+        SetD3d12Name(gTextures[slot].Resource.Get(), name);
+        SetD3d12Name(gTextures[slot].Depth.Get(), name);
+    }
+}
 void RasterDestroy(RasterKind kind, usize slot) noexcept
 {
     switch (kind)

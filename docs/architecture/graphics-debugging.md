@@ -2,7 +2,8 @@
 
 Status: implementation contract, 2026-10-20. Native local-editor P0/P1 recording
 and local P2 pass-duration counters are implemented: CPU/GPU/Both controls,
-the Record Profiling shortcut (Ctrl+Alt+F9), frame timing and shared pass scopes. Hosted transport, resource naming, P3 and
+the Record Profiling shortcut (Ctrl+Alt+F9), frame timing and shared pass scopes.
+G0 resource names and nested GPU scopes are implemented; hosted transport, P3 and
 native Metal/RenderDoc debugger capture remain planned.
 Implementation availability is distinct from platform/hardware qualification.
 
@@ -37,9 +38,10 @@ owns hosted producer/consumer images and viewport publication. Capture adapters
 must preserve those owners rather than introduce another resource registry,
 process supervisor or viewport publication transaction.
 
-At this baseline, graph pass descriptions already carry authored diagnostic
-names. Broad native object naming, nested GPU annotations, a graphics-capture
-request service and editor capture controls remain work in this plan. Finding an
+Graph pass descriptions carry authored diagnostic names, and G0 adds buffer
+and texture names and nested GPU scopes ([delivered contract](#delivered-g0-names-and-nested-scopes)).
+Naming the remaining object kinds, a graphics-capture request service and editor
+capture controls remain work in this plan. Finding an
 installed tool or a single existing Metal label does not establish support.
 The RHI already exposes an optional single-sample, nonblocking frame-duration
 probe, and viewport Stats already consumes it. Those durations are device-local;
@@ -115,6 +117,39 @@ Renderer identity generation happens at resource creation, graph preparation or
 an explicit rename. Recording reuses prepared names, performs no engine heap
 allocation and does no file I/O. Measure enabled/disabled overhead on the same
 workload; native tool overhead is additional and must not be described as free.
+
+### Delivered G0 names and nested scopes
+
+`ludus/graphics/rhi/gpu_scope.h` owns the annotation text: valid UTF-8, no
+embedded zero, at most 127 bytes plus the terminator. `SetDebugName` copies a
+buffer or texture name into the RHI resource record and applies it to the
+native object: the Metal `label`, a `VK_EXT_debug_utils` object name, Direct3D 12
+`SetName` or the WebGPU label. A texture's private depth backing shares its
+name. WebGL 2 and borrowed Vulkan devices record the name without a native
+label. Renaming happens between frames and never changes identity, retention or
+lifetime. Destroying the resource discards the name, so a recycled slot starts
+unnamed. `GetDebugName` returns the recorded copy.
+
+The renderer names its prepared graph textures `RenderGraph/Resource/<index>`
+after the plan resource index, and its viewport targets `Viewport/SceneColor`
+and `Viewport/Image`. Native frame command buffers are `Ludus/Frame`, and the
+owned Vulkan queue is `Ludus/Queue`.
+
+`BeginGpuScope` admits up to eight nested scopes on the owner thread, so a view
+region contains its graph and physical-pass regions. A deeper scope returns
+CapacityExceeded and rendering continues. Timed physical operations stay with
+the outermost scope, so Stats and Perfetto keep the `Viewport/Scene` breakdown.
+Inside a merged raster group, each authored logical pass gets an untimed label
+within the physical region, which keeps the leading member's name. Culled
+passes get neither label nor timing. Submission ends every region still open,
+and a later `EndGpuScope` returns InvalidState. A `GpuScope` from an earlier
+frame never ends a newer frame's region. A draw failure that faults the session
+discards the frame's commands, including their open regions and labels.
+
+To inspect the names, capture a frame with Xcode's Metal debugger. The command
+buffer contains the nested viewport, graph and pass groups, and the textures
+carry their names. On Linux, capture with RenderDoc. Use the
+[RGP recipe](#external-radeon-gpu-profiling) for Radeon user events.
 
 ### Scope placement and pairing
 
@@ -458,8 +493,8 @@ native Metal backend. PIX GPU capture requires Windows/D3D12.
 ## Phased implementation and acceptance
 
 P0/P1 and local P2 physical-pass counters are implemented for the native editor.
-Shared pass scopes supply the annotation part of G0; resource naming, nested
-scopes, hosted recording transport and capture adapters remain pending. Implement changes in isolated reviewable branches targeting
+G0 buffer/texture names and nested scopes are implemented. Hosted recording
+transport and capture adapters remain pending. Implement changes in isolated reviewable branches targeting
 `develop`, following [CI qualification](../development/continuous-integration.md).
 Acceptance into `develop` is distinct from full batch/platform qualification.
 
@@ -475,7 +510,7 @@ adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
 
 | Phase | Deliverable and dependency | Exit gate |
 | --- | --- | --- |
-| G0 Shared GPU annotations | Pass-scope subset implemented: owned RHI names, authored graph identity and Metal/optional Vulkan labels. Resource naming and nesting remain pending. | Native captures show useful resource and logical/physical pass names; disabled/missing annotation paths preserve rendering. |
+| G0 Shared GPU annotations | Implemented: owned RHI names, buffer/texture names, nested scopes and merged logical-pass labels. Scopes use Metal, optional Vulkan and optional D3D12 PIX regions; object names also reach WebGPU labels. Shader and pipeline names remain pending. | Native captures show useful resource and logical/physical pass names; disabled/missing annotation paths preserve rendering. |
 | G1 Capture contract | Session/request ownership, bounded state machine, capabilities, destinations and manifest publication. Depends on G0 identities. | Production-path tests cover admission, skipped frames, deadlines, cancellation, stale replies, shutdown and output preservation. |
 | G2 Metal capture | Programmatic `.gputrace`, startup enablement and standalone SDK fixture. Depends on G1; first local platform adapter. | A real Mac capture opens in Xcode, contains the intended frame and exposes named resources/passes and recorded shader-source capability. |
 | G3 RenderDoc capture | Linux/Vulkan launch attachment, version negotiation and explicit frame capture. Depends on G1; can follow the same contract independently of G2. | A real `.rdc` replays in the tested RenderDoc version with named resources/passes, correct offscreen boundaries and explicit feature limits. |

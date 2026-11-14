@@ -715,6 +715,27 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     wgpuDeviceCreateRenderPipelineAsync(gDevice, &descriptor, callback);
     return RasterPop(request);
 }
+// Thanks to the W3C GPU for the Web Working Group, WebGPU, "GPUObjectBase label":
+// https://www.w3.org/TR/webgpu/#dom-gpuobjectbase-label
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+{
+    const WGPUStringView label{name, std::strlen(name)};
+    if (kind == internal::RasterKind::Buffer && gRasterBuffers[slot] != nullptr)
+    {
+        wgpuBufferSetLabel(gRasterBuffers[slot], label);
+    }
+    else if (kind == internal::RasterKind::Texture)
+    {
+        if (gRasterTextures[slot] != nullptr)
+        {
+            wgpuTextureSetLabel(gRasterTextures[slot], label);
+        }
+        if (gRasterDepths[slot] != nullptr)
+        {
+            wgpuTextureSetLabel(gRasterDepths[slot], label);
+        }
+    }
+}
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 {
     switch (kind)

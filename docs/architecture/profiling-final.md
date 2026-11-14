@@ -187,8 +187,10 @@ skips samples with coverage information instead of serializing work.
 nonzero identities, physical-operation ordinals, and logical member counts.
 The same scope supplies native Metal command groups/encoder labels, optional
 Vulkan debug-utils command groups, and `GPU/Pass/<name> [identity:ordinal:kind]/DurationNanoseconds`
-counters. Scope admission is independent of recording. The initial scope API
-rejects nesting; failed annotations do not prevent rendering. Vulkan labels are
+counters. Scope admission is independent of recording. Scopes nest up to
+`MAX_GPU_SCOPE_DEPTH` (8); timed operations belong to the outermost open scope,
+so nested graph and pass labels do not rename the built-in viewport counters.
+Failed or over-deep annotations do not prevent rendering. Vulkan labels are
 optional and only called when the owned instance enables debug-utils. Borrowed
 Vulkan devices keep annotation calls disabled because extension admission is not
 part of their interop contract.

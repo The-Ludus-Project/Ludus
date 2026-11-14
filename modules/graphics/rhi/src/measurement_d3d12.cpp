@@ -43,6 +43,8 @@ QueryStorage gPassQueries;
 GpuTiming gFrameTiming;
 internal::GpuPassTimingBuffer gPassTimings;
 usize gActivePass = MAX_GPU_TIMED_PASSES;
+/// Untimed logical-pass events open inside the current raster pass.
+uint32 gPassLabelDepth = 0;
 
 RasterStatus GetQueryFailure(HRESULT result) noexcept
 {
@@ -305,9 +307,13 @@ GpuPassTimings PollPassTimings() noexcept
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
     ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
-    if (commandsOrNull == nullptr || gPassTimings.BeginScope(scope) == false)
+    if (commandsOrNull == nullptr)
     {
         return RasterStatus::InvalidState;
+    }
+    if (gPassTimings.BeginScope(scope) == false)
+    {
+        return RasterStatus::CapacityExceeded;
     }
     BeginPixEvent(*commandsOrNull, scope.Name.GetData());
     return RasterStatus::Ready;
@@ -324,10 +330,36 @@ RasterStatus EndScope() noexcept
     return RasterStatus::Ready;
 }
 
+internal::GpuScopePosition GetScopePosition() noexcept
+{
+    return gPassTimings.GetPosition();
+}
+
+void BeginPassLabel(const char* name) noexcept
+{
+    ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
+    if (commandsOrNull != nullptr)
+    {
+        BeginPixEvent(*commandsOrNull, name);
+        ++gPassLabelDepth;
+    }
+}
+
+void EndPassLabel() noexcept
+{
+    ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
+    if (gPassLabelDepth != 0 && commandsOrNull != nullptr)
+    {
+        --gPassLabelDepth;
+        EndPixEvent(*commandsOrNull);
+    }
+}
+
 void ResetPassTimings() noexcept
 {
     gPassTimings.Reset();
     gActivePass = MAX_GPU_TIMED_PASSES;
+    gPassLabelDepth = 0;
 }
 
 namespace d3d12
@@ -335,6 +367,7 @@ namespace d3d12
 void BeginTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept
 {
     BeginPixEvent(inoutCommands, "Ludus/Frame");
+    gPassLabelDepth = 0;
     gPassTimings.BeginFrame();
     if (gPassTimings.GetReport().State == GpuTimingState::Armed)
     {
@@ -347,9 +380,22 @@ void BeginTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept
     }
 }
 
+void ClosePassLabels(ID3D12GraphicsCommandList& inoutCommands) noexcept
+{
+    for (; gPassLabelDepth != 0; --gPassLabelDepth)
+    {
+        EndPixEvent(inoutCommands);
+    }
+}
+
 void CloseTimingScopes(ID3D12GraphicsCommandList& inoutCommands) noexcept
 {
-    static_cast<void>(EndScope());
+    // Scopes never span submission: end every event an early return left open, then the frame.
+    ClosePassLabels(inoutCommands);
+    for (uint32 closed = gPassTimings.CloseScopes(); closed != 0; --closed)
+    {
+        EndPixEvent(inoutCommands);
+    }
     EndPixEvent(inoutCommands);
 }
 
