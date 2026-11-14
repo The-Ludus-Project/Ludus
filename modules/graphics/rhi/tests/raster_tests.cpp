@@ -1882,9 +1882,13 @@ TEST_CASE("R5 attachment chains keep versions, barriers and final depth validity
     OrderedGraph graph;
     REQUIRE(CreateOrderedGraph(session.Device, graph) == RasterStatus::Ready);
     GraphTexture texture(session.Device, graph);
-    const auto variant = GENERATE(0, 1, 2);
+    const uint32 variant = GENERATE(0U, 1U, 2U, 3U, 4U, 5U, 6U);
+    const bool shouldDiscardFinalDepth = variant >= 3;
+    const bool shouldMerge = variant != 4 && variant != 6;
+    const bool shouldRejectDepthLoad = variant >= 5;
+    const uint32 passCount = shouldDiscardFinalDepth == true && shouldRejectDepthLoad == false ? 2U : 3U;
     GraphVersion previous = texture.Initial;
-    for (uint32 i = 0; i < 3; ++i)
+    for (uint32 i = 0; i < passCount; ++i)
     {
         GraphVersion next;
         if (i == 0)
@@ -1900,7 +1904,8 @@ TEST_CASE("R5 attachment chains keep versions, barriers and final depth validity
         pass.Name = "versioned attachment";
         pass.Attachment.Color = texture.Texture;
         pass.Attachment.ColorLoad = pass.Attachment.DepthLoad = i == 0 ? RasterLoad::Clear : RasterLoad::Load;
-        pass.Attachment.DepthStore = RasterStore::Store;
+        pass.Attachment.DepthStore =
+            shouldDiscardFinalDepth == true && i == 1 ? RasterStore::Discard : RasterStore::Store;
         pass.Attachment.DepthReadOnly = variant == 1 && i == 2;
         pass.Attachment.ColorStore = variant == 2 && i == 2 ? RasterStore::Discard : RasterStore::Store;
         pass.Uses = &use;
@@ -1910,8 +1915,9 @@ TEST_CASE("R5 attachment chains keep versions, barriers and final depth validity
     }
     REQUIRE(AddGraphRoot(session.Device, graph, previous, GraphRoot::History) == RasterStatus::Ready);
     GraphReport report;
-    const auto status = CompileOrderedGraph(session.Device, graph, report, GraphCompileOptions{true, true});
-    if (variant == 2)
+    const RasterStatus status =
+        CompileOrderedGraph(session.Device, graph, report, GraphCompileOptions{true, shouldMerge});
+    if (variant == 2 || shouldRejectDepthLoad == true)
     {
         CHECK(status == RasterStatus::InvalidDescription);
         CHECK(report.RasterPasses == 0);
@@ -1921,10 +1927,10 @@ TEST_CASE("R5 attachment chains keep versions, barriers and final depth validity
         return;
     }
     REQUIRE(status == RasterStatus::Ready);
-    CHECK(report.RasterPasses == (variant == 0 ? 1U : 2U));
+    CHECK(report.RasterPasses == (variant == 0 || variant == 3 ? 1U : 2U));
     CHECK(report.TextureBytes == uint64{16} * 8 * 8);
-    CHECK(report.LastUse[0] == 2);
-    CHECK(report.DependencyCount >= 3);
+    CHECK(report.LastUse[0] == passCount - 1);
+    CHECK(report.DependencyCount >= passCount);
     // Target skips retain the frozen group plan; retry issues one submission.
     backend::NextFrame = FrameStatus::Skipped;
     SubmissionToken token;
@@ -1933,11 +1939,16 @@ TEST_CASE("R5 attachment chains keep versions, barriers and final depth validity
     backend::NextFrame = FrameStatus::Ready;
     REQUIRE(ExecuteOrderedGraph(session.Device, session.Surface, graph, token) == RasterStatus::Ready);
     CHECK(reference::Passes == report.RasterPasses);
+    if (shouldDiscardFinalDepth == true)
+    {
+        CHECK(reference::Pass.Description.DepthLoad == (shouldMerge == true ? RasterLoad::Clear : RasterLoad::Load));
+        CHECK(reference::Pass.Description.DepthStore == RasterStore::Discard);
+    }
     CHECK(reference::Submitted != 0);
     RasterTextureState state;
     REQUIRE(GetTextureState(session.Device, texture.Texture, state) == RasterStatus::Ready);
     CHECK(state.ColorDefined);
-    CHECK(state.DepthDefined);
+    CHECK(state.DepthDefined == (shouldDiscardFinalDepth == false));
     CHECK(state.Use == RasterTextureUse::SampledFragment);
     REQUIRE(Destroy(session.Device, texture.Texture) == RasterStatus::Ready);
     CHECK(reference::Destroys[1] == 0);

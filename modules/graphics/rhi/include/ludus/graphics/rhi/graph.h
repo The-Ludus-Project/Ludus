@@ -294,8 +294,9 @@ struct GraphCompileOptions final
     /// Keep every legal authored pass when false; initialization is still validated.
     bool CullPasses = true;
     /// Opt into conservative consecutive raster-pass merging. Equal attachment,
-    /// read scopes and rectangles, Load/Store preservation and no side effects are
-    /// required. Compute and incompatible passes always retain their boundaries.
+    /// read scopes and rectangles, Load/Store preservation between passes, and no
+    /// side effects are required. An offscreen group may discard depth at its end.
+    /// Compute and incompatible passes always retain their boundaries.
     bool MergeRasterPasses = false;
 };
 /// Deterministic fixed-size summary copied without allocation. Totals cover the full plan.

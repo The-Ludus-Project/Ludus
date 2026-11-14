@@ -1022,13 +1022,17 @@ use, frozen import revisions, retry, failure and completion contracts remain
 those of [ordered graphs](#ordered-raster-graphs-r3).
 
 The current rule requires consecutive authored, live raster passes with the same
-physical color/depth attachment. Both must Store color and depth; the later pass
-must Load both, with matching depth-read-only mode, viewport and scissor. Read
+physical color/depth attachment. Both must Store color. The earlier pass must
+Store depth, and the later pass must Load both attachments, with matching
+depth-read-only mode, viewport and scissor. A group targeting a single-sample
+offscreen attachment can end with an authored depth Discard. The physical pass
+uses the first load and the final depth store, and a later depth Load requires
+the graph to initialize depth again. Read
 use lists must match field by field, including order, physical resource, version,
 range and visibility; only the validated color output version may advance.
 Different pipelines/bindings/draw packets remain legal and execute in authored
-order. Compute, declared side effects, a culled gap, clears, discards, changed
-read scopes or rectangles prevent merging. No barrier executes inside a group:
+order. Compute, declared side effects, a culled gap, intermediate clears or
+discards, and changed read scopes or rectangles prevent merging. No barrier executes inside a group:
 its identical external read scope is synchronized before its first pass. The
 last store happens at group end. Every logical pass still updates the registry's
 color/depth/version ledger and retains its packets through R2 completion.
