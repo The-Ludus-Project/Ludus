@@ -1,6 +1,7 @@
 #include "gltf_reader.h"
 
 #include "../front_end_support.h"
+#include "../name_index.h"
 #include "../transform_utilities.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
@@ -626,7 +627,7 @@ private:
     }
 
     [[nodiscard]] Status readContainer(std::span<const uint8> entryBytes, std::string_view& outJson) noexcept;
-    [[nodiscard]] bool checkAssetAndExtensions() noexcept;
+    [[nodiscard]] Status checkAssetAndExtensions() noexcept;
     [[nodiscard]] Status loadBuffer(usize index, const LoadedBuffer*& outBufferOrNull) noexcept;
     [[nodiscard]] Status getBufferView(usize index, BufferViewSlice& outSlice) noexcept;
     [[nodiscard]] Status getAccessor(usize index, AccessorView& outView, bool& outIsUsable) noexcept;
@@ -749,21 +750,21 @@ Status GltfReader::readContainer(std::span<const uint8> entryBytes, std::string_
     return Status::Ok;
 }
 
-bool GltfReader::checkAssetAndExtensions() noexcept
+Status GltfReader::checkAssetAndExtensions() noexcept
 {
     const JsonValue asset = mRoot.Get("asset");
     std::string_view version;
     if (asset.Valid() == false || GetString(asset, "version", version) != Field::Ok)
     {
         fail(codes::MALFORMED_INPUT, "asset.version is missing");
-        return false;
+        return Status::Invalid;
     }
     std::string_view minimum;
     const bool hasMinimum = GetString(asset, "minVersion", minimum) == Field::Ok;
     if (version.substr(0, 2) != "2." || (hasMinimum == true && minimum != "2.0"))
     {
         fail(codes::UNSUPPORTED_FEATURE, "only glTF 2.0 assets are supported");
-        return false;
+        return Status::Invalid;
     }
     const auto isSupported = [](std::string_view name) noexcept {
         for (const std::string_view supported : SUPPORTED_EXTENSIONS)
@@ -775,24 +776,43 @@ bool GltfReader::checkAssetAndExtensions() noexcept
         }
         return false;
     };
-    bool isAccepted = true;
+    // Thanks to Khronos for the glTF 2.0 Extensions contract: required names
+    // also appear in extensionsUsed. Index rejected names to classify each
+    // used extension without a nested scan of the input arrays.
+    // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#specifying-extensions
+    NameIndex rejectedExtensions;
+    bool hasRejectedExtension = false;
     const JsonValue required = mRoot.Get("extensionsRequired");
     for (usize i = 0; required.Valid() == true && i < required.Count(); ++i)
     {
         std::string_view name;
-        if (required.At(i).String(name) == false || isSupported(name) == false)
+        if (required.At(i).String(name) == false)
         {
+            fail(codes::EXTENSION_REQUIRED, "extensionsRequired must contain extension names as strings");
+            hasRejectedExtension = true;
+            continue;
+        }
+        if (isSupported(name) == false && rejectedExtensions.Find(name) == NameIndex::NOT_FOUND)
+        {
+            if (rejectedExtensions.TryAdd(name, 0) == false)
+            {
+                return Status::OutOfMemory;
+            }
             MessageBuilder message;
-            (void)message.Append("required extension is not supported: ").Append(name);
+            (void)message.Append("Required glTF extension ")
+                .Append(name)
+                .Append(
+                    " is unsupported. Re-export the asset with this feature disabled or baked into a supported form.");
             fail(codes::EXTENSION_REQUIRED, message.GetView());
-            isAccepted = false;
+            hasRejectedExtension = true;
         }
     }
     const JsonValue used = mRoot.Get("extensionsUsed");
     for (usize i = 0; used.Valid() == true && i < used.Count(); ++i)
     {
         std::string_view name;
-        if (used.At(i).String(name) == true && isSupported(name) == false)
+        if (used.At(i).String(name) == true && isSupported(name) == false &&
+            rejectedExtensions.Find(name) == NameIndex::NOT_FOUND)
         {
             MessageBuilder message;
             (void)message.Append("optional extension ignored: ").Append(name);
@@ -803,7 +823,7 @@ bool GltfReader::checkAssetAndExtensions() noexcept
     {
         warn(codes::ANIMATION_IGNORED, "animations and skins ignored; the static node transforms are imported");
     }
-    return isAccepted;
+    return hasRejectedExtension == true ? Status::Invalid : Status::Ok;
 }
 
 Status GltfReader::loadBuffer(usize index, const LoadedBuffer*& outBufferOrNull) noexcept
@@ -1424,7 +1444,8 @@ Status GltfReader::loadMaterial(usize index, uint32& outMaterial) noexcept
             const bool isTransmission = key == "KHR_materials_transmission" || key == "KHR_materials_volume" ||
                                         key == "KHR_materials_diffuse_transmission";
             MessageBuilder message;
-            (void)message.Append(key).Append(" not represented by the metallic-roughness profile");
+            (void)message.Append(key).Append(
+                " was skipped. The imported material uses the base metallic-roughness inputs.");
             warn(isTransmission == true ? codes::TRANSMISSION_DROPPED : codes::MATERIAL_APPROXIMATED,
                  message.GetView());
             material.IsApproximated = true;
@@ -2210,9 +2231,10 @@ Status GltfReader::Read(std::span<const uint8> entryBytes) noexcept
         fail(codes::MALFORMED_INPUT, "glTF JSON root is not an object");
         return Status::Invalid;
     }
-    if (checkAssetAndExtensions() == false)
+    status = checkAssetAndExtensions();
+    if (status != Status::Ok)
     {
-        return Status::Invalid;
+        return status;
     }
     if (mBuffers.TryResize(CountArray(mRoot, "buffers")) == false ||
         mMaterials.TryResize(CountArray(mRoot, "materials"), IR_NONE) == false ||

@@ -460,11 +460,16 @@ TEST_CASE("glTF extension policy: required unsupported fails, optional is report
 {
     SceneIr scene;
     DiagnosticLog log;
-    CHECK(ReadGltf(MakeTriangle(R"(,"extensionsUsed":["KHR_draco_mesh_compression"],)"
-                                R"("extensionsRequired":["KHR_draco_mesh_compression"])"),
+    CHECK(ReadGltf(MakeTriangle(R"(,"extensionsUsed":["KHR_materials_iridescence","KHR_materials_clearcoat"],)"
+                                R"("extensionsRequired":["KHR_materials_iridescence"])"),
                    scene,
                    log) == Status::Invalid);
-    CHECK(HasCode(log, codes::EXTENSION_REQUIRED));
+    REQUIRE(log.GetEntries().GetSize() == 2);
+    CHECK(log.GetEntries()[0].Code.GetView() == codes::EXTENSION_REQUIRED);
+    CHECK(log.GetEntries()[0].Message.GetView().find("KHR_materials_iridescence") != std::string_view::npos);
+    CHECK(log.GetEntries()[0].Message.GetView().find("Re-export") != std::string_view::npos);
+    CHECK(log.GetEntries()[1].Code.GetView() == codes::EXTENSION_IGNORED);
+    CHECK(log.GetEntries()[1].Message.GetView().find("KHR_materials_clearcoat") != std::string_view::npos);
 
     SceneIr optional;
     DiagnosticLog optionalLog;
@@ -498,6 +503,41 @@ TEST_CASE("glTF extension policy: required unsupported fails, optional is report
     DiagnosticLog versionLog;
     CHECK(ReadGltf(R"({"asset":{"version":"1.0"}})", version, versionLog) == Status::Invalid);
     CHECK(HasCode(versionLog, codes::UNSUPPORTED_FEATURE));
+}
+
+TEST_CASE("Optional glTF iridescence cooks the base material and explains the fallback", "[scene_cook][gltf]")
+{
+    ScratchDirectory scratch;
+    WriteFile(scratch.GetPath("film.gltf"),
+              MakeTriangle(R"(,"extensionsUsed":["KHR_materials_iridescence"],"materials":[{)"
+                           R"("pbrMetallicRoughness":{"baseColorFactor":[1,0.5,0,1],"metallicFactor":0.5},)"
+                           R"("extensions":{"KHR_materials_iridescence":{"iridescenceFactor":1}}}])",
+                           {},
+                           R"(,"material":0)"));
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportGltfBestEffort(scratch.GetPath("film.gltf"), {}, result, error) == true);
+    const std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
+    CHECK(report.find("MATERIAL_APPROXIMATED") != std::string_view::npos);
+    CHECK(
+        report.find(
+            "KHR_materials_iridescence was skipped. The imported material uses the base metallic-roughness inputs.") !=
+        std::string_view::npos);
+
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    const ludus::resources::SceneMaterial& material = decoded.Materials[0];
+    CHECK(material.Metallic == 0.5F);
+    CHECK(material.Roughness == 1.0F);
+    REQUIRE(material.Texture < decoded.Textures.GetSize());
+    const ludus::resources::SceneTexture& texture = decoded.Textures[material.Texture];
+    constexpr uint32 FULL_SRGB_BYTE = 255;
+    constexpr uint32 HALF_LINEAR_SRGB_BYTE = 188;
+    CHECK(texture.Pixels[0] == FULL_SRGB_BYTE);
+    CHECK(texture.Pixels[1] == HALF_LINEAR_SRGB_BYTE);
+    CHECK(texture.Pixels[2] == 0);
 }
 
 TEST_CASE("glTF malformed containers, JSON and references fail without partial output", "[scene_cook][gltf]")
