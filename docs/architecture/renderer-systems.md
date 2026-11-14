@@ -4453,6 +4453,45 @@ bake geometry. The fixed directional resolution can miss fine occluders.
 This atlas is a raster lighting approximation. Reference captures continue
 to evaluate their original transport against the full scene.
 
+#### Probe visibility near walls and openings
+
+Each lookup compares the receiver against one nearest sample of a 4 × 4
+axial depth map per face. The ray through that texel's centre can cross a
+different part of a wall from the ray to the receiver. It can see around a
+thin or diagonal obstruction, or hit a wall where the receiver's ray would
+pass through a doorway. Renormalizing the surviving weights can magnify a
+single wrongly admitted probe. Receiver meshes marked for probe GI are
+excluded from the bake, so this test covers World occlusion. An asset's
+self-occlusion would require its own representation.
+
+A synthetic visibility check isolated this approximation with a unit probe
+cell and eight valid probes. The four probes at x = 0 had unit red irradiance
+on all faces and the four at x = 1 were black. An exact segment/plane
+intersection provided the visibility oracle. Both paths used the same
+trilinear weights and renormalization. The approximation used the shipped
+face size, depth quantization and bias.
+
+| Divider in cell coordinates | Receiver (x, y, z) | Exact red | Depth map red |
+| --- | --- | ---: | ---: |
+| Closed wall at x = 0.5 | (0.60, 0.50, 0.50) | 0 | 0 |
+| Closed wall at x = 0.5 | (0.55, 0.44, 0.50) | 0 | 0.265 |
+| Closed wall at x + 0.4(y − 0.5) = 0.5 | (0.66, 0.23, 0.50) | 0 | 0.691 |
+| Wall at x = 0.5 with an opening at 0.4 < y < 0.6 | (0.60, 0.50, 0.50) | 0.400 | 0 |
+
+These values isolate the visibility test with fixed probe irradiance.
+[Native Lit qualification](https://github.com/The-Ludus-Project/Ludus/issues/1367)
+needs scene-linear measurements during receiver movement, with the same
+baked inputs and a reference for both blocked bounce and bounce through an
+opening. A higher face resolution is a candidate if it improves both and
+fits the bake and GPU budgets.
+
+Thanks to Michał Iwanicki and Peter-Pike Sloan, whose
+[Precomputed Lighting in Call of Duty: Infinite Warfare, SIGGRAPH 2017](https://advances.realtimerendering.com/s2017/index.html),
+slides 55–60, motivates checking visibility before interpolation. Their
+light grid stores first-hit depth for each incident tetrahedron. Ludus
+uses a regular grid and per-probe cube faces. Their asset-space
+self-visibility in slides 14–25 is a separate approximation.
+
 ### Material debug views
 
 `LitMaterialDescription::DebugView` (`MaterialDebugView`) replaces a lit
