@@ -10,6 +10,7 @@
 #include "internal/world_workspace.h"
 
 #if defined(LUDUS_WORLD_DEMO_PLAYER)
+#    include "internal/hosted_producer.h"
 #    include "internal/level.h"
 #endif
 
@@ -38,6 +39,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QQuickWindow>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -276,7 +278,7 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
 #endif
 }
 
-#if defined(LUDUS_HOSTED_PRODUCER) && LUDUS_PROFILING_ENABLED
+#if (defined(LUDUS_HOSTED_PRODUCER) || defined(LUDUS_WORLD_DEMO_PLAYER)) && LUDUS_PROFILING_ENABLED
 namespace
 {
 QJsonObject ReadRecordedTrace(const QString& path)
@@ -308,6 +310,23 @@ int32 CountSamplesOfRecording(const QJsonObject& trace, uint64 recording, int32&
         }
     }
     return count;
+}
+
+/// The pass names of the GPU samples a trace attributes to `recording`.
+QSet<QString> CollectPassNamesOfRecording(const QJsonObject& trace, uint64 recording)
+{
+    QSet<QString> names;
+    for (const QJsonValue& value : trace.value(QStringLiteral("traceEvents")).toArray())
+    {
+        const QJsonObject event = value.toObject();
+        const QJsonObject arguments = event.value(QStringLiteral("args")).toObject();
+        if (event.value(QStringLiteral("name")).toString() == QStringLiteral("GPU sample identity") &&
+            static_cast<uint64>(arguments.value(QStringLiteral("deviceSession")).toDouble()) == recording)
+        {
+            names.insert(arguments.value(QStringLiteral("passName")).toString());
+        }
+    }
+    return names;
 }
 } // namespace
 #endif
@@ -613,5 +632,106 @@ TEST_CASE("Play runs the World-demo game in the World viewport, with keys, resiz
     workspace.StopPreview();
 #else
     SKIP("Needs Windows, macOS or Linux, the native GPU preview and the World-demo player");
+#endif
+}
+
+TEST_CASE("A GPU recording of the World-demo game in the World viewport names its viewport passes and process",
+          "[editor][play][viewport][gpu][.play-native]")
+{
+#if defined(LUDUS_WORLD_DEMO_PLAYER) && LUDUS_PROFILING_ENABLED &&                                                     \
+    (defined(Q_OS_MACOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN))
+    // Run it through the native display plugin.
+    REQUIRE(IsSharedDisplay());
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    const QString path =
+        QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(QStringLiteral("room.world.json"));
+    const std::string_view sample = ludus::world_demo::ExampleLevel();
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        REQUIRE(file.write(sample.data(), static_cast<int64>(sample.size())) == static_cast<int64>(sample.size()));
+    }
+    QTemporaryDir traces;
+    REQUIRE(traces.isValid());
+    WorldWorkspace workspace;
+    workspace.resize(1200, 850);
+    workspace.show();
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path));
+    RenderPreview& preview = workspace.GetRenderPreview();
+    REQUIRE(AwaitCondition([&preview]() { return preview.Running() == true && preview.Frames() >= 2; }));
+    PreviewViewport* viewport =
+        static_cast<PreviewViewport*>(workspace.findChild<QWidget*>(QStringLiteral("worldViewport")));
+    REQUIRE(viewport != nullptr);
+    ProfilingController controller(&preview);
+
+    QString address;
+    const PlayWindow window = workspace.PreparePlay(PlayMode::InViewport, address);
+    INFO(workspace.GetPlayUnavailableText().toStdString());
+    REQUIRE(window == PlayWindow::InViewport);
+    QProcess game;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE), address);
+    game.setProcessEnvironment(environment);
+    game.start(QStringLiteral(LUDUS_WORLD_DEMO_PLAYER), {QStringLiteral("--level"), path});
+    REQUIRE(game.waitForStarted() == true);
+    REQUIRE(AwaitCondition([&]() { return &viewport->GetFrameSource() != &preview; }));
+    // The main window binds the playing game as the GPU target; this test binds it the same way.
+    PlayViewportSource* playOrNull = workspace.GetPlaySourceOrNull();
+    REQUIRE(playOrNull != nullptr);
+    REQUIRE(controller.SetHostedTarget(playOrNull, playOrNull) == true);
+    CHECK(controller.GetTargetDescription().contains(QString::number(game.processId())) == true);
+
+    // The game's viewport passes, as the Renderer's RasterViewport names them.
+    const QSet<QString> expectedPasses = {
+        QStringLiteral("Viewport/Scene"),
+        QStringLiteral("Viewport/Composite"),
+        QStringLiteral("Viewport/Present"),
+    };
+    const QString tracePath = traces.filePath(QStringLiteral("world-demo.json"));
+    REQUIRE(controller.Start(ProfilingMode::Gpu, tracePath) == true);
+    // Several measured frames, each with every viewport pass.
+    REQUIRE(AwaitCondition([&]() {
+        return controller.GetRecordedSampleCount() >= static_cast<usize>(expectedPasses.size()) * PRESENTED_FRAMES;
+    }));
+    const HostedProducerRecord started = controller.GetHostedProducer();
+    REQUIRE(started.StartFrame != 0);
+    CHECK(started.ProducerName.toStdString() == ludus::world_demo::HOSTED_PRODUCER_NAME);
+    controller.Stop();
+    REQUIRE(AwaitCondition([&controller]() { return controller.GetState() == ProfilingState::Complete; }));
+
+    const QJsonObject trace = ReadRecordedTrace(tracePath);
+    REQUIRE(trace.isEmpty() == false);
+    const QJsonObject producer = trace.value(QStringLiteral("ludusHostedProducer")).toObject();
+    CHECK(producer.value(QStringLiteral("processId")).toString() == QString::number(game.processId()));
+    CHECK(producer.value(QStringLiteral("producerName")).toString() ==
+          QString::fromUtf8(ludus::world_demo::HOSTED_PRODUCER_NAME.data(),
+                            static_cast<qsizetype>(ludus::world_demo::HOSTED_PRODUCER_NAME.size())));
+    CHECK(producer.value(QStringLiteral("complete")).toBool() == true);
+    CHECK(producer.value(QStringLiteral("stopAcknowledged")).toBool() == true);
+    CHECK(producer.value(QStringLiteral("disconnected")).toBool() == false);
+    CHECK(producer.value(QStringLiteral("acknowledgementTimedOut")).toBool() == false);
+    CHECK(producer.value(QStringLiteral("stopFrame")).toString().toULongLong() >= started.StartFrame);
+    CHECK(producer.value(QStringLiteral("measuredFrames")).toString().toULongLong() >= 1);
+    CHECK(producer.value(QStringLiteral("deliveredSamples")).toString().toULongLong() >=
+          static_cast<uint64>(expectedPasses.size()));
+    CHECK(producer.value(QStringLiteral("rejectedSamples")).toString() == QStringLiteral("0"));
+    int32 others = 0;
+    CHECK(CountSamplesOfRecording(trace, started.Recording, others) >= expectedPasses.size());
+    CHECK(others == 0);
+    const QSet<QString> recordedPasses = CollectPassNamesOfRecording(trace, started.Recording);
+    INFO("Recorded passes: " << QStringList(recordedPasses.values()).join(QStringLiteral(", ")).toStdString());
+    CHECK(recordedPasses.contains(expectedPasses) == true);
+
+    // Recording leaves Play untouched: Stop still closes the game normally.
+    workspace.RequestPlayClose();
+    REQUIRE(game.waitForFinished(TIMEOUT_MILLISECONDS) == true);
+    CHECK(game.exitStatus() == QProcess::NormalExit);
+    CHECK(game.exitCode() == 0);
+    REQUIRE(AwaitCondition([&]() { return workspace.IsPlayingInViewport() == false; }));
+    workspace.StopPreview();
+#else
+    SKIP("Needs Windows, macOS or Linux, a profiling build, the native GPU preview and the World-demo player");
 #endif
 }
