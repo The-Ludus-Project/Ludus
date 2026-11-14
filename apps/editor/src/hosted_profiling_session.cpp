@@ -59,10 +59,13 @@ HostedProfilingSession::~HostedProfilingSession() noexcept
     Reset();
 }
 
+// A sample capacity and a clock reading, in that order, as documented on the declaration.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 bool HostedProfilingSession::Start(HostedRecordingTarget& inoutTarget,
                                    usize maximumSamples,
                                    uint64 nowTicks,
                                    QString& outReason)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     Reset();
     if (inoutTarget.IsRecordingConnected() == false)

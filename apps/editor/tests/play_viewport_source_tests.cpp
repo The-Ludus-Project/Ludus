@@ -290,7 +290,7 @@ int32 CountSamplesOfRecording(const QJsonObject& trace, uint64 recording, int32&
 {
     int32 count = 0;
     outOthers = 0;
-    for (const QJsonValue& value : trace.value(QStringLiteral("traceEvents")).toArray())
+    for (const QJsonValue value : trace.value(QStringLiteral("traceEvents")).toArray())
     {
         const QJsonObject event = value.toObject();
         if (event.value(QStringLiteral("name")).toString() != QStringLiteral("GPU sample identity"))
