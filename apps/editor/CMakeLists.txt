@@ -1156,6 +1156,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         # Its individual performance assertions still enforce their own limits.
         set(code_editor_timeout 90)
     endif()
+    if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
+        # The instrumented macOS suite takes 27-30 seconds on hosted runners.
+        # Its individual performance assertions still enforce their own limits.
+        set(code_editor_timeout 90)
+    endif()
     set(content_editor_timeout 60)
     set(graph_configuration_timeout 180)
     if(WIN32 AND LUDUS_ENABLE_ASAN)
