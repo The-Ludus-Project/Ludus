@@ -37,6 +37,15 @@
     },
     {
       "kind": "graph",
+      "identity": "hybrid-shadows",
+      "label": "Hybrid shadows — ray-traced analytic light shadows",
+      "category": "hybrid",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["shadows", "hybrid", "directional", "point", "spot", "ray tracing"],
+      "description": "Rasterize visibility and depth, then light the first surface with the World's directional, point and spot lights, each shadowed by one ray. Blockers outside the view still cast. Up to 16 lights per pixel are shadowed; more add unshadowed. Requires native ray tracing."
+    },
+    {
+      "kind": "graph",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
       "category": "ray-traced",

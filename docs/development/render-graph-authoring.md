@@ -4841,6 +4841,7 @@ node editor to resize them together.
 | --- | --- |
 | **Visibility buffer + depth** (`visibility-buffer`) | One raster pass exports the exact RGBA8 identity image and its Depth32Float attachment. The identity image is the camera output; its alpha channel encodes identity rather than transparency. No ray-tracing capability is needed. |
 | **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
+| **Hybrid shadows — ray-traced analytic light shadows** (`hybrid-shadows`) | The same raster producer feeds one ray pass that lights the first surface with the World's directional, point and spot lights, each shadowed by a ray, then ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Shadow analytic lights with rays](#shadow-analytic-lights-with-rays). |
 | **Tiled vbuffer NEE — many-light direct lighting** (`tiled-vbuffer-nee`) | The same raster producer feeds three ray passes that build one emitter-selection table per 16 × 16 tile and shade direct mesh-emitter lighting with MIS, then Accumulate. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Select emitters per screen tile](#select-emitters-per-screen-tile). |
 
 Create the same packages through the CLI:
@@ -4850,6 +4851,8 @@ ludus render-graph new graphs/Visibility --template visibility-buffer --output o
   --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/Reflections --template visibility-secondary-rays --output offscreen \
   --renderer-static --profiles metal wgsl
+ludus render-graph new graphs/Shadows --template hybrid-shadows --output offscreen \
+  --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/DirectLighting --template tiled-vbuffer-nee --output offscreen \
   --renderer-static --profiles metal wgsl
 ```
@@ -4857,7 +4860,8 @@ ludus render-graph new graphs/DirectLighting --template tiled-vbuffer-nee --outp
 Use `spirv wgsl` for Vulkan. The raster-only template also accepts `wgsl` alone.
 The canonical packages are shipped with the SDK:
 [visibility and depth](../../modules/graphics/renderer/render_graphs/visibility_buffer/main.lurender.json),
-[secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json)
+[secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json),
+[hybrid shadows](../../modules/graphics/renderer/render_graphs/hybrid_shadows/main.lurender.json)
 and [tiled vbuffer NEE](../../modules/graphics/renderer/render_graphs/tiled_vbuffer_nee/main.lurender.json).
 Existing graph folders are never overwritten; cancelling creation writes nothing.
 
@@ -4870,6 +4874,56 @@ It uses one surface-query slot and no visibility queries: reconstruction consume
 neither. The starter has no recursive bounce, roughness/metallic BRDF, direct-light
 sampling, accumulation or denoising. A scene without emission or environment
 lighting produces black. These are editable transport choices, not engine lights.
+
+#### Shadow analytic lights with rays
+
+The **Hybrid shadows** starter is the first RT2 effect: raster primary visibility
+with ray-traced visibility for the World's directional, point and spot lights.
+`main_shaders/shade.slang` calls `LoadVisibilitySurface`, evaluates the resolved
+material and emission, and visits the analytic lights in scene catalog order.
+Each light that can reach the receiver adds the standard BSDF times its
+incident coefficient and receiver cosine, and `TestVisibility` traces one shadow
+ray towards it. A ray starts at the reconstructed first hit, so a blocker outside
+the camera frustum, or behind the near plane, still casts its shadow; the
+whole-scene shadow map of the [default graph](#directional-shadows) also keeps it.
+Shadow rays are `TestVisibility` queries from the scene's offset surface point, and
+alpha-masked materials occlude as the scene's visibility traversal tests them. No
+shadow map, receiver bias or filter is involved.
+
+The ray technique grants 16 visibility queries, the interactive maximum, and the
+shader's `MAXIMUM_SHADOW_RAYS` matches it. The first 16 contributing lights at a
+pixel are ray shadowed. Any further contributing light is added unshadowed,
+like the default graph's point and spot lights. Each light is counted once.
+Lights do not use the raster **Raster Shadows** flag; every analytic light is a
+ray-shadow candidate. Mesh emitters and the environment light no surface here,
+so the template does not double light what [tiled vbuffer NEE](#select-emitters-per-screen-tile)
+or ReSTIR DI estimate. Misses show the environment. Glass shows only its emission
+because no analytic light reaches its delta lobes.
+
+Punctual lights cast hard shadows, and one deterministic ray per light gives a
+noise-free signal, so the graph keeps no history and applies no reconstruction
+filter: its raw and displayed images differ only by ToneMap. Area-light soft
+shadows, roughness-aware reflections and indirect diffuse remain the later RT2
+effects, with their reconstruction and history contracts. Devices without native
+ray tracing reject preparation; the default raster graph is their shadow route.
+
+The `[hybrid-shadows]` GPU regression renders one closed box blocker over a planar
+receiver under a directional light, from a camera window that contains the blocker
+and from one that excludes it. A float64 slab test projects the blocker along the
+light ray of each pixel centre. The template, the default graph's shadow map and the
+RT1 reference (CPU oracle and GPU compute, centre rays, first-surface direct output)
+must classify every pixel away from the boundary as lit or shadowed like that
+oracle, with no false occlusion, and place the measured left shadow edge within half
+a pixel of the projected edge. Lit pixels must match the RT1 CPU BSDF value, and the
+template must match the GPU RT1 image within one RGBA8 code plus 1%. The template's
+and default graph's copies for this test disable ToneMap and read clamped linear
+colour. On an Apple M5 with Metal, all four routes classify every interior pixel
+correctly in both windows. The template's and the shadow map's lit radiance lie within
+0.0019 and 0.0020 of the RT1 CPU BSDF value of 0.445. The template lies within 0.0019
+of the GPU RT1 image, and both graphs measure the edge 0.2 and 0.4 pixels from the
+projection, the pixel-centre quantization. This fixture does not separate the two
+graphs: the default graph's whole-scene shadow fit also keeps the offscreen shadow.
+Curved receivers, bias and timing comparisons remain open in issue 1248.
 
 Extend the manifest's `RendererStatic` vertex schema with these two fields:
 
