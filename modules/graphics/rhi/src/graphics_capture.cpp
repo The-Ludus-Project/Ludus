@@ -219,17 +219,23 @@ template <usize N>
 #endif
 }
 
+/// Manifest field name, a distinct type so a key and its text value cannot be swapped.
+struct ManifestKey final
+{
+    std::string_view Name;
+};
+
 /// Bounded JSON object writer for the manifest. A field that does not fit fails the whole
 /// manifest rather than publishing a truncated record.
 class ManifestWriter final
 {
 public:
-    void WriteText(std::string_view key, std::string_view value) noexcept
+    void WriteText(ManifestKey key, std::string_view value) noexcept
     {
         beginField(key);
         appendString(value);
     }
-    void WriteNumber(std::string_view key, uint64 value) noexcept
+    void WriteNumber(ManifestKey key, uint64 value) noexcept
     {
         beginField(key);
         ArtifactStem digits;
@@ -252,11 +258,11 @@ private:
     {
         mIsOk = mIsOk && mText.TryAppend(text) == foundation::StringStatus::Ok;
     }
-    void beginField(std::string_view key) noexcept
+    void beginField(ManifestKey key) noexcept
     {
         append(mHasField == true ? ",\n  " : "{\n  ");
         mHasField = true;
-        appendString(key);
+        appendString(key.Name);
         append(": ");
     }
     void appendString(std::string_view value) noexcept
@@ -326,23 +332,23 @@ void PublishManifest() noexcept
     std::span<const uint8> bytes;
     const MeasurementAdapter& gpu = gRecord.Gpu;
     ManifestWriter writer;
-    writer.WriteText("format", "ludus-graphics-capture");
-    writer.WriteNumber("version", MANIFEST_VERSION);
-    writer.WriteNumber("session", gRecord.Report.Identity.Session);
-    writer.WriteNumber("request", gRecord.Report.Identity.Request);
-    writer.WriteText("build", GetBuildConfigurationName());
-    writer.WriteText("backend", GetBackendName(gRecord.SelectedBackend));
-    writer.WriteText("tool", GetToolName(gRecord.Report.Tool));
-    writer.WriteText("toolVersion", GetText(gRecord.Report.ToolVersion));
-    writer.WriteText("adapter", std::string_view{gpu.Name});
-    writer.WriteNumber("vendorId", gpu.VendorId);
-    writer.WriteNumber("deviceId", gpu.DeviceId);
-    writer.WriteNumber("driverVersion", gpu.DriverVersion);
-    writer.WriteText("captureScope", "device frame");
-    writer.WriteNumber("requestedFrame", gRecord.Report.RequestedFrame);
-    writer.WriteNumber("capturedFrame", gRecord.Report.CapturedFrame);
-    writer.WriteNumber("skippedFrames", gRecord.Report.SkippedFrames);
-    writer.WriteText("artifact", GetText(gRecord.Report.Artifact));
+    writer.WriteText({"format"}, "ludus-graphics-capture");
+    writer.WriteNumber({"version"}, MANIFEST_VERSION);
+    writer.WriteNumber({"session"}, gRecord.Report.Identity.Session);
+    writer.WriteNumber({"request"}, gRecord.Report.Identity.Request);
+    writer.WriteText({"build"}, GetBuildConfigurationName());
+    writer.WriteText({"backend"}, GetBackendName(gRecord.SelectedBackend));
+    writer.WriteText({"tool"}, GetToolName(gRecord.Report.Tool));
+    writer.WriteText({"toolVersion"}, GetText(gRecord.Report.ToolVersion));
+    writer.WriteText({"adapter"}, std::string_view{gpu.Name});
+    writer.WriteNumber({"vendorId"}, gpu.VendorId);
+    writer.WriteNumber({"deviceId"}, gpu.DeviceId);
+    writer.WriteNumber({"driverVersion"}, gpu.DriverVersion);
+    writer.WriteText({"captureScope"}, "device frame");
+    writer.WriteNumber({"requestedFrame"}, gRecord.Report.RequestedFrame);
+    writer.WriteNumber({"capturedFrame"}, gRecord.Report.CapturedFrame);
+    writer.WriteNumber({"skippedFrames"}, gRecord.Report.SkippedFrames);
+    writer.WriteText({"artifact"}, GetText(gRecord.Report.Artifact));
     filesystem::WriteDirectory directory;
     filesystem::PublicationResult published;
     if (writer.Finish(bytes) == true && MakeManifestName(gRecord.Stem.GetView(), manifestName) == true &&

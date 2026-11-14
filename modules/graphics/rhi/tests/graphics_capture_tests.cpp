@@ -6,6 +6,7 @@
 #include "internal/lifecycle.h"
 #include "reference_raster.h"
 
+#include <ludus/foundation/strings/static_string.hpp>
 #include <ludus/foundation/strings/string.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -42,6 +43,8 @@ constexpr uint64 SHORT_DEADLINE_MILLISECONDS = 1;
 constexpr uint64 FRAME_DEADLINE_MILLISECONDS = 500;
 constexpr std::string_view ARTIFACT_EXTENSION = ".testcapture";
 constexpr std::string_view ARTIFACT_BYTES = "controlled capture";
+/// Room for a scratch destination path plus an artifact name.
+constexpr usize ADAPTER_PATH_BYTES = 4096;
 
 /// How the controlled adapter answers EndFrameCapture.
 enum class Finalization : uint8
@@ -79,9 +82,11 @@ struct ControlledAdapter final : internal::GraphicsCaptureAdapter
     bool WasFrameOpenAtBegin = true;
     bool WasFrameOpenAtEnd = true;
     uint32 ShutdownsAtAbandon = 0;
+    /// Set when a file operation inside a noexcept native call failed; checked by the tests.
+    bool HasFileFailure = false;
     GraphicsCaptureIdentity Started;
-    std::string Destination;
-    std::string Stem;
+    StaticString<ADAPTER_PATH_BYTES> Destination;
+    StaticString<GRAPHICS_CAPTURE_NAME_BYTES> Stem;
 
     [[nodiscard]] GraphicsCaptureTool GetTool() const noexcept override
     {
@@ -98,8 +103,8 @@ struct ControlledAdapter final : internal::GraphicsCaptureAdapter
         if (BeginResult == GraphicsCaptureError::None)
         {
             Started = start.Identity;
-            Destination = start.Destination;
-            Stem = start.ArtifactStem;
+            HasFileFailure = HasFileFailure || Destination.TryAssign(start.Destination) != StringStatus::Ok ||
+                             Stem.TryAssign(start.ArtifactStem) != StringStatus::Ok;
         }
         return BeginResult;
     }
@@ -111,7 +116,7 @@ struct ControlledAdapter final : internal::GraphicsCaptureAdapter
         {
             return EndResult;
         }
-        WriteArtifact();
+        writeArtifact();
         if (Mode == Finalization::Synchronous)
         {
             Report(identity);
@@ -130,44 +135,76 @@ struct ControlledAdapter final : internal::GraphicsCaptureAdapter
     {
         ++Abandons;
         ShutdownsAtAbandon = backend::ShutdownCount;
-        const std::string artifact = GetArtifactName();
-        if (ludus::test_support::IsExistingPath(GetPath(artifact)) == true)
+        StaticString<GRAPHICS_CAPTURE_NAME_BYTES> artifact;
+        StaticString<ADAPTER_PATH_BYTES> path;
+        if (makeArtifactName(artifact) == true && makePath(artifact.GetView(), path) == true &&
+            ludus::test_support::IsExistingPath(path.GetView()) == true)
         {
             outCleanup.IsArtifactPreserved = true;
-            std::memcpy(outCleanup.Artifact.GetData(), artifact.data(), artifact.size());
+            std::memcpy(outCleanup.Artifact.GetData(), artifact.GetData(), artifact.GetSize());
         }
     }
-    [[nodiscard]] std::string GetArtifactName() const
+    /// Report a verified artifact for identity, as the tool's completion would.
+    void Report(GraphicsCaptureIdentity identity) noexcept
     {
-        return Stem + std::string(ARTIFACT_EXTENSION);
-    }
-    [[nodiscard]] std::string GetPath(std::string_view name) const
-    {
-        return Destination + "/" + std::string(name);
-    }
-    void WriteArtifact() const
-    {
-        REQUIRE(ludus::test_support::WriteFile(
-                    GetPath(GetArtifactName()),
-                    {reinterpret_cast<const uint8*>(ARTIFACT_BYTES.data()), ARTIFACT_BYTES.size()}) == true);
-        if (ShouldBlockManifest == true)
+        StaticString<GRAPHICS_CAPTURE_NAME_BYTES> artifact;
+        if (ShouldReportForeignArtifact == true)
         {
-            REQUIRE(ludus::test_support::CreateDirectories(GetPath(Stem + ".manifest.json")) == true);
+            HasFileFailure = HasFileFailure || artifact.TryAssign("other.testcapture") != StringStatus::Ok;
         }
-    }
-    void Report(GraphicsCaptureIdentity identity) const
-    {
-        const std::string artifact = ShouldReportForeignArtifact == true ? "other.testcapture" : GetArtifactName();
+        else
+        {
+            HasFileFailure = HasFileFailure || makeArtifactName(artifact) == false;
+        }
         const internal::GraphicsCaptureFinalization finalization
         {
             .Error = GraphicsCaptureError::None,
-            .ArtifactOrNull = artifact.c_str(),
+            .ArtifactOrNull = artifact.GetData(),
             .IsArtifactVerified = true,
             .IsArtifactPreserved = false,
             .ToolVersionOrNull = "controlled 1.0",
             .DiagnosticOrNull = nullptr,
         };
         internal::ReportGraphicsCaptureFinalization(identity, finalization);
+    }
+    [[nodiscard]] std::string GetStem() const
+    {
+        return std::string(Stem.GetView());
+    }
+    [[nodiscard]] std::string GetArtifactName() const
+    {
+        return GetStem() + std::string(ARTIFACT_EXTENSION);
+    }
+
+private:
+    [[nodiscard]] bool makeArtifactName(StaticString<GRAPHICS_CAPTURE_NAME_BYTES>& outName) const noexcept
+    {
+        return outName.TryAssign(Stem.GetView()) == StringStatus::Ok &&
+               outName.TryAppend(ARTIFACT_EXTENSION) == StringStatus::Ok;
+    }
+    [[nodiscard]] bool makePath(std::string_view name, StaticString<ADAPTER_PATH_BYTES>& outPath) const noexcept
+    {
+        return outPath.TryAssign(Destination.GetView()) == StringStatus::Ok &&
+               outPath.TryAppend("/") == StringStatus::Ok && outPath.TryAppend(name) == StringStatus::Ok;
+    }
+    void writeArtifact() noexcept
+    {
+        StaticString<GRAPHICS_CAPTURE_NAME_BYTES> artifact;
+        StaticString<ADAPTER_PATH_BYTES> path;
+        const bool isWritten = makeArtifactName(artifact) == true && makePath(artifact.GetView(), path) == true &&
+                               ludus::test_support::WriteFile(path.GetView(),
+                                                              {reinterpret_cast<const uint8*>(ARTIFACT_BYTES.data()),
+                                                               ARTIFACT_BYTES.size()}) == true;
+        HasFileFailure = HasFileFailure || isWritten == false;
+        if (ShouldBlockManifest == true)
+        {
+            StaticString<GRAPHICS_CAPTURE_NAME_BYTES> manifest;
+            const bool isBlocked = manifest.TryAssign(Stem.GetView()) == StringStatus::Ok &&
+                                   manifest.TryAppend(".manifest.json") == StringStatus::Ok &&
+                                   makePath(manifest.GetView(), path) == true &&
+                                   ludus::test_support::CreateDirectories(path.GetView()) == true;
+            HasFileFailure = HasFileFailure || isBlocked == false;
+        }
     }
 };
 
@@ -218,12 +255,14 @@ struct CaptureSession final
     {
         GraphicsCaptureIdentity identity;
         REQUIRE(RequestGraphicsCapture(Device, MakeRequest(deadline), identity) == GraphicsCaptureError::None);
+        CHECK(Adapter.HasFileFailure == false);
         return identity;
     }
     void RenderFrame() const
     {
         REQUIRE(BeginFrame(Device, Surface) == DeviceStatus::Ready);
         REQUIRE(EndFrame(Device) == DeviceStatus::Ready);
+        CHECK(Adapter.HasFileFailure == false);
     }
     [[nodiscard]] std::string GetPath(std::string_view name) const
     {
@@ -368,7 +407,7 @@ TEST_CASE("G1 skipped frames keep a capture armed until the next eligible frame"
     CHECK(session.Adapter.Ends == 1);
 
     // Publication waits for the adapter's completion and happens on the poll, not the frame.
-    CHECK(ludus::test_support::IsExistingPath(session.GetPath(session.Adapter.Stem + ".manifest.json")) == false);
+    CHECK(ludus::test_support::IsExistingPath(session.GetPath(session.Adapter.GetStem() + ".manifest.json")) == false);
     report = GetReport(identity);
     CHECK(session.Adapter.Polls == 1);
     CHECK(report.State == GraphicsCaptureState::Complete);
@@ -464,7 +503,7 @@ TEST_CASE("G1 cancellation ends armed, capturing and finalizing requests without
     CHECK(session.Adapter.Abandons == 2);
     CHECK(report.IsArtifactPreserved == true);
     CHECK(report.IsManifestPublished == false);
-    CHECK(ludus::test_support::IsExistingPath(session.GetPath(session.Adapter.Stem + ".manifest.json")) == false);
+    CHECK(ludus::test_support::IsExistingPath(session.GetPath(session.Adapter.GetStem() + ".manifest.json")) == false);
     // A late tool reply after cleanup is ignored.
     session.Adapter.Report(finalizing);
     CHECK(GetReport(finalizing).State == GraphicsCaptureState::Cancelled);
@@ -477,7 +516,7 @@ TEST_CASE("G1 stale capture identities and replies never affect the current requ
     const GraphicsCaptureIdentity first = session.Arm();
     session.RenderFrame();
     REQUIRE(CancelGraphicsCapture(first) == GraphicsCaptureError::None);
-    const std::string firstStem = session.Adapter.Stem;
+    const std::string firstStem = session.Adapter.GetStem();
 
     const GraphicsCaptureIdentity second = session.Arm();
     CHECK((second == first) == false);
@@ -585,7 +624,7 @@ TEST_CASE("G1 failed native capture, frame or manifest publication preserves out
     REQUIRE(ludus::test_support::GetFileSize(session.GetPath(report.Artifact.GetData()), artifactBytes) == true);
     CHECK(artifactBytes == ARTIFACT_BYTES.size());
     // The blocking entry was not replaced.
-    CHECK(ludus::test_support::IsDirectory(session.GetPath(session.Adapter.Stem + ".manifest.json")) == true);
+    CHECK(ludus::test_support::IsDirectory(session.GetPath(session.Adapter.GetStem() + ".manifest.json")) == true);
     session.Adapter.ShouldBlockManifest = false;
 
     session.Adapter.ShouldReportForeignArtifact = true;
