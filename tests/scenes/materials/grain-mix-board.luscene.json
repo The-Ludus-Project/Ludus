@@ -1,0 +1,55 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Grain mix board",
+  "description": "A board leaning back on a grey floor under a square one-sided ceiling light. The board's closure program reads a scalar grain mask from the base colour input and mixes a white diffuse lobe weighted by its complement with a glossy gold conductor weighted by the mask, after the wood of Cook's Shade Trees. The authored base colour is an interior mask value; a base texture supplies the grain. The renderer's texture-weighted mixing tests load the program this file compiles to.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "Floor", "model": "diffuse", "base_color": [0.5, 0.5, 0.5]},
+    {
+      "name": "Grain mix",
+      "model": "program",
+      "base_color": [0.4, 0.4, 0.4],
+      "metallic": 0.4,
+      "roughness": 0.3,
+      "program": {
+        "version": 1,
+        "parameters": [
+          {"name": "mask", "input": "base_color"},
+          {"name": "earlywood", "one_minus": "mask"},
+          {"name": "rough", "input": "roughness"}
+        ],
+        "lobes": [
+          {"operation": "diffuse", "weight": "earlywood"},
+          {"operation": "conductor", "weight": "mask", "roughness": "rough", "eta": [0.143, 0.374, 1.442], "k": [3.983, 2.386, 1.603]}
+        ]
+      }
+    },
+    {"name": "Light", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [12, 12, 12], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "Floor",
+      "positions": [[-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Board",
+      "material": "Grain mix",
+      "positions": [[-0.6, -0.99, 0.2], [0.6, -0.99, 0.2], [0.6, 0.2, -0.6], [-0.6, 0.2, -0.6]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [[-0.25, 0.99, -0.25], [0.25, 0.99, -0.25], [0.25, 0.99, 0.25], [-0.25, 0.99, 0.25]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}

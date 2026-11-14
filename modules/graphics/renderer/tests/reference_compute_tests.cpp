@@ -1318,6 +1318,11 @@ struct QuadItem final
     float32 Roughness = 1;
     /// Real index of a smooth Dielectric or ThinDielectric model.
     float32 Eta = ludus::content::scene_format::DEFAULT_DIELECTRIC_ETA;
+    /// Optional base texture multiplying BaseColor, sampled nearest and clamped. Corners c0..c3 map to UVs (0, 1),
+    /// (0, 0), (1, 0) and (1, 1), so u runs along c1 to c2.
+    rhi::TextureHandle Texture{};
+    /// Closure program of a Program model, borrowed until BuildQuadSnapshot returns.
+    const ludus::content::scene_format::MaterialProgram* ProgramOrNull = nullptr;
 };
 /// A snapshot of planar quads, wound so that each quad's geometric normal is cross(c1 - c0, c3 - c0).
 S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
@@ -1342,6 +1347,12 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
         const uint32 indices[]{0, 1, 2, 0, 2, 3};
         rr::MeshDescription mesh{quad.CornersWorld.GetData(), 4, indices, 6};
         mesh.Normals = normals;
+        const math::Vector2 texcoords[]{{0, 1}, {0, 0}, {1, 0}, {1, 1}};
+        const bool isTextured = quad.Texture != rhi::TextureHandle{};
+        if (isTextured == true)
+        {
+            mesh.Texcoords = texcoords;
+        }
         S status = inoutRenderer.CreateMesh(mesh, meshes[i]);
         uint64 start = time::NowTicks();
         while (status == S::Pending && time::NowTicks() - start < TIMEOUT)
@@ -1363,6 +1374,17 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
         }
         material.Emission = quad.Emission;
         material.IsEmissionTwoSided = quad.IsEmissionTwoSided;
+        if (isTextured == true)
+        {
+            material.Surface.Texture = quad.Texture;
+            material.Surface.Sampler.Filter = rhi::RasterFilter::Nearest;
+            material.Surface.Sampler.U = rhi::RasterAddress::Clamp;
+            material.Surface.Sampler.V = rhi::RasterAddress::Clamp;
+        }
+        if (quad.ProgramOrNull != nullptr)
+        {
+            material.Program = *quad.ProgramOrNull;
+        }
         rr::LightSelection selection;
         status = inoutRenderer.CreateLitMaterial(program, material, materials[i], selection);
         start = time::NowTicks();
@@ -2057,6 +2079,130 @@ TEST_CASE("Typed reflection and transmission match between CPU and GPU reference
     // A rare near-edge hit can send one path elsewhere; the image mean stays matched.
     CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
     CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+}
+
+TEST_CASE("A grain-masked closure program matches between CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][program]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+
+    // A linear grain mask in vertical stripes of zero, one and an interior value, read through the base colour
+    // input: the board's white Lambertian lobe takes 1 - m and its glossy gold takes m.
+    constexpr usize GRAIN_TEXELS = 6;
+    constexpr usize GRAIN_TEXEL_BYTES = 4;
+    constexpr uint8 INTERIOR_MASK_BYTE = 89;
+    constexpr usize MASK_VALUES = 3;
+    constexpr StaticArray<uint8, MASK_VALUES> MASK_BYTES{{0, 255, INTERIOR_MASK_BYTE}};
+    StaticArray<uint8, GRAIN_TEXELS * GRAIN_TEXEL_BYTES> grainTexels{};
+    for (usize texel = 0; texel < GRAIN_TEXELS; ++texel)
+    {
+        const uint8 mask = MASK_BYTES[texel % MASK_VALUES];
+        grainTexels[texel * GRAIN_TEXEL_BYTES] = mask;
+        grainTexels[texel * GRAIN_TEXEL_BYTES + 1] = mask;
+        grainTexels[texel * GRAIN_TEXEL_BYTES + 2] = mask;
+        grainTexels[texel * GRAIN_TEXEL_BYTES + 3] = 255;
+    }
+    rhi::TextureDescription grainDescription{static_cast<uint32>(GRAIN_TEXELS), 1, rhi::RasterFormat::Rgba8Unorm};
+    grainDescription.RetainCpuContent = true;
+    rhi::TextureHandle grain;
+    REQUIRE(rhi::CreateTexture(device,
+                               grainDescription,
+                               {{grainTexels.GetData(), grainTexels.GetSize()}, GRAIN_TEXELS * GRAIN_TEXEL_BYTES},
+                               grain) == S::Ready);
+    const ludus::content::scene_format::MaterialProgram program = ludus::renderer_tests::MakeGrainMixProgram();
+    StaticArray<QuadItem, 2> quads{};
+    QuadItem& board = quads[0];
+    board.CornersWorld = {{{-1, -1, 0}, {-1, 1, 0}, {1, 1, 0}, {1, -1, 0}}};
+    board.BaseColor = {1, 1, 1};
+    board.Model = ludus::content::scene_format::MaterialModel::Program;
+    board.Roughness = ludus::renderer_tests::GRAIN_MIX_ROUGHNESS;
+    board.Texture = grain;
+    board.ProgramOrNull = &program;
+    // A diffuse floor below the board returns light between the two surfaces.
+    QuadItem& floor = quads[1];
+    floor.CornersWorld = {{{-2, -1, -2}, {-2, -1, 2}, {2, -1, 2}, {2, -1, -2}}};
+    for (Session* session : {&cpu, &gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                  session->Program,
+                                  quads.GetData(),
+                                  quads.GetSize(),
+                                  session->Snapshot) == S::Ready);
+    }
+    // The sun lights the board from off the camera's mirror direction.
+    rr::DirectLight sun;
+    sun.SourceId = 7;
+    sun.Direction = math::Vector3{-.3F, -.4F, 1} / math::Length(math::Vector3{-.3F, -.4F, 1});
+    sun.Intensity = .8F;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = 32;
+    capture.Height = 24;
+    capture.TargetSamples = 16;
+    capture.MaxDepth = 6;
+    capture.Seed = 99;
+    capture.Environment = {.2F, .25F, .3F};
+    capture.Lights = &sun;
+    capture.LightCount = 1;
+    math::Matrix4 view;
+    math::Matrix4 projection;
+    capture.CameraPosition = {.3F, .2F, -2};
+    REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(.9F, float32(capture.Width) / float32(capture.Height), .1F, 20, projection) ==
+            math::MathStatus::Success);
+    capture.WorldToClip = projection * view;
+    capture.ReverseZ = true;
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    const uint64 cpuStart = time::NowTicks();
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    const uint64 gpuStart = time::NowTicks();
+    Capture(gpu, capture, surface, compute, computeInfo);
+    const uint64 gpuEnd = time::NowTicks();
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance,
+            math::Sqrt(comparison.SquaredRadiance),
+            (gpuStart - cpuStart) / NANOSECONDS_PER_MILLISECOND,
+            (gpuEnd - gpuStart) / NANOSECONDS_PER_MILLISECOND);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+    // The tolerances of the typed-material parity case: matched raw linear radiance, not a converged mean.
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+    // Each stripe reaches the image: the board's centre row crosses all three mask values, so its pixels differ.
+    float32 darkest = oracle[0].Radiance.X;
+    float32 brightest = darkest;
+    const usize centreRow = usize{capture.Height / 2} * capture.Width;
+    for (usize column = 0; column < capture.Width; ++column)
+    {
+        darkest = math::Min(darkest, oracle[centreRow + column].Radiance.X);
+        brightest = math::Max(brightest, oracle[centreRow + column].Radiance.X);
+    }
+    CHECK(brightest > darkest);
 }
 
 TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral on CPU and GPU",

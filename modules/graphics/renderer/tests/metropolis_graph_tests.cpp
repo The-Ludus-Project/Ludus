@@ -14,6 +14,7 @@
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 namespace
 {
@@ -26,6 +27,8 @@ constexpr usize CAMERA_COUNT = 1;
 constexpr uint32 ITERATIONS = 64;
 constexpr uint64 TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
 constexpr math::Vector3 ENVIRONMENT{0.25F, 0.5F, 1};
+/// A grain mask strictly between its two lobes.
+constexpr float32 INTERIOR_GRAIN_MASK = 0.35F;
 struct Session final
 {
     LUDUS_INLINE Session() noexcept
@@ -87,6 +90,15 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
         hasSurface = true;
         model = format::MaterialModel::Program;
     }
+    bool isGrainMix = false;
+    float32 grainMask = 0;
+    SECTION("A grain-masked closure program of distinct lobes offers fixed-dimension reflection")
+    {
+        hasSurface = true;
+        model = format::MaterialModel::Program;
+        isGrainMix = true;
+        grainMask = GENERATE(0.0F, 1.0F, INTERIOR_GRAIN_MASK);
+    }
     SECTION("A project BRDF without the guarantee fails the material requirement")
     {
         hasSurface = true;
@@ -129,6 +141,15 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
     {
         material.Roughness = 0.35F;
         material.Program = ludus::renderer_tests::MakeParityProgram();
+    }
+    if (isGrainMix == true)
+    {
+        // The mask arrives through the base colour input; the same record loads unchanged in the general graph.
+        CAPTURE(grainMask);
+        material.BaseColor = {grainMask, grainMask, grainMask};
+        material.Roughness = ludus::renderer_tests::GRAIN_MIX_ROUGHNESS;
+        material.Program = ludus::renderer_tests::MakeGrainMixProgram();
+        REQUIRE(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
     }
     if (model == format::MaterialModel::ProjectBrdf)
     {
@@ -197,6 +218,17 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
             CHECK(pixel.Samples == ITERATIONS + warmup);
             // A short requested capture must run past the declared warm-up. Its
             // latest ratio must not average black warm-up outputs into the environment.
+            if (isGrainMix == true)
+            {
+                // A white Lambertian under the uniform sky is a furnace that returns the sky's radiance, and the
+                // gold reflects less; the admitted estimator stays finite and inside that bound.
+                constexpr float32 FURNACE_TOLERANCE = 0.05F;
+                CAPTURE(pixel.Mean.X, pixel.Mean.Y, pixel.Mean.Z);
+                CHECK(math::IsFinite(pixel.Mean.X) == true);
+                CHECK(pixel.Mean.X > 0);
+                CHECK(pixel.Mean.X <= ENVIRONMENT.X * (1 + FURNACE_TOLERANCE));
+                continue;
+            }
             if (hasSurface == true)
             {
                 CHECK(pixel.Mean.X > 0);
