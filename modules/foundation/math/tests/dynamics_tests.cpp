@@ -156,3 +156,90 @@ TEST_CASE("Radial sweep agrees with independent sampled overlap", "[math][dynami
         }
     }
 }
+
+TEST_CASE("Exponential damping weight composes and snaps explicitly", "[math][dynamics]")
+{
+    constexpr float64 HALF_LIFE = 0.2;
+    float64 full = -1.0;
+    float64 half = -1.0;
+    REQUIRE(IsSuccess(TryComputeExponentialDampingWeight(HALF_LIFE, 0.4, full)));
+    REQUIRE(IsSuccess(TryComputeExponentialDampingWeight(HALF_LIFE, 0.2, half)));
+    REQUIRE(NearlyEqual(half, 0.5, 1e-15, 1e-15));
+    REQUIRE(NearlyEqual(full, 0.75, 1e-15, 1e-15));
+    // Two half steps leave the same remaining fraction as one full step.
+    REQUIRE(NearlyEqual(1.0 - full, (1.0 - half) * (1.0 - half), 1e-15, 1e-15));
+    float64 tiny = -1.0;
+    REQUIRE(IsSuccess(TryComputeExponentialDampingWeight(1.0, 1e-20, tiny)));
+    REQUIRE(tiny > 0.0); // Naive 1-exp(-x) would produce zero.
+    REQUIRE(NearlyEqual(tiny, 0.693147180559945309417e-20, 1e-30, 1e-15));
+    float64 weight = -1.0;
+    REQUIRE(IsSuccess(TryComputeExponentialDampingWeight(0.0, 0.1, weight)));
+    REQUIRE(weight == 1.0);
+    REQUIRE(IsSuccess(TryComputeExponentialDampingWeight(0.0, 0.0, weight)));
+    REQUIRE(weight == 0.0);
+    REQUIRE(IsSuccess(TryComputeExponentialDampingWeight(1e-300, 1e300, weight)));
+    REQUIRE(weight == 1.0);
+    weight = 0.25;
+    REQUIRE(TryComputeExponentialDampingWeight(-1.0, 1.0, weight) == MathStatus::InvalidArgument);
+    REQUIRE(TryComputeExponentialDampingWeight(1.0, -1.0, weight) == MathStatus::InvalidArgument);
+    REQUIRE(TryComputeExponentialDampingWeight(std::numeric_limits<float64>::quiet_NaN(), 1.0, weight) ==
+            MathStatus::NonFiniteInput);
+    REQUIRE(weight == 0.25);
+}
+
+TEST_CASE("Critical spring steps are exact for a held target", "[math][dynamics]")
+{
+    constexpr float64 SMOOTH_TIME = 0.3;
+    const Vector3d start{1.0, -2.0, 0.5};
+    const Vector3d startVelocity{0.25, 0.0, -3.0};
+    CriticalSpringStep full;
+    CriticalSpringStep half;
+    REQUIRE(IsSuccess(TryComputeCriticalSpringStep(SMOOTH_TIME, 0.5, full)));
+    REQUIRE(IsSuccess(TryComputeCriticalSpringStep(SMOOTH_TIME, 0.25, half)));
+    REQUIRE(full.Omega == 2.0 / SMOOTH_TIME);
+    const CriticalSpringState initial{ .Displacement = start, .Velocity = startVelocity };
+    CriticalSpringState spring;
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(full, initial, spring)));
+    CriticalSpringState halves;
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(half, initial, halves)));
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(half, halves, halves)));
+    REQUIRE(Length(spring.Displacement - halves.Displacement) < 1e-14);
+    REQUIRE(Length(spring.Velocity - halves.Velocity) < 1e-13);
+    // Closed form x(t) = (e0 + (v0 + omega e0) t) exp(-omega t) for one channel.
+    const float64 omega = full.Omega;
+    const float64 expected = (start.X + (startVelocity.X + omega * start.X) * 0.5) * std::exp(-omega * 0.5);
+    REQUIRE(NearlyEqual(spring.Displacement.X, expected, 1e-15, 1e-14));
+    // Zero delta advances nothing; a zero smooth time snaps and clears velocity.
+    CriticalSpringStep step;
+    REQUIRE(IsSuccess(TryComputeCriticalSpringStep(SMOOTH_TIME, 0.0, step)));
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(step, initial, spring)));
+    REQUIRE(spring.Displacement == start);
+    REQUIRE(spring.Velocity == startVelocity);
+    REQUIRE(IsSuccess(TryComputeCriticalSpringStep(0.0, 0.1, step)));
+    REQUIRE(step.IsSnap);
+    REQUIRE(IsSuccess(TryAdvanceCriticalSpring(step, initial, spring)));
+    REQUIRE(spring.Displacement == Vector3d{});
+    REQUIRE(spring.Velocity == Vector3d{});
+}
+
+TEST_CASE("Invalid critical springs preserve caller output", "[math][dynamics]")
+{
+    CriticalSpringStep step{ .Omega = 7.0 };
+    REQUIRE(TryComputeCriticalSpringStep(-1.0, 1.0, step) == MathStatus::InvalidArgument);
+    REQUIRE(TryComputeCriticalSpringStep(1.0, -1.0, step) == MathStatus::InvalidArgument);
+    REQUIRE(TryComputeCriticalSpringStep(std::numeric_limits<float64>::infinity(), 1.0, step) ==
+            MathStatus::NonFiniteInput);
+    REQUIRE(TryComputeCriticalSpringStep(std::numeric_limits<float64>::denorm_min(), 1.0, step) ==
+            MathStatus::OutOfRange);
+    REQUIRE(step.Omega == 7.0);
+    REQUIRE(IsSuccess(TryComputeCriticalSpringStep(1.0, 1.0, step)));
+    CriticalSpringState spring{ .Displacement = {1.0, 2.0, 3.0}, .Velocity = {4.0, 5.0, 6.0} };
+    REQUIRE(TryAdvanceCriticalSpring(step,
+                                     { .Displacement = {std::numeric_limits<float64>::quiet_NaN(), 0.0, 0.0} },
+                                     spring) == MathStatus::NonFiniteInput);
+    REQUIRE(TryAdvanceCriticalSpring(step,
+                                     { .Displacement = {1e308, 0.0, 0.0}, .Velocity = {1e308, 0.0, 0.0} },
+                                     spring) == MathStatus::OutOfRange);
+    REQUIRE(spring.Displacement == Vector3d{1.0, 2.0, 3.0});
+    REQUIRE(spring.Velocity == Vector3d{4.0, 5.0, 6.0});
+}

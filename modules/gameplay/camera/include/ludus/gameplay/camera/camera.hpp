@@ -16,8 +16,14 @@ enum class CameraStatus : foundation::uint8
     InvalidInput,
     /// A finite calculation exceeded its representable range.
     OutOfRange,
-    /// The follow recipe has no resolved target.
+    /// The follow or orbit recipe has no resolved target.
     MissingTarget,
+    /// A fixed request capacity (for example director override slots) is exhausted; nothing changed.
+    CapacityExceeded,
+    /// A handle is stale, released, retired or owned by another director; nothing changed.
+    StaleHandle,
+    /// A director has neither a base rig nor an active override to publish.
+    NoSelection,
 };
 
 /// Rigid camera pose: right handed, +Y up, local forward -Z; no scale/shear.
@@ -27,6 +33,8 @@ struct CameraPose final
     foundation::math::Vector3d Position{};
     /// Unit local-to-world rotation; squared-length tolerance is 1e-4.
     foundation::math::Quaternion Orientation{};
+    /// Exact memberwise comparison.
+    [[nodiscard]] friend constexpr bool operator==(const CameraPose&, const CameraPose&) = default;
 };
 
 /// Explicit reverse-Z [0,1] projection policy; infinity is a tag, never a sentinel.
@@ -55,6 +63,8 @@ struct CameraLens final
     foundation::float32 NearPlane = 0.0F;
     /// Finite far distance in world units; ignored only for PerspectiveInfinite.
     foundation::float32 FarPlane = 100.0F;
+    /// Exact memberwise comparison.
+    [[nodiscard]] friend constexpr bool operator==(const CameraLens&, const CameraLens&) = default;
 };
 
 /// Value-only publication; owns no entity, query, surface or GPU references.
@@ -76,8 +86,11 @@ struct CameraSample final
     foundation::float32 RenderAlpha = 1.0F;
     /// Game-owned presentation sequence; zero is permitted for previews.
     foundation::uint64 PresentationSequence = 0;
-    /// Game-owned reset revision for world replacement, cuts or binding changes.
+    /// Reset revision for world replacement, cuts or binding changes; game-owned for C0 evaluation and owned
+    /// by the director for its publications.
     foundation::uint64 DiscontinuityRevision = 0;
+    /// Exact memberwise comparison.
+    [[nodiscard]] friend constexpr bool operator==(const CameraSample&, const CameraSample&) = default;
 };
 
 /// Check finite pose, unit orientation, active lens fields and sample metadata.

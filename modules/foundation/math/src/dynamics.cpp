@@ -10,6 +10,8 @@ namespace ludus::foundation::math
 namespace
 {
 constexpr float64 kRoundoff = 64.0 * std::numeric_limits<float64>::epsilon();
+/// ln(2), converting a half-life into an exponential rate.
+constexpr float64 NATURAL_LOG_OF_TWO = 0.693147180559945309417;
 
 [[nodiscard]] Vector3d Divide(Vector3d value, float64 divisor) noexcept
 {
@@ -53,6 +55,99 @@ MathStatus TryComputeLinearDragStep(float64 rate, float64 dt, LinearDragStep& ou
         }
     }
     out = result;
+    return MathStatus::Success;
+}
+
+MathStatus
+TryComputeExponentialDampingWeight(float64 halfLifeSeconds, float64 deltaSeconds, float64& outWeight) noexcept
+{
+    if (IsFinite(halfLifeSeconds) == false || IsFinite(deltaSeconds) == false)
+    {
+        return MathStatus::NonFiniteInput;
+    }
+    if (halfLifeSeconds < 0.0 || deltaSeconds < 0.0)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    if (deltaSeconds == 0.0)
+    {
+        outWeight = 0.0;
+        return MathStatus::Success;
+    }
+    if (halfLifeSeconds == 0.0)
+    {
+        outWeight = 1.0;
+        return MathStatus::Success;
+    }
+    // ln(2) * dt / h may overflow for a huge delta over a tiny half-life; the limit is a full snap.
+    const float64 ratio = deltaSeconds / halfLifeSeconds;
+    const float64 weight = IsFinite(ratio) == true ? -std::expm1(-NATURAL_LOG_OF_TWO * ratio) : 1.0;
+    outWeight = Clamp(weight, 0.0, 1.0);
+    return MathStatus::Success;
+}
+
+MathStatus
+TryComputeCriticalSpringStep(float64 smoothTimeSeconds, float64 deltaSeconds, CriticalSpringStep& outStep) noexcept
+{
+    if (IsFinite(smoothTimeSeconds) == false || IsFinite(deltaSeconds) == false)
+    {
+        return MathStatus::NonFiniteInput;
+    }
+    if (smoothTimeSeconds < 0.0 || deltaSeconds < 0.0)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    CriticalSpringStep result{ .DeltaSeconds = deltaSeconds };
+    if (smoothTimeSeconds == 0.0)
+    {
+        result.IsSnap = true;
+        outStep = result;
+        return MathStatus::Success;
+    }
+    result.Omega = 2.0 / smoothTimeSeconds;
+    if (IsFinite(result.Omega) == false)
+    {
+        return MathStatus::OutOfRange;
+    }
+    const float64 exponent = result.Omega * deltaSeconds;
+    result.Decay = IsFinite(exponent) == true ? std::exp(-exponent) : 0.0;
+    outStep = result;
+    return MathStatus::Success;
+}
+
+MathStatus TryAdvanceCriticalSpring(const CriticalSpringStep& step,
+                                    CriticalSpringState current,
+                                    CriticalSpringState& outState) noexcept
+{
+    const Vector3d displacement = current.Displacement;
+    const Vector3d velocity = current.Velocity;
+    if (IsFinite(displacement) == false || IsFinite(velocity) == false || IsFinite(step.Omega) == false ||
+        IsFinite(step.DeltaSeconds) == false || IsFinite(step.Decay) == false)
+    {
+        return MathStatus::NonFiniteInput;
+    }
+    if (step.DeltaSeconds == 0.0)
+    {
+        outState = current;
+        return MathStatus::Success;
+    }
+    if (step.IsSnap == true)
+    {
+        outState = {};
+        return MathStatus::Success;
+    }
+    // Thanks to Thomas Lowe, "Critically Damped Ease-In/Ease-Out Smoothing", Game Programming Gems 4, section 1.10,
+    // pp. 95-101, and Ryan Juckett, "Damped Springs" (https://www.ryanjuckett.com/damped-springs/), for the exact
+    // constant-target solution. Ludus uses accurate exponentials and checked ranges instead of the rational
+    // approximation; reading notes: docs/architecture/camera-systems-gems-review.md.
+    const Vector3d coupled = velocity + displacement * step.Omega;
+    const Vector3d nextDisplacement = (displacement + coupled * step.DeltaSeconds) * step.Decay;
+    const Vector3d nextVelocity = (velocity - coupled * (step.Omega * step.DeltaSeconds)) * step.Decay;
+    if (IsFinite(coupled) == false || IsFinite(nextDisplacement) == false || IsFinite(nextVelocity) == false)
+    {
+        return MathStatus::OutOfRange;
+    }
+    outState = { .Displacement = nextDisplacement, .Velocity = nextVelocity };
     return MathStatus::Success;
 }
 
