@@ -277,6 +277,23 @@ ToneCurve GetToneCurve(const format::Pass& pass) noexcept
 {
     return pass.ToneMappingCurve == format::DisplayCurve::PbrNeutral ? ToneCurve::PbrNeutral : ToneCurve::Reinhard;
 }
+/// An execution report with no lowering: every pass and resource mapping ABSENT.
+RenderGraphExecutionReport MakeExecutionReport(RenderGraphExecution execution) noexcept
+{
+    RenderGraphExecutionReport report;
+    report.Execution = execution;
+    for (uint32& pass : report.GraphPasses)
+    {
+        pass = format::ABSENT;
+    }
+    for (usize resource = 0; resource < format::MAX_RESOURCES; ++resource)
+    {
+        report.GraphResources[resource] = format::ABSENT;
+        report.FirstPass[resource] = format::ABSENT;
+        report.LastPass[resource] = format::ABSENT;
+    }
+    return report;
+}
 /// Editor overlays belong to display color, never the visibility codec's triangle/instance IDs.
 ViewDescription MakeRasterPassView(const ViewDescription& source,
                                    const RenderGraphPrograms& programs,
@@ -935,6 +952,9 @@ struct RenderGraph::State final
     uint32 AccumulationLimitOverride = 0;
     /// Capture-only row bands per ray sample (SetRayTileCount), each rendered by its own submission.
     uint32 RayTileCount = 1;
+    /// Recording path of later frames (SetExecution) and the latest ordered-graph lowering.
+    RenderGraphExecution Execution = RenderGraphExecution::Direct;
+    RenderGraphExecutionReport ExecutionReport = MakeExecutionReport(RenderGraphExecution::Direct);
     /// Failure summary read-back of PollRayFailures, in flight while HasFailureReadback.
     rhi::ReadbackTicket FailureReadback{};
     bool HasFailureReadback = false;
@@ -1032,6 +1052,9 @@ struct RenderGraph::State final
         StaticArray<core::UniquePtr<internal::RenderGraphDeferredTargets>, format::MAX_PASSES> DeferredTargets{};
         rhi::OrderedGraph RayGraph{};
         bool IsRayGraphPrepared = false;
+        /// RenderGraphExecution::OrderedGraph lowering of the next frame; rebuilt between frames.
+        rhi::OrderedGraph RasterGraph{};
+        bool IsRasterGraphPrepared = false;
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
         StaticArray<StaticArray<SceneItem, format::MAX_ITEMS>, format::MAX_PASSES> Items{};
         StaticArray<usize, format::MAX_PASSES> Counts{};
@@ -1052,6 +1075,7 @@ struct RenderGraph::State final
             if (OwnerOrNull != nullptr)
             {
                 static_cast<void>(rhi::DiscardOrderedGraph(OwnerOrNull->Device, RayGraph));
+                static_cast<void>(rhi::DiscardOrderedGraph(OwnerOrNull->Device, RasterGraph));
                 for (usize i = 0; i < OwnerOrNull->Header.PassCount; ++i)
                 {
                     DeferredPasses[i].Reset();
@@ -1243,6 +1267,7 @@ struct RenderGraph::State final
         // Every replacement is ready. Retire the old binding snapshots before swapping them.
         static_cast<void>(rhi::DiscardOrderedGraph(Device, Current->RayGraph));
         Current->IsRayGraphPrepared = false;
+        DiscardRasterGraph();
         // Publication cannot allocate or fail, and no producer is open.
         for (usize i = 0; i < Header.PassCount; ++i)
         {
@@ -1694,6 +1719,18 @@ struct RenderGraph::State final
             {
                 continue;
             }
+            if (Execution == RenderGraphExecution::OrderedGraph)
+            {
+                // PrepareEncoding lowered the whole admitted plan, which is this one pass, between frames.
+                if (Current->IsRasterGraphPrepared == false)
+                {
+                    return RecordingStatus = Status::NotReady;
+                }
+                HasAttemptedDraw = true;
+                RecordingStatus = rhi::EncodeOrderedGraph(Device, surface, Current->RasterGraph);
+                Current->IsRasterGraphPrepared = false;
+                continue;
+            }
             const uint32 backing = Resources[operation.Depth].Backing;
             rhi::RasterPassDescription description;
             description.Color = Textures[backing];
@@ -1735,6 +1772,173 @@ struct RenderGraph::State final
                     : GetContext(operation.Program).DrawView(Current->Views[pass], description);
         }
         return RecordingStatus;
+    }
+    /// Whether the cooked plan fits RenderGraphExecution::OrderedGraph: one flat ColorAndDepth pass clearing an
+    /// offscreen allocation, outside the forward, deferred, visibility and light-transformer profiles.
+    [[nodiscard]] bool IsOrderedProfile() const noexcept
+    {
+        if (Header.PassCount != 1 || HasForwardProfile() == true || Programs.HasClusteredDeferred == true ||
+            Programs.HasClusteredForward == true || Model.Get() != nullptr)
+        {
+            return false;
+        }
+        const format::Pass& operation = Passes[0];
+        if (operation.Program != format::Technique::ColorAndDepth || operation.Color == format::ABSENT ||
+            operation.Depth == format::ABSENT)
+        {
+            return false;
+        }
+        const format::Resource& depth = Resources[operation.Depth];
+        return GetStage(Programs, operation.Program, rhi::ShaderStage::Vertex).Inputs.GetSize() !=
+                   format::VISIBILITY_INPUT_COUNT &&
+               depth.IsSurface == 0 && Resources[depth.Backing].IsSurface == 0 &&
+               Resources[operation.Color].IsSurface == 0 &&
+               static_cast<rhi::RasterLoad>(operation.ColorLoad) == rhi::RasterLoad::Clear &&
+               static_cast<rhi::RasterLoad>(operation.DepthLoad) == rhi::RasterLoad::Clear;
+    }
+    /// Drop the drawable scene's prepared, unencoded ordered graph, releasing its leases without GPU work.
+    void DiscardRasterGraph() noexcept
+    {
+        if (Current.Get() != nullptr)
+        {
+            static_cast<void>(rhi::DiscardOrderedGraph(Device, Current->RasterGraph));
+            Current->IsRasterGraphPrepared = false;
+        }
+    }
+    /// Lower the drawable scene to Current->RasterGraph between frames, after its producer completed, and copy
+    /// the outcome into ExecutionReport. Packet admission and the device's draw/resource limits are checked
+    /// before the graph is created, so a rejection records no command and leaves the output untouched.
+    Status PrepareRasterGraph() noexcept
+    {
+        RenderGraphExecutionReport report = MakeExecutionReport(RenderGraphExecution::OrderedGraph);
+        report.Result = LowerRasterGraph(report);
+        ExecutionReport = report;
+        return report.Result;
+    }
+    Status LowerRasterGraph(RenderGraphExecutionReport& inoutReport) noexcept
+    {
+        // The admitted profile's only pass; its color and depth share one backing allocation.
+        constexpr uint32 PASS = 0;
+        // That allocation is the first import, so it is RHI resource zero.
+        constexpr uint32 ATTACHMENT_RESOURCE = 0;
+        const format::Pass& operation = Passes[PASS];
+        rhi::DeviceInfo information;
+        const rhi::DeviceStatus queried = rhi::GetDeviceInfo(Device, information);
+        if (queried != rhi::DeviceStatus::Ready)
+        {
+            return MapDeviceStatus(queried);
+        }
+        inoutReport.DrawLimit = information.Profile.Storage.DrawsPerPlan;
+        inoutReport.ResourceLimit = information.Profile.Storage.ResourcesPerGraph;
+        Renderer& context = GetContext(operation.Program);
+        Renderer::OpaqueViewCost cost;
+        Status status = context.measureOpaqueView(Current->Views[PASS], cost);
+        if (status != Status::Ready)
+        {
+            inoutReport.FailedPass = PASS;
+            return status;
+        }
+        inoutReport.DrawCount = cost.DrawCount;
+        inoutReport.ResourceCount = 1 + cost.BufferCount;
+        // The pass declares the attachment write and every buffer, so its uses equal the graph's resources.
+        if (inoutReport.DrawCount > inoutReport.DrawLimit || inoutReport.ResourceCount > inoutReport.ResourceLimit)
+        {
+            inoutReport.FailedPass = PASS;
+            return Status::CapacityExceeded;
+        }
+        const uint32 backing = Resources[operation.Depth].Backing;
+        bool isExported = false;
+        for (usize resource = 0; resource < Header.ResourceCount; ++resource)
+        {
+            isExported =
+                isExported == true || (Resources[resource].Backing == backing && Resources[resource].IsExported == 1);
+        }
+        rhi::OrderedGraph graph;
+        status = rhi::CreateOrderedGraph(Device, graph);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        rhi::RasterTextureState textureState;
+        rhi::GraphVersion imported;
+        rhi::GraphVersion written;
+        status = rhi::GetTextureState(Device, Textures[backing], textureState);
+        if (status == Status::Ready)
+        {
+            // Exports end ready for sampling consumers; other backings stay attachments, as the direct path leaves
+            // them.
+            status = rhi::ImportGraphTexture(Device,
+                                             graph,
+                                             Textures[backing],
+                                             textureState,
+                                             isExported == true ? rhi::RasterTextureUse::SampledFragment
+                                                                : rhi::RasterTextureUse::ColorAttachment,
+                                             imported);
+        }
+        if (status == Status::Ready)
+        {
+            rhi::RasterPassDescription attachment;
+            attachment.Color = Textures[backing];
+            attachment.ColorLoad = static_cast<rhi::RasterLoad>(operation.ColorLoad);
+            attachment.ColorStore = static_cast<rhi::RasterStore>(operation.ColorStore);
+            attachment.DepthLoad = static_cast<rhi::RasterLoad>(operation.DepthLoad);
+            attachment.DepthStore = static_cast<rhi::RasterStore>(operation.DepthStore);
+            status = context.appendOpaqueView(Current->Views[PASS],
+                                              graph,
+                                              attachment,
+                                              PassScopes[PASS].Name.GetData(),
+                                              imported,
+                                              written);
+        }
+        if (status == Status::Ready && isExported == true)
+        {
+            status = rhi::AddGraphRoot(Device, graph, written, rhi::GraphRoot::Export);
+        }
+        rhi::GraphReport compiled;
+        if (status == Status::Ready)
+        {
+            // Keep unexported writes too: the direct path records every authored pass.
+            rhi::GraphCompileOptions options;
+            options.CullPasses = false;
+            status = rhi::CompileOrderedGraph(Device, graph, compiled, options);
+        }
+        rhi::GraphResourceDiagnostic lifetime;
+        if (status == Status::Ready)
+        {
+            status = rhi::GetGraphResourceDiagnostic(Device, graph, ATTACHMENT_RESOURCE, lifetime);
+        }
+        if (status != Status::Ready)
+        {
+            inoutReport.FailedPass = PASS;
+            static_cast<void>(rhi::DiscardOrderedGraph(Device, graph));
+            return status;
+        }
+        inoutReport.RasterPasses = compiled.RasterPasses;
+        inoutReport.DependencyCount = compiled.DependencyCount;
+        inoutReport.GraphPasses[PASS] = 0;
+        // Map RHI pass ordinals of the physical lifetime back to cooked serial operations.
+        const auto findCookedPass = [&inoutReport](uint32 ordinal) noexcept {
+            for (uint32 pass = 0; pass < format::MAX_PASSES; ++pass)
+            {
+                if (ordinal != rhi::GRAPH_EXTERNAL_INDEX && inoutReport.GraphPasses[pass] == ordinal)
+                {
+                    return pass;
+                }
+            }
+            return format::ABSENT;
+        };
+        for (usize resource = 0; resource < Header.ResourceCount; ++resource)
+        {
+            if (Resources[resource].Backing == backing)
+            {
+                inoutReport.GraphResources[resource] = ATTACHMENT_RESOURCE;
+                inoutReport.FirstPass[resource] = findCookedPass(lifetime.FirstUse);
+                inoutReport.LastPass[resource] = findCookedPass(lifetime.LastUse);
+            }
+        }
+        Current->RasterGraph = graph;
+        Current->IsRasterGraphPrepared = true;
+        return Status::Ready;
     }
     void CommitShadowRecording() noexcept
     {
@@ -1851,6 +2055,33 @@ Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
         state.Current->IsRayGraphPrepared = false;
     }
     return Status::Ready;
+}
+Status RenderGraph::SetExecution(RenderGraphExecution execution) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true)
+    {
+        return Status::InvalidState;
+    }
+    if (execution != RenderGraphExecution::Direct && execution != RenderGraphExecution::OrderedGraph)
+    {
+        return Status::InvalidDescription;
+    }
+    if (execution == RenderGraphExecution::OrderedGraph && state.IsOrderedProfile() == false)
+    {
+        return Status::Unsupported;
+    }
+    state.DiscardRasterGraph();
+    state.Execution = execution;
+    return Status::Ready;
+}
+RenderGraphExecutionReport RenderGraph::GetExecutionReport() const noexcept
+{
+    return mState.Get() == nullptr ? MakeExecutionReport(RenderGraphExecution::Direct) : mState->ExecutionReport;
 }
 uint32 RenderGraph::GetSubmittedRaySamples() const noexcept
 {
@@ -3762,6 +3993,14 @@ Status RenderGraph::PrepareEncoding() noexcept
             return completed == Status::Pending ? Status::NotReady : completed;
         }
     }
+    if (state.Execution == RenderGraphExecution::OrderedGraph && state.Current->IsRasterGraphPrepared == false)
+    {
+        const Status lowered = state.PrepareRasterGraph();
+        if (lowered != Status::Ready)
+        {
+            return lowered;
+        }
+    }
     if (state.Current->IsRayGraphPrepared == true)
     {
         return Status::Ready;
@@ -3916,6 +4155,10 @@ Status RenderGraph::Encode(rhi::SurfaceHandle surface) noexcept
         {
             return Status::NotReady;
         }
+    }
+    if (state.Execution == RenderGraphExecution::OrderedGraph && state.Current->IsRasterGraphPrepared == false)
+    {
+        return Status::NotReady;
     }
     const Status encoded = state.EncodePasses(surface);
     state.HasExternalRecording = state.HasAttemptedDraw;

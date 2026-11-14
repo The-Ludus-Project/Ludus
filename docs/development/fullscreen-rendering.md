@@ -954,7 +954,8 @@ invocations in total, further bounded by enabled device limits. Dispatch counts
 are nonzero and at most 65535 on each axis, again clamped to enabled limits.
 `GetComputeCapabilities` is authoritative. The renderer checks these limits and
 reflection; bounds checks, shader-local synchronization and race freedom are
-kernel obligations. There is no indirect dispatch or separate asynchronous queue.
+kernel obligations. There is no separate asynchronous queue; indirect dispatch is
+the [R12a profile](#expanded-indirect-draws-and-dispatches-r12a).
 
 ### Ordered dispatches and indirect commands
 
@@ -978,8 +979,10 @@ still supplies mesh/index/instance slices and nonzero maximum `IndexCount` and
 must keep actual counts within those maxima and write zero `FirstIndex`,
 `BaseVertex` and `FirstInstance`; packet `IndexOffset` selects the mesh. Zero
 actual instance count culls the draw. The GPU arguments are not read back on the
-rendering hot path, so kernel correctness is part of this contract. The profile
+rendering hot path, so kernel correctness is part of this contract. This R4 path
 issues one indexed indirect command per packet, without indirect count buffers.
+Nonzero offsets, non-indexed commands, command counts with strides and indirect
+dispatch are the [R12a profile](#expanded-indirect-draws-and-dispatches-r12a).
 
 Vulkan lowers declared buffer uses to compute shader, vertex input, uniform
 shader or draw-indirect access/stage barriers on the existing queue. It retains
@@ -2078,6 +2081,125 @@ Thanks to Khronos Group, *Vulkan Specification*,
 and *Vulkan Guide*, [Descriptor Arrays](https://docs.vulkan.org/guide/latest/descriptor_arrays.html),
 for dynamic-offset ordering and independently enabled indexing/lifetime rules;
 and to the Slang and SPIRV-Cross teams for the target reflection/native lowering.
+
+## Expanded indirect draws and dispatches (R12a)
+
+R12a extends the R4 indexed indirect path with GPU-written offsets, non-indexed
+commands, a bounded number of commands per draw packet and indirect compute
+dispatch. Every command is read on the GPU; nothing is read back to the CPU on the
+rendering path. The [architecture milestone](../architecture/rhi-gdi.md#follow-up-milestones-r6r17)
+owns the assignment, and the API comments in `compute.h`, `raster.h`, `graph.h`
+and `profile.h` own the caller contracts.
+
+| Command | Argument record | Selected by |
+| --- | --- | --- |
+| Indexed draw | `IndexedIndirectArguments` (20 bytes) | `RasterDraw::Indirect` with `Indices` |
+| Non-indexed draw | `DrawIndirectArguments` (16 bytes) | `RasterDraw::Indirect` without `Indices` |
+| Dispatch | `DispatchIndirectArguments` (12 bytes) | `ComputeDispatch::Indirect` |
+
+### Negotiate the profile
+
+Read `DeviceProfile::Indirect` after Ready. It is zero unless
+`DeviceFeatures::IndirectRendering` is enabled, so WebGL 2 reports nothing and
+keeps its authored CPU/direct alternative. Its fields describe what the engine
+validates and lowers:
+
+- `ArgumentAlignment` is four bytes on every backend. Command offsets and
+  nonzero strides must be multiples of it.
+- `MaxCommandsPerDraw` bounds `RasterDraw::IndirectCount` (64 on every backend).
+- `HasNonIndexedDraws` admits packets without an index buffer.
+- `HasDrawOffsets` means GPU-written `FirstIndex`, `BaseVertex` and `FirstVertex`
+  are honored. Without it they must be zero.
+- `HasFirstInstance` means a GPU-written nonzero `FirstInstance` is honored.
+  Without it the kernel must write zero.
+- `HasIndirectDispatch` admits `ComputeDispatch::Indirect`.
+
+| Backend | Non-indexed | Offsets | First instance | Dispatch |
+| --- | --- | --- | --- | --- |
+| Vulkan | Yes | Yes | When the created device enabled `drawIndirectFirstInstance` (imported devices report none) | Yes |
+| Metal | Yes | Apple3+/Mac2 GPU families | Apple3+/Mac2 GPU families | Yes |
+| WebGPU | Yes | Yes | When the adapter exposes `indirect-first-instance`, which the device then requests | Yes |
+| Direct3D 12 | Yes | Yes | Yes | Yes |
+| WebGL 2 | No | No | No | No |
+
+A non-indexed packet on a profile without `HasNonIndexedDraws`, or an indirect
+dispatch without `HasIndirectDispatch`, returns `Unsupported` before native work.
+
+### Author draws and dispatches
+
+Set `RasterDraw::Indirect` to a ready `StorageIndirect` buffer. Leave `Indices`
+null, with zero `IndexOffset` and `IndexCount`, to select non-indexed commands.
+`IndirectCount` (default one) issues that many consecutive commands in order,
+`IndirectStride` bytes apart. A zero stride means the argument size. Commands
+after the first are ordered single-command calls: this is not native multi-draw,
+and no GPU-provided draw count is read. Native multi-draw and count buffers are
+R12c. Direct packets keep one command with zero stride and offset.
+
+The CPU-side counts of the packet remain conservative bounds. Every GPU command
+must satisfy them:
+
+- `FirstIndex + IndexCount <= RasterDraw::IndexCount`, counted from the packet's
+  `IndexOffset`.
+- Every index plus `BaseVertex`, and `FirstVertex + VertexCount`, stays within
+  `RasterDraw::VertexCount`.
+- `FirstInstance + InstanceCount <= RasterDraw::InstanceCount`.
+
+A zero vertex, index or instance count culls that command. Offsets apply to
+vertex-stream fetches on every backend. Shader-visible vertex and instance index
+built-ins include them on Vulkan, Metal and WebGPU, but Direct3D 12's
+`SV_InstanceID` excludes `StartInstanceLocation`, so portable shaders must not rely
+on those built-ins with nonzero offsets.
+
+Set `ComputeDispatch::Indirect` and `IndirectOffset` to read
+`DispatchIndirectArguments` on the GPU. `Groups` then holds the per-axis maxima the
+GPU counts must respect, still validated against `GetComputeCapabilities`. A zero
+count on any axis dispatches nothing. Native compute pipelines reject indirect
+dispatch.
+
+Validation precedes native work and returns `InvalidDescription` for any of:
+
+- a non-`StorageIndirect` buffer or a misaligned offset or stride;
+- a stride smaller than the argument record;
+- a zero count, or more commands than `MaxCommandsPerDraw`;
+- a command span that overflows or extends past the buffer;
+- an offset, count or stride on a packet without `Indirect`.
+
+### Declare in ordered graphs
+
+Declare `GraphAccessMode::Indirect` for the whole span a packet reads,
+`(IndirectCount - 1) * stride + argument size` bytes from `IndirectOffset`. One
+use per pass and resource can cover several packets. An indirect dispatch declares
+exactly its twelve bytes in the compute pass. A compute pass may declare
+`Indirect` only for its own indirect dispatch. A missing or short declaration
+fails compilation with `InvalidDescription` and an `ErrorPass`. A kernel that
+writes the arguments declares `StorageReadWrite` of a new version, and the
+consumer's `Indirect` read of that version yields a read-after-write dependency.
+Vulkan lowers it to a `DRAW_INDIRECT` / `INDIRECT_COMMAND_READ` barrier, which also
+covers `vkCmdDispatchIndirect`. Direct3D 12 transitions to
+`INDIRECT_ARGUMENT`. Metal and WebGPU rely on tracked resources and pass
+boundaries.
+
+### Evidence
+
+The portable conformance case `Portable R12a indirect commands honor offsets,
+counts, strides and dispatch arguments` (`ludus_rhi_render_tests` and the Windows
+`ludus_rhi_d3d12_tests`) cooks `tests/shaders/indirect_commands.slang` for every
+native target. One kernel writes every command; nothing is read back before use:
+
+- an indexed command with nonzero `FirstIndex`, `BaseVertex` and `FirstInstance`;
+- a zero-instance command 40 bytes later, consumed through `IndirectCount = 2`, with
+  a red full-image command placed where a wrong 20-byte stride would read;
+- a non-indexed command with nonzero `FirstVertex` and `FirstInstance`;
+- a three-group dispatch and an empty dispatch.
+
+The complete image must equal the direct-draw oracle, green left half and blue
+right half, and the dispatch marks are read back. Reference tests (`[indirect]` in
+`ludus_rhi_lifecycle_tests`) cover the profile and its WebGL absence, non-indexed
+admission, count, stride, alignment and span-overflow rejection, disabled-feature
+`Unsupported` results, graph span declarations and producer-to-command hazards.
+Metal runs locally. Vulkan, Direct3D 12 and WebGPU results come from their CI
+lanes, and physical-GPU qualification remains R7b. Visibility and compaction
+algorithms that produce commands remain renderer policy.
 
 ## Raster-stage storage buffers and textures (R12b)
 

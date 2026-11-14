@@ -602,6 +602,53 @@ struct RenderGraphAllocationReport final
     /// Logical color plus private depth bytes of those allocations; excludes native padding and per-view bindings.
     foundation::uint64 DeferredAttachmentBytes = 0;
 };
+/// How Render and Encode record the raster passes of the drawable scene.
+/// See "Logical resource uses and submitted work" in docs/architecture/render-graph-authoring.md.
+enum class RenderGraphExecution : foundation::uint8
+{
+    /// Each pass records through its Renderer path. The default, and the comparison control of the pilot.
+    Direct,
+    /// Pilot: lower the plan to one RHI ordered graph per frame, built between frames by PrepareEncoding and
+    /// encoded by Render/Encode. Admits a plan of exactly one ColorAndDepth pass, outside the forward,
+    /// deferred, visibility and light-transformer profiles, that clears the color and depth of one
+    /// offscreen RGBA8 allocation. Its view must hold only flat opaque packets without uniform values.
+    OrderedGraph,
+};
+/// Copied lowering of the latest PrepareEncoding in RenderGraphExecution::OrderedGraph, kept after encoding
+/// consumes the graph. Index arrays follow the cooked plan; ABSENT marks no counterpart. Pass indices are
+/// cooked serial operations, comparable with the offline plan dump's intervals.
+struct RenderGraphExecutionReport final
+{
+    /// Mode of the latest lowering attempt; Direct when none was made.
+    RenderGraphExecution Execution = RenderGraphExecution::Direct;
+    /// Ready after a compiled graph; otherwise the rejection, raised before any command was recorded.
+    rhi::RasterStatus Result = rhi::RasterStatus::NotReady;
+    /// Cooked pass whose view or capacity rejected lowering, or ABSENT.
+    foundation::uint32 FailedPass = content::render_graph_format::ABSENT;
+    /// Draw packets the plan requires, checked against DrawLimit before the graph is created.
+    foundation::uint32 DrawCount = 0;
+    /// The device's StorageLimits::DrawsPerPlan.
+    foundation::uint32 DrawLimit = 0;
+    /// RHI resources the plan requires: attachment backings, then each pass's instance and mesh buffers.
+    foundation::uint32 ResourceCount = 0;
+    /// The device's StorageLimits::ResourcesPerGraph, which also bounds one pass's declared uses.
+    foundation::uint32 ResourceLimit = 0;
+    /// Planned RHI raster pass starts of the compiled graph.
+    foundation::uint32 RasterPasses = 0;
+    /// Semantic dependencies the RHI compiler reported, including the external import and export edges.
+    foundation::uint32 DependencyCount = 0;
+    /// RHI authored pass ordinal of each cooked pass.
+    foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_PASSES> GraphPasses{};
+    /// RHI resource index of each logical resource's physical backing. Logical color and depth sharing a
+    /// backing map to one resource; the presentation surface and unused resources are ABSENT.
+    foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_RESOURCES> GraphResources{};
+    /// First cooked pass using each logical resource's backing, from the RHI lifetime of the physical
+    /// resource. A backing reports the union of the logical intervals it holds.
+    foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_RESOURCES> FirstPass{};
+    /// Last cooked pass using each logical resource's backing. Exports and readbacks remain in use beyond it,
+    /// until their consumers finish.
+    foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_RESOURCES> LastPass{};
+};
 /// Device preparation of the native raster pipelines compiled from one used technique's cooked stages.
 /// A recipe is prepared as several fixed-function native pipelines (surface and offscreen targets,
 /// conventional and reverse depth, overlay), so NativePipelines can exceed one for one recipe key.
@@ -909,6 +956,17 @@ public:
     /// when RenderGraphPrograms::HasRayTiles is false; InvalidState when uninitialized, not Ready, in a frame or
     /// between the bands of a sample. Failure leaves the graph unchanged.
     [[nodiscard]] rhi::RasterStatus SetRayTileCount(foundation::uint32 tileCount) noexcept;
+    /// Select how later frames record the drawable scene. Direct is always admitted. OrderedGraph checks the
+    /// cooked plan against the pilot profile here; its scene-dependent admission (packets, draw and resource
+    /// limits) runs in PrepareEncoding, between frames, and a rejection leaves the last output and exports
+    /// untouched with the cause in GetExecutionReport. A change discards any prepared, unencoded graph.
+    /// @param execution Recording path for later Render/Encode calls.
+    /// @return Ready when set; Unsupported for a plan outside RenderGraphExecution::OrderedGraph's profile;
+    /// InvalidState when uninitialized, not Ready, in a frame or awaiting ConfirmSubmission. Failure leaves the
+    /// graph unchanged.
+    [[nodiscard]] rhi::RasterStatus SetExecution(RenderGraphExecution execution) noexcept;
+    /// Copy the lowering of the latest ordered-graph PrepareEncoding; a default report before any attempt.
+    [[nodiscard]] RenderGraphExecutionReport GetExecutionReport() const noexcept;
     /// Ray samples submitted for every pixel of the drawable scene: whole frames, or complete rounds of bands
     /// after SetRayTileCount. Zero without a scene; a replaced scene or camera starts again from zero.
     [[nodiscard]] foundation::uint32 GetSubmittedRaySamples() const noexcept;

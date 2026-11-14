@@ -17,6 +17,8 @@ uint32 PendingToken = 0;
 uint32 ShutdownCount = 0;
 StartupError ImmediateError = StartupError::None;
 FrameStatus NextFrame = FrameStatus::Ready;
+/// Result of the next frame submission.
+FrameStatus NextFrameEnd = FrameStatus::Ready;
 Backend ActiveKind = Backend::WebGPU;
 bool SelectionSupported = true;
 Backend Kind() noexcept
@@ -68,7 +70,7 @@ FrameStatus Begin() noexcept
 FrameStatus End() noexcept
 {
     reference::CloseAnnotationScopes();
-    return FrameStatus::Ready;
+    return NextFrameEnd;
 }
 } // namespace ludus::graphics::rhi::backend
 using namespace ludus::graphics::rhi;

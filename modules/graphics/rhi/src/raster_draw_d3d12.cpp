@@ -368,11 +368,15 @@ RasterStatus RasterDraw(const RasterPacket& packet) noexcept
                             info.Streams[stream].Stride};
     }
     commands->IASetVertexBuffers(0, static_cast<UINT>(info.StreamCount), vertices.GetData());
-    const uint32 indexBytes = packet.Index32 == true ? sizeof(uint32) : sizeof(uint16);
-    const D3D12_INDEX_BUFFER_VIEW indices{GetBuffer(packet.Indices)->GetGPUVirtualAddress() + packet.IndexOffset,
-                                          packet.IndexCount * indexBytes,
-                                          packet.Index32 == true ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT};
-    commands->IASetIndexBuffer(&indices);
+    const bool isIndexed = packet.Indices != RASTER_INVALID;
+    if (isIndexed == true)
+    {
+        const uint32 indexBytes = packet.Index32 == true ? sizeof(uint32) : sizeof(uint16);
+        const D3D12_INDEX_BUFFER_VIEW indices{GetBuffer(packet.Indices)->GetGPUVirtualAddress() + packet.IndexOffset,
+                                              packet.IndexCount * indexBytes,
+                                              packet.Index32 == true ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT};
+        commands->IASetIndexBuffer(&indices);
+    }
     commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     const RasterRectangle& viewport = gArea.Viewport;
     const RasterRectangle& scissor = gArea.Scissor;
@@ -391,12 +395,18 @@ RasterStatus RasterDraw(const RasterPacket& packet) noexcept
     if (packet.Indirect != RASTER_INVALID)
     {
         ComputeBufferBarrier(packet.Indirect, GraphAccessMode::Indirect);
-        commands->ExecuteIndirect(GetIndexedIndirectSignature(),
-                                  1,
-                                  GetBuffer(packet.Indirect),
-                                  packet.IndirectOffset,
-                                  nullptr,
-                                  0);
+        // R12a: ordered single commands; one-command calls make the signature stride irrelevant.
+        ID3D12CommandSignature* signature =
+            isIndexed == true ? GetIndexedIndirectSignature() : GetDrawIndirectSignature();
+        for (uint32 command = 0; command < packet.IndirectCount; ++command)
+        {
+            commands->ExecuteIndirect(signature,
+                                      1,
+                                      GetBuffer(packet.Indirect),
+                                      packet.IndirectOffset + usize{command} * packet.IndirectStride,
+                                      nullptr,
+                                      0);
+        }
     }
     else
     {

@@ -17,6 +17,7 @@ target_sources(ludus_graphics_rhi
         src/dxil_container.cpp
         src/gpu_scope.cpp
         src/gpu_pass_timing_buffer.cpp
+        src/graphics_capture.cpp
         src/profile.cpp
         src/raster.cpp
         src/compute_workload.cpp
@@ -27,11 +28,11 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
-    PRIVATE Ludus::FoundationStrings Ludus::FoundationMath Ludus::FoundationTime
+    PRIVATE Ludus::FoundationStrings Ludus::FoundationMath Ludus::FoundationTime Ludus::FoundationFilesystem
     PUBLIC
         Ludus::FoundationBase
         Ludus::FoundationContainers
@@ -150,6 +151,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_rhi_lifecycle_tests
         tests/lifecycle_tests.cpp
         tests/gpu_scope_tests.cpp
+        tests/graphics_capture_tests.cpp
         tests/device_tests.cpp
         tests/profile_tests.cpp
         tests/raster_tests.cpp
@@ -158,6 +160,7 @@ if(LUDUS_BUILD_TESTS)
         tests/compute_tests.cpp
         tests/compute_workload_tests.cpp
         tests/raster_storage_tests.cpp
+        tests/indirect_tests.cpp
         tests/hosted_ring_tests.cpp
         tests/hosted_adapter_tests.cpp
         tests/dxil_container_tests.cpp
@@ -165,7 +168,8 @@ if(LUDUS_BUILD_TESTS)
     target_compile_definitions(ludus_rhi_lifecycle_tests PRIVATE LUDUS_RHI_TEST_STORAGE=1)
     target_include_directories(ludus_rhi_lifecycle_tests PRIVATE src)
     target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE ludus_rhi_reference_backend
-        Ludus::GraphicsRhi Ludus::FoundationMath Ludus::FoundationStrings Catch2::Catch2WithMain)
+        Ludus::GraphicsRhi Ludus::FoundationFilesystem Ludus::FoundationMath Ludus::FoundationStrings
+        Ludus::FoundationTime ludus_test_files Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_rhi_lifecycle_tests)
     ludus_enable_test_exceptions(ludus_rhi_lifecycle_tests)
     add_test(NAME ludus_rhi_lifecycle_tests COMMAND ludus_rhi_lifecycle_tests)
@@ -441,6 +445,14 @@ foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests
             SOURCE "${ordered_compute_shader}" COMPUTE PrepareDraw)
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_draw RASTER
             SOURCE "${ordered_compute_shader}" VERTEX DrawVertex FRAGMENT DrawFragment)
+        # R12a GPU-written indexed/non-indexed draws with offsets, counts and strides, and indirect dispatch.
+        set(indirect_commands_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/indirect_commands.slang")
+        ludus_compile_shader(TARGET ${conformance_target} NAME indirect_prepare
+            SOURCE "${indirect_commands_shader}" COMPUTE PrepareCommands)
+        ludus_compile_shader(TARGET ${conformance_target} NAME indirect_mark
+            SOURCE "${indirect_commands_shader}" COMPUTE MarkGroups)
+        ludus_compile_shader(TARGET ${conformance_target} NAME indirect_draw RASTER
+            SOURCE "${indirect_commands_shader}" VERTEX CommandVertex FRAGMENT CommandFragment)
         # R12b raster storage: vertex storage reads, fragment buffer/texture writes, compute texture writes.
         set(raster_storage_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/raster_storage.slang")
         ludus_compile_shader(TARGET ${conformance_target} NAME raster_storage_write RASTER RASTER_STORAGE

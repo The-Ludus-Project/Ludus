@@ -1,5 +1,6 @@
 #include "internal/backend.h"
 #include "internal/dxil_container.h"
+#include "internal/graphics_capture.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -30,6 +31,9 @@ bool gDrawn = false;
 bool gRasterDrawn = false;
 bool gRequireRaster = false;
 bool gRequireCompute = false;
+// Last accepted frame target, so a capture is not started for a frame that cannot open.
+bool isFrameTargetEmpty = false;
+bool isFrameTargetOffscreen = false;
 DeviceProfileRequirements gRequiredProfile;
 DeviceProfile gProfile;
 internal::FallbackHandler gFallback = nullptr;
@@ -97,6 +101,9 @@ void Fail(uint32 token, StartupError error) noexcept
         return;
     }
     RecordAttempt(token, gStartup.SelectedBackend, error);
+    // Abandon a capture with the adapter's cleanup while its borrowed native objects live.
+    EndGraphicsCaptureSession(error == StartupError::DeviceLost ? GraphicsCaptureError::DeviceLost
+                                                                : GraphicsCaptureError::SessionEnded);
     gToken = 0;
     gStartup.State = error == StartupError::DeviceLost ? StartupState::DeviceLost : StartupState::Failed;
     gStartup.Error = error;
@@ -339,7 +346,13 @@ FrameStatus SetFrameTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::Failed;
     }
-    return backend::SetTarget(target);
+    const FrameStatus result = backend::SetTarget(target);
+    if (result == FrameStatus::Ready)
+    {
+        isFrameTargetEmpty = target.Width == 0 || target.Height == 0;
+        isFrameTargetOffscreen = target.ShouldPresentToSurface == false;
+    }
+    return result;
 }
 FrameStatus BeginFrameStatus() noexcept
 {
@@ -355,11 +368,14 @@ FrameStatus BeginFrameStatus() noexcept
     {
         return FrameStatus::Failed;
     }
+    // An armed capture starts before the frame's command buffers exist (Metal requires it).
+    internal::BeginGraphicsCaptureFrame(isFrameTargetEmpty, isFrameTargetOffscreen);
     const auto result = backend::Begin();
     gFrame = result == FrameStatus::Ready;
     gDrawn = false;
     gRasterDrawn = false;
     internal::RasterBeginFrame();
+    internal::FinishGraphicsCaptureBegin(gFrame);
     return result;
 }
 FrameStatus EndFrameStatus() noexcept
@@ -379,6 +395,8 @@ FrameStatus EndFrameStatus() noexcept
     gFrame = false;
     const auto result = backend::End();
     internal::RasterEndFrame(result == FrameStatus::Ready || result == FrameStatus::Skipped);
+    internal::EndGraphicsCaptureFrame((result == FrameStatus::Ready || result == FrameStatus::Skipped) &&
+                                      gStartup.State == StartupState::Ready);
     return result;
 }
 bool Initialize(const ApplicationInfo& app) noexcept
@@ -420,6 +438,10 @@ void ShutdownRendering() noexcept
 }
 void Shutdown() noexcept
 {
+    // Stop or abandon a capture before any native object it borrows is released.
+    internal::EndGraphicsCaptureSession(GraphicsCaptureError::SessionEnded);
+    isFrameTargetEmpty = false;
+    isFrameTargetOffscreen = false;
     gDeviceOwner = 0;
     internal::SetGpuTimingRequest(false);
     gRayProfileRequest = false;

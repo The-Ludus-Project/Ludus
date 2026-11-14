@@ -69,6 +69,35 @@ RasterStatus ValidateCompute(DeviceHandle device, const ComputeDispatch& dispatc
         }
         packet.Groups[i] = dispatch.Groups[i];
     }
+    // R12a: Groups above are the validated per-axis maxima the GPU-written counts must respect.
+    if (RasterAccess::Owner(dispatch.Indirect) != 0)
+    {
+        const Record* indirect = Resolve(dispatch.Indirect, RasterKind::Buffer);
+        if (indirect == nullptr)
+        {
+            return RasterStatus::InvalidHandle;
+        }
+        if (indirect->Status != RasterStatus::Ready)
+        {
+            return indirect->Status == RasterStatus::Pending ? RasterStatus::NotReady : indirect->Status;
+        }
+        if (CurrentDeviceProfile().Indirect.HasIndirectDispatch == false)
+        {
+            return RasterStatus::Unsupported;
+        }
+        if (pipeline->Compute.Native.SubmitOrNull != nullptr || indirect->Buffer.Role != BufferRole::StorageIndirect ||
+            dispatch.IndirectOffset % INDIRECT_ARGUMENT_ALIGNMENT_BYTES != 0 ||
+            Fits(dispatch.IndirectOffset, sizeof(DispatchIndirectArguments), indirect->Buffer.Size) == false)
+        {
+            return RasterStatus::InvalidDescription;
+        }
+        packet.Indirect = RasterAccess::Slot(dispatch.Indirect);
+        packet.IndirectOffset = dispatch.IndirectOffset;
+    }
+    else if (dispatch.IndirectOffset != 0)
+    {
+        return RasterStatus::InvalidDescription;
+    }
     packet.Pipeline = RasterAccess::Slot(dispatch.Pipeline);
     packet.Set = RasterAccess::Slot(dispatch.Bindings);
     return RasterStatus::Ready;
@@ -79,11 +108,19 @@ void ComputeReferences(const ComputePacket& packet, bool retain) noexcept
     {
         Retain(RasterKind::ComputePipeline, packet.Pipeline);
         Retain(RasterKind::Set, packet.Set);
+        if (packet.Indirect != RASTER_INVALID)
+        {
+            Retain(RasterKind::Buffer, packet.Indirect);
+        }
     }
     else
     {
         Release(RasterKind::ComputePipeline, packet.Pipeline);
         Release(RasterKind::Set, packet.Set);
+        if (packet.Indirect != RASTER_INVALID)
+        {
+            Release(RasterKind::Buffer, packet.Indirect);
+        }
     }
 }
 RasterStatus ComputePacketStatus(const ComputePacket& packet) noexcept
@@ -95,6 +132,10 @@ RasterStatus ComputePacketStatus(const ComputePacket& packet) noexcept
         {
             return record->Status;
         }
+    }
+    if (packet.Indirect != RASTER_INVALID && At(RasterKind::Buffer, packet.Indirect).Status != RasterStatus::Ready)
+    {
+        return At(RasterKind::Buffer, packet.Indirect).Status;
     }
     return RasterStatus::Ready;
 }
@@ -110,6 +151,10 @@ RasterStatus EncodeCompute(const ComputePacket& packet) noexcept
     }
     FrameRetain(RasterKind::ComputePipeline, packet.Pipeline);
     FrameRetain(RasterKind::Set, packet.Set);
+    if (packet.Indirect != RASTER_INVALID)
+    {
+        FrameRetain(RasterKind::Buffer, packet.Indirect);
+    }
     const auto& set = At(RasterKind::Set, packet.Set).Set;
     const RasterLayout& layout = set.Description;
     for (usize i = 0; i < layout.DescriptorCount; ++i)
