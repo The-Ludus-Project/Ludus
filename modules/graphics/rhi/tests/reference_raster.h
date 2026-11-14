@@ -112,6 +112,16 @@ inline RasterStatus TransferStart = RasterStatus::Ready;
 inline RasterStatus ReadbackCopy = RasterStatus::Ready;
 inline foundation::usize Discards = 0;
 inline foundation::usize Copies = 0;
+/// R16a/R17a reference ray profile. Unavailable by default, like the browser and D3D12 backends,
+/// so unsupported-target admission stays the default; tests opt in to the static-triangle profile.
+inline bool IsRayAvailable = false;
+/// Initial status of each BLAS/TLAS build: Pending until RayBuildPoll reports completion, or Ready.
+inline RasterStatus RayBuildResult = RasterStatus::Pending;
+/// Polled status of a Pending build; Ready completes it, Failed reports a failed native build.
+inline RasterStatus RayBuildPoll = RasterStatus::Pending;
+/// Resident and scratch bytes reported for each geometry and scene build.
+inline foundation::usize RayResidentBytes = 0;
+inline foundation::usize RayScratchBytes = 0;
 /// Reset every reference counter, including the annotation journal.
 void Reset() noexcept;
 } // namespace ludus::graphics::rhi::reference

@@ -2227,6 +2227,8 @@ UV transform, nearest/bilinear filtering and clamp/repeat addressing. Geometry,
 scene and program owners can detach while accepted batches retain their versions.
 Polling never waits; shutdown drains accepted work before destroying native state.
 Build/read failures and invalid/stale handles are explicit statuses.
+Ordered graphs import Ready scenes for compute-stage queries and require a declared
+read for each bound scene; see [R16a/R17a graph reads](../development/fullscreen-rendering.md#acceleration-structure-builds-and-graph-reads-r16ar17a).
 
 ### Reference workflow and frozen profile
 

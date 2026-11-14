@@ -2311,6 +2311,106 @@ contracts, RAW/WAW reports, merge exclusion and rejection of misdeclared writes.
 exercised locally; Vulkan, Direct3D 12 and WebGPU pixel results come from their CI
 lanes. Physical-GPU qualification remains R7b.
 
+## Acceleration-structure builds and graph reads (R16a/R17a)
+
+R16a/R17a admit the immutable native ray scenes of the
+[RT0 profile](../architecture/renderer-systems.md#l6-implemented-scope-rt0-and-rt1)
+into ordered graphs. A compute pass that binds a scene declares the read, the
+graph reports the scene's build as its external producer, and the import keeps the
+scene and its geometry alive until the GPU finishes with them. The
+[architecture milestone](../architecture/rhi-gdi.md#follow-up-milestones-r6r17)
+owns the assignment; the API comments in `ray.h`, `raster.h` and `graph.h` own the
+caller contracts.
+
+### Negotiate and build
+
+Request `DeviceFeatures::RayQueries` (preferred or required) and `Compute`, then
+read `GetRayCapabilities`. It returns `Unsupported` unless both `StaticTriangles`
+and `InlineQueries` are true. Metal needs `supportsRaytracing`; Vulkan negotiates
+acceleration structures, ray queries and buffer device addresses. WebGPU, WebGL 2
+and Direct3D 12 report the profile unavailable. Without it,
+`ImportGraphRayScene`, ray creation and binding layouts with a `RayScene` entry
+return `Unsupported` before any handle is resolved. Unsupported backends keep an
+authored raster or software-traversal alternative; nothing selects one implicitly.
+
+`CreateRayGeometry` and `CreateRayScene` build asynchronously and return `Pending`.
+A scene over a `Pending` BLAS returns `NotReady` and publishes nothing. While a
+build is `Pending`, `GetRayResourceStats::BuildScratchBytes` includes its scratch;
+the scratch is released when the build becomes `Ready`. A failed build reports its
+status and is never imported as an empty structure.
+
+### Import and declare
+
+`ImportGraphRayScene` imports a `Ready` scene. It returns `NotReady` for a
+`Pending` build and leaves the graph unchanged, so setup can retry after
+`GetStatus` reports `Ready`. A duplicate import returns `InvalidDescription`.
+Scenes are immutable inputs: `NextGraphVersion` and `AddGraphRoot` reject their
+version.
+
+Every `RayScene` binding of a compute dispatch needs a
+`GraphAccessMode::AccelerationStructureRead` use of that scene in the same pass,
+with zero `Offset` and `Size` and `RasterVisibility::Compute`. Compilation fails
+with `InvalidDescription`:
+
+- at the pass (`ErrorPass`) when a bound scene is undeclared;
+- at the resource (`ErrorResource`) for a scene read in a raster pass, a nonzero
+  range, another visibility, another access mode on a scene, or a scene read of a
+  buffer.
+
+`AccelerationStructureBuild` appears only in reports. `AddGraphPass` rejects it as
+an authored use, because builds are RHI operations in this profile. The first pass
+that reads each scene receives one external `ReadAfterWrite` dependency from
+`AccelerationStructureBuild` to `AccelerationStructureRead`. Later readers of the
+same scene have no mutual dependency.
+
+Cook query kernels with `ludus_compile_shader(... NATIVE_RAY_QUERIES COMPUTE ...)`.
+Keep each `RayQuery` in a `[noinline]` function with by-value parameters, like the
+renderer's `TraceNative`; the Metal build rejects a query inlined into the kernel
+body. The fixed `SubmitRayQueries` batches keep their own program, cooked with
+`ludus_compile_ray_queries`.
+
+### Synchronize and retain
+
+Import requires a completed build, so no graph pass can race it. On Vulkan the
+build command buffer ends with an `ACCELERATION_STRUCTURE_BUILD` to
+`COMPUTE_SHADER` barrier (`ACCELERATION_STRUCTURE_WRITE` to
+`ACCELERATION_STRUCTURE_READ`) on the single queue. That barrier orders the build
+before every later submission. On Metal a scene is `Ready` only after its build
+command buffer has completed. Graph passes therefore encode no additional barrier
+for scene reads.
+
+The import retains the exact scene incarnation and, through it, each BLAS after
+their public handles are destroyed. `DiscardOrderedGraph` releases them. Execution
+retains them in the frame until the frame's GPU completion, then collection
+retires them. `GetRayResourceStats::DetachedBytes` reports retained bytes whose
+public handles are gone.
+
+### Scope
+
+This profile admits immutable scenes and compute-stage inline queries. Graph-owned
+builds, updates, refits, compaction and acceleration-structure copies are R16b.
+Procedural and motion inputs are R16c. Dedicated ray pipelines and function tables
+in graphs are R17b. Other query stages are R17c.
+
+### Evidence
+
+`Ordered graphs read declared native scenes in compute ray queries`
+(`ludus_rhi_ray_tests`) cooks `tests/shaders/graph_ray_query.slang`. It builds one
+triangle BLAS and a two-instance TLAS with a translated second instance, then
+reads it in an ordered compute pass after the public scene, geometry and binding
+handles are destroyed. Four rays cover a hit on each instance, a miss between them,
+and a miss whose interval ends before the triangle. The test checks the hit flag,
+instance and primitive IDs, and the distance, then that the retained resources
+retire after completion. The reference-backend `[ray][graph]` cases in
+`ludus_rhi_lifecycle_tests` cover unsupported-target admission, `Pending`/`Failed`
+build and import rollback, scratch release, duplicate and immutable versions,
+missing and malformed declarations, the build dependency, and retention through
+discard and execution.
+
+Metal runs locally. The Linux CI adapter (llvmpipe) lacks the profile and skips the
+native case, so Vulkan hit/miss evidence requires a ray-capable host. Physical-GPU
+qualification remains R7b.
+
 ## Raster world coordinate grid
 
 `ViewDescription::WorldGrid` opts a raster view into an adaptive world grid. Set

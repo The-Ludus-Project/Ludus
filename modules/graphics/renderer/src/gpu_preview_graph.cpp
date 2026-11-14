@@ -33,6 +33,8 @@ constexpr usize QUAD_INDEX_COUNT = 6;
 constexpr usize QUAD_BYTES = sizeof(math::Vector2) * QUAD_VERTEX_COUNT;
 constexpr usize INDEX_BYTES = sizeof(uint16) * QUAD_INDEX_COUNT;
 constexpr usize IMAGE_PARAMETERS_BYTES = LUDUS_GPU_PREVIEW_VECTOR_BYTES;
+/// A native-query kernel binds at most one ray scene, declared as one acceleration-structure read.
+constexpr usize RAY_SCENE_USE_COUNT = 1;
 struct GpuGraphResources final
 {
     struct BufferEntry final
@@ -46,10 +48,42 @@ struct GpuGraphResources final
         rhi::TextureHandle Handle{};
         rhi::GraphVersion Version{};
     };
+    struct SceneEntry final
+    {
+        rhi::RaySceneHandle Handle{};
+        rhi::GraphVersion Version{};
+    };
     StaticArray<BufferEntry, GRAPH_SEQUENCE_RESOURCE_COUNT> Buffers{};
     StaticArray<TextureEntry, content::render_graph_format::MAX_RAY_PASSES> Textures{};
+    StaticArray<SceneEntry, content::render_graph_format::MAX_RAY_PASSES> Scenes{};
     usize BufferCount = 0;
     usize TextureCount = 0;
+    usize SceneCount = 0;
+    /// Import a native scene once per graph; every pass that binds it declares the same version.
+    Status ImportScene(rhi::DeviceHandle device,
+                       rhi::OrderedGraph graph,
+                       rhi::RaySceneHandle scene,
+                       rhi::GraphVersion& outVersion) noexcept
+    {
+        for (usize index = 0; index < SceneCount; ++index)
+        {
+            if (Scenes[index].Handle == scene)
+            {
+                outVersion = Scenes[index].Version;
+                return Status::Ready;
+            }
+        }
+        if (SceneCount == Scenes.GetSize())
+        {
+            return Status::CapacityExceeded;
+        }
+        const Status status = rhi::ImportGraphRayScene(device, graph, scene, outVersion);
+        if (status == Status::Ready)
+        {
+            Scenes[SceneCount++] = {scene, outVersion};
+        }
+        return status;
+    }
     Status ImportBuffer(rhi::DeviceHandle device,
                         rhi::OrderedGraph graph,
                         rhi::BufferHandle buffer,
@@ -245,7 +279,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     // summary.
     StaticArray<rhi::GraphUse,
                 LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-                    LUDUS_GRAPH_FAILURE_BINDING_COUNT>
+                    LUDUS_GRAPH_FAILURE_BINDING_COUNT + RAY_SCENE_USE_COUNT>
         computeUses{{{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
                      {versions[1],
                       rhi::GraphAccessMode::Uniform,
@@ -324,6 +358,25 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           rhi::GraphAccessMode::StorageReadWrite,
                                           0,
                                           job.RayPathCapture.Size,
+                                          rhi::RasterVisibility::Compute};
+    }
+    // R17a: a native-query kernel reads its bound scene through a declared acceleration-structure use.
+    for (usize index = 0; index < state.ComputeBindingCount; ++index)
+    {
+        if (state.ComputeBindings[index].Kind != rhi::RasterBindingKind::RayScene)
+        {
+            continue;
+        }
+        rhi::GraphVersion scene;
+        status = inoutResources.ImportScene(device, graph, job.NativeScene, scene);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        computeUses[computeUseCount++] = {scene,
+                                          rhi::GraphAccessMode::AccelerationStructureRead,
+                                          0,
+                                          0,
                                           rhi::RasterVisibility::Compute};
     }
     if (state.HasLtcTable == true)
