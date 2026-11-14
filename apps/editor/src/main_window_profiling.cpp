@@ -3,6 +3,9 @@
 #include "internal/main_window.h"
 #include "internal/profiling_panel.h"
 #include "internal/world_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/play_viewport_source.h"
+#endif
 
 #include <QAction>
 #include <QDockWidget>
@@ -25,6 +28,16 @@ void MainWindow::setupProfiling()
     };
     connect(World_, &WorldWorkspace::RenderPreviewChanged, mProfilingPanel, updatePreview);
     connect(&mProfilingPanel->GetController(), &ProfilingController::Changed, World_, updatePreview);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // GPU recordings target the game while one plays in the World viewport; an active
+    // recording keeps its game, and the completion notification retries the binding.
+    const auto updateHosted = [this]() {
+        PlayViewportSource* playOrNull = World_->GetPlaySourceOrNull();
+        static_cast<void>(mProfilingPanel->GetController().SetHostedTarget(playOrNull, playOrNull));
+    };
+    connect(World_, &WorldWorkspace::PlayInViewportChanged, mProfilingPanel, updateHosted);
+    connect(&mProfilingPanel->GetController(), &ProfilingController::Changed, World_, updateHosted);
+#endif
     connect(mRecordProfileAction, &QAction::triggered, this, [this]() { showToolWindow(mProfilingDock); });
 }
 } // namespace ludus::editor

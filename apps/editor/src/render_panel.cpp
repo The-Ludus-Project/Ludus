@@ -350,6 +350,10 @@ bool RenderPanel::IsPlaying() const noexcept
 {
     return mIsPlaying;
 }
+PlayViewportSource* RenderPanel::GetPlaySourceOrNull() const noexcept
+{
+    return mIsPlaying == true ? mPlayOrNull : nullptr;
+}
 QString RenderPanel::GetPlayUnavailableReason() const
 {
     return mPlayUnavailableReason;

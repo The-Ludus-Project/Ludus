@@ -36,6 +36,8 @@ public:
     Array<uint8> Bytes;
     profile::GpuTraceCoverage Coverage;
     ViewportTraceSnapshot ViewportSnapshot;
+    HostedProducerRecord HostedProducer;
+    bool IsHosted = false;
     QString Destination;
     QString Error;
     bool ShouldIncludeCpu = false;
@@ -73,12 +75,19 @@ protected:
             Error = QStringLiteral("No trace data was recorded, or serialization failed.");
             return;
         }
-        if (ShouldSerialize == true && ViewportSnapshot.StartedTicks != 0)
+        if (ShouldSerialize == true && (ViewportSnapshot.StartedTicks != 0 || IsHosted == true))
         {
             const QByteArray original(reinterpret_cast<const char*>(Bytes.GetData()),
                                       static_cast<qsizetype>(Bytes.GetSize()));
             QJsonObject trace = QJsonDocument::fromJson(original).object();
-            AppendViewportTrace(trace, ViewportSnapshot);
+            if (ViewportSnapshot.StartedTicks != 0)
+            {
+                AppendViewportTrace(trace, ViewportSnapshot);
+            }
+            if (IsHosted == true)
+            {
+                AppendHostedProducerTrace(trace, HostedProducer);
+            }
             const QByteArray serialized = QJsonDocument(trace).toJson(QJsonDocument::Compact);
             if (Bytes.TryResize(static_cast<usize>(serialized.size())) == false)
             {
@@ -136,6 +145,120 @@ bool ProfilingController::SetPreviewSource(RenderPreview* preview)
     connectPreview();
     Q_EMIT Changed();
     return true;
+}
+
+bool ProfilingController::SetHostedTarget(HostedRecordingTarget* targetOrNull, QObject* lifetimeOrNull)
+{
+    LUDUS_REQUIRE(targetOrNull == nullptr || lifetimeOrNull != nullptr);
+    if (targetOrNull == mHostedTargetOrNull && mHostedLifetime.data() == lifetimeOrNull)
+    {
+        return true;
+    }
+    if (GetState() == ProfilingState::Recording || GetState() == ProfilingState::Finalizing)
+    {
+        return false;
+    }
+    mHostedTargetOrNull = targetOrNull;
+    mHostedLifetime = lifetimeOrNull;
+    Q_EMIT Changed();
+    return true;
+}
+
+bool ProfilingController::isHostedConnected() const noexcept
+{
+    return mHostedTargetOrNull != nullptr && mHostedLifetime.isNull() == false &&
+           mHostedTargetOrNull->IsRecordingConnected() == true;
+}
+
+QString ProfilingController::GetTargetDescription() const
+{
+    if (isHostedConnected() == true)
+    {
+        return QStringLiteral("GPU: the game playing in the World viewport (process %1). CPU: editor process.")
+            .arg(mHostedTargetOrNull->GetProducerProcessId());
+    }
+    return QStringLiteral("GPU: the World viewport's scene device. CPU: editor process.");
+}
+
+usize ProfilingController::GetRecordedSampleCount() const noexcept
+{
+    if (mState == ProfilingState::Recording)
+    {
+        return mIsHosted == true ? mHosted.GetSampleCount() : mSamples.GetSize();
+    }
+    return mCompletedSampleCount;
+}
+
+const HostedProducerRecord& ProfilingController::GetHostedProducer() const noexcept
+{
+    return mIsHosted == true && mState == ProfilingState::Recording ? mHosted.GetProducer() : mHostedProducer;
+}
+
+bool ProfilingController::startHosted(const QString& destination)
+{
+    QString reason;
+    const uint64 now = time::NowTicks();
+    if (mHosted.Start(*mHostedTargetOrNull, MAX_GPU_SAMPLES, now, reason) == false)
+    {
+        mStatus = QStringLiteral("Cannot record the game playing in the viewport: %1").arg(reason);
+        Q_EMIT Changed();
+        return false;
+    }
+    mMode = ProfilingMode::Gpu;
+    mIsHosted = true;
+    mHostedProducer = {};
+    mCoverage = { .IsGpuRequested = true };
+    mStartedTicks = now;
+    mStoppedTicks = 0;
+    mLastStatusTicks = now;
+    mDeviceSession = 0;
+    mDestination = QFileInfo(destination).absoluteFilePath();
+    mIsStopping = false;
+    mState = ProfilingState::Recording;
+    mStatus = QStringLiteral("Recording the game playing in the viewport (process %1). Its recorder measures its own "
+                             "passes; press Ctrl+Alt+F9 again to stop.")
+                  .arg(mHosted.GetProducer().ProcessId);
+    mTimer.start();
+    Q_EMIT Changed();
+    return true;
+}
+
+void ProfilingController::pollHosted()
+{
+    const uint64 now = time::NowTicks();
+    if (mIsStopping == true && mHosted.GetPhase() == HostedRecordingPhase::Recording)
+    {
+        // Stop arrived while the game had not yet acknowledged Start.
+        mHosted.Stop(now);
+    }
+    mHosted.Poll(now);
+    if (mHosted.GetPhase() == HostedRecordingPhase::Finished)
+    {
+        if (mHosted.HasStarted() == false)
+        {
+            mTimer.stop();
+            mStatus = QStringLiteral("Cannot record the game playing in the viewport: %1").arg(mHosted.GetFailure());
+            mHosted.Reset();
+            mIsHosted = false;
+            mState = ProfilingState::Failed;
+            Q_EMIT Changed();
+            return;
+        }
+        // Stop acknowledged, the game disconnected, or its acknowledgement timed out.
+        mIsStopping = true;
+        mStoppedTicks = mStoppedTicks == 0 ? now : mStoppedTicks;
+        beginExport();
+        return;
+    }
+    if (mIsStopping == false && now - mLastStatusTicks >= STATUS_REFRESH_NANOSECONDS)
+    {
+        mLastStatusTicks = now;
+        Q_EMIT Changed();
+    }
+    if (mIsStopping == false && now - mStartedTicks >= MAX_RECORDING_NANOSECONDS)
+    {
+        Stop();
+    }
 }
 
 void ProfilingController::connectPreview()
@@ -240,6 +363,18 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
         Q_EMIT Changed();
         return false;
     }
+    if (mode != ProfilingMode::Cpu && isHostedConnected() == true)
+    {
+        if (mode == ProfilingMode::Both)
+        {
+            // Both would put editor CPU scopes and the game's GPU work in one trace on unrelated clocks.
+            mStatus = QStringLiteral("Both is unavailable while a game plays in the viewport: GPU records the game "
+                                     "in its own process. Select GPU to record the game, or CPU for the editor.");
+            Q_EMIT Changed();
+            return false;
+        }
+        return startHosted(destination);
+    }
     if (mode != ProfilingMode::Cpu && CanRecordGpu() == false)
     {
         mStatus = QStringLiteral("GPU timing is unavailable for the selected viewport. Start its preview, "
@@ -315,6 +450,15 @@ void ProfilingController::Stop()
         return;
     }
     mStoppedTicks = time::NowTicks();
+    if (mIsHosted == true)
+    {
+        mIsStopping = true;
+        mHosted.Stop(mStoppedTicks);
+        mStatus = QStringLiteral("Finalizing: waiting up to two seconds for the game to acknowledge Stop.");
+        Q_EMIT Changed();
+        poll();
+        return;
+    }
     if (mMode != ProfilingMode::Gpu)
     {
         mViewportSnapshot = StopViewportTrace();
@@ -336,6 +480,11 @@ void ProfilingController::poll()
 {
     if (mState != ProfilingState::Recording)
     {
+        return;
+    }
+    if (mIsHosted == true)
+    {
+        pollHosted();
         return;
     }
     if (mMode != ProfilingMode::Cpu && mPreviewOrNull != nullptr)
@@ -473,6 +622,15 @@ void ProfilingController::beginExport()
     }
     mState = ProfilingState::Finalizing;
     mJobOrNull = new ProfilingExportJob;
+    if (mIsHosted == true)
+    {
+        mCoverage = mHosted.GetCoverage();
+        mHostedProducer = mHosted.GetProducer();
+        mSamples = mHosted.TakeSamples();
+        mHosted.Reset();
+        mJobOrNull->IsHosted = true;
+        mJobOrNull->HostedProducer = mHostedProducer;
+    }
     mCompletedSampleCount = mSamples.GetSize();
     mJobOrNull->Samples = Move(mSamples);
     mJobOrNull->Coverage = mCoverage;
@@ -509,12 +667,42 @@ void ProfilingController::finishExport()
         {
             mStatus = QStringLiteral("Saved CPU recording.");
         }
+        if (mIsHosted == true)
+        {
+            mStatus = QStringLiteral("Saved %1 GPU samples from the game %2 (process %3), its frames %4 to %5; "
+                                     "skipped %6 of %7 submitted frames, dropped %8, rejected %9.")
+                          .arg(mCompletedSampleCount)
+                          .arg(mHostedProducer.ProducerName)
+                          .arg(mHostedProducer.ProcessId)
+                          .arg(mHostedProducer.StartFrame)
+                          .arg(mHostedProducer.IsStopAcknowledged == true ? mHostedProducer.StopFrame
+                                                                          : mHostedProducer.LastSampleFrame)
+                          .arg(mHostedProducer.Coverage.SkippedFrames)
+                          .arg(mHostedProducer.Coverage.SubmittedFrames)
+                          .arg(mCoverage.DroppedSamples)
+                          .arg(mHostedProducer.RejectedSamples);
+            if (mHostedProducer.IsStopAcknowledged == false)
+            {
+                mStatus += mHostedProducer.IsDisconnected == true
+                               ? QStringLiteral(" Incomplete: the game disconnected before acknowledging Stop, so "
+                                                "its frame and skip counts are unknown.")
+                               : QStringLiteral(" Incomplete: the game did not acknowledge Stop in time.");
+            }
+        }
         mStatus += QStringLiteral(" Trace: %1").arg(mLastPath);
     }
     else
     {
         mStatus = mJobOrNull->Error;
+        if (mIsHosted == true && mCompletedSampleCount == 0)
+        {
+            mStatus = mHostedProducer.IsDisconnected == true
+                          ? QStringLiteral("The game disconnected before it delivered a GPU sample; nothing was saved.")
+                          : QStringLiteral("The game delivered no GPU sample; nothing was saved. Its passes must run "
+                                           "inside named GPU scopes.");
+        }
     }
+    mIsHosted = false;
     mJobOrNull->wait();
     delete mJobOrNull;
     mJobOrNull = nullptr;
@@ -557,6 +745,12 @@ ProfilingState ProfilingController::GetState() const noexcept
 }
 QString ProfilingController::GetStatus() const
 {
+    if (mState == ProfilingState::Recording && mIsStopping == false && mIsHosted == true)
+    {
+        return mStatus + QStringLiteral(" Elapsed %1 s; %2 GPU samples from the game.")
+                             .arg((time::NowTicks() - mStartedTicks) / time::NANOSECONDS_PER_SECOND)
+                             .arg(mHosted.GetSampleCount());
+    }
     if (mState == ProfilingState::Recording && mIsStopping == false)
     {
         const profile::TraceHealth health =
@@ -581,6 +775,6 @@ bool ProfilingController::HasUnsavedSnapshot() const noexcept
 }
 bool ProfilingController::CanRecordGpu() const noexcept
 {
-    return mPreviewOrNull != nullptr && mPreviewOrNull->CanProfileGpu() == true;
+    return isHostedConnected() == true || (mPreviewOrNull != nullptr && mPreviewOrNull->CanProfileGpu() == true);
 }
 } // namespace ludus::editor

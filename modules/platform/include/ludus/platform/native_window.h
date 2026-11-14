@@ -8,6 +8,7 @@ struct wl_surface;
 namespace ludus::platform
 {
 class HostedSurfaceChannel;
+class HostedRecordingChannel;
 
 enum class WindowSystem : ludus::foundation::uint8
 {
@@ -65,5 +66,12 @@ struct NativeWindowInfo final
     /// Valid while that window lives; null for every other backend. RHI publishes its
     /// hosted images and frames through it. Use it on the thread that pumps the window.
     HostedSurfaceChannel* HostedSurfaceOrNull = nullptr;
+    /// @brief Hosted only: the window's recording channel, borrowed from the hosted window.
+    ///
+    /// Valid while that window lives; null for every other backend. A game's recorder
+    /// receives the editor's recording requests and returns its samples through it. Use
+    /// it on the thread that pumps the window; see docs/architecture/editor-gui-systems.md,
+    /// "Hosted recording".
+    HostedRecordingChannel* HostedRecordingOrNull = nullptr;
 };
 } // namespace ludus::platform

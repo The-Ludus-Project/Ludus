@@ -43,6 +43,7 @@ namespace ludus::editor
 {
 class WorldEntitySearch;
 // Desktop, project-owned schema UI. No runtime pools or project code are loaded.
+class PlayViewportSource;
 class RenderPanel;
 class RenderPreview;
 class RendererWorkspace;
@@ -157,6 +158,8 @@ public:
     void RequestPlayClose() noexcept;
     /// Whether a game is playing in the World viewport.
     [[nodiscard]] bool IsPlayingInViewport() const noexcept;
+    /// The game playing in the World viewport, for hosted recording; null while none plays.
+    [[nodiscard]] PlayViewportSource* GetPlaySourceOrNull() const noexcept;
     void ResumePreview();
     [[nodiscard]] bool PreviewRunning() const noexcept;
     /// Local World, camera, selection and splitter preferences. Hidden chrome records the
@@ -219,6 +222,8 @@ Q_SIGNALS:
     void PlayRequested(ludus::editor::PlayMode mode);
     /// GetRenderPreview now returns a different viewport renderer (the shown view changed).
     void RenderPreviewChanged();
+    /// A game started or stopped playing in the World viewport (GetPlaySourceOrNull changed).
+    void PlayInViewportChanged();
     /// The World or its viewport reported what an edit, import, save, pause or Play did; the window shows it in its
     /// status bar. The World keeps no wrapped status line of its own, so a message never resizes the viewport.
     /// @param message One or more sentences for the user, already including any recovery warning or repair.

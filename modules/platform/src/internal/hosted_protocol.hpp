@@ -1,6 +1,6 @@
 #pragma once
 
-// Hosted-window channel protocol, version 3 (private to Platform).
+// Hosted-window channel protocol, version 4 (private to Platform; version 5 on Windows).
 //
 // The editor endpoint and the hosted window speak this bounded binary protocol
 // over one Unix stream socket. It is separate from the GameHost control protocol
@@ -15,7 +15,10 @@
 // rendezvous nonce, the window sends Images and Present, and the endpoint sends
 // Release. Version 3 lets the Welcome announce the consumer's adapter
 // (deviceUUID and driverUUID), so a Vulkan game can render on the editor's GPU.
-// A peer of another version is refused as IncompatibleVersion.
+// Version 4 (5 on Windows, whose version 4 added ImagesCopied) adds hosted
+// recording: the endpoint sends RecordingRequest, and the window answers with
+// RecordingAcknowledgement and streams RecordingSample. A peer of another version
+// is refused as IncompatibleVersion.
 
 #include <ludus/foundation/base/core.h>
 
@@ -25,6 +28,7 @@
 #include <ludus/input/key.h>
 #include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/hosted_recording.h>
 #include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/hosted_window.h>
 
@@ -41,9 +45,9 @@ using foundation::usize;
 
 /// Wire protocol version carried by Hello and Welcome.
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
-inline constexpr uint16 PROTOCOL_VERSION = 4;
+inline constexpr uint16 PROTOCOL_VERSION = 5;
 #else
-inline constexpr uint16 PROTOCOL_VERSION = 3;
+inline constexpr uint16 PROTOCOL_VERSION = 4;
 #endif
 /// First field of every Hello payload: "LHWN" read as little-endian bytes.
 inline constexpr uint32 HELLO_MAGIC = 0x4E57484C;
@@ -110,6 +114,12 @@ enum class MessageKind : uint16
     Release = 11,
     /// Endpoint -> window (Windows): the endpoint duplicated every handle of the generation.
     ImagesCopied = 12,
+    /// Endpoint -> window: start or stop a recording (HostedRecordingRequest).
+    RecordingRequest = 13,
+    /// Window -> endpoint: the answer to one RecordingRequest (HostedRecordingAcknowledgement).
+    RecordingAcknowledgement = 14,
+    /// Window -> endpoint: one measured pass (HostedRecordingSample).
+    RecordingSample = 15,
 };
 
 /// Payload sizes; each kind has exactly one.
@@ -127,9 +137,22 @@ inline constexpr usize IMAGES_PAYLOAD_BYTES =
 inline constexpr usize PRESENT_PAYLOAD_BYTES = 4 + 1 + 3 + 8;
 inline constexpr usize RELEASE_PAYLOAD_BYTES = 4 + 1 + 3;
 inline constexpr usize IMAGES_COPIED_PAYLOAD_BYTES = sizeof(uint32);
-/// Largest payload of any version-3 message.
-inline constexpr usize MAX_PAYLOAD_BYTES = IMAGES_PAYLOAD_BYTES;
-/// Largest encoded version-3 message.
+/// Request kind, recording and request number.
+inline constexpr usize RECORDING_REQUEST_PAYLOAD_BYTES = 1 + 8 + 8;
+/// Coverage counters of a Stop acknowledgement.
+inline constexpr usize RECORDING_COVERAGE_WORDS = 8;
+/// Kind, result, name length and a reserved byte; recording, request, frame and ticks;
+/// coverage; the zero-padded producer name.
+inline constexpr usize RECORDING_ACKNOWLEDGEMENT_PAYLOAD_BYTES =
+    1 + 1 + 1 + 1 + (4 * 8) + (RECORDING_COVERAGE_WORDS * 8) + HOSTED_RECORDING_PRODUCER_NAME_BYTES;
+/// Recording, frame, submission, collection, duration and scope; pass index and logical
+/// count; kind, flags, name length and a reserved byte; start, end and uncertainty; the
+/// zero-padded pass name.
+inline constexpr usize RECORDING_SAMPLE_PAYLOAD_BYTES =
+    (6 * 8) + 4 + 4 + 1 + 1 + 1 + 1 + (3 * 8) + HOSTED_RECORDING_PASS_NAME_BYTES;
+/// Largest payload of any version-4 message.
+inline constexpr usize MAX_PAYLOAD_BYTES = RECORDING_SAMPLE_PAYLOAD_BYTES;
+/// Largest encoded version-4 message.
 inline constexpr usize MAX_MESSAGE_BYTES = HEADER_BYTES + MAX_PAYLOAD_BYTES;
 /// Largest payload any version may frame. A peer reading a longer frame stops at once; a
 /// shorter one, even of a future Hello, is framed so its version can be reported.
@@ -137,8 +160,14 @@ inline constexpr usize MAX_FRAME_PAYLOAD_BYTES = 255;
 /// Largest frame of any version; receive buffers hold at least this much.
 inline constexpr usize MAX_FRAME_BYTES = HEADER_BYTES + MAX_FRAME_PAYLOAD_BYTES;
 static_assert(RESET_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES && WELCOME_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES &&
-              HELLO_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES && MAX_PAYLOAD_BYTES <= MAX_FRAME_PAYLOAD_BYTES);
+              HELLO_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES && IMAGES_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES &&
+              RECORDING_ACKNOWLEDGEMENT_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES &&
+              MAX_PAYLOAD_BYTES <= MAX_FRAME_PAYLOAD_BYTES);
+/// Largest encoded surface message (Images); the window keeps this much send room for its frames.
+inline constexpr usize MAX_SURFACE_MESSAGE_BYTES = HEADER_BYTES + IMAGES_PAYLOAD_BYTES;
 
+/// Sample payload flag: the sample carries a calibrated interval on the game's clock.
+inline constexpr uint8 SAMPLE_FLAG_CPU_INTERVAL = 0x01;
 /// Key payload flag: the transition is an operating-system auto-repeat.
 inline constexpr uint8 KEY_FLAG_REPEAT = 0x01;
 /// Welcome flag: the payload's UUIDs name the consumer's adapter. Without it they are zero.
@@ -198,6 +227,12 @@ struct Message final
     AdapterUuid DeviceUuid = {};
     /// Images: the producer's driverUUID (Vulkan). Welcome: the consumer's, when HasConsumerAdapter.
     AdapterUuid DriverUuid = {};
+    /// RecordingRequest.
+    HostedRecordingRequest RecordingRequest = {};
+    /// RecordingAcknowledgement.
+    HostedRecordingAcknowledgement RecordingAcknowledgement = {};
+    /// RecordingSample.
+    HostedRecordingSample RecordingSample = {};
 };
 
 /// Result of decoding the front of a byte stream.
@@ -236,6 +271,17 @@ TryDecodeMessage(foundation::BorrowedView<const uint8> bytes, Message& outMessag
 /// True when `message` carries a hosted surface generation: nonzero generation, a
 /// nonzero extent within MAX_EXTENT_PIXELS, a known format and a sharing handle kind.
 [[nodiscard]] bool IsValidImagesMessage(const Message& message) noexcept;
+
+/// True when `request` has a known kind and nonzero recording and request numbers.
+[[nodiscard]] bool IsValidRecordingRequest(const HostedRecordingRequest& request) noexcept;
+
+/// True when `acknowledgement` has a known kind and result, nonzero identities and a
+/// terminated, valid UTF-8 producer name of at most HOSTED_RECORDING_PRODUCER_NAME_BYTES.
+[[nodiscard]] bool IsValidRecordingAcknowledgement(const HostedRecordingAcknowledgement& acknowledgement) noexcept;
+
+/// True when `sample` has nonzero identities and logical count, a known kind, ordered
+/// ticks and interval, and a nonempty, terminated, valid UTF-8 name.
+[[nodiscard]] bool IsValidRecordingSample(const HostedRecordingSample& sample) noexcept;
 
 /// Constant-time comparison of two tokens.
 [[nodiscard]] bool AreTokensEqual(const Token& left, const Token& right) noexcept;

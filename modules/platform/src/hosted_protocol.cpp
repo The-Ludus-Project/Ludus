@@ -1,6 +1,7 @@
 #include "internal/hosted_protocol.hpp"
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/strings/utf8.hpp>
 
 #include <cstring>
 #include <span>
@@ -239,6 +240,223 @@ bool TryReadKeyMask(const uint8* mask, bool isFocused, input::FocusBaseline& out
     return true;
 }
 
+/// @brief Length of a terminated name stored in `capacity + 1` bytes.
+/// @return false when no terminator lies within the first capacity + 1 bytes, a byte after
+/// the terminator is nonzero, or the text is not valid UTF-8.
+template <usize Capacity>
+[[nodiscard]] bool TryGetNameLength(const foundation::StaticArray<char, Capacity + 1>& name, usize& outLength) noexcept
+{
+    usize length = 0;
+    while (length <= Capacity && name[length] != '\0')
+    {
+        ++length;
+    }
+    if (length > Capacity)
+    {
+        return false;
+    }
+    for (usize i = length; i <= Capacity; ++i)
+    {
+        if (name[i] != '\0')
+        {
+            return false;
+        }
+    }
+    foundation::Utf8View validated;
+    usize errorOffset = 0;
+    if (foundation::ValidateUtf8({name.GetData(), length}, validated, errorOffset) != foundation::StringStatus::Ok)
+    {
+        return false;
+    }
+    outLength = length;
+    return true;
+}
+
+/// Write the name's bytes, zero-padded to Capacity.
+template <usize Capacity>
+void WriteName(const foundation::StaticArray<char, Capacity + 1>& name, MessageWriter& inoutWriter) noexcept
+{
+    // The bytes after the terminator are zero (TryGetNameLength), so the padding is written as stored.
+    inoutWriter.WriteBytes(reinterpret_cast<const uint8*>(name.GetData()), Capacity);
+}
+
+/// @brief Read a zero-padded name of `length` bytes.
+/// @return false for a length above Capacity, nonzero padding, an embedded zero or invalid UTF-8.
+template <usize Capacity>
+[[nodiscard]] bool
+TryReadName(MessageReader& inoutReader, usize length, foundation::StaticArray<char, Capacity + 1>& outName) noexcept
+{
+    const uint8* bytesOrNull = inoutReader.ReadBytesOrNull(Capacity);
+    if (bytesOrNull == nullptr || length > Capacity)
+    {
+        return false;
+    }
+    foundation::StaticArray<char, Capacity + 1> name{};
+    std::memcpy(name.GetData(), bytesOrNull, Capacity);
+    usize decodedLength = 0;
+    if (TryGetNameLength<Capacity>(name, decodedLength) == false || decodedLength != length)
+    {
+        return false;
+    }
+    outName = name;
+    return true;
+}
+
+[[nodiscard]] bool IsValidRequestKind(uint8 value) noexcept
+{
+    return value == static_cast<uint8>(HostedRecordingRequestKind::Start) ||
+           value == static_cast<uint8>(HostedRecordingRequestKind::Stop);
+}
+
+[[nodiscard]] bool IsValidRecordingResult(uint8 value) noexcept
+{
+    return value <= static_cast<uint8>(HostedRecordingResult::UnknownRecording);
+}
+
+[[nodiscard]] bool IsValidPassKind(uint8 value) noexcept
+{
+    return value <= static_cast<uint8>(HostedPassKind::RayTracing);
+}
+
+void WriteCoverage(const HostedRecordingCoverage& coverage, MessageWriter& inoutWriter) noexcept
+{
+    inoutWriter.Write<uint64>(coverage.SubmittedFrames);
+    inoutWriter.Write<uint64>(coverage.MeasuredFrames);
+    inoutWriter.Write<uint64>(coverage.SkippedFrames);
+    inoutWriter.Write<uint64>(coverage.DeliveredSamples);
+    inoutWriter.Write<uint64>(coverage.DroppedSamples);
+    inoutWriter.Write<uint64>(coverage.InvalidSamples);
+    inoutWriter.Write<uint64>(coverage.QueryDroppedPasses);
+    inoutWriter.Write<uint64>(coverage.UnresolvedBatches);
+}
+
+void ReadCoverage(MessageReader& inoutReader, HostedRecordingCoverage& outCoverage) noexcept
+{
+    outCoverage.SubmittedFrames = inoutReader.Read<uint64>();
+    outCoverage.MeasuredFrames = inoutReader.Read<uint64>();
+    outCoverage.SkippedFrames = inoutReader.Read<uint64>();
+    outCoverage.DeliveredSamples = inoutReader.Read<uint64>();
+    outCoverage.DroppedSamples = inoutReader.Read<uint64>();
+    outCoverage.InvalidSamples = inoutReader.Read<uint64>();
+    outCoverage.QueryDroppedPasses = inoutReader.Read<uint64>();
+    outCoverage.UnresolvedBatches = inoutReader.Read<uint64>();
+}
+
+[[nodiscard]] bool TryEncodeRecordingMessage(const Message& message, MessageWriter& inoutWriter) noexcept
+{
+    if (message.Kind == MessageKind::RecordingRequest)
+    {
+        const HostedRecordingRequest& request = message.RecordingRequest;
+        if (IsValidRecordingRequest(request) == false)
+        {
+            return false;
+        }
+        inoutWriter.Write<uint8>(static_cast<uint8>(request.Kind));
+        inoutWriter.Write<uint64>(request.Recording);
+        inoutWriter.Write<uint64>(request.Request);
+        return true;
+    }
+    if (message.Kind == MessageKind::RecordingAcknowledgement)
+    {
+        const HostedRecordingAcknowledgement& acknowledgement = message.RecordingAcknowledgement;
+        usize nameLength = 0;
+        if (IsValidRecordingAcknowledgement(acknowledgement) == false ||
+            TryGetNameLength<HOSTED_RECORDING_PRODUCER_NAME_BYTES>(acknowledgement.ProducerName, nameLength) == false)
+        {
+            return false;
+        }
+        inoutWriter.Write<uint8>(static_cast<uint8>(acknowledgement.Kind));
+        inoutWriter.Write<uint8>(static_cast<uint8>(acknowledgement.Result));
+        inoutWriter.Write<uint8>(static_cast<uint8>(nameLength));
+        inoutWriter.Write<uint8>(0);
+        inoutWriter.Write<uint64>(acknowledgement.Recording);
+        inoutWriter.Write<uint64>(acknowledgement.Request);
+        inoutWriter.Write<uint64>(acknowledgement.Frame);
+        inoutWriter.Write<uint64>(acknowledgement.Ticks);
+        WriteCoverage(acknowledgement.Coverage, inoutWriter);
+        WriteName<HOSTED_RECORDING_PRODUCER_NAME_BYTES>(acknowledgement.ProducerName, inoutWriter);
+        return true;
+    }
+    const HostedRecordingSample& sample = message.RecordingSample;
+    usize nameLength = 0;
+    if (IsValidRecordingSample(sample) == false ||
+        TryGetNameLength<HOSTED_RECORDING_PASS_NAME_BYTES>(sample.Name, nameLength) == false)
+    {
+        return false;
+    }
+    inoutWriter.Write<uint64>(sample.Recording);
+    inoutWriter.Write<uint64>(sample.Frame);
+    inoutWriter.Write<uint64>(sample.SubmissionTicks);
+    inoutWriter.Write<uint64>(sample.CollectionTicks);
+    inoutWriter.Write<uint64>(sample.DurationNanoseconds);
+    inoutWriter.Write<uint64>(sample.ScopeIdentity);
+    inoutWriter.Write<uint32>(sample.ScopePassIndex);
+    inoutWriter.Write<uint32>(sample.LogicalPassCount);
+    inoutWriter.Write<uint8>(static_cast<uint8>(sample.Kind));
+    inoutWriter.Write<uint8>(sample.HasCpuInterval == true ? SAMPLE_FLAG_CPU_INTERVAL : 0);
+    inoutWriter.Write<uint8>(static_cast<uint8>(nameLength));
+    inoutWriter.Write<uint8>(0);
+    inoutWriter.Write<uint64>(sample.StartTicks);
+    inoutWriter.Write<uint64>(sample.EndTicks);
+    inoutWriter.Write<uint64>(sample.ClockUncertaintyNanoseconds);
+    WriteName<HOSTED_RECORDING_PASS_NAME_BYTES>(sample.Name, inoutWriter);
+    return true;
+}
+
+[[nodiscard]] bool TryDecodeRecordingMessage(MessageReader& inoutReader, Message& inoutMessage) noexcept
+{
+    if (inoutMessage.Kind == MessageKind::RecordingRequest)
+    {
+        HostedRecordingRequest& request = inoutMessage.RecordingRequest;
+        const uint8 kind = inoutReader.Read<uint8>();
+        request.Kind = static_cast<HostedRecordingRequestKind>(kind);
+        request.Recording = inoutReader.Read<uint64>();
+        request.Request = inoutReader.Read<uint64>();
+        return IsValidRequestKind(kind) == true && IsValidRecordingRequest(request) == true;
+    }
+    if (inoutMessage.Kind == MessageKind::RecordingAcknowledgement)
+    {
+        HostedRecordingAcknowledgement& acknowledgement = inoutMessage.RecordingAcknowledgement;
+        const uint8 kind = inoutReader.Read<uint8>();
+        const uint8 result = inoutReader.Read<uint8>();
+        const uint8 nameLength = inoutReader.Read<uint8>();
+        const bool hasZeroReserved = inoutReader.Read<uint8>() == 0;
+        acknowledgement.Kind = static_cast<HostedRecordingRequestKind>(kind);
+        acknowledgement.Result = static_cast<HostedRecordingResult>(result);
+        acknowledgement.Recording = inoutReader.Read<uint64>();
+        acknowledgement.Request = inoutReader.Read<uint64>();
+        acknowledgement.Frame = inoutReader.Read<uint64>();
+        acknowledgement.Ticks = inoutReader.Read<uint64>();
+        ReadCoverage(inoutReader, acknowledgement.Coverage);
+        return IsValidRequestKind(kind) == true && IsValidRecordingResult(result) == true && hasZeroReserved == true &&
+               TryReadName<HOSTED_RECORDING_PRODUCER_NAME_BYTES>(inoutReader,
+                                                                 nameLength,
+                                                                 acknowledgement.ProducerName) == true &&
+               IsValidRecordingAcknowledgement(acknowledgement) == true;
+    }
+    HostedRecordingSample& sample = inoutMessage.RecordingSample;
+    sample.Recording = inoutReader.Read<uint64>();
+    sample.Frame = inoutReader.Read<uint64>();
+    sample.SubmissionTicks = inoutReader.Read<uint64>();
+    sample.CollectionTicks = inoutReader.Read<uint64>();
+    sample.DurationNanoseconds = inoutReader.Read<uint64>();
+    sample.ScopeIdentity = inoutReader.Read<uint64>();
+    sample.ScopePassIndex = inoutReader.Read<uint32>();
+    sample.LogicalPassCount = inoutReader.Read<uint32>();
+    const uint8 kind = inoutReader.Read<uint8>();
+    const uint8 flags = inoutReader.Read<uint8>();
+    const uint8 nameLength = inoutReader.Read<uint8>();
+    const bool hasZeroReserved = inoutReader.Read<uint8>() == 0;
+    sample.Kind = static_cast<HostedPassKind>(kind);
+    sample.HasCpuInterval = (flags & SAMPLE_FLAG_CPU_INTERVAL) != 0;
+    sample.StartTicks = inoutReader.Read<uint64>();
+    sample.EndTicks = inoutReader.Read<uint64>();
+    sample.ClockUncertaintyNanoseconds = inoutReader.Read<uint64>();
+    return IsValidPassKind(kind) == true && (flags & ~SAMPLE_FLAG_CPU_INTERVAL) == 0 && hasZeroReserved == true &&
+           TryReadName<HOSTED_RECORDING_PASS_NAME_BYTES>(inoutReader, nameLength, sample.Name) == true &&
+           IsValidRecordingSample(sample) == true;
+}
+
 bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexcept
 {
     switch (message.Kind)
@@ -360,6 +578,10 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             inoutWriter.Write<uint8>(static_cast<uint8>(message.Image));
             WriteReserved(RESERVED_REFERENCE_BYTES, inoutWriter);
             return true;
+        case MessageKind::RecordingRequest:
+        case MessageKind::RecordingAcknowledgement:
+        case MessageKind::RecordingSample:
+            return TryEncodeRecordingMessage(message, inoutWriter);
     }
     return false;
 }
@@ -392,13 +614,20 @@ usize GetPayloadBytes(MessageKind kind) noexcept
             return RELEASE_PAYLOAD_BYTES;
         case MessageKind::ImagesCopied:
             return IMAGES_COPIED_PAYLOAD_BYTES;
+        case MessageKind::RecordingRequest:
+            return RECORDING_REQUEST_PAYLOAD_BYTES;
+        case MessageKind::RecordingAcknowledgement:
+            return RECORDING_ACKNOWLEDGEMENT_PAYLOAD_BYTES;
+        case MessageKind::RecordingSample:
+            return RECORDING_SAMPLE_PAYLOAD_BYTES;
     }
     return 0;
 }
 
 bool IsKnownKind(uint16 value) noexcept
 {
-    return value >= static_cast<uint16>(MessageKind::Hello) && value <= static_cast<uint16>(MessageKind::ImagesCopied);
+    return value >= static_cast<uint16>(MessageKind::Hello) &&
+           value <= static_cast<uint16>(MessageKind::RecordingSample);
 }
 
 bool TryDecodeHello(MessageReader& inoutReader, usize payloadSize, Message& inoutMessage) noexcept
@@ -520,6 +749,10 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
             return IsReservedZero(RESERVED_REFERENCE_BYTES, inoutReader) == true &&
                    IsValidImageReference(inoutMessage.Generation, inoutMessage.Image);
         }
+        case MessageKind::RecordingRequest:
+        case MessageKind::RecordingAcknowledgement:
+        case MessageKind::RecordingSample:
+            return TryDecodeRecordingMessage(inoutReader, inoutMessage);
     }
     return false;
 }
@@ -559,6 +792,31 @@ bool IsValidImagesMessage(const Message& message) noexcept
            (message.HandleKind == HostedHandleKind::MachPort ||
             message.HandleKind == HostedHandleKind::OpaqueFileDescriptor ||
             message.HandleKind == HostedHandleKind::Win32SharedResource);
+}
+
+bool IsValidRecordingRequest(const HostedRecordingRequest& request) noexcept
+{
+    return IsValidRequestKind(static_cast<uint8>(request.Kind)) == true && request.Recording != 0 &&
+           request.Request != 0;
+}
+
+bool IsValidRecordingAcknowledgement(const HostedRecordingAcknowledgement& acknowledgement) noexcept
+{
+    usize nameLength = 0;
+    return IsValidRequestKind(static_cast<uint8>(acknowledgement.Kind)) == true &&
+           IsValidRecordingResult(static_cast<uint8>(acknowledgement.Result)) == true &&
+           acknowledgement.Recording != 0 && acknowledgement.Request != 0 &&
+           TryGetNameLength<HOSTED_RECORDING_PRODUCER_NAME_BYTES>(acknowledgement.ProducerName, nameLength) == true;
+}
+
+bool IsValidRecordingSample(const HostedRecordingSample& sample) noexcept
+{
+    usize nameLength = 0;
+    return sample.Recording != 0 && sample.Frame != 0 && sample.ScopeIdentity != 0 && sample.LogicalPassCount != 0 &&
+           IsValidPassKind(static_cast<uint8>(sample.Kind)) == true &&
+           sample.CollectionTicks >= sample.SubmissionTicks &&
+           (sample.HasCpuInterval == false || sample.EndTicks >= sample.StartTicks) &&
+           TryGetNameLength<HOSTED_RECORDING_PASS_NAME_BYTES>(sample.Name, nameLength) == true && nameLength != 0;
 }
 
 bool AreTokensEqual(const Token& left, const Token& right) noexcept

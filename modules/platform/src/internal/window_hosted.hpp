@@ -8,6 +8,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/hosted_recording.h>
 #include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/hosted_window.h>
 
@@ -21,9 +22,13 @@ inline constexpr uint32 WELCOME_TIMEOUT_MILLISECONDS = 5000;
 /// Bytes buffered from the channel between HandleEvent() calls.
 inline constexpr usize RECEIVE_BUFFER_BYTES = 4096;
 static_assert(RECEIVE_BUFFER_BYTES >= MAX_FRAME_BYTES);
-/// Bytes of Images and Present messages queued while the endpoint does not drain its socket.
-inline constexpr usize SEND_BUFFER_BYTES = 1024;
-static_assert(SEND_BUFFER_BYTES >= 2 * MAX_MESSAGE_BYTES);
+/// Bytes queued while the endpoint does not drain its socket.
+inline constexpr usize SEND_BUFFER_BYTES = static_cast<usize>(8) * 1024;
+/// Send room recording messages never take: the version-3 send queue for Images and
+/// Present, so a recording cannot make a frame's Present report Busy sooner.
+inline constexpr usize SURFACE_SEND_RESERVE_BYTES = 1024;
+static_assert(SURFACE_SEND_RESERVE_BYTES >= 2 * MAX_SURFACE_MESSAGE_BYTES &&
+              SEND_BUFFER_BYTES >= SURFACE_SEND_RESERVE_BYTES + (2 * MAX_MESSAGE_BYTES));
 /// Releases received but not yet taken by the surface producer: every image of four generations.
 inline constexpr usize MAX_QUEUED_RELEASES = 4 * HOSTED_SURFACE_IMAGE_COUNT;
 
@@ -44,8 +49,9 @@ inline constexpr usize MAX_QUEUED_RELEASES = 4 * HOSTED_SURFACE_IMAGE_COUNT;
 
 /// @brief Wait for the Welcome on a connection whose Hello was sent, then build the window.
 ///
-/// The window implements HostedSurfaceChannel for RHI and publishes it in its
-/// NativeWindowInfo; `token` authenticates its Mach rendezvous messages.
+/// The window implements HostedSurfaceChannel for RHI and HostedRecordingChannel for a
+/// recorder, and publishes both in its NativeWindowInfo; `token` authenticates its Mach
+/// rendezvous messages.
 ///
 /// Takes ownership of `connection` whatever the outcome. The caller configured it
 /// with TryConfigureSocket() before sending the Hello, so HandleEvent() never blocks;

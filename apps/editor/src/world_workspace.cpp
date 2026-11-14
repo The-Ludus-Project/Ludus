@@ -751,6 +751,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         {
             showPlayUnavailable(Render_->GetPlayUnavailableReason());
         }
+        Q_EMIT PlayInViewportChanged();
     });
     auto* split = new QSplitter(this);
     Split_ = split;
@@ -4432,6 +4433,10 @@ void WorldWorkspace::RequestPlayClose() noexcept
 bool WorldWorkspace::IsPlayingInViewport() const noexcept
 {
     return Render_->IsPlaying();
+}
+PlayViewportSource* WorldWorkspace::GetPlaySourceOrNull() const noexcept
+{
+    return Render_->GetPlaySourceOrNull();
 }
 bool WorldWorkspace::PreviewRunning() const noexcept
 {

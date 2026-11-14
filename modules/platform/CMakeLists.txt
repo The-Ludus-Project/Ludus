@@ -90,6 +90,7 @@ target_sources(
         FILES
             include/ludus/platform/browser/window.h
             include/ludus/platform/config.h
+            include/ludus/platform/hosted_recording.h
             include/ludus/platform/hosted_surface.h
             include/ludus/platform/hosted_window.h
             include/ludus/platform/keyboard_sink.h
