@@ -383,6 +383,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER A
         ludus_compile_shader(TARGET ludus_rhi_r10_consumer NAME r10${entry} RASTER
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.slang" VERTEX vertexMain FRAGMENT ${entry}Main)
     endforeach()
+    ludus_compile_shader(TARGET ludus_rhi_r10_consumer NAME r10coverage RASTER
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10_coverage.slang" VERTEX vertexMain FRAGMENT CoverageMain
+        DEPENDS "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.slang")
     add_test(NAME ludus_rhi_r10_consumer COMMAND ludus_rhi_r10_consumer)
     set_tests_properties(ludus_rhi_r10_consumer PROPERTIES LABELS "rhi;gpu;build-contract" TIMEOUT 45)
     add_executable(ludus_rhi_r18c_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r18c.cpp")

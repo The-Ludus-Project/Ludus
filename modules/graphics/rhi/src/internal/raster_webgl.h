@@ -971,11 +971,19 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     // GL interprets this pointer-shaped argument as an element-buffer byte offset.
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     const void* indexOffset = reinterpret_cast<const void*>(packet.IndexOffset);
+    if (info.ShouldUseAlphaToCoverage == true)
+    {
+        glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    }
     glDrawElementsInstanced(GL_TRIANGLES,
                             static_cast<GLsizei>(packet.IndexCount),
                             packet.Index32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
                             indexOffset,
                             static_cast<GLsizei>(packet.InstanceCount));
+    if (info.ShouldUseAlphaToCoverage == true)
+    {
+        glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    }
     glBindVertexArray(0);
     return RasterGlResult();
 }

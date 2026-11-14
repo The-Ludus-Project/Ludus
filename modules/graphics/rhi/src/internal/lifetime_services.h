@@ -239,8 +239,9 @@ bool ArePipelinesEqual(const RasterPipelineInfo& left, const RasterPipelineInfo&
         left.Depth != right.Depth || left.Blend != right.Blend || left.Target != right.Target ||
         left.DepthWrite != right.DepthWrite || left.ShouldWriteColor != right.ShouldWriteColor ||
         left.FillMode != right.FillMode || left.DepthCompare != right.DepthCompare ||
-        left.StreamCount != right.StreamCount || left.AttributeCount != right.AttributeCount ||
-        left.ColorCount != right.ColorCount || left.SampleCount != right.SampleCount || left.Stencil != right.Stencil)
+        left.ShouldUseAlphaToCoverage != right.ShouldUseAlphaToCoverage || left.StreamCount != right.StreamCount ||
+        left.AttributeCount != right.AttributeCount || left.ColorCount != right.ColorCount ||
+        left.SampleCount != right.SampleCount || left.Stencil != right.Stencil)
     {
         return false;
     }

@@ -855,6 +855,7 @@ RasterStatus MetalRasterPreparation::Build() noexcept
             : info.Target == RasterTarget::Rgba8Unorm ? MTLPixelFormatRGBA8Unorm
                                                       : MTLPixelFormatRGBA8Unorm_sRGB;
         descriptor.rasterSampleCount = info.SampleCount;
+        descriptor.alphaToCoverageEnabled = info.ShouldUseAlphaToCoverage;
         descriptor.depthAttachmentPixelFormat =
             info.Stencil == true ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
         if (info.Stencil == true)

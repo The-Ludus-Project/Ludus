@@ -411,8 +411,9 @@ try {
     await page.waitForFunction(() => ['passed','failed'].includes(document.querySelector('#status')?.dataset.state),null,{timeout:45000});
     const status = await page.locator('#status').evaluate(node => ({...node.dataset}));
     assert.equal(status.state,'passed',JSON.stringify(status));
-    assert.equal(status.frames,'17'); assert.deepEqual(errors,[]);
-    report.cases.push({scenario:`r10-${backend}`,frames:17,pixelReadbacks:17});
+    const pixelReadbacks = 21;
+    assert.equal(status.frames,String(pixelReadbacks)); assert.deepEqual(errors,[]);
+    report.cases.push({scenario:`r10-${backend}`,frames:pixelReadbacks,pixelReadbacks});
     await context.close();
   }
 

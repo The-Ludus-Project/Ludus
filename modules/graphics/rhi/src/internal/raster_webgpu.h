@@ -699,6 +699,7 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     }
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.multisample.count = info.SampleCount;
+    descriptor.multisample.alphaToCoverageEnabled = info.ShouldUseAlphaToCoverage;
     descriptor.layout = pipeline.Layout;
     descriptor.vertex.module = gRasterShaders[info.Vertex].Object;
     descriptor.vertex.entryPoint = {gRasterShaders[info.Vertex].Entry, WGPU_STRLEN};

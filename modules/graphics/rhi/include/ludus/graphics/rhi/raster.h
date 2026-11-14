@@ -731,6 +731,13 @@ struct RasterPipelineDescription final
     bool ShouldWriteColor = true;
     /// Triangle rasterization. Lines returns Unsupported unless RasterCapabilities::HasLineFill.
     RasterFillMode FillMode = RasterFillMode::Solid;
+    /// @brief Convert color output zero's alpha to a backend-defined MSAA coverage mask.
+    /// Requires an explicit four-sample offscreen pipeline, a blendable RGBA target at slot zero,
+    /// enabled color writes, and disabled blending.
+    /// @pre The fragment stage writes RGBA at location zero, leaves sample-mask output unused
+    /// and does not force early depth/stencil tests.
+    /// Coverage masks color and depth/stencil writes. A color resolve also resolves the stored alpha.
+    bool ShouldUseAlphaToCoverage = false;
 };
 /// One vertex-stream slice, borrowed during DrawIndexed and retained through submission.
 struct RasterVertexSlice final

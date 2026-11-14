@@ -1801,6 +1801,28 @@ The shader tool checks the emitted WGSL scalar type and GLSL sampler dimension;
 unfiltered GLSL loads carry an explicit no-sampler sentinel. Comparison samplers,
 depth filtering and compute-stage texture access are outside the profile.
 
+### Alpha-to-coverage for offscreen cutouts
+
+Set `RasterPipelineDescription.ShouldUseAlphaToCoverage` for an explicit
+four-sample offscreen pass. Check the chosen formats' `SampleCounts` and use a
+blendable RGBA format at slot zero. Use a fragment shader with an RGBA output at
+location zero. Leave sample-mask output and forced early depth/stencil tests
+disabled. Keep color writes enabled and blending disabled. One coverage mask
+gates writes to every attachment and the enabled depth/stencil operations.
+The backend chooses intermediate sample masks, so compare the resolved image
+without assuming exact sample positions. Resolve into a matching single-sample
+attachment. The fragment's alpha is still stored in covered samples. A consumer
+that needs an opaque image should use resolved RGB and write its own output alpha.
+
+For cutouts, use the material's alpha cutoff and an edge transition sized by
+the screen-space derivatives of sampled alpha. This leaves opaque interiors at
+full coverage and limits partial coverage to the silhouette, following
+[Ben Golus, *Anti-aliased Alpha Test: The Esoteric Alpha To Coverage*, “Fixing the Solution”](https://bgolus.medium.com/anti-aliased-alpha-test-the-esoteric-alpha-to-coverage-8b177335ae4f).
+For single-sample targets, select a pipeline with alpha-to-coverage disabled
+and a shader that discards fragments below the authored cutoff. Direct3D 12's
+current single-sample profile uses that alternative. Built-in renderer and
+Editor passes still use their existing alpha-test shaders.
+
 ### GDI declarations, retention and evidence
 
 Import each attachment allocation once. Declare each color source's new version
@@ -1825,8 +1847,10 @@ physical residency remain separate R7 measurements.
 The installed SDK's `tests/sdk_consumer/r10.cpp` journey compares direct and GDI
 pixels for two color outputs, MSAA resolves with discarded sources, selected
 array/cube-face mips, depth/stencil loads, stencil comparison accept/reject, and
-detached attachment owners. It performs seventeen RGBA8 readbacks on each
-selected backend, with explicit fallback cases for unavailable profiles. Native
+detached attachment owners. It checks alpha-to-coverage endpoints, partial
+coverage and an otherwise identical disabled pipeline through both paths.
+It performs twenty-one RGBA8 readbacks per backend, with explicit fallback
+cases for unavailable profiles. Native
 tests add malformed range/sample/resolve, typed-binding, undefined-sibling,
 declaration and completion-retention checks. Existing resize/loss suites continue
 to exercise the shared device/frame/resource lifecycle.
