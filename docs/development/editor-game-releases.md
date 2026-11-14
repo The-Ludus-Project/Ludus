@@ -45,6 +45,8 @@ sections/native binaries, plus notices/licenses. Installation must match the
 selected CMake executable's current JavaScript and WebAssembly. Verification does
 not execute game code or prove all dynamically constructed JavaScript URLs resolve;
 playtesting the extracted and hosted game remains a separate acceptance step.
+For performance evidence from the exact package on the intended device, see
+[Check a GPU budget on target hardware](runtime-profiling.md#check-a-gpu-budget-on-target-hardware).
 
 Browser SDKs currently use the project's explicit CMake preset, rather than the
 native SDK catalog resolver. Their actual SDK manifest identity is recorded, and
