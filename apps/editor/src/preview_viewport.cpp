@@ -26,6 +26,7 @@
 #include <QContextMenuEvent>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -51,6 +52,7 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <QWidgetAction>
+#include <QtGlobal>
 
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
 #    include "internal/browser_viewport.h"
@@ -1368,6 +1370,14 @@ private:
         QObject::connect(Window, &QQuickWindow::heightChanged, Widget, [this]() {
             static_cast<PreviewViewport*>(Widget)->resizeSurface();
         });
+#    if QT_VERSION < QT_VERSION_CHECK(6, 6, 0)
+        QObject::connect(
+            Window,
+            &QQuickWindow::screenChanged,
+            Widget,
+            [this]() { static_cast<PreviewViewport*>(Widget)->resizeSurface(); },
+            Qt::QueuedConnection);
+#    endif
         createItem();
         ObjectOverlayOrNull = CreateViewportObjectOverlayItem(Widget->GetObjectInteraction(), *Window->contentItem());
         ObjectOverlayOrNull->setSize(Window->size());
@@ -3186,9 +3196,11 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
             case QEvent::Show:
                 mState->noteWindowShown();
                 break;
-#    if defined(Q_OS_WIN)
+#    if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
             case QEvent::DevicePixelRatioChange:
-                // Moving to another monitor can change the backing extent at the same logical size.
+                // Thanks to Tobias Persson, "DPI-aware IMGUI", Our Machinery, "Windows API":
+                // refresh per-window scale even when the viewport keeps its logical size.
+                // https://ruby0x1.github.io/machinery_blog_archive/post/dpi-aware-imgui/index.html#windows-api
                 resizeSurface();
                 break;
 #    endif
@@ -3235,20 +3247,20 @@ void PreviewViewport::resizeSurface()
     if (mState->CanvasOrNull != nullptr)
     {
         // RenderPreview recreates the offscreen targets when the requested size changes.
-        const QSize drawable =
-            ComputeViewportDrawableSize(size, mState->CanvasOrNull->size(), mState->CanvasOrNull->devicePixelRatioF());
-        mFrameSource->Resize(drawable.width(), drawable.height());
+        const float64 pixelRatio = mState->CanvasOrNull->devicePixelRatioF();
+        const QSize drawable = ComputeViewportDrawableSize(size, mState->CanvasOrNull->size(), pixelRatio);
+        mFrameSource->Resize(drawable.width(), drawable.height(), static_cast<float32>(pixelRatio));
         return;
     }
     if (mState->Window != nullptr && mState->Item != nullptr)
     {
-        const QSize drawable =
-            ComputeViewportDrawableSize(size, mState->Window->size(), mState->Window->devicePixelRatio());
+        const float64 pixelRatio = mState->Window->devicePixelRatio();
+        const QSize drawable = ComputeViewportDrawableSize(size, mState->Window->size(), pixelRatio);
         if (mState->ProjectGraph.isNull() == false && mFrameSource == &mState->ProjectGraph->GetDisplayFrames())
         {
             Preview_->Resize(drawable.width(), drawable.height());
         }
-        mFrameSource->Resize(drawable.width(), drawable.height());
+        mFrameSource->Resize(drawable.width(), drawable.height(), static_cast<float32>(pixelRatio));
         mState->Item->setSize(QSizeF(mState->Window->size()));
         if (mState->ObjectOverlayOrNull != nullptr)
         {

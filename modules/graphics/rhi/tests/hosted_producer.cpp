@@ -155,6 +155,7 @@ int32 RunRender(platform::Window& inoutWindow)
                 break;
             }
             ++statistics.ReadyFrames;
+            statistics.LastRenderedScale = info.Scale;
         }
         else if (status == rhi::DeviceStatus::Skipped)
         {

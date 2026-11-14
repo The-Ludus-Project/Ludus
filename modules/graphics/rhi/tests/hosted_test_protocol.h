@@ -33,5 +33,7 @@ struct ProducerStatistics final
     foundation::uint32 SkippedFrames = 0;
     /// Longest BeginFrame call that returned Skipped.
     foundation::uint64 MaxSkippedNanoseconds = 0;
+    /// Display scale on the most recent frame the game rendered.
+    foundation::float32 LastRenderedScale = 0;
 };
 } // namespace ludus::graphics::rhi::hosted_test

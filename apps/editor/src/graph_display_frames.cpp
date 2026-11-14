@@ -467,7 +467,7 @@ bool GraphDisplayFrames::TakeFrame(graphics::renderer::ViewportFrame&, graphics:
     return false;
 }
 void GraphDisplayFrames::ReleaseFrame(graphics::renderer::ViewportFrame&) noexcept {}
-void GraphDisplayFrames::Resize(int32, int32) {}
+void GraphDisplayFrames::Resize(int32, int32, float32) {}
 rhi::RasterStatus GraphDisplayFrames::TakeFrameRead(rhi::NativeDeviceLease device,
                                                     const rhi::NativeDeviceIdentity& consumer,
                                                     ViewportFrameRead& outRead) noexcept

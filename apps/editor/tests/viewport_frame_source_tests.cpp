@@ -7,11 +7,14 @@
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QGuiApplication>
 #include <QObject>
 #include <QString>
 #include <QTest>
+#include <QWindow>
 #include <QtGlobal>
 
 #include <catch2/catch_test_macros.hpp>
@@ -66,10 +69,10 @@ public:
         ++mReleasedFrames;
         mProducer.ReleaseFrame(inoutFrame);
     }
-    void Resize(int32 width, int32 height) override
+    void Resize(int32 width, int32 height, float32 pixelRatio) override
     {
         ++mResizeRequests;
-        mProducer.Resize(width, height);
+        mProducer.Resize(width, height, pixelRatio);
     }
     [[nodiscard]] rhi::RasterStatus TakeFrameRead(rhi::NativeDeviceLease device,
                                                   const rhi::NativeDeviceIdentity& consumer,
@@ -266,6 +269,23 @@ TEST_CASE("Viewport keeps a source-owned read until its source ends it", "[edito
     REQUIRE(AwaitPresentedFrames(viewport, preview, PRESENTED_FRAMES) == true);
     // Every presented image went through the source's own read, not a viewport-side read.
     CHECK(source.GetOpenedReads() >= viewport.PresentedFrames());
+
+#    if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    QWindow* renderWindowOrNull = nullptr;
+    for (QWindow* window : QGuiApplication::allWindows())
+    {
+        if (window->objectName() == QStringLiteral("LudusGpuViewport"))
+        {
+            renderWindowOrNull = window;
+            break;
+        }
+    }
+    REQUIRE(renderWindowOrNull != nullptr);
+    const uint64 requests = source.GetResizeRequests();
+    QEvent ratioChange(QEvent::DevicePixelRatioChange);
+    QCoreApplication::sendEvent(renderWindowOrNull, &ratioChange);
+    CHECK(source.GetResizeRequests() > requests);
+#    endif
 
     // The viewport asks again while the source answers Pending, and never holds more than its
     // two slots; once the source ends the reads, presentation continues.

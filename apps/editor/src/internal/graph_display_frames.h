@@ -74,7 +74,7 @@ public:
     [[nodiscard]] bool TakeFrame(graphics::renderer::ViewportFrame& outFrame,
                                  graphics::renderer::ViewportImage& outImage) noexcept override;
     void ReleaseFrame(graphics::renderer::ViewportFrame& inoutFrame) noexcept override;
-    void Resize(foundation::int32 width, foundation::int32 height) override;
+    void Resize(foundation::int32 width, foundation::int32 height, foundation::float32 pixelRatio) override;
     [[nodiscard]] graphics::rhi::RasterStatus TakeFrameRead(graphics::rhi::NativeDeviceLease device,
                                                             const graphics::rhi::NativeDeviceIdentity& consumer,
                                                             ViewportFrameRead& outRead) noexcept override;

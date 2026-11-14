@@ -134,12 +134,14 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
         REQUIRE(window->GetNativeWindowInfo().CocoaView == (__bridge void*)native.contentView);
         REQUIRE(native.visible);
         REQUIRE(native.contentView.wantsLayer);
+        CHECK(window->GetNativeWindowInfo().Scale == static_cast<float32>(native.backingScaleFactor));
         [native setContentSize:NSMakeSize(250, 140)];
         REQUIRE(window->HandleEvent({}));
         const auto extent = window->GetNativeWindowInfo();
         const NSRect backing = [native.contentView convertRectToBacking:native.contentView.bounds];
         CHECK(extent.Width == static_cast<uint32>(std::ceil(backing.size.width)));
         CHECK(extent.Height == static_cast<uint32>(std::ceil(backing.size.height)));
+        CHECK(extent.Scale == static_cast<float32>(native.backingScaleFactor));
         CHECK(extent.Width >= 250);
         CHECK(extent.Height >= 140);
         CHECK(extent.Display == nullptr);
@@ -156,6 +158,7 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
         REQUIRE(window->HandleEvent({}));
         CHECK(window->GetNativeWindowInfo().Width == 0);
         CHECK(window->GetNativeWindowInfo().Height == 0);
+        CHECK(window->GetNativeWindowInfo().Scale == static_cast<float32>(native.backingScaleFactor));
         CHECK(window->GetVisibility() == WindowVisibility::Minimized);
         [native deminiaturize:nil];
         deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -170,12 +173,14 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
         }
         CHECK(window->GetNativeWindowInfo().Width == extent.Width);
         CHECK(window->GetNativeWindowInfo().Height == extent.Height);
+        CHECK(window->GetNativeWindowInfo().Scale == static_cast<float32>(native.backingScaleFactor));
         CHECK(window->GetVisibility() != WindowVisibility::Minimized);
         [native performClose:nil];
         CHECK_FALSE(window->HandleEvent({}));
         CHECK_FALSE(window->HandleEvent({}));
         CHECK(window->GetNativeWindowInfo().CocoaWindow == nullptr);
         CHECK(window->GetNativeWindowInfo().CocoaView == nullptr);
+        CHECK(window->GetNativeWindowInfo().Scale == 1);
         CHECK(window->GetVisibility() == WindowVisibility::Occluded);
         window.Reset();
         CHECK_FALSE(native.visible);

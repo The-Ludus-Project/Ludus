@@ -1202,9 +1202,11 @@ not interpret game keys.
 - **Capture.** Once Platform supports cursor capture, a capture request from the
   game makes the viewport grab the mouse and hide the cursor, as navigation fly
   mode already does. The release chord, focus loss and Stop each end the capture.
-- **Resize, scale and visibility.** A viewport resize becomes a hosted resize
-  event in backing pixels and scale. Switching tabs or hiding the dock becomes
-  Occluded, so GameHost's existing 10 Hz hidden pacing applies unchanged.
+- **Resize, scale and visibility.** A viewport resize or device pixel ratio
+  change sends the hosted game the requested backing-pixel extent and current
+  display scale together. A fixed-pixel preset keeps its extent when display
+  scale changes. Switching tabs or hiding the dock becomes Occluded, so
+  GameHost's existing 10 Hz hidden pacing applies unchanged.
 - **Close.** Stop sends a hosted close, the same as clicking a native window's
   close button, so the game shuts down along its normal path. The existing
   supervisor timeout and process-group cleanup remain the backstop.
