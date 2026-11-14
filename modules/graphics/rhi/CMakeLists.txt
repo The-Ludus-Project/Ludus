@@ -17,6 +17,7 @@ target_sources(ludus_graphics_rhi
         src/dxil_container.cpp
         src/gpu_scope.cpp
         src/gpu_pass_timing_buffer.cpp
+        src/graphics_capture.cpp
         src/profile.cpp
         src/raster.cpp
         src/compute_workload.cpp
@@ -26,11 +27,11 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
-    PRIVATE Ludus::FoundationStrings Ludus::FoundationMath Ludus::FoundationTime
+    PRIVATE Ludus::FoundationStrings Ludus::FoundationMath Ludus::FoundationTime Ludus::FoundationFilesystem
     PUBLIC
         Ludus::FoundationBase
         Ludus::FoundationContainers
@@ -149,6 +150,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_rhi_lifecycle_tests
         tests/lifecycle_tests.cpp
         tests/gpu_scope_tests.cpp
+        tests/graphics_capture_tests.cpp
         tests/device_tests.cpp
         tests/profile_tests.cpp
         tests/raster_tests.cpp
@@ -164,7 +166,8 @@ if(LUDUS_BUILD_TESTS)
     target_compile_definitions(ludus_rhi_lifecycle_tests PRIVATE LUDUS_RHI_TEST_STORAGE=1)
     target_include_directories(ludus_rhi_lifecycle_tests PRIVATE src)
     target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE ludus_rhi_reference_backend
-        Ludus::GraphicsRhi Ludus::FoundationMath Ludus::FoundationStrings Catch2::Catch2WithMain)
+        Ludus::GraphicsRhi Ludus::FoundationFilesystem Ludus::FoundationMath Ludus::FoundationStrings
+        Ludus::FoundationTime ludus_test_files Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_rhi_lifecycle_tests)
     ludus_enable_test_exceptions(ludus_rhi_lifecycle_tests)
     add_test(NAME ludus_rhi_lifecycle_tests COMMAND ludus_rhi_lifecycle_tests)
