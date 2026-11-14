@@ -1813,16 +1813,15 @@ struct RenderGraph::State final
         inoutReport.DrawLimit = information.Profile.Storage.DrawsPerPlan;
         inoutReport.ResourceLimit = information.Profile.Storage.ResourcesPerGraph;
         Renderer& context = GetContext(operation.Program);
-        uint32 drawCount = 0;
-        uint32 bufferCount = 0;
-        Status status = context.measureOpaqueView(Current->Views[PASS], drawCount, bufferCount);
+        Renderer::OpaqueViewCost cost;
+        Status status = context.measureOpaqueView(Current->Views[PASS], cost);
         if (status != Status::Ready)
         {
             inoutReport.FailedPass = PASS;
             return status;
         }
-        inoutReport.DrawCount = drawCount;
-        inoutReport.ResourceCount = 1 + bufferCount;
+        inoutReport.DrawCount = cost.DrawCount;
+        inoutReport.ResourceCount = 1 + cost.BufferCount;
         // The pass declares the attachment write and every buffer, so its uses equal the graph's resources.
         if (inoutReport.DrawCount > inoutReport.DrawLimit || inoutReport.ResourceCount > inoutReport.ResourceLimit)
         {

@@ -841,12 +841,18 @@ private:
     };
     [[nodiscard]] rhi::RasterStatus
     drawView(PreparedView handle, const rhi::RasterPassDescription& description, DrawMode mode) noexcept;
+    /// What appendOpaqueView adds to an ordered graph for one view.
+    struct OpaqueViewCost final
+    {
+        foundation::uint32 DrawCount = 0; ///< Draw packets.
+        /// Imported buffers: the instance table and each distinct mesh's vertex/index pair.
+        foundation::uint32 BufferCount = 0;
+    };
     /// Between frames and without graph changes, admit a ready view to appendOpaqueView and count what its pass
-    /// adds: draw packets and imported buffers (the instance table and each distinct mesh's vertex/index pair).
-    /// Unsupported for materials, uniform sets, overlays, a world grid or visibility inputs; outputs preserved.
-    [[nodiscard]] rhi::RasterStatus measureOpaqueView(PreparedView handle,
-                                                      foundation::uint32& outDrawCount,
-                                                      foundation::uint32& outBufferCount) const noexcept;
+    /// adds. Unsupported for materials, uniform sets, overlays, a world grid or visibility inputs.
+    /// @param handle Ready view of this renderer.
+    /// @param outCost Receives the counts on Ready; preserved on failure.
+    [[nodiscard]] rhi::RasterStatus measureOpaqueView(PreparedView handle, OpaqueViewCost& outCost) const noexcept;
     /// Between frames, append a view admitted by measureOpaqueView as one ordered raster pass: the commands
     /// DrawView records into an RGBA8 offscreen attachment, with the declared uses of every bound buffer.
     /// @param handle Ready view of this renderer; its packets and instance table are retained by the graph.

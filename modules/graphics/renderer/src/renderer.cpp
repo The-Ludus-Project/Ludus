@@ -1771,7 +1771,7 @@ Status Renderer::AppendVisibilityView(PreparedView handle,
                                                 attachment};
     return internal::AppendVisibilityCommands(state.Device, inoutGraph, commands, previous, outWritten);
 }
-Status Renderer::measureOpaqueView(PreparedView handle, uint32& outDrawCount, uint32& outBufferCount) const noexcept
+Status Renderer::measureOpaqueView(PreparedView handle, OpaqueViewCost& outCost) const noexcept
 {
     const Status status = GetStatus(handle);
     if (status != Status::Ready)
@@ -1804,8 +1804,7 @@ Status Renderer::measureOpaqueView(PreparedView handle, uint32& outDrawCount, ui
         // Every distinct mesh imports its vertex and index buffers once.
         buffers += isCounted == true ? 0 : 2;
     }
-    outDrawCount = static_cast<uint32>(view.DrawCount);
-    outBufferCount = buffers;
+    outCost = {static_cast<uint32>(view.DrawCount), buffers};
     return Status::Ready;
 }
 Status Renderer::appendOpaqueView(PreparedView handle,
@@ -1815,9 +1814,8 @@ Status Renderer::appendOpaqueView(PreparedView handle,
                                   rhi::GraphVersion previous,
                                   rhi::GraphVersion& outWritten) noexcept
 {
-    uint32 drawCount = 0;
-    uint32 bufferCount = 0;
-    const Status admitted = measureOpaqueView(handle, drawCount, bufferCount);
+    OpaqueViewCost cost;
+    const Status admitted = measureOpaqueView(handle, cost);
     if (admitted != Status::Ready)
     {
         return admitted;
