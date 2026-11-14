@@ -24,6 +24,11 @@ inline bool HdrAvailable = true;
 /// Reported as RasterCapabilities::HasLineFill; read when a device is created.
 inline bool HasLineFill = true;
 inline bool ComputeAvailable = true;
+/// Replaces the default R12b raster-storage profile when HasRasterStorageOverride is true.
+inline bool HasRasterStorageOverride = false;
+inline RasterStorageCapabilities RasterStorageOverride;
+/// Most recent texture state requested from the backend barrier hook.
+inline RasterTextureUse LastTextureUse = RasterTextureUse::Undefined;
 inline bool IsSpatialUpscaleAvailable = false;
 inline foundation::usize SpatialUpscaleEncodes = 0;
 inline foundation::StaticArray<bool, RASTER_FORMAT_COUNT> FormatUnavailable{};

@@ -154,7 +154,8 @@ struct RasterCapabilities final
     bool HasLineFill = false;
 };
 /// Bounded single-queue buffer compute profile; zero fields mean unavailable.
-/// Storage textures, atomics between queues and indirect dispatch are deferred.
+/// Compute storage textures are reported by RasterStorageCapabilities; atomics between
+/// queues and indirect dispatch are deferred.
 /// Layouts obey enabled MaxStorageBindings and Interface.MaxBindings independently.
 struct ComputeCapabilities final
 {
@@ -172,7 +173,7 @@ struct ComputeCapabilities final
     ludus::foundation::uint32 MaxStorageBindings = 0;
 };
 /// Implemented texture operations; native support alone never enables an engine API.
-/// Storage remains unimplemented; copy flags describe bounded R8 RGBA8Unorm D2 operations.
+/// Copy flags describe bounded R8 RGBA8Unorm D2 operations.
 struct TextureUses final
 {
     /// Original-format sampled views in the enabled dimensions.
@@ -183,7 +184,9 @@ struct TextureUses final
     bool ColorAttachment = false;
     /// Premultiplied-alpha blending into that color attachment.
     bool Blendable = false;
-    /// Shader storage texture access; currently unimplemented.
+    /// Write-only D2 shader storage through TextureDescription::IsStorage allocations and
+    /// Storage views (R12b). Enabled for RGBA8Unorm and RGBA16Float only when a fragment
+    /// or compute stage admits storage textures; read/write storage texture access is excluded.
     bool Storage = false;
     /// General texture-copy source; readback of the frame does not imply this use.
     bool CopySource = false;
@@ -292,6 +295,23 @@ struct BindingCapabilities final
     /// or native partially-bound descriptor feature is implied.
     bool HasPartiallyBoundArrays = false;
 };
+/// Enabled R12b raster-stage storage profile; zero/false fields mean unavailable.
+/// Counts bound descriptors (including array elements) visible to one stage, independently
+/// of ComputeCapabilities::MaxStorageBindings. Writes are admitted only through ordered-graph
+/// declarations. WebGL 2 reports zero; other backends report only what their device enabled.
+struct RasterStorageCapabilities final
+{
+    /// Maximum read-only storage buffer descriptors visible to the vertex stage.
+    ludus::foundation::uint32 MaxVertexStorageBuffers = 0;
+    /// Maximum read-only and writable storage buffer descriptors visible to the fragment stage.
+    ludus::foundation::uint32 MaxFragmentStorageBuffers = 0;
+    /// Fragment shaders may write StorageReadWrite buffers; vertex-stage writes are never admitted.
+    bool HasFragmentStorageWrites = false;
+    /// Maximum write-only storage texture descriptors visible to the fragment stage.
+    ludus::foundation::uint32 MaxFragmentStorageTextures = 0;
+    /// Maximum write-only storage texture descriptors visible to the compute stage.
+    ludus::foundation::uint32 MaxComputeStorageTextures = 0;
+};
 /// Immutable effective profile snapshot while the device is ready; zero otherwise.
 /// Formats are indexed by RasterFormat's underlying value, in declaration order.
 /// This describes enabled engine operations, not an unbounded raw adapter catalog.
@@ -305,6 +325,8 @@ struct DeviceProfile final
     ComputeCapabilities Compute;
     /// Independently enabled descriptor arrays, dynamic offsets and optional indexing.
     BindingCapabilities Binding;
+    /// Raster-stage storage buffers and storage textures (R12b); zero if unavailable.
+    RasterStorageCapabilities RasterStorage;
     /// Immutable configured resource/plan/staging maxima and budgets; all zero outside Ready.
     StorageLimits Storage
     {

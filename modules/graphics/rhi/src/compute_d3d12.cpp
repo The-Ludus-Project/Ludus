@@ -42,6 +42,26 @@ ComputeCapabilities ComputeLimits() noexcept
     };
 }
 
+// Thanks to Microsoft, "Resource Binding Tier" and "Hardware Feature Levels": feature
+// level 11 devices expose UAVs to every stage, so pixel writes and typed UAV texture
+// stores of RGBA8/RGBA16F need no optional feature here.
+RasterStorageCapabilities RasterStorageLimits() noexcept
+{
+    const ComputeCapabilities compute = ComputeLimits();
+    if (compute.MaxStorageRange == 0)
+    {
+        return {};
+    }
+    return
+    {
+        .MaxVertexStorageBuffers = compute.MaxStorageBindings,
+        .MaxFragmentStorageBuffers = compute.MaxStorageBindings,
+        .HasFragmentStorageWrites = true,
+        .MaxFragmentStorageTextures = RASTER_BINDING_COUNT,
+        .MaxComputeStorageTextures = RASTER_BINDING_COUNT,
+    };
+}
+
 RasterStatus ComputeCreatePipeline(usize slot, const ComputePipelineInfo& info, uint32) noexcept
 {
     ID3D12Device* device = GetDeviceOrNull();

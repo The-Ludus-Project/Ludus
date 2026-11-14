@@ -590,3 +590,93 @@ class SoftwareRayComputeProfileTests(unittest.TestCase):
             verify_ray_compute_metal(code + '// metal_raytracing', interface, False)
         with self.assertRaisesRegex(RuntimeError, 'must not require native ray traversal'):
             verify_ray_compute_metal(code, {'entries': [{'binding': 5, 'kind': 'RayScene'}]}, False)
+if __name__=='__main__':unittest.main()
+
+class RasterStorageProfileTests(unittest.TestCase):
+    """R12b: vertex storage reads, fragment storage writes and write-only storage textures."""
+
+    def storage_fixture(self, stage, access='readWrite'):
+        return {'parameters': [{'name': 'records', 'binding': {'kind': 'descriptorTableSlot', 'index': 1},
+                                'type': {'kind': 'resource', 'baseShape': 'structuredBuffer', 'access': access,
+                                         'resultType': {'kind': 'scalar', 'scalarType': 'uint32'}}}],
+                'entryPoints': [{'stage': stage, 'bindings': [{'name': 'records', 'binding': {'used': 1}}]}]}
+
+    def texture_fixture(self, stage, access='write', texel_format='rgba8', metal=False):
+        resource = {'name': 'image', 'format': texel_format,
+                    'type': {'kind': 'resource', 'baseShape': 'texture2D', 'access': access,
+                             'resultType': {'kind': 'vector', 'elementCount': 4,
+                                            'elementType': {'kind': 'scalar', 'scalarType': 'float32'}}}}
+        if metal:
+            # Slang numbers Metal write textures itself; the authored slot is supplied separately.
+            resource['bindings'] = [{'kind': 'shaderResource', 'index': 0},
+                                    {'kind': 'unorderedAccess', 'index': 0, 'count': 0}]
+        else:
+            resource['binding'] = {'kind': 'descriptorTableSlot', 'index': 2}
+        document = {'parameters': [resource],
+                    'entryPoints': [{'stage': stage, 'bindings': [{'name': 'image', 'binding': {'used': 1}}]}]}
+        if stage == 'compute':
+            document['entryPoints'][0]['threadGroupSize'] = [8, 8, 1]
+        return document
+
+    def test_raster_storage_buffers_require_the_explicit_profile(self):
+        with self.assertRaises(RuntimeError):
+            raster_interface(self.storage_fixture('fragment'), 'fragment')
+        with self.assertRaises(RuntimeError):
+            raster_interface(self.storage_fixture('vertex', 'read'), 'vertex')
+        entry = raster_interface(self.storage_fixture('fragment'), 'fragment', raster_storage=True)['entries'][0]
+        self.assertEqual((entry['binding'], entry['kind'], entry['size']), (1, 'StorageReadWrite', 4))
+        entry = raster_interface(self.storage_fixture('vertex', 'read'), 'vertex', raster_storage=True)['entries'][0]
+        self.assertEqual(entry['kind'], 'StorageRead')
+
+    def test_vertex_storage_stays_read_only(self):
+        with self.assertRaises(RuntimeError):
+            raster_interface(self.storage_fixture('vertex'), 'vertex', raster_storage=True)
+
+    def test_storage_textures_reflect_format_and_stage(self):
+        for texel_format, expected in (('rgba8', 'Rgba8Unorm'), ('rgba16f', 'Rgba16Float')):
+            entry = raster_interface(self.texture_fixture('fragment', texel_format=texel_format), 'fragment',
+                                     raster_storage=True)['entries'][0]
+            self.assertEqual((entry['binding'], entry['kind'], entry['storage_format']),
+                             (2, 'StorageTexture2D', expected))
+        entry = raster_interface(self.texture_fixture('compute'), 'compute')['entries'][0]
+        self.assertEqual(entry['kind'], 'StorageTexture2D')
+        with self.assertRaisesRegex(RuntimeError, 'raster-storage fragment profile'):
+            raster_interface(self.texture_fixture('fragment'), 'fragment')
+        with self.assertRaisesRegex(RuntimeError, 'raster-storage fragment profile'):
+            raster_interface(self.texture_fixture('vertex'), 'vertex', raster_storage=True)
+
+    def test_storage_textures_reject_read_write_access_and_unknown_formats(self):
+        with self.assertRaisesRegex(RuntimeError, 'write-only'):
+            raster_interface(self.texture_fixture('compute', access='readWrite'), 'compute')
+        for texel_format in (None, 'r32f', 'rgba8_snorm'):
+            with self.assertRaisesRegex(RuntimeError, 'format'):
+                raster_interface(self.texture_fixture('compute', texel_format=texel_format), 'compute')
+        document = self.texture_fixture('compute')
+        document['parameters'][0]['type']['resultType'] = {'kind': 'scalar', 'scalarType': 'float32'}
+        with self.assertRaisesRegex(RuntimeError, 'float4'):
+            raster_interface(document, 'compute')
+
+    def test_metal_storage_textures_use_the_authored_slot(self):
+        from compile_raster import metal_storage_texture_slots, normalize_metal_storage_textures
+        document = self.texture_fixture('compute', metal=True)
+        with self.assertRaisesRegex(RuntimeError, 'authored descriptor slot'):
+            raster_interface(document, 'compute', metal=True)
+        slots = metal_storage_texture_slots(self.texture_fixture('compute'))
+        self.assertEqual(slots, {'image': 2})
+        interface = raster_interface(document, 'compute', metal=True, storage_slots=slots)
+        self.assertEqual(interface['entries'][0]['binding'], 2)
+        code = '[[kernel]] void Main(texture2d<float, access::write> image_0 [[texture(0)]])'
+        self.assertIn('[[texture(2)]]', normalize_metal_storage_textures(code, interface, document))
+        with self.assertRaisesRegex(RuntimeError, 'missing or ambiguous'):
+            normalize_metal_storage_textures(code.replace('access::write', 'access::read'), interface, document)
+
+    def test_metal_usage_ignores_zero_count_categories(self):
+        from compile_raster import raster_interface_usage
+        document = {'entryPoints': [{'stage': 'fragment', 'bindings': [
+            {'name': 'buffer', 'bindings': [{'kind': 'constantBuffer', 'index': 0, 'used': 0},
+                                            {'kind': 'shaderResource', 'index': 0, 'count': 0, 'used': 1}]},
+            {'name': 'image', 'bindings': [{'kind': 'shaderResource', 'index': 0, 'used': 1}]}]}]}
+        self.assertEqual(raster_interface_usage(document, 'fragment'), {'image'})
+
+
+if __name__=='__main__':unittest.main()

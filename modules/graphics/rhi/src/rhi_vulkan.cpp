@@ -1055,6 +1055,8 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         {
             .fillModeNonSolid = supported.fillModeNonSolid,
             .textureCompressionBC = supported.textureCompressionBC,
+            // R12b fragment storage writes; reported only when enabled here.
+            .fragmentStoresAndAtomics = supported.fragmentStoresAndAtomics,
             .shaderSampledImageArrayDynamicIndexing = supported.shaderSampledImageArrayDynamicIndexing,
         };
         gHasUniformTextureIndexing = enabled.shaderSampledImageArrayDynamicIndexing == VK_TRUE;

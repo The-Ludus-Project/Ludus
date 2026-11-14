@@ -138,6 +138,13 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
             {
                 found = true;
             }
+            else if (internal::StorageTextureBinding(entry.Kind) == true && binding.type == MTLBindingTypeTexture)
+            {
+                // Metal storage textures carry no texel format; the layout's format binds the view.
+                found = ((id<MTLTextureBinding>)binding).textureType == MTLTextureType2D &&
+                        binding.access == MTLBindingAccessWriteOnly &&
+                        ((id<MTLTextureBinding>)binding).arrayLength == 1;
+            }
         }
         if (found == false)
         {
@@ -259,6 +266,29 @@ RasterCapabilities RasterLimits() noexcept
         .HdrColor = true,
         .MaxTextureUploadBytes = max,
         .HasLineFill = true,
+    };
+}
+// Thanks to Apple, "Metal Feature Set Tables" (writable textures in fragment functions,
+// Apple3+/Mac2), https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf.
+// Fragment/vertex storage buffers share the group-zero buffer slots; R12b storage
+// textures use texture slots equal to their binding numbers, like sampled textures.
+// Tracked resources and encoder boundaries order these writes before later reads.
+RasterStorageCapabilities RasterStorageLimits() noexcept
+{
+    if (gDevice == nil)
+    {
+        return {};
+    }
+    const bool hasWritableTextures =
+        [gDevice supportsFamily:MTLGPUFamilyApple3] == YES || [gDevice supportsFamily:MTLGPUFamilyMac2] == YES;
+    const uint32 slots = static_cast<uint32>(internal::RASTER_BINDINGS);
+    return
+    {
+        .MaxVertexStorageBuffers = slots,
+        .MaxFragmentStorageBuffers = slots,
+        .HasFragmentStorageWrites = true,
+        .MaxFragmentStorageTextures = hasWritableTextures == true ? slots : 0U,
+        .MaxComputeStorageTextures = slots,
     };
 }
 // Thanks to Apple, "MTLComputeCommandEncoder" and Metal's tracked-resource
@@ -595,7 +625,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
             BindRayMetalScene(encoder, {set.Slots[i], layout.Entries[i].Binding});
             continue;
         }
-        if (internal::TextureBinding(layout.Entries[i].Kind) == true)
+        if (internal::ViewBinding(layout.Entries[i].Kind) == true)
         {
             [encoder setTexture:gRasterViews[set.Slots[i]] atIndex:layout.Entries[i].Binding];
         }
@@ -673,7 +703,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         descriptor.arrayLength = info.Dimension == TextureDimension::D2Array ? info.DepthOrLayers : 1;
         descriptor.mipmapLevelCount = info.MipLevels;
         descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView |
-                           (info.Attachment ? MTLTextureUsageRenderTarget : MTLTextureUsageUnknown);
+                           (info.Attachment ? MTLTextureUsageRenderTarget : MTLTextureUsageUnknown) |
+                           (info.IsStorage ? MTLTextureUsageShaderWrite : MTLTextureUsageUnknown);
         descriptor.storageMode = info.Attachment                            ? MTLStorageModePrivate
                                  : internal::CompressedTexture(info.Format) ? MTLStorageModeManaged
                                                                             : MTLStorageModeShared;
@@ -1045,7 +1076,8 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
         const uint32 textureIndex = entry.Binding + layout.GetArrayElement(i);
         const bool vertex = (static_cast<uint8>(entry.Visibility) & 1) != 0;
         const bool fragment = (static_cast<uint8>(entry.Visibility) & 2) != 0;
-        if (entry.Kind == RasterBindingKind::UniformBuffer || entry.Kind == RasterBindingKind::StorageRead)
+        if (entry.Kind == RasterBindingKind::UniformBuffer || entry.Kind == RasterBindingKind::StorageRead ||
+            entry.Kind == RasterBindingKind::StorageReadWrite)
         {
             if (vertex)
             {
@@ -1060,7 +1092,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
                                     atIndex:textureIndex];
             }
         }
-        else if (internal::TextureBinding(entry.Kind))
+        else if (internal::ViewBinding(entry.Kind))
         {
             if (vertex)
             {

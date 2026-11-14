@@ -341,7 +341,7 @@ void Dependencies(Record& record, RasterKind kind, bool retain) noexcept
         {
             const RasterBindingKind type = layout.GetDescriptorBinding(i).Kind;
             reference(BufferBinding(type)                   ? RasterKind::Buffer
-                      : TextureBinding(type)                ? RasterKind::View
+                      : ViewBinding(type)                   ? RasterKind::View
                       : type == RasterBindingKind::RayScene ? RasterKind::RayScene
                                                             : RasterKind::Sampler,
                       record.Set.Slots[i]);
@@ -540,11 +540,17 @@ bool ValidBinding(const RasterBinding& binding) noexcept
     }
     if (binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite)
     {
-        const ComputeCapabilities limits = backend::ComputeLimits();
-        return (binding.Visibility == RasterVisibility::Compute ||
-                (binding.Kind == RasterBindingKind::StorageRead && binding.Visibility == RasterVisibility::Fragment)) &&
-               binding.MinSize > 0 && binding.MinSize % sizeof(uint32) == 0 &&
-               binding.MinSize <= limits.MaxStorageRange;
+        // R12b: reads in any one stage set; writes only in compute or fragment shaders.
+        // The enabled range is a capability, checked by ValidateLayoutCapabilities.
+        return (binding.Kind == RasterBindingKind::StorageRead || binding.Visibility == RasterVisibility::Compute ||
+                binding.Visibility == RasterVisibility::Fragment) &&
+               binding.MinSize > 0 && binding.MinSize % sizeof(uint32) == 0;
+    }
+    if (StorageTextureBinding(binding.Kind) == true)
+    {
+        return (binding.Visibility == RasterVisibility::Compute || binding.Visibility == RasterVisibility::Fragment) &&
+               binding.Count == 1 && binding.MinSize == 0 && binding.HasPartialBinding == false &&
+               binding.IsRuntimeSized == false && IsStorageTextureFormat(binding.StorageFormat) == true;
     }
     return (binding.Visibility != RasterVisibility::Compute ||
             (binding.Count == 1 &&
@@ -674,6 +680,8 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
         uint32 sampled = 0;
         uint32 samplers = 0;
         uint32 storage = 0;
+        uint32 storageTextures = 0;
+        bool hasStorageWrite = false;
         for (usize entry = 0; entry < layout.Count; ++entry)
         {
             const RasterBinding& binding = layout.Entries[entry];
@@ -692,9 +700,24 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
                 binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite
                     ? binding.Count
                     : 0U;
+            storageTextures += StorageTextureBinding(binding.Kind) == true ? binding.Count : 0U;
+            hasStorageWrite = hasStorageWrite == true || binding.Kind == RasterBindingKind::StorageReadWrite;
         }
+        // Raster stages use the independently negotiated R12b counts; compute keeps R4/R18c.
+        const RasterStorageCapabilities rasterStorage = backend::RasterStorageLimits();
+        const uint32 storageLimit =
+            stage == static_cast<uint32>(RasterVisibility::Vertex)     ? rasterStorage.MaxVertexStorageBuffers
+            : stage == static_cast<uint32>(RasterVisibility::Fragment) ? rasterStorage.MaxFragmentStorageBuffers
+                                                                       : backend::ComputeLimits().MaxStorageBindings;
+        const uint32 storageTextureLimit =
+            stage == static_cast<uint32>(RasterVisibility::Fragment)  ? rasterStorage.MaxFragmentStorageTextures
+            : stage == static_cast<uint32>(RasterVisibility::Compute) ? rasterStorage.MaxComputeStorageTextures
+                                                                      : 0U;
         if (uniforms > capabilities.MaxUniformBuffersPerStage || sampled > capabilities.MaxSampledTexturesPerStage ||
-            samplers > capabilities.MaxSamplersPerStage || storage > backend::ComputeLimits().MaxStorageBindings)
+            samplers > capabilities.MaxSamplersPerStage || storage > storageLimit ||
+            storageTextures > storageTextureLimit ||
+            (stage == static_cast<uint32>(RasterVisibility::Fragment) && hasStorageWrite == true &&
+             rasterStorage.HasFragmentStorageWrites == false))
         {
             return RasterStatus::Unsupported;
         }
@@ -705,7 +728,9 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
     for (usize entry = 0; entry < layout.Count; ++entry)
     {
         const RasterBinding& binding = layout.Entries[entry];
-        if (binding.Kind == RasterBindingKind::RayScene && backend::RayLimits().InlineQueries == false)
+        if ((binding.Kind == RasterBindingKind::RayScene && backend::RayLimits().InlineQueries == false) ||
+            ((binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite) &&
+             binding.MinSize > backend::ComputeLimits().MaxStorageRange))
         {
             return RasterStatus::Unsupported;
         }
@@ -738,7 +763,7 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
             return RasterStatus::Unsupported;
         }
         if (backend::Kind() == Backend::Metal &&
-            (TextureBinding(binding.Kind) == true || binding.Kind == RasterBindingKind::Sampler))
+            (ViewBinding(binding.Kind) == true || binding.Kind == RasterBindingKind::Sampler))
         {
             const uint32 registerLimit = binding.Kind == RasterBindingKind::Sampler
                                              ? capabilities.MaxSamplersPerStage
@@ -750,7 +775,7 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
             for (usize previous = 0; previous < entry; ++previous)
             {
                 const RasterBinding& other = layout.Entries[previous];
-                if (((TextureBinding(binding.Kind) == true && TextureBinding(other.Kind) == true) ||
+                if (((ViewBinding(binding.Kind) == true && ViewBinding(other.Kind) == true) ||
                      (binding.Kind == RasterBindingKind::Sampler && other.Kind == RasterBindingKind::Sampler)) &&
                     binding.Binding < other.Binding + other.Count && other.Binding < binding.Binding + binding.Count)
                 {
@@ -898,6 +923,7 @@ bool ShaderFits(const RasterShaderInfo& shader, const RasterLayout& layout) noex
         {
             const auto& entry = layout.Entries[j];
             if (entry.Binding == need.Binding && entry.Kind == need.Kind &&
+                (StorageTextureBinding(need.Kind) == false || entry.StorageFormat == need.StorageFormat) &&
                 (hasExactStride == true ? entry.MinSize == need.MinSize : entry.MinSize >= need.MinSize) &&
                 entry.IsRuntimeSized == need.IsRuntimeSized &&
                 (need.IsRuntimeSized == true ? entry.Count >= need.Count : entry.Count == need.Count) &&
@@ -1114,11 +1140,18 @@ RasterStatus CreateTexture(DeviceHandle device,
           description.Format == RasterFormat::Rg8Unorm || CompressedTexture(description.Format))) ||
         (description.RetainCpuContent &&
          (description.Attachment || description.Dimension != TextureDimension::D2 ||
-          description.Format == RasterFormat::Rgba16Float || CompressedTexture(description.Format))))
+          description.Format == RasterFormat::Rgba16Float || CompressedTexture(description.Format))) ||
+        (description.IsStorage && (description.Attachment || description.DeferredInitialization ||
+                                   description.RetainCpuContent || description.Dimension != TextureDimension::D2 ||
+                                   description.MipLevels != 1 || IsStorageTextureFormat(description.Format) == false)))
     {
         return RasterStatus::InvalidDescription;
     }
     const FormatCapabilities format = internal::CurrentDeviceProfile().Formats[static_cast<usize>(description.Format)];
+    if (description.IsStorage && format.Uses.Storage == false)
+    {
+        return RasterStatus::Unsupported;
+    }
     const uint32 dimension = description.Attachment && description.Dimension == TextureDimension::Cube
                                  ? format.MaxAttachmentCubeDimension
                              : description.Attachment                          ? format.MaxAttachmentDimension2D
@@ -1352,7 +1385,10 @@ RasterStatus CreateTextureView(DeviceHandle device,
     }
     if ((description.Attachment &&
          (source->Texture.Attachment == false || description.Aspect != TextureAspect::Color)) ||
-        (description.Attachment == false && source->Texture.SampleCount != 1))
+        (description.Attachment == false && source->Texture.SampleCount != 1) ||
+        (description.IsStorage &&
+         (source->Texture.IsStorage == false || description.Attachment || description.Aspect != TextureAspect::Color ||
+          description.Dimension != TextureDimension::D2)))
     {
         return RasterStatus::InvalidDescription;
     }
@@ -1815,8 +1851,8 @@ RasterStatus CreateBindingSnapshot(DeviceHandle device,
             return RasterStatus::InvalidDescription;
         }
         const RasterBindingKind kind = layout.GetDescriptorBinding(i).Kind;
-        const Record* resourceOrNull = BufferBinding(kind)    ? Resolve(entryOrNull->Buffer, RasterKind::Buffer)
-                                       : TextureBinding(kind) ? Resolve(entryOrNull->Texture, RasterKind::View)
+        const Record* resourceOrNull = BufferBinding(kind) ? Resolve(entryOrNull->Buffer, RasterKind::Buffer)
+                                       : ViewBinding(kind) ? Resolve(entryOrNull->Texture, RasterKind::View)
                                        : kind == RasterBindingKind::RayScene
                                            ? Resolve(entryOrNull->Scene, RasterKind::RayScene)
                                            : Resolve(entryOrNull->Sampler, RasterKind::Sampler);
@@ -1833,7 +1869,15 @@ RasterStatus CreateBindingSnapshot(DeviceHandle device,
                                               : resourceOrNull->View.Aspect == TextureAspect::Stencil
                                                   ? RasterBindingKind::TextureStencil2D
                                                   : TextureBindingType(resourceOrNull->View.Dimension);
-        if (TextureBinding(kind) == true && (resourceOrNull->View.Attachment == true || textureType != kind))
+        if (TextureBinding(kind) == true &&
+            (resourceOrNull->View.Attachment == true || resourceOrNull->View.IsStorage == true || textureType != kind))
+        {
+            return RasterStatus::InvalidDescription;
+        }
+        if (StorageTextureBinding(kind) == true &&
+            (resourceOrNull->View.IsStorage == false ||
+             At(RasterKind::Texture, resourceOrNull->TextureSlot).Texture.Format !=
+                 layout.GetDescriptorBinding(i).StorageFormat))
         {
             return RasterStatus::InvalidDescription;
         }
@@ -1862,7 +1906,7 @@ RasterStatus CreateBindingSnapshot(DeviceHandle device,
             }
         }
         set.Slots[i] = BufferBinding(kind)                   ? RasterAccess::Slot(entryOrNull->Buffer)
-                       : TextureBinding(kind)                ? RasterAccess::Slot(entryOrNull->Texture)
+                       : ViewBinding(kind)                   ? RasterAccess::Slot(entryOrNull->Texture)
                        : kind == RasterBindingKind::RayScene ? RasterAccess::Slot(entryOrNull->Scene)
                                                              : RasterAccess::Slot(entryOrNull->Sampler);
         set.Offsets[i] = entryOrNull->Offset;

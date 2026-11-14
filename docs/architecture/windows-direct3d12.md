@@ -408,8 +408,11 @@ Windows hardware or the production MSVC toolchain.
   when created with the corresponding role. A fragment stage may read a
   structured buffer through the same `StorageRead` binding (D6c); raster draws
   transition it to a shader-readable state before binding the set, as the
-  ordered graph does before a dispatch. Descriptor arrays, dynamic offsets,
-  sampled depth/stencil, storage textures, raster storage writes, and ray
+  ordered graph does before a dispatch. R12b also admits vertex-stage structured
+  reads, pixel-shader structured writes (UAVs) and write-only typed UAV storage
+  textures in pixel and compute shaders; see the
+  [R12b raster-storage profile](../development/fullscreen-rendering.md#raster-stage-storage-buffers-and-textures-r12b).
+  Descriptor arrays, dynamic offsets, sampled depth/stencil in compute and ray
   bindings are outside the Direct3D 12 compute profile.
 - **Ordering and lifetime.** The shared graph compiler validates versions and
   packet uses before acquiring a frame. The direct command list orders dispatch
