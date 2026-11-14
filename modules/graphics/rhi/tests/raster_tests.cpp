@@ -1995,14 +1995,15 @@ TEST_CASE("G0 GPU scopes nest in a frame and close at submission without closing
     SubmissionToken completion;
     REQUIRE(EndFrame(session.Device, completion) == RasterStatus::Ready);
     CHECK(EndGpuScope(session.Device) == RasterStatus::InvalidState);
-    REQUIRE(reference::AnnotationCount == 2 * MAX_GPU_SCOPE_DEPTH);
+    constexpr usize DEPTH = MAX_GPU_SCOPE_DEPTH;
+    REQUIRE(reference::AnnotationCount == 2 * DEPTH);
     CHECK(reference::Annotations[0].Event == AnnotationEvent::BeginScope);
     CHECK(std::strcmp(reference::Annotations[0].Name.GetData(), "Viewport/Scene") == 0);
     CHECK(std::strcmp(reference::Annotations[1].Name.GetData(), "Graph/Opaque") == 0);
-    CHECK(reference::Annotations[MAX_GPU_SCOPE_DEPTH - 1].Event == AnnotationEvent::BeginScope);
-    CHECK(reference::Annotations[MAX_GPU_SCOPE_DEPTH].Event == AnnotationEvent::EndScope);
-    CHECK(reference::Annotations[2 * MAX_GPU_SCOPE_DEPTH - 2].Event == AnnotationEvent::EndScope);
-    CHECK(reference::Annotations[2 * MAX_GPU_SCOPE_DEPTH - 1].Event == AnnotationEvent::CloseScope);
+    CHECK(reference::Annotations[DEPTH - 1].Event == AnnotationEvent::BeginScope);
+    CHECK(reference::Annotations[DEPTH].Event == AnnotationEvent::EndScope);
+    CHECK(reference::Annotations[2 * DEPTH - 2].Event == AnnotationEvent::EndScope);
+    CHECK(reference::Annotations[2 * DEPTH - 1].Event == AnnotationEvent::CloseScope);
 
     reference::AnnotationCount = 0;
     std::optional<GpuScope> stale;
