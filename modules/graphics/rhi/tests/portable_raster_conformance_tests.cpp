@@ -6,6 +6,9 @@
 #include "ordered_draw.h"
 #include "ordered_prepare.h"
 #include "raster.h"
+#include "raster_storage_compute.h"
+#include "raster_storage_sample.h"
+#include "raster_storage_write.h"
 #include "raster_test_readiness.h"
 
 #include <ludus/foundation/containers/array.hpp>
@@ -22,6 +25,8 @@
 #    include <ludus/graphics/rhi/gpu_scope.h>
 #    include <string_view>
 #endif
+
+#include <cstring>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -956,5 +961,364 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
         CHECK(std::string_view(timing.Scope.Name.GetData()) == expectedName);
     }
 #endif
+    owner.CheckDebugMessages();
+}
+
+namespace
+{
+constexpr usize STORAGE_LAYOUT_CAPACITY = 4;
+// Vertex and fragment reflection share one group-zero layout; binding numbers are distinct.
+usize MergeStageBindings(const rhi::RasterShaderDescription& vertex,
+                         const rhi::RasterShaderDescription& fragment,
+                         StaticArray<rhi::RasterBinding, STORAGE_LAYOUT_CAPACITY>& outBindings)
+{
+    usize count = 0;
+    for (const rhi::RasterShaderDescription* stage : {&vertex, &fragment})
+    {
+        for (usize i = 0; i < stage->Bindings.GetSize(); ++i)
+        {
+            REQUIRE(count < outBindings.GetSize());
+            outBindings[count++] = stage->Bindings[i];
+        }
+    }
+    return count;
+}
+void RequireReadback(rhi::DeviceHandle device, rhi::ReadbackTicket ticket, uint8* outBytes, usize size)
+{
+    RequireReady(device, ticket);
+    REQUIRE(rhi::CopyReadback(device, ticket, outBytes, size) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Release(device, ticket) == rhi::RasterStatus::Ready);
+}
+void RequireUniformPixels(const StaticArray<uint8, PIXEL_BYTES>& pixels,
+                          const StaticArray<uint8, CHANNELS>& expected,
+                          const char* failure)
+{
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        if (pixels[index] != expected[index % CHANNELS])
+        {
+            CAPTURE(index, failure);
+            FAIL("R12b storage image differs from the shared oracle");
+        }
+    }
+}
+} // namespace
+
+// R12b: target-reflected raster storage. The vertex stage reads positions from storage, the
+// fragment stage writes a coverage buffer and a write-only storage texture, compute writes a
+// second storage texture, and a later pass samples the fragment-written texture. Every write
+// is declared in the ordered graph; readbacks check the complete results on each backend.
+TEST_CASE("Portable raster storage buffers and textures follow declared graph writes", "[rhi][gpu][raster-storage]")
+{
+    DeviceOwner owner(true);
+    const rhi::DeviceHandle device = owner.Device;
+#if defined(_WIN32)
+    REQUIRE(rhi::SetFrameTarget(device,
+                                owner.Surface,
+                                { .Width = WIDTH, .Height = HEIGHT, .ShouldPresentToSurface = false }) ==
+            rhi::DeviceStatus::Ready);
+#endif
+    rhi::DeviceInfo info;
+    REQUIRE(rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready);
+    const rhi::RasterStorageCapabilities& storage = info.Profile.RasterStorage;
+    if (storage.HasFragmentStorageWrites == false || storage.MaxFragmentStorageTextures == 0 ||
+        storage.MaxVertexStorageBuffers == 0 || storage.MaxComputeStorageTextures == 0)
+    {
+        SKIP("The enabled device profile does not admit R12b raster storage");
+    }
+    REQUIRE(info.Profile.Formats[static_cast<usize>(rhi::RasterFormat::Rgba8Unorm)].Uses.Storage == true);
+
+    constexpr usize TRIANGLE_COORDINATES = 6;
+    constexpr float32 OVERSCAN_EDGE = 3;
+    const StaticArray<float32, TRIANGLE_COORDINATES> positionValues{-1, -1, -1, OVERSCAN_EDGE, OVERSCAN_EDGE, -1};
+    constexpr uint32 TRIANGLE_INDEX_COUNT = 3;
+    const StaticArray<uint32, TRIANGLE_INDEX_COUNT> indexValues{0, 1, 2};
+    constexpr usize COVERAGE_BYTES = usize{WIDTH} * HEIGHT * sizeof(uint32);
+    Array<uint8> zeroCoverage;
+    REQUIRE(zeroCoverage.TryResize(COVERAGE_BYTES) == true);
+    Array<uint8> zeroPixels;
+    REQUIRE(zeroPixels.TryResize(PIXEL_BYTES) == true);
+    rhi::BufferHandle positions;
+    rhi::BufferHandle coverage;
+    rhi::BufferHandle indices;
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Storage, sizeof(positionValues)},
+                              GetBytes(positionValues),
+                              positions) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Storage, COVERAGE_BYTES},
+                              {zeroCoverage.GetData(), zeroCoverage.GetSize()},
+                              coverage) == rhi::RasterStatus::Ready);
+    REQUIRE(
+        rhi::CreateBuffer(device, {rhi::BufferRole::Index32, sizeof(indexValues)}, GetBytes(indexValues), indices) ==
+        rhi::RasterStatus::Ready);
+
+    constexpr usize ROW_BYTES = usize{WIDTH} * CHANNELS;
+    const rhi::TextureUpload zeroUpload{{zeroPixels.GetData(), zeroPixels.GetSize()}, ROW_BYTES};
+    rhi::TextureHandle fragmentImage;
+    rhi::TextureHandle computeImage;
+    const rhi::TextureDescription storageImage{ .Width = WIDTH, .Height = HEIGHT, .IsStorage = true };
+    RequireReady(device, fragmentImage, rhi::CreateTexture(device, storageImage, zeroUpload, fragmentImage));
+    RequireReady(device, computeImage, rhi::CreateTexture(device, storageImage, zeroUpload, computeImage));
+    rhi::TextureViewHandle fragmentStorageView;
+    rhi::TextureViewHandle fragmentSampledView;
+    rhi::TextureViewHandle computeStorageView;
+    REQUIRE(rhi::CreateTextureView(device, fragmentImage, { .IsStorage = true }, fragmentStorageView) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateTextureView(device, fragmentImage, fragmentSampledView) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateTextureView(device, computeImage, { .IsStorage = true }, computeStorageView) ==
+            rhi::RasterStatus::Ready);
+    rhi::BindingSetHandle rejected;
+
+    // Shared reflection drives every layout; no backend-specific binding table is authored here.
+    const rhi::RasterShaderDescription writeVertex = ludus::shaders::raster_storage_write::Vertex();
+    const rhi::RasterShaderDescription writeFragment = ludus::shaders::raster_storage_write::Fragment();
+    const rhi::RasterShaderDescription sampleVertex = ludus::shaders::raster_storage_sample::Vertex();
+    const rhi::RasterShaderDescription sampleFragment = ludus::shaders::raster_storage_sample::Fragment();
+    const rhi::RasterShaderDescription computeShader = ludus::shaders::raster_storage_compute::Compute();
+    const auto makePipeline = [&](const rhi::RasterShaderDescription& vertexDescription,
+                                  const rhi::RasterShaderDescription& fragmentDescription,
+                                  rhi::BindingLayoutHandle& outLayout) {
+        StaticArray<rhi::RasterBinding, STORAGE_LAYOUT_CAPACITY> bindings{};
+        const usize count = MergeStageBindings(vertexDescription, fragmentDescription, bindings);
+        rhi::RasterShaderHandle vertex;
+        rhi::RasterShaderHandle fragment;
+        RequireReady(device, vertex, rhi::CreateRasterShader(device, vertexDescription, vertex));
+        RequireReady(device, fragment, rhi::CreateRasterShader(device, fragmentDescription, fragment));
+        REQUIRE(rhi::CreateBindingLayout(device, {bindings.GetData(), count}, outLayout) == rhi::RasterStatus::Ready);
+        rhi::RasterPipelineHandle pipeline;
+        RequireReady(device,
+                     pipeline,
+                     rhi::CreateRasterPipeline(device,
+                                               {
+                                                   .Vertex = vertex,
+                                                   .Fragment = fragment,
+                                                   .Layout = outLayout,
+                                                   .Streams = {},
+                                                   .Attributes = {},
+                                                   .Target = rhi::RasterTarget::Rgba8Unorm,
+                                               },
+                                               pipeline));
+        REQUIRE(rhi::Destroy(device, vertex) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, fragment) == rhi::RasterStatus::Ready);
+        return pipeline;
+    };
+    rhi::BindingLayoutHandle writeLayout;
+    rhi::BindingLayoutHandle sampleLayout;
+    const rhi::RasterPipelineHandle writePipeline = makePipeline(writeVertex, writeFragment, writeLayout);
+    const rhi::RasterPipelineHandle samplePipeline = makePipeline(sampleVertex, sampleFragment, sampleLayout);
+    constexpr usize WRITE_BINDING_COUNT = 3;
+    const StaticArray<rhi::RasterBindingResource, WRITE_BINDING_COUNT> writeResources{{
+        { .Binding = writeVertex.Bindings[0].Binding, .Buffer = positions, .Size = sizeof(positionValues) },
+        { .Binding = writeFragment.Bindings[0].Binding, .Buffer = coverage, .Size = COVERAGE_BYTES },
+        { .Binding = writeFragment.Bindings[1].Binding, .Texture = fragmentStorageView },
+    }};
+    rhi::BindingSetHandle writeSet;
+    REQUIRE(
+        rhi::CreateBindingSet(device, writeLayout, {writeResources.GetData(), writeResources.GetSize()}, writeSet) ==
+        rhi::RasterStatus::Ready);
+    // A sampled view cannot satisfy a storage binding, and the storage view cannot be sampled.
+    StaticArray<rhi::RasterBindingResource, WRITE_BINDING_COUNT> wrongResources = writeResources;
+    wrongResources[2].Texture = fragmentSampledView;
+    CHECK(rhi::CreateBindingSet(device, writeLayout, {wrongResources.GetData(), wrongResources.GetSize()}, rejected) ==
+          rhi::RasterStatus::InvalidDescription);
+    constexpr usize SAMPLE_BINDING_COUNT = 2;
+    StaticArray<rhi::RasterBindingResource, SAMPLE_BINDING_COUNT> sampleResources{{
+        { .Binding = sampleVertex.Bindings[0].Binding, .Buffer = positions, .Size = sizeof(positionValues) },
+        { .Binding = sampleFragment.Bindings[0].Binding, .Texture = fragmentStorageView },
+    }};
+    CHECK(
+        rhi::CreateBindingSet(device, sampleLayout, {sampleResources.GetData(), sampleResources.GetSize()}, rejected) ==
+        rhi::RasterStatus::InvalidDescription);
+    sampleResources[1].Texture = fragmentSampledView;
+    rhi::BindingSetHandle sampleSet;
+    REQUIRE(rhi::CreateBindingSet(device,
+                                  sampleLayout,
+                                  {sampleResources.GetData(), sampleResources.GetSize()},
+                                  sampleSet) == rhi::RasterStatus::Ready);
+
+    rhi::RasterShaderHandle compute;
+    rhi::BindingLayoutHandle computeLayout;
+    rhi::ComputeDispatch dispatch;
+    RequireReady(device, compute, rhi::CreateRasterShader(device, computeShader, compute));
+    REQUIRE(rhi::CreateBindingLayout(device, computeShader.Bindings, computeLayout) == rhi::RasterStatus::Ready);
+    const rhi::RasterBindingResource computeResource
+    {
+        .Binding = computeShader.Bindings[0].Binding,
+        .Texture = computeStorageView,
+    };
+    REQUIRE(rhi::CreateBindingSet(device, computeLayout, {&computeResource, 1}, dispatch.Bindings) ==
+            rhi::RasterStatus::Ready);
+    RequireReady(device,
+                 dispatch.Pipeline,
+                 rhi::CreateComputePipeline(device, {compute, computeLayout}, dispatch.Pipeline));
+    constexpr uint32 GROUP_EXTENT = 8;
+    dispatch.Groups[0] = WIDTH / GROUP_EXTENT;
+    dispatch.Groups[1] = HEIGHT / GROUP_EXTENT;
+
+    rhi::TextureHandle writeTarget;
+    rhi::TextureHandle sampleTarget;
+    REQUIRE(rhi::CreateTexture(device, { .Width = WIDTH, .Height = HEIGHT, .Attachment = true }, {}, writeTarget) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateTexture(device, { .Width = WIDTH, .Height = HEIGHT, .Attachment = true }, {}, sampleTarget) ==
+            rhi::RasterStatus::Ready);
+
+    const rhi::RasterDraw writeDraw
+    {
+        .Pipeline = writePipeline,
+        .Bindings = writeSet,
+        .Vertices = {},
+        .Indices = indices,
+        .IndexCount = TRIANGLE_INDEX_COUNT,
+        .VertexCount = TRIANGLE_INDEX_COUNT,
+        .InstanceCount = 1,
+    };
+    rhi::RasterDraw sampleDraw = writeDraw;
+    sampleDraw.Pipeline = samplePipeline;
+    sampleDraw.Bindings = sampleSet;
+
+    rhi::OrderedGraph graph;
+    REQUIRE(rhi::CreateOrderedGraph(device, graph) == rhi::RasterStatus::Ready);
+    const auto importTexture = [&](rhi::TextureHandle texture, rhi::RasterTextureUse finalUse) {
+        rhi::RasterTextureState state;
+        REQUIRE(rhi::GetTextureState(device, texture, state) == rhi::RasterStatus::Ready);
+        rhi::GraphVersion version;
+        REQUIRE(rhi::ImportGraphTexture(device, graph, texture, state, finalUse, version) == rhi::RasterStatus::Ready);
+        return version;
+    };
+    const auto nextVersion = [&](rhi::GraphVersion version) {
+        rhi::GraphVersion next;
+        REQUIRE(rhi::NextGraphVersion(device, graph, version, next) == rhi::RasterStatus::Ready);
+        return next;
+    };
+    rhi::GraphVersion positionInput;
+    rhi::GraphVersion coverageInput;
+    rhi::GraphVersion indexInput;
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, positions, positionInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, coverage, coverageInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, indices, indexInput) == rhi::RasterStatus::Ready);
+    const rhi::GraphVersion fragmentImageInput = importTexture(fragmentImage, rhi::RasterTextureUse::SampledBoth);
+    const rhi::GraphVersion computeImageInput = importTexture(computeImage, rhi::RasterTextureUse::SampledBoth);
+    const rhi::GraphVersion writeTargetInput = importTexture(writeTarget, rhi::RasterTextureUse::ColorAttachment);
+    const rhi::GraphVersion sampleTargetInput = importTexture(sampleTarget, rhi::RasterTextureUse::ColorAttachment);
+    const rhi::GraphVersion coverageOutput = nextVersion(coverageInput);
+    const rhi::GraphVersion fragmentImageOutput = nextVersion(fragmentImageInput);
+    const rhi::GraphVersion computeImageOutput = nextVersion(computeImageInput);
+    const rhi::GraphVersion writeTargetOutput = nextVersion(writeTargetInput);
+    const rhi::GraphVersion sampleTargetOutput = nextVersion(sampleTargetInput);
+
+    constexpr usize WRITE_USE_COUNT = 5;
+    StaticArray<rhi::GraphUse, WRITE_USE_COUNT> writeUses{{
+        {positionInput, rhi::GraphAccessMode::StorageRead, 0, sizeof(positionValues), rhi::RasterVisibility::Vertex},
+        {coverageOutput, rhi::GraphAccessMode::StorageReadWrite, 0, COVERAGE_BYTES, rhi::RasterVisibility::Fragment},
+        {
+            .Resource = fragmentImageOutput,
+            .Access = rhi::GraphAccessMode::StorageTextureWrite,
+            .Visibility = rhi::RasterVisibility::Fragment,
+        },
+        {indexInput, rhi::GraphAccessMode::Index, 0, sizeof(indexValues)},
+        { .Resource = writeTargetOutput, .Access = rhi::GraphAccessMode::ColorWrite },
+    }};
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "fragment storage writes",
+                                  .Attachment = { .Color = writeTarget },
+                                  .Uses = writeUses.GetData(),
+                                  .UseCount = writeUses.GetSize(),
+                                  .Draws = &writeDraw,
+                                  .DrawCount = 1,
+                              }) == rhi::RasterStatus::Ready);
+    const rhi::GraphUse computeUse
+    {
+        .Resource = computeImageOutput,
+        .Access = rhi::GraphAccessMode::StorageTextureWrite,
+        .Visibility = rhi::RasterVisibility::Compute,
+    };
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "compute storage texture",
+                                  .Attachment = {},
+                                  .Uses = &computeUse,
+                                  .UseCount = 1,
+                                  .Dispatch = &dispatch,
+                              }) == rhi::RasterStatus::Ready);
+    constexpr usize SAMPLE_USE_COUNT = 4;
+    const StaticArray<rhi::GraphUse, SAMPLE_USE_COUNT> sampleUses{{
+        {positionInput, rhi::GraphAccessMode::StorageRead, 0, sizeof(positionValues), rhi::RasterVisibility::Vertex},
+        {
+            .Resource = fragmentImageOutput,
+            .Access = rhi::GraphAccessMode::Sampled,
+            .Visibility = rhi::RasterVisibility::Fragment,
+        },
+        {indexInput, rhi::GraphAccessMode::Index, 0, sizeof(indexValues)},
+        { .Resource = sampleTargetOutput, .Access = rhi::GraphAccessMode::ColorWrite },
+    }};
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "sample storage texture",
+                                  .Attachment = { .Color = sampleTarget },
+                                  .Uses = sampleUses.GetData(),
+                                  .UseCount = sampleUses.GetSize(),
+                                  .Draws = &sampleDraw,
+                                  .DrawCount = 1,
+                              }) == rhi::RasterStatus::Ready);
+    for (const rhi::GraphVersion root : {coverageOutput, computeImageOutput, sampleTargetOutput})
+    {
+        REQUIRE(rhi::AddGraphRoot(device, graph, root, rhi::GraphRoot::Readback) == rhi::RasterStatus::Ready);
+    }
+    rhi::GraphReport report;
+    REQUIRE(rhi::CompileOrderedGraph(device, graph, report) == rhi::RasterStatus::Ready);
+    CHECK(report.ComputePasses == 1);
+    CHECK(report.RasterPasses == 2);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::ExecuteOrderedGraph(device, owner.Surface, graph, completion) == rhi::RasterStatus::Ready);
+
+    rhi::RasterTextureState finalState;
+    REQUIRE(rhi::GetTextureState(device, fragmentImage, finalState) == rhi::RasterStatus::Ready);
+    CHECK(finalState.Use == rhi::RasterTextureUse::SampledBoth);
+    rhi::ReadbackTicket coverageReadback;
+    REQUIRE(rhi::RequestBufferReadback(device, coverage, 0, COVERAGE_BYTES, coverageReadback) ==
+            rhi::RasterStatus::Pending);
+    Array<uint8> coverageBytes;
+    REQUIRE(coverageBytes.TryResize(COVERAGE_BYTES) == true);
+    RequireReadback(device, coverageReadback, coverageBytes.GetData(), coverageBytes.GetSize());
+    constexpr uint32 COVERAGE_MARK = 7;
+    for (usize pixel = 0; pixel < usize{WIDTH} * HEIGHT; ++pixel)
+    {
+        uint32 value = 0;
+        std::memcpy(&value, coverageBytes.GetData() + pixel * sizeof(uint32), sizeof(value));
+        if (value != COVERAGE_MARK)
+        {
+            CAPTURE(pixel, value);
+            FAIL("Fragment storage buffer writes did not cover every pixel");
+        }
+    }
+    const auto readImage = [&](rhi::TextureHandle texture, StaticArray<uint8, PIXEL_BYTES>& outPixels) {
+        rhi::ReadbackTicket ticket;
+        REQUIRE(rhi::RequestTextureReadback(device, texture, {0, 0, 0, WIDTH, HEIGHT}, ROW_BYTES, ticket) ==
+                rhi::RasterStatus::Pending);
+        RequireReadback(device, ticket, outPixels.GetData(), outPixels.GetSize());
+    };
+    StaticArray<uint8, PIXEL_BYTES> pixels{};
+    readImage(fragmentImage, pixels);
+    RequireUniformPixels(pixels, {255, 0, 0, 255}, "fragment storage texture");
+    readImage(computeImage, pixels);
+    RequireUniformPixels(pixels, {0, 0, 255, 255}, "compute storage texture");
+    readImage(sampleTarget, pixels);
+    RequireUniformPixels(pixels, {255, 0, 0, 255}, "sampled after fragment storage write");
+    readImage(writeTarget, pixels);
+    RequireUniformPixels(pixels, {0, 255, 0, 255}, "color output beside storage writes");
+    REQUIRE(rhi::GetStatus(device, completion) == rhi::RasterStatus::Ready);
+
+    // Direct draws have no declared versions, so writable raster bindings reject before encoding.
+    REQUIRE(rhi::BeginFrame(device, owner.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginRasterPass(device, { .Color = writeTarget, .ColorLoad = rhi::RasterLoad::Load }) ==
+            rhi::RasterStatus::Ready);
+    CHECK(rhi::DrawIndexed(device, writeDraw) == rhi::RasterStatus::InvalidDescription);
+    REQUIRE(rhi::DrawIndexed(device, sampleDraw) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
     owner.CheckDebugMessages();
 }

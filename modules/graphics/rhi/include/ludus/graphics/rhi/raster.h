@@ -230,6 +230,11 @@ struct TextureDescription final
     /// Allocate a private depth/stencil image instead of depth alone; attachments only.
     /// Stencil support is independent of depth sampling and MSAA.
     bool Stencil = false;
+    /// Also allow write-only shader storage through Storage views (R12b). Requires a
+    /// format with enabled Uses.Storage, D2, one mip, one sample and complete upload bytes:
+    /// attachments, deferred initialization and retained CPU content reject. Sampled views
+    /// of the same allocation remain available; ordered graphs order writes before reads.
+    bool IsStorage = false;
 };
 /// Sampled color or private depth/stencil aspect; capability-gated independently.
 enum class TextureAspect : ludus::foundation::uint8
@@ -263,6 +268,10 @@ struct TextureViewDescription final
     /// exactly one mip/layer and D2; retains both color and its private depth/stencil.
     /// Undefined contents are legal until a pass clears them. Not bindable in a set.
     bool Attachment = false;
+    /// Select the write-only storage view of a Storage texture instead of a sampled view.
+    /// Color, D2 and the complete single mip/layer; excludes Attachment. Bindable only at
+    /// StorageTexture2D entries of the allocation's format; sampled bindings reject it.
+    bool IsStorage = false;
 };
 /// One complete initialized mip within the borrowed upload byte blob.
 struct TextureMipUpload final
@@ -380,13 +389,19 @@ enum class RasterBindingKind : ludus::foundation::uint8
     TextureStencil2D,
     /// Non-comparison sampler.
     Sampler,
-    /// Read-only storage buffer range, visible to compute or fragment shaders.
-    /// Fragment storage requires the compute/storage capability profile; WebGL rejects it.
+    /// Read-only storage buffer range, visible to compute, vertex or fragment shaders.
+    /// Raster visibility requires RasterStorageCapabilities per-stage counts; WebGL rejects it.
     StorageRead,
-    /// Read/write compute storage buffer range; shader write races remain kernel obligations.
+    /// Read/write storage buffer range in a compute or fragment shader; shader write races
+    /// remain kernel obligations. Fragment writes require HasFragmentStorageWrites and an
+    /// ordered-graph StorageReadWrite declaration; direct draws reject writable bindings.
     StorageReadWrite,
     /// Immutable, fully built native TLAS; compute-stage ray queries only.
     RayScene,
+    /// Write-only two-dimensional storage texture of RasterBinding::StorageFormat, visible to
+    /// one fragment or compute stage. Binds a Storage view; writes are declared through an
+    /// ordered-graph StorageTextureWrite use. Requires RasterStorageCapabilities per-stage counts.
+    StorageTexture2D,
 };
 /// Shader stage visibility mask.
 enum class RasterVisibility : ludus::foundation::uint8
@@ -397,7 +412,7 @@ enum class RasterVisibility : ludus::foundation::uint8
     Fragment = 2,
     /// Visible to both raster stages.
     Both = 3,
-    /// Compute stage only; no raster/storage writes in this profile.
+    /// Compute stage only.
     Compute = 4,
 };
 /// Descriptor selection admitted by a reflected shader; array length alone grants no indexing mode.
@@ -415,7 +430,7 @@ struct RasterBinding final
 {
     /// Group/set-zero binding number.
     ludus::foundation::uint32 Binding = 0;
-    /// Resource type; storage textures remain outside the binding profile.
+    /// Resource type.
     RasterBindingKind Kind = RasterBindingKind::UniformBuffer;
     /// Stages allowed to use this entry.
     RasterVisibility Visibility = RasterVisibility::Both;
@@ -440,6 +455,10 @@ struct RasterBinding final
     /// Holes sample/bind that retained fallback and cannot produce host index tokens.
     /// Allocation and descriptor budgets charge the complete table, including holes.
     bool HasPartialBinding = false;
+    /// Texel format written through a StorageTexture2D binding, from target reflection.
+    /// Must be a format whose enabled FormatCapabilities::Uses.Storage is true; the bound
+    /// Storage view must have exactly this format. Ignored for every other kind.
+    RasterFormat StorageFormat = RasterFormat::Rgba8Unorm;
 };
 /// Byte offsets indexed by group-zero binding number, copied into each accepted packet.
 /// Non-dynamic and absent bindings require zero. Values are added to the snapshot
@@ -549,7 +568,8 @@ struct RasterBindingResource final
     ludus::foundation::usize Offset = 0;
     /// Buffer byte range, nonzero and at least the layout's reflected minimum.
     ludus::foundation::usize Size = 0;
-    /// Sampled view identity of the layout's exact dimension/aspect; writable views reject.
+    /// Sampled view of the layout's exact dimension/aspect, or an IsStorage view of the
+    /// layout's StorageFormat for StorageTexture2D entries. Attachment views reject.
     TextureViewHandle Texture{};
     /// Sampler identity; ignored for other entries.
     SamplerHandle Sampler{};

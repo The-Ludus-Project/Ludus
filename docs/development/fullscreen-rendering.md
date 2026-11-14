@@ -913,14 +913,15 @@ obeys `Compute.MaxStorageRange`. Layouts obey `Compute.MaxStorageBindings`,
 compute. Compute storage entries use `StorageRead` or `StorageReadWrite`,
 `RasterVisibility::Compute`, and a reflected minimum element stride. Read-only
 `StorageRead` also admits `RasterVisibility::Fragment` on the compute/storage
-profile (Metal, Vulkan and WebGPU). Ordered raster passes declare that exact
+profile (Metal, Vulkan, WebGPU and Direct3D 12). Ordered raster passes declare that exact
 fragment read and receive compute-write-to-fragment-read synchronization. Vertex
-storage and raster storage writes remain unsupported; WebGL has no storage
-profile. The renderer's GPU image recipe uses fragment reads to present an image
-with constant draw geometry.
+storage reads, fragment storage writes and storage textures are the separate
+[R12b raster-storage profile](#raster-stage-storage-buffers-and-textures-r12b);
+WebGL has no storage profile. The renderer's GPU image recipe uses fragment reads
+to present an image with constant draw geometry.
 Custom raster programs using this profile pass `RASTER FRAGMENT_STORAGE` to
 `ludus_compile_shader`; it emits native/WebGPU artifacts and omits the unsupported
-WebGL artifact. Built-in recipes declare this requirement in their manifest. Storage textures remain deferred; existing buffer
+WebGL artifact. Built-in recipes declare this requirement in their manifest. Existing buffer
 updates follow the completion and lease rules of R8.
 
 Compute WGSL uniform verification also admits signed/unsigned 32-bit scalars
@@ -1944,7 +1945,7 @@ No native mutable-descriptor feature is inferred from this API.
 Fixed sampler and buffer descriptor arrays use constant selection verified in
 the emitted target. Buffer arrays exclude dynamic offsets. Vulkan accepts
 uniform buffers and the existing compute storage kinds; storage textures and
-raster storage access remain R12. Metal supports fixed sampler and sampled
+R12b raster storage remain scalar bindings. Metal supports fixed sampler and sampled
 color descriptor arrays, with separate nonoverlapping sampler/texture register
 ranges; buffer descriptor arrays remain explicitly unsupported.
 
@@ -2077,6 +2078,116 @@ Thanks to Khronos Group, *Vulkan Specification*,
 and *Vulkan Guide*, [Descriptor Arrays](https://docs.vulkan.org/guide/latest/descriptor_arrays.html),
 for dynamic-offset ordering and independently enabled indexing/lifetime rules;
 and to the Slang and SPIRV-Cross teams for the target reflection/native lowering.
+
+## Raster-stage storage buffers and textures (R12b)
+
+R12b admits target-reflected storage in raster stages and write-only storage
+textures in fragment and compute stages. Every write is an explicit ordered-graph
+declaration; the [architecture milestone](../architecture/rhi-gdi.md#follow-up-milestones-r6r17)
+owns the assignment and the API comments in `raster.h`, `graph.h` and `profile.h`
+own the caller contracts.
+
+| Binding | Stages | Graph use |
+| --- | --- | --- |
+| `StorageRead` | Vertex, Fragment, Both or Compute | `StorageRead` with the binding's stages |
+| `StorageReadWrite` | Fragment or Compute (never vertex) | `StorageReadWrite` writing the next buffer version |
+| `StorageTexture2D` | Fragment or Compute | `StorageTextureWrite` writing the next texture version |
+
+### Negotiate, allocate and bind
+
+Read `DeviceProfile::RasterStorage` after Ready. Its per-stage counts
+(`MaxVertexStorageBuffers`, `MaxFragmentStorageBuffers`,
+`MaxFragmentStorageTextures`, `MaxComputeStorageTextures`) and
+`HasFragmentStorageWrites` are independent of `Compute.MaxStorageBindings`; a
+layout exceeding any of them returns `Unsupported` before native creation.
+`FormatCapabilities::Uses::Storage` is true only for `Rgba8Unorm` and
+`Rgba16Float`, and only when a storage-texture stage is enabled. A profile
+requirement or preference on `Uses.Storage` reports `ProfileRequirement::Storage`
+when it is unavailable.
+
+Create a storage texture with `TextureDescription::IsStorage`: D2, one mip, one
+sample, one of the two formats and complete upload bytes. Attachments, deferred
+initialization and retained CPU content reject, because a write-only shader keeps
+every texel it does not write. Create its writable view with
+`TextureViewDescription::IsStorage`; that view binds only at `StorageTexture2D`
+entries whose reflected `RasterBinding::StorageFormat` equals the allocation's
+format. Create an ordinary view of the same allocation for later sampling. Sampled
+bindings reject storage views and storage bindings reject sampled views.
+
+| Backend | Vertex storage reads | Fragment storage writes | Storage textures |
+| --- | --- | --- | --- |
+| Vulkan | Enabled with compute storage | When the created device enabled `fragmentStoresAndAtomics` (imported devices report none) | Fragment with fragment stores; compute always, both formats requiring `STORAGE_IMAGE` |
+| Metal | Enabled | Enabled | Compute; fragment on Apple3+/Mac2 GPU families |
+| WebGPU | Enabled (read-only storage in vertex shaders) | Enabled | Write-only, within `maxStorageTexturesPerShaderStage` |
+| Direct3D 12 | Enabled (structured SRVs) | Enabled (UAVs in pixel shaders) | Typed UAV stores; first qualified by the Windows lane |
+| WebGL 2 | Unsupported | Unsupported | Unsupported |
+
+WebGL 2 reports every R12b count as zero, `Uses.Storage` as false, and rejects
+storage layouts and storage allocations with `Unsupported`. Shaders cooked with
+`RASTER_STORAGE` produce no GLSL ES artifact. Keep an authored alternative, such as
+sampled textures written by an attachment pass, and select it from the reported
+profile; the engine does not emulate storage writes.
+
+### Cook shaders
+
+Pass `RASTER RASTER_STORAGE` to `ludus_compile_shader` for raster stages that read
+storage in the vertex stage, write storage buffers in the fragment stage or write
+storage textures in the fragment stage. Compute stages admit storage textures
+without an extra option. Declare storage textures write-only with an explicit
+format:
+
+```slang
+[format("rgba8")] LUDUS_SHADER_BINDING(2)
+WTexture2D<float4> Image LUDUS_SHADER_STORAGE_REGISTER(2);
+```
+
+`rgba8` reflects `Rgba8Unorm` and `rgba16f` reflects `Rgba16Float`; other formats,
+read/write storage textures, arrays and non-`float4` texels reject. Each target is
+reflected independently. WGSL must emit
+`texture_storage_2d<format, write>` at the reflected binding. Slang numbers Metal
+write textures itself, so the cooker reads the authored slot from a reflection-only
+SPIR-V pass and rebinds the emitted MSL argument to that binding number. DXIL
+reflects storage textures as typed UAVs. Vertex storage stays read-only on every
+target.
+
+### Declare, order and retain
+
+Raster passes declare `StorageRead` with the reading stages, `StorageReadWrite`
+with `RasterVisibility::Fragment`, and `StorageTextureWrite` with
+`RasterVisibility::Fragment`; compute passes use `RasterVisibility::Compute`.
+Reserve the written version with `NextGraphVersion`. A storage texture write reads
+the defined preceding version and writes the next one in place, so it produces
+RAW, WAR and WAW dependencies like a storage buffer write. A texture cannot be an
+attachment of the pass that writes it as storage. Passes with storage writes are
+never merged. Direct and retained draws have no declared versions and reject sets
+with writable storage bindings (`InvalidDescription`); read-only fragment storage
+keeps its existing direct path.
+
+Backend lowering keeps conservative whole-resource synchronization. Vulkan
+transitions storage textures to `GENERAL` before each write and back to the
+declared final sampled use; buffer barriers use the union of the raster and
+compute shader stages. Direct3D 12 uses `UNORDERED_ACCESS` with UAV barriers
+between consecutive writes. Metal and WebGPU rely on their tracked resources and
+encoder boundaries. Graphs finish in the imported final use, so
+`RasterTextureState::Use` never reports the internal `StorageFragment` or
+`StorageCompute` states. Storage writes advance buffer and texture revisions and
+invalidate earlier frozen plans like compute writes.
+
+### Evidence
+
+The portable conformance case `Portable raster storage buffers and textures
+follow declared graph writes` (`ludus_rhi_render_pixels` and the Windows
+`ludus_rhi_d3d12_tests`) cooks `tests/shaders/raster_storage.slang` for every
+native target. It reads positions from vertex storage, writes a coverage buffer and
+an RGBA8 storage texture from fragments, writes a second storage texture from
+compute, samples the fragment-written texture in a later pass and reads back every
+result. It also checks that direct draws reject the writable set. Reference-backend
+tests (`[raster-storage]` in `ludus_rhi_lifecycle_tests`) cover stage, access and
+format admission, capability gates and the WebGL fallback, texture/view/binding
+contracts, RAW/WAW reports, merge exclusion and rejection of misdeclared writes.
+`scripts/python/test_raster_shaders.py` covers the reflection rules. Metal is
+exercised locally; Vulkan, Direct3D 12 and WebGPU pixel results come from their CI
+lanes. Physical-GPU qualification remains R7b.
 
 ## Raster world coordinate grid
 

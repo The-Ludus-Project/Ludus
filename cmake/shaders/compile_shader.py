@@ -395,7 +395,8 @@ def compile_dxil(args, lock):
             raise RuntimeError('Expected one DXIL entry with the requested stage')
         if has_reflected_interface:
             from compile_raster import raster_interface
-            interfaces[stage] = raster_interface(json.loads(reflection.read_text()), stage, dxil=True)
+            interfaces[stage] = raster_interface(json.loads(reflection.read_text()), stage, dxil=True,
+                                                 raster_storage=getattr(args, 'raster_storage', False))
         else:
             sizes[stage] = constant_buffer_uniform_size(reflection, 'DXIL', 'register b0, space 0')
         entries[stage] = source_entry
@@ -413,7 +414,9 @@ def compile_dxil(args, lock):
             if interface['entries']:
                 header += f'inline constexpr graphics::rhi::RasterBinding {label}_BINDINGS[] = {{\n'
                 for binding in interface['entries']:
-                    header += '{' + f'.Binding={binding["binding"]},.Kind=graphics::rhi::RasterBindingKind::{binding["kind"]},.Visibility=graphics::rhi::RasterVisibility::{stage.title()},.MinSize={binding["size"]}' + '},\n'
+                    storage_format = (f',.StorageFormat=graphics::rhi::RasterFormat::{binding["storage_format"]}'
+                                      if 'storage_format' in binding else '')
+                    header += '{' + f'.Binding={binding["binding"]},.Kind=graphics::rhi::RasterBindingKind::{binding["kind"]},.Visibility=graphics::rhi::RasterVisibility::{stage.title()},.MinSize={binding["size"]}{storage_format}' + '},\n'
                 header += '};\n'
             if interface['inputs']:
                 header += f'inline constexpr graphics::rhi::RasterShaderInput {label}_INPUTS[] = {{\n'
@@ -477,6 +480,9 @@ def main():
     parser.add_argument('--dxc-path')
     parser.add_argument('--raster', action='store_true')
     parser.add_argument('--fragment-storage', action='store_true')
+    # R12b: vertex storage reads, fragment storage writes and fragment storage textures.
+    # Implies --fragment-storage: no GLSL ES (WebGL 2) artifact is produced.
+    parser.add_argument('--raster-storage', action='store_true')
     parser.add_argument('--native-ray-queries', action='store_true')
     parser.add_argument('--native-ray-pipeline', action='store_true')
     parser.add_argument('--native-ray-storage', default='{}')
@@ -493,6 +499,10 @@ def main():
     parser.add_argument("--graph-stage", choices=("vertex", "fragment", "compute"))
     parser.add_argument("--graph-target", choices=("spirv", "wgsl", "metal", "glsl", "dxil"))
     args = parser.parse_args()
+    if args.raster_storage:
+        if not args.raster or args.compute or args.graph_stage:
+            raise RuntimeError('Raster storage requires raster vertex/fragment stages')
+        args.fragment_storage = True
     if args.graph_forward_material and args.graph_stage not in ('vertex', 'fragment'):
         raise RuntimeError('Forward material resources require a closed generated raster graph stage')
     lock = json.loads(Path(args.lock).read_text())

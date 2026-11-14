@@ -3,7 +3,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
 # No downloads at configure/build time. Host tools remain separate from target
 # compilers, including when cross-compiling to wasm.
 function(ludus_compile_shader)
-    cmake_parse_arguments(PARSE_ARGV 0 SH "RASTER;NATIVE_BINDING_ARRAYS;RUNTIME_BINDING_ARRAYS;NATIVE_RAY_QUERIES;SOFTWARE_RAY_QUERIES;FRAGMENT_STORAGE" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEFINES;DEPENDS")
+    cmake_parse_arguments(PARSE_ARGV 0 SH "RASTER;NATIVE_BINDING_ARRAYS;RUNTIME_BINDING_ARRAYS;NATIVE_RAY_QUERIES;SOFTWARE_RAY_QUERIES;FRAGMENT_STORAGE;RASTER_STORAGE" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEFINES;DEPENDS")
     if(SH_UNPARSED_ARGUMENTS OR NOT TARGET "${SH_TARGET}" OR
        NOT SH_NAME MATCHES "^[A-Za-z_][A-Za-z_0-9]*$" OR NOT SH_SOURCE OR (NOT SH_COMPUTE AND (NOT SH_VERTEX OR NOT SH_FRAGMENT)) OR (SH_COMPUTE AND (SH_VERTEX OR SH_FRAGMENT OR SH_RASTER)))
         message(FATAL_ERROR "ludus_compile_shader requires TARGET NAME SOURCE and either VERTEX/FRAGMENT or COMPUTE; optional RASTER INCLUDES DEFINES DEPENDS")
@@ -29,6 +29,15 @@ function(ludus_compile_shader)
     endif()
     if(SH_RASTER)
         list(APPEND backend_args --raster)
+    endif()
+    # R12b raster storage: vertex storage reads, fragment storage writes and storage textures.
+    # Like FRAGMENT_STORAGE it produces no GLSL ES artifact; WebGL 2 rejects such stages.
+    if(SH_RASTER_STORAGE)
+        if(NOT SH_RASTER OR SH_COMPUTE OR SH_NATIVE_BINDING_ARRAYS)
+            message(FATAL_ERROR "RASTER_STORAGE requires scalar RASTER vertex/fragment stages")
+        endif()
+        set(SH_FRAGMENT_STORAGE TRUE)
+        list(APPEND backend_args --raster-storage)
     endif()
     if(SH_FRAGMENT_STORAGE)
         if(NOT SH_RASTER OR SH_COMPUTE)

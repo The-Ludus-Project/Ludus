@@ -491,9 +491,14 @@ DeviceProfile QueryDeviceProfile() noexcept
                         backend::RasterColorAttachmentLimit(),
                         1};
     result.Compute = backend::ComputeLimits();
+    result.RasterStorage = backend::RasterStorageLimits();
+    const bool hasStorageTextures =
+        result.RasterStorage.MaxFragmentStorageTextures != 0 || result.RasterStorage.MaxComputeStorageTextures != 0;
     for (usize i = 0; i < RASTER_FORMAT_COUNT; ++i)
     {
         result.Formats[i] = backend::FormatLimits(static_cast<RasterFormat>(i));
+        result.Formats[i].Uses.Storage = hasStorageTextures == true && result.Formats[i].Uses.Sampled == true &&
+                                         IsStorageTextureFormat(static_cast<RasterFormat>(i)) == true;
         if (result.Formats[i].MaxArrayLayers > result.Interface.MaxTextureLayers)
         {
             result.Interface.MaxTextureLayers = result.Formats[i].MaxArrayLayers;

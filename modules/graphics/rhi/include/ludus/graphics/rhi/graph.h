@@ -45,6 +45,11 @@ enum class RasterTextureUse : ludus::foundation::uint8
     SampledCompute,
     /// Read/write as a color attachment.
     ColorAttachment,
+    /// Written through a Storage view by a fragment shader. Execution-internal: ordered
+    /// graphs finish in the imported final use, so registry snapshots never report it.
+    StorageFragment,
+    /// Written through a Storage view by a compute shader; execution-internal like StorageFragment.
+    StorageCompute,
 };
 /// Top-left physical-pixel rectangle with half-open edges; zero area clips every draw.
 struct RasterRectangle final
@@ -167,6 +172,7 @@ private:
     friend struct internal::GraphAccess;
 };
 /// Actual use of a declared buffer range or complete color texture.
+/// Values are append-only; existing enumerators keep their underlying values.
 enum class GraphAccessMode : ludus::foundation::uint8
 {
     /// Vertex stream read; range must cover the packet's slice.
@@ -181,12 +187,17 @@ enum class GraphAccessMode : ludus::foundation::uint8
     ColorWrite,
     /// Attachment Load of the preceding version and write of a new version.
     ColorReadWrite,
-    /// Read-only compute storage range.
+    /// Read-only storage range in compute, vertex or fragment shaders.
     StorageRead,
-    /// Read/write compute storage range, writing the next in-place version.
+    /// Read/write storage range in a compute or fragment shader, writing the next in-place version.
     StorageReadWrite,
     /// Indexed indirect argument range.
     Indirect,
+    /// Write-only shader storage of a complete Storage texture in a fragment or compute pass.
+    /// Texels the shader does not write keep the preceding version, so the use reads that
+    /// defined version and writes the next one in place, like StorageReadWrite. Offset and
+    /// Size are zero; the texture cannot also be an attachment or sampled in the same pass.
+    StorageTextureWrite,
 };
 /// One declared use; whole textures and conservative whole-buffer hazards.
 struct GraphUse final
@@ -199,7 +210,8 @@ struct GraphUse final
     ludus::foundation::usize Offset = 0;
     /// Nonzero buffer length; zero for textures.
     ludus::foundation::usize Size = 0;
-    /// Required stages for uniform/sample/storage uses; storage requires Compute.
+    /// Required stages for uniform/sample/storage uses. Compute passes require Compute.
+    /// Raster storage reads accept Vertex, Fragment or Both; raster storage writes require Fragment.
     /// Vertex/index/indirect and attachment uses ignore it.
     RasterVisibility Visibility = RasterVisibility::Both;
 };
@@ -395,7 +407,7 @@ GetGraphDependency(DeviceHandle, OrderedGraph, ludus::foundation::uint32, GraphD
 /// both outputs and can be polled using GetStatus on the texture before setup continues.
 [[nodiscard]] RasterStatus
 CreateGraphTexture(DeviceHandle, OrderedGraph, const TextureDescription&, GraphVersion&, TextureHandle&) noexcept;
-/// Reserve the next attachment or storage-buffer version without new physical storage.
+/// Reserve the next attachment, storage-buffer or Storage-texture version without new physical storage.
 /// May reserve before its producer is added; compilation verifies authored ordering.
 [[nodiscard]] RasterStatus NextGraphVersion(DeviceHandle, OrderedGraph, GraphVersion, GraphVersion&) noexcept;
 /// Copy one ordered pass and retain its validated packets. Failure changes no graph

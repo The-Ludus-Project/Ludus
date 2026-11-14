@@ -337,6 +337,11 @@ ComputeCapabilities ComputeLimits() noexcept
 {
     return gActive == Backend::WebGL2 ? ComputeCapabilities{} : webgpu::ComputeLimits();
 }
+// WebGL 2 has no shader storage; its authored alternative remains the CPU/direct path.
+RasterStorageCapabilities RasterStorageLimits() noexcept
+{
+    return gActive == Backend::WebGL2 ? RasterStorageCapabilities{} : webgpu::RasterStorageLimits();
+}
 RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineInfo& info, uint32 request) noexcept
 {
     return gActive == Backend::WebGL2 ? RasterStatus::Unsupported : webgpu::ComputeCreatePipeline(slot, info, request);

@@ -116,7 +116,7 @@ RasterStatus EncodeCompute(const ComputePacket& packet) noexcept
     {
         const RasterBindingKind bindingKind = layout.GetDescriptorBinding(i).Kind;
         const RasterKind kind = bindingKind == RasterBindingKind::RayScene ? RasterKind::RayScene
-                                : TextureBinding(bindingKind) == true      ? RasterKind::View
+                                : ViewBinding(bindingKind) == true         ? RasterKind::View
                                                                            : RasterKind::Buffer;
         FrameRetain(kind, set.Slots[i]);
         if (kind == RasterKind::View)
@@ -173,7 +173,8 @@ RasterStatus CreateComputePipeline(DeviceHandle device,
             (BufferBinding(layout->Layout.Entries[i].Kind) == false &&
              layout->Layout.Entries[i].Kind != RasterBindingKind::RayScene &&
              layout->Layout.Entries[i].Kind != RasterBindingKind::Texture2D &&
-             layout->Layout.Entries[i].Kind != RasterBindingKind::TextureDepth2D))
+             layout->Layout.Entries[i].Kind != RasterBindingKind::TextureDepth2D &&
+             layout->Layout.Entries[i].Kind != RasterBindingKind::StorageTexture2D))
         {
             return RasterStatus::InvalidDescription;
         }
