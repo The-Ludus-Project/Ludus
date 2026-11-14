@@ -331,6 +331,7 @@ void RasterEndPass() noexcept
     ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
     if (isPassOpen == true && commandsOrNull != nullptr)
     {
+        ClosePassLabels(*commandsOrNull);
         EndPhysicalPassTiming(*commandsOrNull);
     }
     isPassOpen = false;

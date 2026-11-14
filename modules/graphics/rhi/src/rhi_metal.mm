@@ -72,6 +72,7 @@ void TimingBegin() noexcept;
 void TimingEnd() noexcept;
 void BeginPassTimingFrame() noexcept;
 void SubmitPassTimings() noexcept;
+void ClosePassLabels() noexcept;
 namespace
 {
 using namespace foundation;
@@ -368,6 +369,7 @@ void ShutdownRendering() noexcept
 {
     @autoreleasepool
     {
+        ClosePassLabels();
         [gEncoder endEncoding];
         gEncoder = nil;
         gCommand = nil;
@@ -528,6 +530,7 @@ FrameStatus Begin() noexcept
             return FrameFailure();
         }
         gCommand = [gQueue commandBuffer];
+        gCommand.label = @"Ludus/Frame";
         BeginPassTimingFrame();
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.depthAttachment.texture = gDepth;
@@ -562,6 +565,7 @@ FrameStatus End() noexcept
         }
         if (gEncoder != nil)
         {
+            ClosePassLabels();
             [gEncoder endEncoding];
         }
         gEncoder = nil;
