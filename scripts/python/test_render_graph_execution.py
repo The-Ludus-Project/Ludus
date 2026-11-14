@@ -54,6 +54,51 @@ class ExecutionTests(unittest.TestCase):
     def package(self):
         return build.verify_package(Path(self.run_build()['package']))
 
+    def test_pass_order_change_reuses_stage_artifacts_and_pipeline_recipes(self):
+        # Thanks to Natalya Tatarchuk, “Evolution of Programmable Models for Graphics Engines,”
+        # HPG 2017, PDF pp. 69–71 and 107–112, for motivating pass-level iteration over a stable core.
+        # https://www.highperformancegraphics.org/wp-content/uploads/2017/Special-Session/HPG2017_EvolutionProgrammableModels.pdf#page=69
+        document = graph._root_asset('offscreen')
+        configuration = document['configurations'][0]
+        nodes = configuration['nodes']
+        nodes[:0] = [
+            graph._target('secondDepth', 'DepthTexture'),
+            {'id': 'secondCamera', 'kind': 'Camera', 'active': True,
+             'role': 'Offscreen', 'target_type': 'DepthTexture'}]
+        nodes.extend([
+            {'id': 'secondRaster', 'kind': 'Subgraph', 'asset': 'rasterize.lurender.json',
+             'configuration': 'DepthOnly'},
+            {'id': 'secondOutput', 'kind': 'Export', 'type': 'DepthTexture'}])
+        configuration['edges'].extend([
+            {'from': 'scene.scene', 'to': 'secondRaster.scene'},
+            {'from': 'secondDepth.texture', 'to': 'secondCamera.target'},
+            {'from': 'secondDepth.texture', 'to': 'secondRaster.depth'},
+            {'from': 'secondCamera.view', 'to': 'secondRaster.view'},
+            {'from': 'secondRaster.depth', 'to': 'secondOutput.texture'}])
+        self.graph.write_bytes(graph.canonical_asset(document))
+        baseline = self.package()
+        baseline_runtime = execution._runtime_contents(self.output, 'Default')
+        self.assertEqual(['ColorAndDepth', 'DepthOnly'], [p['Program'] for p in baseline_runtime['passes']])
+        self.assertTrue(self.calls)
+        self.calls.clear()
+
+        first_raster = next(index for index, node in enumerate(nodes) if node['id'] == 'raster')
+        second_raster = next(index for index, node in enumerate(nodes) if node['id'] == 'secondRaster')
+        nodes[first_raster], nodes[second_raster] = nodes[second_raster], nodes[first_raster]
+        self.graph.write_bytes(graph.canonical_asset(document))
+        report = self.run_build()
+        reordered = build.verify_package(Path(report['package']))
+        reordered_runtime = execution._runtime_contents(self.output, 'Default')
+
+        self.assertEqual(['DepthOnly', 'ColorAndDepth'], [p['Program'] for p in reordered_runtime['passes']])
+        self.assertEqual(baseline_runtime['interface_identity'], reordered_runtime['interface_identity'])
+        self.assertNotEqual(execution.encode_runtime_package(baseline_runtime),
+                            execution.encode_runtime_package(reordered_runtime))
+        self.assertEqual([p['key'] for p in baseline['programs']], [p['key'] for p in reordered['programs']])
+        self.assertEqual([r['key'] for r in baseline['recipes']], [r['key'] for r in reordered['recipes']])
+        self.assertEqual(0, report['cache_misses'])
+        self.assertEqual([], self.calls)
+
     def test_independent_same_family_passes_keep_distinct_entry_points_in_both_emitters(self):
         from ludus_tools import render_graph_pipeline as pipeline
         self.run_build()

@@ -1020,6 +1020,17 @@ architecture fits Ludus or that current features exist on our pinned tools.
   its intervals from a per-frame setup. Ludus derives the offline spans from
   a saved configuration and checks physical uses at execution.
   [GDC session](https://www.gdcvault.com/play/1024045/FrameGraph-Extensible-Rendering-Architecture-in)
+- Thanks to Natalya Tatarchuk, **Evolution of Programmable Models for Graphics
+  Engines**, HPG 2017, PDF pp. 67–71, 107–128 and 139–150, for placing pass-level
+  iteration in project space while retaining native culling, batching and
+  command generation. Ludus uses typed graphs and offline shader packages for
+  this boundary. A host-tool regression reorders two independent raster passes
+  and checks that the cooked plan changes while stage artifacts, recipe keys
+  and CPU interface identity stay stable. The Destiny examples also motivate
+  measuring whether skipping an empty skin diffusion pass saves GPU time on a
+  representative scene. Any prototype must define which initialized resource
+  version later passes read on the skipped route.
+  [HPG slides and speaker notes](https://www.highperformancegraphics.org/wp-content/uploads/2017/Special-Session/HPG2017_EvolutionProgrammableModels.pdf#page=67)
 - Thanks to Zhenglong Zhou and Huabin Ling, **Render Graph, a Data Oriented
   Approach**, GDC 2023, slides 15–19, 22 and 27–29. The command/dependency
   layers and debug-copy example show how an inspectable description can support
