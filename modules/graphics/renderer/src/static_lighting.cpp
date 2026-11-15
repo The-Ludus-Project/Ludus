@@ -372,7 +372,11 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
             continue;
         }
         const uint32 textureIndex = hasOverride == true ? description.Surfaces[objectIndex].Texture : material.Texture;
-        surface.Bsdf = {material.Reflectance, material.Metallic, material.Roughness, material.Scattering};
+        // A hair card's strand highlight is a raster technique; the bake transports its surface lobes.
+        surface.Bsdf = {material.Reflectance,
+                        material.Metallic,
+                        material.Roughness,
+                        content::scene_format::GetSurfaceReflectionScattering(material.Scattering)};
         surface.Program = material.Program;
         surface.Emission = material.Emission;
         surface.IsEmissionTwoSided = material.IsEmissionTwoSided;
@@ -402,7 +406,7 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
             surface.Bsdf = {{override.Tint.X, override.Tint.Y, override.Tint.Z},
                             override.Metallic,
                             override.Roughness,
-                            override.Scattering};
+                            content::scene_format::GetSurfaceReflectionScattering(override.Scattering)};
             surface.Program = override.Program;
             surface.Tint = override.Tint;
             surface.UvTransform = override.UvTransform;

@@ -637,7 +637,8 @@ Status Renderer::State::PrepareReferenceSurface(const MaterialDescription& surfa
         return Status::OutOfMemory;
     }
     data->Bsdf = {{surface.Tint.X, surface.Tint.Y, surface.Tint.Z}, lighting->Metallic, lighting->Roughness};
-    data->Bsdf.Scattering = lighting->Scattering;
+    // A hair card's strand highlight is a raster technique; reference evaluators shade its surface lobes.
+    data->Bsdf.Scattering = content::scene_format::GetSurfaceReflectionScattering(lighting->Scattering);
     data->Program = lighting->Program;
     data->Tint = surface.Tint;
     data->UvTransform = surface.UvTransform;

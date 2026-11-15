@@ -121,6 +121,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Unsupported imported material");
         case format::MaterialModel::MediumInterface:
             return QStringLiteral("Absorbing medium boundary");
+        case format::MaterialModel::HairCard:
+            return QStringLiteral("Hair card");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
@@ -344,6 +346,17 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
              scattering.Model == format::MaterialModel::ThinDielectric)
     {
         rows.append({QStringLiteral("IOR η"), FormatScalar(scattering.Eta[0])});
+    }
+    else if (scattering.Model == format::MaterialModel::HairCard)
+    {
+        const format::HairCardParameters hair = format::GetHairCardParameters(scattering);
+        rows.append({QStringLiteral("Strand direction (°)"), FormatScalar(hair.StrandDirectionDegrees)});
+        rows.append({QStringLiteral("Highlight shifts (°, primary / secondary)"),
+                     QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryShiftDegrees),
+                                                   FormatScalar(hair.SecondaryShiftDegrees))});
+        rows.append(
+            {QStringLiteral("Highlight weights (primary / tinted secondary)"),
+             QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryWeight), FormatScalar(hair.SecondaryWeight))});
     }
     rows.append({QStringLiteral("Surface map"),
                  DescribeTexture(definition, material.SurfaceTexture),
