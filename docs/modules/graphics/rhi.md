@@ -67,6 +67,45 @@ build-time profile; devices still negotiate ordinary compute before execution.
 
 Neither compiler tools nor probe headers are installed as engine dependencies.
 
+## Follow a Vulkan frame on Linux
+
+Stephanie Hurlburt’s [*Beginners Guide to Vulkan* (2017)](https://www.khronos.org/blog/beginners-guide-to-vulkan)
+collects introductions for programmers new to graphics APIs. Start with the
+maintained [Khronos tutorial overview](https://docs.vulkan.org/tutorial/latest/01_Overview.html),
+under **What it takes to draw a triangle**, to see how device and queue selection,
+image acquisition, command recording, and presentation fit together. The tutorial
+uses Vulkan 1.4, dynamic rendering, and Vulkan-Hpp. Ludus’s baseline uses Vulkan 1.1
+render passes and checks explicit results through the C API.
+
+- **Engine.** Start with the [World demo’s `Application`](../../../apps/world_demo/application.cpp).
+  It creates a Platform window and calls `rhi::CreateDevice` with portable raster
+  required. Follow `render` as it updates the frame target and calls the renderer
+  to present. In the [Vulkan backend](../../../modules/graphics/rhi/src/rhi_vulkan.cpp),
+  look for `vkAcquireNextImageKHR`, `vkQueueSubmit`, and `vkQueuePresentKHR`.
+  [Native object relationships](../../architecture/rhi-gdi.md#reading-native-vulkan-object-relationships)
+  explains what can be reused after a submission completes and what must wait for
+  presentation.
+- **Editor.** Open a room from the World demo and inspect it in the
+  [World viewport](../../development/editor-workspace.md#world-renderer-and-camera-preview).
+  **Play saved World** builds and launches the game with the saved room. Hosted
+  Play on Linux needs an X11 or Wayland display, `VK_KHR_external_memory_fd`, and a
+  matching adapter and driver in both processes. If hosting is unavailable, the
+  viewport explains why and offers **Play in a separate window**.
+  [Configure Play](../../development/editor-workspace.md#s4-scene-authoring).
+- **App.** Build the [World demo](../../examples/world-demo.md#run-the-application)
+  and launch it from a Linux desktop. With the Khronos validation layer installed,
+  run the command below, expect `Reference presented 3 frames`, and check the log
+  for validation errors. The `ludus_rhi_render_pixels` test checks offscreen
+  rendering and readback separately. For an installed SDK app, use
+  [`Ludus::GraphicsRhi` and the public shader helper](../../development/fullscreen-rendering.md)
+  and exercise the [Linux Release package](../../development/game-packaging-publishing.md#build-and-inspect-the-package)
+  on a target with a Vulkan loader, usable driver, and display.
+
+  ```bash
+  VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+    out/build/linux-clang-development/apps/world_demo/ludus_world_demo --frames 3
+  ```
+
 ## Raster color writes
 
 `RasterPipelineDescription::ShouldWriteColor` defaults to true. Set it to false
