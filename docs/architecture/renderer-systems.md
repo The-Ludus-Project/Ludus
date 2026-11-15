@@ -2293,8 +2293,9 @@ shading upper hemispheres. Textured RGB decodes sRGB before fixed-mip filtering;
 alpha stays linear. The capture mip overrides per-material LOD/mip filtering
 and LOD clamps. Transmission is limited to the
 [smooth dielectric reference](#smooth-dielectric-reference); there is no rough
-transmission, volume, spectral transport, coat,
-multiple-scattering energy compensation or shading-normal energy correction.
+transmission, volume, spectral transport, coat or shading-normal energy
+correction. Multiple-scattering energy compensation is the opt-in
+[multiple-scattering GGX profile](#multiple-scattering-ggx-profile).
 
 The rough-metal white-furnace regression measures the energy missing from the
 single-scatter model. It views a white metallic-roughness plane (`metallic = 1`,
@@ -2311,11 +2312,12 @@ Thanks to Sébastien Lagarde for the lossless furnace setup and rough-surface
 comparisons. [*Physically-Based Materials: Where Are We?*, SIGGRAPH 2017,
 slides 36–37 and 76–77](https://openproblems.realtimerendering.com/s2017/02-PhysicallyBasedMaterialWhereAreWe.pdf#page=36)
 
-A future compensated profile needs its own declared integral and CPU/GPU parity.
-For lossless reflection its furnace target is one. Before making compensation
-the raster default, qualify the same lobe under punctual, polygonal and
-environment lighting, including the LTC and environment preintegrations, and
-check the appearance of existing materials.
+The opt-in [multiple-scattering GGX profile](#multiple-scattering-ggx-profile)
+declares a compensated integral with its own furnace target of one. Before
+making compensation the raster default, qualify the same lobe under punctual,
+polygonal and environment lighting, including the LTC and environment
+preintegrations, and check the appearance of existing materials
+([#1365](https://github.com/The-Ludus-Project/Ludus/issues/1365)).
 
 Depth and finite secondary range are declared truncations. Local/world geometry, generated ray origins, UVs and transform components are
 bounded to ±1,000,000 for the reference profile. Admission rejects oversized
@@ -2608,6 +2610,170 @@ and the capture tests in the renderer test above:
 - **Identity.** `UniformArea` captures on both implementations, including query
   and event counts, are bit-identical to those before the mode was added.
 
+### Multiple-scattering GGX profile
+
+`ReferenceMaterialProfile::MultipleScatteringGgx` is an opt-in RT1 reflection
+integral that restores the energy the single-scattering GGX lobe loses between
+microfacets. Authored assets keep their material model and parameters. The
+profile is a property of the capture, so one scene can be captured with both
+integrals and compared:
+
+- `ReferenceCaptureDescription::MaterialProfile` selects it for every traversal.
+  It is part of the integral key, so changing it resets accumulation, and values
+  outside the enumeration are rejected. `ReferenceCaptureInfo::MaterialProfile`
+  and `LUHDR01` flag 512 record it.
+- `ReferenceBsdf::Profile` selects it for direct `EvaluateReferenceBsdf` and
+  `SampleReferenceBsdf` calls.
+- `SingleScattering` remains the default and is bit-identical to the earlier
+  profile. `BeginGpuPreview` rejects the compensated profile as `Unsupported`
+  instead of shading single scattering.
+
+**Declared integral.** Every MetallicRoughness, Conductor and
+DiffuseConductorMix GGX lobe `f_ss` gains Christopher Kulla and Alejandro
+Conty's reciprocal compensation lobe:
+
+```text
+f_ms(o, i) = F_ms · (1 − E(μo)) (1 − E(μi)) / (π (1 − E_avg))
+F_ms       = F_avg² E_avg / (1 − F_avg (1 − E_avg))     (per RGB channel)
+```
+
+`E(μ)` is the unit-Fresnel directional albedo of RT1's own single-scattering
+lobe (height-correlated Smith visibility, including its `1e-6` denominator
+floor), and `1 − E_avg = 2 ∫ (1 − E(μ)) μ dμ`. The multiplier is the revised
+form with `F_avg²` in the numerator. `F_avg = 2 ∫ F(μ) μ dμ` is exact for
+Schlick's approximation (`F0 + (1 − F0)/21`). Complex-IOR conductors use
+composite Simpson integration over 16 cosine intervals. DiffuseConductorMix
+weights the compensated conductor lobe by `Metallic`. For legacy surfaces with
+`Metallic < 1` only the specular lobe is compensated; the Fresnel-weighted
+diffuse term is unchanged, so no lossless target is claimed for them. Diffuse,
+project BRDF, closure-program, coated and dielectric models are unchanged.
+Thanks to Kulla and Conty for the lobe and the furnace criterion.
+[*Revisiting Physically Based Shading at Imageworks*, SIGGRAPH 2017, slides 9–18 and revised appendix](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf#page=12)
+
+**Sampling.** Each GGX proposal keeps its visible-normal sampler with
+probability `E(μo)`. It samples the cosine-weighted hemisphere with
+probability `1 − E(μo)`, as the legacy diffuse lobe does. Sampling still
+consumes exactly three uniform values. Evaluation and MIS use the full mixture
+density. Single scattering keeps the visible-normal proposal for the whole
+lobe. The compensation lobe of a smooth metal seen near grazing
+puts its energy at grazing light directions, where cosine sampling rarely goes.
+Light sampling still reaches them, but BSDF-sampled estimates of such a lobe
+have high variance.
+
+**Table.** `data/ggx_albedo_table.bin` holds 64 × 64 directional albedos and 64
+average deficits in float32, which is 16,640 bytes. Every GPU-compute renderer
+uploads it once and charges it to `GpuByteBudget`. Rows are linear in `√α` over
+`[0, 1]`; row 0 is a mirror. Columns are uniform in
+`x = 1 − √(1 − 2θs/π)`, where `θs = atan2(α sin θ, cos θ)` is the inclination of
+the stretched view. This follows the
+[grazing-angle experiment](../development/ltc-table.md#can-the-moments-drive-ggx-energy-compensation)
+that found the LTC norm too coarse near grazing. Each albedo integrates
+512 × 512 midpoint samples in Eric Heitz's visible-normal sample space. Each
+deficit is a Stieltjes sum of `(1 − E)` over exact `sin² θ` increments of the
+row's own bilinear interpolant. That keeps the normalization consistent with the
+lookup and stays accurate where nearly every view inclination falls in the
+first column. Storing the deficit rather than `E_avg` keeps the small deficits
+of smooth rows precise. Regenerate both files with:
+
+```bash
+python3 tools/ggx-albedo/generate_ggx_albedo_table.py --output modules/graphics/renderer/data/ggx_albedo_table.bin --provenance modules/graphics/renderer/data/ggx_albedo_table_provenance.json --strata 512
+```
+
+The generator takes about five minutes on eight cores. The build embeds the
+binary, and `shaders/ggx_albedo_table_layout.h` describes its layout.
+
+**Evidence.** The CPU oracle and GPU compute evaluate and sample the same
+lobe, densities and MIS weights (`reference_bsdf.cpp`,
+`renderer_reference.slang` and `ggx_albedo_table.slang`). The independent
+higher-order Smith reference is a float64 random walk on the GGX microsurface.
+It follows Eric Heitz, Johannes Hanika, Eugene d'Eon and Carsten Dachsbacher,
+[*Multiple-Scattering Microfacet BSDFs with the Smith Model*, SIGGRAPH 2016, sections 4–6](https://doi.org/10.1145/2897824.2925943).
+It applies complex-amplitude Fresnel at every event and samples visible normals
+with Jonathan Dupuy and Anis Benyoub's spherical caps (*Sampling Visible GGX
+Normals with Spherical Caps*, High-Performance Graphics 2023). Its first-order term
+matches RT1's single-scattering lobe within 1%, and its lossless walks keep at
+least 0.999 of their energy.
+
+| Check | Inputs | Measured | Tolerance |
+| --- | --- | ---: | ---: |
+| Table against a normal-sampling quadrature (Walter et al., EGSR 2007) | 11 points, including roughness 0.06 at 89.75° and roughness 1 at 0° | within each point's bound; 1 − ln 2 within 1e-5 | 0.0005–0.004 |
+| Lossless BSDF furnace, deterministic | roughness 0.045, 0.06, 0.1, 0.25, 0.5, 0.75, 1 × views 0°–89.99° (84 cases) | 0.0036 | 0.01 |
+| Same, from the compensated sampler | roughness ≥ 0.25, views ≤ 85° | 0.0003 from the deterministic value | 0.01 |
+| Lossless capture furnace, CPU and GPU | 8 roughness/view cases, 16 × 16 px, 64 spp, seeds 23 and 59, depths 1 and 4 | 0.0088 | 0.02 |
+| Matched CPU/GPU pixels in those captures | as above | ≤ 0.001 RGB distance | 0.001 |
+| Absorbing-metal albedo per channel against the random walk | gold and achromatic, α 0.25, 0.64, 1, views 0°, 45°, 75° | 0.043 (single scattering 0.62) | 0.05 |
+| Sampled direction density, MIS density and weight | 4 materials × 3 views | match evaluation | 1e-5 relative |
+| Density integral against the accepted fraction | same | within 0.01 | 0.01 |
+| Rough-metal scene, CPU against GPU | sphere and wall below, seeds 99 and 131 | RMS ≤ 0.001 | 0.001 |
+
+The lossless capture furnace uses the fully rough normal-incidence baseline and
+the Imageworks grazing case among its eight cases. Its environment light
+sampling reaches the grazing compensation energy that BSDF sampling misses.
+
+The directional lobe follows James F. Blinn,
+[*Models of Light Reflection for Computer Synthesized Pictures*, SIGGRAPH ’77, Fig. 5](https://www.microsoft.com/en-us/research/wp-content/uploads/1977/01/p192-blinn.pdf).
+A unit white directional light (RGB 1, 1, 1) stays at a fixed oblique angle,
+while the view sweeps through −60°, −30°, 0°, 20°, 35°, 45°, 55°, 65°, 75°, 82°,
+86° and 89° in the plane of incidence. Positive angles are on the mirror side.
+Each 1 × 1 capture measures `f cos θi` exactly, and the comparison uses the
+RGB sum of the intensity `f cos θi cos θv`. The materials are complex-IOR
+conductors with α = 0.64. The gold-like one has η = (0.143, 0.374, 1.442) and
+k = (3.983, 2.385, 1.603); the achromatic control repeats its green channel.
+CPU and GPU captures agree within 1e-4 relative and match `EvaluateReferenceBsdf`.
+Values are compensated / single scattering / random walk:
+
+| Material, incidence | Peak | Width at half maximum | Intensity at −60° | At 0° | At 89° |
+| --- | --- | --- | --- | --- | --- |
+| Gold, 45° | 35° / 35° / 35° | 113.8° / 99.4° / 111.4° | 0.155 / 0.083 / 0.153 | 0.422 / 0.254 / 0.430 | 0.0158 / 0.0155 / 0.0158 |
+| Gold, 75° | 55° / 65° / 55° | 105.1° / 83.3° / 100.3° | 0.058 / 0.040 / 0.060 | 0.139 / 0.096 / 0.137 | 0.0239 / 0.0238 / 0.0240 |
+| Achromatic, 45° | 35° / 35° / 35° | 113.3° / 99.3° / 111.2° | 0.175 / 0.096 / 0.175 | 0.477 / 0.292 / 0.485 | 0.0177 / 0.0173 / 0.0177 |
+| Achromatic, 75° | 55° / 55° / 55° | 105.7° / 84.6° / 101.0° | 0.066 / 0.046 / 0.068 | 0.157 / 0.111 / 0.156 | 0.0256 / 0.0255 / 0.0257 |
+
+Peaks must coincide on the 12-view grid. Intensities must agree within 7%
+(measured 4.9%; single scattering is off by up to 46%). Widths must agree within
+6° (measured 4.8°; single scattering is off by up to 17°). Normalized RGB must
+agree within 0.015 over the slice (measured 0.0096) and within 0.005 at the
+mirror view (measured 0.0026). An equal-energy achromatic compensation is
+0.0104 from the reference at gold's mirror view, so it fails the mirror check.
+
+The grazing-color sweep uses the same conductors at α = 0.09. Light and view
+move together along the mirror direction at 0°, 30°, 60°, 75°, 85° and 89°.
+Following Robert L. Cook and Kenneth E. Torrance,
+[*A Reflectance Model for Computer Graphics*, SIGGRAPH ’81, pp. 307–316](https://icg.gwu.edu/sites/g/files/zaxdzs6126/files/downloads/A%20REFLECTANCE%20MODEL%20FOR%20COMPUTER%20GRAPHICS.pdf),
+the gold highlight's normalized RGB should follow the declared Fresnel
+reflectance at `cos θ` and whiten toward grazing. Energy and color have
+separate tolerances:
+
+| Angle | Raw RGB `f cos θi`, CPU and GPU | Random walk | Normalized RGB | Normalized Fresnel |
+| --- | --- | --- | --- | --- |
+| 0° | 9.498, 7.885, 3.184 | 9.498, 7.885, 3.184 | 0.4618, 0.3834, 0.1548 | 0.4618, 0.3834, 0.1548 |
+| 60° | 18.68, 15.63, 7.205 | 18.71, 15.65, 7.215 | 0.4500, 0.3764, 0.1735 | 0.4500, 0.3764, 0.1736 |
+| 75° | 34.53, 30.29, 17.84 | 35.19, 30.86, 18.15 | 0.4177, 0.3665, 0.2158 | 0.4177, 0.3665, 0.2159 |
+| 85° | 76.71, 72.99, 58.68 | 81.42, 77.47, 62.26 | 0.3681, 0.3503, 0.2816 | 0.3681, 0.3503, 0.2816 |
+| 89° | 106.6, 105.5, 100.6 | 107.2, 106.1, 101.2 | 0.3408, 0.3374, 0.3218 | 0.3408, 0.3374, 0.3218 |
+
+The largest energy error is 5.9%, at 85°, where higher-order scattering grows
+faster than the tabulated lobe (tolerance 8%). Normalized RGB stays within
+2.3e-4 of the random walk and 4.3e-5 of the Fresnel expectation (tolerance
+0.002). The spread of gold's normalized channels shrinks monotonically from 60°,
+and the achromatic control stays neutral to 1e-6.
+
+**Cost.** In a debug build on the shared Apple M5, the rough-metal scene
+(32 × 24 px, 16 spp, depth 6, including setup) took 1.04–1.25 s on the CPU
+oracle and 0.22–0.28 s on GPU compute with single scattering, and 1.13–1.29 s
+and 0.28–0.30 s with the compensated profile. A release-build measurement is
+pending.
+
+**Limits.** This is a reference prototype. It has no raster, render-graph or
+GPU-preview implementation, and the LTC and environment preintegrations are not
+compensated ([#1365](https://github.com/The-Ludus-Project/Ludus/issues/1365)).
+The lobe approximates the angular distribution of higher-order scattering.
+The table follows RT1's Smith denominator floor, so at α below about 1e-3 and
+grazing directions the compensation also restores energy that the floor
+removes. RGB optical constants remain a declared proxy for spectral Fresnel.
+The CPU and GPU checks are in `tests/reference_multiple_scattering_tests.cpp`
+and `tests/reference_compute_tests.cpp`.
+
 ### Raw capture and installed SDK
 
 `CopyReferencePixels` copies raw linear means and committed counts without
@@ -2619,11 +2785,12 @@ column-major world-to-clip floats at 96–159, eye at 160–171 and environment 
 172–183. Optical wavelength in metres occupies byte 92 (zero for geometric transport);
 remaining header bytes are reserved zero. Flags encode CPU (1), center
 rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
-GPU compute (64), resampled light sampling (128) and scalar optical connections (256); neither
+GPU compute (64), resampled light sampling (128), scalar optical connections (256) and the
+[multiple-scattering GGX profile](#multiple-scattering-ggx-profile) (512); neither
 traversal bit marks native queries. The sampler field is 1 for `UniformArea`,
 2 and 3 for the resampled modes with flag 128, and 4 for
 `SeparateDirectional` without that flag. `scripts/reference-hdr` rejects other pairings and records
-`light_sampling` in its manifest, with `center_rays` for flag 2.
+`light_sampling` in its manifest, with `center_rays` for flag 2 and `material_profile` for flag 512.
 The scalar optical connection profile and its CPU/GPU contract are described in
 [render-graph authoring](../development/render-graph-authoring.md#trace-scene-optical-connections).
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32

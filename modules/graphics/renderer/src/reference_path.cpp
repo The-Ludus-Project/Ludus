@@ -728,6 +728,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     }
     // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
     bsdf.IsViewerInside = isBackFace;
+    bsdf.Profile = job.Description.MaterialProfile;
     const bool isSpecular = IsReferenceDielectric(bsdf.Scattering.Model);
     // ResampledProjectedSolidAngle keeps the receiver for this vertex's light sample and its continuation's BSDF-hit
     // density; Z-hat is computed once, on first use.

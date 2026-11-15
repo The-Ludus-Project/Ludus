@@ -1,3 +1,4 @@
+#include "internal/ggx_albedo_table.h"
 #include "internal/gpu_preview_data.h"
 #include "internal/ltc_table_data.h"
 #include "internal/reference_data.h"
@@ -68,8 +69,14 @@ constexpr StaticArray<rhi::RasterBinding, LUDUS_REFERENCE_BINDING_COUNT> COMPUTE
      rhi::RasterBindingKind::StorageRead,
      rhi::RasterVisibility::Compute,
      VECTOR_BYTES},
+    {LUDUS_REFERENCE_GGX_ALBEDO_TABLE_BINDING,
+     rhi::RasterBindingKind::StorageRead,
+     rhi::RasterVisibility::Compute,
+     VECTOR_BYTES},
 }};
 static_assert(sizeof(LtcTableEntry) == VECTOR_BYTES, "the trace kernel reads the LTC table as float4 entries");
+static_assert(sizeof(GGX_ALBEDO_TABLE) == usize{LUDUS_GGX_ALBEDO_TABLE_ENTRY_COUNT} * VECTOR_BYTES,
+              "the trace kernel reads the GGX albedo table as float4 entries");
 static_assert(static_cast<uint32>(ReferenceFailure::None) == LUDUS_REFERENCE_FAILURE_NONE);
 static_assert(static_cast<uint32>(ReferenceFailure::InvalidHit) == LUDUS_REFERENCE_FAILURE_INVALID_HIT);
 static_assert(static_cast<uint32>(ReferenceFailure::InvalidEmitterPdf) == LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
@@ -176,6 +183,7 @@ Status BuildDispatchGraph(const ReferenceComputePipelines& pipelines,
     rhi::GraphVersion accumulation;
     rhi::GraphVersion statusVersion;
     rhi::GraphVersion ltcTable;
+    rhi::GraphVersion albedoTable;
     if (status == Status::Ready)
     {
         status = rhi::ImportGraphBuffer(device, outGraph, compute.Parameters, parameters);
@@ -183,6 +191,10 @@ Status BuildDispatchGraph(const ReferenceComputePipelines& pipelines,
     if (status == Status::Ready)
     {
         status = rhi::ImportGraphBuffer(device, outGraph, pipelines.LtcTable, ltcTable);
+    }
+    if (status == Status::Ready)
+    {
+        status = rhi::ImportGraphBuffer(device, outGraph, pipelines.GgxAlbedoTable, albedoTable);
     }
     if (status == Status::Ready)
     {
@@ -235,6 +247,11 @@ Status BuildDispatchGraph(const ReferenceComputePipelines& pipelines,
              rhi::RasterVisibility::Compute},
             {texels, rhi::GraphAccessMode::StorageRead, 0, compute.TexelBytes, rhi::RasterVisibility::Compute},
             {ltcTable, rhi::GraphAccessMode::StorageRead, 0, sizeof(LTC_TABLE), rhi::RasterVisibility::Compute},
+            {albedoTable,
+             rhi::GraphAccessMode::StorageRead,
+             0,
+             sizeof(GGX_ALBEDO_TABLE),
+             rhi::RasterVisibility::Compute},
         }};
         // NOLINTEND(bugprone-invalid-enum-default-initialization)
         const rhi::ComputeDispatch dispatch{pipeline, compute.Bindings, {groupsX, groupsY, 1}};
@@ -316,6 +333,7 @@ Status AdvanceSetup(const ReferenceComputePipelines& pipelines, ReferenceJob& in
             {LUDUS_REFERENCE_STATUS_BINDING, compute.Status, 0, REFERENCE_COMPUTE_STATUS_BYTES},
             {LUDUS_REFERENCE_TEXELS_BINDING, compute.Texels, 0, compute.TexelBytes},
             {LUDUS_REFERENCE_LTC_TABLE_BINDING, pipelines.LtcTable, 0, sizeof(LTC_TABLE)},
+            {LUDUS_REFERENCE_GGX_ALBEDO_TABLE_BINDING, pipelines.GgxAlbedoTable, 0, sizeof(GGX_ALBEDO_TABLE)},
         }};
         const Status created = rhi::CreateBindingSet(compute.Device,
                                                      pipelines.Layout,
@@ -548,6 +566,14 @@ Status CreateReferenceComputePipelines(rhi::DeviceHandle device,
                                    {reinterpret_cast<const uint8*>(LTC_TABLE.GetData()), sizeof(LTC_TABLE)},
                                    pipelines.LtcTable);
     }
+    if (Accepted(status) == true)
+    {
+        status =
+            rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Storage, sizeof(GGX_ALBEDO_TABLE)},
+                              {reinterpret_cast<const uint8*>(GGX_ALBEDO_TABLE.GetData()), sizeof(GGX_ALBEDO_TABLE)},
+                              pipelines.GgxAlbedoTable);
+    }
     if (Accepted(status) == false)
     {
         DestroyReferenceComputePipelines(device, pipelines);
@@ -576,6 +602,10 @@ Status PollReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputeP
             if (status == Status::Ready)
             {
                 status = rhi::GetStatus(device, pipelines.LtcTable);
+            }
+            if (status == Status::Ready)
+            {
+                status = rhi::GetStatus(device, pipelines.GgxAlbedoTable);
             }
             if (status == Status::Ready)
             {
@@ -641,6 +671,7 @@ void DestroyReferenceComputePipelines(rhi::DeviceHandle device, ReferenceCompute
     static_cast<void>(rhi::Destroy(device, inoutPipelines.TraceShader));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.ReduceShader));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.LtcTable));
+    static_cast<void>(rhi::Destroy(device, inoutPipelines.GgxAlbedoTable));
     inoutPipelines = {};
 }
 Status CreateReferenceComputeJob(const ReferenceComputeInputs& inputs, ReferenceJob& inoutJob) noexcept

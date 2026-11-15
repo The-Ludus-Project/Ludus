@@ -1,0 +1,15 @@
+{
+  "generator": "tools/ggx-albedo/generate_ggx_albedo_table.py",
+  "tableVersion": 1,
+  "brdf": "RT1 single-scattering GGX at unit Fresnel: height-correlated Smith visibility with a 1e-6 denominator floor",
+  "rows": "linear in sqrt(alpha) over [0, 1]; row 0 is a unit-albedo mirror",
+  "columns": "uniform in x = 1 - sqrt(1 - 2 theta_s / pi), theta_s = atan2(alpha sin theta, cos theta)",
+  "averageDeficit": "2 * integral of (1 - E(mu)) mu dmu for the clamped bilinear interpolant E, a Stieltjes sum over exact sin^2(theta) increments of each column cell",
+  "settings": {
+    "roughnessCount": 64,
+    "viewCount": 64,
+    "strata": 512,
+    "averageSubdivisions": 4096
+  },
+  "fullyRoughNormalIncidence": 0.3068532962757885
+}

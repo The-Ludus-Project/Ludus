@@ -1,5 +1,6 @@
 #include <ludus/graphics/renderer/reference.hpp>
 
+#include "internal/ggx_albedo_table.h"
 #include "internal/reference_coating.h"
 #include "internal/reference_dielectric.h"
 
@@ -21,6 +22,13 @@
 // Thanks to Pharr, Jakob and Humphreys, Physically Based Rendering, 4th ed., section 2.2.3,
 // https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency: evaluate the weighted
 // sum of both proposal densities after sampling one lobe of the authored Mix.
+// Thanks to Christopher Kulla and Alejandro Conty, "Revisiting Physically Based Shading at Imageworks", SIGGRAPH 2017,
+// slides 9-18 and the revised appendix,
+// https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf#page=12:
+// ReferenceMaterialProfile::MultipleScatteringGgx adds their reciprocal compensation lobe
+// (1 - E(mu_o))(1 - E(mu_i)) / (pi (1 - Eavg)) with the multiplier Favg^2 Eavg / (1 - Favg (1 - Eavg)) of the revised
+// appendix (page 138). Cosine sampling of the lobe with the probability of the deficit is a Ludus choice; see
+// docs/architecture/renderer-systems.md#multiple-scattering-ggx-profile.
 namespace ludus::graphics::renderer
 {
 using namespace foundation;
@@ -45,6 +53,8 @@ bool Valid(const ReferenceBsdf& b) noexcept
            (b.Scattering.Model != format::MaterialModel::Conductor || b.Scattering.AlphaU == b.Scattering.AlphaV) &&
            (b.Scattering.Model != format::MaterialModel::Program ||
             (b.ProgramOrNull != nullptr && format::IsMaterialProgramValid(*b.ProgramOrNull) == true)) &&
+           (b.Profile == ReferenceMaterialProfile::SingleScattering ||
+            b.Profile == ReferenceMaterialProfile::MultipleScatteringGgx) &&
            math::IsFinite(b.BaseColor) && b.BaseColor.X >= 0 && b.BaseColor.X <= 1 && b.BaseColor.Y >= 0 &&
            b.BaseColor.Y <= 1 && b.BaseColor.Z >= 0 && b.BaseColor.Z <= 1 && math::IsFinite(b.Metallic) &&
            b.Metallic >= 0 && b.Metallic <= 1 && math::IsFinite(b.Roughness) && b.Roughness >= 0.045F &&
@@ -115,6 +125,64 @@ float32 GetMicrofacetAlpha(const ReferenceBsdf& bsdf) noexcept
 {
     return format::HasRoughConductorLobe(bsdf.Scattering.Model) == true ? bsdf.Scattering.AlphaU
                                                                         : bsdf.Roughness * bsdf.Roughness;
+}
+/// Divisor of Schlick's cosine-weighted average reflectance: 2 * integral of mu (1 - mu)^5 dmu over [0, 1] = 1 / 21.
+constexpr float32 SCHLICK_AVERAGE_DIVISOR = 21;
+/// Composite Simpson weight of odd nodes, and the divisor of the step.
+constexpr float32 SIMPSON_ODD_WEIGHT = 4;
+constexpr float32 SIMPSON_DIVISOR = 3;
+constexpr uint32 FRESNEL_AVERAGE_INTERVALS = LUDUS_GGX_FRESNEL_AVERAGE_INTERVALS;
+static_assert(FRESNEL_AVERAGE_INTERVALS % 2 == 0, "composite Simpson needs an even interval count");
+/// Cosine-weighted average Fresnel reflectance Favg = 2 * integral of F(mu) mu dmu per channel, exact for Schlick's
+/// approximation and by composite Simpson for complex-IOR conductors (ggx_albedo_table.slang's GPU repeats it).
+[[nodiscard]] math::Vector3 ComputeFresnelAverage(const ReferenceBsdf& b, math::Vector3 f0) noexcept
+{
+    if (format::HasRoughConductorLobe(b.Scattering.Model) == false)
+    {
+        return f0 + (math::Vector3{1, 1, 1} - f0) * (1 / SCHLICK_AVERAGE_DIVISOR);
+    }
+    math::Vector3 sum{};
+    const float32 step = 1 / float32(FRESNEL_AVERAGE_INTERVALS);
+    for (uint32 node = 1; node <= FRESNEL_AVERAGE_INTERVALS; ++node)
+    {
+        const float32 cosine = float32(node) * step;
+        const float32 weight = node == FRESNEL_AVERAGE_INTERVALS ? 1 : (node % 2 == 1 ? SIMPSON_ODD_WEIGHT : 2);
+        const math::Vector3 fresnel = {ComputeConductorFresnel(cosine, b.Scattering.Eta[0], b.Scattering.K[0]),
+                                       ComputeConductorFresnel(cosine, b.Scattering.Eta[1], b.Scattering.K[1]),
+                                       ComputeConductorFresnel(cosine, b.Scattering.Eta[2], b.Scattering.K[2])};
+        sum = sum + fresnel * (weight * 2 * cosine);
+    }
+    return sum * (step / SIMPSON_DIVISOR);
+}
+/// Kulla and Conty's compensation lobe for scattering between microfacets, without the cosine.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): GGX alpha, then the view and light cosines.
+[[nodiscard]] math::Vector3
+EvaluateGgxCompensation(float32 alpha, float32 viewCosine, float32 lightCosine, math::Vector3 fresnelAverage) noexcept
+{
+    const float32 averageDeficit = internal::LookupGgxAverageDeficit(alpha);
+    const float32 averageAlbedo = 1 - averageDeficit;
+    if (averageDeficit <= LUDUS_GGX_MINIMUM_AVERAGE_DEFICIT)
+    {
+        return {};
+    }
+    const float32 lobe = (1 - internal::LookupGgxDirectionalAlbedo(alpha, viewCosine)) *
+                         (1 - internal::LookupGgxDirectionalAlbedo(alpha, lightCosine)) / (math::kPiF * averageDeficit);
+    const auto multiplier = [averageAlbedo, averageDeficit](float32 average) noexcept {
+        return average * average * averageAlbedo / (1 - average * averageDeficit);
+    };
+    return math::Vector3{multiplier(fresnelAverage.X), multiplier(fresnelAverage.Y), multiplier(fresnelAverage.Z)} *
+           lobe;
+}
+/// Probability that a GGX-bearing model samples its visible normals; the remainder is cosine sampled. The
+/// multiple-scattering profile moves the deficit 1 - E(view) of the GGX proposal to cosine sampling.
+[[nodiscard]] float32 GetVisibleNormalProbability(const ReferenceBsdf& b, float32 viewCosine) noexcept
+{
+    const float32 specular = SpecularProbability(b);
+    if (b.Profile != ReferenceMaterialProfile::MultipleScatteringGgx)
+    {
+        return specular;
+    }
+    return specular * internal::LookupGgxDirectionalAlbedo(GetMicrofacetAlpha(b), viewCosine);
 }
 /// Lower bound of the height-correlated Smith visibility denominator; dimensionless, avoids division by zero at
 /// grazing view and light.
@@ -439,7 +507,8 @@ ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::
     }
     const math::Vector3 halfWorld = Normalized(v + l);
     const float32 vh = math::Clamp(math::Dot(v, halfWorld), 0.0F, 1.0F);
-    const GgxReflection ggx = EvaluateGgxReflection(GetMicrofacetAlpha(b), nv, nl, n, halfWorld);
+    const float32 alpha = GetMicrofacetAlpha(b);
+    const GgxReflection ggx = EvaluateGgxReflection(alpha, nv, nl, n, halfWorld);
     const float32 distribution = ggx.Distribution;
     const float32 visibility = ggx.Visibility;
     const math::Vector3 f0 = math::Vector3{0.04F, 0.04F, 0.04F} * (1 - b.Metallic) + b.BaseColor * b.Metallic;
@@ -454,15 +523,23 @@ ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::
     }
     const float32 specularPdf = ggx.Pdf;
     const float32 probability = SpecularProbability(b);
-    const float32 pdf = probability * specularPdf + (1 - probability) * nl / math::kPiF;
+    const float32 visibleNormalProbability = GetVisibleNormalProbability(b, nv);
+    const float32 pdf = visibleNormalProbability * specularPdf + (1 - visibleNormalProbability) * nl / math::kPiF;
+    // Adding the zero compensation of SingleScattering keeps that profile's values bit-identical.
+    math::Vector3 compensation{};
+    if (b.Profile == ReferenceMaterialProfile::MultipleScatteringGgx)
+    {
+        compensation = EvaluateGgxCompensation(alpha, nv, nl, ComputeFresnelAverage(b, f0));
+    }
     if (isMix == true)
     {
-        return {fresnel * (distribution * visibility * probability) + b.BaseColor * ((1 - probability) / math::kPiF),
+        return {fresnel * (distribution * visibility * probability) + compensation * probability +
+                    b.BaseColor * ((1 - probability) / math::kPiF),
                 pdf};
     }
     const float32 diffuseFraction = b.Scattering.Model == format::MaterialModel::Conductor ? 0 : 1 - b.Metallic;
     const math::Vector3 value =
-        fresnel * (distribution * visibility) +
+        fresnel * (distribution * visibility) + compensation +
         math::Hadamard(b.BaseColor, math::Vector3{1, 1, 1} - fresnel) * (diffuseFraction / math::kPiF);
     return {value, pdf};
 }
@@ -545,7 +622,7 @@ rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf& b,
     {
         direction = SampleMaterialProgram(b, frame, view, sample, diskX, diskY);
     }
-    else if (sample.X >= SpecularProbability(b))
+    else if (sample.X >= GetVisibleNormalProbability(b, math::Dot(normal, view)))
     {
         direction = frame.World({diskX, diskY, math::Sqrt(math::Max(0.0F, 1 - sample.Y))});
     }

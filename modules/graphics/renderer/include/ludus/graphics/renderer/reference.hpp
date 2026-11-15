@@ -22,6 +22,22 @@ struct ReferenceBsdfRandomContext final
     foundation::math::RandomKey Key{};         ///< Explicit root key, copied; no lifetime requirement.
     foundation::math::RandomAddress Address{}; ///< Logical material event; invalid dimensions reject.
 };
+/// Declared reflection integral of RT1's GGX lobes, recorded in capture metadata. Authored materials keep
+/// their scattering model; the profile chooses how a capture integrates it, so one scene compares both.
+/// See "Multiple-scattering GGX profile" in docs/architecture/renderer-systems.md.
+enum class ReferenceMaterialProfile : ludus::foundation::uint8
+{
+    /// The default: single-scattering GGX with height-correlated Smith visibility. Energy scattered between
+    /// microfacets is lost, so a white rough metal reflects about 0.31 of a white furnace at roughness 1.
+    SingleScattering,
+    /// Opt-in prototype: every MetallicRoughness, Conductor and DiffuseConductorMix GGX lobe adds Christopher Kulla
+    /// and Alejandro Conty's reciprocal compensation lobe for scattering between microfacets, from a tabulated
+    /// unit-Fresnel directional albedo, and the revised Fresnel multiplier Favg^2 Eavg / (1 - Favg (1 - Eavg)).
+    /// Lossless GGX reflection then integrates to unit albedo within the table's accuracy. Diffuse lobes, project
+    /// BRDFs, closure programs, coatings and dielectrics are unchanged. The lobe is cosine sampled with the probability
+    /// of the deficit 1 - E(view) within each GGX proposal; sampling keeps three fixed dimensions.
+    MultipleScatteringGgx,
+};
 /// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
 /// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
 /// CoatedDiffuse is a rough dielectric layer over Lambertian reflection with
@@ -51,6 +67,8 @@ struct ReferenceBsdf final
     /// Dielectric only: the view direction lies inside the medium, behind the surface's
     /// oriented front side, so refraction uses the inverse relative index. Thin slabs ignore it.
     bool IsViewerInside = false;
+    /// Declared reflection integral of the GGX lobes; values outside the enumeration are invalid input.
+    ReferenceMaterialProfile Profile = ReferenceMaterialProfile::SingleScattering;
 };
 /// BSDF value and directional density in inverse steradians, without the cosine.
 struct ReferenceBsdfEvaluation final
@@ -101,7 +119,8 @@ struct ReferenceBsdfSample final
 /// Sample the matching mixture with three independent values in [0,1): X selects
 /// the lobe, Y/Z sample it. Diffuse uses cosine sampling; conductors and legacy
 /// pure metals use visible-GGX reflection; legacy mixed surfaces mix cosine diffuse
-/// and GGX equally. DiffuseConductorMix uses Metallic as the conductor proposal
+/// and GGX equally. MultipleScatteringGgx cosine samples the fraction 1 - E(view) of each GGX proposal for its
+/// compensation lobe. DiffuseConductorMix uses Metallic as the conductor proposal
 /// probability and returns the weighted sum of both lobe densities. ProjectBrdf
 /// chooses one authored cosine-power lobe and returns the full mixture density. A closure program
 /// chooses one of its lobes in proportion to the mean of its weight and returns the full mixture density.
@@ -181,10 +200,10 @@ struct ReferenceRenderingOptions final
     ludus::foundation::uint32 TilePixels = 0;
     /// GpuCompute only: renderer-owned packed scene, texel, uniform, accumulation and
     /// status buffer bytes across live captures, including a replacement built by
-    /// UpdateReferenceCapture, plus the renderer's LTC table (3407872 bytes), which every
-    /// capture shares and which is charged when rendering is enabled. Excludes RHI
-    /// registries, transfer rings, pipelines and driver padding. At least the table's
-    /// size for GpuCompute; other traversals ignore it.
+    /// UpdateReferenceCapture, plus the renderer's LTC table (3407872 bytes) and GGX albedo
+    /// table (16640 bytes), which every capture shares and which are charged when rendering
+    /// is enabled. Excludes RHI registries, transfer rings, pipelines and driver padding. At
+    /// least both tables' size for GpuCompute; other traversals ignore it.
     ludus::foundation::usize GpuByteBudget = 0;
 };
 /// Immutable reference integral and stop target. Camera coordinates and matrices
@@ -242,6 +261,9 @@ struct ReferenceCaptureDescription final
     /// Direct-light next-event estimator. Recorded in the integral key: changing it
     /// replaces the job and resets accumulation. Values outside the enumeration are rejected.
     ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;
+    /// Reflection integral of GGX lobes, applied by every traversal. Recorded in the integral key: changing it replaces
+    /// the job and resets accumulation. Values outside the enumeration are rejected.
+    ReferenceMaterialProfile MaterialProfile = ReferenceMaterialProfile::SingleScattering;
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
     /// coupling on finite light connections, including coherent diffraction by successive scene regions.
     /// The positive range starts at one nanometre; smaller values reject before capture preparation.
@@ -335,6 +357,8 @@ struct ReferenceCaptureInfo final
     ludus::foundation::uint32 SamplerVersion = 1;
     /// The capture's direct-light next-event estimator.
     ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;
+    /// The capture's declared reflection integral of GGX lobes.
+    ReferenceMaterialProfile MaterialProfile = ReferenceMaterialProfile::SingleScattering;
     /// Original capture seed.
     ludus::foundation::uint64 Seed = 0;
     /// Nonwrapping accepted integral revision; changes reset every pixel's accumulation.

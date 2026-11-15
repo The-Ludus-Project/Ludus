@@ -509,6 +509,7 @@ public:
     /// baked/atlas lighting, transmission or deformation. Target <=4096, depth <=8,
     /// pixel count <=2^24; negotiated storage limits can be tighter.
     /// RGB emissive triangles, up to 128 analytic lights and constant/HDR environment.
+    /// Only ReferenceMaterialProfile::SingleScattering; another material profile is Unsupported.
     /// Ready/Pending publish ownership into a null output; rejection preserves it. All caller
     /// owners may detach after success. Changing camera/content/exposure creates a
     /// new job and restarts accumulation. Setup can allocate/upload; never shades.
