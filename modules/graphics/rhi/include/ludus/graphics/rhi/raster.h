@@ -29,6 +29,9 @@ struct RasterAccess;
 /// exact TLAS and its BLAS versions until their accepted GPU uses complete.
 struct RaySceneHandle final
 {
+    /// Compare device, generation and slot identity; this does not query build readiness.
+    friend LUDUS_INLINE constexpr bool operator==(RaySceneHandle, RaySceneHandle) noexcept = default;
+
 private:
     ludus::foundation::uint64 mOwner = 0;
     ludus::foundation::uint64 mGeneration = 0;

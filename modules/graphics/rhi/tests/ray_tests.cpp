@@ -8,9 +8,14 @@
 
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/ray.h>
 
+#include "graph_ray_query.h"
 #include "ray_query.h"
+
+#include <cstring>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -572,4 +577,232 @@ TEST_CASE("Native ray opacity queries preserve aligned offsets beyond 64 MiB", "
     CHECK(result.Hit == 1);
     CHECK(result.Instance == ACCEPTED_INSTANCE_COUNT - 1);
     CHECK(result.Distance == 1);
+}
+
+// R16a/R17a: an ordinary compute pipeline binds the scene and an ordered graph declares the read.
+// Independent triangle fixtures check hit/miss, ray intervals, instance transforms and identities;
+// the import keeps the scene and BLAS alive after their public handles are destroyed.
+TEST_CASE("Ordered graphs read declared native scenes in compute ray queries", "[rhi][gpu][ray][graph]")
+{
+    rhi::Shutdown();
+    logging::LogConfig loggingConfig;
+    loggingConfig.Mode = logging::LogMode::Synchronous;
+    loggingConfig.EnableFile = loggingConfig.EnableDebugger = false;
+    static_cast<void>(logging::LogSystem::Initialize(loggingConfig));
+    struct Guard final
+    {
+        ~Guard() noexcept
+        {
+            rhi::Shutdown();
+            logging::LogSystem::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Preferred.Compute = true;
+    description.Preferred.RayQueries = true;
+    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    rhi::DeviceInfo info;
+    REQUIRE(rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready);
+    if (rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Unsupported ||
+        info.Enabled.Compute == false)
+    {
+        // The reference graph cases cover unsupported-target admission deterministically.
+        SKIP("Native adapter does not implement compute ray queries; raster remains usable");
+    }
+    constexpr usize RAY_COUNT = 4;
+    constexpr usize RAY_VECTORS = 2;
+    constexpr usize VECTOR_COMPONENTS = 4;
+    constexpr usize RAY_BYTES = RAY_COUNT * RAY_VECTORS * VECTOR_COMPONENTS * sizeof(float32);
+    constexpr usize HIT_BYTES = RAY_COUNT * VECTOR_COMPONENTS * sizeof(uint32);
+    constexpr usize VECTOR_BYTES = VECTOR_COMPONENTS * sizeof(float32);
+    constexpr usize BYTE_BUDGET = usize{16} * 1024 * 1024;
+    constexpr float32 INSTANCE_OFFSET = 10;
+    constexpr float32 RAY_HEIGHT = 5;
+    constexpr float32 MISS_X = 5;
+    constexpr float32 SHORT_INTERVAL = 4;
+    constexpr float32 FAR_INTERVAL = 100;
+    constexpr uint32 TRANSLATION_X = 3;
+    const StaticArray<float32, 9> positions{-1, -1, 0, 1, -1, 0, 0, 1, 0};
+    const StaticArray<uint32, 3> indices{0, 1, 2};
+    const rhi::RayGeometryDescription mesh{positions.GetData(),
+                                           3,
+                                           indices.GetData(),
+                                           indices.GetSize(),
+                                           nullptr,
+                                           BYTE_BUDGET};
+    rhi::RayGeometryHandle geometry;
+    REQUIRE(rhi::CreateRayGeometry(device, mesh, geometry) == rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, geometry) == rhi::RasterStatus::Ready);
+    StaticArray<rhi::RayInstanceDescription, 2> instances{};
+    instances[0].Geometry = geometry;
+    instances[1].Geometry = geometry;
+    instances[1].Transform[TRANSLATION_X] = INSTANCE_OFFSET;
+    rhi::RaySceneHandle scene;
+    REQUIRE(rhi::CreateRayScene(device, {instances.GetData(), instances.GetSize(), BYTE_BUDGET}, scene) ==
+            rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, scene) == rhi::RasterStatus::Ready);
+
+    // Downward rays: instance 0, translated instance 1, a gap between them, and an interval
+    // ending before the first triangle.
+    const StaticArray<float32, RAY_COUNT * RAY_VECTORS * VECTOR_COMPONENTS> rays{
+        0,
+        0,
+        RAY_HEIGHT,
+        0,
+        0,
+        0,
+        -1,
+        FAR_INTERVAL,
+        INSTANCE_OFFSET,
+        0,
+        RAY_HEIGHT,
+        0,
+        0,
+        0,
+        -1,
+        FAR_INTERVAL,
+        MISS_X,
+        0,
+        RAY_HEIGHT,
+        0,
+        0,
+        0,
+        -1,
+        FAR_INTERVAL,
+        0,
+        0,
+        RAY_HEIGHT,
+        0,
+        0,
+        0,
+        -1,
+        SHORT_INTERVAL,
+    };
+    rhi::BufferHandle rayBuffer;
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Storage, RAY_BYTES},
+                              {reinterpret_cast<const uint8*>(rays.GetData()), RAY_BYTES},
+                              rayBuffer) == rhi::RasterStatus::Ready);
+    const StaticArray<uint8, HIT_BYTES> zeros{};
+    rhi::BufferHandle hitBuffer;
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Storage, HIT_BYTES},
+                              {zeros.GetData(), zeros.GetSize()},
+                              hitBuffer) == rhi::RasterStatus::Ready);
+    const rhi::RasterShaderDescription shaderDescription = ludus::shaders::graph_ray_query::Compute();
+    rhi::RasterShaderHandle shader;
+    REQUIRE(rhi::CreateRasterShader(device, shaderDescription, shader) == rhi::RasterStatus::Ready);
+    const StaticArray<rhi::RasterBinding, 3> bindings{{
+        {0, rhi::RasterBindingKind::RayScene, rhi::RasterVisibility::Compute, 0},
+        {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+        {2, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+    }};
+    rhi::BindingLayoutHandle layout;
+    REQUIRE(rhi::CreateBindingLayout(device, {bindings.GetData(), bindings.GetSize()}, layout) ==
+            rhi::RasterStatus::Ready);
+    const StaticArray<rhi::RasterBindingResource, 3> resources{{
+        { .Binding = 0, .Scene = scene },
+        { .Binding = 1, .Buffer = rayBuffer, .Size = RAY_BYTES },
+        { .Binding = 2, .Buffer = hitBuffer, .Size = HIT_BYTES },
+    }};
+    rhi::BindingSetHandle set;
+    REQUIRE(rhi::CreateBindingSet(device, layout, {resources.GetData(), resources.GetSize()}, set) ==
+            rhi::RasterStatus::Ready);
+    rhi::ComputePipelineHandle pipeline;
+    REQUIRE(rhi::CreateComputePipeline(device, {shader, layout}, pipeline) == rhi::RasterStatus::Ready);
+    if (rhi::GetStatus(device, pipeline) == rhi::RasterStatus::Pending)
+    {
+        REQUIRE(Poll(device, pipeline) == rhi::RasterStatus::Ready);
+    }
+
+    rhi::OrderedGraph graph;
+    REQUIRE(rhi::CreateOrderedGraph(device, graph) == rhi::RasterStatus::Ready);
+    rhi::GraphVersion rayVersion;
+    rhi::GraphVersion hitVersion;
+    rhi::GraphVersion hitWritten;
+    rhi::GraphVersion sceneVersion;
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, rayBuffer, rayVersion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, hitBuffer, hitVersion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::NextGraphVersion(device, graph, hitVersion, hitWritten) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphRayScene(device, graph, scene, sceneVersion) == rhi::RasterStatus::Ready);
+    const StaticArray<rhi::GraphUse, 3> uses{{
+        {rayVersion, rhi::GraphAccessMode::StorageRead, 0, RAY_BYTES, rhi::RasterVisibility::Compute},
+        {hitWritten, rhi::GraphAccessMode::StorageReadWrite, 0, HIT_BYTES, rhi::RasterVisibility::Compute},
+        {sceneVersion, rhi::GraphAccessMode::AccelerationStructureRead, 0, 0, rhi::RasterVisibility::Compute},
+    }};
+    const rhi::ComputeDispatch dispatch{pipeline, set};
+    rhi::GraphPassDescription pass;
+    pass.Name = "graph ray query";
+    pass.Uses = uses.GetData();
+    pass.UseCount = uses.GetSize();
+    pass.Dispatch = &dispatch;
+    REQUIRE(rhi::AddGraphPass(device, graph, pass) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::AddGraphRoot(device, graph, hitWritten, rhi::GraphRoot::Readback) == rhi::RasterStatus::Ready);
+    rhi::GraphReport report;
+    REQUIRE(rhi::CompileOrderedGraph(device, graph, report) == rhi::RasterStatus::Ready);
+    bool hasBuildDependency = false;
+    for (uint32 i = 0; i < report.ReportedDependencies; ++i)
+    {
+        const rhi::GraphDependency& edge = report.Dependencies[i];
+        hasBuildDependency =
+            hasBuildDependency == true || (edge.Before == rhi::GRAPH_EXTERNAL_INDEX && edge.After == 0 &&
+                                           edge.Source == rhi::GraphAccessMode::AccelerationStructureBuild &&
+                                           edge.Destination == rhi::GraphAccessMode::AccelerationStructureRead);
+    }
+    CHECK(hasBuildDependency == true);
+    // The graph and its retained binding snapshot keep the scene and BLAS through execution.
+    REQUIRE(rhi::Destroy(device, scene) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, geometry) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, set) == rhi::RasterStatus::Ready);
+    rhi::RayResourceStats stats;
+    REQUIRE(rhi::GetRayResourceStats(device, stats) == rhi::RasterStatus::Ready);
+    CHECK(stats.Scenes == 1);
+    CHECK(stats.Geometries == 1);
+    CHECK(stats.DetachedBytes == stats.ResidentBytes);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::ExecuteOrderedGraph(device, surface, graph, completion) == rhi::RasterStatus::Ready);
+
+    rhi::ReadbackTicket ticket;
+    REQUIRE(rhi::RequestBufferReadback(device, hitBuffer, 0, HIT_BYTES, ticket) == rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, ticket) == rhi::RasterStatus::Ready);
+    StaticArray<uint32, RAY_COUNT * VECTOR_COMPONENTS> hits{};
+    REQUIRE(rhi::CopyReadback(device, ticket, reinterpret_cast<uint8*>(hits.GetData()), HIT_BYTES) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Release(device, ticket) == rhi::RasterStatus::Ready);
+    const auto distance = [&hits](usize ray) noexcept {
+        float32 value = 0;
+        std::memcpy(&value, &hits[ray * VECTOR_COMPONENTS + 3], sizeof(value));
+        return value;
+    };
+    // Hit, instance, primitive and distance along the normalized world ray.
+    CHECK(hits[0] == 1);
+    CHECK(hits[1] == 0);
+    CHECK(hits[2] == 0);
+    CHECK(distance(0) == RAY_HEIGHT);
+    CHECK(hits[VECTOR_COMPONENTS] == 1);
+    CHECK(hits[VECTOR_COMPONENTS + 1] == 1);
+    CHECK(distance(1) == RAY_HEIGHT);
+    for (usize component = 0; component < VECTOR_COMPONENTS; ++component)
+    {
+        CAPTURE(component);
+        CHECK(hits[2 * VECTOR_COMPONENTS + component] == 0);
+        CHECK(hits[3 * VECTOR_COMPONENTS + component] == 0);
+    }
+    REQUIRE(Poll(device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::PollLifetime(device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetRayResourceStats(device, stats) == rhi::RasterStatus::Ready);
+    CHECK(stats.Scenes == 0);
+    CHECK(stats.Geometries == 0);
+    REQUIRE(rhi::Destroy(device, pipeline) == rhi::RasterStatus::Ready);
 }

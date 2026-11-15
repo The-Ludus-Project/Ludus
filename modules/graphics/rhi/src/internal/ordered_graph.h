@@ -924,6 +924,34 @@ ImportGraphBuffer(DeviceHandle device, OrderedGraph handle, BufferHandle buffer,
     }
     return added;
 }
+RasterStatus
+ImportGraphRayScene(DeviceHandle device, OrderedGraph graph, RaySceneHandle scene, GraphVersion& outVersion) noexcept
+{
+    GraphRecord* graphOrNull = nullptr;
+    const RasterStatus admission = GraphAdmission(device, graph, graphOrNull);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    const RayCapabilities limits = backend::RayLimits();
+    if (limits.StaticTriangles == false || limits.InlineQueries == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    Collect();
+    const Record* sourceOrNull = Resolve(scene, RasterKind::RayScene);
+    if (sourceOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    // R16a: graph reads begin only after the native build has completed. Pending imports leave the
+    // graph unchanged, so setup can retry once GetStatus reports the scene Ready.
+    if (sourceOrNull->Status != RasterStatus::Ready)
+    {
+        return sourceOrNull->Status == RasterStatus::Pending ? RasterStatus::NotReady : sourceOrNull->Status;
+    }
+    return AddImport(*graphOrNull, graph, RasterKind::RayScene, RasterAccess::Slot(scene), outVersion);
+}
 RasterStatus ImportGraphTexture(DeviceHandle device,
                                 OrderedGraph handle,
                                 TextureHandle texture,
@@ -1075,7 +1103,8 @@ NextGraphVersion(DeviceHandle device, OrderedGraph handle, GraphVersion previous
     }
     auto& resource = graph->Resources[GraphAccess::Resource(previous)];
     const auto& physical = At(resource.Kind, resource.Slot);
-    const bool isMutableResource = resource.Kind == RasterKind::Texture
+    const bool isMutableResource = resource.Kind == RasterKind::RayScene ? false
+                                   : resource.Kind == RasterKind::Texture
                                        ? physical.Texture.Attachment == true || physical.Texture.IsStorage == true
                                        : StorageRole(physical.Buffer.Role);
     if (isMutableResource == false || GraphAccess::Version(previous) != resource.Versions)
@@ -1150,7 +1179,8 @@ RasterStatus AddGraphPass(DeviceHandle device, OrderedGraph handle, const GraphP
         {
             return RasterStatus::InvalidHandle;
         }
-        if (static_cast<uint8>(use.Access) > static_cast<uint8>(GraphAccessMode::StorageTextureWrite) ||
+        // AccelerationStructureBuild is reported for RHI-owned builds, never authored.
+        if (static_cast<uint8>(use.Access) > static_cast<uint8>(GraphAccessMode::AccelerationStructureRead) ||
             static_cast<uint8>(use.Visibility) < 1 ||
             static_cast<uint8>(use.Visibility) > static_cast<uint8>(RasterVisibility::Compute))
         {
@@ -1216,7 +1246,8 @@ RasterStatus AddGraphRoot(DeviceHandle device, OrderedGraph handle, GraphVersion
         return RasterStatus::InvalidDescription;
     }
     auto& resource = graph->Resources[GraphAccess::Resource(version)];
-    if (resource.Transient)
+    // Imported ray scenes are immutable inputs; no graph version of them is externally produced.
+    if (resource.Transient || resource.Kind == RasterKind::RayScene)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -1426,8 +1457,9 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
             report.Summary.ErrorResource = static_cast<uint32>(r);
             return RasterStatus::InvalidState;
         }
-        tracks[r].Defined =
-            resource.Kind == RasterKind::Buffer || (resource.Transient == false && resource.Import.ColorDefined);
+        // A Ready scene's build has completed, so its single immutable version is defined.
+        tracks[r].Defined = resource.Kind == RasterKind::Buffer || resource.Kind == RasterKind::RayScene ||
+                            (resource.Transient == false && resource.Import.ColorDefined);
         // Sampling is restricted to retained initialized views. Whole-allocation
         // roots/load operations must still require complete defined contents.
         tracks[r].InitializedViews = resource.Kind == RasterKind::Texture && physical.Texture.Attachment == false &&
@@ -1502,6 +1534,25 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                     return StorageFailure();
                 }
             }
+            const bool isSceneRead = use.Access == GraphAccessMode::AccelerationStructureRead;
+            if ((resource.Kind == RasterKind::RayScene) != isSceneRead ||
+                (isSceneRead == true && (pass.IsCompute == false || use.Offset != 0 || use.Size != 0 ||
+                                         use.Visibility != RasterVisibility::Compute)))
+            {
+                return RasterStatus::InvalidDescription;
+            }
+            // R16a/R17a: the RHI-owned build is the external producer of the scene's only version.
+            if (imported[r] == false && isSceneRead == true &&
+                AddDependency(report,
+                              GRAPH_EXTERNAL_INDEX,
+                              p,
+                              r,
+                              GraphHazard::ReadAfterWrite,
+                              GraphAccessMode::AccelerationStructureBuild,
+                              use.Access) == false)
+            {
+                return StorageFailure();
+            }
             imported[r] = true;
             if (resource.Kind == RasterKind::Buffer)
             {
@@ -1538,12 +1589,13 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                     return RasterStatus::InvalidDescription;
                 }
             }
-            else if (use.Offset != 0 || use.Size != 0 ||
-                     (pass.IsCompute == true &&
-                      (use.Access != GraphAccessMode::Sampled || use.Visibility != RasterVisibility::Compute)) ||
-                     (pass.IsCompute == false && use.Visibility == RasterVisibility::Compute) ||
-                     (use.Access != GraphAccessMode::Sampled && use.Access != GraphAccessMode::ColorWrite &&
-                      use.Access != GraphAccessMode::ColorReadWrite))
+            else if (isSceneRead == false &&
+                     (use.Offset != 0 || use.Size != 0 ||
+                      (pass.IsCompute == true &&
+                       (use.Access != GraphAccessMode::Sampled || use.Visibility != RasterVisibility::Compute)) ||
+                      (pass.IsCompute == false && use.Visibility == RasterVisibility::Compute) ||
+                      (use.Access != GraphAccessMode::Sampled && use.Access != GraphAccessMode::ColorWrite &&
+                       use.Access != GraphAccessMode::ColorReadWrite)))
             {
                 return RasterStatus::InvalidDescription;
             }
@@ -1762,10 +1814,21 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
             for (usize i = 0; i < layout.DescriptorCount; ++i)
             {
                 const RasterBinding& binding = layout.GetDescriptorBinding(i);
-                // Immutable scenes enter bindings only after their build completes.
-                // The retained snapshot owns their TLAS/BLAS through submission.
+                // R17a: immutable scenes enter bindings only after their build completes, and each
+                // bound scene must be an imported, declared compute read of this pass.
                 if (binding.Kind == RasterBindingKind::RayScene)
                 {
+                    if (FindUse(graph,
+                                pass,
+                                RasterKind::RayScene,
+                                set.Slots[i],
+                                GraphAccessMode::AccelerationStructureRead,
+                                0,
+                                0,
+                                static_cast<uint8>(RasterVisibility::Compute)) == nullptr)
+                    {
+                        return RasterStatus::InvalidDescription;
+                    }
                     continue;
                 }
                 if (StorageTextureBinding(binding.Kind) == true)
@@ -2057,7 +2120,7 @@ void PlanRasterGroups(const GraphRecord& graph, FullGraphReport& report, bool me
         {
             report.Summary.BufferBytes += physical.Buffer.Size;
         }
-        else
+        else if (resource.Kind == RasterKind::Texture)
         {
             report.Summary.TextureBytes += physical.StorageBytes;
         }
@@ -2464,6 +2527,13 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                         return currentBuffer;
                     }
                     FrameRetain(RasterKind::Buffer, resource.Slot);
+                }
+                // The completed build's barrier already orders it before this submission; the frame
+                // retains the TLAS (and, through it, each BLAS) until the frame's GPU completion.
+                if (resource.Kind == RasterKind::RayScene)
+                {
+                    FrameRetain(RasterKind::RayScene, resource.Slot);
+                    continue;
                 }
                 if (resource.Kind != RasterKind::Texture ||
                     (use.Access != GraphAccessMode::Sampled && use.Access != GraphAccessMode::StorageTextureWrite))

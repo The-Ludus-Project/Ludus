@@ -25,7 +25,7 @@ TEST_CASE("Vulkan graph buffer uses resolve to legacy synchronization scopes", "
         bool HasComputeQueue;
         VulkanBufferAccess Scope;
     };
-    constexpr usize CASE_COUNT = 11;
+    constexpr usize CASE_COUNT = 13;
     constexpr StaticArray<ExpectedAccess, CASE_COUNT> CASES{{
         {GraphAccessMode::Vertex, false, {VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, 0}},
         {GraphAccessMode::Index, false, {VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_ACCESS_INDEX_READ_BIT, 0}},
@@ -42,6 +42,8 @@ TEST_CASE("Vulkan graph buffer uses resolve to legacy synchronization scopes", "
         {GraphAccessMode::ColorWrite, true, {}},
         {GraphAccessMode::ColorReadWrite, true, {}},
         {GraphAccessMode::StorageTextureWrite, true, {}},
+        {GraphAccessMode::AccelerationStructureRead, true, {}},
+        {GraphAccessMode::AccelerationStructureBuild, true, {}},
     }};
     for (const ExpectedAccess& expected : CASES)
     {

@@ -43,9 +43,8 @@ target_link_libraries(ludus_graphics_rhi
 if(NOT EMSCRIPTEN)
     target_link_libraries(ludus_graphics_rhi PRIVATE Ludus::FoundationThreading)
 endif()
-# The unsupported ray backend is also used by deterministic tests. Embed its one
-# compiled object in native archives that need it and directly in reference tests.
-if(LUDUS_BUILD_TESTS OR EMSCRIPTEN OR WIN32)
+# Browser and Direct3D 12 archives embed the unsupported ray backend's one compiled object.
+if(EMSCRIPTEN OR WIN32)
     add_library(ludus_rhi_ray_unsupported OBJECT src/ray_unsupported.cpp)
     target_include_directories(ludus_rhi_ray_unsupported PRIVATE include)
     target_link_libraries(ludus_rhi_ray_unsupported PRIVATE Ludus::FoundationContainers Ludus::Platform)
@@ -142,8 +141,8 @@ if(LUDUS_BUILD_TESTS)
     # Storage failure injection is private to test-enabled builds, as renderer
     # readback is. Share the instrumented registry instead of recompiling the RHI.
     set_source_files_properties(src/profile.cpp PROPERTIES COMPILE_DEFINITIONS LUDUS_RHI_TEST_STORAGE=1)
-    add_library(ludus_rhi_reference_backend OBJECT tests/reference_raster.cpp)
-    target_link_libraries(ludus_rhi_reference_backend INTERFACE "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>")
+    # The reference ray backend defaults to the unsupported profile; R16a/R17a cases opt in.
+    add_library(ludus_rhi_reference_backend OBJECT tests/reference_raster.cpp tests/reference_ray.cpp)
     target_include_directories(ludus_rhi_reference_backend PRIVATE src)
     target_link_libraries(ludus_rhi_reference_backend PRIVATE Ludus::GraphicsRhi)
     target_compile_options(ludus_rhi_reference_backend PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
@@ -161,6 +160,7 @@ if(LUDUS_BUILD_TESTS)
         tests/compute_workload_tests.cpp
         tests/raster_storage_tests.cpp
         tests/indirect_tests.cpp
+        tests/ray_graph_tests.cpp
         tests/hosted_ring_tests.cpp
         tests/hosted_adapter_tests.cpp
         tests/dxil_container_tests.cpp
@@ -426,6 +426,9 @@ if(TARGET ludus_rhi_render_tests AND LUDUS_SPIRV_CROSS)
         target_compile_definitions(ludus_rhi_ray_tests PRIVATE LUDUS_TEST_METAL=1)
     endif()
     ludus_compile_ray_queries(TARGET ludus_rhi_ray_tests NAME ray_query)
+    # R16a/R17a: an ordinary compute pipeline whose RayScene binding an ordered graph declares.
+    ludus_compile_shader(TARGET ludus_rhi_ray_tests NAME graph_ray_query NATIVE_RAY_QUERIES
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/graph_ray_query.slang" COMPUTE GraphQuery)
     add_test(NAME ludus_rhi_ray_queries COMMAND ludus_rhi_ray_tests)
     set_tests_properties(ludus_rhi_ray_queries PROPERTIES LABELS "rhi;gpu;ray" TIMEOUT 60)
 endif()

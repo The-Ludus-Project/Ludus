@@ -199,19 +199,29 @@ enum class GraphAccessMode : ludus::foundation::uint8
     /// defined version and writes the next one in place, like StorageReadWrite. Offset and
     /// Size are zero; the texture cannot also be an attachment or sampled in the same pass.
     StorageTextureWrite,
+    /// R16a/R17a: compute-stage ray-query read of an imported native acceleration structure
+    /// (ImportGraphRayScene). Every RayScene binding of a compute dispatch needs exactly this use
+    /// of the bound scene, with zero Offset and Size and Compute visibility. Scenes are immutable,
+    /// so the use always reads version zero and concurrent readers need no mutual ordering.
+    AccelerationStructureRead,
+    /// R16a: native build of an imported acceleration structure, reported only as the Source of the
+    /// external ReadAfterWrite dependency before a scene's first graph read. Builds are RHI-owned
+    /// asynchronous operations (CreateRayScene) in this immutable profile, so authored passes
+    /// cannot declare this use; AddGraphPass rejects it.
+    AccelerationStructureBuild,
 };
-/// One declared use; whole textures and conservative whole-buffer hazards.
+/// One declared use; whole textures, whole acceleration structures and conservative whole-buffer hazards.
 struct GraphUse final
 {
     /// Read version, or newly reserved output version for attachment/storage writes.
     GraphVersion Resource{};
     /// Required resource role and access.
     GraphAccessMode Access = GraphAccessMode::Sampled;
-    /// Buffer start in bytes; zero for textures.
+    /// Buffer start in bytes; zero for textures and acceleration structures.
     ludus::foundation::usize Offset = 0;
-    /// Nonzero buffer length; zero for textures.
+    /// Nonzero buffer length; zero for textures and acceleration structures.
     ludus::foundation::usize Size = 0;
-    /// Required stages for uniform/sample/storage uses. Compute passes require Compute.
+    /// Required stages for uniform/sample/storage/acceleration-structure uses. Compute passes require Compute.
     /// Raster storage reads accept Vertex, Fragment or Both; raster storage writes require Fragment.
     /// Vertex/index/indirect and attachment uses ignore it.
     RasterVisibility Visibility = RasterVisibility::Both;
@@ -399,6 +409,26 @@ GetGraphDependency(DeviceHandle, OrderedGraph, ludus::foundation::uint32, GraphD
                                               const RasterTextureState&,
                                               RasterTextureUse finalUse,
                                               GraphVersion&) noexcept;
+/// Import a native ray scene (TLAS, retained BLAS versions and opacity table) for compute-stage
+/// ray queries declared with GraphAccessMode::AccelerationStructureRead (R16a/R17a).
+/// The scene's build must already be Ready: its native completion and the backend's build-to-query
+/// barrier precede every later submission, and compilation reports that ordering as an external
+/// AccelerationStructureBuild-to-AccelerationStructureRead dependency at the first reader.
+/// The import retains the exact scene incarnation and, through it, every BLAS incarnation, after
+/// their public handles are destroyed. Execution keeps them until the frame's GPU completion; discard
+/// or a failed setup releases them. Scenes are immutable: NextGraphVersion and AddGraphRoot reject
+/// the returned version. Owner thread, between frames; counts toward StorageLimits::ResourcesPerGraph.
+/// @param device Ready owner of the graph and scene.
+/// @param graph Uncompiled graph in setup.
+/// @param scene Ready scene from CreateRayScene; a duplicate import of the same scene is rejected.
+/// @param outVersion Null version; receives version zero on success and is preserved on every failure.
+/// @return Ready on import; Unsupported without the negotiated static-triangle inline-query profile;
+/// NotReady while the scene build is Pending (the graph is unchanged and the import may be retried);
+/// the scene's own failure status for a failed build; InvalidHandle for a stale or foreign scene;
+/// InvalidDescription for a duplicate; InvalidState for a compiled graph or non-null output;
+/// CapacityExceeded when the graph's resource limit is reached.
+[[nodiscard]] RasterStatus
+ImportGraphRayScene(DeviceHandle device, OrderedGraph graph, RaySceneHandle scene, GraphVersion& outVersion) noexcept;
 /// Acquire a matching complete attachment object under StorageLimits::TransientTextures.
 /// Reuse requires no other leases and actual GPU completion. Contents begin undefined.
 /// Returned texture is borrowed from the graph/pool: Destroy rejects it; create views
