@@ -13,7 +13,7 @@ namespace format = content::render_graph_format;
 namespace
 {
 constexpr usize FORWARD_BINDING_COUNT = 10;
-constexpr usize FORWARD_MEMBER_COUNT = 14;
+constexpr usize FORWARD_MEMBER_COUNT = 16;
 constexpr usize OUTPUT_BINDING_COUNT = 3;
 constexpr usize CLUSTERED_BINDING_COUNT = FORWARD_BINDING_COUNT + 1;
 constexpr usize CLUSTERED_MEMBER_COUNT = FORWARD_MEMBER_COUNT + CLUSTERED_GRID_ROWS;
@@ -75,7 +75,15 @@ constexpr StaticArray<rhi::RasterUniformMember, FORWARD_MEMBER_COUNT> FORWARD_ME
      {0, "ShadowData", FORWARD_SHADOW_OFFSET, rhi::RasterUniformShape::Float4Array},
      {0, "SurfaceMap", FORWARD_SURFACE_OFFSET, rhi::RasterUniformShape::Float4},
      {0, "Authored", FORWARD_SURFACE_OFFSET + FLOAT4_BYTES, rhi::RasterUniformShape::Float4},
-     {0, "IrradianceSh", FORWARD_SURFACE_OFFSET + 2 * FLOAT4_BYTES, rhi::RasterUniformShape::Float4Array}},
+     {0, "IrradianceSh", FORWARD_SURFACE_OFFSET + 2 * FLOAT4_BYTES, rhi::RasterUniformShape::Float4Array},
+     {0,
+      "HairStrand",
+      FORWARD_SURFACE_OFFSET + (2 + LUDUS_ENVIRONMENT_SH_COEFFICIENTS) * FLOAT4_BYTES,
+      rhi::RasterUniformShape::Float4},
+     {0,
+      "HairHighlights",
+      FORWARD_SURFACE_OFFSET + (3 + LUDUS_ENVIRONMENT_SH_COEFFICIENTS) * FLOAT4_BYTES,
+      rhi::RasterUniformShape::Float4}},
 };
 constexpr StaticArray<rhi::RasterBinding, CLUSTERED_BINDING_COUNT> CLUSTERED_BINDINGS = []() noexcept {
     StaticArray<rhi::RasterBinding, CLUSTERED_BINDING_COUNT> bindings;

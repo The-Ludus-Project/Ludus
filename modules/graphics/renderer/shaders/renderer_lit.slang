@@ -36,6 +36,11 @@ struct Parameters
 #ifdef LUDUS_AUTHORED_INPUTS
     float4 Authored;
     float4 IrradianceSh[LUDUS_ENVIRONMENT_SH_COEFFICIENTS];
+    // X: one for a hair card. Y: strand direction, radians from the tangent toward the bitangent.
+    // Z, W: primary and secondary highlight shifts in radians toward the card normal.
+    float4 HairStrand;
+    // X, Y: primary and base-colour-tinted secondary highlight weights.
+    float4 HairHighlights;
 #endif
 };
 LUDUS_SHADER_BINDING(0) ConstantBuffer<Parameters> material : register(b0);
@@ -229,6 +234,98 @@ float3 EvaluateBrdf(float3 baseColor,
     return nl * (distribution * visibility * fresnel +
                  baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse ? 0 : 1) / PI);
 }
+#ifdef LUDUS_AUTHORED_INPUTS
+// Raster hair cards (content::scene_format::MaterialModel::HairCard). hair_card.cpp mirrors every operation for
+// tests; keep the two together. Thanks to James T. Kajiya and Timothy L. Kay, "Rendering Fur with Three Dimensional
+// Textures", SIGGRAPH '89, pp. 271-280, "The specular component", Fig. 8, for the highlight on a cone around the fibre
+// tangent. Ludus evaluates it around a card's strand, tilted by two authored shifts, with a (p + 2) / (2 pi)
+// normalization and card-side gating; see hair_card.hpp.
+static const float HAIR_CARD_MIN_EXPONENT = 1;     // MIN_HAIR_CARD_EXPONENT
+static const float HAIR_CARD_MAX_EXPONENT = 65536; // MAX_HAIR_CARD_EXPONENT
+// Squared length below which a hair-card direction is treated as vanishing.
+static const float HAIR_CARD_MIN_DIRECTION_LENGTH_SQUARED = 1e-12;
+// Sine between the normal and +Y below which the fallback tangent uses +Z instead.
+static const float HAIR_CARD_MIN_TANGENT_SINE = 1e-3;
+bool IsHairCard()
+{
+    return material.HairStrand.x > .5;
+}
+float3 NormalizeHairCardDirection(in float3 value)
+{
+    float lengthSquared = dot(value, value);
+    return lengthSquared > HAIR_CARD_MIN_DIRECTION_LENGTH_SQUARED ? value * rsqrt(lengthSquared) : float3(0);
+}
+float ComputeHairCardExponent(float roughness)
+{
+    float alpha = roughness * roughness;
+    float alphaSquared = alpha * alpha;
+    return alphaSquared > 0 ? clamp(2 / alphaSquared - 2, HAIR_CARD_MIN_EXPONENT, HAIR_CARD_MAX_EXPONENT)
+                            : HAIR_CARD_MIN_EXPONENT;
+}
+float3 ComputeHairCardFallbackTangent(in float3 normalWorld)
+{
+    float3 horizontal = cross(float3(0, 1, 0), normalWorld);
+    if (dot(horizontal, horizontal) > HAIR_CARD_MIN_TANGENT_SINE * HAIR_CARD_MIN_TANGENT_SINE)
+        return NormalizeHairCardDirection(horizontal);
+    return NormalizeHairCardDirection(cross(normalWorld, float3(0, 0, 1)));
+}
+float3 ComputeHairCardStrand(in float3 normalWorld, in float3 tangentWorld, float handedness, float strandRadians)
+{
+    float3 planarTangentWorld = NormalizeHairCardDirection(tangentWorld - normalWorld * dot(normalWorld, tangentWorld));
+    float sign = handedness < 0 ? -1 : 1;
+    if (dot(planarTangentWorld, planarTangentWorld) == 0)
+    {
+        planarTangentWorld = ComputeHairCardFallbackTangent(normalWorld);
+        sign = 1;
+    }
+    float3 bitangentWorld = cross(normalWorld, planarTangentWorld) * sign;
+    return NormalizeHairCardDirection(planarTangentWorld * cos(strandRadians) + bitangentWorld * sin(strandRadians));
+}
+float EvaluateHairCardHighlight(in float3 strandWorld,
+                                in float3 facingNormalWorld,
+                                in float3 halfDirectionWorld,
+                                float shiftRadians,
+                                float exponent)
+{
+    float3 shiftedStrandWorld =
+        NormalizeHairCardDirection(strandWorld * cos(shiftRadians) + facingNormalWorld * sin(shiftRadians));
+    float cosine = dot(shiftedStrandWorld, halfDirectionWorld);
+    float sine = sqrt(max(0, 1 - cosine * cosine));
+    // Render stages compile with fast math: keep pow away from log2(0).
+    return sine > 0 ? (exponent + 2) / (2 * PI) * pow(sine, exponent) : 0;
+}
+float3 EvaluateHairCard(in float3 baseColor,
+                        float roughness,
+                        in float3 facingNormalWorld,
+                        in float3 strandWorld,
+                        in float3 viewDirectionWorld,
+                        in float3 lightDirectionWorld,
+                        bool isBakedDiffuse)
+{
+    float nl = dot(facingNormalWorld, lightDirectionWorld);
+    float nv = dot(facingNormalWorld, viewDirectionWorld);
+    if (nl <= 0 || nv <= 0)
+        return float3(0);
+    float3 result = isBakedDiffuse == true ? float3(0) : baseColor / PI;
+    float3 halfDirectionWorld = NormalizeHairCardDirection(viewDirectionWorld + lightDirectionWorld);
+    if (dot(halfDirectionWorld, halfDirectionWorld) > 0)
+    {
+        float exponent = ComputeHairCardExponent(roughness);
+        float primary = material.HairHighlights.x * EvaluateHairCardHighlight(strandWorld,
+                                                                              facingNormalWorld,
+                                                                              halfDirectionWorld,
+                                                                              material.HairStrand.z,
+                                                                              exponent);
+        float secondary = material.HairHighlights.y * EvaluateHairCardHighlight(strandWorld,
+                                                                                facingNormalWorld,
+                                                                                halfDirectionWorld,
+                                                                                material.HairStrand.w,
+                                                                                exponent);
+        result += float3(primary) + baseColor * secondary;
+    }
+    return result * nl;
+}
+#endif
 // Instance flags in EyeWorld.w: bit 0 receives shadows, bit 1 orthographic eye. The value is
 // constant per instance but reaches the fragment through a perspective-interpolated varying,
 // so it may arrive as 0.9999...; round instead of truncating or whole pixel rows lose a flag.
@@ -543,6 +640,8 @@ struct SurfaceSample
     float Roughness;
     float3 Emission;
     float Alpha;
+    // Unit hair-card strand direction; zero for every other material.
+    float3 StrandWorld = float3(0);
 };
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 SurfaceSample SampleMaterial(in Varying input)
@@ -552,6 +651,12 @@ SurfaceSample SampleMaterial(in Varying input)
     // Evaluate quad derivatives before alpha discard and the per-fragment tangent-frame choice.
     float3 positionDerivativeXWorld = ddx(input.PositionWorld);
     float3 positionDerivativeYWorld = ddy(input.PositionWorld);
+#    ifdef LUDUS_AUTHORED_INPUTS
+    float2 hairUv = (material.Authored.y > .5 ? input.MaterialUv1 : input.TexcoordUv) * material.UvTransform.xy +
+                    material.UvTransform.zw;
+    float2 hairUvDerivativeX = ddx(hairUv);
+    float2 hairUvDerivativeY = ddy(hairUv);
+#    endif
     float4 baseColor = SampleBaseTexel(input);
     float3 normalWorld = NormalizeOrZero(input.NormalWorld);
     float3 viewDirectionWorld = (GetEyeFlags(input) & 2) != 0
@@ -604,6 +709,39 @@ SurfaceSample SampleMaterial(in Varying input)
         // Smooth or mapped normals can turn past the camera on a visible face.
         normalWorld = ClipShadingNormalToOutgoingHemisphere(normalWorld, viewDirectionWorld);
     }
+#    ifdef LUDUS_AUTHORED_INPUTS
+    float3 strandWorld = float3(0);
+    if (IsHairCard() == true && dot(normalWorld, normalWorld) > 0)
+    {
+        // The strand comes from the front-side frame, so both sides of a card share one physical direction.
+        // An authored tangent wins; otherwise the texture-coordinate derivatives give dP/du and the handedness,
+        // and a card without texture coordinates takes ComputeHairCardFallbackTangent's frame.
+        float3 tangentWorld = float3(0);
+        float handedness = 1;
+        if (abs(input.TangentWorld.w) > .5)
+        {
+            tangentWorld = input.TangentWorld.xyz;
+            handedness = input.TangentWorld.w;
+        }
+        else
+        {
+            float determinant = hairUvDerivativeX.x * hairUvDerivativeY.y - hairUvDerivativeX.y * hairUvDerivativeY.x;
+            // Only the directions matter, so multiply by the determinant's sign instead of dividing by it.
+            float orientation = determinant < 0 ? -1 : (determinant > 0 ? 1 : 0);
+            tangentWorld =
+                (positionDerivativeXWorld * hairUvDerivativeY.y - positionDerivativeYWorld * hairUvDerivativeX.y) *
+                orientation;
+            float3 bitangentWorld =
+                (positionDerivativeYWorld * hairUvDerivativeX.x - positionDerivativeXWorld * hairUvDerivativeY.x) *
+                orientation;
+            handedness = dot(cross(normalWorld, tangentWorld), bitangentWorld) < 0 ? -1 : 1;
+        }
+        strandWorld = ComputeHairCardStrand(normalWorld, tangentWorld, handedness, material.HairStrand.y);
+        // Two-sided: the back of a card faces the viewer with the opposite normal.
+        if (isGeometricFront == false)
+            normalWorld = ClipShadingNormalToOutgoingHemisphere(-normalWorld, viewDirectionWorld);
+    }
+#    endif
     float3 result = material.Emission.w > .5 || isGeometricFront == true ? material.Emission.rgb : float3(0);
 #    ifdef LUDUS_AUTHORED_INPUTS
     if (material.SurfaceMap.z > .5)
@@ -625,6 +763,9 @@ SurfaceSample SampleMaterial(in Varying input)
     output.Roughness = roughness;
     output.Emission = result;
     output.Alpha = material.Options.z == 2 ? baseColor.a : 1;
+#    ifdef LUDUS_AUTHORED_INPUTS
+    output.StrandWorld = strandWorld;
+#    endif
     return output;
 }
 #endif
@@ -790,14 +931,31 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 #else
     const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
 #endif
-        float3 contribution = EvaluateBrdf(baseColor.rgb,
-                                           normalWorld,
-                                           viewDirectionWorld,
-                                           lightDirectionWorld,
-                                           metallic,
-                                           roughness,
-                                           shouldReplaceDiffuse) *
-                              lightColor * attenuation * ComputeShadowVisibility(i, input);
+#ifdef LUDUS_AUTHORED_INPUTS
+        float3 reflectance = IsHairCard() == true ? EvaluateHairCard(baseColor.rgb,
+                                                                     roughness,
+                                                                     normalWorld,
+                                                                     surface.StrandWorld,
+                                                                     viewDirectionWorld,
+                                                                     lightDirectionWorld,
+                                                                     shouldReplaceDiffuse)
+                                                  : EvaluateBrdf(baseColor.rgb,
+                                                                 normalWorld,
+                                                                 viewDirectionWorld,
+                                                                 lightDirectionWorld,
+                                                                 metallic,
+                                                                 roughness,
+                                                                 shouldReplaceDiffuse);
+#else
+        float3 reflectance = EvaluateBrdf(baseColor.rgb,
+                                          normalWorld,
+                                          viewDirectionWorld,
+                                          lightDirectionWorld,
+                                          metallic,
+                                          roughness,
+                                          shouldReplaceDiffuse);
+#endif
+        float3 contribution = reflectance * lightColor * attenuation * ComputeShadowVisibility(i, input);
         result += contribution;
 #ifdef LUDUS_DEBUG_VIEW
         lightCount += any(contribution > 0) ? 1 : 0;

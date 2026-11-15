@@ -1,5 +1,6 @@
 #include "internal/reference_coating.h"
 #include "internal/reference_dielectric.h"
+#include <ludus/graphics/renderer/hair_card.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 
@@ -103,6 +104,8 @@ constexpr usize LIT_BYTES = FORWARD_SURFACE_OFFSET;
 constexpr usize CLUSTER_GRID_OFFSET = CLUSTERED_GRID_OFFSET;
 constexpr usize CLUSTER_BYTES = CLUSTERED_SURFACE_OFFSET;
 constexpr usize AUTHORED_PARAMETER_BYTES = LUDUS_AUTHORED_PARAMETER_WORDS * sizeof(math::Vector4);
+// Authored, IrradianceSh, HairStrand and HairHighlights.
+constexpr usize AUTHORED_MEMBER_COUNT = 4;
 constexpr usize CLUSTER_LIGHT_WORD_COUNT = static_cast<usize>(CLUSTERED_LIGHT_COUNT) * FORWARD_LIGHT_WORDS;
 constexpr usize LIGHT_GRID_ROW_COUNT = CLUSTERED_GRID_ROWS;
 constexpr usize LEGACY_LIGHT_PARAMETER_BYTES = LIT_BYTES + sizeof(math::Vector4) + AUTHORED_PARAMETER_BYTES;
@@ -127,6 +130,8 @@ struct LitMaterialParameters final
     math::Vector4 SurfaceMap{};
     math::Vector4 Authored{};
     StaticArray<math::Vector4, internal::ENVIRONMENT_SH_COUNT> IrradianceSh{};
+    math::Vector4 HairStrand{};
+    math::Vector4 HairHighlights{};
 };
 static_assert(sizeof(LitMaterialParameters) == CLUSTER_BYTES + sizeof(math::Vector4) + AUTHORED_PARAMETER_BYTES);
 struct LitMaterialScratch final
@@ -2557,7 +2562,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     const usize memberCount = (isClustered == true ? CLUSTER_MEMBER_COUNT
                                : isLit == true     ? LIT_MEMBER_COUNT
                                                    : PLAIN_MEMBER_COUNT) +
-                              (hasSurfaceMapProfile ? 1U : 0U) + (hasAuthoredProfile ? 2U : 0U);
+                              (hasSurfaceMapProfile ? 1U : 0U) + (hasAuthoredProfile ? AUTHORED_MEMBER_COUNT : 0U);
     if (mState.Get() == nullptr || mState->Setup != Status::Ready ||
         (isLit == true && mState->LightingSetup != Status::Ready))
     {
@@ -2681,16 +2686,21 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     }
     if (hasAuthoredProfile == true)
     {
-        const usize authoredOffset = (isClustered == true ? CLUSTER_BYTES : LIT_BYTES) + 16;
-        for (usize index = 0; index < 2; ++index)
+        const usize authoredOffset = (isClustered == true ? CLUSTER_BYTES : LIT_BYTES) + WORD_BYTES;
+        constexpr usize HAIR_STRAND_WORD = 1 + internal::ENVIRONMENT_SH_COUNT;
+        const StaticArray<const char*, AUTHORED_MEMBER_COUNT> authoredNames{
+            {"Authored", "IrradianceSh", "HairStrand", "HairHighlights"}};
+        const StaticArray<usize, AUTHORED_MEMBER_COUNT> authoredWords{{0, 1, HAIR_STRAND_WORD, HAIR_STRAND_WORD + 1}};
+        for (usize index = 0; index < AUTHORED_MEMBER_COUNT; ++index)
         {
+            const rhi::RasterUniformShape shape =
+                index == 1 ? rhi::RasterUniformShape::Float4Array : rhi::RasterUniformShape::Float4;
             bool found = false;
             for (const rhi::RasterUniformMember& member : fragment.UniformMembers)
             {
-                found = found || (member.Binding == 0 && member.Name == (index == 0 ? "Authored" : "IrradianceSh") &&
-                                  member.Offset == authoredOffset + index * 16 &&
-                                  member.Shape == (index == 0 ? rhi::RasterUniformShape::Float4
-                                                              : rhi::RasterUniformShape::Float4Array));
+                found = found ||
+                        (member.Binding == 0 && member.Name == authoredNames[index] &&
+                         member.Offset == authoredOffset + authoredWords[index] * WORD_BYTES && member.Shape == shape);
             }
             if (found == false)
             {
@@ -4846,7 +4856,8 @@ Status Renderer::createLitMaterial(MaterialProgram program,
         internal::IsReferenceCoatingSupported(description.Scattering) == false ||
         internal::IsReferenceDielectricSupported(description.Scattering) == false ||
         (description.Scattering.Model == content::scene_format::MaterialModel::Conductor &&
-         description.Scattering.AlphaU != description.Scattering.AlphaV))
+         description.Scattering.AlphaU != description.Scattering.AlphaV) ||
+        (description.Scattering.Model == content::scene_format::MaterialModel::HairCard && description.Metallic != 0))
     {
         return Status::InvalidDescription;
     }
@@ -5151,6 +5162,13 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                            static_cast<float32>(description.MaterialUvSet),
                            description.EnvironmentOrNull != nullptr ? 1.0F : 0.0F,
                            0};
+    if (description.Scattering.Model == content::scene_format::MaterialModel::HairCard)
+    {
+        const HairCardShading hair =
+            MakeHairCardShading(content::scene_format::GetHairCardParameters(description.Scattering));
+        parameters.HairStrand = {1, hair.StrandRadians, hair.PrimaryShiftRadians, hair.SecondaryShiftRadians};
+        parameters.HairHighlights = {hair.PrimaryWeight, hair.SecondaryWeight, 0, 0};
+    }
     if (description.EnvironmentOrNull != nullptr)
     {
         const internal::EnvironmentData& environment = *Access::GetEnvironment(description.EnvironmentOrNull);

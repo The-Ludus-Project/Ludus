@@ -1761,7 +1761,8 @@ curve traversal.
   textures and existing colour, depth and shadow passes. Verify matching
   coverage across those passes and supported ray hit and shadow queries.
   Compare GPU time and overdraw against the same cards with ordinary masked
-  shading. [Hair cards #1371](https://github.com/The-Ludus-Project/Ludus/issues/1371)
+  shading. [Raster hair cards](#raster-hair-cards) ·
+  [Hair cards #1371](https://github.com/The-Ludus-Project/Ludus/issues/1371)
 - **Raster skin.** Adapt the two separable convolutions in Jorge Jimenez et
   al., *Separable Subsurface Scattering* (Computer Graphics Forum, 2015),
   to the deferred lighting path. Filter diffuse lighting only, with depth and
@@ -1782,6 +1783,76 @@ curve traversal.
   isolation. Use the backlit ear to decide whether to add thin-feature
   transmission. [Technical memo](https://www.seanet.com/~myandper/abstract/memo1504.htm) ·
   [Reference skin #1373](https://github.com/The-Ludus-Project/Ludus/issues/1373)
+
+#### Raster hair cards
+
+A `HairCard` material (`content::scene_format::MaterialModel::HairCard`, LUSCN
+v13) stores a strand direction, two highlight shifts and two highlight weights in
+its typed scattering slots (`HairCardParameters`). Its record keeps zero metallic,
+and base colour, roughness, textures and the alpha mask keep their usual meaning.
+Author it in a [scene source](scene-source-format.md#hair-card) or from code.
+
+The forward raster profile with authored inputs, which the World viewport uses,
+shades a hair card as follows:
+
+- **Strand frame.** The authored tangent sets the frame. Without one, the
+  texture-coordinate derivatives give dP/du and the handedness. A card with
+  neither uses `ComputeHairCardFallbackTangent`. The strand is rotated from the
+  tangent toward the bitangent in the front-side frame, so both sides of a card
+  share one physical direction.
+- **Two sides.** A back face turns its shading normal toward the viewer and is
+  shaded like a front face. A light on the far side of the card contributes
+  nothing; transmission through the card is not modelled.
+- **Lobe.** Per light, the result is
+  `cos · (baseColor/π + w₁ S(s₁) + w₂ baseColor S(s₂))`. Here `cos` is the cosine
+  with the facing normal, and `S(s)` is the Kajiya–Kay highlight
+  `(p + 2)/(2π) · sin^p(strand′, half vector)`. The strand is tilted toward the
+  normal by the shift `s`, and `p = 2/α² − 2` for `α = roughness²`, clamped to
+  [1, 65536]. James T. Kajiya and Timothy L. Kay, *Rendering Fur with Three
+  Dimensional Textures* (SIGGRAPH ’89, pp. 271–280, “The specular component”,
+  Fig. 8) supply the highlight cone around the fibre tangent. Stephen R. Marschner
+  et al., *Light Scattering from Human Hair Fibers* (ACM TOG 22(3), 2003) supply
+  the opposite shifts of the surface and internal reflections, which set the
+  defaults. Thanks to the authors. The card normalization, the gating and the
+  Lambertian diffuse term are Ludus's raster approximation, not either paper's
+  model.
+- **Environment.** Environment and baked terms use the ordinary dielectric
+  approximation about the facing normal.
+
+`hair_card.hpp` evaluates the same lobe on the CPU. The `[hair-card]` tests in
+`ludus_reference_material_tests` sweep the view through the predicted
+longitudinal peak at two incident angles and three shifts. They check the peak
+value, rotation with the strand direction, both sides and finite output near
+tangent-aligned directions. The `[hair-card][gpu]` forward-lit test in `ludus_renderer_render_tests` checks the
+same behaviour in raster pixels: the highlight moves with the strand, back faces
+match front faces where an ordinary card is dark, far-side lights are gated, and
+masks discard. It also checks that a metallic hair card is rejected while the
+last drawable scene is kept.
+
+Coverage reuses the material's mask in every pass. Colour, depth and shadow
+casting discard through `SampleBaseTexel` with the same cutoff. Ray scenes apply
+the record's mask in closest-hit and shadow queries as for any masked material.
+
+Other paths make declared approximations:
+
+- **Clustered deferred profile.** It packs the facing normal and resolves the
+  ordinary lobes, because the G-buffer stores no strand.
+- **Lit programs without authored inputs.** They have no hair parameters and
+  shade a hair card with the ordinary lobes.
+- **Ray previews and reference captures.** They receive the metallic/roughness
+  dielectric lobes (`GetSurfaceReflectionScattering`). Hair transport waits for
+  the [strand prototype](https://github.com/The-Ludus-Project/Ludus/issues/1374).
+- **Raster mesh lights.** Deferred raster mesh lights shade a hair card with the
+  ordinary lobes.
+
+The editor inspector lists the strand controls but cannot edit them yet. Still
+open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
+
+- World assignment and editing with undo, save and reimport.
+- The shared static bust.
+- The matched-cutoff and mismatched-cutoff coverage comparison across raster
+  passes and ray queries.
+- GPU time and overdraw measurements against an ordinary masked material.
 
 Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
 An artist must be able to import the bust, assign and edit hair and skin
