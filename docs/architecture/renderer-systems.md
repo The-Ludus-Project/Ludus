@@ -4973,8 +4973,8 @@ its existing level-zero sampling contract.
 The optional analytic-light bake also samples incoming bounced radiance at
 a bounded uniform World grid. Six cosine projections form an ambient cube at
 each probe. Short first-hit rays populate six coarse face depth maps in the
-same atlas. The depth maps store distance along the face axis so planar walls
-aligned to the grid give consistent comparisons across neighbouring rays.
+same atlas, 8 × 8 texels per face. The depth maps store distance along the
+face axis so planar walls aligned to the grid give consistent comparisons across neighbouring rays.
 This adapts the visibility-aware interpolation of [Majercik, Guertin,
 Nowrouzezahrai and McGuire, *Dynamic Diffuse Global Illumination with Ray-Traced
 Irradiance Fields*, §5](https://jcgt.org/published/0008/02/01/) for an offline
@@ -4991,7 +4991,7 @@ to evaluate their original transport against the full scene.
 
 #### Probe visibility near walls and openings
 
-Each lookup compares the receiver against one nearest sample of a 4 × 4
+Each lookup compares the receiver against one nearest sample of an 8 × 8
 axial depth map per face. The ray through that texel's centre can cross a
 different part of a wall from the ray to the receiver. It can see around a
 thin or diagonal obstruction, or hit a wall where the receiver's ray would
@@ -5000,26 +5000,22 @@ single wrongly admitted probe. Receiver meshes marked for probe GI are
 excluded from the bake, so this test covers World occlusion. An asset's
 self-occlusion would require its own representation.
 
-A synthetic visibility check isolated this approximation with a unit probe
-cell and eight valid probes. The four probes at x = 0 had unit red irradiance
-on all faces and the four at x = 1 were black. An exact segment/plane
-intersection provided the visibility oracle. Both paths used the same
-trilinear weights and renormalization. The approximation used the shipped
-face size, depth quantization and bias.
+A synthetic visibility check first isolated this approximation with a unit
+probe cell and eight valid probes, using the earlier 4 × 4 faces. The four
+probes at x = 0 had unit red irradiance on all faces and the four at x = 1
+were black. An exact segment/plane intersection provided the visibility
+oracle. Both paths used the same trilinear weights and renormalization. The
+approximation used the face size, depth quantization and bias of that layout.
 
-| Divider in cell coordinates | Receiver (x, y, z) | Exact red | Depth map red |
+| Divider in cell coordinates | Receiver (x, y, z) | Exact red | 4 × 4 depth map red |
 | --- | --- | ---: | ---: |
 | Closed wall at x = 0.5 | (0.60, 0.50, 0.50) | 0 | 0 |
 | Closed wall at x = 0.5 | (0.55, 0.44, 0.50) | 0 | 0.265 |
 | Closed wall at x + 0.4(y − 0.5) = 0.5 | (0.66, 0.23, 0.50) | 0 | 0.691 |
 | Wall at x = 0.5 with an opening at 0.4 < y < 0.6 | (0.60, 0.50, 0.50) | 0.400 | 0 |
 
-These values isolate the visibility test with fixed probe irradiance.
-[Native Lit qualification](https://github.com/The-Ludus-Project/Ludus/issues/1367)
-needs scene-linear measurements during receiver movement, with the same
-baked inputs and a reference for both blocked bounce and bounce through an
-opening. A higher face resolution is a candidate if it improves both and
-fits the bake and GPU budgets.
+These values isolate the visibility test with fixed probe irradiance. The
+native qualification below measures the same dividers with baked inputs.
 
 Thanks to Michał Iwanicki and Peter-Pike Sloan, whose
 [Precomputed Lighting in Call of Duty: Infinite Warfare, SIGGRAPH 2017](https://advances.realtimerendering.com/s2017/index.html),
@@ -5027,6 +5023,112 @@ slides 55–60, motivates checking visibility before interpolation. Their
 light grid stores first-hit depth for each incident tetrahedron. Ludus
 uses a regular grid and per-probe cube faces. Their asset-space
 self-visibility in slides 14–25 is a separate approximation.
+
+#### Native Lit probe visibility qualification
+
+The hidden native editor test *Native Lit probe GI visibility qualification
+around thin and diagonal walls and a doorway*
+(`apps/editor/tests/render_native_tests.mm`, `[.render-native][probe-gi]`)
+renders the studied cell through the production World bake and native Lit
+viewport. It runs in the macOS batch jobs and locally with the Cocoa platform.
+
+- **Fixture.** A 3 × 2 × 2 grid with 1 m spacing and origin
+  (−1, 0.5, −0.5) m puts the studied cell between lit probes at x = 0 and
+  dark probes at x = 1. Black, absorbing walls 6 m wide and 3 m high
+  separate the rooms over a grey floor with albedo 0.7. A red point light of
+  15 W/sr at (−0.5, 1.2, −0.4) m is the selected always-on light. Each path
+  holds ten marked 6 cm receivers 0.1 m apart. They face +Z, away from the
+  light, so probe GI is their only illumination.
+- **Dividers.** The axis-aligned wall at x = 0.5 is the control along the
+  cell's centre line and the near-field case along x = 0.55. The diagonal wall
+  is x + 0.4(y − 1) = 0.5. The doorway wall is open for 0.9 < y < 1.1. In
+  the embedded case the floor and a ceiling sit 3 mm outside the two probe
+  layers, so every probe touches geometry and is invalid.
+- **Measurement.** Each receiver is read from a 3 × 3 block of presented
+  pixels. sRGB decoding and `InvertPbrNeutral` at exposure 1 give
+  scene-linear radiance. Dividing by the albedo and Schlick transmission
+  (1 − F) for the view angle, then multiplying by π, recovers probe
+  irradiance. A CPU copy of the shader's lookup reads the same atlas and
+  evaluates it at the pixels' receiver-plane positions. A second copy
+  replaces the depth test with an exact probe-to-receiver segment test.
+- **Reference.** The bake's own probe transport evaluates the receiver
+  positions: the selected light only, at least one bounce, receivers
+  excluded and a maximum depth of 4. The +Z ambient-cube faces of a 0.1 m
+  reference grid at the receivers average 16 seeds of 256 sphere samples.
+  Each seed is RGBA8-quantized.
+- **Tolerances.** Native and CPU lookups agree within 0.02 + 3 %. A closed-off
+  receiver leaks if it exceeds the reference by more than 0.01, about 2.5 %
+  of the lit half's reference irradiance (0.37–0.40). Bounce just past the
+  opening must keep at least half of the reference.
+
+Native irradiance in the fixture's units, with 4 × 4 faces before this
+qualification and 8 × 8 faces after it:
+
+| Path and position | Reference | 4 × 4 | 8 × 8 | Exact visibility |
+| --- | ---: | ---: | ---: | ---: |
+| Axis control, lit, x = 0.05–0.45 | 0.37–0.40 | 0.608 | 0.608 | 0.611 |
+| Axis control, dark, x = 0.55–0.95 | 0 | 0 | 0 | 0 |
+| Near field x = 0.55, worst y | 0 | 0.207 (y = 1.15) | 0.157 (y = 1.25) | 0 |
+| Near field, leaking receivers of ten | 0 | 4 | 4 | 0 |
+| Diagonal, dark, x = 0.65 | 0 | 0.508 | 0 | 0 |
+| Diagonal, dark, x = 0.75 | 0 | 0.041 | 0 | 0 |
+| Doorway, lit, x = 0.35 | 0.358 | 0.608 | 0.401 | 0.611 |
+| Doorway, past the opening, x = 0.55 | 0.157 | 0.009 | 0.279 | 0.279 |
+| Doorway, dark, x = 0.65 | 0.024 | 0.009 | 0.219 | 0.009 |
+| Embedded layers, lit, x = 0.05–0.45 | 1.96–3.43 | 0 | 0 | 0 |
+
+Native values matched the CPU lookup to within 0.003 except at one 4 × 4
+texel boundary (0.041 against 0.022), so the table measures the
+representation rather than the shader. Moving one receiver through the
+doorway at x = 0.25, 0.45, 0.55 and 0.75 changes the World lighting key and
+rebakes. Each step presented its new bounce in 355–413 ms, matching the
+static receiver at that position. In the embedded case no neighbour
+remains, and receivers fall back to live lighting with no probe term.
+
+Cost on an Apple M5 (Metal 4) with the macOS Clang debug build:
+
+| Measure | 4 × 4 | 8 × 8 |
+| --- | ---: | ---: |
+| Unpadded atlas bytes per probe | 408 | 1,560 |
+| Atlas bytes, 12 probes | 5,120 | 19,456 |
+| Atlas bytes, 12 × 12 × 12 probes | 705,536 | 2,696,192 |
+| Visibility rays per probe | 96 | 384 |
+| CPU bake, 40 probes, four workers | 18–44 ms | 36–63 ms |
+| GPU frame, receiver covering the view | 2.30 ms | 1.94 ms |
+| GPU frame, lookups outside the volume | 1.65 ms | 1.74 ms |
+
+The GPU rows are 30-frame means at 1024 × 697 physical pixels, with 95th
+percentiles up to 5.8 ms. The two layouts did not differ beyond run-to-run
+variation.
+
+**Decision.** The bake uses 8 × 8 faces. They remove the diagonal leak and
+keep the bounce through the opening at the exact-visibility value, for 3.8
+times the atlas bytes and no measurable GPU cost. Worlds saved with 4 × 4
+atlases fail the atlas extent check on open, so the editor rebakes them in
+the background. Two errors remain. A receiver 5 cm (5 % of the spacing) from
+an axis-aligned wall leaked at four of ten heights, where a lit probe's
+dominant face texel misses the wall. Just past an opening, one wrongly admitted probe outweighs the
+reference by 0.2. The exact-visibility lookup has neither error with the
+same weights, so both belong to the single nearest-texel depth comparison.
+A seam-aware variant also tested each face within one edge texel of the
+dominant axis. In the CPU lookup it removed two of the four near-field leaks
+but not the largest, so it was not adopted. A filtered distance
+representation, such as the mean and second-moment test of Majercik et al.
+§5, is the next candidate and should be measured with this fixture.
+
+Usable limits from the 1 m qualification:
+
+- Keep probe layers more than 1.6 % of the spacing from surfaces, the
+  bake's minimum clearance of 2/255 of its two-cell depth range. A probe
+  closer than that is invalid. Where every neighbour is invalid, receivers
+  lose all baked bounce; the embedded case lost 1.96–3.43.
+- Expect leaks at receivers about 5 % of the spacing from a wall and just
+  past an opening. Choose a spacing whose cells do not straddle a thin divider near
+  where receivers move, or move the volume so walls fall near cell centres.
+- Trilinear interpolation across 1 m cells overestimated the lit half by
+  51–62 %. Probes nearer the light and floor contributed brighter bounce.
+  Visibility does not cause this error. Smaller spacing reduces it but was
+  not qualified here.
 
 ### Material debug views
 
