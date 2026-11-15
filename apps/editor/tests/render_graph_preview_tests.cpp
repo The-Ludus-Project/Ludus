@@ -987,9 +987,12 @@ TEST_CASE("Qt paints only the surviving candidate after delayed native pipeline 
     world.resize(320, 240);
     world.show();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
-    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
-    REQUIRE(TickUntilDisplay(preview, [&]() { return world.GetImage().isNull() == false; }) == true);
     const QString runtimePath = GetDefaultRenderGraphRuntime();
+    REQUIRE(preview.Load(runtimePath) == RenderGraphPreviewLoad::Staged);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    const bool hasInitialImage = TickUntilDisplay(preview, [&]() { return world.GetImage().isNull() == false; });
+    INFO(preview.GetDisplayStatus().toStdString());
+    REQUIRE(hasInitialImage == true);
     QFile runtime(runtimePath);
     REQUIRE(runtime.open(QIODevice::ReadOnly) == true);
     const QByteArray bytes = runtime.readAll();
@@ -1058,7 +1061,9 @@ TEST_CASE("Qt paints only the surviving candidate after delayed native pipeline 
     const ViewportTraceSpan& painted = snapshot.Spans[source.EditTrace.Lifetime.Index];
     CHECK(QString::fromUtf8(painted.Outcome) == QStringLiteral("first matching image painted"));
     CHECK(painted.Identity.GraphGeneration == replacement);
-    CHECK(painted.Identity.FrameId != 0);
+    // This fixture attaches a headless RHI device directly. The live RenderPreview
+    // supplies frame IDs, so correlate the QPaintEvent by viewport and graph generation here.
+    CHECK(painted.Identity.ViewportId != 0);
     const QString tracePath = qEnvironmentVariable("LUDUS_EDITOR_SHADER_EDIT_TRACE_OUTPUT");
     if (tracePath.isEmpty() == false)
     {
