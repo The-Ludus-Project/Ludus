@@ -506,6 +506,35 @@ QString Display(const QJsonValue& value)
     }
     return value.toString();
 }
+/// A Transform axis as its one-line vector row shows it (FormatCompactInspectorNumber).
+QString DisplayCompact(const QJsonValue& value)
+{
+    if (value.isDouble())
+    {
+        return FormatCompactInspectorNumber(value.toDouble());
+    }
+    return value.toString();
+}
+/// Shows a Transform axis compactly in field, keeping every stored digit in its tooltip below tooltip.
+void ShowCompactNumber(QLineEdit& inoutField, const QJsonValue& value, const QString& tooltip)
+{
+    MarkCompactNumberField(inoutField);
+    inoutField.setText(DisplayCompact(value));
+    QString text = tooltip;
+    if (value.isDouble() == true && FormatStoredNumber(value.toDouble()) != inoutField.text() &&
+        text.contains(QStringLiteral("Stored value:")) == false)
+    {
+        text += (text.isEmpty() == true ? QString() : QStringLiteral("\n")) +
+                QStringLiteral("Stored value: %1").arg(FormatStoredNumber(value.toDouble()));
+    }
+    inoutField.setToolTip(text);
+}
+/// Whether field still shows value as the inspector put it there, so Apply keeps the stored number exactly.
+bool IsShownUnchanged(const QLineEdit& field, const QJsonValue& value)
+{
+    return field.text() == Display(value) ||
+           (IsCompactNumberField(field) == true && field.text() == DisplayCompact(value));
+}
 /// Editor preference holding the Play mode; project data never records it.
 [[nodiscard]] LUDUS_INLINE QString GetPlayModeKey()
 {
@@ -2016,25 +2045,35 @@ void WorldWorkspace::addMaterialGroup()
         {
             continue;
         }
-        // A texture reference ("Texture 6 · 4 × 4 · sRGB") stays on one line beside its thumbnail, shortened in the
-        // middle when the panel is narrow, rather than wrapping into a column of fragments.
+        // A texture reference ("1024 × 512 · sRGB") stays on one line beside its thumbnail, shortened in the middle
+        // when the panel is narrow, rather than wrapping into a column of fragments.
         const bool isReference = property.Thumbnail.isNull() == false;
         QLabel* value =
             isReference == true ? new ElidedLabel(property.Value, group) : new QLabel(property.Value, group);
         value->setObjectName(QStringLiteral("worldMaterial:") + property.Label);
         value->setTextFormat(Qt::PlainText);
-        if (isReference == true)
-        {
-            value->setToolTip(property.Value);
-        }
-        else
+        if (isReference == false)
         {
             value->setWordWrap(true);
         }
+        // Labels stay short enough for the label column ("Reflectance", not "Reflectance (linear RGB)"); what they
+        // leave out, and which texture a reference is, read in the tooltip of the label and the value.
+        const QString detail = property.Detail.isEmpty() == true ? property.Value : property.Detail;
+        if (isReference == true || property.Detail.isEmpty() == false)
+        {
+            value->setToolTip(detail);
+        }
         MarkReadOnlyValue(*value);
+        const auto addRow = [&rows, &property](QWidget& inoutField) {
+            InspectorLabel& label = AddInspectorRow(*rows, property.Label, inoutField);
+            if (property.Detail.isEmpty() == false)
+            {
+                label.setToolTip(property.Label + QLatin1Char('\n') + property.Detail);
+            }
+        };
         if (property.Swatch.isValid() == false && property.Thumbnail.isNull() == true)
         {
-            AddInspectorRow(*rows, property.Label, *value);
+            addRow(*value);
             continue;
         }
         // A colour or texture row leads with what it looks like, then its numbers.
@@ -2057,12 +2096,12 @@ void WorldWorkspace::addMaterialGroup()
                                           Qt::SmoothTransformation));
             swatch.setDevicePixelRatio(pixelRatio);
             thumbnail->setPixmap(swatch);
-            thumbnail->setToolTip(property.Value);
+            thumbnail->setToolTip(detail);
             thumbnail->setAccessibleName(property.Label + QStringLiteral(" preview"));
             rowLayout->addWidget(thumbnail);
         }
         rowLayout->addWidget(value, 1);
-        AddInspectorRow(*rows, property.Label, *row);
+        addRow(*row);
     }
     if (materialOrNull != nullptr &&
         materialOrNull->Scattering.Model == content::scene_format::MaterialModel::Unresolved)
@@ -2795,7 +2834,10 @@ void WorldWorkspace::RenderInspector()
                 for (foundation::int32 axis = 0; axis < 3; ++axis)
                 {
                     const QString fieldKey = QStringLiteral("scene/") + vector.Key + QString::number(axis);
-                    auto* field = new QLineEdit(Display(values[axis]), group);
+                    auto* field = new QLineEdit(group);
+                    // Every Transform shows its axes the same way: short numbers on one line, stored digits in the
+                    // tooltip.
+                    ShowCompactNumber(*field, values[axis], QString());
                     field->setObjectName(QStringLiteral("worldField:") + fieldKey);
                     field->setAccessibleName(vector.Title + QStringLiteral(" ") + QString(QChar('X' + axis)));
                     Fields_.insert(fieldKey, field);
@@ -3152,6 +3194,11 @@ void WorldWorkspace::RenderInspector()
             const foundation::float64 minimum = p.value(QStringLiteral("min")).toDouble();
             const foundation::float64 maximum = p.value(QStringLiteral("max")).toDouble();
             const qsizetype axis = groupOrNull->Members.indexOf(pid);
+            if (groupOrNull->IsColour == false)
+            {
+                // Position, Rotation and Scale read like a scene instance's: short numbers, X, Y and Z on one line.
+                ShowCompactNumber(*textFieldOrNull, current, textFieldOrNull->toolTip());
+            }
             groupOrNull->Components.append(
             {
                 .Name = groupOrNull->AxisNames.at(axis),
@@ -3833,7 +3880,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             {
                 // Preserve unchanged JSON numbers exactly rather than round them
                 // through the float32 text converter during an unrelated edit.
-                if (textOrNull->text() == Display(current))
+                if (IsShownUnchanged(*textOrNull, current) == true)
                 {
                     candidate = current;
                 }
@@ -3877,7 +3924,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                     outError = QStringLiteral("Scene inspector is stale.");
                     return false;
                 }
-                if (field->text() == Display(values[axis]))
+                if (IsShownUnchanged(*field, values[axis]) == true)
                 {
                     continue;
                 }
