@@ -104,6 +104,70 @@ TEST_CASE("viewport trace includes scheduling gaps and matching frame stages thr
     CHECK(hasPaint == true);
     CHECK(hasLatency == true);
 }
+TEST_CASE("only the surviving shader candidate reaches its matching Qt paint", "[profiling][editor]")
+{
+    const ViewportCaptureCleanup cleanup;
+    REQUIRE(StartViewportTrace() == true);
+    ViewportFrameTrace frame;
+    ViewportPaintTrace paint;
+
+    const GraphEditTrace outdated = BeginGraphEditTrace();
+    const uint64 queued = profiling::NowTicks();
+    QTest::qWait(10);
+    const uint64 started = profiling::NowTicks();
+    const GraphEditTrace survivor = BeginGraphEditTrace();
+    QTest::qWait(10);
+    const uint64 finished = profiling::NowTicks();
+    RecordShaderStageTrace(outdated, 1, "Await shader build lane", queued, started);
+    RecordShaderStageTrace(outdated, 1, "Compile and validate shader stage", started, finished);
+    EndViewportTrace(outdated.Lifetime, "superseded source snapshot");
+
+    const ViewportTraceToken preparation = BeginGraphEditStage(survivor, "Prepare graph pipelines (observed)");
+    QTest::qWait(10);
+    EndViewportTrace(preparation, "ready");
+
+    // A retained frame may still paint while staging the next graph.
+    frame.BeginService(1, 1);
+    frame.BeginFrame(outdated, 1);
+    frame.Publish();
+    paint.Queue(frame.GetPublishedIdentity(), frame.GetPublishedBeginTicks());
+    paint.BeginPaint();
+    paint.EndPaint();
+    frame.EndService();
+
+    frame.BeginService(2, 1);
+    frame.BeginFrame(survivor, 2);
+    frame.Publish();
+    paint.Queue(frame.GetPublishedIdentity(), frame.GetPublishedBeginTicks());
+    paint.BeginPaint();
+    paint.EndPaint();
+    frame.EndService();
+
+    const ViewportTraceSnapshot snapshot = StopViewportTrace();
+    REQUIRE(snapshot.DroppedSpans == 0);
+    const ViewportTraceSpan& superseded = snapshot.Spans[outdated.Lifetime.Index];
+    CHECK(QString::fromUtf8(superseded.Outcome) == QStringLiteral("superseded source snapshot"));
+    CHECK(superseded.Identity.FrameId == 0);
+    const ViewportTraceSpan& presented = snapshot.Spans[survivor.Lifetime.Index];
+    CHECK(QString::fromUtf8(presented.Outcome) == QStringLiteral("first matching image painted"));
+    CHECK(presented.Identity.Edit.CandidateId == survivor.CandidateId);
+    CHECK(presented.Identity.FrameId == 2);
+    CHECK(presented.Identity.GraphGeneration == 2);
+    CHECK(presented.EndTicks > snapshot.Spans[preparation.Index].EndTicks);
+    bool hasQueue = false;
+    bool hasCompile = false;
+    for (const ViewportTraceSpan& span : snapshot.Spans)
+    {
+        if (span.Lane == ViewportTraceLane::ShaderStage)
+        {
+            CHECK(span.Identity.Edit.CandidateId == outdated.CandidateId);
+            hasQueue = hasQueue == true || (span.BeginTicks == queued && span.EndTicks == started);
+            hasCompile = hasCompile == true || (span.BeginTicks == started && span.EndTicks == finished);
+        }
+    }
+    CHECK(hasQueue == true);
+    CHECK(hasCompile == true);
+}
 TEST_CASE("viewport captures close pending spans and reject handles from an earlier recording", "[profiling][editor]")
 {
     const ViewportCaptureCleanup cleanup;

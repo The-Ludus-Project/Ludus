@@ -31,6 +31,7 @@
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_graph_capture.h"
 #include "internal/viewport_raster_capture.h"
+#include "internal/viewport_trace.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
 #include "internal/world_workspace.h"
@@ -59,6 +60,10 @@
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/platform/entropy.h>
 #include <ludus/runtime/resources/scene.h>
+
+#if defined(Q_OS_MACOS)
+#    include "internal/readback.h"
+#endif
 
 #include <cstddef>
 #include <cstring>
@@ -961,6 +966,111 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
     CHECK(preview.GetImage() == red);
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
 }
+
+#if defined(Q_OS_MACOS) && LUDUS_PROFILING_ENABLED
+TEST_CASE("Qt paints only the surviving candidate after delayed native pipeline preparation",
+          "[editor][render-graph][shader-edit-trace]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphPreview& preview = *workspace.GetPreviewOrNull();
+    WorldGraphView world(workspace, nullptr);
+    world.resize(320, 240);
+    world.show();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(TickUntilDisplay(preview, [&]() { return world.GetImage().isNull() == false; }) == true);
+    const QString runtimePath = GetDefaultRenderGraphRuntime();
+    QFile runtime(runtimePath);
+    REQUIRE(runtime.open(QIODevice::ReadOnly) == true);
+    const QByteArray bytes = runtime.readAll();
+    QFile names(GetTargetNamesPath(runtimePath));
+    REQUIRE(names.open(QIODevice::ReadOnly) == true);
+    RenderGraphPreviewSource source;
+    source.Generation =
+        QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1();
+    source.RuntimeIdentity = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
+
+    struct CaptureCleanup final
+    {
+        ~CaptureCleanup()
+        {
+            static_cast<void>(StopViewportTrace());
+        }
+    };
+    struct PreparationPause final
+    {
+        PreparationPause()
+        {
+            rhi::backend::SetNativePipelinePreparationPaused(true);
+        }
+        ~PreparationPause()
+        {
+            rhi::backend::SetNativePipelinePreparationPaused(false);
+        }
+    };
+    const CaptureCleanup cleanup;
+    REQUIRE(StartViewportTrace() == true);
+    source.EditTrace = BeginGraphEditTrace();
+    const GraphEditTrace warm = source.EditTrace;
+    REQUIRE(preview.Load(runtimePath, {}, source) == RenderGraphPreviewLoad::Staged);
+    const uint64 warmGeneration = preview.GetReport().CandidateGeneration;
+    REQUIRE(TickUntilDisplay(preview, [&]() { return preview.GetPresentedGeneration() == warmGeneration; }) == true);
+    CHECK(world.grab().isNull() == false);
+    const QImage original = world.GetImage();
+
+    source.EditTrace = BeginGraphEditTrace();
+    const GraphEditTrace first = source.EditTrace;
+    uint64 replacement = 0;
+    {
+        const PreparationPause pause;
+        const uint32 alreadyStarted = rhi::backend::GetNativePreparationStarted();
+        REQUIRE(preview.Load(runtimePath, {}, source) == RenderGraphPreviewLoad::Staged);
+        REQUIRE(TickUntilDisplay(preview, [&]() {
+                    return rhi::backend::GetNativePreparationStarted() != alreadyStarted;
+                }) == true);
+        source.EditTrace = BeginGraphEditTrace();
+        REQUIRE(preview.Load(runtimePath, {}, source) == RenderGraphPreviewLoad::Staged);
+        replacement = preview.GetReport().CandidateGeneration;
+        CHECK(preview.GetPresentedGeneration() == warmGeneration);
+        CHECK(world.GetImage() == original);
+    }
+    REQUIRE(TickUntilDisplay(preview, [&]() { return preview.GetPresentedGeneration() == replacement; }) == true);
+    // QWidget::render drives its real paint handler, including when running without an exposed window.
+    CHECK(world.grab().isNull() == false);
+    CHECK(QTest::qWaitFor([&]() { return world.GetPresentedFrames() > 1; }) == true);
+    const ViewportTraceSnapshot snapshot = StopViewportTrace();
+    CHECK(snapshot.DroppedSpans == 0);
+    const ViewportTraceSpan& warmPaint = snapshot.Spans[warm.Lifetime.Index];
+    CHECK(QString::fromUtf8(warmPaint.Outcome) == QStringLiteral("first matching image painted"));
+    CHECK(warmPaint.Identity.GraphGeneration == warmGeneration);
+    const ViewportTraceSpan& superseded = snapshot.Spans[first.Lifetime.Index];
+    CHECK(QString::fromUtf8(superseded.Outcome) == QStringLiteral("superseded before activation"));
+    const ViewportTraceSpan& painted = snapshot.Spans[source.EditTrace.Lifetime.Index];
+    CHECK(QString::fromUtf8(painted.Outcome) == QStringLiteral("first matching image painted"));
+    CHECK(painted.Identity.GraphGeneration == replacement);
+    CHECK(painted.Identity.FrameId != 0);
+    const QString tracePath = qEnvironmentVariable("LUDUS_EDITOR_SHADER_EDIT_TRACE_OUTPUT");
+    if (tracePath.isEmpty() == false)
+    {
+        QJsonObject trace;
+        AppendViewportTrace(trace, snapshot);
+        const QByteArray json = QJsonDocument(trace).toJson();
+        QFile output(tracePath);
+        REQUIRE(output.open(QIODevice::WriteOnly | QIODevice::NewOnly) == true);
+        REQUIRE(output.write(json) == json.size());
+    }
+    preview.Detach();
+}
+#endif
 
 #if defined(Q_OS_MACOS)
 TEST_CASE("asynchronous activation failure reaches the shell Error List and recovers independently of compilation",

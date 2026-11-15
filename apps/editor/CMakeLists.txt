@@ -698,8 +698,9 @@ ludus_editor_add_objects(ludus_editor_render_graph_canvas
     src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
     src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
     src/internal/render_graph_job.h src/render_graph_job.cpp)
-target_link_libraries(ludus_editor_render_graph_canvas PUBLIC ludus_editor_render_graph_model ludus_editor_presentation
-    Ludus::RenderGraphFormat)
+target_link_libraries(ludus_editor_render_graph_canvas
+    PUBLIC ludus_editor_render_graph_model ludus_editor_presentation Ludus::RenderGraphFormat
+    PRIVATE Ludus::FoundationProfiling ludus_editor_viewport_trace)
 
 # File names and icons shared by the explorers, content browser and Renderer tab.
 ludus_editor_add_objects(ludus_editor_presentation

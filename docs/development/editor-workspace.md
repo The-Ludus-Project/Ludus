@@ -1014,6 +1014,39 @@ See the [GPU timing contract](../architecture/profiling-final.md#basic-gpu-timin
 and [graphics-debugging plan](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
 for pass timing, clock calibration and later process targets.
 
+### Trace a shader edit to its first paint
+
+Start a CPU or Both recording, change a graph shader, and build a preview. For
+Live Preview, save the shader to start the build. In Perfetto, find **Graph edit
+to first Qt paint** and follow its `candidateId` through the replacement tracks.
+The terminal slice for a painted candidate also carries the rendered
+`graphGeneration`, `viewportId`, `deviceSession` and `frameId`. A stale build or
+superseded candidate has its own outcome. Paints of the retained graph keep
+their own frame and generation identities.
+
+**Await shader build lane** measures dispatch to the build executor and, when
+used, admission to the shader worker's advertised lanes. **Compile and validate
+shader stage** covers the stage helper, which includes invoking the compiler or
+exchanging with the native worker, dependency checks and reflection validation.
+Internal worker queue and compiler boundaries are unavailable separately. The
+trace records up to 64 cache-miss stages from a successful build. A cache hit
+adds no stage compile slice. Failed builds or incompatible process clocks can
+leave only the observed tool process interval.
+
+**Prepare graph pipelines (observed)** runs from staging the decoded candidate
+until the editor observes setup readiness. **Await graph activation** covers
+the remaining admission and publication wait. Frame and paint tracks then
+record output production and delivery to Qt. These are CPU monotonic wall-clock
+intervals and may include time between callbacks. Use the device pipeline
+report for native creation and queue time by [recipe](render-graph-authoring.md#device-pipeline-preparation).
+
+On macOS, the editor's `[shader-edit-trace]` test exercises a warm reload and
+two overlapping replacements with native pipeline work paused. Set
+`LUDUS_EDITOR_SHADER_EDIT_TRACE_OUTPUT` to a new file under `out/` to save its
+Qt wall-clock trace. The fixture starts from a cooked generation, so its
+tool-process intervals are absent. The regular CPU or Both recording captures
+the build stages when editing sources in the editor.
+
 ## Closing and shortcuts
 
 **File → Close Project** returns to Welcome without quitting. Save/Discard/Cancel

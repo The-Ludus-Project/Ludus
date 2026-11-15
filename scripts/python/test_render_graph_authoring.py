@@ -364,6 +364,12 @@ def parse_runtime(data):
     result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 8 else []
     result['scene_resources'] = take(1)[0] if version >= 25 else 0
     result['capture_warmup_samples'] = take(execution.ray.MAX_RAY_PROGRAMS) if version >= 33 else (0,) * execution.ray.MAX_RAY_PROGRAMS
+    result['recipe_keys'] = []
+    if version >= 35:
+        for _ in range(take(1)[0]):
+            technique, target = take(2)
+            result['recipe_keys'].append((technique, target, data[offset:offset + 32].hex()))
+            offset += 32
     result['pass_names'] = []
     if version >= 3:
         for _ in range(passes):
@@ -379,6 +385,7 @@ def parse_runtime(data):
 
 class RuntimePackageTests(BuildFixture):
     setUp = execution_fixtures.ExecutionTests.setUp
+    mask_techniques = execution_fixtures.ExecutionTests.mask_techniques
 
     def stage(self, command, cancel):
         """Reflect the current static vertex schema names, including renamed fields."""
@@ -389,6 +396,18 @@ class RuntimePackageTests(BuildFixture):
             fields = self.value()['schemas'][0]['fields']
             descriptor['interface']['inputs'] = [{'location': f['location'], 'format': f['type'], 'name': f['id']} for f in fields]
         (output / 'stage.json').write_bytes(build.encoded(descriptor))
+
+    def test_runtime_keys_match_the_build_inventory_for_routed_techniques(self):
+        self.edit(self.mask_techniques)
+        report = self.run_build()
+        destination = self.root / 'masked.lurgrt'
+        execution.cook_runtime(self.output, destination)
+        expected = sorted((execution.PROGRAM_CODES['MaskedColorAndDepth'],
+                           execution.TARGET_CODES[recipe['profile']], recipe['key'])
+                          for recipe in report['inventory']['recipes']
+                          if recipe['technique'] == 'DefaultStaticMasked.ColorAndDepth')
+        self.assertEqual(len(expected), 2)
+        self.assertEqual(parse_runtime(destination.read_bytes())['recipe_keys'], expected)
 
     def test_runtime_package_matches_header_plan_and_identity(self):
         package = Path(self.run_build()['package'])
