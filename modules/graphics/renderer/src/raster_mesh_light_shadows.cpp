@@ -423,8 +423,9 @@ rhi::RasterRectangle GetDirectionalShadowInterior(uint32 index) noexcept
 }
 uint32 GetDirectionalShadowAtlasTexels(uint32 directionalCount) noexcept
 {
-    // Z-order fills a square of twice the side after one slot; MAX_DIRECTIONAL_SHADOW_REGIONS fits it.
-    static_assert(MAX_DIRECTIONAL_SHADOW_REGIONS <= 4);
+    // Z-order fills a square of twice the side, four slots, after one slot; MAX_DIRECTIONAL_SHADOW_REGIONS fits it.
+    constexpr uint32 SLOTS_IN_DOUBLED_SQUARE = 4;
+    static_assert(MAX_DIRECTIONAL_SHADOW_REGIONS <= SLOTS_IN_DOUBLED_SQUARE);
     return directionalCount <= 1 ? DIRECTIONAL_SHADOW_TEXELS : 2 * DIRECTIONAL_SHADOW_TEXELS;
 }
 bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCasters,
