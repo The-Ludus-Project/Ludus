@@ -623,8 +623,66 @@ pattern-based edge blending in their HPG 2017 retrospective.
 [Reshetov, “Pros and cons”](https://www.highperformancegraphics.org/wp-content/uploads/2017/Retrospective/HPG2017_Reshetov_MLAARetrospective.pdf) ·
 [Jimenez, slides 18–20](https://www.iryoku.com/research-impact-retrospective-mlaa-from-2009-to-2017/)
 
-Measure missed coverage, stair steps and corner softening independently in the
-[analytic coverage benchmark](https://github.com/The-Ludus-Project/Ludus/issues/1414).
+#### Measured coverage of spatial antialiasing
+
+The [analytic coverage benchmark](../../modules/graphics/renderer/tests/viewport_antialiasing_coverage_tests.cpp)
+measures missed coverage, stair steps and corner softening separately. It
+renders flat unlit polygons through the normal `RasterViewport` output pass in
+Off, Fast and Balanced (Linear8, Reinhard, no backdrop) over a blue background.
+The polygons are an oblique edge about 20° from vertical, an isolated strip
+10/32 pixel wide, two overlapping strips at distinct depths, an acute wedge of
+about 20° and a staircase rising one pixel in eight. The camera moves them right
+and down over one pixel in sixteen equal steps.
+
+The comparator follows Catmull: the expected pixel value is the box-filtered
+visible area of each surface. Each polygon is clipped against the pixel square
+and the area hidden by a nearer polygon is subtracted. The expected linear
+composite then passes through the documented output conversion (clip to [0,1],
+per-channel Reinhard, sRGB encode) before it is compared with the capture. A
+64 × 64 stratified point estimate cross-checks the three-surface areas and their
+partition of the pixel. Each surface of the overlapping strips has its own
+primary colour, so each captured channel recovers one visible weight. Errors
+are in 8-bit display steps over each region's edge band: pixels with fractional
+coverage and their eight neighbours. A background patch and a feature interior
+are flat controls.
+
+Measured on Metal (Apple GPU) at 128 × 64:
+
+| Measurement | Off | Fast | Balanced |
+| --- | --- | --- | --- |
+| Oblique edge, mean / max error | 17.85 / 156.1 | 14.60 / 109.1 | 14.76 / 109.1 |
+| Staircase, mean / max error | 19.72 / 155.8 | 16.93 / 111.0 | 17.54 / 91.8 |
+| Acute corner, mean / max error | 23.75 / 155.8 | 22.89 / 151.4 | 25.15 / 151.4 |
+| Contrast lost inside the corner | 0 | 0.100 | 0.157 |
+| Thin strip: frames vanished of 16 | 11 | 11 | 11 |
+| Thin strip: total contrast / expected, visible frames' maximum | 1.40 | 1.11 | 0.96 |
+| Strips: far / near / background weight mean error | 0.102 / 0.135 / 0.145 | 0.056 / 0.080 / 0.169 | 0.056 / 0.097 / 0.180 |
+| Strips: recovered weights' sum, mean deviation from one | 0.012 | 0.176 | 0.215 |
+| Strips: frames missing the far / near colour | 12 / 9 | 12 / 9 | 12 / 9 |
+| Flat controls, maximum error | 0.48 | 0.48 | 0.48 |
+
+Off agrees with point sampling at every pixel centre farther than 1/32 pixel
+from an edge. The filtered modes reduce the error of the oblique edge and the
+staircase. Balanced's 16-pixel walk lowers the staircase's worst pixel below
+Fast's. Neither mode improves the acute corner. Both soften contrast inside it.
+
+All modes share the sampling limit. The thin strip vanishes in the 11 phases in
+which no pixel centre falls inside it. Each strip colour is missing in exactly
+the phases in which no centre sample reaches it, including phases in which the
+centre misses the overlap. A filter that reads only the display image has
+nothing there to blend. Where a surface was sampled, blending toward a
+neighbour recovers part of the strips' visible weights. Blending in display
+space does not preserve the partition, so the recovered weights of the three
+surfaces no longer sum to one. Recovering missed coverage needs more samples
+per pixel, such as MSAA or temporal accumulation, not a better display-space
+filter.
+
+The test asserts exact agreement of Off with point sampling and unchanged flat
+controls. It asserts the analytic dropout counts in every mode, the improvements
+and limits above, and bounds with about a quarter of headroom over these
+measurements. Set `LUDUS_RENDERER_COVERAGE_REPORT=1` to print the backend,
+viewport size and every value per mode. Linux CI runs the same assertions on
+Vulkan. Its values are not recorded here.
 
 Default renderer budgets are eight prepared views (four shadow views plus scene/UI
 and overlap), two atlases, two programs, eight materials, four snapshots and four
