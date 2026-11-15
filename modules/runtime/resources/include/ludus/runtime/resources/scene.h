@@ -53,6 +53,7 @@ struct SceneMaterial final
     /// Version 7 typed optical parameters. A version 12 MediumInterface material marks its objects as the closed
     /// boundary of an absorbing medium whose per-metre absorption is Scattering.K; such objects are not surfaces.
     /// Renderers reject the material, and RT1 reference captures take the boundary as a ReferenceMediumDescription.
+    /// A version 13 Skin material has zero Metallic, and Scattering.K holds its RGB scattering distance in metres.
     content::scene_format::MaterialScattering Scattering{};
     bool HasSourceMaterial = false; ///< Version 7 retains reflectance even without a texture.
     /// Version 11 closure program, valid when Scattering.Model is Program and zero-initialized otherwise.

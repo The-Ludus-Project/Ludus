@@ -121,6 +121,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Unsupported imported material");
         case format::MaterialModel::MediumInterface:
             return QStringLiteral("Absorbing medium boundary");
+        case format::MaterialModel::Skin:
+            return QStringLiteral("Skin");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
@@ -344,6 +346,10 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
              scattering.Model == format::MaterialModel::ThinDielectric)
     {
         rows.append({QStringLiteral("IOR η"), FormatScalar(scattering.Eta[0])});
+    }
+    else if (scattering.Model == format::MaterialModel::Skin)
+    {
+        rows.append({QStringLiteral("Scattering distance (m, RGB)"), FormatRgb(scattering.K)});
     }
     rows.append({QStringLiteral("Surface map"),
                  DescribeTexture(definition, material.SurfaceTexture),

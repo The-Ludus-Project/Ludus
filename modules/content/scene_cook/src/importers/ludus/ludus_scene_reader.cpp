@@ -33,6 +33,10 @@ using scene_source::SourceObject;
     {
         return "medium_interface";
     }
+    if (model == SourceMaterialModel::Skin)
+    {
+        return "skin";
+    }
     return model == SourceMaterialModel::Diffuse ? "diffuse" : "metallic_roughness";
 }
 
@@ -100,6 +104,15 @@ void CopyRgb(math::Vector3d value, float64 (&outRgb)[IR_RGB_CHANNEL_COUNT]) noex
         material.Scattering.K = {{static_cast<float32>(source.MediumAbsorptionPerWorld.X),
                                   static_cast<float32>(source.MediumAbsorptionPerWorld.Y),
                                   static_cast<float32>(source.MediumAbsorptionPerWorld.Z)}};
+    }
+    if (source.Model == SourceMaterialModel::Skin)
+    {
+        // Skin reflects through the metallic/roughness dielectric lobes; K carries the scattering distance.
+        material.Metallic = 0.0;
+        material.Scattering.Model = scene_format::MaterialModel::Skin;
+        material.Scattering.K = {{static_cast<float32>(source.ScatteringDistance.X),
+                                  static_cast<float32>(source.ScatteringDistance.Y),
+                                  static_cast<float32>(source.ScatteringDistance.Z)}};
     }
     material.SourceFile = 0;
     return inoutScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == true ? Status::Ok : Status::OutOfMemory;

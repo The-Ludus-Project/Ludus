@@ -240,8 +240,6 @@ TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surface
     CHECK(format::GetMaterialCapabilities(scattering) == 0);
     CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::MediumInterface) == format::VERSION_12);
     CHECK(format::IsSupportedVersion(format::VERSION_12) == true);
-    CHECK(format::IsSupportedVersion(format::VERSION_12 + 1) == false);
-    CHECK(format::LAST_MATERIAL_MODEL == format::MaterialModel::MediumInterface);
     // Vacuum is admitted; negative, nonfinite and oversized absorption is not.
     scattering.K = {};
     CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
@@ -259,4 +257,46 @@ TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surface
     scattering.Model = format::MaterialModel::MediumInterface;
     scattering.AlphaU = .5F;
     CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
+}
+
+TEST_CASE("Skin stores scattering distances in LUSCN v13 and reflects like metallic-roughness",
+          "[scene_format][materials][skin]")
+{
+    format::MaterialScattering scattering;
+    scattering.Model = format::MaterialModel::Skin;
+    scattering.K = {{0.012F, 0.006F, 0.003F}};
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
+    // The surface reflection is the metallic-roughness dielectric, so fixed-dimension estimators accept it.
+    CHECK(format::GetMaterialCapabilities(scattering) ==
+          format::GetMaterialCapabilities(format::MaterialModel::MetallicRoughness));
+    CHECK(format::SupportsFixedDimensionReflection(scattering) == true);
+    CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::Skin) == format::VERSION_13);
+    CHECK(format::IsSupportedVersion(format::VERSION_13) == true);
+    CHECK(format::IsSupportedVersion(format::VERSION_13 + 1) == false);
+    CHECK(format::LAST_MATERIAL_MODEL == format::MaterialModel::Skin);
+    // Zero distance is admitted: it reproduces the unfiltered metallic-roughness lighting.
+    scattering.K = {};
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    scattering.K = {{format::MAX_SKIN_SCATTERING_DISTANCE, 0, 0}};
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    for (const format::float32 invalid :
+         {-0.001F, __builtin_nanf(""), format::MAX_SKIN_SCATTERING_DISTANCE * 2, __builtin_inff()})
+    {
+        scattering.K = {{0, 0, invalid}};
+        CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    }
+    // Every other field keeps its default, so equal skin materials cook to equal bytes.
+    scattering.K = {};
+    scattering.Eta = {{1.4F, 1.4F, 1.4F}};
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    scattering = {};
+    scattering.Model = format::MaterialModel::Skin;
+    scattering.AlphaU = .5F;
+    scattering.AlphaV = .5F;
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    scattering = {};
+    scattering.Model = format::MaterialModel::Skin;
+    scattering.CoatingThickness = 0;
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
 }

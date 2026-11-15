@@ -6,8 +6,10 @@
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "importers/import_diagnostics.h"
@@ -519,4 +521,127 @@ TEST_CASE("Ludus scene import cooks an absorbing medium boundary into LUSCN vers
     CHECK(ImportSceneBestEffort(entry, {}, failed, error) == false);
     CHECK(ReportHasCode(failed, codes::MALFORMED_INPUT) == true);
     CHECK(GetReport(failed).find("is an unsupported medium type") != std::string_view::npos);
+}
+
+TEST_CASE("Ludus scene import cooks the engine's skin bench into LUSCN version 13", "[scene_cook][ludus-scene][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/skin-diffusion-bench.luscene.json"), {}, result, error) ==
+            true);
+    CHECK(result.Summary.Errors == 0);
+    uint32 version = 0;
+    REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
+                {result.Bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                version) == true);
+    CHECK(version == format::VERSION_13);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize skinObjects = 0;
+    usize otherObjects = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        if (material.Scattering.Model != format::MaterialModel::Skin)
+        {
+            ++otherObjects;
+            continue;
+        }
+        ++skinObjects;
+        CHECK(material.Name.View() == "Skin");
+        CHECK(material.Scattering.K[0] == 0.012F);
+        CHECK(material.Scattering.K[1] == 0.006F);
+        CHECK(material.Scattering.K[2] == 0.003F);
+        CHECK(material.Metallic == 0);
+        CHECK(math::Abs(material.Roughness - 0.45F) < 1e-6F);
+        CHECK(material.Reflectance == math::Vector3{0.8F, 0.5F, 0.4F});
+        CHECK(format::IsMaterialScatteringValid(material.Scattering) == true);
+    }
+    // The skin block sits beside a non-skin block, under a non-skin bar, on a floor, under a light.
+    CHECK(skinObjects == 1);
+    CHECK(otherObjects == 4);
+
+    // Skin is a dielectric: the decoder rejects a stored metallic fraction. The record's metallic and
+    // roughness fields are adjacent, and only the skin material has roughness 0.45.
+    constexpr float32 SKIN_ROUGHNESS = 0.45F;
+    constexpr float32 EDITED_VALUE = 0.5F;
+    const ludus::foundation::StaticArray<float32, 2> metallicAndRoughness{{0, SKIN_ROUGHNESS}};
+    ludus::foundation::StaticArray<ludus::foundation::core::uint8, 2 * sizeof(float32)> pattern{};
+    std::memcpy(pattern.GetData(), metallicAndRoughness.GetData(), pattern.GetSize());
+    usize metallicAt = result.Bundle.GetSize();
+    for (usize at = 0; at + pattern.GetSize() <= result.Bundle.GetSize(); ++at)
+    {
+        if (std::memcmp(result.Bundle.GetData() + at, pattern.GetData(), pattern.GetSize()) == 0)
+        {
+            REQUIRE(metallicAt == result.Bundle.GetSize());
+            metallicAt = at;
+        }
+    }
+    REQUIRE(metallicAt < result.Bundle.GetSize());
+    // Control: editing the adjacent roughness still decodes, so the rejection below is the metallic check.
+    ludus::foundation::Array<ludus::foundation::core::uint8> edited;
+    REQUIRE(edited.TryResize(result.Bundle.GetSize()) == true);
+    std::memcpy(edited.GetData(), result.Bundle.GetData(), edited.GetSize());
+    std::memcpy(edited.GetData() + metallicAt + sizeof(float32), &EDITED_VALUE, sizeof(float32));
+    CHECK(ludus::resources::SceneDefinition::Decode(edited.GetData(), edited.GetSize(), decoded) ==
+          ludus::resources::Status::Ok);
+    std::memcpy(edited.GetData(), result.Bundle.GetData(), edited.GetSize());
+    std::memcpy(edited.GetData() + metallicAt, &EDITED_VALUE, sizeof(float32));
+    CHECK(ludus::resources::SceneDefinition::Decode(edited.GetData(), edited.GetSize(), decoded) !=
+          ludus::resources::Status::Ok);
+}
+
+TEST_CASE("The engine's character bust imports with its maps, licence and metre scale", "[scene_cook][gltf][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("characters/infinite-head/infinite-head.gltf"), {}, result, error) ==
+            true);
+    CHECK(result.Format == SceneSourceFormat::Gltf);
+    CHECK(result.Summary.Errors == 0);
+    // One mesh in one material slot, the slot an artist assigns skin to.
+    constexpr uint32 HEAD_TRIANGLES = 17684;
+    CHECK(result.Summary.SourceIndices == HEAD_TRIANGLES * 3);
+    CHECK(result.Summary.CookedMaterials == 1);
+    CHECK(ReportHasCode(result, codes::TANGENTS_GENERATED) == true);
+    bool hasLicense = false;
+    for (const ludus::foundation::String& input : result.Inputs)
+    {
+        hasLicense = hasLicense == true || input.GetView() == "LICENSE.txt";
+    }
+    CHECK(hasLicense == true);
+
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    const ludus::resources::SceneMaterial& slot = decoded.Materials[0];
+    CHECK(slot.Name.View() == "Skin");
+    CHECK(slot.Scattering.Model == format::MaterialModel::MetallicRoughness);
+    CHECK(slot.Metallic == 0);
+    CHECK(slot.Texture != format::NO_TEXTURE);
+    CHECK(slot.SurfaceTexture != format::NO_TEXTURE);
+    CHECK(slot.NormalScale > 0);
+    // About 17 cm wide in metres, so authored scattering distances are in skin's millimetre range.
+    constexpr float32 MIN_WIDTH_WORLD = 0.15F;
+    constexpr float32 MAX_WIDTH_WORLD = 0.19F;
+    float32 minimumX = 0;
+    float32 maximumX = 0;
+    bool hasPosition = false;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        for (const math::Vector3& positionMesh : decoded.Meshes[object.Mesh].Positions)
+        {
+            const math::Vector3 positionWorld = math::TransformPoint(object.Transform, positionMesh);
+            minimumX = hasPosition == true ? math::Min(minimumX, positionWorld.X) : positionWorld.X;
+            maximumX = hasPosition == true ? math::Max(maximumX, positionWorld.X) : positionWorld.X;
+            hasPosition = true;
+        }
+    }
+    REQUIRE(hasPosition == true);
+    CHECK(maximumX - minimumX > MIN_WIDTH_WORLD);
+    CHECK(maximumX - minimumX < MAX_WIDTH_WORLD);
 }

@@ -38,6 +38,8 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROJECT_BRDF = 8;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROGRAM = 9;
 /// Invisible boundary of a bounded homogeneous absorbing medium; content storage only.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_MEDIUM_INTERFACE = 10;
+/// Skin: a dielectric surface whose diffuse lighting spreads over per-channel scattering distances.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_SKIN = 11;
 /// Maximum authored cosine exponent before applying perceptual roughness.
 static const MaterialScalar LUDUS_PROJECT_BRDF_MAX_POWER = 32;
 /// Minimum total lobe weight, to keep normalization bounded in binary32.
@@ -97,9 +99,16 @@ enum class MaterialModel : foundation::uint32
     /// side faces the outside. Only content storage accepts this tag: surface evaluators reject it,
     /// and RT1 reference captures receive the boundary as a renderer ReferenceMediumDescription.
     MediumInterface = LUDUS_MATERIAL_MODEL_MEDIUM_INTERFACE,
+    /// Skin: the record's base colour and roughness with zero metallic, and K holding the linear RGB
+    /// scattering distance in world metres, each channel in [0, MAX_SKIN_SCATTERING_DISTANCE]. Every
+    /// other scattering field keeps its default (IsMaterialScatteringValid). The surface reflection is the
+    /// metallic/roughness model's dielectric lobes, so a zero distance reproduces that model exactly.
+    /// Renderers currently shade the surface reflection only: the raster screen-space diffusion is
+    /// issue #1372 and reference subsurface transport is issue #1373.
+    Skin = LUDUS_MATERIAL_MODEL_SKIN,
 };
 /// Highest stored MaterialModel tag; readers reject larger tags.
-inline constexpr MaterialModel LAST_MATERIAL_MODEL = MaterialModel::MediumInterface;
+inline constexpr MaterialModel LAST_MATERIAL_MODEL = MaterialModel::Skin;
 /// Report whether the model uses the complex-IOR GGX lobe and its authored alpha.
 [[nodiscard]] constexpr bool HasRoughConductorLobe(MaterialModel model) noexcept
 {
@@ -118,6 +127,7 @@ inline constexpr MaterialModel LAST_MATERIAL_MODEL = MaterialModel::MediumInterf
         case MaterialModel::Diffuse:
         case MaterialModel::Conductor:
         case MaterialModel::DiffuseConductorMix:
+        case MaterialModel::Skin:
             return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER;
         case MaterialModel::CoatedDiffuse:
             return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_INTERNAL_WALK;
@@ -175,6 +185,9 @@ inline constexpr foundation::float32 MAX_MATERIAL_OPTICAL_CONSTANT = 10000;
 /// Largest admitted medium absorption coefficient per world metre: transmittance through one
 /// millimetre is then exp(-10), and larger values add no reference evidence before underflow.
 inline constexpr foundation::float32 MAX_MEDIUM_ABSORPTION_PER_WORLD = 10000;
+/// Largest admitted skin scattering distance, in world metres. Skin spreads light over millimetres;
+/// a screen-space diffusion of ten centimetres no longer represents a surface's own scattering.
+inline constexpr foundation::float32 MAX_SKIN_SCATTERING_DISTANCE = 0.1F;
 /// Default PBRT coated-diffuse dielectric index of refraction.
 inline constexpr foundation::float32 DEFAULT_COATING_ETA = 1.5F;
 /// Default PBRT coated-diffuse optical thickness.
@@ -229,7 +242,8 @@ struct MaterialScattering final
 inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHANNELS + MATERIAL_RGB_CHANNELS + 2 + 2;
 /// Validate finite bounded optical parameters. Unsupported model tags, including the unresolved
 /// marker, reject. A closure program keeps every field at its default, so equal programs cook to
-/// equal bytes; its program is validated by IsMaterialProgramValid.
+/// equal bytes; its program is validated by IsMaterialProgramValid. Skin admits only its scattering
+/// distances in K, each in [0, MAX_SKIN_SCATTERING_DISTANCE], with every other field at its default.
 /// An evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
@@ -261,6 +275,20 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
         return total >= LUDUS_PROJECT_BRDF_MIN_WEIGHT && scattering.AlphaU == 1 && scattering.AlphaV == 1 &&
                scattering.CoatingEta == DEFAULT_COATING_ETA &&
                (scattering.CoatingThickness == 0 || scattering.CoatingThickness == 1);
+    }
+    if (scattering.Model == MaterialModel::Skin)
+    {
+        const MaterialScattering defaults;
+        for (foundation::usize channel = 0; channel < MATERIAL_RGB_CHANNELS; ++channel)
+        {
+            if (scattering.Eta[channel] != defaults.Eta[channel] ||
+                (scattering.K[channel] >= 0 && scattering.K[channel] <= MAX_SKIN_SCATTERING_DISTANCE) == false)
+            {
+                return false;
+            }
+        }
+        return scattering.AlphaU == defaults.AlphaU && scattering.AlphaV == defaults.AlphaV &&
+               scattering.CoatingEta == defaults.CoatingEta && scattering.CoatingThickness == defaults.CoatingThickness;
     }
     if (scattering.Model > MaterialModel::DiffuseConductorMix ||
         (scattering.Model == MaterialModel::DiffuseConductorMix && scattering.AlphaU != scattering.AlphaV) ||
@@ -332,5 +360,6 @@ enum MaterialModel : MaterialModelTag
     DiffuseConductorMix = LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX, ///< Weighted Lambertian and conductor.
     ProjectBrdf = LUDUS_MATERIAL_MODEL_PROJECT_BRDF,                  ///< Bounded project-authored reflection program.
     Program = LUDUS_MATERIAL_MODEL_PROGRAM, ///< Closure program at MaterialSample.ProgramOffset.
+    Skin = LUDUS_MATERIAL_MODEL_SKIN,       ///< Metallic/roughness dielectric lobes; K is scattering distance.
 };
 #endif // __cplusplus

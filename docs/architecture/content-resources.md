@@ -563,6 +563,15 @@ then gain absent tangents, version 3 parts dropping their stored bake UVs.
 
 ### Typed source materials (LUSCN v7)
 
+LUSCN v13 admits skin, written for a
+[`skin` source material](scene-source-format.md#skin). The tag-11 material keeps
+the v7 record: its K vector holds the RGB scattering distance in metres, each in
+[0, `MAX_SKIN_SCATTERING_DISTANCE`] (0.1 m), and every other scattering field keeps
+its default, so equal skin materials cook to equal bytes. The v6 record's metallic
+must be zero; the decoder rejects any other value. Its base colour and roughness
+are the record's ordinary fields, so a zero distance is the metallic-roughness
+material.
+
 LUSCN v12 admits medium interfaces, written for a
 [`medium_interface` source material](scene-source-format.md#medium-interface).
 The tag-10 material keeps the v7 record: its K vector holds the enclosed medium's
