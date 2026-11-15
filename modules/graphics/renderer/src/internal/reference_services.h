@@ -169,7 +169,8 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
                                                                           cornerWorld.Z,
                                                                           0};
         }
-        static_assert(LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS == 3, "one corner per word");
+        static_assert(LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS == REFERENCE_MEDIUM_TRIANGLE_CORNERS,
+                      "one corner per word");
         uniform.Tile[1] = static_cast<uint32>(first);
         uniform.Tile[2] = static_cast<uint32>(medium.CornersWorld.GetSize() / LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS);
     }

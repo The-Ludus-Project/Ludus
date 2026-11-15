@@ -153,6 +153,12 @@ void Stop(bool failed) noexcept
     emscripten_cancel_main_loop();
 #endif
 }
+// R12b: RGBA8Unorm is a storage format exactly when the device admits storage textures.
+bool HasStorageTextures(const rhi::DeviceInfo& info) noexcept
+{
+    return info.Profile.RasterStorage.MaxFragmentStorageTextures != 0 ||
+           info.Profile.RasterStorage.MaxComputeStorageTextures != 0;
+}
 bool Create() noexcept
 {
     const auto vertex = ludus::shaders::raster::Vertex();
@@ -188,7 +194,8 @@ bool Create() noexcept
     rhi::FormatCapabilities format;
     if (rhi::GetFormatCapabilities(gDevice, rhi::RasterFormat::Rgba8Unorm, format) != rhi::RasterStatus::Ready ||
         format.Uses.Sampled == false || format.Uses.Blendable == false || (format.SampleCounts & 1U) == 0 ||
-        format.Uses.Storage || format.Uses.CopySource == false || format.Uses.CopyDestination == false ||
+        format.Uses.Storage != HasStorageTextures(info) || format.Uses.CopySource == false ||
+        format.Uses.CopyDestination == false ||
         info.UnmetProfilePreference.Requirement != rhi::ProfileRequirement::ColorAttachmentCount ||
         info.UnmetProfilePreference.Requested != 5 ||
         info.UnmetProfilePreference.Available != info.Profile.Interface.MaxColorAttachments ||
