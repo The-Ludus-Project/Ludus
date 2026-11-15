@@ -185,6 +185,9 @@ for `d̄` with 16-point Gauss–Legendre quadrature per angular cell, weighted b
 
 Use a dedicated grazing-resolved grid for the
 [opt-in reference profile prototype](https://github.com/The-Ludus-Project/Ludus/issues/1360).
+RT1's [multiple-scattering GGX profile](../architecture/renderer-systems.md#multiple-scattering-ggx-profile)
+now uses such a grid, with rows over the whole conductor alpha range, and records its
+furnace, absorbing-metal, angular and grazing-color evidence.
 The furnace measures total energy for lossless reflection. Absorbing metals
 also need angular comparisons against a higher-order Smith reference, using
 the corrected Fresnel multiplier with `Favg²` in the numerator from the
