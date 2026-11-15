@@ -661,40 +661,61 @@ read-to-read change of texture layout can still require a native transition.
 Graph edges, encoded synchronization and submission completion answer different
 questions.
 
-Before narrowing R13a hazards, add opt-in observations at the existing Vulkan
-barrier call sites. Start with the
-[ordered-compute fixture](../../modules/graphics/rhi/tests/portable_raster_conformance_tests.cpp)
-that writes a storage buffer in successive dispatches and consumes generated
-geometry and indexed indirect arguments. Correlate the native operation with its
-graph pass or transfer boundary, retained resource identity and submission when
-available. Capture the emitted stage and access masks and affected byte range.
-For image transitions also capture the layout pair and aspect/mip/layer span. Reuse existing GPU scope identifiers
-where available, with bounded storage and an explicit truncated-record count.
-The observation path must leave recording, admission and resource state
-unchanged. Keep the data backend-private until another backend needs the same
-field. WebGPU scope validation and Direct3D 12 UAV/state transitions can supply
-their own evidence through the same test journeys.
+R13a records opt-in observations at the existing Vulkan barrier call sites in a
+[backend-private trace](../../modules/graphics/rhi/src/internal/synchronization_trace_vulkan.h).
+It covers graph buffer and texture barriers, final role/state restoration, and
+buffer upload, update and readback and texture transfer barriers. Each record
+holds the emitted source and destination stage and access masks, the buffer
+dependency range or the image layout pair and aspect/mip/layer span, and the
+object's backend slot. Graph records also carry the GPU scope identity of the
+following pass (graph pass index plus one), the graph resource, the frame
+submission and the graph execution. The ordered encoder supplies that context
+through a private
+[lowering site](../../modules/graphics/rhi/src/internal/graph_lowering_site.h)
+that other backends ignore. Transfer records name their own submission site and
+keep the copied byte range separate from the dependency range: a readback copies
+the requested bytes under a whole-buffer dependency. Storage holds 256 records
+and counts later records as dropped. Disabled recording builds no records, and
+recording never changes barriers, admission or resource state. Records describe
+recorded commands; a failed submission does not remove them. Texture-creation
+uploads, native interop, ray-scene builds, hosted surfaces and presentation are
+not instrumented yet. WebGPU scope validation and Direct3D 12 UAV/state
+transitions can supply their own evidence through the same test journeys.
 
-For the first range-aware trial, split buffer uses only at validated byte-range
-boundaries and keep the whole-resource plan as the control. Narrow a dependency
-only when the declared range covers every admitted binding/command access and
-the backend can order that range. Overlapping writes and reads, broader indirect
-or native uses, and a backend with coarser synchronization retain conservative
-ordering. Whole-resource version validation and culling stay in place during
-this first trial, as does conservative texture state. An import
-must carry the accepted native state and producer obligations for the covered
-range. If a direct update, another submission or a wider binding makes that
-snapshot stale, revalidate before encoding. Completion still governs backing
-reuse even when access ranges are disjoint.
+The opt-in [buffer-range trial](../../modules/graphics/rhi/src/internal/buffer_range_vulkan.h)
+keeps the whole-buffer plan as the control and the default. While a graph
+executes, it tracks disjoint byte ranges of declared buffer uses, each with its
+own prior accesses and retained writer. A new range starts from the buffer's
+state before the execution's first narrowed use. A narrowed barrier covers only
+the declared range and waits only for that range's prior accesses. Admission
+already requires the declared range to cover every binding, vertex/index slice
+and indirect command of the use. The buffer falls back to the conservative
+whole-buffer barrier for a use without a range, a partial overlap with a tracked
+range, and capacity exhaustion (16 buffers and 64 ranges per execution). Every
+narrowed use also enters the whole-buffer state as a superset. Transfers, final
+role restoration and later submissions therefore order against all prior
+accesses. Each graph execution discards the previous snapshots and starts from
+the whole-buffer state, and transfers and destruction forget the buffer. This
+revalidates a snapshot after a direct update, readback or another submission.
+Whole-resource version validation, culling, conservative texture state and
+completion-based backing reuse are unchanged.
 
-Compare the existing whole-resource path and the candidate with disjoint and
-partially overlapping buffer ranges, dependent writes in the same storage role,
-and an upload or readback across a submission boundary. Require matching
-readback bytes and rendered output, clean backend validation where available,
-and evidence of narrower native synchronization in the intended case. Record
-CPU plan/encode cost and GPU duration on the named device before adopting a
-performance optimization. A reduced logical edge count alone establishes
-neither native ordering nor a speedup.
+The [Vulkan trial test](../../modules/graphics/rhi/tests/synchronization_trial_vulkan_tests.cpp)
+extends the ordered-compute fixture. Three counters share one storage buffer.
+The graph advances one counter, then a disjoint counter, then the first counter
+again (a dependent write in the same storage role). It then advances a third
+counter through a use that partly overlaps the second, and generates an indirect
+draw from the first. A readback, a direct update and a second graph cross
+submission boundaries. The control and the trial must produce identical readback
+bytes and pixels. The trace must show the disjoint write as a 4-byte dependency
+without the earlier compute writer in its source scope. The dependent write keeps
+that writer, and the overlap falls back to a whole-buffer barrier. The second
+graph must start from the update's transfer write. Linux CI runs it on Mesa
+lavapipe with synchronization validation and prints CPU encode time and GPU pass
+duration for both modes. These lavapipe numbers are evidence, not a speedup claim.
+Adopting the trial as the default still needs measurements on a named hardware
+device. A reduced logical edge count alone establishes neither native ordering
+nor a speedup.
 
 Transient pooling reuses equivalent resource objects after all uses finish.
 Native heap aliasing is a separate later feature: match memory requirements and

@@ -2487,6 +2487,9 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
     }
     gFrameSubmission = gSubmissions.Next;
     gGraphExecuting = true;
+    // Backend synchronization calls below read their graph context from this site (R13a).
+    const internal::GraphLoweringSiteReset siteReset;
+    const uint64 execution = ++internal::gGraphLoweringExecutions;
     if (ClaimRasterFrame() == false)
     {
         internal::FaultRasterSession();
@@ -2516,8 +2519,20 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
             for (usize i = 0; i < pass.UseCount; ++i)
             {
                 const auto& use = pass.Uses[i];
-                const auto& resource = graph->Resources[GraphAccess::Resource(use.Resource)];
-                if (resource.Kind == RasterKind::Buffer)
+                const usize resourceIndex = GraphAccess::Resource(use.Resource);
+                const GraphResourceRecord& resource = graph->Resources[resourceIndex];
+                const bool isBuffer = resource.Kind == RasterKind::Buffer;
+                internal::gGraphLoweringSite =
+                {
+                    .Boundary = internal::GraphLoweringBoundary::Pass,
+                    .Scope = p + 1,
+                    .Submission = gFrameSubmission,
+                    .Execution = execution,
+                    .Resource = static_cast<uint32>(resourceIndex + 1),
+                    .Offset = isBuffer == true ? use.Offset : 0,
+                    .Size = isBuffer == true ? use.Size : 0,
+                };
+                if (isBuffer == true)
                 {
                     backend::ComputeBufferBarrier(resource.Slot, use.Access);
                     const auto currentBuffer = Admission(device, false);
@@ -2558,6 +2573,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 FrameRetain(RasterKind::Texture, resource.Slot);
                 At(RasterKind::Texture, resource.Slot).FrameTextureUse = sampled;
             }
+            internal::gGraphLoweringSite = {};
             const GraphPassDiagnostic& diagnostic = graph->Report.Passes[p];
             uint32 logicalPassCount = 1;
             const RasterPassInfo physical =
@@ -2627,6 +2643,13 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
     for (usize r = 0; r < graph->ResourceCount; ++r)
     {
         const auto& resource = graph->Resources[r];
+        internal::gGraphLoweringSite =
+        {
+            .Boundary = internal::GraphLoweringBoundary::Final,
+            .Submission = gFrameSubmission,
+            .Execution = execution,
+            .Resource = static_cast<uint32>(r + 1),
+        };
         if (resource.Kind == RasterKind::Buffer && graph->Report.Resources[r].FirstUse != GRAPH_EXTERNAL_INDEX)
         {
             const auto role = At(RasterKind::Buffer, resource.Slot).Buffer.Role;
@@ -2660,6 +2683,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
         FrameRetain(RasterKind::Texture, resource.Slot);
         At(RasterKind::Texture, resource.Slot).FrameTextureUse = resource.Final;
     }
+    internal::gGraphLoweringSite = {};
     const RasterStatus ended = shouldSubmit == true ? EndFrame(device, outCompletion) : RasterStatus::Ready;
     if (shouldSubmit == false)
     {
