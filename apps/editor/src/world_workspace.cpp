@@ -2834,7 +2834,7 @@ void WorldWorkspace::RenderInspector()
                 for (foundation::int32 axis = 0; axis < 3; ++axis)
                 {
                     const QString fieldKey = QStringLiteral("scene/") + vector.Key + QString::number(axis);
-                    auto* field = new QLineEdit(group);
+                    QLineEdit* field = new QLineEdit(group);
                     // Every Transform shows its axes the same way: short numbers on one line, stored digits in the
                     // tooltip.
                     ShowCompactNumber(*field, values[axis], QString());
