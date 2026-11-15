@@ -909,16 +909,21 @@ rendering the current World and camera. A raster project graph continues to run 
 a raster graph. The preview status identifies the selected renderer and explains
 when hardware raytracing is unavailable on the current GPU/API.
 
-Turn on **Force raster** in the viewport toolbar to exercise the raster path on RT
-hardware. This is a local saved viewport preference, restored with navigation
-settings; it does not edit the project's graph or shader manifest. Turn it off to
-return to Automatic and re-evaluate the requested project graph. Device restarts
+Turn on **Force raster** in the viewport toolbar to draw the engine's default
+raster graph instead of the selected project graph, whatever that graph contains:
+a raytracing graph, a graph that traces rays in authored compute pipelines, or an
+authored raster graph. Use it to exercise the raster path on RT hardware, or to
+see a World whose inputs the project graph cannot draw, such as an Atmosphere,
+which needs the default graph's clustered deferred programs. This is a local saved
+viewport preference, restored with navigation settings; it does not edit the
+project's graph or shader manifest. Turn it off to return to Automatic and
+re-evaluate the requested project graph. Device restarts
 also re-evaluate selection against the new device's enabled capabilities. Pending
 or failed replacements keep the last completed image until the new renderer
 presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
-When a raytracing graph is too slow to navigate, the viewport offers the raster
-graph itself. After three consecutive frames that each take at least one second,
+When a project graph is too slow to navigate, the viewport offers the engine's
+default raster graph itself. After three consecutive frames that each take at least one second,
 from the camera update before submission to presentation, a **Slow viewport**
 message names the measured frame time and asks whether to switch. The first
 frame of every generation is not counted, because it includes cold preparation
@@ -926,8 +931,9 @@ such as pipeline and acceleration-structure builds. **Switch to raster** turns o
 **Force raster**, exactly as the toolbar button does; **Keep current renderer**
 (Escape) changes nothing. Either way the message is not shown again for that
 runtime package until the editor restarts, so turning **Force raster** back off
-keeps the raytracing graph without asking again. The message never appears for
-a raster graph, while **Force raster** is on, or while the viewport is hidden.
+keeps the project graph without asking again. The message never appears for
+the engine's default raster graph itself, while **Force raster** is on, or while
+the viewport is hidden.
 
 #### See which nodes cannot run here
 

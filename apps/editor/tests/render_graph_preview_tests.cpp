@@ -4123,6 +4123,58 @@ TEST_CASE("Viewport forces authored raster before attaching a device", "[editor]
     CHECK(preview.GetImage().cacheKey() == last.cacheKey());
     preview.Detach();
 }
+TEST_CASE("Force raster draws the engine default graph instead of an authored raster graph",
+          "[editor][render-graph][selection]")
+{
+    // A project graph without a RayTracing pass (an authored raster graph, or one tracing rays in compute
+    // pipelines) used to ignore Force raster. With an Atmosphere it then rejected every World revision.
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    RenderGraphExtraction extraction = MakeExtraction({.25F, .5F, .75F, 1}, 1);
+    extraction.View.Atmosphere.IsEnabled = true;
+    preview.SetExtraction(extraction);
+    const QString forward = QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE);
+    const QString raster = GetDefaultRenderGraphRuntime();
+    REQUIRE(raster.isEmpty() == false);
+    REQUIRE(preview.Load(forward, raster) == RenderGraphPreviewLoad::Staged);
+    // The forward graph has no clustered deferred programs, so it cannot draw the Atmosphere.
+    REQUIRE(TickUntil(preview, [&]() { return preview.WasExtractionRejected(1) == true; }) == true);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere needs")) == true);
+    CHECK(preview.GetActivePackagePath() == forward);
+    CHECK(preview.CanSwitchToRasterFallback() == true);
+
+    preview.SetForceRaster(true);
+    // The default graph draws the revision the forward graph rejected, without waiting for a World edit.
+    const bool hasForcedFrame = TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasForcedFrame == true);
+    CHECK(preview.GetActivePackagePath() == raster);
+    CHECK(preview.GetRequestedPackagePath() == forward);
+    CHECK(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Force raster")) == true);
+    CHECK(preview.CanSwitchToRasterFallback() == false);
+
+    // Turning it off selects the requested graph again. It still cannot accept the Atmosphere, so the default
+    // graph keeps drawing and the status names the repair.
+    const QImage forced = preview.GetImage();
+    preview.SetForceRaster(false);
+    REQUIRE(TickUntil(preview, [&]() {
+                return preview.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed;
+            }) == true);
+    INFO(preview.GetStatus().toStdString());
+    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere needs")) == true);
+    CHECK(preview.GetActivePackagePath() == raster);
+    CHECK(preview.GetImage().cacheKey() == forced.cacheKey());
+    preview.Detach();
+}
 TEST_CASE("Force raster switches the live hardware renderer and restores automatic selection",
           "[editor][render-graph][selection]")
 {
