@@ -3206,10 +3206,40 @@ The first RT2 effect is the [hybrid shadows template](../development/render-grap
 raster first hits and one shadow ray for each of up to 16 contributing analytic
 lights per pixel. Its regression compares an offscreen blocker's shadow with a
 geometric projection, the default graph's shadow map and the paired RT1 direct
-output. Hard punctual shadows need no history or filter, so this step does not yet
-qualify reconstruction, temporal behavior, area-light penumbrae, reflections or
-indirect diffuse. [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248)
-tracks those fixtures.
+output. A second `[hybrid-shadows]` fixture compares the default graph's directional
+atlas with the same graph selected by RT2 activation. It fixes the camera over
+a tessellated curved receiver and nearby blocker, with light angles of roughly
+63° and 21° above the receiver's center tangent. The unoccluded render keeps the
+same geometry and light, with raster shadow casting disabled. The ratio to this
+control isolates shadow visibility from the receiver's changing direct response.
+The fixture checks interior false occlusion and false light against independent
+rays on the tessellation and measures the signed contact-edge displacement in
+screen pixels separately. It exercises Automatic on a device without enabled
+native rays and ForceRaster when the device still exposes them.
+
+The directional atlas uses a 1024 × 1024 slot with a one-texel gutter. The
+effective comparison tolerance adds the 0.001 normalized light-depth bias,
+projected receiver depth uncertainty, and the dot product of the absolute
+stored caster slope and projected texel uncertainty for each filter tap.
+The slope also reprojects sampled depth to the receiver's position in the map.
+The fixture measures the combined effect of these terms on visibility. Lance
+Williams's 1978 study motivates measuring both self-shadowing and changes at the
+contact. [Casting Curved Shadows on Curved Surfaces, pp. 270–274](https://cg.informatik.uni-freiburg.de/intern/seminar/shadowMapping_1978_Williams.pdf)
+
+On Apple M5 with Metal, the default graph and ForceRaster give identical linear
+output. At the steep angle, all 5,520 lit probes retained full visibility. At
+grazing incidence, 62 of 3,720 lit probes returned half visibility along one
+column beside a tessellation seam. The fixture permits one column's worth of
+lit probes to lose over 5% visibility at grazing incidence, with a peak loss
+limit of half the signal plus one RGBA8 code relative to the minimum admitted
+control. Both angles had zero falsely lit probes. The contact edge moved
+0.156 pixels inward at the steep angle and 0.051 pixels at the grazing angle,
+within a 1.5-pixel limit.
+
+Hard punctual shadows need no history or reconstruction filter.
+[Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
+remaining area-light penumbrae, reflections, indirect diffuse, reconstruction
+and temporal fixtures.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)
