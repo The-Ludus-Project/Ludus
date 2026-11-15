@@ -22,6 +22,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/startup_sound.h"
+#include "internal/state_view.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -55,6 +56,12 @@ enum PropertiesPage : foundation::uint8
     EMPTY_PROPERTIES_PAGE,
     WORLD_PROPERTIES_PAGE,
     RENDER_GRAPH_PROPERTIES_PAGE,
+};
+/// Pages of the Project Explorer dock, in the order main_window_layout.cpp adds them.
+enum ProjectExplorerPage : foundation::uint8
+{
+    PROJECT_EXPLORER_PAGE,
+    NO_PROJECT_EXPLORER_PAGE,
 };
 constexpr foundation::int32 STATUS_MESSAGE_MILLISECONDS = 8000;
 constexpr QLatin1StringView RENDER_GRAPH_SUFFIX{".lurender.json"};
@@ -294,12 +301,32 @@ void MainWindow::renderActiveDocument()
     }
     else
     {
-        mNoProperties->setText(QStringLiteral("The active document has no selection with properties. Select a "
-                                              "World entity or a render-graph node to edit it here."));
+        renderEmptyStates();
         mProperties->setCurrentIndex(EMPTY_PROPERTIES_PAGE);
     }
     RenderDocumentActions();
     updateContextStrip();
+}
+
+void MainWindow::renderEmptyStates()
+{
+    const bool isProjectLoaded = Controller_->State().Document == DocumentState::ProjectLoaded;
+    mProjectExplorerPages->setCurrentIndex(isProjectLoaded == true ? PROJECT_EXPLORER_PAGE : NO_PROJECT_EXPLORER_PAGE);
+    StateViewContent content;
+    if (isProjectLoaded == true)
+    {
+        content.Icon = EditorIcon::Information;
+        content.Message = QStringLiteral("Nothing selected");
+        content.Cause = QStringLiteral("Select a World entity or a render-graph node to edit it here.");
+    }
+    else
+    {
+        content.Icon = EditorIcon::Configuration;
+        content.Message = QStringLiteral("No project is open");
+        content.Cause =
+            QStringLiteral("The selected entity or render-graph node is edited here once a project is open.");
+    }
+    mNoProperties->SetContent(content);
 }
 
 void MainWindow::renderActivity()

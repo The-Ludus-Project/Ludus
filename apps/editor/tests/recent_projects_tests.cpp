@@ -1,5 +1,6 @@
 #include "internal/controller.h"
 #include "internal/main_window.h"
+#include "internal/recent_project_delegate.h"
 #include "internal/recent_projects.h"
 
 #include <ludus/foundation/base/types.h>
@@ -11,6 +12,7 @@
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
+#include <QFontMetrics>
 #include <QIcon>
 #include <QLabel>
 #include <QListWidget>
@@ -18,6 +20,8 @@
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
+#include <QStackedWidget>
+#include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -297,13 +301,13 @@ TEST_CASE("A missing recent project is dimmed and can be removed without touchin
     REQUIRE(list != nullptr);
     REQUIRE(remove != nullptr);
     REQUIRE(list->count() == 2);
-    // The missing project sorts first, being the most recent.
-    const QListWidgetItem* missing = list->item(0);
-    const QListWidgetItem* present = list->item(1);
+    // The missing project is the most recent, yet it follows the one that can open, in its own section.
+    const QListWidgetItem* present = list->item(0);
+    const QListWidgetItem* missing = list->item(1);
     CHECK(missing->text().contains(QStringLiteral("(missing)")));
     CHECK(missing->foreground().color() == window.palette().color(QPalette::Disabled, QPalette::Text));
     CHECK(present->foreground().style() == Qt::NoBrush);
-    list->setCurrentRow(0);
+    list->setCurrentRow(1);
     REQUIRE(remove->isEnabled() == true);
     remove->click();
     REQUIRE(list->count() == 1);
@@ -313,6 +317,118 @@ TEST_CASE("A missing recent project is dimmed and can be removed without touchin
     REQUIRE(restored.Load());
     REQUIRE(restored.Entries().size() == 1);
     CHECK(restored.Entries().first().DescriptorPath == QDir::cleanPath(kept));
+}
+
+TEST_CASE("Recent projects lead with their names and group missing ones under a section that clears at once",
+          "[editor][recent]")
+{
+    QTemporaryDir directory;
+    const QString history = directory.filePath(QStringLiteral("recent.json"));
+    const QString kept = WriteProject(directory, QStringLiteral("kept.json"), QByteArrayLiteral("Kept"));
+    const QString firstGone =
+        WriteProject(directory, QStringLiteral("first-gone.json"), QByteArrayLiteral("First Gone"));
+    const QString secondGone =
+        WriteProject(directory, QStringLiteral("second-gone.json"), QByteArrayLiteral("Second Gone"));
+    {
+        EditorController previous(NoTooling(), nullptr, history);
+        previous.OpenProject(firstGone);
+        previous.OpenProject(kept);
+        previous.OpenProject(secondGone);
+    }
+    REQUIRE(QFile::remove(firstGone));
+    REQUIRE(QFile::remove(secondGone));
+    EditorController controller(NoTooling(), nullptr, history);
+    MainWindow window(&controller);
+    QListWidget* list = window.findChild<QListWidget*>(QStringLiteral("recentProjectsList"));
+    QPushButton* removeMissing = window.findChild<QPushButton*>(QStringLiteral("removeMissingRecentProjectsButton"));
+    REQUIRE(list != nullptr);
+    REQUIRE(removeMissing != nullptr);
+    CHECK(qobject_cast<RecentProjectDelegate*>(list->itemDelegate()) != nullptr);
+    REQUIRE(list->count() == 3);
+
+    // The project that opens leads; the missing ones keep their most-recent order after it.
+    CHECK(list->item(0)->data(RECENT_PROJECT_NAME_ROLE).toString() == QStringLiteral("Kept"));
+    CHECK(list->item(0)->data(RECENT_PROJECT_IS_MISSING_ROLE).toBool() == false);
+    CHECK(list->item(0)->data(RECENT_PROJECT_STARTS_MISSING_SECTION_ROLE).toBool() == false);
+    CHECK(list->item(1)->data(RECENT_PROJECT_NAME_ROLE).toString() == QStringLiteral("Second Gone"));
+    CHECK(list->item(1)->data(RECENT_PROJECT_IS_MISSING_ROLE).toBool() == true);
+    CHECK(list->item(1)->data(RECENT_PROJECT_STARTS_MISSING_SECTION_ROLE).toBool() == true);
+    CHECK(list->item(2)->data(RECENT_PROJECT_NAME_ROLE).toString() == QStringLiteral("First Gone"));
+    CHECK(list->item(2)->data(RECENT_PROJECT_STARTS_MISSING_SECTION_ROLE).toBool() == false);
+
+    // The heading rides on the first missing row, which is taller by it; the rows keep one line for the name and one
+    // for the path.
+    QStyleOptionViewItem option;
+    option.initFrom(list);
+    const QSize presentSize = list->itemDelegate()->sizeHint(option, list->model()->index(0, 0));
+    const QSize headingSize = list->itemDelegate()->sizeHint(option, list->model()->index(1, 0));
+    const QSize missingSize = list->itemDelegate()->sizeHint(option, list->model()->index(2, 0));
+    CHECK(presentSize.height() == missingSize.height());
+    CHECK(headingSize.height() > missingSize.height());
+    CHECK(presentSize.height() >= QFontMetrics(list->font()).height() * 2);
+
+    // The File menu keeps the plain most-recent order.
+    QMenu* recentMenu = window.findChild<QMenu*>(QStringLiteral("recentProjectsMenu"));
+    REQUIRE(recentMenu != nullptr);
+    REQUIRE(recentMenu->actions().size() == 3);
+    CHECK(recentMenu->actions().first()->data().toString() == QDir::cleanPath(secondGone));
+
+    REQUIRE(removeMissing->isHidden() == false);
+    CHECK(removeMissing->text() == QStringLiteral("Remove Missing (2)"));
+    REQUIRE(removeMissing->isEnabled() == true);
+    removeMissing->click();
+    REQUIRE(list->count() == 1);
+    CHECK(list->item(0)->data(Qt::UserRole).toString() == QDir::cleanPath(kept));
+    CHECK(removeMissing->isHidden() == true);
+    CHECK(QFile::exists(kept));
+    RecentProjectStore restored(history);
+    REQUIRE(restored.Load());
+    REQUIRE(restored.Entries().size() == 1);
+    CHECK(restored.Entries().first().DescriptorPath == QDir::cleanPath(kept));
+}
+
+TEST_CASE("With no project open, Project Explorer and Properties say so and offer the way in", "[editor][recent]")
+{
+    QTemporaryDir directory;
+    const QString path = WriteProject(directory, QStringLiteral("game.json"), QByteArrayLiteral("Game"));
+    EditorController controller(NoTooling(), nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    window.show();
+    QApplication::processEvents();
+    QStackedWidget* explorerPages = window.findChild<QStackedWidget*>(QStringLiteral("projectExplorerPages"));
+    QWidget* explorer = window.findChild<QWidget*>(QStringLiteral("projectExplorer"));
+    QWidget* noProject = window.findChild<QWidget*>(QStringLiteral("projectExplorerNoProject"));
+    QWidget* noProperties = window.findChild<QWidget*>(QStringLiteral("propertiesEmpty"));
+    REQUIRE(explorerPages != nullptr);
+    REQUIRE(explorer != nullptr);
+    REQUIRE(noProject != nullptr);
+    REQUIRE(noProperties != nullptr);
+    QLabel* explorerMessage = noProject->findChild<QLabel*>(QStringLiteral("stateMessage"));
+    QPushButton* openAction = noProject->findChild<QPushButton*>(QStringLiteral("stateAction"));
+    QLabel* propertiesMessage = noProperties->findChild<QLabel*>(QStringLiteral("stateMessage"));
+    REQUIRE(explorerMessage != nullptr);
+    REQUIRE(openAction != nullptr);
+    REQUIRE(propertiesMessage != nullptr);
+
+    CHECK(explorerPages->currentWidget()->isAncestorOf(noProject) == true);
+    CHECK(noProject->isVisible() == true);
+    CHECK(explorerMessage->text() == QStringLiteral("No project is open"));
+    CHECK(openAction->isHidden() == false);
+    CHECK(openAction->text() == QStringLiteral("Open Project..."));
+    CHECK(noProperties->isVisible() == true);
+    CHECK(propertiesMessage->text() == QStringLiteral("No project is open"));
+
+    controller.OpenProject(path);
+    REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
+    QApplication::processEvents();
+    CHECK(explorerPages->currentWidget() == explorer);
+    CHECK(explorer->isVisible() == true);
+    CHECK(propertiesMessage->text() == QStringLiteral("Nothing selected"));
+
+    REQUIRE(controller.CloseProject() == true);
+    QApplication::processEvents();
+    CHECK(explorerPages->currentWidget()->isAncestorOf(noProject) == true);
+    CHECK(propertiesMessage->text() == QStringLiteral("No project is open"));
 }
 
 TEST_CASE("The Start page says why New Project is unavailable", "[editor][recent]")

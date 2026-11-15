@@ -21,6 +21,7 @@
 #include "internal/project_explorer.h"
 #include "internal/project_rendering_settings.h"
 #include "internal/project_store.h"
+#include "internal/recent_project_delegate.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/search_tool_window.h"
@@ -408,11 +409,21 @@ void MainWindow::BuildUi()
     mPropertiesDock->setWindowIcon(GetEditorIcon(EditorIcon::Configuration));
     mProperties->setObjectName(QStringLiteral("propertiesStack"));
     mNoProperties->setObjectName(QStringLiteral("propertiesEmpty"));
-    mNoProperties->setWordWrap(true);
-    mNoProperties->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    mNoProperties->setMargin(PROPERTIES_HINT_MARGIN_PIXELS);
-    mNoProperties->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    mProperties->addWidget(mNoProperties);
+    auto* noPropertiesPage = new QWidget(mProperties);
+    auto* noPropertiesLayout = new QVBoxLayout(noPropertiesPage);
+    noPropertiesLayout->setContentsMargins(PROPERTIES_HINT_MARGIN_PIXELS,
+                                           design::SPACING_EXTRA_LARGE,
+                                           PROPERTIES_HINT_MARGIN_PIXELS,
+                                           PROPERTIES_HINT_MARGIN_PIXELS);
+    mNoProperties->setParent(noPropertiesPage);
+    auto* noPropertiesRow = new QHBoxLayout;
+    noPropertiesRow->addStretch();
+    noPropertiesRow->addWidget(mNoProperties, 1);
+    noPropertiesRow->addStretch();
+    noPropertiesLayout->addLayout(noPropertiesRow);
+    noPropertiesLayout->addStretch();
+    noPropertiesPage->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    mProperties->addWidget(noPropertiesPage);
     mProperties->addWidget(World_->TakePropertiesPanel(mProperties));
     mProperties->addWidget(Renderer_->TakeInspectorPanel(mProperties));
     mProperties->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
@@ -428,7 +439,36 @@ void MainWindow::BuildUi()
 
     mProjectExplorerDock->setObjectName(QStringLiteral("projectExplorerDock"));
     mProjectExplorerDock->setWindowIcon(GetEditorIcon(EditorIcon::Folder));
-    mProjectExplorerDock->setWidget(mProjectExplorer);
+    // With no project the explorer has nothing to list, so the dock says so and offers the way in instead.
+    mProjectExplorerPages = new QStackedWidget(mProjectExplorerDock);
+    mProjectExplorerPages->setObjectName(QStringLiteral("projectExplorerPages"));
+    mProjectExplorerPages->addWidget(mProjectExplorer);
+    auto* noProjectPage = new QWidget(mProjectExplorerPages);
+    auto* noProjectLayout = new QVBoxLayout(noProjectPage);
+    noProjectLayout->setContentsMargins(PROPERTIES_HINT_MARGIN_PIXELS,
+                                        design::SPACING_EXTRA_LARGE,
+                                        PROPERTIES_HINT_MARGIN_PIXELS,
+                                        PROPERTIES_HINT_MARGIN_PIXELS);
+    mNoProjectExplorerOrNull = new StateView(noProjectPage);
+    mNoProjectExplorerOrNull->setObjectName(QStringLiteral("projectExplorerNoProject"));
+    StateViewContent noProject;
+    noProject.Icon = EditorIcon::OpenProject;
+    noProject.Message = QStringLiteral("No project is open");
+    noProject.Cause = QStringLiteral("A project's worlds, render graphs, shaders and scripts are listed here.");
+    noProject.ActionLabel = QStringLiteral("Open Project...");
+    mNoProjectExplorerOrNull->SetContent(noProject);
+    // In a row, not aligned, so the wrapped text gets the height it needs at the dock's width.
+    auto* noProjectRow = new QHBoxLayout;
+    noProjectRow->addStretch();
+    noProjectRow->addWidget(mNoProjectExplorerOrNull, 1);
+    noProjectRow->addStretch();
+    noProjectLayout->addLayout(noProjectRow);
+    noProjectLayout->addStretch();
+    noProjectPage->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    mProjectExplorerPages->addWidget(noProjectPage);
+    mProjectExplorerPages->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    connect(mNoProjectExplorerOrNull, &StateView::ActionTriggered, this, &MainWindow::OnOpenRequested);
+    mProjectExplorerDock->setWidget(mProjectExplorerPages);
     mErrorListDock->setObjectName(QStringLiteral("errorListDock"));
     mErrorListDock->setWindowIcon(GetEditorIcon(EditorIcon::Error));
     mErrorListDock->setWidget(mErrorList);
@@ -616,11 +656,17 @@ void MainWindow::BuildUi()
     RecentList_->setAccessibleName(QStringLiteral("Recent projects"));
     RecentList_->setWordWrap(true);
     RecentList_->setProperty(ITEM_PADDING_PROPERTY, RECENT_PROJECT_ITEM_PADDING);
+    RecentList_->setItemDelegate(new RecentProjectDelegate(RecentList_));
     RecentOpenButton_ = new QPushButton(QStringLiteral("Open Selected"), recentPanel);
     RecentOpenButton_->setObjectName(QStringLiteral("openRecentProjectButton"));
     mRecentRemoveButtonOrNull = new QPushButton(QStringLiteral("Remove from List"), recentPanel);
     mRecentRemoveButtonOrNull->setObjectName(QStringLiteral("removeRecentProjectButton"));
     mRecentRemoveButtonOrNull->setToolTip(QStringLiteral("Forget the selected project. Its files are not deleted."));
+    mRecentRemoveMissingButtonOrNull = new QPushButton(recentPanel);
+    mRecentRemoveMissingButtonOrNull->setObjectName(QStringLiteral("removeMissingRecentProjectsButton"));
+    mRecentRemoveMissingButtonOrNull->setToolTip(
+        QStringLiteral("Forget every project whose file was moved or deleted. Nothing on disk changes."));
+    mRecentRemoveMissingButtonOrNull->hide();
     BrowseProjectButton_ = new QPushButton(QStringLiteral("Open Project..."), recentPanel);
     recentLayout->setContentsMargins(design::SPACING_EXTRA_LARGE,
                                      design::SPACING_EXTRA_LARGE,
@@ -671,6 +717,7 @@ void MainWindow::BuildUi()
     recentActions->addWidget(RecentOpenButton_);
     recentActions->addWidget(mRecentRemoveButtonOrNull);
     recentActions->addStretch();
+    recentActions->addWidget(mRecentRemoveMissingButtonOrNull);
     recentLayout->addLayout(recentActions);
     // Document registration order is the Window menu order.
     mDocuments->AddDocument(Welcome_, QStringLiteral("Start Page"));
@@ -694,6 +741,20 @@ void MainWindow::BuildUi()
         if (const QListWidgetItem* item = RecentList_->currentItem())
         {
             Controller_->RemoveRecentProject(item->data(Qt::UserRole).toString());
+        }
+    });
+    connect(mRecentRemoveMissingButtonOrNull, &QPushButton::clicked, this, [this]() {
+        QStringList missingPaths;
+        for (const RecentProject& project : Controller_->RecentProjects())
+        {
+            if (QFileInfo(project.DescriptorPath).isFile() == false)
+            {
+                missingPaths.append(project.DescriptorPath);
+            }
+        }
+        for (const QString& path : missingPaths)
+        {
+            Controller_->RemoveRecentProject(path);
         }
     });
     RecentList_->setContextMenuPolicy(Qt::CustomContextMenu);

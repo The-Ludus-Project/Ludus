@@ -176,6 +176,8 @@ private:
     /// black, and add it to the World on acceptance. Returns false when the warning offers no sun.
     bool offerSunRepair();
     void renderActiveDocument();
+    /// The Project Explorer and Properties states for no project and for nothing selected.
+    void renderEmptyStates();
     /// Show the context strip while a render graph is current in any group and Focus Viewport is off.
     void updateContextStrip();
     /// Refresh the status bar's activity chip and problem counts from the current work.
@@ -290,9 +292,13 @@ private:
     QScrollArea* mAudioDocument;
     QDockWidget* mProjectExplorerDock;
     ProjectExplorer* mProjectExplorer;
+    /// The explorer, or in its place with no project open, a state that offers to open one.
+    QStackedWidget* mProjectExplorerPages = nullptr;
+    StateView* mNoProjectExplorerOrNull = nullptr;
     QDockWidget* mPropertiesDock;
     QStackedWidget* mProperties;
-    QLabel* mNoProperties;
+    /// Properties with nothing to edit: says why, for the Start page and for a document without a selection.
+    StateView* mNoProperties;
     QDockWidget* mErrorListDock;
     ErrorList* mErrorList;
     // The Search tool window and its scope provider (CE07); created in BuildUi
@@ -401,6 +407,8 @@ private:
     StateView* mRecentEmptyStateOrNull = nullptr;
     QPushButton* RecentOpenButton_ = nullptr;
     QPushButton* mRecentRemoveButtonOrNull = nullptr;
+    /// Forgets every recent project whose file is missing; hidden when none is.
+    QPushButton* mRecentRemoveMissingButtonOrNull = nullptr;
     QPushButton* BrowseProjectButton_ = nullptr;
     QMenu* RecentMenu_ = nullptr;
     QAction* ClearRecentAction_ = nullptr;
