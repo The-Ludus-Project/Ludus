@@ -1712,6 +1712,56 @@ for the enabled allocation bound. The milestone ownership and
 remaining binding/compute/ray/resource work live in the
 [canonical RHI/GDI assignment](../architecture/rhi-gdi.md#follow-up-milestones-r6r18).
 
+### Test the BC5 fallback on Vulkan
+
+On Linux, use a BC5-capable Vulkan adapter and the Khronos Profiles and
+Validation layers. Build `ludus_rhi_r9_consumer` in the engine tree and
+`ludus_sdk_r9_consumer` from `tests/sdk_consumer/raster`
+against the installed Linux SDK from the same revision. Run each executable
+twice on the same adapter. Keep the Profiles layer closest to the driver so
+the Validation layer sees its reported capabilities. Use a clean shell without
+other Vulkan layer overrides.
+
+From the repository root, in Bash:
+
+```bash
+(
+  set -eo pipefail
+  vulkaninfo --summary 2>&1 | tee out/bc5-vulkan-adapter.log
+  for consumer in \
+    out/build/linux-clang-development/modules/graphics/rhi/ludus_rhi_r9_consumer \
+    out/r11-raster-sdk/ludus_sdk_r9_consumer
+  do
+    log="out/${consumer##*/}-bc5"
+    VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+      "$consumer" 2>&1 | tee "$log-enabled.log"
+    VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation:VK_LAYER_KHRONOS_profiles \
+      VK_KHRONOS_PROFILES_PROFILE_EMULATION=false \
+      VK_KHRONOS_PROFILES_EXCLUDE_FORMATS=VK_FORMAT_BC5_UNORM_BLOCK \
+      "$consumer" 2>&1 | tee "$log-hidden.log"
+    grep -F 'R18 BC5 enabled true;' "$log-enabled.log"
+    grep -F 'R18 BC5 enabled false;' "$log-hidden.log"
+    if grep -E 'Validation Error|VUID-' "$log-enabled.log" "$log-hidden.log"; then
+      exit 1
+    fi
+  done
+)
+```
+
+The example uses the installed consumer location from Linux CI. Substitute its
+build path if different. Check that both logs name the same adapter, and record
+its driver and layer versions. Zero exit status confirms the pixel checks. The
+hidden-format run also requires a valid BC5 upload to return `Unsupported`
+without publishing a texture, before exercising the caller-authored RGBA8
+fallback. The layer changes format queries for these test processes. Real
+device and presentation evidence belongs in the
+[R7 qualification records](#named-qualification-records).
+
+The paired run adapts Sascha Willems's
+[device simulation example](https://www.saschawillems.de/blog/2017/08/19/the-vulkan-device-simulation-layer/#using-the-device-simulation-layer)
+using the
+[Khronos Profiles layer](https://github.com/KhronosGroup/Vulkan-Profiles/blob/main/layer/TUTORIAL.md#technical-details).
+
 ## Attachment extensions (R10)
 
 R10a adds up to four offscreen color attachments, private depth sampling and

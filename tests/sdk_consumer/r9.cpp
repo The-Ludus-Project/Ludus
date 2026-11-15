@@ -165,9 +165,35 @@ bool CreateExtendedTextures() noexcept
         return false;
     }
     rhi::FormatCapabilities bc5;
-    gHasBc5 = rhi::GetFormatCapabilities(gDevice, rhi::RasterFormat::Bc5RgUnorm, bc5) == rhi::RasterStatus::Ready;
+    const rhi::RasterStatus bc5Status = rhi::GetFormatCapabilities(gDevice, rhi::RasterFormat::Bc5RgUnorm, bc5);
+    if (bc5Status != rhi::RasterStatus::Ready && bc5Status != rhi::RasterStatus::Unsupported)
+    {
+        return false;
+    }
+    gHasBc5 = bc5Status == rhi::RasterStatus::Ready;
     StaticArray<uint8, BC5_CHAIN_BYTES> encoded{};
     EncodeBc5Block(encoded.GetData(), {230, 40}, true);
+    // Thanks to Sascha Willems, "The Vulkan Device Simulation Layer", for testing different capability reports on one
+    // adapter.
+    // https://www.saschawillems.de/blog/2017/08/19/the-vulkan-device-simulation-layer/#using-the-device-simulation-layer
+    if (gHasBc5 == false)
+    {
+        constexpr uint32 BC5_BLOCK_EXTENT = 4;
+        rhi::TextureHandle unsupportedTexture;
+        if (rhi::CreateTexture(gDevice,
+                               {
+                                   .Width = BC5_BLOCK_EXTENT,
+                                   .Height = BC5_BLOCK_EXTENT,
+                                   .Format = rhi::RasterFormat::Bc5RgUnorm,
+                               },
+                               {{encoded.GetData(), BC5_BLOCK_BYTES}, BC5_BLOCK_BYTES},
+                               unsupportedTexture) != rhi::RasterStatus::Unsupported ||
+            rhi::IsNull(unsupportedTexture) == false)
+        {
+            LUDUS_LOG_ERROR(LOG_R9, "Unavailable BC5 must reject a valid upload without returning a texture handle");
+            return false;
+        }
+    }
     EncodeBc5Block(encoded.GetData() + 16, {20, 200}, true);
     for (usize offset = 32; offset < encoded.GetSize(); offset += BC5_BLOCK_BYTES)
     {
