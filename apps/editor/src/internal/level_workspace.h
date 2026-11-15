@@ -351,11 +351,18 @@ private:
     bool WorldOwned_ = false;
     bool VerificationOnly_ = false;
     bool Busy_ = false, Dirty_ = false, Cancelling_ = false, Success_ = false, Rendering_ = false;
-    QLabel *Status_, *File_, *Warnings_;
+    QLabel* mStatus;
+    QLabel* mFile;
+    QLabel* mWarnings;
     PreviewViewport* Viewport_;
     QListWidget* Objects_;
     QLineEdit* Name_;
     QDoubleSpinBox* Translation_[3];
-    QPushButton *New_, *Open_, *Import_, *Save_, *Cancel_, *Remove_;
+    QPushButton* mNewButton;
+    QPushButton* mOpenButton;
+    QPushButton* mImportButton;
+    QPushButton* mSaveButton;
+    QPushButton* mCancelButton;
+    QPushButton* mRemoveButton;
 };
 } // namespace ludus::editor

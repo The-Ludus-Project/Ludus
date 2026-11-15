@@ -9,8 +9,6 @@ namespace
 {
 /// Largest spatial attenuation distance, in world units.
 constexpr float64 MAX_SPATIAL_DISTANCE = 1e30;
-/// Longest retrigger cooldown, in milliseconds (ten minutes).
-constexpr uint64 MAX_COOLDOWN_MILLISECONDS = 600000;
 /// Most variations one sound may declare.
 constexpr usize MAX_SOUND_VARIATIONS = 16;
 /// Initial scratch capacity for writing one sound or music definition, in bytes.
