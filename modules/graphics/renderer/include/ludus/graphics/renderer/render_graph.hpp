@@ -185,8 +185,8 @@ struct RenderGraphPrograms final
     bool HasLightTransformer =
         false; ///< Requires a trained model description; prepares a view-independent GPU encoder.
     /// Recipe keys of the routed techniques, at most one per technique and target; copied during Initialize.
-    /// Generated package headers fill it; runtime generations and hand-built programs leave it empty, and
-    /// RenderGraph::GetPipelineReport then reports those techniques without a key.
+    /// Generated headers and runtime generations may supply these keys. Techniques without a supplied key
+    /// still appear in RenderGraph::GetPipelineReport with HasRecipeKey false.
     // Keep partial aggregate callers warning-clean when this optional field is omitted.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const RenderGraphRecipeKey> RecipeKeys{};

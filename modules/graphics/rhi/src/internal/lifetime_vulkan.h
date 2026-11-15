@@ -116,6 +116,39 @@ VkBufferMemoryBarrier LifetimeVulkanBarrier(VkBuffer buffer) noexcept
     barrier.size = VK_WHOLE_SIZE;
     return barrier;
 }
+// R13a observation context of one transfer buffer barrier.
+struct LifetimeVkTransferSite final
+{
+    VulkanSynchronizationSite Site;
+    VulkanSynchronizationObject Object;
+    usize Slot;
+    VkDeviceSize CopyOffset;
+    VkDeviceSize CopySize;
+};
+void RecordTransferSynchronization(const LifetimeVkTransferSite& site,
+                                   VkPipelineStageFlags sourceStages,
+                                   VkPipelineStageFlags destinationStages,
+                                   const VkBufferMemoryBarrier& barrier) noexcept
+{
+    if (gSynchronizationTrace.IsEnabled() == false)
+    {
+        return;
+    }
+    gSynchronizationTrace.Append(
+    {
+        .Site = site.Site,
+        .Object = site.Object,
+        .Slot = site.Slot,
+        .SourceStages = sourceStages,
+        .DestinationStages = destinationStages,
+        .SourceAccess = barrier.srcAccessMask,
+        .DestinationAccess = barrier.dstAccessMask,
+        .Offset = barrier.offset,
+        .Size = barrier.size,
+        .CopyOffset = site.CopyOffset,
+        .CopySize = site.CopySize,
+    });
+}
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
@@ -167,10 +200,12 @@ RasterStatus LifetimeUpload(usize transferSlot,
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
                             VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+    constexpr VkPipelineStageFlags UPLOAD_CONSUMERS =
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
     vkCmdPipelineBarrier(transfer.Command,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         UPLOAD_CONSUMERS,
                          0,
                          0,
                          nullptr,
@@ -178,6 +213,12 @@ RasterStatus LifetimeUpload(usize transferSlot,
                          &barrier,
                          0,
                          nullptr);
+    RecordTransferSynchronization(
+        {VulkanSynchronizationSite::BufferUpload, VulkanSynchronizationObject::Buffer, bufferSlot, 0, size},
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        UPLOAD_CONSUMERS,
+        barrier);
+    gBufferRangeTrial.Ranges.Forget(bufferSlot);
     return RasterError(LifetimeVulkanSubmit(transfer));
 }
 RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::LifetimeCopyRange& range) noexcept
@@ -199,9 +240,10 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
     source.srcAccessMask =
         VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | gRasterBuffers[bufferSlot].WriterAccess;
     source.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    const VkPipelineStageFlags sourceStages =
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | gRasterBuffers[bufferSlot].WriterStage;
     vkCmdPipelineBarrier(transfer.Command,
-                         VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
-                             gRasterBuffers[bufferSlot].WriterStage,
+                         sourceStages,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0,
                          0,
@@ -210,6 +252,11 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
                          &source,
                          0,
                          nullptr);
+    RecordTransferSynchronization(
+        {VulkanSynchronizationSite::BufferReadback, VulkanSynchronizationObject::Buffer, bufferSlot, offset, size},
+        sourceStages,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        source);
     VkBufferCopy copy{offset, 0, size};
     vkCmdCopyBuffer(transfer.Command, source.buffer, transfer.Staging.Object, 1, &copy);
     auto host = LifetimeVulkanBarrier(transfer.Staging.Object);
@@ -225,11 +272,17 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
                          &host,
                          0,
                          nullptr);
+    RecordTransferSynchronization(
+        {VulkanSynchronizationSite::BufferReadback, VulkanSynchronizationObject::StagingBuffer, transferSlot, 0, size},
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        host);
     const auto submitted = LifetimeVulkanSubmit(transfer);
     if (submitted == VK_SUCCESS)
     {
         gRasterBuffers[bufferSlot].Stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
         gRasterBuffers[bufferSlot].Access |= VK_ACCESS_TRANSFER_READ_BIT;
+        gBufferRangeTrial.Ranges.Forget(bufferSlot);
     }
     return RasterError(submitted);
 }
@@ -259,6 +312,11 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
     auto barrier = LifetimeVulkanBarrier(destination.Object);
     barrier.srcAccessMask = destination.Access | destination.WriterAccess;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    const LifetimeVkTransferSite site{VulkanSynchronizationSite::BufferUpdate,
+                                      VulkanSynchronizationObject::Buffer,
+                                      range.Buffer,
+                                      range.Offset,
+                                      range.Size};
     vkCmdPipelineBarrier(transfer.Command,
                          destination.Stage | destination.WriterStage,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -269,6 +327,10 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
                          &barrier,
                          0,
                          nullptr);
+    RecordTransferSynchronization(site,
+                                  destination.Stage | destination.WriterStage,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  barrier);
     const VkBufferCopy copy{0, range.Offset, range.Size};
     vkCmdCopyBuffer(transfer.Command, transfer.Staging.Object, destination.Object, 1, &copy);
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -283,11 +345,13 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
                          &barrier,
                          0,
                          nullptr);
+    RecordTransferSynchronization(site, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, barrier);
     result = LifetimeVulkanSubmit(transfer);
     if (result == VK_SUCCESS)
     {
         destination.Stage = destination.WriterStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         destination.Access = destination.WriterAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+        gBufferRangeTrial.Ranges.Forget(range.Buffer);
     }
     return RasterError(result);
 }
@@ -301,6 +365,7 @@ struct LifetimeVkImageTransition final
     VkAccessFlags DestinationAccess;
 };
 void LifetimeVkImageBarrier(VkCommandBuffer command,
+                            usize slot,
                             const RasterVulkanTexture& texture,
                             const LifetimeVkImageTransition& transition) noexcept
 {
@@ -313,8 +378,9 @@ void LifetimeVkImageBarrier(VkCommandBuffer command,
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = texture.Object;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, texture.Info.MipLevels, 0, 1};
+    constexpr VkPipelineStageFlags SOURCE_STAGES = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT;
     vkCmdPipelineBarrier(command,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+                         SOURCE_STAGES,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          0,
                          0,
@@ -323,6 +389,22 @@ void LifetimeVkImageBarrier(VkCommandBuffer command,
                          nullptr,
                          1,
                          &barrier);
+    if (gSynchronizationTrace.IsEnabled() == true)
+    {
+        gSynchronizationTrace.Append(
+        {
+            .Site = VulkanSynchronizationSite::TextureTransfer,
+            .Object = VulkanSynchronizationObject::ColorImage,
+            .Slot = slot,
+            .SourceStages = SOURCE_STAGES,
+            .DestinationStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            .SourceAccess = barrier.srcAccessMask,
+            .DestinationAccess = barrier.dstAccessMask,
+            .OldLayout = barrier.oldLayout,
+            .NewLayout = barrier.newLayout,
+            .Subresources = barrier.subresourceRange,
+        });
+    }
 }
 VkImageSubresourceLayers LifetimeVkLayers(const TextureRegion& region) noexcept
 {
@@ -361,6 +443,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     {
         const auto& source = gRasterTextures[info.Source];
         LifetimeVkImageBarrier(transfer.Command,
+                               info.Source,
                                source,
                                {
                                    .Before = source.ColorLayout,
@@ -373,6 +456,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     {
         const auto& destination = gRasterTextures[info.Destination];
         LifetimeVkImageBarrier(transfer.Command,
+                               info.Destination,
                                destination,
                                {
                                    .Before = destination.ColorLayout,
@@ -418,6 +502,14 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
                              &host,
                              0,
                              nullptr);
+        RecordTransferSynchronization({VulkanSynchronizationSite::TextureTransfer,
+                                       VulkanSynchronizationObject::StagingBuffer,
+                                       slot,
+                                       0,
+                                       info.Size},
+                                      VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                      VK_PIPELINE_STAGE_HOST_BIT,
+                                      host);
     }
     else
     {
@@ -439,6 +531,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     {
         const auto& source = gRasterTextures[info.Source];
         LifetimeVkImageBarrier(transfer.Command,
+                               info.Source,
                                source,
                                {
                                    .Before = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -451,6 +544,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     {
         const auto& destination = gRasterTextures[info.Destination];
         LifetimeVkImageBarrier(transfer.Command,
+                               info.Destination,
                                destination,
                                {
                                    .Before = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

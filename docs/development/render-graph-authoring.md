@@ -4922,7 +4922,19 @@ correctly in both windows. The template's and the shadow map's lit radiance lie 
 of the GPU RT1 image, and both graphs measure the edge 0.2 and 0.4 pixels from the
 projection, the pixel-centre quantization. This fixture does not separate the two
 graphs: the default graph's whole-scene shadow fit also keeps the offscreen shadow.
-Curved receivers, bias and timing comparisons remain open in issue 1248.
+The same tag covers a curved-receiver regression with the default directional
+shadow atlas and the raster route selected by RT2 activation. It compares
+visibility against rays on the tessellated receiver at steep and grazing angles
+and checks both interior occlusion and the contact edge. See the
+[fixture and bias contract](../architecture/renderer-systems.md#hybrid-and-real-time-transport).
+
+Run `ludus_renderer_render_tests "[.benchmark][hybrid-shadows]"` for punctual
+shadow timings on a native device. After warmup, the benchmark reports the
+median and 95th percentile over 21 geometry edits and 21 steady-state frames.
+The edit interval starts at the new extraction and ends at drawable publication.
+It includes scene preparation, acceleration structure work and the polling
+interval. The device's pass timestamps measure the shadow-ray compute pass.
+This template has no filter pass.
 
 Extend the manifest's `RendererStatic` vertex schema with these two fields:
 
@@ -6947,8 +6959,9 @@ plus the device totals from `rhi::GetPipelinePreparationReport`
 (`ludus/graphics/rhi/pipeline_preparation.h`). A generated package header
 carries `RECIPE_KEYS`, the bytes of `inventory.recipes[].key` for each routed
 technique and target. The row for the device's target therefore uses the same
-key as `build-report.json`. Runtime generations (`.lurgrt`) and hand-built
-`RenderGraphPrograms` carry no keys. Their rows have `HasRecipeKey == false`.
+key as `build-report.json`. Version 35 runtime generations (`.lurgrt`) carry the same keys for the routed
+techniques and targets. Older generations, hand-built programs, and techniques
+with ambiguous keys report `HasRecipeKey == false`.
 
 | Field | Contents |
 | --- | --- |
@@ -6997,8 +7010,55 @@ technique and the WGSL keys in the build inventory cost the Metal device
 nothing. Of the six native pipelines prepared for the routed recipe, one is
 drawn by a single-pass offscreen graph. The surface, reverse-depth and overlay
 variants are prepared but unused here. Vulkan and WebGPU records come from CI.
-The cold native consumer journeys and the correlation of a shader edit with its
-first presented frame remain open in
+The native shader-worker reload fixture exports the recipe digest and preparation
+counts for initial and replacement generations. Its owner-thread sample covers
+polling and render submission while the driver's replacement work is paused.
+First readback is measured separately. The queue and native time fields sum
+individual pipelines and can overlap. The installed SDK runtime fixture checks
+that the same recipe reported by its compiled header is ready before drawing
+either activated generation. Use the [Qt edit trace](editor-workspace.md#trace-a-shader-edit-to-its-first-paint)
+to correlate a native editor replacement with the first updated image.
+
+#### Native renderer reload measurement
+
+The shader-worker reload fixture used one 96×64 raster graph on Apple M5 and
+the Metal implementation shipped with macOS 26.6 (25G72). Slang 2026.1.2 built
+Metal and WGSL. Filling an empty cooked-artifact cache took 5.97 s with six
+stage misses. Rebuilding the same graph took 1.41 s with six hits and produced
+the same runtime SHA-256 (`351174d7…`). Changing the fragment color from red to
+green kept the CPU interface identity (`7c90fffb…`) and compiled two stages.
+The active Metal recipe changed from `4e5993a5…` to `2fc3249f…`.
+
+The renderer ran twice in fresh processes with the same cooked files. Driver
+caches were left under OS control and host load was high. These are two observed
+runs with unknown driver cache state.
+
+| Metal renderer measurement | First process | Fresh process repeat |
+| --- | ---: | ---: |
+| Startup, staging request to observed readiness | 2478 ms | 63.1 ms |
+| Startup, first service to verified readback | 2514 ms | 84.6 ms |
+| Startup recipe, summed native creation | 27.6 ms | 26.5 ms |
+| Replacement, latest staging request to observed readiness | 924 ms | 19.8 ms |
+| Replacement recipe, summed native creation | 71.3 ms | 10.7 ms |
+| Owner-thread poll and submission while replacement held, p95 / maximum, 32 frames | 3.46 / 14.6 ms | 1.47 / 5.65 ms |
+
+Each recipe prepared six pipelines, drew one, and reported zero first-use
+misses and zero recipe queue seconds. During the injected hold, all sampled
+frames matched the original red frame. The superseding generation produced
+green. Failed native compilation and a mismatched CPU interface preserved
+green. The CPU submission samples exclude readback and do not measure GPU work.
+The first-process startup wait exceeds the time attributed to recipe creation.
+These results leave the rest of setup and owner-thread scheduling unallocated,
+so they do not establish grounds for a hybrid pipeline.
+
+On the same Metal device, the independent installed-SDK fixture rendered
+opaque and masked graphs through both compiled headers and cooked runtime
+generations. It checked the recipe key and readiness before each dependent
+draw and compared every exported pixel across both paths.
+
+Cold startup and transitions in an independently packaged Release app, hosted
+Editor Play with identical input, and the admitted browser viewport still
+require qualification. Track the remaining measurements in
 [#1253](https://github.com/The-Ludus-Project/Ludus/issues/1253).
 
 ### Acceptance evidence

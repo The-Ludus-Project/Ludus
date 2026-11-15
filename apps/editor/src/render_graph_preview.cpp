@@ -588,6 +588,21 @@ struct RenderGraphPreview::State final
     LightTransformerPreviewSetup WaitingModel;
     bool HasWaitingModel = false;
     Target Candidate;
+    ViewportTraceToken CandidatePreparationTrace;
+    ViewportTraceToken CandidateActivationTrace;
+
+    void FinishCandidateTrace(const char* outcome) noexcept
+    {
+        EndViewportTrace(CandidatePreparationTrace, outcome);
+        EndViewportTrace(CandidateActivationTrace, outcome);
+        EndViewportTrace(Candidate.Source.EditTrace.Lifetime, outcome);
+    }
+
+    void TraceCandidateSetupReady() noexcept
+    {
+        EndViewportTrace(CandidatePreparationTrace, "ready");
+        CandidateActivationTrace = BeginGraphEditStage(Candidate.Source.EditTrace, "Await graph activation");
+    }
     Target Active;
     RenderGraphExtraction Extraction;
     bool HasExtraction = false;
@@ -690,6 +705,9 @@ RenderGraphPreview::RenderGraphPreview(BorrowedView<const uint8> interfaceIdenti
 RenderGraphPreview::~RenderGraphPreview()
 {
     // Same release order as Detach, without notifying observers during destruction.
+    mState->FinishCandidateTrace("preview destroyed");
+    EndViewportTrace(mState->Waiting.Source.EditTrace.Lifetime, "preview destroyed");
+    EndViewportTrace(mState->Active.Source.EditTrace.Lifetime, "preview destroyed");
     mState->Capture.Reset();
     mState->Display.Reset();
     mState->Reader.Release();
@@ -745,6 +763,8 @@ void RenderGraphPreview::Detach() noexcept
         return;
     }
     state.Trace.Cancel("preview detached");
+    state.FinishCandidateTrace("preview detached");
+    EndViewportTrace(state.Active.Source.EditTrace.Lifetime, "preview detached");
     // The capture graph lives on this device too; decoded results stay for the inspector.
     state.Capture.Release(QStringLiteral("The viewport device stopped before the capture finished."));
     if (state.IsFrozen == true)
@@ -804,6 +824,11 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     state.RequestedSource = source;
     state.RasterFallbackPath = rasterFallbackPath;
     state.ShouldReselectRenderer = false;
+    if (state.WaitingOrNull.Get() != nullptr &&
+        state.Waiting.Source.EditTrace.CandidateId != source.EditTrace.CandidateId)
+    {
+        EndViewportTrace(state.Waiting.Source.EditTrace.Lifetime, "superseded before staging");
+    }
     state.WaitingOrNull.Reset();
     UniquePtr<renderer::RenderGraphPackage> package;
     QByteArray decodedRuntimeIdentity;
@@ -970,6 +995,10 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     {
         target.Source = source;
     }
+    else
+    {
+        EndViewportTrace(source.EditTrace.Lifetime, "selected package does not match built candidate");
+    }
     LightTransformerPreviewSetup model;
     const bool hasModel = package->HasLightTransformer();
     if (hasModel == true)
@@ -1015,6 +1044,15 @@ RenderGraphPreviewLoad RenderGraphPreview::stage()
     State& state = *mState;
     state.IsResizeRejected = false;
     const bool hasModel = state.HasWaitingModel;
+    if (state.Candidate.Source.EditTrace.CandidateId != state.Waiting.Source.EditTrace.CandidateId)
+    {
+        state.FinishCandidateTrace("superseded before activation");
+    }
+    EndViewportTrace(state.CandidatePreparationTrace, "replaced");
+    EndViewportTrace(state.CandidateActivationTrace, "replaced");
+    state.CandidateActivationTrace = {};
+    state.CandidatePreparationTrace =
+        BeginGraphEditStage(state.Waiting.Source.EditTrace, "Prepare graph pipelines (observed)");
     const rhi::RasterStatus staged =
         state.Activation.Stage(Move(state.WaitingOrNull),
                                state.HasWaitingModel == true ? &state.WaitingModel.Description : nullptr);
@@ -1028,10 +1066,12 @@ RenderGraphPreviewLoad RenderGraphPreview::stage()
     Q_EMIT Changed();
     if (report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
     {
+        state.FinishCandidateTrace("restart required");
         return RenderGraphPreviewLoad::RestartRequired;
     }
     if (IsAccepted(staged) == false)
     {
+        state.FinishCandidateTrace("renderer preparation failed");
         if (hasModel == true)
         {
             setStatus(QStringLiteral("Trained-model setup was rejected (%1). Re-export encoder.llte and decoder.lltd "
@@ -1580,10 +1620,21 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
     const rhi::RasterStatus preparation = state.Activation.Poll();
     state.HasPendingPreparation = preparation == rhi::RasterStatus::Pending;
     const renderer::RenderGraphActivationReport report = state.Activation.GetReport();
-    if (report.ActiveGeneration != before.ActiveGeneration && report.ActiveGeneration == state.Candidate.Serial)
+    const bool hasActivated =
+        report.ActiveGeneration != before.ActiveGeneration && report.ActiveGeneration == state.Candidate.Serial;
+    if (before.IsCandidateSetupReady == false && (report.IsCandidateSetupReady == true || hasActivated == true))
     {
+        state.TraceCandidateSetupReady();
+    }
+    if (hasActivated == true)
+    {
+        if (state.Active.Source.EditTrace.CandidateId != state.Candidate.Source.EditTrace.CandidateId)
+        {
+            EndViewportTrace(state.Active.Source.EditTrace.Lifetime, "superseded before paint");
+        }
         state.Active = state.Candidate;
         state.Candidate = {};
+        EndViewportTrace(state.CandidateActivationTrace, "activated");
         if (state.IsFrozen == true)
         {
             markRayPathStale(QStringLiteral("The graph was rebuilt after this capture; capture again to trace the "
@@ -1689,6 +1740,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
     const renderer::RenderGraphActivationReport modelReport = state.Activation.GetReport();
     if (modelReport.Candidate == renderer::RenderGraphCandidateState::Failed)
     {
+        state.FinishCandidateTrace("renderer preparation failed");
         const QString modelFailure = DescribeLightTransformerPreparationFailure(modelReport.CandidateReport.Model);
         if (modelFailure.isEmpty() == false)
         {
@@ -1738,7 +1790,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
     {
         return;
     }
-    state.Trace.BeginFrame();
+    state.Trace.BeginFrame(state.Active.Source.EditTrace, report.ActiveGeneration);
     state.ProducerTimeoutMilliseconds =
         activeOrNull->HasPendingSamples() == true && activeOrNull->GetSubmittedRaySamples() == 0
             ? FIRST_SAMPLE_PRODUCER_MILLISECONDS

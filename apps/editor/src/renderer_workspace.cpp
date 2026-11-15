@@ -1410,6 +1410,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceEditDebounce.setSingleShot(true);
     mSourceEditDebounce.setInterval(SOURCE_EDIT_DEBOUNCE_MILLISECONDS);
     connect(mSourceController, &CodeDocumentController::TextAccepted, this, [this]() {
+        if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == true)
+        {
+            queueGraphEditTrace(RenderGraphSource::Draft);
+        }
         // History is immediate. Expensive tree/interface/watch refresh stays coalesced.
         mSourceEditDebounce.start();
         SetSourceStatus(*mSourceStatus,
@@ -1424,6 +1428,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         if (mHasPendingWorkerBuild == true)
         {
             mHasPendingWorkerBuild = false;
+            EndViewportTrace(mWorkerStartupTrace);
             if (mShouldPreviewAfterWorker == true)
             {
                 static_cast<void>(buildAndPreview(mSourceAfterWorker));
@@ -1436,6 +1441,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(mWorkerOrNull, &RenderGraphWorker::Failed, this, [this]() {
         mHasPendingWorkerBuild = false;
+        EndViewportTrace(mWorkerStartupTrace, "shader worker startup failed");
+        EndViewportTrace(mQueuedGraphEditStage, "shader worker startup failed");
+        EndViewportTrace(mQueuedGraphEdit.Lifetime, "shader worker startup failed");
+        mQueuedGraphEdit = {};
+        mQueuedGraphEditInput.clear();
         mStatus->setText(mWorkerOrNull->GetError());
         setProblem(mBuildProblem, mStatus->text());
         Q_EMIT JobFinished();
@@ -1597,6 +1607,9 @@ bool RendererWorkspace::RestoreSourceViewState(const QJsonObject& state)
 
 RendererWorkspace::~RendererWorkspace()
 {
+    EndViewportTrace(mQueuedGraphEditStage, "workspace closed");
+    EndViewportTrace(mQueuedGraphEdit.Lifetime, "workspace closed");
+    EndViewportTrace(mWorkerStartupTrace, "workspace closed");
     delete mResourceInspectorOrNull;
     mResourceInspectorOrNull = nullptr;
     delete mSourceAssistance;
@@ -1982,6 +1995,7 @@ bool RendererWorkspace::ReloadSourcesFromDisk()
     setProblem(mSourceProblem, {});
     if (hasChanged == true)
     {
+        queueGraphEditTrace(RenderGraphSource::Saved);
         documentEdited(RenderGraphDocumentStatus::Ok);
     }
     return true;
@@ -2154,9 +2168,24 @@ bool RendererWorkspace::startJob(const QString& action,
     {
         request.Arguments.append(QString(argument).replace(QStringLiteral("{snapshot}"), request.SnapshotDirectory));
     }
+    if (shouldPreview == true)
+    {
+        if (mQueuedGraphEdit.CandidateId != 0 && request.InputIdentity == mQueuedGraphEditInput)
+        {
+            EndViewportTrace(mQueuedGraphEditStage);
+            request.EditTrace = mQueuedGraphEdit;
+            mQueuedGraphEdit = {};
+            mQueuedGraphEditInput.clear();
+        }
+        else
+        {
+            request.EditTrace = BeginGraphEditTrace();
+        }
+    }
     if (mJob.Start(mTooling, request) == false)
     {
         QDir(request.SnapshotDirectory).removeRecursively();
+        EndViewportTrace(request.EditTrace.Lifetime, "shader tool unavailable");
         mStatus->setText(QStringLiteral("The render-graph tool is unavailable from this editor's tooling root."));
         return false;
     }
@@ -2371,6 +2400,15 @@ void RendererWorkspace::setProblem(QString& inoutProblem, const QString& text)
         Q_EMIT RenderProblemChanged();
     }
 }
+void RendererWorkspace::queueGraphEditTrace(RenderGraphSource source)
+{
+    EndViewportTrace(mQueuedGraphEditStage, "superseded before build");
+    EndViewportTrace(mQueuedGraphEdit.Lifetime, "superseded before build");
+    mQueuedGraphEdit = BeginGraphEditTrace();
+    mQueuedGraphEditInput = mQueuedGraphEdit.CandidateId != 0 ? getBuildIdentity(source) : QByteArray{};
+    mQueuedGraphEditStage = BeginGraphEditStage(mQueuedGraphEdit, "Await preview build request");
+}
+
 void RendererWorkspace::applySourceEdit()
 {
     mSourceEditDebounce.stop();
@@ -2512,6 +2550,15 @@ bool RendererWorkspace::startBuild(bool shouldPreview, RenderGraphSource source)
         {
             const QString error = mWorkerOrNull->GetError();
             mHasPendingWorkerBuild = mWorkerOrNull->GetState() == RenderGraphWorkerState::Starting;
+            if (mHasPendingWorkerBuild == true && shouldPreview == true)
+            {
+                if (mQueuedGraphEdit.CandidateId == 0)
+                {
+                    queueGraphEditTrace(source);
+                }
+                EndViewportTrace(mWorkerStartupTrace, "superseded worker wait");
+                mWorkerStartupTrace = BeginGraphEditStage(mQueuedGraphEdit, "Start shader worker");
+            }
             mShouldPreviewAfterWorker = shouldPreview;
             mSourceAfterWorker = source;
             mStatus->setText(error.isEmpty() == true ? QStringLiteral("Starting shader compiler…") : error);
@@ -2890,6 +2937,11 @@ bool RendererWorkspace::CookRuntime()
 void RendererWorkspace::CancelJob()
 {
     mHasPendingWorkerBuild = false;
+    EndViewportTrace(mQueuedGraphEditStage, "cancelled");
+    EndViewportTrace(mQueuedGraphEdit.Lifetime, "cancelled");
+    EndViewportTrace(mWorkerStartupTrace, "cancelled");
+    mQueuedGraphEdit = {};
+    mQueuedGraphEditInput.clear();
     const bool isCreating = mCreation.IsActive();
     SetLivePreview(false);
     mCreation.Cancel();
@@ -2958,6 +3010,7 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     if (result.Request.Request != mActiveRequest || result.Request.ProjectEpoch != mEpoch ||
         mDocument.IsLoaded() == false)
     {
+        EndViewportTrace(result.Request.EditTrace.Lifetime, "superseded request");
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         if (result.Request.Action == QStringLiteral("ray-path-capture") && mRayPathsOrNull != nullptr)
         {
@@ -3027,7 +3080,17 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     if (result.IsSuccessful == true && result.Request.ShouldPreview == true && mSourceProblem.isEmpty() == true &&
         result.Request.InputIdentity == getBuildIdentity(result.Request.Source))
     {
-        static_cast<void>(PreviewRuntime(result.Request.Source));
+        if (PreviewRuntime(result.Request.Source) == false)
+        {
+            EndViewportTrace(result.Request.EditTrace.Lifetime, "runtime preview rejected");
+        }
+    }
+    else if (result.Request.ShouldPreview == true)
+    {
+        EndViewportTrace(result.Request.EditTrace.Lifetime,
+                         result.IsCancelled == true    ? "cancelled"
+                         : result.IsSuccessful == true ? "superseded source snapshot"
+                                                       : "shader build failed");
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (result.Request.Action == QStringLiteral("capture-profile") && mCaptureProfileOrNull != nullptr)
@@ -5520,6 +5583,7 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
         mLastResult.Request.InputIdentity == getBuildIdentity(source) && mLastResult.Request.Source == source)
     {
         provenance.SourceRevision = mLastResult.Request.Revision;
+        provenance.EditTrace = mLastResult.Request.EditTrace;
         const QByteArray rootBytes = source == RenderGraphSource::Saved ? mDocument.GetSaved(mDocument.GetRootGraph())
                                                                         : mDocument.GetDraft(mDocument.GetRootGraph());
         const QJsonObject root = QJsonDocument::fromJson(rootBytes).object();

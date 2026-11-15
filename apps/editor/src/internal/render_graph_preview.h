@@ -98,10 +98,11 @@ struct RenderGraphPreviewSource final
 {
     QByteArray InputIdentity;
     QString Configuration;
-    QByteArray Generation;                 ///< Hex build-generation identity, as reported by the cooker.
-    QByteArray RuntimeIdentity{};          ///< Hex SHA-256 of the cooked runtime bytes, binding the configuration too.
-    QString ModelDirectory{};              ///< Source package root for optional external trained-model assets.
-    QString RootFile{};                    ///< Package-relative root graph that was cooked.
+    QByteArray Generation;        ///< Hex build-generation identity, as reported by the cooker.
+    QByteArray RuntimeIdentity{}; ///< Hex SHA-256 of the cooked runtime bytes, binding the configuration too.
+    QString ModelDirectory{};     ///< Source package root for optional external trained-model assets.
+    QString RootFile{};           ///< Package-relative root graph that was cooked.
+    GraphEditTrace EditTrace{};
     foundation::uint64 SourceRevision = 0; ///< Document revision captured by the build; 0 when unverified.
 };
 

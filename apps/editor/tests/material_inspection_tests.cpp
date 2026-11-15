@@ -116,6 +116,16 @@ RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::
         legacy.Scattering.Eta = {
             {format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA}};
     }
+    if (thirdModel == format::MaterialModel::HairCard)
+    {
+        format::HairCardParameters hair;
+        hair.StrandDirectionDegrees = 90;
+        hair.PrimaryShiftDegrees = -8;
+        hair.SecondaryShiftDegrees = 12;
+        hair.PrimaryWeight = .25F;
+        hair.SecondaryWeight = .5F;
+        legacy.Scattering = format::MakeHairCardScattering(hair);
+    }
 
     RenderScene scene;
     scene.Definition = definition;
@@ -220,6 +230,18 @@ TEST_CASE("Material inspection names dielectrics and their index", "[editor][wor
             true);
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Thin dielectric"));
     CHECK(FindValue(rows, QStringLiteral("IOR η")) == QStringLiteral("1.5"));
+}
+
+TEST_CASE("Material inspection lists a hair card's strand controls", "[editor][world][material][hair-card]")
+{
+    QVector<MaterialPropertyRow> rows;
+    REQUIRE(DescribeSceneObjectMaterial(MakeScene(format::MaterialModel::HairCard), QString(LEGACY_ID), rows) == true);
+    CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Hair card"));
+    CHECK(FindValue(rows, QStringLiteral("Strand direction (°)")) == QStringLiteral("90"));
+    CHECK(FindValue(rows, QStringLiteral("Highlight shifts (°, primary / secondary)")) == QStringLiteral("-8 / 12"));
+    CHECK(FindValue(rows, QStringLiteral("Highlight weights (primary / tinted secondary)")) ==
+          QStringLiteral("0.25 / 0.5"));
+    CHECK(FindValue(rows, QStringLiteral("IOR η")).isNull() == true);
 }
 
 TEST_CASE("Material inspection preserves output without a cooked definition or object", "[editor][world][material]")

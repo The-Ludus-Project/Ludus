@@ -1,8 +1,11 @@
 #pragma once
 
 #include "buffer_access_vulkan.h"
+#include "buffer_range_vulkan.h"
 #include "depth_barrier_vulkan.h"
+#include "graph_lowering_site.h"
 #include "resources.h"
+#include "synchronization_trace_vulkan.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
@@ -116,6 +119,61 @@ struct RasterVkFramebuffer final
 };
 internal::StorageTable<RasterVkFramebuffer> gRasterAdvancedFrames;
 internal::RasterPassInfo gRasterNativePass;
+VulkanSynchronizationTrace gSynchronizationTrace;
+// Opt-in R13a buffer-range trial; the whole-buffer control is the default.
+struct VulkanBufferRangeTrial final
+{
+    VulkanBufferRangeLedger Ranges;
+    bool IsSelected = false;
+};
+VulkanBufferRangeTrial gBufferRangeTrial;
+VulkanSynchronizationSite GetGraphSynchronizationSite() noexcept
+{
+    switch (internal::gGraphLoweringSite.Boundary)
+    {
+        case internal::GraphLoweringBoundary::Pass:
+            return VulkanSynchronizationSite::GraphPass;
+        case internal::GraphLoweringBoundary::Final:
+            return VulkanSynchronizationSite::GraphFinal;
+        case internal::GraphLoweringBoundary::None:
+            break;
+    }
+    return VulkanSynchronizationSite::Direct;
+}
+// Record a barrier emitted in the frame command buffer with the current graph lowering context.
+void RecordFrameSynchronization(VulkanSynchronizationRecord record) noexcept
+{
+    const internal::GraphLoweringSite& site = internal::gGraphLoweringSite;
+    record.Site = GetGraphSynchronizationSite();
+    record.Scope = site.Scope;
+    record.Submission = site.Submission;
+    record.Execution = site.Execution;
+    record.GraphResource = site.Resource;
+    gSynchronizationTrace.Append(record);
+}
+void RecordFrameImageSynchronization(VulkanSynchronizationObject object,
+                                     usize slot,
+                                     VkPipelineStageFlags sourceStages,
+                                     VkPipelineStageFlags destinationStages,
+                                     const VkImageMemoryBarrier& barrier) noexcept
+{
+    if (gSynchronizationTrace.IsEnabled() == false)
+    {
+        return;
+    }
+    RecordFrameSynchronization(
+    {
+        .Object = object,
+        .Slot = slot,
+        .SourceStages = sourceStages,
+        .DestinationStages = destinationStages,
+        .SourceAccess = barrier.srcAccessMask,
+        .DestinationAccess = barrier.dstAccessMask,
+        .OldLayout = barrier.oldLayout,
+        .NewLayout = barrier.newLayout,
+        .Subresources = barrier.subresourceRange,
+    });
+}
 VkFormat RasterPixelFormat(RasterFormat) noexcept;
 RasterStatus RasterError(VkResult result) noexcept
 {
@@ -1204,10 +1262,22 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     EndPhysicalPassTiming();
     return RasterStatus::Ready;
 }
-// Thanks to Khronos, "Synchronization Examples", compute-to-compute and
-// compute-to-graphics dependencies. This adapts the narrow stage/access pairs to
-// Vulkan 1.1 barriers and retains the original writer for later independent reads.
-// https://docs.vulkan.org/guide/latest/synchronization_examples.html
+void SetVulkanSynchronizationTrace(bool isEnabled) noexcept
+{
+    gSynchronizationTrace.SetEnabled(isEnabled);
+}
+const VulkanSynchronizationTrace& GetVulkanSynchronizationTrace() noexcept
+{
+    return gSynchronizationTrace;
+}
+void SetVulkanBufferRangeTrial(bool isEnabled) noexcept
+{
+    gBufferRangeTrial.IsSelected = isEnabled;
+    gBufferRangeTrial.Ranges.Clear();
+}
+// The whole-buffer plan (buffer_range_vulkan.h) is the control. The opt-in R13a trial narrows
+// a dependency to the declared use range only while the ledger can prove the range disjoint;
+// the whole-buffer state remains a conservative superset for transfers and later submissions.
 void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
 {
     const VulkanBufferAccess access = GetVulkanBufferAccess(use, gQueueCompute);
@@ -1216,17 +1286,32 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
         return;
     }
     RasterVulkanBuffer& buffer = gRasterBuffers[slot];
-    const VkAccessFlags destinationAccess = access.ReadAccess | access.WriteAccess;
+    VulkanBufferState state
+    {
+        .Stages = buffer.Stage,
+        .Access = buffer.Access,
+        .WriterStages = buffer.WriterStage,
+        .WriterAccess = buffer.WriterAccess,
+    };
+    const internal::GraphLoweringSite& site = internal::gGraphLoweringSite;
+    const VulkanBufferBarrierPlan plan =
+        gBufferRangeTrial.IsSelected == true
+            ? gBufferRangeTrial.Ranges.Plan(slot,
+                                            { .Execution = site.Execution, .Offset = site.Offset, .Size = site.Size },
+                                            access,
+                                            state)
+            : PlanVulkanBufferBarrier(access, state);
     VkBufferMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     barrier.buffer = buffer.Object;
-    barrier.size = VK_WHOLE_SIZE;
+    barrier.offset = plan.Offset;
+    barrier.size = plan.Size;
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.srcAccessMask = buffer.Access | buffer.WriterAccess;
-    barrier.dstAccessMask = destinationAccess;
+    barrier.srcAccessMask = plan.SourceAccess;
+    barrier.dstAccessMask = plan.DestinationAccess;
     vkCmdPipelineBarrier(gFrames[gFrame].Command,
-                         buffer.Stage | buffer.WriterStage,
-                         access.Stages,
+                         plan.SourceStages,
+                         plan.DestinationStages,
                          0,
                          0,
                          nullptr,
@@ -1234,16 +1319,24 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
                          &barrier,
                          0,
                          nullptr);
-    if (access.WriteAccess != 0)
+    buffer.Stage = state.Stages;
+    buffer.Access = state.Access;
+    buffer.WriterStage = state.WriterStages;
+    buffer.WriterAccess = state.WriterAccess;
+    if (gSynchronizationTrace.IsEnabled() == true)
     {
-        buffer.Stage = buffer.WriterStage = access.Stages;
-        buffer.Access = destinationAccess;
-        buffer.WriterAccess = access.WriteAccess;
-    }
-    else
-    {
-        buffer.Stage |= access.Stages;
-        buffer.Access |= destinationAccess;
+        RecordFrameSynchronization(
+        {
+            .Object = VulkanSynchronizationObject::Buffer,
+            .Range = plan.Outcome,
+            .Slot = slot,
+            .SourceStages = plan.SourceStages,
+            .DestinationStages = plan.DestinationStages,
+            .SourceAccess = plan.SourceAccess,
+            .DestinationAccess = plan.DestinationAccess,
+            .Offset = plan.Offset,
+            .Size = plan.Size,
+        });
     }
 }
 RasterStatus RasterCreateBuffer(usize slot,
@@ -2095,6 +2188,7 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
                 vmaDestroyBuffer(gRasterAllocator, gRasterBuffers[slot].Object, gRasterBuffers[slot].Allocation);
             }
             gRasterBuffers[slot] = {};
+            gBufferRangeTrial.Ranges.Forget(slot);
             break;
         case internal::RasterKind::Texture:
             vkDestroyFramebuffer(gDevice, gRasterTextures[slot].Framebuffer, nullptr);
@@ -2334,6 +2428,11 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
                              1,
                              &depth.Image);
         texture.DepthLayout = depth.Image.newLayout;
+        RecordFrameImageSynchronization(VulkanSynchronizationObject::DepthImage,
+                                        slot,
+                                        depth.SourceStages,
+                                        depth.DestinationStages,
+                                        depth.Image);
     }
     const bool isStorageUse = use == RasterTextureUse::StorageFragment || use == RasterTextureUse::StorageCompute;
     if (isStorageUse == true)
@@ -2362,6 +2461,11 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
                              nullptr,
                              1,
                              &storage);
+        RecordFrameImageSynchronization(VulkanSynchronizationObject::ColorImage,
+                                        slot,
+                                        texture.ColorStage | texture.ColorWriterStage,
+                                        storageStage,
+                                        storage);
         texture.ColorLayout = VK_IMAGE_LAYOUT_GENERAL;
         texture.ColorStage = texture.ColorWriterStage = storageStage;
         texture.ColorAccess = 0;
@@ -2409,6 +2513,11 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
                          nullptr,
                          1,
                          &barrier);
+    RecordFrameImageSynchronization(VulkanSynchronizationObject::ColorImage,
+                                    slot,
+                                    texture.ColorStage | texture.ColorWriterStage,
+                                    stage,
+                                    barrier);
     texture.ColorLayout = layout;
     texture.ColorStage = isAttachmentUse == true ? stage : texture.ColorStage | stage;
     texture.ColorAccess = access;

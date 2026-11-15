@@ -2,6 +2,9 @@
 #include "internal/editor_files.h"
 #include "internal/item_selection.h"
 
+#include <ludus/audio/audio_types.h>
+#include <ludus/audio/content/definitions.h>
+
 #include <QCheckBox>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -28,6 +31,10 @@ namespace ludus::editor
 using namespace foundation;
 namespace
 {
+/// Decimal places the gain field shows; gain is a linear factor in [0, 1].
+constexpr int32 GAIN_DECIMALS = 4;
+/// Largest attenuation distance the spatial fields accept, in world units.
+constexpr float64 MAXIMUM_DISTANCE_INPUT = 1e9;
 class Wave final : public QWidget
 {
 public:
@@ -129,49 +136,49 @@ AudioWorkspace::AudioWorkspace(QWidget* parent) : QWidget(parent)
     });
     auto* form = new QFormLayout;
     layout->addLayout(form);
-    Id_ = new QLineEdit(this);
-    Id_->setReadOnly(true);
-    Id_->setObjectName(QStringLiteral("audio-id"));
-    Bus_ = new QLineEdit(this);
-    Group_ = new QLineEdit(this);
-    Sources_ = new QLineEdit(this);
-    Begin_ = new QLineEdit(this);
-    End_ = new QLineEdit(this);
-    Priority_ = new QSpinBox(this);
-    Priority_->setRange(0, 7);
-    Cooldown_ = new QSpinBox(this);
-    Cooldown_->setRange(0, 600000);
-    Gain_ = new QDoubleSpinBox(this);
-    Gain_->setObjectName(QStringLiteral("audio-gain"));
-    Gain_->setRange(0, 1);
-    Gain_->setDecimals(4);
-    Rate_ = new QDoubleSpinBox(this);
-    Rate_->setRange(0.5, 2);
-    Min_ = new QDoubleSpinBox(this);
-    Max_ = new QDoubleSpinBox(this);
-    Min_->setRange(0, 1e9);
-    Max_->setRange(0, 1e9);
-    Loop_ = new QCheckBox(this);
-    Spatial_ = new QCheckBox(this);
-    Suppress_ = new QCheckBox(this);
-    form->addRow(QStringLiteral("Resource ID"), Id_);
-    form->addRow(QStringLiteral("Bus"), Bus_);
-    form->addRow(QStringLiteral("Group"), Group_);
-    form->addRow(QStringLiteral("Source IDs (comma separated)"), Sources_);
-    form->addRow(QStringLiteral("Priority"), Priority_);
-    form->addRow(QStringLiteral("Gain"), Gain_);
-    form->addRow(QStringLiteral("Rate"), Rate_);
-    form->addRow(QStringLiteral("Point source"), Spatial_);
-    form->addRow(QStringLiteral("Minimum distance"), Min_);
-    form->addRow(QStringLiteral("Maximum distance"), Max_);
-    form->addRow(QStringLiteral("Loop"), Loop_);
-    form->addRow(QStringLiteral("Loop begin source frame"), Begin_);
-    form->addRow(QStringLiteral("Loop end source frame"), End_);
-    form->addRow(QStringLiteral("Cooldown ms"), Cooldown_);
-    form->addRow(QStringLiteral("Suppress while active"), Suppress_);
+    mId = new QLineEdit(this);
+    mId->setReadOnly(true);
+    mId->setObjectName(QStringLiteral("audio-id"));
+    mBus = new QLineEdit(this);
+    mGroup = new QLineEdit(this);
+    mSources = new QLineEdit(this);
+    mLoopBegin = new QLineEdit(this);
+    mLoopEnd = new QLineEdit(this);
+    mPriority = new QSpinBox(this);
+    mPriority->setRange(audio::PRIORITY_MIN, audio::PRIORITY_MAX);
+    mCooldown = new QSpinBox(this);
+    mCooldown->setRange(0, static_cast<int32>(audio::content::MAX_COOLDOWN_MILLISECONDS));
+    mGain = new QDoubleSpinBox(this);
+    mGain->setObjectName(QStringLiteral("audio-gain"));
+    mGain->setRange(0, 1);
+    mGain->setDecimals(GAIN_DECIMALS);
+    mRate = new QDoubleSpinBox(this);
+    mRate->setRange(static_cast<float64>(audio::RATE_MIN), static_cast<float64>(audio::RATE_MAX));
+    mMinimumDistance = new QDoubleSpinBox(this);
+    mMaximumDistance = new QDoubleSpinBox(this);
+    mMinimumDistance->setRange(0, MAXIMUM_DISTANCE_INPUT);
+    mMaximumDistance->setRange(0, MAXIMUM_DISTANCE_INPUT);
+    mLoop = new QCheckBox(this);
+    mSpatial = new QCheckBox(this);
+    mSuppress = new QCheckBox(this);
+    form->addRow(QStringLiteral("Resource ID"), mId);
+    form->addRow(QStringLiteral("Bus"), mBus);
+    form->addRow(QStringLiteral("Group"), mGroup);
+    form->addRow(QStringLiteral("Source IDs (comma separated)"), mSources);
+    form->addRow(QStringLiteral("Priority"), mPriority);
+    form->addRow(QStringLiteral("Gain"), mGain);
+    form->addRow(QStringLiteral("Rate"), mRate);
+    form->addRow(QStringLiteral("Point source"), mSpatial);
+    form->addRow(QStringLiteral("Minimum distance"), mMinimumDistance);
+    form->addRow(QStringLiteral("Maximum distance"), mMaximumDistance);
+    form->addRow(QStringLiteral("Loop"), mLoop);
+    form->addRow(QStringLiteral("Loop begin source frame"), mLoopBegin);
+    form->addRow(QStringLiteral("Loop end source frame"), mLoopEnd);
+    form->addRow(QStringLiteral("Cooldown ms"), mCooldown);
+    form->addRow(QStringLiteral("Suppress while active"), mSuppress);
     Wave_ = new Wave(this);
-    static_cast<Wave*>(Wave_)->Begin = Begin_;
-    static_cast<Wave*>(Wave_)->End = End_;
+    static_cast<Wave*>(Wave_)->Begin = mLoopBegin;
+    static_cast<Wave*>(Wave_)->End = mLoopEnd;
     layout->addWidget(Wave_);
     auto* playback = new QHBoxLayout;
     layout->addLayout(playback);
@@ -220,19 +227,19 @@ AudioWorkspace::AudioWorkspace(QWidget* parent) : QWidget(parent)
     connect(List_, &QListWidget::itemActivated, this, [this]() { Open(); });
     connect(play, &QPushButton::clicked, this, [this]() { Play(); });
     connect(stop, &QPushButton::clicked, Preview_, &AudioPreview::Stop);
-    for (auto* edit : {Bus_, Group_, Sources_, Begin_, End_})
+    for (QLineEdit* edit : {mBus, mGroup, mSources, mLoopBegin, mLoopEnd})
     {
         connect(edit, &QLineEdit::textEdited, this, [this]() { Edit(); });
     }
-    for (auto* spin : {Gain_, Rate_, Min_, Max_})
+    for (QDoubleSpinBox* spin : {mGain, mRate, mMinimumDistance, mMaximumDistance})
     {
         connect(spin, &QDoubleSpinBox::valueChanged, this, [this]() { Edit(); });
     }
-    for (auto* spin : {Priority_, Cooldown_})
+    for (QSpinBox* spin : {mPriority, mCooldown})
     {
         connect(spin, &QSpinBox::valueChanged, this, [this]() { Edit(); });
     }
-    for (auto* check : {Loop_, Spatial_, Suppress_})
+    for (QCheckBox* check : {mLoop, mSpatial, mSuppress})
     {
         connect(check, &QCheckBox::toggled, this, [this]() { Edit(); });
     }
@@ -315,7 +322,7 @@ bool AudioWorkspace::OpenResource(const QString& id)
         {
             List_->setCurrentRow(row);
             Open();
-            return HasDocument_ && Id_->text() == id;
+            return HasDocument_ && mId->text() == id;
         }
     }
     return false;
@@ -394,9 +401,9 @@ void AudioWorkspace::Render()
 {
     Rendering_ = true;
     const auto& region = IsMusic_ ? Music_.Region : Sound_.Region;
-    Id_->setText(Name(IsMusic_ ? Music_.Id.View() : Sound_.Id.View()));
-    Bus_->setText(Name(IsMusic_ ? Music_.Bus.View() : Sound_.Bus.View()));
-    Group_->setText(Name(Sound_.Group.View()));
+    mId->setText(Name(IsMusic_ ? Music_.Id.View() : Sound_.Id.View()));
+    mBus->setText(Name(IsMusic_ ? Music_.Bus.View() : Sound_.Bus.View()));
+    mGroup->setText(Name(Sound_.Group.View()));
     QStringList sources;
     if (IsMusic_)
     {
@@ -409,23 +416,29 @@ void AudioWorkspace::Render()
             sources.append(Name(Sound_.Variations[i].View()));
         }
     }
-    Sources_->setText(sources.join(QStringLiteral(", ")));
-    Priority_->setValue(IsMusic_ ? Music_.Priority : Sound_.Priority);
-    Gain_->setValue(static_cast<float64>(IsMusic_ ? Music_.Gain : Sound_.Gain));
-    Rate_->setValue(static_cast<float64>(Sound_.Rate));
-    Min_->setValue(static_cast<float64>(Sound_.MinDistance));
-    Max_->setValue(static_cast<float64>(Sound_.MaxDistance));
-    Spatial_->setChecked(Sound_.Positional);
-    Suppress_->setChecked(Sound_.SuppressWhileActive);
-    Cooldown_->setValue(static_cast<int>(Sound_.CooldownMs));
-    Loop_->setChecked(region.Enabled);
-    Begin_->setText(QString::number(region.Begin));
-    End_->setText(QString::number(region.End));
-    for (QWidget* widget : std::initializer_list<QWidget*>{Group_, Rate_, Min_, Max_, Spatial_, Suppress_, Cooldown_})
+    mSources->setText(sources.join(QStringLiteral(", ")));
+    mPriority->setValue(IsMusic_ ? Music_.Priority : Sound_.Priority);
+    mGain->setValue(static_cast<float64>(IsMusic_ ? Music_.Gain : Sound_.Gain));
+    mRate->setValue(static_cast<float64>(Sound_.Rate));
+    mMinimumDistance->setValue(static_cast<float64>(Sound_.MinDistance));
+    mMaximumDistance->setValue(static_cast<float64>(Sound_.MaxDistance));
+    mSpatial->setChecked(Sound_.Positional);
+    mSuppress->setChecked(Sound_.SuppressWhileActive);
+    mCooldown->setValue(static_cast<int>(Sound_.CooldownMs));
+    mLoop->setChecked(region.Enabled);
+    mLoopBegin->setText(QString::number(region.Begin));
+    mLoopEnd->setText(QString::number(region.End));
+    for (QWidget* widget : std::initializer_list<QWidget*>{mGroup,
+                                                           mRate,
+                                                           mMinimumDistance,
+                                                           mMaximumDistance,
+                                                           mSpatial,
+                                                           mSuppress,
+                                                           mCooldown})
     {
         widget->setEnabled(IsMusic_ == false && HasDocument_);
     }
-    for (auto* spin : {Gain_, Rate_, Min_, Max_})
+    for (QDoubleSpinBox* spin : {mGain, mRate, mMinimumDistance, mMaximumDistance})
     {
         spin->setProperty("displayedValue", spin->value());
     }
@@ -448,14 +461,14 @@ bool AudioWorkspace::ReadDraft(audio::content::Sound& sound, audio::content::Mus
         return false;
     }
     // Read forms through Play's shared draft validation without starting output.
-    const auto bus = Bus_->text().toUtf8();
-    const auto group = Group_->text().toUtf8();
+    const QByteArray bus = mBus->text().toUtf8();
+    const QByteArray group = mGroup->text().toUtf8();
     sound = Sound_;
     music = Music_;
     bool beginOk = false, endOk = false;
-    audio::content::Loop region{Loop_->isChecked(),
-                                Begin_->text().toULongLong(&beginOk),
-                                End_->text().toULongLong(&endOk)};
+    audio::content::Loop region{mLoop->isChecked(),
+                                mLoopBegin->text().toULongLong(&beginOk),
+                                mLoopEnd->text().toULongLong(&endOk)};
     if (beginOk == false || endOk == false)
     {
         Message_->setText(QStringLiteral("Loop frames must be unsigned integers."));
@@ -466,7 +479,7 @@ bool AudioWorkspace::ReadDraft(audio::content::Sound& sound, audio::content::Mus
         Message_->setText(QStringLiteral("Routing names exceed 128 bytes."));
         return false;
     }
-    const auto sources = Sources_->text().split(QLatin1Char(','));
+    const QStringList sources = mSources->text().split(QLatin1Char(','));
     for (const auto& source : sources)
     {
         if (source.trimmed().toUtf8().size() > 128)
@@ -479,11 +492,11 @@ bool AudioWorkspace::ReadDraft(audio::content::Sound& sound, audio::content::Mus
     {
         (void)music.Bus.Set(View(bus));
         music.Gain =
-            (Gain_->value() == Gain_->property("displayedValue").toDouble() ? (IsMusic_ ? Music_.Gain : Sound_.Gain)
-                                                                            : static_cast<float32>(Gain_->value()));
-        music.Priority = static_cast<uint8>(Priority_->value());
+            (mGain->value() == mGain->property("displayedValue").toDouble() ? (IsMusic_ ? Music_.Gain : Sound_.Gain)
+                                                                            : static_cast<float32>(mGain->value()));
+        music.Priority = static_cast<uint8>(mPriority->value());
         music.Region = region;
-        (void)music.Source.Set(View(Sources_->text().trimmed().toUtf8()));
+        (void)music.Source.Set(View(mSources->text().trimmed().toUtf8()));
     }
     else
     {
@@ -495,22 +508,22 @@ bool AudioWorkspace::ReadDraft(audio::content::Sound& sound, audio::content::Mus
         (void)sound.Bus.Set(View(bus));
         (void)sound.Group.Set(View(group));
         sound.Gain =
-            (Gain_->value() == Gain_->property("displayedValue").toDouble() ? (IsMusic_ ? Music_.Gain : Sound_.Gain)
-                                                                            : static_cast<float32>(Gain_->value()));
+            (mGain->value() == mGain->property("displayedValue").toDouble() ? (IsMusic_ ? Music_.Gain : Sound_.Gain)
+                                                                            : static_cast<float32>(mGain->value()));
         sound.Rate =
-            (Rate_->value() == Rate_->property("displayedValue").toDouble() ? Sound_.Rate
-                                                                            : static_cast<float32>(Rate_->value()));
-        sound.Priority = static_cast<uint8>(Priority_->value());
+            (mRate->value() == mRate->property("displayedValue").toDouble() ? Sound_.Rate
+                                                                            : static_cast<float32>(mRate->value()));
+        sound.Priority = static_cast<uint8>(mPriority->value());
         sound.Region = region;
-        sound.Positional = Spatial_->isChecked();
-        sound.MinDistance =
-            (Min_->value() == Min_->property("displayedValue").toDouble() ? Sound_.MinDistance
-                                                                          : static_cast<float32>(Min_->value()));
-        sound.MaxDistance =
-            (Max_->value() == Max_->property("displayedValue").toDouble() ? Sound_.MaxDistance
-                                                                          : static_cast<float32>(Max_->value()));
-        sound.CooldownMs = static_cast<uint32>(Cooldown_->value());
-        sound.SuppressWhileActive = Suppress_->isChecked();
+        sound.Positional = mSpatial->isChecked();
+        sound.MinDistance = (mMinimumDistance->value() == mMinimumDistance->property("displayedValue").toDouble()
+                                 ? Sound_.MinDistance
+                                 : static_cast<float32>(mMinimumDistance->value()));
+        sound.MaxDistance = (mMaximumDistance->value() == mMaximumDistance->property("displayedValue").toDouble()
+                                 ? Sound_.MaxDistance
+                                 : static_cast<float32>(mMaximumDistance->value()));
+        sound.CooldownMs = static_cast<uint32>(mCooldown->value());
+        sound.SuppressWhileActive = mSuppress->isChecked();
         sound.VariationCount = static_cast<usize>(sources.size());
         for (qsizetype i = 0; i < sources.size(); ++i)
         {

@@ -9,16 +9,25 @@ namespace ludus::editor
 {
 /// All operations are GUI-thread only. Storage is reserved before capture; overflow drops spans.
 inline constexpr foundation::usize MAX_VIEWPORT_TRACE_SPANS = 32768;
+struct ViewportTraceToken final
+{
+    foundation::uint64 Capture = 0;
+    foundation::usize Index = 0;
+};
+/// A copyable correlation for one candidate. Only its first terminal outcome is recorded.
+struct GraphEditTrace final
+{
+    foundation::uint64 CandidateId = 0;
+    ViewportTraceToken Lifetime{};
+};
 struct ViewportTraceIdentity final
 {
     foundation::uint64 ViewportId = 0;
     foundation::uint64 FrameId = 0;
     foundation::uint64 DeviceSession = 0;
-};
-struct ViewportTraceToken final
-{
-    foundation::uint64 Capture = 0;
-    foundation::usize Index = 0;
+    GraphEditTrace Edit{};
+    foundation::uint64 GraphGeneration = 0;
+    foundation::uint64 ShaderStage = 0;
 };
 enum class ViewportTraceLane : foundation::uint8
 {
@@ -29,6 +38,9 @@ enum class ViewportTraceLane : foundation::uint8
     Presentation,
     Paint,
     Interval,
+    Edit,
+    Candidate,
+    ShaderStage,
     Count,
 };
 struct ViewportTraceSpan final
@@ -60,6 +72,15 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
                                                     foundation::uint64 beginTicks = 0) noexcept;
 void EndViewportTrace(ViewportTraceToken token, const char* outcomeOrNull = nullptr) noexcept;
 
+[[nodiscard]] GraphEditTrace BeginGraphEditTrace() noexcept;
+[[nodiscard]] ViewportTraceToken BeginGraphEditStage(GraphEditTrace edit, const char* name) noexcept;
+
+void RecordShaderStageTrace(GraphEditTrace edit,
+                            foundation::uint64 stage,
+                            const char* name,
+                            foundation::uint64 beginTicks,
+                            foundation::uint64 endTicks) noexcept;
+
 /// Tracks the graph's observed states across service calls without changing scheduling.
 class ViewportFrameTrace final
 {
@@ -70,7 +91,7 @@ public:
     ViewportFrameTrace& operator=(const ViewportFrameTrace&) = delete;
     void BeginService(foundation::uint64 nextFrameId, foundation::uint64 deviceSession) noexcept;
     void EndService() noexcept;
-    void BeginFrame() noexcept;
+    void BeginFrame(GraphEditTrace edit = {}, foundation::uint64 graphGeneration = 0) noexcept;
     void SetStage(const char* name) noexcept;
     void Publish() noexcept;
     void Cancel(const char* outcome) noexcept;
