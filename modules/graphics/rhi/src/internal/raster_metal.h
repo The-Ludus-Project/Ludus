@@ -333,6 +333,27 @@ ComputeCapabilities ComputeLimits() noexcept
             {65535, 65535, 65535},
             static_cast<uint32>(internal::RASTER_BINDINGS)};
 }
+// Thanks to Apple, "MTLCompileOptions.mathMode" and "MTLMathMode", Metal documentation:
+// https://developer.apple.com/documentation/metal/mtlcompileoptions/mathmode.
+// Compute libraries disable Metal's default fast math. With fast or relaxed math, the merged render-graph
+// ray kernels lost private values of whole SIMD groups at random on an Apple M5, although their MSL is well
+// defined: wave exports returned exact zeros and a closure program read a zeroed register. The repetition
+// test in wave_scene_graph_tests.cpp exposed it in every run; safe math removed it in thousands of captures.
+// Safe math still contracts a*b + c written as one MSL expression. Render stages keep fast math.
+// See docs/architecture/renderer-systems.md#metal-compute-floating-point.
+void ConfigureMetalComputeMath(MTLCompileOptions* options) noexcept
+{
+    if (@available(macOS 15.0, *)) // ludus-style: magic-number Metal mathMode availability version
+    {
+        options.mathMode = MTLMathModeSafe;
+    }
+#if __MAC_OS_X_VERSION_MIN_REQUIRED < 150000
+    else
+    {
+        options.fastMathEnabled = NO;
+    }
+#endif
+}
 // Thanks to Apple, "MTLDevice", Metal documentation, for library/pipeline creation:
 // https://developer.apple.com/documentation/metal/mtldevice.
 // Retain immutable device/function inputs on a dedicated preparation lane;
@@ -351,6 +372,10 @@ struct MetalShaderPreparation final : NativePreparationTask
         {
             MTLCompileOptions* options = [MTLCompileOptions new];
             options.languageVersion = MTLLanguageVersion2_4;
+            if (Shader.Info.Stage == ShaderStage::Compute)
+            {
+                ConfigureMetalComputeMath(options);
+            }
             NSError* errorOrNull = nil;
             id<MTLLibrary> libraryOrNull = [DeviceOrNull newLibraryWithSource:SourceOrNull
                                                                       options:options

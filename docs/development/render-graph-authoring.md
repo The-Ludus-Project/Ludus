@@ -853,11 +853,10 @@ strategies. Each ray's traversal stack holds 64 nodes, and the builder's 48-leve
 depth limit keeps admitted scenes within it; an overflow would fail the query rather
 than return a partial result. Use it for scenes larger than a few hundred triangles,
 and `TriangleLoop` for small comparisons. Edge, tolerance and tie behavior can differ
-from hardware intersection and from the loop's Moller-Trumbore test. Ludus compiles
-Metal with fast math, which may fuse the watertight test's edge products into
-multiply-adds; each edge function is therefore evaluated in a canonical vertex order,
-so triangles sharing an edge still compute exactly negated values and rays through
-the edge cannot miss both.
+from hardware intersection and from the loop's Moller-Trumbore test. A shader compiler
+may fuse the watertight test's edge products into multiply-adds; each edge function is
+therefore evaluated in a canonical vertex order, so triangles sharing an edge still
+compute exactly negated values and rays through the edge cannot miss both.
 
 The `ludus_render_graph_ray_tests` traversal parity test renders a
 [fixture](../../tests/sdk_consumer/rg2/traversal_parity/main.lurender.json) with
@@ -5179,7 +5178,7 @@ float pmf = EvaluateEmissiveTriangleSelectionPmf(scene, hit.TriangleIndex);
 The C++ reference counterparts (`SelectReferenceEmissiveTriangle` and
 `EvaluateReferenceEmissiveTriangleSelectionPmf`) are private to the renderer. The
 `[power-cdf]` GPU test compares the two implementations: triangle selections must
-match exactly, and PMFs must agree within the division error of Metal's fast math.
+match exactly, and PMFs must agree within float32 division error.
 
 LightSample exposes SelectionPmf and ConditionalPdf separately. Continuous
 sources use inverse-steradian density; delta sources set IsDiscrete and sampled

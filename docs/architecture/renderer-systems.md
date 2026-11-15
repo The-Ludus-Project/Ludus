@@ -2532,7 +2532,7 @@ submits one ordered graph with two compute passes in a frame of `surface`. The
 transport pass traces one sample for every pixel at the image's minimum committed
 count. It walks the BVH with float32 ports of the oracle's slab and watertight
 triangle tests (`ray_bvh_traversal.slang`, shared with render-graph `ComputeBvh`
-ray passes). Each edge function is evaluated in a canonical vertex order, so fast-math
+ray passes). Each edge function is evaluated in a canonical vertex order, so
 multiply-add contraction cannot open cracks between triangles that share an edge. The
 pass applies the same masked opacity, light proposals, power MIS,
 visible-GGX/Lambert sampling and compensated roulette. It adds emission, direct
@@ -2899,6 +2899,45 @@ Khronos/Apple for native query/build synchronization. The more ambitious plan be
 retains future goals; it is not a statement that dynamic scenes, GPU transport,
 all parity AOVs, arbitrary content import or full Staircase2 are already qualified.
 
+### Metal compute floating point
+
+The Metal backend compiles every compute library, including the translated
+render-graph ray kernels and the native ray library, with `MTLMathModeSafe`
+(`fastMathEnabled = NO` before macOS 15). Render-stage libraries keep Metal's
+default fast math. The RHI's `ConfigureMetalComputeMath` owns the choice.
+
+With fast math, and also with `MTLMathModeRelaxed`, which keeps infinities and
+NaNs, the merged ray kernel of the scene Wave Tracing graph lost private values
+of whole SIMD groups at random on an Apple M5. A lost value affected every pixel
+of a compute workgroup (one image row) and no failure was reported. The wave
+export returned exact zeros, and the grain-mask closure program read its zeroed
+roughness register, so a gold lobe came back about 2000 times too bright. The MSL
+writes each value before reading it. Changes to unrelated kernel code moved the
+fault between the wave and program paths, and removing out-of-line calls made it
+worse. About 1-2% of 4 x 4 captures failed. Safe math gave no wrong pixel in
+thousands of captures.
+
+`Scene wave graph repeats its wave and closure-program exports bit for bit`
+(`ludus_wave_graph_tests`) is the regression. It alternates the default-material
+wave export and the program's geometric export on one device at 64 x 64 for 16
+rounds and requires every capture to repeat the first bit for bit. With fast math
+it failed every run, with at least 160 wrong pixels.
+
+Safe math still contracts `a * b + c` when it is written as one MSL expression;
+fast and relaxed math also contract across statements. Slang's `precise` does not
+reach the translated MSL, so shared code whose bits must match the CPU oracle, which
+FoundationMath builds without contraction, keeps the product in its own
+translated statement. `TryMutateMetropolisPrimary` gives its step a second use
+for this, and the `ludus_renderer_metropolis_parity` case checks the bits.
+Turning contraction off for every compute library instead made 2,816 of 4,096
+pixels of the 64 x 64 wave capture exceed `WavePropagationCapacity`, so the wave
+connection's region stepping depends on contraction
+([#1546](https://github.com/The-Ludus-Project/Ludus/issues/1546)).
+
+Three GPU-transport cases (`L6 depth 4`, one-more-vertex HGS and conditional ReSTIR
+final gather) took the same warm wall time with fast and safe math, within run
+noise. Those cases include CPU oracle work, so they are not a GPU benchmark.
+Measure performance-sensitive compute work before it opts back into fast math.
 
 ### Traversal capability and backend boundary
 
