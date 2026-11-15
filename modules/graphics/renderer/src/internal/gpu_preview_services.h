@@ -96,8 +96,8 @@ bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCa
            left.Environment == right.Environment && left.EnvironmentTextureOrNull == right.EnvironmentTextureOrNull &&
            left.Lights == right.Lights && left.LightCount == right.LightCount && left.TextureMip == right.TextureMip &&
            left.Seed == right.Seed && left.CenterRays == right.CenterRays &&
-           left.LightSampling == right.LightSampling && left.OpticalWavelengthWorld == right.OpticalWavelengthWorld &&
-           left.MediumOrNull == right.MediumOrNull;
+           left.LightSampling == right.LightSampling && left.MaterialProfile == right.MaterialProfile &&
+           left.OpticalWavelengthWorld == right.OpticalWavelengthWorld && left.MediumOrNull == right.MediumOrNull;
 }
 bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuContent& b) noexcept
 {
@@ -1559,6 +1559,11 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     if (description.MaxDepth > LUDUS_GPU_PREVIEW_MAX_DEPTH ||
         description.TargetSamples > content::render_graph_format::MAX_ACCUMULATION_SAMPLES ||
         uint64(description.Width) * description.Height > (uint64{1} << 24))
+    {
+        return Status::Unsupported;
+    }
+    // The GPU preview shades single-scattering GGX only; the RT1 profile is not silently replaced.
+    if (description.MaterialProfile != ReferenceMaterialProfile::SingleScattering)
     {
         return Status::Unsupported;
     }

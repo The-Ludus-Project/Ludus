@@ -1,5 +1,6 @@
 #include "l6_scene.h"
 #include "material_program_fixtures.h"
+#include "microfacet_random_walk.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_lit.h"
@@ -23,6 +24,8 @@
 #include <ludus/graphics/rhi/device.h>
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <cmath>
 
 // CPU oracle / GPU-compute parity for the RT1 reference integral. Both paths read
 // the same addressed Philox dimensions, so matching samples follow matching paths;
@@ -118,6 +121,9 @@ enum class SphereSurfaces : uint8
     /// A closure program of diffuse, conductor and cosine-power lobes whose weights read the textured
     /// base colour and metallic inputs, on every reflector including the checker-textured quad.
     Program,
+    /// A rough complex-IOR conductor sphere (alpha 0.6) before a rough legacy metal wall (roughness 0.8), where
+    /// scattering between microfacets is significant.
+    RoughMetal,
 };
 
 /// Every SPHERE_INWARD_ROW_PERIOD-th sphere ring of a Mixed layout points its normals inwards.
@@ -238,6 +244,24 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
             material.Scattering.K[0] = 9.223869F;
             material.Scattering.K[1] = 6.269523F;
             material.Scattering.K[2] = 4.837001F;
+        }
+        if (surfaces == SphereSurfaces::RoughMetal && i < 2)
+        {
+            namespace format = ludus::content::scene_format;
+            material.Metallic = 1;
+            material.Roughness = .8F;
+            if (i == 0)
+            {
+                material.Scattering.Model = format::MaterialModel::Conductor;
+                material.Scattering.AlphaU = 0.6F;
+                material.Scattering.AlphaV = 0.6F;
+                material.Scattering.Eta = {{0.143F, 0.374F, 1.442F}};
+                material.Scattering.K = {{3.983F, 2.385F, 1.603F}};
+            }
+            else
+            {
+                material.Surface.Tint = {.9F, .9F, .9F, 1};
+            }
         }
         if (surfaces == SphereSurfaces::Mix)
         {
@@ -1318,6 +1342,10 @@ struct QuadItem final
     float32 Roughness = 1;
     /// Real index of a smooth Dielectric or ThinDielectric model.
     float32 Eta = ludus::content::scene_format::DEFAULT_DIELECTRIC_ETA;
+    /// Conductor model only: RGB complex index and isotropic GGX alpha.
+    StaticArray<float32, 3> ConductorEta{{1, 1, 1}};
+    StaticArray<float32, 3> ConductorK{};
+    float32 ConductorAlpha = 1;
     /// Optional base texture multiplying BaseColor, sampled nearest and clamped. Corners c0..c3 map to UVs (0, 1),
     /// (0, 0), (1, 0) and (1, 1), so u runs along c1 to c2.
     rhi::TextureHandle Texture{};
@@ -1371,6 +1399,13 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
             material.Scattering.Eta = {{quad.Eta, quad.Eta, quad.Eta}};
             material.Scattering.AlphaU = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
             material.Scattering.AlphaV = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
+        }
+        if (quad.Model == ludus::content::scene_format::MaterialModel::Conductor)
+        {
+            material.Scattering.Eta = quad.ConductorEta;
+            material.Scattering.K = quad.ConductorK;
+            material.Scattering.AlphaU = quad.ConductorAlpha;
+            material.Scattering.AlphaV = quad.ConductorAlpha;
         }
         material.Emission = quad.Emission;
         material.IsEmissionTwoSided = quad.IsEmissionTwoSided;
@@ -2304,6 +2339,622 @@ TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral 
     }
 }
 
+namespace
+{
+using ludus::renderer_tests::Double3;
+using ludus::renderer_tests::MicrofacetRandomWalk;
+using ludus::renderer_tests::OracleRandom;
+constexpr rr::ReferenceMaterialProfile SINGLE_SCATTERING = rr::ReferenceMaterialProfile::SingleScattering;
+constexpr rr::ReferenceMaterialProfile MULTIPLE_SCATTERING = rr::ReferenceMaterialProfile::MultipleScatteringGgx;
+/// Gold-like RGB optical constants whose Fresnel reflectance differs strongly by channel.
+constexpr StaticArray<float32, 3> GOLD_ETA{{0.143F, 0.374F, 1.442F}};
+constexpr StaticArray<float32, 3> GOLD_K{{3.983F, 2.385F, 1.603F}};
+/// The achromatic control repeats gold's green channel in every channel.
+constexpr StaticArray<float32, 3> ACHROMATIC_ETA{{0.374F, 0.374F, 0.374F}};
+constexpr StaticArray<float32, 3> ACHROMATIC_K{{2.385F, 2.385F, 2.385F}};
+
+float64 Widen(float32 value)
+{
+    return static_cast<float64>(value);
+}
+Double3 Widen(math::Vector3 value)
+{
+    return {Widen(value.X), Widen(value.Y), Widen(value.Z)};
+}
+Double3 Widen(const StaticArray<float32, 3>& value)
+{
+    return {Widen(value[0]), Widen(value[1]), Widen(value[2])};
+}
+float64 SumChannels(Double3 value)
+{
+    return value.X + value.Y + value.Z;
+}
+/// Direction at a signed angle from the normal in the plane x = 0 of the tangent frame (+z the normal).
+math::Vector3 MakeTangentDirection(float64 degrees)
+{
+    const float64 radians = degrees * math::kPi / 180;
+    return {0, static_cast<float32>(std::sin(radians)), static_cast<float32>(std::cos(radians))};
+}
+/// The z = 0 quad of these tests faces -z: world (x, y, z) is tangent (x, -y, -z).
+math::Vector3 ToWorld(math::Vector3 tangent)
+{
+    return {tangent.X, -tangent.Y, -tangent.Z};
+}
+/// A 4 x 4 m quad at z = 0 facing -z with one material.
+QuadItem MakeTestPlane()
+{
+    QuadItem plane;
+    plane.CornersWorld = {{{-2, -2, 0}, {-2, 2, 0}, {2, 2, 0}, {2, -2, 0}}};
+    return plane;
+}
+QuadItem MakeWhiteMetalPlane(float32 roughness)
+{
+    QuadItem plane = MakeTestPlane();
+    plane.BaseColor = {1, 1, 1};
+    plane.Metallic = 1;
+    plane.Roughness = roughness;
+    return plane;
+}
+QuadItem
+MakeConductorPlane(float32 alpha, const StaticArray<float32, 3>& eta, const StaticArray<float32, 3>& extinction)
+{
+    QuadItem plane = MakeTestPlane();
+    plane.Model = ludus::content::scene_format::MaterialModel::Conductor;
+    plane.ConductorAlpha = alpha;
+    plane.ConductorEta = eta;
+    plane.ConductorK = extinction;
+    return plane;
+}
+rr::ReferenceBsdf MakeConductorBsdf(float32 alpha,
+                                    const StaticArray<float32, 3>& eta,
+                                    const StaticArray<float32, 3>& extinction,
+                                    rr::ReferenceMaterialProfile profile)
+{
+    rr::ReferenceBsdf bsdf;
+    bsdf.Scattering.Model = ludus::content::scene_format::MaterialModel::Conductor;
+    bsdf.Scattering.AlphaU = alpha;
+    bsdf.Scattering.AlphaV = alpha;
+    bsdf.Scattering.Eta = eta;
+    bsdf.Scattering.K = extinction;
+    bsdf.Profile = profile;
+    return bsdf;
+}
+/// Orthographic view of the test plane at `viewTangent`, a direction in the x = 0 plane of its tangent frame. The clip
+/// window spans +-halfExtentWorld across the view and +-2 m along it, centred on the origin.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the window's half extent in metres, then its pixel count.
+rr::ReferenceCaptureDescription MakeTiltedCapture(math::Vector3 viewTangent, float32 halfExtentWorld, uint32 extent)
+{
+    constexpr float32 DEPTH_SCALE = 0.25F;
+    // Rays travel along -view in world space; the image y axis is the view rotated a quarter turn about x.
+    const math::Vector3 rayWorld = -ToWorld(viewTangent);
+    const math::Vector3 upWorld{0, rayWorld.Z, -rayWorld.Y};
+    const float32 scale = 1 / halfExtentWorld;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = extent;
+    capture.Height = extent;
+    capture.OrthographicCamera = true;
+    capture.CenterRays = true;
+    capture.WorldToClip.Columns[0] = {scale, 0, 0, 0};
+    capture.WorldToClip.Columns[1] = {0, upWorld.Y * scale, DEPTH_SCALE * rayWorld.Y, 0};
+    capture.WorldToClip.Columns[2] = {0, upWorld.Z * scale, DEPTH_SCALE * rayWorld.Z, 0};
+    capture.WorldToClip.Columns[3] = {0, 0, 0.5F, 1};
+    return capture;
+}
+/// Paired sessions on one compute device; CpuOracle first, then GpuCompute.
+struct PairedSessions final
+{
+    rhi::DeviceHandle Device;
+    rhi::SurfaceHandle Surface;
+    Session Cpu;
+    Session Gpu;
+};
+/// Start both traversals; on a device that cannot run the GPU-compute reference, return the skip reason, otherwise
+/// null.
+const char* StartPairedSessions(PairedSessions& outSessions)
+{
+    if (StartComputeDevice(outSessions.Device, outSessions.Surface) == false)
+    {
+        return "No Metal adapter";
+    }
+    const S enabled = Prepare(outSessions.Device, rr::ReferenceTraversal::GpuCompute, outSessions.Gpu);
+    if (enabled == S::Unsupported)
+    {
+        return "Compute storage is unavailable on this device";
+    }
+    REQUIRE(enabled == S::Ready);
+    REQUIRE(Prepare(outSessions.Device, rr::ReferenceTraversal::CpuOracle, outSessions.Cpu) == S::Ready);
+    return nullptr;
+}
+void UsePlane(PairedSessions& inoutSessions, const QuadItem& plane)
+{
+    for (Session* session : {&inoutSessions.Cpu, &inoutSessions.Gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer, session->Program, &plane, 1, session->Snapshot) == S::Ready);
+    }
+}
+/// The direct radiance of a 1 x 1, one-sample capture of the plane under one unit white directional light, which is
+/// f(view, light) cos(light) exactly: the continuation finds a black environment.
+struct DirectionalResponse final
+{
+    math::Vector3 Cpu{};
+    math::Vector3 Gpu{};
+};
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the view then the light, as EvaluateReferenceBsdf orders them.
+DirectionalResponse CaptureDirectionalResponse(PairedSessions& inoutSessions,
+                                               math::Vector3 viewTangent,
+                                               math::Vector3 lightTangent,
+                                               rr::ReferenceMaterialProfile profile)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    rr::ReferenceCaptureDescription capture = MakeTiltedCapture(viewTangent, 0.01F, 1);
+    capture.MaxDepth = 1;
+    capture.RouletteDepth = 1;
+    capture.TargetSamples = 1;
+    capture.LightSampling = rr::ReferenceLightSampling::SeparateDirectional;
+    capture.MaterialProfile = profile;
+    rr::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = rr::LightKind::Directional;
+    light.Direction = -ToWorld(lightTangent);
+    light.Color = {1, 1, 1};
+    light.Intensity = 1;
+    capture.Lights = &light;
+    capture.LightCount = 1;
+    DirectionalResponse response;
+    for (const bool isGpu : {false, true})
+    {
+        Session& session = isGpu == true ? inoutSessions.Gpu : inoutSessions.Cpu;
+        Array<rr::ReferencePixel> pixels;
+        rr::ReferenceCaptureInfo info;
+        Capture(session, capture, inoutSessions.Surface, pixels, info);
+        CHECK(info.MaterialProfile == profile);
+        CHECK(info.InvalidContributions == 0);
+        REQUIRE(pixels.GetSize() == 1);
+        CHECK(pixels[0].Indirect == math::Vector3{});
+        (isGpu == true ? response.Gpu : response.Cpu) = pixels[0].Direct;
+    }
+    return response;
+}
+/// Peak angle and full width at half maximum of a sampled lobe, with linear interpolation between samples.
+struct LobeShape final
+{
+    float64 PeakDegrees = 0;
+    float64 WidthDegrees = 0;
+};
+template <usize COUNT>
+LobeShape MeasureLobe(const StaticArray<float64, COUNT>& degrees, const StaticArray<float64, COUNT>& values)
+{
+    usize peak = 0;
+    for (usize i = 1; i < COUNT; ++i)
+    {
+        peak = values[i] > values[peak] ? i : peak;
+    }
+    const float64 half = 0.5 * values[peak];
+    float64 left = degrees[0];
+    for (usize i = peak; i > 0; --i)
+    {
+        if (values[i - 1] < half)
+        {
+            left =
+                degrees[i - 1] + (degrees[i] - degrees[i - 1]) * (half - values[i - 1]) / (values[i] - values[i - 1]);
+            break;
+        }
+    }
+    float64 right = degrees[COUNT - 1];
+    for (usize i = peak; i + 1 < COUNT; ++i)
+    {
+        if (values[i + 1] < half)
+        {
+            right = degrees[i] + (degrees[i + 1] - degrees[i]) * (values[i] - half) / (values[i] - values[i + 1]);
+            break;
+        }
+    }
+    return {degrees[peak], right - left};
+}
+} // namespace
+
+TEST_CASE("RT1 multiple-scattering GGX white furnace approaches unit radiance on CPU and GPU",
+          "[renderer][gpu][reference-compute][materials][multiple-scattering]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    // The single-scattering baseline is the rough-metal furnace above. The compensated profile restores the energy
+    // lost between microfacets at one scattering event, so its furnace target is one at every depth. The grazing case
+    // (roughness 0.06, 89.75 degrees) and the fully rough normal-incidence baseline come from the Imageworks review.
+    struct FurnaceCase final
+    {
+        float32 Roughness = 0;
+        float64 Degrees = 0;
+    };
+    const FurnaceCase cases[]{{1, 0}, {1, 60}, {1, 85}, {0.5F, 0}, {0.5F, 75}, {0.25F, 45}, {0.06F, 0}, {0.06F, 89.75}};
+    constexpr uint32 IMAGE_EXTENT = 16;
+    constexpr uint32 SAMPLES_PER_PIXEL = 64;
+    constexpr uint32 DEEP_PATH_LIMIT = 4;
+    constexpr uint64 SEEDS[]{23, 59};
+    // As in the single-scattering furnace, each MIS-weighted trial is bounded and 16,384 trials per seed bound the
+    // mean error by 0.02 except with probability about 4e-6; the BSDF-level sweep checks 0.01 deterministically.
+    constexpr float64 MEAN_RADIANCE_TOLERANCE = 0.02;
+    constexpr float32 MATCHED_PIXEL_TOLERANCE = 1e-3F;
+    float64 largestError = 0;
+    for (const FurnaceCase& furnace : cases)
+    {
+        UsePlane(sessions, MakeWhiteMetalPlane(furnace.Roughness));
+        rr::ReferenceCaptureDescription capture =
+            MakeTiltedCapture(MakeTangentDirection(furnace.Degrees), 0.005F, IMAGE_EXTENT);
+        capture.Environment = {1, 1, 1};
+        capture.TargetSamples = SAMPLES_PER_PIXEL;
+        capture.RouletteDepth = DEEP_PATH_LIMIT;
+        capture.MaterialProfile = MULTIPLE_SCATTERING;
+        for (const uint64 seed : SEEDS)
+        {
+            capture.Seed = seed;
+            for (const uint32 pathLimit : {uint32{1}, DEEP_PATH_LIMIT})
+            {
+                capture.MaxDepth = pathLimit;
+                CAPTURE(furnace.Roughness, furnace.Degrees, seed, pathLimit);
+                Array<rr::ReferencePixel> oracle;
+                Array<rr::ReferencePixel> compute;
+                rr::ReferenceCaptureInfo oracleInfo;
+                rr::ReferenceCaptureInfo computeInfo;
+                Capture(sessions.Cpu, capture, sessions.Surface, oracle, oracleInfo);
+                Capture(sessions.Gpu, capture, sessions.Surface, compute, computeInfo);
+                CHECK(oracleInfo.MaterialProfile == MULTIPLE_SCATTERING);
+                CHECK(computeInfo.MaterialProfile == MULTIPLE_SCATTERING);
+                CHECK(oracleInfo.InvalidContributions == 0);
+                CHECK(computeInfo.InvalidContributions == 0);
+                const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+                CAPTURE(comparison.MaximumRadiance, comparison.MaximumDirect);
+                CHECK(comparison.MaximumRadiance <= MATCHED_PIXEL_TOLERANCE);
+                for (const Array<rr::ReferencePixel>* pixels : {&oracle, &compute})
+                {
+                    INFO((pixels == &oracle ? "CPU oracle" : "GPU compute"));
+                    const ImageMeans means = MeasureImage(*pixels);
+                    CAPTURE(means.Radiance.X);
+                    CHECK(means.Indirect == math::Vector3{});
+                    CHECK(means.Radiance.X == means.Radiance.Y);
+                    CHECK(means.Radiance.X == means.Radiance.Z);
+                    const float64 error = std::fabs(Widen(means.Radiance.X) - 1);
+                    largestError = std::fmax(largestError, error);
+                    CHECK(error <= MEAN_RADIANCE_TOLERANCE);
+                }
+            }
+        }
+    }
+    WARN("Largest multiple-scattering furnace capture error: " << largestError);
+}
+
+TEST_CASE("RT1 multiple-scattering GGX resolves the directional lobe of absorbing metals on CPU and GPU",
+          "[renderer][gpu][reference-compute][materials][multiple-scattering][oracle]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    // Thanks to James F. Blinn, "Models of Light Reflection for Computer Synthesized Pictures", SIGGRAPH '77,
+    // pp. 192-198, Fig. 5: hold the incident direction fixed and plot the reflected intensity against the view on both
+    // sides of the mirror direction. Each capture measures f(view, light) cos(light) under a unit white directional
+    // light; the lobe compares the intensity f cos(light) cos(view), which peaks inside the hemisphere.
+    constexpr float32 ALPHA = 0.64F;
+    constexpr usize VIEW_COUNT = 12;
+    const StaticArray<float64, VIEW_COUNT> views{{-60, -30, 0, 20, 35, 45, 55, 65, 75, 82, 86, 89}};
+    constexpr uint32 WALKS = 1U << 15;
+    constexpr float64 PAIRED_TOLERANCE = 1e-4;
+    // Measured on Metal: relative intensity error up to 0.049 and width error up to 4.8 degrees (single scattering:
+    // 0.46 and 17 degrees). Normalized RGB stays within 0.0096 of the reference over the slice and 0.0026 at the mirror
+    // view, where an equal-energy gray compensation is 0.0104 away.
+    constexpr float64 RELATIVE_TOLERANCE = 0.07;
+    constexpr float64 WIDTH_TOLERANCE_DEGREES = 6;
+    constexpr float64 COLOR_TOLERANCE = 0.015;
+    constexpr float64 MIRROR_COLOR_TOLERANCE = 0.005;
+    OracleRandom random(0x51ab);
+    float64 largestOffPeakError = 0;
+    float64 largestWidthError = 0;
+    float64 largestColorError = 0;
+    float64 largestMirrorColorError = 0;
+    float64 smallestGrayColorError = 1;
+    for (const bool isGold : {true, false})
+    {
+        const StaticArray<float32, 3>& eta = isGold == true ? GOLD_ETA : ACHROMATIC_ETA;
+        const StaticArray<float32, 3>& extinction = isGold == true ? GOLD_K : ACHROMATIC_K;
+        UsePlane(sessions, MakeConductorPlane(ALPHA, eta, extinction));
+        const MicrofacetRandomWalk walk(Widen(ALPHA), Widen(eta), Widen(extinction), false);
+        for (const float64 incidentDegrees : {45.0, 75.0})
+        {
+            const math::Vector3 lightTangent = MakeTangentDirection(-incidentDegrees);
+            StaticArray<float64, VIEW_COUNT> compensatedEnergy{};
+            StaticArray<float64, VIEW_COUNT> singleEnergy{};
+            StaticArray<float64, VIEW_COUNT> referenceEnergy{};
+            for (usize view = 0; view < VIEW_COUNT; ++view)
+            {
+                const math::Vector3 viewTangent = MakeTangentDirection(views[view]);
+                CAPTURE(isGold, incidentDegrees, views[view]);
+                const DirectionalResponse compensated =
+                    CaptureDirectionalResponse(sessions, viewTangent, lightTangent, MULTIPLE_SCATTERING);
+                const DirectionalResponse single =
+                    CaptureDirectionalResponse(sessions, viewTangent, lightTangent, SINGLE_SCATTERING);
+                rr::ReferenceBsdfEvaluation evaluated;
+                REQUIRE(rr::EvaluateReferenceBsdf(MakeConductorBsdf(ALPHA, eta, extinction, MULTIPLE_SCATTERING),
+                                                  {0, 0, 1},
+                                                  viewTangent,
+                                                  lightTangent,
+                                                  evaluated) == rhi::RasterStatus::Ready);
+                const Double3 expected = Widen(evaluated.Value) * Widen(lightTangent.Z);
+                const Double3 reference = walk.Evaluate(Widen(viewTangent), Widen(lightTangent), WALKS, random);
+                CAPTURE(compensated.Cpu.X, compensated.Cpu.Y, compensated.Cpu.Z);
+                CAPTURE(compensated.Gpu.X, compensated.Gpu.Y, compensated.Gpu.Z);
+                CAPTURE(reference.X, reference.Y, reference.Z, single.Cpu.X, single.Cpu.Y, single.Cpu.Z);
+                // The CPU capture shades with the same evaluation; the GPU capture repeats it in binary32.
+                CHECK(std::fabs(SumChannels(Widen(compensated.Cpu)) - SumChannels(expected)) <=
+                      PAIRED_TOLERANCE * (1 + SumChannels(expected)));
+                for (const DirectionalResponse* response : {&compensated, &single})
+                {
+                    CHECK(std::fabs(Widen(response->Gpu.X) - Widen(response->Cpu.X)) <=
+                          PAIRED_TOLERANCE * (1 + Widen(response->Cpu.X)));
+                    CHECK(std::fabs(Widen(response->Gpu.Z) - Widen(response->Cpu.Z)) <=
+                          PAIRED_TOLERANCE * (1 + Widen(response->Cpu.Z)));
+                }
+                const float64 viewCosine = Widen(viewTangent.Z);
+                // Normalized RGB against the reference, and for an equal-energy achromatic compensation that adds the
+                // mean of the compensated lobe's channels: the separate color tolerance detects the latter.
+                const Double3 compensatedRgb = Widen(compensated.Gpu);
+                const Double3 singleRgb = Widen(single.Gpu);
+                const float64 addedMean = (SumChannels(compensatedRgb) - SumChannels(singleRgb)) / 3;
+                const Double3 grayRgb = singleRgb + Double3{addedMean, addedMean, addedMean};
+                const auto colorDistance = [&reference](Double3 rgb) noexcept {
+                    const Double3 normalized = rgb * (1 / SumChannels(rgb));
+                    const Double3 target = reference * (1 / SumChannels(reference));
+                    return std::fmax(std::fabs(normalized.X - target.X),
+                                     std::fmax(std::fabs(normalized.Y - target.Y), std::fabs(normalized.Z - target.Z)));
+                };
+                largestColorError = std::fmax(largestColorError, colorDistance(compensatedRgb));
+                CHECK(colorDistance(compensatedRgb) <= COLOR_TOLERANCE);
+                if (isGold == true && views[view] == incidentDegrees)
+                {
+                    smallestGrayColorError = std::fmin(smallestGrayColorError, colorDistance(grayRgb));
+                    largestMirrorColorError = std::fmax(largestMirrorColorError, colorDistance(compensatedRgb));
+                    CHECK(colorDistance(compensatedRgb) <= MIRROR_COLOR_TOLERANCE);
+                    CHECK(colorDistance(grayRgb) > MIRROR_COLOR_TOLERANCE);
+                }
+                compensatedEnergy[view] = SumChannels(Widen(compensated.Gpu)) * viewCosine;
+                singleEnergy[view] = SumChannels(Widen(single.Gpu)) * viewCosine;
+                referenceEnergy[view] = SumChannels(reference) * viewCosine;
+            }
+            const LobeShape compensatedShape = MeasureLobe(views, compensatedEnergy);
+            const LobeShape singleShape = MeasureLobe(views, singleEnergy);
+            const LobeShape referenceShape = MeasureLobe(views, referenceEnergy);
+            CAPTURE(compensatedShape.PeakDegrees, compensatedShape.WidthDegrees);
+            CAPTURE(singleShape.PeakDegrees, singleShape.WidthDegrees);
+            CAPTURE(referenceShape.PeakDegrees, referenceShape.WidthDegrees);
+            CHECK(compensatedShape.PeakDegrees == referenceShape.PeakDegrees);
+            const float64 widthError = std::fabs(compensatedShape.WidthDegrees - referenceShape.WidthDegrees);
+            largestWidthError = std::fmax(largestWidthError, widthError);
+            CHECK(widthError <= WIDTH_TOLERANCE_DEGREES);
+            for (usize view = 0; view < VIEW_COUNT; ++view)
+            {
+                const float64 relative =
+                    std::fabs(compensatedEnergy[view] - referenceEnergy[view]) / referenceEnergy[view];
+                const float64 singleRelative =
+                    std::fabs(singleEnergy[view] - referenceEnergy[view]) / referenceEnergy[view];
+                CAPTURE(views[view], compensatedEnergy[view], singleEnergy[view], referenceEnergy[view]);
+                largestOffPeakError = std::fmax(largestOffPeakError, relative);
+                CHECK(relative <= RELATIVE_TOLERANCE);
+                CHECK(relative <= singleRelative + 0.01);
+            }
+        }
+    }
+    WARN("Directional lobe: largest relative error "
+         << largestOffPeakError << ", largest width error " << largestWidthError << " degrees, largest color error "
+         << largestColorError << " (mirror " << largestMirrorColorError << "), gray compensation color error "
+         << smallestGrayColorError);
+}
+
+TEST_CASE("RT1 multiple-scattering GGX keeps the grazing Fresnel color of a colored conductor on CPU and GPU",
+          "[renderer][gpu][reference-compute][materials][multiple-scattering][oracle]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    // Thanks to Robert L. Cook and Kenneth E. Torrance, "A Reflectance Model for Computer Graphics", SIGGRAPH '81,
+    // pp. 307-316: a colored metal's highlight under white light shifts toward the light's color at grazing angles,
+    // as its Fresnel reflectance approaches one. Illumination and observation move together along the mirror
+    // direction. Energy and normalized RGB have separate tolerances, so a compensation that matches total energy while
+    // shifting the highlight's color fails.
+    constexpr float32 ALPHA = 0.09F;
+    constexpr uint32 WALKS = 1U << 15;
+    // Measured on Metal: energy error up to 0.059 at 85 degrees, where the reference gains higher-order energy that the
+    // tabulated lobe underestimates, and normalized RGB error up to 2.3e-4.
+    constexpr float64 ENERGY_TOLERANCE = 0.08;
+    constexpr float64 COLOR_TOLERANCE = 0.002;
+    constexpr float64 PAIRED_TOLERANCE = 1e-4;
+    OracleRandom random(0xc0101);
+    float64 largestEnergyError = 0;
+    float64 largestColorError = 0;
+    for (const bool isGold : {true, false})
+    {
+        const StaticArray<float32, 3>& eta = isGold == true ? GOLD_ETA : ACHROMATIC_ETA;
+        const StaticArray<float32, 3>& extinction = isGold == true ? GOLD_K : ACHROMATIC_K;
+        UsePlane(sessions, MakeConductorPlane(ALPHA, eta, extinction));
+        const MicrofacetRandomWalk walk(Widen(ALPHA), Widen(eta), Widen(extinction), false);
+        float64 previousSpread = 1;
+        for (const float64 degrees : {0.0, 30.0, 60.0, 75.0, 85.0, 89.0})
+        {
+            const math::Vector3 viewTangent = MakeTangentDirection(degrees);
+            const math::Vector3 lightTangent = MakeTangentDirection(-degrees);
+            CAPTURE(isGold, degrees);
+            const DirectionalResponse compensated =
+                CaptureDirectionalResponse(sessions, viewTangent, lightTangent, MULTIPLE_SCATTERING);
+            const Double3 reference = walk.Evaluate(Widen(viewTangent), Widen(lightTangent), WALKS, random);
+            // At the mirror configuration the half vector is the normal: the declared Fresnel model at cos(theta).
+            const float64 cosine = std::cos(degrees * math::kPi / 180);
+            const Double3 fresnel{
+                ludus::renderer_tests::ComputeComplexFresnel(cosine, Widen(eta[0]), Widen(extinction[0])),
+                ludus::renderer_tests::ComputeComplexFresnel(cosine, Widen(eta[1]), Widen(extinction[1])),
+                ludus::renderer_tests::ComputeComplexFresnel(cosine, Widen(eta[2]), Widen(extinction[2]))};
+            for (const math::Vector3 pixel : {compensated.Cpu, compensated.Gpu})
+            {
+                const Double3 raw = Widen(pixel);
+                const Double3 normalized = raw * (1 / SumChannels(raw));
+                const Double3 referenceNormalized = reference * (1 / SumChannels(reference));
+                const Double3 fresnelNormalized = fresnel * (1 / SumChannels(fresnel));
+                CAPTURE(raw.X, raw.Y, raw.Z, normalized.X, normalized.Y, normalized.Z);
+                CAPTURE(reference.X,
+                        reference.Y,
+                        reference.Z,
+                        referenceNormalized.X,
+                        referenceNormalized.Y,
+                        referenceNormalized.Z);
+                CAPTURE(fresnelNormalized.X, fresnelNormalized.Y, fresnelNormalized.Z);
+                const float64 energyError =
+                    std::fabs(SumChannels(raw) - SumChannels(reference)) / SumChannels(reference);
+                const float64 colorError = std::fmax(std::fabs(normalized.X - referenceNormalized.X),
+                                                     std::fmax(std::fabs(normalized.Y - referenceNormalized.Y),
+                                                               std::fabs(normalized.Z - referenceNormalized.Z)));
+                const float64 fresnelColorError = std::fmax(std::fabs(normalized.X - fresnelNormalized.X),
+                                                            std::fmax(std::fabs(normalized.Y - fresnelNormalized.Y),
+                                                                      std::fabs(normalized.Z - fresnelNormalized.Z)));
+                largestEnergyError = std::fmax(largestEnergyError, energyError);
+                largestColorError = std::fmax(largestColorError, colorError);
+                CHECK(energyError <= ENERGY_TOLERANCE);
+                CHECK(colorError <= COLOR_TOLERANCE);
+                CHECK(fresnelColorError <= COLOR_TOLERANCE);
+                if (isGold == false)
+                {
+                    CHECK(std::fabs(normalized.X - 1.0 / 3) <= 1e-6);
+                    CHECK(std::fabs(normalized.Z - 1.0 / 3) <= 1e-6);
+                }
+            }
+            CHECK(std::fabs(Widen(compensated.Gpu.X) - Widen(compensated.Cpu.X)) <=
+                  PAIRED_TOLERANCE * (1 + Widen(compensated.Cpu.X)));
+            CHECK(std::fabs(Widen(compensated.Gpu.Z) - Widen(compensated.Cpu.Z)) <=
+                  PAIRED_TOLERANCE * (1 + Widen(compensated.Cpu.Z)));
+            // Gold's highlight whitens toward grazing: the spread of its normalized channels shrinks.
+            const Double3 normalized = Widen(compensated.Gpu) * (1 / SumChannels(Widen(compensated.Gpu)));
+            const float64 spread = std::fmax(normalized.X, std::fmax(normalized.Y, normalized.Z)) -
+                                   std::fmin(normalized.X, std::fmin(normalized.Y, normalized.Z));
+            if (isGold == true && degrees >= 60)
+            {
+                CHECK(spread < previousSpread);
+            }
+            previousSpread = spread;
+        }
+    }
+    WARN("Grazing color: largest energy error " << largestEnergyError << ", largest normalized RGB error "
+                                                << largestColorError);
+}
+
+TEST_CASE("RT1 multiple-scattering GGX matches between CPU and GPU on a rough-metal scene and records its cost",
+          "[renderer][gpu][reference-compute][materials][multiple-scattering]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    rr::Snapshot spheres[2];
+    REQUIRE(BuildSphereSnapshot(sessions.Device,
+                                sessions.Cpu.Renderer,
+                                sessions.Cpu.Program,
+                                spheres[0],
+                                true,
+                                SphereSurfaces::RoughMetal) == S::Ready);
+    REQUIRE(BuildSphereSnapshot(sessions.Device,
+                                sessions.Gpu.Renderer,
+                                sessions.Gpu.Program,
+                                spheres[1],
+                                true,
+                                SphereSurfaces::RoughMetal) == S::Ready);
+    REQUIRE(sessions.Cpu.Renderer.Release(sessions.Cpu.Snapshot) == S::Ready);
+    REQUIRE(sessions.Gpu.Renderer.Release(sessions.Gpu.Snapshot) == S::Ready);
+    sessions.Cpu.Snapshot = spheres[0];
+    sessions.Gpu.Snapshot = spheres[1];
+    rr::DirectLight sun;
+    sun.SourceId = 7;
+    sun.Direction = math::Vector3{-.3F, -.4F, 1} / math::Length(math::Vector3{-.3F, -.4F, 1});
+    sun.Intensity = .8F;
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({.3F, .2F, -2}, 32, 24);
+    capture.TargetSamples = 16;
+    capture.MaxDepth = 6;
+    capture.Environment = {.2F, .25F, .3F};
+    capture.Lights = &sun;
+    capture.LightCount = 1;
+    StaticArray<math::Vector3, 2> profileMeans{};
+    for (const rr::ReferenceMaterialProfile profile : {SINGLE_SCATTERING, MULTIPLE_SCATTERING})
+    {
+        capture.MaterialProfile = profile;
+        for (const uint64 seed : {uint64{99}, uint64{131}})
+        {
+            capture.Seed = seed;
+            CAPTURE(static_cast<uint32>(profile), seed);
+            Array<rr::ReferencePixel> oracle;
+            Array<rr::ReferencePixel> compute;
+            rr::ReferenceCaptureInfo oracleInfo;
+            rr::ReferenceCaptureInfo computeInfo;
+            const uint64 cpuStart = time::NowTicks();
+            Capture(sessions.Cpu, capture, sessions.Surface, oracle, oracleInfo);
+            const uint64 gpuStart = time::NowTicks();
+            Capture(sessions.Gpu, capture, sessions.Surface, compute, computeInfo);
+            const uint64 gpuEnd = time::NowTicks();
+            const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+            CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+            CHECK(oracleInfo.MaterialProfile == profile);
+            CHECK(computeInfo.MaterialProfile == profile);
+            CHECK(computeInfo.InvalidContributions == 0);
+            CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+            CHECK(computeInfo.NullBsdfSamples == oracleInfo.NullBsdfSamples);
+            CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+            CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+            profileMeans[profile == MULTIPLE_SCATTERING ? 1 : 0] =
+                profileMeans[profile == MULTIPLE_SCATTERING ? 1 : 0] + comparison.CpuMean;
+            WARN("Rough-metal scene, profile " << static_cast<uint32>(profile) << ", seed " << seed << ": CPU oracle "
+                                               << (gpuStart - cpuStart) / NANOSECONDS_PER_MILLISECOND
+                                               << " ms, GPU compute "
+                                               << (gpuEnd - gpuStart) / NANOSECONDS_PER_MILLISECOND << " ms");
+        }
+    }
+    // The compensated profile only adds reflected energy.
+    CHECK(profileMeans[1].X > profileMeans[0].X);
+    CHECK(profileMeans[1].Y > profileMeans[0].Y);
+}
+
 TEST_CASE("An emitter seen through smooth glass keeps the Fresnel-transmitted radiance",
           "[renderer][gpu][reference-compute][dielectric]")
 {
@@ -2465,10 +3116,6 @@ math::Vector2 GetMediumPixelCenter(usize pixel)
     const float64 row = static_cast<float64>(pixel / MEDIUM_IMAGE_EXTENT) + .5;
     return {static_cast<float32>(2 * column / MEDIUM_IMAGE_EXTENT - 1),
             static_cast<float32>(1 - 2 * row / MEDIUM_IMAGE_EXTENT)};
-}
-float64 Widen(float32 value)
-{
-    return static_cast<float64>(value);
 }
 float64 GetBeerLambert(float32 absorptionPerWorld, float64 insideWorld)
 {

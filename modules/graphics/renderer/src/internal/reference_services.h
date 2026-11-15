@@ -3,6 +3,7 @@
 // mesh and material incarnations, while RHI retains accepted native work.
 
 #include "../../shaders/wave_connection_layout.h"
+#include "ggx_albedo_table.h"
 #include "ltc_table_data.h"
 #include "reference_data.h"
 
@@ -109,6 +110,8 @@ constexpr uint32 HDR_MEDIUM_FLAG = 512;
 /// Medium absorption RGB (three float32) and boundary triangle count (uint32) in the LUHDR01 header.
 constexpr usize HDR_MEDIUM_ABSORPTION_OFFSET = 184;
 constexpr usize HDR_MEDIUM_TRIANGLES_OFFSET = 196;
+/// LUHDR01 flags bit identifying ReferenceMaterialProfile::MultipleScatteringGgx.
+constexpr uint32 HDR_MULTIPLE_SCATTERING_FLAG = 1024;
 constexpr usize HDR_SCENE_FINGERPRINT_OFFSET = 64;
 constexpr usize HDR_OPTICAL_WAVELENGTH_OFFSET = 92;
 
@@ -135,6 +138,10 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     if (inoutJob.Description.LightSampling == ReferenceLightSampling::ResampledFormFactor)
     {
         uniform.Sampling[2] |= LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG;
+    }
+    if (inoutJob.Description.MaterialProfile == ReferenceMaterialProfile::MultipleScatteringGgx)
+    {
+        uniform.Sampling[2] |= LUDUS_REFERENCE_MULTIPLE_SCATTERING_FLAG;
     }
     uniform.Options.Y = inoutJob.Description.OpticalWavelengthWorld;
     uniform.Tile[0] = inoutJob.DirectionalLightCount;
@@ -208,8 +215,8 @@ bool SameReferenceIntegral(const ReferenceJob& a,
         d.SecondaryDistance != b.SecondaryDistance || d.Environment != b.Environment ||
         a.EnvironmentOrNull != Access::GetEnvironment(b.EnvironmentTextureOrNull) || d.TextureMip != b.TextureMip ||
         d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightSampling != b.LightSampling ||
-        d.OpticalWavelengthWorld != b.OpticalWavelengthWorld || d.LightCount != lights.Count ||
-        internal::IsSameReferenceMedium(a.Medium, b.MediumOrNull) == false)
+        d.MaterialProfile != b.MaterialProfile || d.OpticalWavelengthWorld != b.OpticalWavelengthWorld ||
+        d.LightCount != lights.Count || internal::IsSameReferenceMedium(a.Medium, b.MediumOrNull) == false)
     {
         return false;
     }
@@ -235,6 +242,11 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
     if (d.LightSampling != ReferenceLightSampling::UniformArea &&
         d.LightSampling != ReferenceLightSampling::SeparateDirectional &&
         internal::IsReferenceResampled(d.LightSampling) == false)
+    {
+        return Status::InvalidDescription;
+    }
+    if (d.MaterialProfile != ReferenceMaterialProfile::SingleScattering &&
+        d.MaterialProfile != ReferenceMaterialProfile::MultipleScatteringGgx)
     {
         return Status::InvalidDescription;
     }
@@ -793,12 +805,13 @@ Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& tr
     core::UniquePtr<internal::ReferenceState> state(allocation);
     state->Options = options;
     state->CpuBytes = sizeof(internal::ReferenceState);
-    // The shared LTC table is charged once to the budget, before any capture.
-    if (options.GpuByteBudget < sizeof(internal::LTC_TABLE))
+    // The shared LTC and GGX albedo tables are charged once to the budget, before any capture.
+    constexpr usize TABLE_BYTES = sizeof(internal::LTC_TABLE) + sizeof(internal::GGX_ALBEDO_TABLE);
+    if (options.GpuByteBudget < TABLE_BYTES)
     {
         return Status::CapacityExceeded;
     }
-    state->GpuBytes = sizeof(internal::LTC_TABLE);
+    state->GpuBytes = TABLE_BYTES;
     Status status = internal::CreateReferenceComputePipelines(mState->Device, trace, reduce, state->Compute);
     if (status != Status::Ready)
     {
@@ -1260,6 +1273,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     }
     job->Info.Traversal = Reference->Options.Traversal;
     job->Info.LightSampling = description.LightSampling;
+    job->Info.MaterialProfile = description.MaterialProfile;
     job->Info.SamplerVersion = internal::GetReferenceSamplerVersion(description.LightSampling);
     job->Info.Seed = description.Seed;
     job->Info.Width = description.Width;
@@ -1978,7 +1992,10 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
         (job.Info.Complete == false ? 32U : 0U) |
         (internal::IsReferenceResampled(job.Description.LightSampling) == true ? HDR_RESAMPLED_LIGHT_FLAG : 0U) |
         (job.Description.OpticalWavelengthWorld > 0 ? HDR_OPTICAL_FLAG : 0U) |
-        (internal::HasReferenceMedium(job.Medium) == true ? HDR_MEDIUM_FLAG : 0U);
+        (internal::HasReferenceMedium(job.Medium) == true ? HDR_MEDIUM_FLAG : 0U) |
+        (job.Description.MaterialProfile == ReferenceMaterialProfile::MultipleScatteringGgx
+             ? HDR_MULTIPLE_SCATTERING_FLAG
+             : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);

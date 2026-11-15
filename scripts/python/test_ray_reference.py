@@ -78,6 +78,18 @@ class ReferenceExportTests(unittest.TestCase):
                 metadata, _ = hdr.decode(data)
                 self.assertEqual(metadata['center_rays'], center_rays)
 
+    def test_material_profile_flag_is_named(self):
+        for flags, profile in ((96, 'single_scattering'), (1120, 'multiple_scattering_ggx'),
+                               (1057, 'multiple_scattering_ggx')):
+            with self.subTest(flags=flags):
+                data = self.capture()
+                struct.pack_into('<I', data, 44, flags)
+                metadata, _ = hdr.decode(data)
+                self.assertEqual(metadata['material_profile'], profile)
+        data = self.capture()
+        struct.pack_into('<I', data, 44, 2048 | 96)
+        with self.assertRaises(ValueError): hdr.decode(data)
+
     def test_optical_capture_retains_its_declared_wavelength(self):
         data = self.capture()
         struct.pack_into('<I', data, 44, 32 | 64 | 256)

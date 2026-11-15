@@ -55,6 +55,9 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_TEXELS_BINDING) StructuredBuffer<uint4> tex
 #define LUDUS_LTC_TABLE_BINDING LUDUS_REFERENCE_LTC_TABLE_BINDING
 #include "linearly_transformed_cosine.slang"
 #include "ltc_table.slang"
+// RT1's GGX albedo table, read only by ReferenceMaterialProfile::MultipleScatteringGgx; declared after the LTC table.
+#define LUDUS_GGX_ALBEDO_TABLE_BINDING LUDUS_REFERENCE_GGX_ALBEDO_TABLE_BINDING
+#include "ggx_albedo_table.slang"
 #include "reference_light_sampling.slang"
 #include "weighted_reservoir.slang"
 
@@ -66,6 +69,7 @@ static const uint INFINITE_FAR_FLAG = 2;
 static const uint CENTER_RAYS_FLAG = 4;
 static const uint RESAMPLED_LIGHT_FLAG = LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG;
 static const uint FORM_FACTOR_TARGET_FLAG = LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG;
+static const uint MULTIPLE_SCATTERING_FLAG = LUDUS_REFERENCE_MULTIPLE_SCATTERING_FLAG;
 static const uint LINEAR_FILTER_FLAG = 1;
 static const uint REPEAT_U_FLAG = 2;
 static const uint REPEAT_V_FLAG = 4;
@@ -87,6 +91,11 @@ static const float UNIT_LENGTH_TOLERANCE = 1e-5;
 static const float MINIMUM_ROUGHNESS = .045;
 static const float DIELECTRIC_REFLECTANCE = .04;
 static const float SMITH_DENOMINATOR_FLOOR = 1e-6;
+// Divisor of Schlick's cosine-weighted average reflectance: 2 * integral of mu (1 - mu)^5 dmu over [0, 1] = 1 / 21.
+static const float SCHLICK_AVERAGE_DIVISOR = 21;
+// Composite Simpson weight of odd nodes, and the divisor of the step.
+static const float SIMPSON_ODD_WEIGHT = 4;
+static const float SIMPSON_DIVISOR = 3;
 static const float NEAR_LIGHT_SQUARED_DISTANCE_FLOOR = 1e-4;
 static const float ROULETTE_MINIMUM_SURVIVAL = .05;
 static const float ROULETTE_MAXIMUM_SURVIVAL = .95;
@@ -434,6 +443,11 @@ bool IsResampled()
 {
     return (Sampling.z & RESAMPLED_LIGHT_FLAG) != 0;
 }
+// ReferenceMaterialProfile::MultipleScatteringGgx: GGX lobes add the Kulla-Conty compensation lobe.
+bool IsMultipleScatteringProfile()
+{
+    return (Sampling.z & MULTIPLE_SCATTERING_FLAG) != 0;
+}
 // ReferenceLightSampling::ResampledFormFactor, sampler version 3: the approximate target and its frozen counts.
 bool HasFormFactorTarget()
 {
@@ -703,6 +717,41 @@ float GetSpecularProbability(Bsdf bsdf)
 {
     return ComputeMaterialSpecularProbability(bsdf.Model, bsdf.Metallic);
 }
+// reference_bsdf.cpp's ComputeFresnelAverage: exact for Schlick's approximation, composite Simpson for conductors.
+float3 ComputeFresnelAverage(Bsdf bsdf, float3 reflectance)
+{
+    if (HasRoughConductorLobe(bsdf.Model) == false)
+        return reflectance + (float3(1) - reflectance) * (1 / SCHLICK_AVERAGE_DIVISOR);
+    float3 sum = 0;
+    float step = 1 / float(LUDUS_GGX_FRESNEL_AVERAGE_INTERVALS);
+    for (uint node = 1; node <= LUDUS_GGX_FRESNEL_AVERAGE_INTERVALS; ++node)
+    {
+        float cosine = float(node) * step;
+        float weight = node == LUDUS_GGX_FRESNEL_AVERAGE_INTERVALS ? 1 : (node % 2 == 1 ? SIMPSON_ODD_WEIGHT : 2);
+        sum += ComputeConductorFresnelRgb(cosine, bsdf.Eta, bsdf.K) * (weight * 2 * cosine);
+    }
+    return sum * (step / SIMPSON_DIVISOR);
+}
+// reference_bsdf.cpp's EvaluateGgxCompensation: Kulla and Conty's lobe with the revised Fresnel multiplier.
+float3 EvaluateGgxCompensation(float alpha, float viewCosine, float lightCosine, float3 fresnelAverage)
+{
+    float averageDeficit = LookupGgxAverageDeficit(alpha);
+    float averageAlbedo = 1 - averageDeficit;
+    if (averageDeficit <= LUDUS_GGX_MINIMUM_AVERAGE_DEFICIT)
+        return 0;
+    float lobe = (1 - LookupGgxDirectionalAlbedo(alpha, viewCosine)) *
+                 (1 - LookupGgxDirectionalAlbedo(alpha, lightCosine)) / (PI * averageDeficit);
+    return fresnelAverage * fresnelAverage * averageAlbedo / (float3(1) - fresnelAverage * averageDeficit) * lobe;
+}
+// reference_bsdf.cpp's GetVisibleNormalProbability: the profile cosine samples the deficit 1 - E(view).
+float GetVisibleNormalProbability(Bsdf bsdf, float viewCosine)
+{
+    float specular = GetSpecularProbability(bsdf);
+    if (IsMultipleScatteringProfile() == false)
+        return specular;
+    return specular *
+           LookupGgxDirectionalAlbedo(ComputeMaterialAlpha(bsdf.Model, bsdf.Roughness, bsdf.Alpha), viewCosine);
+}
 // Value and full mixture density, without the cosine.
 float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 lightWorld, CoatingRandomContext random)
 {
@@ -744,13 +793,19 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     if (HasRoughConductorLobe(bsdf.Model) == true)
         fresnel = ComputeConductorFresnelRgb(vh, bsdf.Eta, bsdf.K);
     float diffuseFraction = isConductor == true ? 0 : 1 - bsdf.Metallic;
-    float3 value =
-        fresnel * (distribution * visibility) + bsdf.BaseColor * (float3(1) - fresnel) * (diffuseFraction / PI);
+    // Adding the zero compensation of SingleScattering keeps that profile's values unchanged.
+    float3 compensation = 0;
+    if (IsMultipleScatteringProfile() == true)
+        compensation = EvaluateGgxCompensation(alpha, nv, nl, ComputeFresnelAverage(bsdf, reflectance));
+    float3 value = fresnel * (distribution * visibility) + compensation +
+                   bsdf.BaseColor * (float3(1) - fresnel) * (diffuseFraction / PI);
     float specularPdf = distribution / (2 * (nv + lambdaView));
     float probability = GetSpecularProbability(bsdf);
+    float visibleNormalProbability = GetVisibleNormalProbability(bsdf, nv);
     if (isMix == true)
-        value = fresnel * (distribution * visibility * probability) + bsdf.BaseColor * ((1 - probability) / PI);
-    return float4(value, probability * specularPdf + (1 - probability) * nl / PI);
+        value = fresnel * (distribution * visibility * probability) + compensation * probability +
+                bsdf.BaseColor * ((1 - probability) / PI);
+    return float4(value, visibleNormalProbability * specularPdf + (1 - visibleNormalProbability) * nl / PI);
 }
 // SampleReferenceBsdf; returns zero for an ordinary null proposal.
 float3 SampleBsdfDirection(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 samples)
@@ -773,7 +828,7 @@ float3 SampleBsdfDirection(Bsdf bsdf, float3 normalWorld, float3 viewWorld, floa
     float diskX = radius * cos(angle);
     float diskY = radius * sin(angle);
     float3 directionWorld;
-    if (samples.x >= GetSpecularProbability(bsdf))
+    if (samples.x >= GetVisibleNormalProbability(bsdf, dot(normalWorld, viewWorld)))
         directionWorld = axisXWorld * diskX + axisYWorld * diskY + normalWorld * sqrt(max(0, 1 - samples.y));
     else
     {

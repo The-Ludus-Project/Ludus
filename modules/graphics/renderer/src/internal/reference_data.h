@@ -232,6 +232,8 @@ struct ReferenceComputePipelines final
     rhi::ComputePipelineHandle ReducePipeline{};
     /// The renderer's LTC table (ltc_table_data.h), uploaded once and bound by every capture's trace kernel.
     rhi::BufferHandle LtcTable{};
+    /// RT1's GGX albedo table (ggx_albedo_table.h), uploaded once and bound by every capture's trace kernel.
+    rhi::BufferHandle GgxAlbedoTable{};
     uint32 Phase = 0;
     rhi::RasterStatus Setup = rhi::RasterStatus::Pending;
 };
