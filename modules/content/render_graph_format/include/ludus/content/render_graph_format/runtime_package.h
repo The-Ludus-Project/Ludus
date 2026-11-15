@@ -64,6 +64,10 @@
 /// ColorAndDepth raster passes, fused into their lighting resolve. Earlier nonzero exposures imply Reinhard.
 /// Version 33 inserts MAX_RAY_PROGRAMS uint32 capture warm-up counts after the scene resource word and
 /// before the pass-name table. Earlier packages imply zero counts and contain no warm-up table.
+/// Version 35 inserts a uint32 recipe-key count before the pass-name table. Each record
+/// carries a Technique, ShaderTarget (both uint32), and an IDENTITY_BYTES digest.
+/// Records are strictly ascending by (Technique, ShaderTarget). Earlier versions
+/// supply no recipe keys. Keys identify build inventory entries for diagnostics.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -125,8 +129,10 @@ inline constexpr foundation::uint32 SCENE_RESOURCE_LIGHT_TRANSFORMER = 4U;
 inline constexpr foundation::uint32 CAPTURE_WARMUP_PACKAGE_VERSION = 33;
 /// First generation carrying specialized forward realtime and optional surface-chart fragments.
 inline constexpr foundation::uint32 FORWARD_SURFACE_CHART_PACKAGE_VERSION = 34;
+/// First generation carrying recipe keys for device preparation reports.
+inline constexpr foundation::uint32 RECIPE_KEY_PACKAGE_VERSION = 35;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = FORWARD_SURFACE_CHART_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = RECIPE_KEY_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -161,6 +167,8 @@ inline constexpr foundation::uint32 LEGACY_PACKAGE_VERSION = 2;
 inline constexpr foundation::usize MAX_PASS_NAME_BYTES = 127;
 /// SHA-256 digest width of interface and generation identities.
 inline constexpr foundation::usize IDENTITY_BYTES = 32;
+/// At most one recipe key per technique and shader target.
+inline constexpr foundation::usize MAX_RECIPE_KEYS = TECHNIQUE_COUNT * SHADER_TARGET_COUNT;
 /// Largest accepted runtime generation.
 inline constexpr foundation::usize MAX_PACKAGE_BYTES = foundation::usize{16} * 1024 * 1024;
 /// Largest single stage artifact, matching the RG1 per-artifact bound.

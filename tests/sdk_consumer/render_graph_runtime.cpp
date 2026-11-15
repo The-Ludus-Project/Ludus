@@ -67,6 +67,7 @@ struct GraphFixture final
                                                   const rhi::RasterShaderDescription&) noexcept = nullptr;
     BorrowedView<const uint8> Identity;
     BorrowedView<const uint8> Package;
+    BorrowedView<const renderer::RenderGraphRecipeKey> Recipes;
     bool IsMasked = false;
 };
 constexpr usize FIXTURE_COUNT = 2;
@@ -75,11 +76,13 @@ const StaticArray<GraphFixture, FIXTURE_COUNT> FIXTURES{
       opaque::MakePrograms,
       {opaque::INTERFACE_IDENTITY.GetData(), opaque::INTERFACE_IDENTITY.GetSize()},
       {RG3_RUNTIME_PACKAGE.GetData(), RG3_RUNTIME_PACKAGE.GetSize()},
+      {opaque::RECIPE_KEYS.GetData(), opaque::RECIPE_KEYS.GetSize()},
       false},
      {masked::MakePlan,
       masked::MakePrograms,
       {masked::INTERFACE_IDENTITY.GetData(), masked::INTERFACE_IDENTITY.GetSize()},
       {RG3_MASKED_PACKAGE.GetData(), RG3_MASKED_PACKAGE.GetSize()},
+      {masked::RECIPE_KEYS.GetData(), masked::RECIPE_KEYS.GetSize()},
       true}}};
 /// Per-draw Mask values for the masked graph: cover mesh x >= 0.
 StaticArray<float32, masked::UNIFORM_VALUE_COUNT> gMask{};
@@ -293,6 +296,37 @@ bool CaptureFrame(renderer::RenderGraph& inoutGraph) noexcept
     gCapture = Capture::Render;
     return true;
 }
+// Both fixtures have one raster recipe on the selected device. Before the first draw, the
+// installed header and activated runtime must report the same inventory key and complete preparation.
+bool CheckPreparedRecipe(const renderer::RenderGraph& graph) noexcept
+{
+    renderer::RenderGraphPipelineReport report;
+    if (graph.GetPipelineReport(report) != rhi::RasterStatus::Ready || report.RecipeCount != 1)
+    {
+        return false;
+    }
+    const renderer::RenderGraphPipelineRecipe& row = report.Recipes[0];
+    if (row.HasRecipeKey == false || row.ReadyPipelines == 0 || row.ReadyPipelines != row.NativePipelines ||
+        row.FirstUseMisses != 0 || row.DrawnPipelines != 0)
+    {
+        return false;
+    }
+    for (const renderer::RenderGraphRecipeKey& key : FIXTURES[gFixture].Recipes)
+    {
+        if (key.Target == report.Target && key.Technique == row.Recipe.Technique)
+        {
+            for (usize byte = 0; byte < key.Key.GetSize(); ++byte)
+            {
+                if (key.Key[byte] != row.Recipe.Key[byte])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
 /// Advance the activation until the target generation is active and drawable.
 bool AdvanceActivation() noexcept
 {
@@ -397,6 +431,11 @@ void Tick() noexcept
             }
             return;
         }
+        if (CheckPreparedRecipe(gCompiled) == false)
+        {
+            Fail(rhi::RasterStatus::InvalidDescription);
+            return;
+        }
         gStep = Step::CaptureCompiled;
     }
     if (gStep == Step::CaptureCompiled)
@@ -426,6 +465,11 @@ void Tick() noexcept
     {
         if (AdvanceActivation() == false)
         {
+            return;
+        }
+        if (CheckPreparedRecipe(*gActivation.GetActiveOrNull()) == false)
+        {
+            Fail(rhi::RasterStatus::InvalidDescription);
             return;
         }
         gStep = Step::CaptureActivated;
