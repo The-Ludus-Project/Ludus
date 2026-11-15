@@ -3275,6 +3275,7 @@ RasterStatus Destroy(DeviceHandle device, RasterPipelineHandle& handle) noexcept
 
 #include "internal/compute_services.h"
 
+#include "internal/graph_lowering_site.h"
 #include "internal/ordered_graph.h"
 
 #include "internal/ray_services.h"

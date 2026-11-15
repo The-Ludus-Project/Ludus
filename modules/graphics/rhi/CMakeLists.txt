@@ -123,6 +123,7 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32)
     add_executable(ludus_graphics_rhi_tests
         tests/rhi_tests.cpp
         tests/buffer_access_vulkan_tests.cpp
+        tests/buffer_range_vulkan_tests.cpp
         tests/depth_barrier_vulkan_tests.cpp)
     target_include_directories(ludus_graphics_rhi_tests PRIVATE src)
     target_link_libraries(ludus_graphics_rhi_tests PRIVATE
@@ -312,6 +313,12 @@ endif()
 
 if(TARGET ludus_rhi_render_tests)
     target_sources(ludus_rhi_render_tests PRIVATE tests/portable_transfer_conformance_tests.cpp)
+    if(NOT APPLE AND NOT WIN32)
+        # R13a: Vulkan whole-buffer control versus the opt-in buffer-range trial, with the
+        # backend-private synchronization trace (docs/architecture/rhi-gdi.md#synchronization-evidence).
+        target_sources(ludus_rhi_render_tests PRIVATE tests/synchronization_trial_vulkan_tests.cpp)
+        target_link_libraries(ludus_rhi_render_tests PRIVATE volk::volk_headers)
+    endif()
     target_sources(ludus_rhi_render_tests PRIVATE tests/raster_render_tests.cpp tests/portable_raster_conformance_tests.cpp)
     target_include_directories(ludus_rhi_render_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     ludus_compile_shader(TARGET ludus_rhi_render_tests NAME cull
