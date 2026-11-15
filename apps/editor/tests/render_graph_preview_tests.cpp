@@ -47,6 +47,7 @@
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/profiling/profiling_config.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
