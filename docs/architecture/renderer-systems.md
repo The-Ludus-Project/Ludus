@@ -3047,10 +3047,12 @@ worse. About 1-2% of 4 x 4 captures failed. Safe math gave no wrong pixel in
 thousands of captures.
 
 `Scene wave graph repeats its wave and closure-program exports bit for bit`
-(`ludus_wave_graph_tests`) is the regression. It alternates the default-material
-wave export and the program's geometric export on one device at 64 x 64 for 16
-rounds and requires every capture to repeat the first bit for bit. With fast math
-it failed every run, with at least 160 wrong pixels.
+(`ludus_wave_graph_tests`) alternates the default-material wave export and the
+program's geometric export on one device and requires every capture to repeat the
+first bit for bit. On Metal it runs 16 rounds at 64 x 64 to stress the compiler
+regression. With fast math it failed every run, with at least 160 wrong pixels.
+Vulkan checks two rounds at 4 x 4, the same extent as the portable wave transport
+cases.
 
 Safe math still contracts `a * b + c` when it is written as one MSL expression;
 fast and relaxed math also contract across statements. Slang's `precise` does not

@@ -9,6 +9,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include <ludus/foundation/base/compiler.h>
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -67,12 +68,16 @@ constexpr uint32 EXPORT_PASSES = 3;
 constexpr uint32 WAVE_PASS = 1;
 /// The geometric-optics export, which shadow-tests its light sample instead of propagating a wave field.
 constexpr uint32 GEOMETRIC_PASS = 2;
-/// Width and height of the repeated captures: each row is a compute workgroup, so a larger image gives a SIMD-group
-/// fault more chances to show in one capture.
+#if defined(LUDUS_PLATFORM_MACOS)
+// Stress the Metal compiler regression: each row is a workgroup, so a larger image exposes more SIMD groups.
 constexpr uint32 REPEATED_CAPTURE_EXTENT = 64;
-/// Alternating capture pairs of the repetition test. With Metal fast math, 16 pairs exposed the fault in each of 12
-/// runs on an Apple M5, with at least 160 wrong pixels per run.
+// With fast math, 16 pairs exposed the fault in each of 12 runs on an Apple M5, with at least 160 wrong pixels per run.
 constexpr uint32 REPEATED_CAPTURE_ROUNDS = 16;
+#else
+// Repeat both exports once on the same portable fixture used by the wave transport checks.
+constexpr uint32 REPEATED_CAPTURE_EXTENT = EXTENT;
+constexpr uint32 REPEATED_CAPTURE_ROUNDS = 2;
+#endif
 /// Mean radiance of one exported pass's pixels.
 using ExportedPixels = StaticArray<math::Vector3, usize{EXTENT} * EXTENT>;
 /// One compute device with the decoded scene wave package; captures on it share the device's pipelines and memory.
@@ -409,10 +414,12 @@ TEST_CASE("Scene wave graph repeats its wave and closure-program exports bit for
         CaptureSceneWavePass(device, 0, nullptr, WAVE_PASS, pixels, REPEATED_CAPTURE_EXTENT, REPEATED_CAPTURE_EXTENT);
         if (round == 0)
         {
-            for (const math::Vector3& value : pixels)
+            for (usize index = 0; index < pixels.GetSize(); ++index)
             {
+                CAPTURE(index, REPEATED_CAPTURE_EXTENT);
+                const math::Vector3& value = pixels[index];
                 REQUIRE(math::IsFinite(value.X) == true);
-                CHECK(value.X > 0);
+                REQUIRE(value.X > 0);
             }
             REQUIRE(firstWave.TryResize(pixels.GetSize()) == true);
             for (usize index = 0; index < pixels.GetSize(); ++index)
