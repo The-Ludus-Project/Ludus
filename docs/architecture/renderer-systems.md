@@ -1575,6 +1575,56 @@ program converge to the same mean luminance. The limits keep their starting
 values: 8 registers, 8 constants, 32 instructions and 8 lobes. Release-build
 measurements remain open.
 
+#### Texture-weighted mixing of distinct lobes
+
+Robert L. Cook's wood in *Shade Trees* (SIGGRAPH ’84, pp. 223–231,
+[Fig. 1b](https://graphics.pixar.com/library/ShadeTrees/paper.pdf)) uses a
+grain texture to mix two separately shaded responses. Blending their
+appearance parameters instead can lose each response's directional behaviour.
+A version-1 program expresses Cook's choice directly. It mixes lobes, not
+parameters. The grain mix reads a scalar mask $m$ from the base colour input,
+after its texture. A white diffuse lobe takes the weight $1 - m$, and a glossy
+gold conductor with roughness 0.3 takes $m$. The surface value is
+$(1 - m) f_d + m f_c$, and the mixture density is $(1 - m) p_d + m p_c$.
+
+The composition is authored once, in
+[`grain-mix-board.luscene.json`](scene-source-format.md#engine-test-scenes).
+A `[scene-source]` check requires its compiled record to equal the renderer
+tests' fixture byte for byte. Every test then loads that record without editing
+a graph or shader:
+
+- The CPU oracle compares the program at masks 0, 1 and 0.35 with the typed
+  Diffuse and Conductor models, evaluated independently and weighted. The
+  directions include the mirror direction and two off-specular directions.
+  Each sampled continuation has the full mixture density and weight. The
+  sampled albedo equals the weighted sum of the lobes' sampled albedos.
+- The CPU/Metal parity case renders an opaque board whose linear base texture
+  holds stripes of the three masks. It meets the typed-material parity bounds
+  for matched raw linear radiance.
+- The Wave Tracing graph is the general transport graph. Its geometric-optics
+  export of the program at each mask matches the same weighted sum of its typed
+  Diffuse and Conductor exports within 1e-3, at the gold's mirror peak. On
+  Metal the wave export has returned zero or unbounded pixels on some runs
+  regardless of the material, so the check does not use it.
+- The Rao-Blackwellized Metropolis graph is the restricted estimator. It admits
+  the program under the fixed-dimension requirement at every mask and
+  completes its capture.
+
+`ludus_reference_benchmark` measured the cooked board against the same board
+as a built-in Mix with weight 0.4. That Mix is the same BSDF as the program at
+the authored mask of 0.4. The build, device and minimum-of-nine method match
+the table above. GPU captures are 256×256 at 64 spp and depth 8. CPU captures
+are 64×64 at 16 spp.
+
+| Board material | GPU transport device time | GPU total | CPU oracle total | GPU mean luminance |
+| --- | --- | --- | --- | --- |
+| Built-in Mix | 54 ms | 221 ms | 153 ms | 0.16715 |
+| Grain mix program | 104 ms | 333 ms | 170 ms | 0.16706 |
+
+The board has six triangles, so material evaluation takes a larger share of
+the time than in the Cornell box. The program's median device time was about
+1.5 times the Mix's, within this GPU's run-to-run variance.
+
 ### Preparation and publication
 
 Validate the candidate definition and overrides, resolve its exact dependencies,

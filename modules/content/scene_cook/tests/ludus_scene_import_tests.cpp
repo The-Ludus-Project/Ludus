@@ -402,6 +402,39 @@ TEST_CASE("Ludus scene import cooks the engine's closure-program test scene", "[
     CHECK(triangles == 16);
 }
 
+TEST_CASE("Ludus scene import cooks the engine's grain-mix test scene", "[scene_cook][ludus-scene][program]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/grain-mix-board.luscene.json"), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize programs = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        if (material.Scattering.Model != format::MaterialModel::Program)
+        {
+            continue;
+        }
+        ++programs;
+        // One record mixes a diffuse lobe weighted by the complement of the base colour mask with a conductor
+        // weighted by the mask; the renderer tests load the same record through both transport graphs.
+        CHECK(material.Program.InstructionCount == 3);
+        CHECK(material.Program.ConstantCount == 0);
+        REQUIRE(material.Program.LobeCount == 2);
+        CHECK(material.Program.Lobes[0].Operation == format::MaterialLobeOperation::Diffuse);
+        CHECK(material.Program.Lobes[1].Operation == format::MaterialLobeOperation::Conductor);
+        CHECK(material.Program.Instructions[1].Opcode == format::MaterialProgramOpcode::OneMinus);
+        CHECK(material.Program.Lobes[0].WeightRegister == material.Program.Instructions[1].Destination);
+        CHECK(material.Program.Lobes[1].WeightRegister == material.Program.Instructions[0].Destination);
+        CHECK(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
+    }
+    CHECK(programs == 1);
+}
+
 TEST_CASE("Scene detection tells Ludus scene sources from glTF JSON", "[scene_cook][ludus-scene]")
 {
     CHECK(DetectSceneSourceFormat(AsBytes("{\n  \"format\": \"ludus.scene\",\n  \"version\": 1"), "a.json") ==
