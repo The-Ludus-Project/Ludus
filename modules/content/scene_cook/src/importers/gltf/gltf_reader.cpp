@@ -819,9 +819,20 @@ Status GltfReader::checkAssetAndExtensions() noexcept
             inform(codes::EXTENSION_IGNORED, message.GetView());
         }
     }
-    if (CountArray(mRoot, "animations") != 0 || CountArray(mRoot, "skins") != 0)
+    if (CountArray(mRoot, "animations") != 0)
     {
-        warn(codes::ANIMATION_IGNORED, "animations and skins ignored; the static node transforms are imported");
+        warn(codes::ANIMATION_IGNORED,
+             "Animation clips are ignored. The importer uses the static node transforms. "
+             "Apply the desired pose and re-export as a static scene.");
+    }
+    if (CountArray(mRoot, "skins") != 0)
+    {
+        // Thanks to the Khronos 3D Formats Working Group, glTF 2.0, "Skins".
+        // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skins
+        // The static fallback uses node transforms in place of joint deformation.
+        warn(codes::ANIMATION_IGNORED,
+             "Skinning is ignored. The importer places the undeformed mesh using the node transform. "
+             "Bake the desired pose to a static mesh and re-export.");
     }
     return hasRejectedExtension == true ? Status::Invalid : Status::Ok;
 }
@@ -1986,10 +1997,6 @@ Status GltfReader::visitNode(usize node, const math::Matrix4d& world) noexcept
                 }
                 ++mMeshes[static_cast<usize>(meshIndex)].References;
             }
-        }
-        if (object.Get("skin").Valid() == true)
-        {
-            inform(codes::ANIMATION_IGNORED, "skinned node imported in its bind pose without skinning");
         }
         const JsonValue camera = object.Get("camera");
         if (camera.Valid() == true)
