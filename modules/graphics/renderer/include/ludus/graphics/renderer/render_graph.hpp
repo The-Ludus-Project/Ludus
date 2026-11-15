@@ -458,6 +458,16 @@ struct RenderGraphCoverageRecord final
     RenderGraphReason Reason = RenderGraphReason::None; ///< Preserved mismatch explanation.
     bool HasDiagnosticRoute = false; ///< A color marker/proxy may render; never establishes depth correctness.
 };
+/// Scene-level cause of the latest Update rejection, so callers can name the input and the repair.
+/// Only causes this graph can attribute are reported; other Unsupported results report None.
+enum class RenderGraphSceneRejection : foundation::uint8
+{
+    None,               ///< The latest Update was not rejected for a scene-level cause.
+    Atmosphere,         ///< A camera enables an atmosphere; only clustered deferred graphs compose one.
+    CameraDepth,        ///< A camera has an infinite far plane or an unknown depth convention.
+    Coverage,           ///< Conflicting coverage, or incomplete coverage under RejectIncomplete.
+    MaskedDepthPrepass, ///< Alpha-masked materials would be sealed by the opaque depth-only prepass.
+};
 /// Editor and shipping admission are explicit policies.
 enum class RenderGraphCoveragePolicy : foundation::uint8
 {
@@ -819,6 +829,9 @@ public:
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCoverageRecord> GetCoverage() const noexcept;
     /// Copy the latest candidate report, independent of the drawable extraction.
     [[nodiscard]] RenderGraphReport GetReport() const noexcept;
+    /// Cause of the latest Update's Unsupported result; None after any other result, before the
+    /// first Update and after Reset. Diagnostic only: it never changes the drawable or pending scene.
+    [[nodiscard]] RenderGraphSceneRejection GetLastRejection() const noexcept;
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
     /// True when the last ray writer of any color target outputs individual samples or has an

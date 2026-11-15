@@ -42,6 +42,14 @@ enum class RenderGraphPreviewWork : foundation::uint8
 [[nodiscard]] QString
 DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
                                      const graphics::renderer::SceneShaderDiagnostics& diagnostics);
+/// Name the World input a graph rejected and the repair, for example the Atmosphere entity that needs a clustered
+/// deferred configuration. Coverage counts come from report. Empty for RenderGraphSceneRejection::None.
+[[nodiscard]] QString DescribeRenderGraphSceneRejection(graphics::renderer::RenderGraphSceneRejection rejection,
+                                                        const graphics::renderer::RenderGraphReport& report);
+/// Viewport status for a failed or restart-requiring candidate, naming its cause and repair when the renderer
+/// attributed one; empty while the candidate is neither Failed nor RestartRequired.
+[[nodiscard]] QString
+DescribeRenderGraphActivationFailure(const graphics::renderer::RenderGraphActivationReport& report);
 /// One World extraction converted to RenderGraph records. Mesh geometry borrows Scene's
 /// storage (its PreviewMesh arrays or its shared cooked Definition), which this value keeps
 /// alive by implicit sharing and reference counting until it is replaced.

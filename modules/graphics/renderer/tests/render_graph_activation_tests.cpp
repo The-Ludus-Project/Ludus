@@ -838,6 +838,47 @@ TEST_CASE("RG3 activation waits for confirmed submission and retires the old gen
     CHECK(rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Texture)] > textureDestroys);
 }
 
+TEST_CASE("Rejected extractions name their scene-level cause for the drawing graph and the candidate",
+          "[render-graph][activation]")
+{
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    PackageOptions second;
+    second.Generation = 2;
+    REQUIRE(fixture.Activation.Stage(MakePackage(second)) == rhi::RasterStatus::Pending);
+    ActivationFixture::CompletePending(rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    // Neither fixture generation composes an atmosphere: only clustered deferred graphs do.
+    fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    renderer::RenderGraphReport report;
+    CHECK(fixture.Update(report, 2) == rhi::RasterStatus::Unsupported);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::Atmosphere);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::Atmosphere);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    fixture.Cameras[0].Atmosphere.IsEnabled = false;
+    fixture.Cameras[0].Depth = renderer::DepthConvention::ReverseZ;
+    fixture.Cameras[0].InfiniteFar = true;
+    CHECK(fixture.Update(report, 3) == rhi::RasterStatus::Unsupported);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::CameraDepth);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::CameraDepth);
+    // An accepted extraction clears the cause, and a newly staged candidate starts without one.
+    fixture.Cameras[0].Depth = renderer::DepthConvention::Conventional;
+    fixture.Cameras[0].InfiniteFar = false;
+    REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
+    fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    CHECK(fixture.Update(report, 5) == rhi::RasterStatus::Unsupported);
+    PackageOptions third;
+    third.Generation = 3;
+    REQUIRE(fixture.Activation.Stage(MakePackage(third)) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
+}
+
 TEST_CASE("RG3 a newer candidate supersedes an unactivated one", "[render-graph][activation]")
 {
     ActivationFixture fixture;
