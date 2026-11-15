@@ -609,6 +609,17 @@ instance. Slots with neither use the imported values. Cooking interns matching
 coatings per source material in the same table, including an override equal to
 the imported defaults. Material mappings resolve the inherited instance from the original ID on reimport.
 
+A World or level slot can carry a `hair_card` object instead of a coating or a
+project BRDF. It holds the five
+[hair-card strand controls](scene-source-format.md#hair-card), under the same
+names as the scene source, and an optional `alpha_cutoff` in [0, 1] that
+overrides the mask cutoff of a masked material. Assembly writes such a slot as a
+LUSCN v13 `HairCard` record with zero metallic, keeping the inherited base colour,
+roughness, textures and mask, and splits it from slots that inherit the same
+material. Slots with equal controls share a record. Validation rejects a card
+combined with a coating or project BRDF, out-of-range controls, and a cutoff on an
+unmasked material, each with a message that names the repair.
+
 Version 7 keeps all version 6 records and appends a `MaterialExtensionV7` after
 **each** material. Its width is derived from the explicit wire fields in
 `ludus/content/scene_format/luscn.h`; never serialize host padding. The extension

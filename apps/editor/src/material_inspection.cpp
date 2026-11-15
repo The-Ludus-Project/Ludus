@@ -217,6 +217,33 @@ QJsonObject MakeProjectBrdfRoughnessProperty()
             {QStringLiteral("max"), 1}};
 }
 
+QJsonObject HairCardField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromUtf8(Label)},
+            {QStringLiteral("min"), static_cast<foundation::float64>(Minimum)},
+            {QStringLiteral("max"), static_cast<foundation::float64>(Maximum)}};
+}
+
+QJsonObject MakeHairCardCutoffProperty()
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QStringLiteral("Mask cutoff")},
+            {QStringLiteral("min"), 0},
+            {QStringLiteral("max"), 1}};
+}
+
+QJsonObject MakeDefaultHairCard()
+{
+    const format::HairCardParameters defaults;
+    QJsonObject hair;
+    for (const HairCardField& field : HAIR_CARD_FIELDS)
+    {
+        hair.insert(QString::fromLatin1(field.Key), static_cast<foundation::float64>(defaults.*field.Member));
+    }
+    return hair;
+}
+
 QJsonObject CoatingField::MakeNumberProperty() const
 {
     return {{QStringLiteral("type"), QStringLiteral("number")},
@@ -350,13 +377,22 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     else if (scattering.Model == format::MaterialModel::HairCard)
     {
         const format::HairCardParameters hair = format::GetHairCardParameters(scattering);
-        rows.append({QStringLiteral("Strand direction (°)"), FormatScalar(hair.StrandDirectionDegrees)});
+        rows.append({QStringLiteral("Strand direction (°)"), FormatScalar(hair.StrandDirectionDegrees), false, {}, {}});
+        rows.last().IsHairCardParameter = true;
         rows.append({QStringLiteral("Highlight shifts (°, primary / secondary)"),
                      QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryShiftDegrees),
-                                                   FormatScalar(hair.SecondaryShiftDegrees))});
+                                                   FormatScalar(hair.SecondaryShiftDegrees)),
+                     false,
+                     {},
+                     {}});
+        rows.last().IsHairCardParameter = true;
         rows.append(
             {QStringLiteral("Highlight weights (primary / tinted secondary)"),
-             QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryWeight), FormatScalar(hair.SecondaryWeight))});
+             QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryWeight), FormatScalar(hair.SecondaryWeight)),
+             false,
+             {},
+             {}});
+        rows.last().IsHairCardParameter = true;
     }
     rows.append({QStringLiteral("Surface map"),
                  DescribeTexture(definition, material.SurfaceTexture),

@@ -761,6 +761,90 @@ struct CoatingOverride final
     return true;
 }
 
+/// A World slot's hair-card override: the strand controls and an optional mask cutoff. An unassigned override
+/// leaves the slot's resolved material unchanged.
+struct HairCardOverride final
+{
+    bool IsAssigned = false;
+    format::HairCardParameters Parameters{};
+    bool HasCutoff = false;
+    float32 Cutoff = 0;
+
+    [[nodiscard]] bool operator==(const HairCardOverride& other) const noexcept
+    {
+        return IsAssigned == other.IsAssigned &&
+               Parameters.StrandDirectionDegrees == other.Parameters.StrandDirectionDegrees &&
+               Parameters.PrimaryShiftDegrees == other.Parameters.PrimaryShiftDegrees &&
+               Parameters.SecondaryShiftDegrees == other.Parameters.SecondaryShiftDegrees &&
+               Parameters.PrimaryWeight == other.Parameters.PrimaryWeight &&
+               Parameters.SecondaryWeight == other.Parameters.SecondaryWeight && HasCutoff == other.HasCutoff &&
+               Cutoff == other.Cutoff;
+    }
+};
+
+/// One strand control of a level object's "hair_card" member and the parameter it sets.
+struct HairCardKey final
+{
+    std::string_view Key;
+    float32 format::HairCardParameters::* Member = nullptr;
+};
+/// Number of strand controls a "hair_card" member must carry.
+constexpr usize HAIR_CARD_CONTROL_COUNT = 5;
+/// Strand controls of a level object's "hair_card" member; the names match the scene source format's.
+constexpr foundation::StaticArray<HairCardKey, HAIR_CARD_CONTROL_COUNT> HAIR_CARD_KEYS{{
+    {"strand_direction_degrees", &format::HairCardParameters::StrandDirectionDegrees},
+    {"primary_shift_degrees", &format::HairCardParameters::PrimaryShiftDegrees},
+    {"secondary_shift_degrees", &format::HairCardParameters::SecondaryShiftDegrees},
+    {"primary_weight", &format::HairCardParameters::PrimaryWeight},
+    {"secondary_weight", &format::HairCardParameters::SecondaryWeight},
+}};
+/// Optional mask cutoff of a level object's "hair_card" member.
+constexpr std::string_view HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
+
+/// Read a level object's "hair_card" member: every strand control and an optional cutoff in [0, 1]. A missing member
+/// leaves the slot unassigned. Invalid members return false and preserve outHair.
+[[nodiscard]] bool ReadHairCardOverride(const JsonTree& tree, JsonIndex node, HairCardOverride& outHair) noexcept
+{
+    if (node == NO_JSON_NODE)
+    {
+        outHair = {};
+        return true;
+    }
+    const JsonIndex cutoff = tree.GetMember(node, HAIR_CARD_CUTOFF_KEY);
+    if (tree.GetKind(node) != JsonKind::Object ||
+        tree.GetCount(node) != HAIR_CARD_CONTROL_COUNT + (cutoff == NO_JSON_NODE ? usize{0} : usize{1}))
+    {
+        return false;
+    }
+    HairCardOverride hair;
+    hair.IsAssigned = true;
+    for (const HairCardKey& control : HAIR_CARD_KEYS)
+    {
+        PythonNumber number;
+        if (IsAuthoredNumber(tree, tree.GetMember(node, control.Key), number) == false)
+        {
+            return false;
+        }
+        hair.Parameters.*control.Member = static_cast<float32>(number.ToFloat());
+    }
+    if (cutoff != NO_JSON_NODE)
+    {
+        PythonNumber number;
+        if (IsAuthoredNumber(tree, cutoff, number) == false || number.ToFloat() < 0 || number.ToFloat() > 1)
+        {
+            return false;
+        }
+        hair.HasCutoff = true;
+        hair.Cutoff = static_cast<float32>(number.ToFloat());
+    }
+    if (format::IsHairCardParametersValid(hair.Parameters) == false)
+    {
+        return false;
+    }
+    outHair = hair;
+    return true;
+}
+
 [[nodiscard]] bool ReadProjectBrdfBinding(const JsonTree& tree, JsonIndex binding, float32& outRoughness) noexcept
 {
     outRoughness = 0;
@@ -885,8 +969,10 @@ struct CoatingOverride final
         const JsonIndex item = tree.GetItem(objects, i);
         const JsonIndex coating = tree.GetMember(item, "coating");
         const JsonIndex binding = tree.GetMember(item, "project_brdf");
-        const usize optionalObjectFields =
-            (coating == NO_JSON_NODE ? usize{0} : usize{1}) + (binding == NO_JSON_NODE ? usize{0} : usize{1});
+        const JsonIndex hairCard = tree.GetMember(item, "hair_card");
+        const usize optionalObjectFields = (coating == NO_JSON_NODE ? usize{0} : usize{1}) +
+                                           (binding == NO_JSON_NODE ? usize{0} : usize{1}) +
+                                           (hairCard == NO_JSON_NODE ? usize{0} : usize{1});
         if (tree.GetKind(item) != JsonKind::Object ||
             tree.GetCount(item) != REQUIRED_OBJECT_FIELDS + optionalObjectFields)
         {
@@ -910,6 +996,18 @@ struct CoatingOverride final
         {
             return inoutFailure.FailInvalid("Invalid coating override. Set GGX alpha, IOR and optical thickness within "
                                             "the coated-diffuse profile.");
+        }
+        HairCardOverride hair;
+        if (ReadHairCardOverride(tree, hairCard, hair) == false)
+        {
+            return inoutFailure.FailInvalid("Invalid hair card. Set the strand direction in [-180, 180] degrees, both "
+                                            "highlight shifts in [-30, 30] "
+                                            "degrees, both weights and any mask cutoff in [0, 1].");
+        }
+        if (hairCard != NO_JSON_NODE && (coating != NO_JSON_NODE || binding != NO_JSON_NODE))
+        {
+            return inoutFailure.FailInvalid("A hair card slot cannot also hold a coating or a project BRDF. Remove the "
+                                            "hair card or use the inherited material.");
         }
         if (IsUuidString(tree, tree.GetMember(item, "id")) == false)
         {
@@ -2884,6 +2982,7 @@ struct MaterialVariant final
     usize SourceIndex = 0;
     CoatingOverride Coating;
     float32 ProjectRoughness = 0;
+    HairCardOverride HairCard;
 };
 
 /// Preserve source material ordering and share records for identical slot overrides.
@@ -2943,9 +3042,25 @@ struct MaterialVariant final
             {
                 roughness = 0;
             }
+            HairCardOverride hair;
+            if (ReadHairCardOverride(tree, tree.GetMember(object, "hair_card"), hair) == false)
+            {
+                return inoutFailure.FailInvalid("Invalid hair card. Reset its strand controls or use the inherited "
+                                                "material.");
+            }
+            const bool isMasked =
+                description.Tree.IsString(description.Tree.GetMember(description.Root, "alpha_mode"), "masked");
+            if (hair.HasCutoff == true && isMasked == false)
+            {
+                return inoutFailure.FailInvalid(
+                    "A hair card's mask cutoff needs a masked material. Remove the cutoff, or reimport the card with a "
+                    "base texture whose alpha masks it.");
+            }
+            // A hair card replaces the slot's reflection model, so an inherited coating no longer applies.
             const JsonIndex local = tree.GetMember(object, "coating");
-            const JsonIndex instance =
-                binding != NO_JSON_NODE ? NO_JSON_NODE : (local != NO_JSON_NODE ? local : shared);
+            const JsonIndex instance = binding != NO_JSON_NODE || hair.IsAssigned == true
+                                           ? NO_JSON_NODE
+                                           : (local != NO_JSON_NODE ? local : shared);
             if (ReadCoatingOverride(tree, instance, coating) == false)
             {
                 return inoutFailure.FailInvalid("Invalid coating instance");
@@ -2962,7 +3077,8 @@ struct MaterialVariant final
             }
             usize variantIndex = firstVariant;
             while (variantIndex < outVariants.GetSize() && (outVariants[variantIndex].Coating != coating ||
-                                                            outVariants[variantIndex].ProjectRoughness != roughness))
+                                                            outVariants[variantIndex].ProjectRoughness != roughness ||
+                                                            outVariants[variantIndex].HairCard != hair))
             {
                 ++variantIndex;
             }
@@ -2973,7 +3089,7 @@ struct MaterialVariant final
                     return inoutFailure.FailInvalid("Scene material capacity exceeded. Reset a slot override or reuse "
                                                     "existing material parameters.");
                 }
-                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating, roughness}) == false)
+                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating, roughness, hair}) == false)
                 {
                     return inoutFailure.FailOutOfMemory();
                 }
@@ -3074,6 +3190,16 @@ struct MaterialVariant final
                     math::Max(typedVersion,
                               format::GetMaterialModelBundleVersion(static_cast<format::MaterialModel>(value.Integer)));
             }
+        }
+    }
+    for (const MaterialVariant& variant : variants)
+    {
+        if (variant.HairCard.IsAssigned == true)
+        {
+            // A World hair card stores its strand controls in the typed record of LUSCN v13.
+            isVersion7 = true;
+            typedVersion =
+                math::Max(typedVersion, format::GetMaterialModelBundleVersion(format::MaterialModel::HairCard));
         }
     }
     bool isVersion6 = isVersion7;
@@ -3295,10 +3421,17 @@ struct MaterialVariant final
             source.Scattering.CoatingEta = coating.Eta;
             source.Scattering.CoatingThickness = coating.Thickness;
         }
+        const HairCardOverride& hair = variant.HairCard;
+        if (hair.IsAssigned == true)
+        {
+            // Hair reflects as a dielectric fibre; its base colour, roughness, textures and mask are kept.
+            source.Scattering = format::MakeHairCardScattering(hair.Parameters);
+        }
         const bool isRepeat = tree.IsString(tree.GetMember(description.Root, "address"), "repeat");
         writer.AppendUint32(texture.empty() == true ? format::NO_TEXTURE : FindIndex(textures, texture));
         writer.AppendUint32(isRepeat == true ? format::ADDRESS_REPEAT : format::ADDRESS_CLAMP);
-        writer.AppendFloat32(GetNumberMember(tree, description.Root, "metallic").ToFloat());
+        writer.AppendFloat32(hair.IsAssigned == true ? 0.0
+                                                     : GetNumberMember(tree, description.Root, "metallic").ToFloat());
         writer.AppendFloat32(roughness);
         const JsonIndex emission = tree.GetMember(description.Root, "emission");
         for (usize channel = 0; channel < 3; ++channel)
@@ -3341,8 +3474,14 @@ struct MaterialVariant final
                 const JsonIndex mode = tree.GetMember(description.Root, "alpha_mode");
                 const bool isMasked = tree.IsString(mode, "masked");
                 writer.AppendUint32(isMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE);
-                writer.AppendFloat32(
-                    isMasked == true ? GetNumberMember(tree, description.Root, "alpha_cutoff").ToFloat() : 0.0);
+                float64 cutoff = 0.0;
+                if (isMasked == true)
+                {
+                    // Only masked materials store a cutoff; a hair card may override it.
+                    cutoff = hair.HasCutoff == true ? static_cast<float64>(hair.Cutoff)
+                                                    : GetNumberMember(tree, description.Root, "alpha_cutoff").ToFloat();
+                }
+                writer.AppendFloat32(cutoff);
             }
             if (isVersion6 == true)
             {

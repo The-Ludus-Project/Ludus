@@ -4978,6 +4978,225 @@ TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[edit
     reopened.StopPreview();
 }
 
+TEST_CASE("World document validates hair-card slots and writes them to the level", "[editor][world][hair-card]")
+{
+    QTemporaryDir directory;
+    static_cast<void>(Fixture(directory));
+    const QString external = directory.filePath(QStringLiteral("external"));
+    QString error;
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external) == true);
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       error) == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(directory.filePath(QStringLiteral("scenes/room.lulevel")))).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString id =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    const QJsonObject entity = document.Entity(id);
+    const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    const QString name = entity.value(QStringLiteral("name")).toString();
+    const QJsonObject placement = entity.value(QStringLiteral("scene")).toObject();
+    const auto edit = [&](const QJsonObject& hair, QString& outError, const QJsonObject* coatingOrNull = nullptr) {
+        QJsonObject scene = placement;
+        scene.insert(QStringLiteral("hair_card"), hair);
+        if (coatingOrNull != nullptr)
+        {
+            scene.insert(QStringLiteral("coating"), *coatingOrNull);
+        }
+        return document.Edit(id, components, name, outError, &scene, "Edit Hair Card");
+    };
+    QJsonObject invalid = MakeDefaultHairCard();
+    invalid.insert(QStringLiteral("strand_direction_degrees"), 200);
+    CHECK(edit(invalid, error) == false);
+    CHECK(error.contains(QStringLiteral("Strand direction")) == true);
+    invalid = MakeDefaultHairCard();
+    invalid.insert(QString::fromLatin1(HAIR_CARD_CUTOFF_KEY), 2);
+    CHECK(edit(invalid, error) == false);
+    CHECK(error.contains(QStringLiteral("Mask cutoff")) == true);
+    invalid = MakeDefaultHairCard();
+    invalid.remove(QStringLiteral("secondary_weight"));
+    CHECK(edit(invalid, error) == false);
+    CHECK(error.contains(QStringLiteral("strand direction")) == true);
+    const QJsonObject coating{{QStringLiteral("alpha"), 0.5},
+                              {QStringLiteral("eta"), 1.5},
+                              {QStringLiteral("thickness"), 0.01}};
+    CHECK(edit(MakeDefaultHairCard(), error, &coating) == false);
+    CHECK(error.contains(QStringLiteral("cannot also hold a coating")) == true);
+    CHECK(document.ScenePlacement(document.Entity(id)).contains(QStringLiteral("hair_card")) == false);
+
+    QJsonObject hair = MakeDefaultHairCard();
+    hair.insert(QStringLiteral("strand_direction_degrees"), 90);
+    REQUIRE(edit(hair, error) == true);
+    bool isWritten = false;
+    for (const QJsonValue value : document.SceneLevel().value(QStringLiteral("objects")).toArray())
+    {
+        const QJsonObject object = value.toObject();
+        if (object.value(QStringLiteral("id")).toString() == id)
+        {
+            CHECK(object.value(QStringLiteral("hair_card")).toObject() == hair);
+            isWritten = true;
+        }
+    }
+    CHECK(isWritten == true);
+}
+
+TEST_CASE("World makes a masked slot a hair card and keeps its strand edits across save, reopen and reimport",
+          "[editor][world][hair-card]")
+{
+    namespace format = ludus::content::scene_format;
+    using ludus::foundation::float32;
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    static_cast<void>(OpenPlacementWorld(directory, workspace));
+    WaitForValidatedScene(workspace);
+    const QString path = workspace.Path();
+    // The cutout glTF fixture: a card masked at 0.25 by its base texture's alpha, and an opaque (blended) panel.
+    const QString source = directory.filePath(QStringLiteral("cutout.gltf"));
+    REQUIRE(
+        QFile::copy(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("modules/content/scene_cook/tests/fixtures/gltf/cutout/scene.gltf")),
+                    source) == true);
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    QString card;
+    QString panel;
+    for (const PreviewObject& object : GetLevel(workspace).PreviewScene().Objects)
+    {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(workspace).PreviewScene(), object.Id);
+        REQUIRE(materialOrNull != nullptr);
+        const std::string_view name = materialOrNull->Name.View();
+        if (name == "Cutout")
+        {
+            card = object.Id;
+        }
+        else if (name == "Glass")
+        {
+            panel = object.Id;
+        }
+    }
+    REQUIRE(card.isEmpty() == false);
+    REQUIRE(panel.isEmpty() == false);
+    const auto getMaterial = [](const WorldWorkspace& view,
+                                const QString& id) -> const ludus::resources::SceneMaterial& {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(view).PreviewScene(), id);
+        REQUIRE(materialOrNull != nullptr);
+        return *materialOrNull;
+    };
+    const auto checkHairCard = [&](const WorldWorkspace& view, float32 strandDegrees, float32 cutoff) {
+        const ludus::resources::SceneMaterial& material = getMaterial(view, card);
+        REQUIRE(material.Scattering.Model == format::MaterialModel::HairCard);
+        CHECK(material.Metallic == 0);
+        CHECK(material.IsAlphaMasked == true);
+        CHECK(material.AlphaCutoff == cutoff);
+        const format::HairCardParameters hair = format::GetHairCardParameters(material.Scattering);
+        CHECK(hair.StrandDirectionDegrees == strandDegrees);
+        CHECK(hair.PrimaryShiftDegrees == format::DEFAULT_HAIR_CARD_PRIMARY_SHIFT_DEGREES);
+        CHECK(hair.SecondaryWeight == format::DEFAULT_HAIR_CARD_SECONDARY_WEIGHT);
+    };
+    CHECK(getMaterial(workspace, card).Scattering.Model == format::MaterialModel::MetallicRoughness);
+    CHECK(getMaterial(workspace, card).AlphaCutoff == 0.25F);
+
+    // Assign the hair card from the inspector; the viewport scene follows with the default strand controls.
+    REQUIRE(workspace.SelectEntity(card) == true);
+    QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard"));
+    REQUIRE(assignOrNull != nullptr);
+    REQUIRE(assignOrNull->isEnabled() == true);
+    assignOrNull->click();
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 0, 0.25F);
+    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard")) == nullptr);
+
+    // Edit the strand direction and the mask cutoff, which the masked material authors.
+    const QString strandField = QStringLiteral("scene/hair_card/strand_direction_degrees");
+    const QString cutoffField = QStringLiteral("scene/hair_card/alpha_cutoff");
+    Type(Field(workspace, strandField), QStringLiteral("90"));
+    Type(Field(workspace, cutoffField), QStringLiteral("0.5"));
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 90, 0.5F);
+
+    // An out-of-range strand is rejected beside the field, and the viewport keeps the last applied card.
+    Type(Field(workspace, strandField), QStringLiteral("200"));
+    CHECK(workspace.Apply() == false);
+    QLabel* errorOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldHairCardError"));
+    REQUIRE(errorOrNull != nullptr);
+    CHECK(errorOrNull->isHidden() == false);
+    CHECK(errorOrNull->text().contains(QStringLiteral("Strand direction")) == true);
+    CHECK(errorOrNull->text().contains(QStringLiteral("-180 to 180")) == true);
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 90, 0.5F);
+    Type(Field(workspace, strandField), QStringLiteral("45"));
+    REQUIRE(workspace.Apply() == true);
+    CHECK(errorOrNull->isHidden() == true);
+    CHECK(errorOrNull->text().isEmpty() == true);
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 45, 0.5F);
+
+    // Undo and redo the strand edit, then the assignment.
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 90, 0.5F);
+    REQUIRE(workspace.CanRedo() == true);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 45, 0.5F);
+
+    // A slot without a mask offers no cutoff.
+    REQUIRE(workspace.SelectEntity(panel) == true);
+    QPushButton* panelAssignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard"));
+    REQUIRE(panelAssignOrNull != nullptr);
+    panelAssignOrNull->click();
+    WaitForValidatedScene(workspace);
+    CHECK(getMaterial(workspace, panel).Scattering.Model == format::MaterialModel::HairCard);
+    CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldField:") + cutoffField) == nullptr);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    CHECK(getMaterial(workspace, panel).Scattering.Model != format::MaterialModel::HairCard);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    workspace.StopPreview();
+    workspace.hide();
+
+    // Save, reopen and reimport keep the slot's hair card and its edits.
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkHairCard(reopened, 45, 0.5F);
+    REQUIRE(reopened.ImportScene(source) == true);
+    WaitForValidatedScene(reopened);
+    checkHairCard(reopened, 45, 0.5F);
+    REQUIRE(reopened.SelectEntity(card) == true);
+    CHECK(Field(reopened, strandField)->text() == QStringLiteral("45"));
+    CHECK(Field(reopened, cutoffField)->text() == QStringLiteral("0.5"));
+
+    // Use Inherited Material restores the imported material in one undoable edit.
+    QPushButton* restoreOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreHairCard"));
+    REQUIRE(restoreOrNull != nullptr);
+    restoreOrNull->click();
+    WaitForValidatedScene(reopened);
+    CHECK(getMaterial(reopened, card).Scattering.Model == format::MaterialModel::MetallicRoughness);
+    CHECK(getMaterial(reopened, card).AlphaCutoff == 0.25F);
+    reopened.Undo();
+    WaitForValidatedScene(reopened);
+    checkHairCard(reopened, 45, 0.5F);
+    reopened.StopPreview();
+}
+
 TEST_CASE("World imports, inspects and maps closure programs across save, reopen and reimport",
           "[editor][world][program]")
 {

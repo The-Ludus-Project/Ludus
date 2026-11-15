@@ -290,7 +290,7 @@ strand direction. Base colour and roughness keep their usual meaning; hair has n
 
 The cook stores the material as a LUSCN v13 `HairCard` record. Scene sources have
 no texture coordinates or masks; import a textured, alpha-masked card from glTF for
-coverage. See [raster hair cards](renderer-systems.md#raster-hair-cards) for the
+coverage and [make its World slot a hair card](../development/editor-workspace.md#make-a-slot-a-hair-card). See [raster hair cards](renderer-systems.md#raster-hair-cards) for the
 shading model and its limits.
 
 ### Medium interface

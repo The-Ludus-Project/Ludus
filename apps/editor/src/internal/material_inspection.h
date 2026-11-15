@@ -48,6 +48,54 @@ inline const CoatingField COATING_FIELDS[] = {
      content::scene_format::MAX_MATERIAL_OPTICAL_CONSTANT},
 };
 
+/// One editable strand control of a World hair-card slot, stored under Key in the slot's "hair_card" object.
+struct HairCardField final
+{
+    const char* Key;
+    const char* Label;
+    foundation::float32 content::scene_format::HairCardParameters::* Member;
+    foundation::float32 Minimum;
+    foundation::float32 Maximum;
+
+    /// Number property with this field's label and bounds, for WorldDocument::ParseValue.
+    [[nodiscard]] QJsonObject MakeNumberProperty() const;
+};
+
+/// The strand controls of a World hair-card slot, in the order the inspector lists them. Bounds are the
+/// scene format's admission limits.
+inline const HairCardField HAIR_CARD_FIELDS[] = {
+    {"strand_direction_degrees",
+     "Strand direction (°)",
+     &content::scene_format::HairCardParameters::StrandDirectionDegrees,
+     -content::scene_format::MAX_HAIR_CARD_STRAND_DEGREES,
+     content::scene_format::MAX_HAIR_CARD_STRAND_DEGREES},
+    {"primary_shift_degrees",
+     "Primary highlight shift (°)",
+     &content::scene_format::HairCardParameters::PrimaryShiftDegrees,
+     -content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES,
+     content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES},
+    {"secondary_shift_degrees",
+     "Secondary highlight shift (°)",
+     &content::scene_format::HairCardParameters::SecondaryShiftDegrees,
+     -content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES,
+     content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES},
+    {"primary_weight", "Primary highlight weight", &content::scene_format::HairCardParameters::PrimaryWeight, 0, 1},
+    {"secondary_weight",
+     "Tinted secondary highlight weight",
+     &content::scene_format::HairCardParameters::SecondaryWeight,
+     0,
+     1},
+};
+
+/// Key of a hair-card slot's optional mask cutoff override; only masked materials accept it.
+inline constexpr const char* HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
+
+/// Number property of the hair-card mask cutoff, in [0, 1].
+[[nodiscard]] QJsonObject MakeHairCardCutoffProperty();
+
+/// A "hair_card" slot object with every strand control at its scene-format default and no cutoff override.
+[[nodiscard]] QJsonObject MakeDefaultHairCard();
+
 /// Borrow the resolved material for as long as the scene definition is retained.
 [[nodiscard]] const resources::SceneMaterial* GetSceneObjectMaterialOrNull(const RenderScene& scene,
                                                                            const QString& objectId);
@@ -62,6 +110,8 @@ struct MaterialPropertyRow final
     QColor Swatch{};
     /// Small preview of a texture row, shown beside Value; null for other rows and for missing textures.
     QImage Thumbnail{};
+    /// Editable separately in a World hair-card slot.
+    bool IsHairCardParameter = false;
 };
 
 /// Edge of a texture thumbnail in pixels; the longer side of the texture is scaled to it.

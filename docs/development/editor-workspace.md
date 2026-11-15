@@ -1980,6 +1980,39 @@ The raster viewport approximates the surface using base color and roughness.
 The reference paths and Wave Tracing evaluate the authored terms. Metropolis
 also requires the program's fixed-dimension reflection declaration.
 
+### Make a slot a hair card
+
+Import a hair card mesh, for example a glTF card whose base texture's alpha
+masks the strands. Select its slot and choose **Make Hair Card** in the
+**Material** group. The slot keeps its base colour, roughness, textures and
+mask, and the viewport shades it two-sided with highlights that follow the
+strand direction. If the slot has its own coating instance, a confirmation
+names it and **Replace Coating** removes it in the same edit. Cancel is the
+default.
+
+Edit the hair-card fields and choose **Apply Changes**:
+
+- **Strand direction (°)**: the direction in the card's plane, from the surface
+  tangent (increasing texture U) toward the bitangent, in [−180, 180].
+- **Primary highlight shift (°)** and **Secondary highlight shift (°)**: the
+  tilt of each highlight toward the card normal, in [−30, 30].
+- **Primary highlight weight** and **Tinted secondary highlight weight**, in
+  [0, 1].
+- **Mask cutoff**: shown only for a masked material, in [0, 1]. It overrides the
+  imported cutoff for this slot.
+
+A value outside its range is rejected beside the hair-card fields, with the
+field's name and accepted range. The field keeps your text so you can correct
+it, and the viewport keeps the last applied card. The message clears after a
+valid **Apply Changes**. **Use Inherited Material** restores the imported
+material. The assignment, each edit and the restore are undoable, and **Save
+World** keeps them across reopening and reimport. Slots with equal values share
+one cooked material.
+
+The raster viewport shades the strand highlight; ray previews and reference
+captures use the card's metallic/roughness surface lobes. See
+[raster hair cards](../architecture/renderer-systems.md#raster-hair-cards).
+
 ### Inspect a closure program
 
 Import a Ludus scene source whose material is a

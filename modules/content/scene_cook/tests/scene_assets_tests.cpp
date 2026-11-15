@@ -579,6 +579,67 @@ TEST_CASE("Invalid levels report the reference messages", "[scene_assets]")
     CHECK(error.Message.View() == "Degenerate authored camera");
 }
 
+TEST_CASE("Level hair-card slots cook into LUSCN v13 and reject unusable overrides", "[scene_assets][hair-card]")
+{
+    namespace format = ludus::content::scene_format;
+    namespace resources = ludus::resources;
+    GoldenProject golden;
+    const std::string original = ToText(golden.Level);
+    const std::string transform = R"("transform":[)";
+    const auto withFirstObject = [&](std::string_view member) {
+        std::string level = original;
+        const usize at = level.find(transform);
+        REQUIRE(at != std::string::npos);
+        level.insert(at, std::string(member) + ",");
+        return level;
+    };
+    const std::string hair = R"("hair_card":{"strand_direction_degrees":90,"primary_shift_degrees":-8,)"
+                             R"("secondary_shift_degrees":12,"primary_weight":0.25,"secondary_weight":0.5})";
+    AssetError error;
+    Array<uint8> bundle;
+    const std::string level = withFirstObject(hair);
+    REQUIRE(ValidateLevel(ToSpan(level), error) == true);
+    INFO(Describe(error));
+    REQUIRE(AssembleLevel(golden.Project.string(), ToSpan(level), {}, bundle, error));
+    uint32 version = 0;
+    REQUIRE(
+        ludus::foundation::core::TryReadLittleEndian<uint32>({bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                                                             version) == true);
+    CHECK(version == format::VERSION_13);
+    resources::SceneDefinition scene;
+    REQUIRE(resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), scene) == resources::Status::Ok);
+    usize hairCards = 0;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        if (material.Scattering.Model != format::MaterialModel::HairCard)
+        {
+            continue;
+        }
+        ++hairCards;
+        const format::HairCardParameters parameters = format::GetHairCardParameters(material.Scattering);
+        CHECK(parameters.StrandDirectionDegrees == 90);
+        CHECK(parameters.SecondaryShiftDegrees == 12);
+        CHECK(parameters.SecondaryWeight == 0.5F);
+        CHECK(material.Metallic == 0);
+    }
+    // Only the first slot became a card: its material record is split from the slots that inherit it.
+    CHECK(hairCards == 1);
+
+    // A cutoff needs a masked material, and a card cannot also hold a coating.
+    const std::string unmasked = withFirstObject(hair.substr(0, hair.size() - 1) + R"(,"alpha_cutoff":0.5})");
+    REQUIRE(ValidateLevel(ToSpan(unmasked), error) == true);
+    CHECK_FALSE(AssembleLevel(golden.Project.string(), ToSpan(unmasked), {}, bundle, error));
+    CHECK(std::string_view(error.Message.View()).find("mask cutoff needs a masked material") != std::string_view::npos);
+    const std::string coated = withFirstObject(hair + R"(,"coating":{"alpha":0.5,"eta":1.5,"thickness":0.01})");
+    CHECK_FALSE(ValidateLevel(ToSpan(coated), error));
+    CHECK(std::string_view(error.Message.View()).find("cannot also hold a coating") != std::string_view::npos);
+    const std::string outOfRange = withFirstObject(R"("hair_card":{"strand_direction_degrees":200,)"
+                                                   R"("primary_shift_degrees":-8,"secondary_shift_degrees":12,)"
+                                                   R"("primary_weight":0.25,"secondary_weight":0.5})");
+    CHECK_FALSE(ValidateLevel(ToSpan(outOfRange), error));
+    CHECK(std::string_view(error.Message.View()).find("strand direction in [-180, 180]") != std::string_view::npos);
+}
+
 TEST_CASE("Composed level transforms match the assembled bundle bit for bit", "[scene_assets]")
 {
     namespace format = ludus::content::scene_format;
