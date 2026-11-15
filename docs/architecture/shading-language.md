@@ -699,7 +699,7 @@ Targets disagree on several operations. LUSL defines each one once:
 | Integer division or modulo by zero | Error | Unspecified value; the emitted code never traps |
 | Shift count at or above the bit width | Error | Count masked to `width - 1` by the emitter |
 | Local or `groupshared` array index out of range | Error | Development builds clamp and latch a failure ([below](#development-bounds-checks)); release builds give an unspecified value |
-| NaN and infinity | No literals or sentinel constants | Test finiteness through bit-inspection functions; Metal compiles with fast math |
+| NaN and infinity | No literals or sentinel constants | Test finiteness through bit-inspection functions; Metal compiles render stages with fast math |
 | Float to integer out of range | Error | Unspecified value |
 | Two writable arguments alias | Compile error | — |
 | Read before definite assignment | Compile error, unless declared `= void` | — |

@@ -63,37 +63,58 @@ void LoadPackage(renderer::RenderGraphPackage& outPackage)
 using ludus::content::scene_format::MaterialModel;
 /// Passes after the primary pass: wave, geometric and aperture exports.
 constexpr uint32 EXPORT_PASSES = 3;
+/// The wave-optics export, which propagates a scalar field to its light sample.
+constexpr uint32 WAVE_PASS = 1;
 /// The geometric-optics export, which shadow-tests its light sample instead of propagating a wave field.
 constexpr uint32 GEOMETRIC_PASS = 2;
+/// Width and height of the repeated captures: each row is a compute workgroup, so a larger image gives a SIMD-group
+/// fault more chances to show in one capture.
+constexpr uint32 REPEATED_CAPTURE_EXTENT = 64;
+/// Alternating capture pairs of the repetition test. With Metal fast math, 16 pairs exposed the fault in each of 12
+/// runs on an Apple M5, with at least 160 wrong pixels per run.
+constexpr uint32 REPEATED_CAPTURE_ROUNDS = 16;
 /// Mean radiance of one exported pass's pixels.
 using ExportedPixels = StaticArray<math::Vector3, usize{EXTENT} * EXTENT>;
-/// Capture the scene wave graph once per exported pass with an optional receiver material.
-/// @param materialOrNull The receiver's material, or null for the neutral default.
-/// @param outGeometricOrNull When non-null, captures only GEOMETRIC_PASS and receives its pixel means.
-void RunSceneWaveGraph(uint32 screen,
-                       const renderer::SceneShaderMaterial* materialOrNull,
-                       ExportedPixels* outGeometricOrNull = nullptr)
+/// One compute device with the decoded scene wave package; captures on it share the device's pipelines and memory.
+struct WaveDevice final
 {
-    Session session;
-    rhi::DeviceHandle device;
-    rhi::SurfaceHandle surface;
+    Session Owner;
+    rhi::DeviceHandle Device;
+    rhi::SurfaceHandle Surface;
+    renderer::RenderGraphPackage Package;
+    renderer::RenderGraphPlan Plan;
+    renderer::RenderGraphPrograms Programs;
+};
+/// Create the device and load the package, or skip the test without a compute adapter.
+void CreateWaveDevice(WaveDevice& outDevice)
+{
     rhi::DeviceDescription description;
     description.Required.Compute = true;
     description.Required.PortableRaster = true;
     const rhi::DeviceStatus created =
-        rhi::CreateDevice({}, { .Width = EXTENT, .Height = EXTENT }, description, device, surface);
+        rhi::CreateDevice({}, { .Width = EXTENT, .Height = EXTENT }, description, outDevice.Device, outDevice.Surface);
     if (created != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
     {
         SKIP("No compute adapter");
     }
     REQUIRE(created == rhi::DeviceStatus::Ready);
-    renderer::RenderGraphPackage package;
-    LoadPackage(package);
-    const renderer::RenderGraphPlan plan = package.GetPlan();
-    const renderer::RenderGraphPrograms programs = package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
-                                                                       ludus::shaders::renderer_composite::Fragment());
-    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
-    REQUIRE(plan.Passes.GetSize() == EXPORT_PASSES + 1);
+    LoadPackage(outDevice.Package);
+    outDevice.Plan = outDevice.Package.GetPlan();
+    outDevice.Programs = outDevice.Package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
+                                                       ludus::shaders::renderer_composite::Fragment());
+    REQUIRE(renderer::RequiresHardwareRayTracing(outDevice.Plan) == false);
+    REQUIRE(outDevice.Plan.Passes.GetSize() == EXPORT_PASSES + 1);
+}
+/// Capture one exported pass of the receiver (and, for a nonzero screen, the screen) with one sample per pixel.
+/// @param materialOrNull The receiver's material, or null for the neutral default.
+void CaptureSceneWavePass(const WaveDevice& device,
+                          uint32 screen,
+                          const renderer::SceneShaderMaterial* materialOrNull,
+                          uint32 pass,
+                          Array<math::Vector3>& outPixels,
+                          uint32 width = EXTENT,
+                          uint32 height = EXTENT)
+{
     const StaticArray<math::Vector3, QUAD_VERTICES> receiverWorld{{{-1, -1, 1}, {1, -1, 1}, {-1, 1, 1}, {1, 1, 1}}};
     const float32 screenRightWorld = screen == 1 ? 1.0F : 0.0F;
     const StaticArray<math::Vector3, QUAD_VERTICES> screenWorld{
@@ -128,60 +149,80 @@ void RunSceneWaveGraph(uint32 screen,
         inputs.Materials = {materialOrNull, 1};
         items[0].MaterialOverrides = {&materialIndex, 1};
     }
+    const renderer::RenderGraphPlan& plan = device.Plan;
+    renderer::RenderGraphCapture capture;
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = plan.Passes[pass].Color;
+    settings.TargetSamples = 1;
+    const RasterStatus started =
+        capture.Start(device.Device, device.Surface, plan, device.Programs, width, height, settings);
+    REQUIRE((started == RasterStatus::Ready || started == RasterStatus::Pending));
+    const uint64 beginning = time::NowTicks();
+    while (capture.GetPhase() == renderer::RenderGraphCapturePhase::Initializing &&
+           time::NowTicks() - beginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
+    {
+        capture.Service();
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
+    }
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
+    const usize itemCount = screen == 0 ? 1 : TABLE_COUNT;
+    const uint64 captureBeginning = time::NowTicks();
+    const RasterStatus submitted = capture.SubmitScene({meshes.GetData(), itemCount},
+                                                       {items.GetData(), itemCount},
+                                                       {cameras.GetData(), CAMERA_COUNT},
+                                                       1,
+                                                       &inputs);
+    REQUIRE((submitted == RasterStatus::Ready || submitted == RasterStatus::Pending));
+    while (capture.GetPhase() != renderer::RenderGraphCapturePhase::Complete &&
+           capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed &&
+           time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
+    {
+        capture.Service();
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
+    }
+    const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
+    CAPTURE(pass,
+            screen,
+            capture.GetPhase(),
+            capture.GetStatus(),
+            capture.GetProblem(),
+            elapsedNanoseconds,
+            COLD_CAPTURE_TIMEOUT_NANOSECONDS);
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
+    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+    REQUIRE(pixels.GetSize() == usize{width} * height);
+    REQUIRE(outPixels.TryResize(pixels.GetSize()) == true);
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        outPixels[index] = pixels[index].Mean;
+    }
+}
+/// Capture the scene wave graph once per exported pass with an optional receiver material.
+/// @param materialOrNull The receiver's material, or null for the neutral default.
+/// @param outGeometricOrNull When non-null, captures only GEOMETRIC_PASS and receives its pixel means.
+void RunSceneWaveGraph(uint32 screen,
+                       const renderer::SceneShaderMaterial* materialOrNull,
+                       ExportedPixels* outGeometricOrNull = nullptr)
+{
+    WaveDevice device;
+    CreateWaveDevice(device);
     // Primary pass index zero only writes shared hits. The following passes export wave, geometric and aperture.
-    for (uint32 pass = 1; pass < plan.Passes.GetSize(); ++pass)
+    for (uint32 pass = 1; pass < device.Plan.Passes.GetSize(); ++pass)
     {
         if (outGeometricOrNull != nullptr && pass != GEOMETRIC_PASS)
         {
             continue;
         }
-        renderer::RenderGraphCapture capture;
-        renderer::RenderGraphCaptureSettings settings;
-        settings.Output = plan.Passes[pass].Color;
-        settings.TargetSamples = 1;
-        const RasterStatus started = capture.Start(device, surface, plan, programs, EXTENT, EXTENT, settings);
-        REQUIRE((started == RasterStatus::Ready || started == RasterStatus::Pending));
-        const uint64 beginning = time::NowTicks();
-        while (capture.GetPhase() == renderer::RenderGraphCapturePhase::Initializing &&
-               time::NowTicks() - beginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
-        {
-            capture.Service();
-            threading::SleepFor(COMPLETION_POLL_INTERVAL);
-        }
-        REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
-        const usize itemCount = screen == 0 ? 1 : TABLE_COUNT;
-        const uint64 captureBeginning = time::NowTicks();
-        const RasterStatus submitted = capture.SubmitScene({meshes.GetData(), itemCount},
-                                                           {items.GetData(), itemCount},
-                                                           {cameras.GetData(), CAMERA_COUNT},
-                                                           1,
-                                                           &inputs);
-        REQUIRE((submitted == RasterStatus::Ready || submitted == RasterStatus::Pending));
-        while (capture.GetPhase() != renderer::RenderGraphCapturePhase::Complete &&
-               capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed &&
-               time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
-        {
-            capture.Service();
-            threading::SleepFor(COMPLETION_POLL_INTERVAL);
-        }
-        const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
-        CAPTURE(pass,
-                screen,
-                capture.GetPhase(),
-                capture.GetStatus(),
-                capture.GetProblem(),
-                elapsedNanoseconds,
-                COLD_CAPTURE_TIMEOUT_NANOSECONDS);
-        REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
-        const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
-        REQUIRE(pixels.GetSize() == usize{EXTENT} * EXTENT);
+        Array<math::Vector3> pixels;
+        CaptureSceneWavePass(device, screen, materialOrNull, pass, pixels);
         for (usize index = 0; index < pixels.GetSize(); ++index)
         {
             if (outGeometricOrNull != nullptr)
             {
-                (*outGeometricOrNull)[index] = pixels[index].Mean;
+                (*outGeometricOrNull)[index] = pixels[index];
             }
-            const float32 value = pixels[index].Mean.X;
+            const float32 value = pixels[index].X;
+            CAPTURE(pass, screen, index);
             REQUIRE(math::IsFinite(value) == true);
             if (screen == 1)
             {
@@ -261,8 +302,7 @@ TEST_CASE("Scene wave graph mixes two distinct lobes by a grain mask without a g
     // The lone receiver is lit by one point light and its continuations escape, so each geometric-optics pixel is the
     // BSDF at one pair of directions times fixed factors: here the gold's mirror peak, at normal incidence. The CPU
     // oracle and the CPU/GPU parity case cover off-specular directions. The wave export propagates a field instead,
-    // and on Metal it has returned zero or unbounded pixels on some runs regardless of the material, so the exact
-    // comparison uses the deterministic geometric export.
+    // so the exact comparison uses the geometric export.
     renderer::SceneShaderMaterial grain;
     grain.Scattering.Model = MaterialModel::Program;
     grain.Roughness = fixtures::GRAIN_MIX_ROUGHNESS;
@@ -313,6 +353,79 @@ TEST_CASE("Scene wave graph diffracts beyond a half screen from the current Worl
           "[renderer][gpu][wave-tracing][graph]")
 {
     CheckSceneWaveGraph(2);
+}
+
+TEST_CASE("Scene wave graph repeats its wave and closure-program exports bit for bit",
+          "[renderer][gpu][wave-tracing][graph][program]")
+{
+    // With Metal fast math, the merged ray kernel lost private values of whole SIMD groups at random: the wave
+    // export returned exact zeros and the grain program read its zeroed roughness register, giving a mirror spike
+    // about 2000 times too bright. Alternating the two exports on one device changes the kernel's code path between
+    // dispatches, which exposed it within a few captures. ConfigureMetalComputeMath now compiles compute kernels with
+    // safe math; see docs/architecture/renderer-systems.md#metal-compute-floating-point.
+    namespace fixtures = ludus::renderer_tests;
+    renderer::SceneShaderMaterial grain;
+    grain.Scattering.Model = MaterialModel::Program;
+    grain.Roughness = fixtures::GRAIN_MIX_ROUGHNESS;
+    grain.Program = fixtures::MakeGrainMixProgram();
+    grain.BaseColor = {1, 1, 1};
+    WaveDevice device;
+    CreateWaveDevice(device);
+    Array<math::Vector3> firstWave;
+    Array<math::Vector3> firstProgram;
+    Array<math::Vector3> pixels;
+    usize mismatchCount = 0;
+    const auto compare = [&](const Array<math::Vector3>& first, uint32 round, uint32 pass) {
+        for (usize index = 0; index < pixels.GetSize(); ++index)
+        {
+            const math::Vector3& value = pixels[index];
+            const math::Vector3& expected = first[index];
+            const bool isEqual = value.X == expected.X && value.Y == expected.Y && value.Z == expected.Z;
+            if (isEqual == false && mismatchCount == 0)
+            {
+                // Report the first difference only; a fault usually changes every pixel of a workgroup.
+                CAPTURE(round, pass, index, value.X, expected.X);
+                CHECK(isEqual == true);
+            }
+            mismatchCount += isEqual == true ? 0 : 1;
+        }
+    };
+    for (uint32 round = 0; round < REPEATED_CAPTURE_ROUNDS; ++round)
+    {
+        CaptureSceneWavePass(device, 0, nullptr, WAVE_PASS, pixels, REPEATED_CAPTURE_EXTENT, REPEATED_CAPTURE_EXTENT);
+        if (round == 0)
+        {
+            for (const math::Vector3& value : pixels)
+            {
+                REQUIRE(math::IsFinite(value.X) == true);
+                CHECK(value.X > 0);
+            }
+            REQUIRE(firstWave.TryResize(pixels.GetSize()) == true);
+            for (usize index = 0; index < pixels.GetSize(); ++index)
+            {
+                firstWave[index] = pixels[index];
+            }
+        }
+        compare(firstWave, round, WAVE_PASS);
+        CaptureSceneWavePass(device,
+                             0,
+                             &grain,
+                             GEOMETRIC_PASS,
+                             pixels,
+                             REPEATED_CAPTURE_EXTENT,
+                             REPEATED_CAPTURE_EXTENT);
+        if (round == 0)
+        {
+            REQUIRE(firstProgram.TryResize(pixels.GetSize()) == true);
+            for (usize index = 0; index < pixels.GetSize(); ++index)
+            {
+                REQUIRE(math::IsFinite(pixels[index].X) == true);
+                firstProgram[index] = pixels[index];
+            }
+        }
+        compare(firstProgram, round, GEOMETRIC_PASS);
+    }
+    CHECK(mismatchCount == 0);
 }
 
 TEST_CASE("Scene optical template captures a supplied cooked test scene", "[.wave-supplied-scene]")
