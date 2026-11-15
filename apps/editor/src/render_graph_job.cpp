@@ -1,8 +1,12 @@
 #include "internal/render_graph_job.h"
 
+#include <ludus/foundation/profiling/profiling.hpp>
+
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QJsonParseError>
 #if defined(Q_OS_WASM)
 // Browser builds have no child processes; render-graph jobs report unavailable.
@@ -77,10 +81,67 @@ void RenderGraphJob::Cancel() {}
 
 void RenderGraphJob::finish(int32, bool) {}
 #else
+namespace
+{
+void RecordShaderBuildTrace(const RenderGraphJobResult& result,
+                            uint64 processRequestedTicks,
+                            uint64 processObservedEndTicks) noexcept
+{
+    const QJsonObject timing = result.Payload.value(QStringLiteral("build"))
+                                   .toObject()
+                                   .value(QStringLiteral("shader_stage_timing"))
+                                   .toObject();
+    const QJsonArray stages = timing.value(QStringLiteral("stages")).toArray();
+    bool hasUnavailableTiming = timing.isEmpty();
+    for (qsizetype i = 0; i < stages.size(); ++i)
+    {
+        const QJsonArray ticks = stages[i].toArray();
+        constexpr qsizetype SHADER_STAGE_TIMING_FIELDS = 3;
+        if (ticks.size() != SHADER_STAGE_TIMING_FIELDS)
+        {
+            hasUnavailableTiming = true;
+            continue;
+        }
+        const qint64 queued = ticks[0].toInteger();
+        const qint64 began = ticks[1].toInteger();
+        const qint64 ended = ticks[2].toInteger();
+        if (queued <= 0 || began < queued || ended < began || static_cast<uint64>(queued) < processRequestedTicks ||
+            static_cast<uint64>(ended) > processObservedEndTicks)
+        {
+            // Reject clocks whose epoch cannot be reconciled with the editor's monotonic clock.
+            hasUnavailableTiming = true;
+            continue;
+        }
+        const uint64 stage = static_cast<uint64>(i) + 1;
+        RecordShaderStageTrace(result.Request.EditTrace,
+                               stage,
+                               "Await shader build lane",
+                               static_cast<uint64>(queued),
+                               static_cast<uint64>(began));
+        RecordShaderStageTrace(result.Request.EditTrace,
+                               stage,
+                               "Compile and validate shader stage",
+                               static_cast<uint64>(began),
+                               static_cast<uint64>(ended));
+    }
+    if (hasUnavailableTiming == true)
+    {
+        EndViewportTrace(BeginGraphEditStage(result.Request.EditTrace, "Shader stage timestamps unavailable"));
+    }
+    if (timing.value(QStringLiteral("omitted")).toInteger() > 0)
+    {
+        EndViewportTrace(BeginGraphEditStage(result.Request.EditTrace, "Additional shader stages omitted"));
+    }
+}
+} // namespace
+
 RenderGraphJob::~RenderGraphJob()
 {
     if (mProcessOrNull != nullptr)
     {
+        EndViewportTrace(mProcessStartTrace, "workspace closed");
+        EndViewportTrace(mProcessTrace, "workspace closed");
+        EndViewportTrace(mRequest.EditTrace.Lifetime, "workspace closed");
         mProcessOrNull->disconnect(this);
         mProcessOrNull->kill();
         mProcessOrNull->waitForFinished(1000);
@@ -132,6 +193,8 @@ bool RenderGraphJob::Start(const ToolingPaths& tooling, const RenderGraphJobRequ
         {
             return;
         }
+        EndViewportTrace(mProcessStartTrace);
+        mProcessTrace = BeginGraphEditStage(mRequest.EditTrace, "Shader tool process (observed)");
         const int64 written = process->write(mRequest.StandardInput);
         if (written != mRequest.StandardInput.size())
         {
@@ -146,6 +209,14 @@ bool RenderGraphJob::Start(const ToolingPaths& tooling, const RenderGraphJobRequ
                           QStringLiteral("render-graph"),
                           request.Action};
     arguments += request.Arguments;
+    mProcessRequestedTicks = 0;
+    if (request.EditTrace.Lifetime.Capture != 0 && request.Action == QStringLiteral("build"))
+    {
+        arguments.append(QStringLiteral("--trace-shader-stages"));
+        mProcessRequestedTicks = profiling::NowTicks();
+    }
+    mProcessStartTrace = BeginGraphEditStage(mRequest.EditTrace, "Launch shader tool process");
+    mProcessTrace = {};
     mProcessOrNull->start(python, arguments);
     return true;
 }
@@ -188,6 +259,15 @@ void RenderGraphJob::finish(int32 exitCode, bool isCrashed)
     {
         result = ParseOutput(mRequest, mOutput, exitCode);
     }
+    if (mProcessRequestedTicks != 0)
+    {
+        RecordShaderBuildTrace(result, mProcessRequestedTicks, profiling::NowTicks());
+    }
+    const char* outcomeOrNull = result.IsSuccessful == true  ? nullptr
+                                : result.IsCancelled == true ? "cancelled"
+                                                             : "tool failed";
+    EndViewportTrace(mProcessStartTrace, outcomeOrNull);
+    EndViewportTrace(mProcessTrace, outcomeOrNull);
     Q_EMIT Finished(result);
 }
 #endif

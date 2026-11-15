@@ -717,8 +717,10 @@ for its fields and the masked color and depth fixture record. The
 Renderer/RHI device preparation report is delivered as
 `RenderGraph::GetPipelineReport`, keyed by the same recipe keys; see
 [Device pipeline preparation](../development/render-graph-authoring.md#device-pipeline-preparation).
-The cold native consumer journeys and the correlation of a shader edit with
-its first presented frame remain proposed.
+Cooked runtime generations carry recipe keys for the same lookup. The native
+[Qt edit trace](../development/editor-workspace.md#trace-a-shader-edit-to-its-first-paint)
+follows a replacement through the selected generation's first paint. Cold and
+warm qualification across the consumer journeys remains open.
 
 Today the graph build report records aggregate cache hits/misses, elapsed time,
 counts and LUSL lowering details. The authored budget counts bound admission

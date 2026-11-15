@@ -1761,7 +1761,8 @@ curve traversal.
   textures and existing colour, depth and shadow passes. Verify matching
   coverage across those passes and supported ray hit and shadow queries.
   Compare GPU time and overdraw against the same cards with ordinary masked
-  shading. [Hair cards #1371](https://github.com/The-Ludus-Project/Ludus/issues/1371)
+  shading. [Raster hair cards](#raster-hair-cards) ·
+  [Hair cards #1371](https://github.com/The-Ludus-Project/Ludus/issues/1371)
 - **Raster skin.** Adapt the two separable convolutions in Jorge Jimenez et
   al., *Separable Subsurface Scattering* (Computer Graphics Forum, 2015),
   to the deferred lighting path. Filter diffuse lighting only, with depth and
@@ -1782,6 +1783,76 @@ curve traversal.
   isolation. Use the backlit ear to decide whether to add thin-feature
   transmission. [Technical memo](https://www.seanet.com/~myandper/abstract/memo1504.htm) ·
   [Reference skin #1373](https://github.com/The-Ludus-Project/Ludus/issues/1373)
+
+#### Raster hair cards
+
+A `HairCard` material (`content::scene_format::MaterialModel::HairCard`, LUSCN
+v13) stores a strand direction, two highlight shifts and two highlight weights in
+its typed scattering slots (`HairCardParameters`). Its record keeps zero metallic,
+and base colour, roughness, textures and the alpha mask keep their usual meaning.
+Author it in a [scene source](scene-source-format.md#hair-card) or from code.
+
+The forward raster profile with authored inputs, which the World viewport uses,
+shades a hair card as follows:
+
+- **Strand frame.** The authored tangent sets the frame. Without one, the
+  texture-coordinate derivatives give dP/du and the handedness. A card with
+  neither uses `ComputeHairCardFallbackTangent`. The strand is rotated from the
+  tangent toward the bitangent in the front-side frame, so both sides of a card
+  share one physical direction.
+- **Two sides.** A back face turns its shading normal toward the viewer and is
+  shaded like a front face. A light on the far side of the card contributes
+  nothing; transmission through the card is not modelled.
+- **Lobe.** Per light, the result is
+  `cos · (baseColor/π + w₁ S(s₁) + w₂ baseColor S(s₂))`. Here `cos` is the cosine
+  with the facing normal, and `S(s)` is the Kajiya–Kay highlight
+  `(p + 2)/(2π) · sin^p(strand′, half vector)`. The strand is tilted toward the
+  normal by the shift `s`, and `p = 2/α² − 2` for `α = roughness²`, clamped to
+  [1, 65536]. James T. Kajiya and Timothy L. Kay, *Rendering Fur with Three
+  Dimensional Textures* (SIGGRAPH ’89, pp. 271–280, “The specular component”,
+  Fig. 8) supply the highlight cone around the fibre tangent. Stephen R. Marschner
+  et al., *Light Scattering from Human Hair Fibers* (ACM TOG 22(3), 2003) supply
+  the opposite shifts of the surface and internal reflections, which set the
+  defaults. Thanks to the authors. The card normalization, the gating and the
+  Lambertian diffuse term are Ludus's raster approximation, not either paper's
+  model.
+- **Environment.** Environment and baked terms use the ordinary dielectric
+  approximation about the facing normal.
+
+`hair_card.hpp` evaluates the same lobe on the CPU. The `[hair-card]` tests in
+`ludus_reference_material_tests` sweep the view through the predicted
+longitudinal peak at two incident angles and three shifts. They check the peak
+value, rotation with the strand direction, both sides and finite output near
+tangent-aligned directions. The `[hair-card][gpu]` forward-lit test in `ludus_renderer_render_tests` checks the
+same behaviour in raster pixels: the highlight moves with the strand, back faces
+match front faces where an ordinary card is dark, far-side lights are gated, and
+masks discard. It also checks that a metallic hair card is rejected while the
+last drawable scene is kept.
+
+Coverage reuses the material's mask in every pass. Colour, depth and shadow
+casting discard through `SampleBaseTexel` with the same cutoff. Ray scenes apply
+the record's mask in closest-hit and shadow queries as for any masked material.
+
+Other paths make declared approximations:
+
+- **Clustered deferred profile.** It packs the facing normal and resolves the
+  ordinary lobes, because the G-buffer stores no strand.
+- **Lit programs without authored inputs.** They have no hair parameters and
+  shade a hair card with the ordinary lobes.
+- **Ray previews and reference captures.** They receive the metallic/roughness
+  dielectric lobes (`GetSurfaceReflectionScattering`). Hair transport waits for
+  the [strand prototype](https://github.com/The-Ludus-Project/Ludus/issues/1374).
+- **Raster mesh lights.** Deferred raster mesh lights shade a hair card with the
+  ordinary lobes.
+
+The editor inspector lists the strand controls but cannot edit them yet. Still
+open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
+
+- World assignment and editing with undo, save and reimport.
+- The shared static bust.
+- The matched-cutoff and mismatched-cutoff coverage comparison across raster
+  passes and ray queries.
+- GPU time and overdraw measurements against an ordinary masked material.
 
 Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
 An artist must be able to import the bust, assign and edit hair and skin
@@ -3008,10 +3079,12 @@ worse. About 1-2% of 4 x 4 captures failed. Safe math gave no wrong pixel in
 thousands of captures.
 
 `Scene wave graph repeats its wave and closure-program exports bit for bit`
-(`ludus_wave_graph_tests`) is the regression. It alternates the default-material
-wave export and the program's geometric export on one device at 64 x 64 for 16
-rounds and requires every capture to repeat the first bit for bit. With fast math
-it failed every run, with at least 160 wrong pixels.
+(`ludus_wave_graph_tests`) alternates the default-material wave export and the
+program's geometric export on one device and requires every capture to repeat the
+first bit for bit. On Metal it runs 16 rounds at 64 x 64 to stress the compiler
+regression. With fast math it failed every run, with at least 160 wrong pixels.
+Vulkan checks two rounds at 4 x 4, the same extent as the portable wave transport
+cases.
 
 Safe math still contracts `a * b + c` when it is written as one MSL expression;
 fast and relaxed math also contract across statements. Slang's `precise` does not
@@ -3238,10 +3311,40 @@ The first RT2 effect is the [hybrid shadows template](../development/render-grap
 raster first hits and one shadow ray for each of up to 16 contributing analytic
 lights per pixel. Its regression compares an offscreen blocker's shadow with a
 geometric projection, the default graph's shadow map and the paired RT1 direct
-output. Hard punctual shadows need no history or filter, so this step does not yet
-qualify reconstruction, temporal behavior, area-light penumbrae, reflections or
-indirect diffuse. [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248)
-tracks those fixtures.
+output. A second `[hybrid-shadows]` fixture compares the default graph's directional
+atlas with the same graph selected by RT2 activation. It fixes the camera over
+a tessellated curved receiver and nearby blocker, with light angles of roughly
+63° and 21° above the receiver's center tangent. The unoccluded render keeps the
+same geometry and light, with raster shadow casting disabled. The ratio to this
+control isolates shadow visibility from the receiver's changing direct response.
+The fixture checks interior false occlusion and false light against independent
+rays on the tessellation and measures the signed contact-edge displacement in
+screen pixels separately. It exercises Automatic on a device without enabled
+native rays and ForceRaster when the device still exposes them.
+
+The directional atlas uses a 1024 × 1024 slot with a one-texel gutter. The
+effective comparison tolerance adds the 0.001 normalized light-depth bias,
+projected receiver depth uncertainty, and the dot product of the absolute
+stored caster slope and projected texel uncertainty for each filter tap.
+The slope also reprojects sampled depth to the receiver's position in the map.
+The fixture measures the combined effect of these terms on visibility. Lance
+Williams's 1978 study motivates measuring both self-shadowing and changes at the
+contact. [Casting Curved Shadows on Curved Surfaces, pp. 270–274](https://cg.informatik.uni-freiburg.de/intern/seminar/shadowMapping_1978_Williams.pdf)
+
+On Apple M5 with Metal, the default graph and ForceRaster give identical linear
+output. At the steep angle, all 5,520 lit probes retained full visibility. At
+grazing incidence, 62 of 3,720 lit probes returned half visibility along one
+column beside a tessellation seam. The fixture permits one column's worth of
+lit probes to lose over 5% visibility at grazing incidence, with a peak loss
+limit of half the signal plus one RGBA8 code relative to the minimum admitted
+control. Both angles had zero falsely lit probes. The contact edge moved
+0.156 pixels inward at the steep angle and 0.051 pixels at the grazing angle,
+within a 1.5-pixel limit.
+
+Hard punctual shadows need no history or reconstruction filter.
+[Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
+remaining area-light penumbrae, reflections, indirect diffuse, reconstruction
+and temporal fixtures.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)
@@ -4904,8 +5007,8 @@ its existing level-zero sampling contract.
 The optional analytic-light bake also samples incoming bounced radiance at
 a bounded uniform World grid. Six cosine projections form an ambient cube at
 each probe. Short first-hit rays populate six coarse face depth maps in the
-same atlas. The depth maps store distance along the face axis so planar walls
-aligned to the grid give consistent comparisons across neighbouring rays.
+same atlas, 8 × 8 texels per face. The depth maps store distance along the
+face axis so planar walls aligned to the grid give consistent comparisons across neighbouring rays.
 This adapts the visibility-aware interpolation of [Majercik, Guertin,
 Nowrouzezahrai and McGuire, *Dynamic Diffuse Global Illumination with Ray-Traced
 Irradiance Fields*, §5](https://jcgt.org/published/0008/02/01/) for an offline
@@ -4922,7 +5025,7 @@ to evaluate their original transport against the full scene.
 
 #### Probe visibility near walls and openings
 
-Each lookup compares the receiver against one nearest sample of a 4 × 4
+Each lookup compares the receiver against one nearest sample of an 8 × 8
 axial depth map per face. The ray through that texel's centre can cross a
 different part of a wall from the ray to the receiver. It can see around a
 thin or diagonal obstruction, or hit a wall where the receiver's ray would
@@ -4931,26 +5034,22 @@ single wrongly admitted probe. Receiver meshes marked for probe GI are
 excluded from the bake, so this test covers World occlusion. An asset's
 self-occlusion would require its own representation.
 
-A synthetic visibility check isolated this approximation with a unit probe
-cell and eight valid probes. The four probes at x = 0 had unit red irradiance
-on all faces and the four at x = 1 were black. An exact segment/plane
-intersection provided the visibility oracle. Both paths used the same
-trilinear weights and renormalization. The approximation used the shipped
-face size, depth quantization and bias.
+A synthetic visibility check first isolated this approximation with a unit
+probe cell and eight valid probes, using the earlier 4 × 4 faces. The four
+probes at x = 0 had unit red irradiance on all faces and the four at x = 1
+were black. An exact segment/plane intersection provided the visibility
+oracle. Both paths used the same trilinear weights and renormalization. The
+approximation used the face size, depth quantization and bias of that layout.
 
-| Divider in cell coordinates | Receiver (x, y, z) | Exact red | Depth map red |
+| Divider in cell coordinates | Receiver (x, y, z) | Exact red | 4 × 4 depth map red |
 | --- | --- | ---: | ---: |
 | Closed wall at x = 0.5 | (0.60, 0.50, 0.50) | 0 | 0 |
 | Closed wall at x = 0.5 | (0.55, 0.44, 0.50) | 0 | 0.265 |
 | Closed wall at x + 0.4(y − 0.5) = 0.5 | (0.66, 0.23, 0.50) | 0 | 0.691 |
 | Wall at x = 0.5 with an opening at 0.4 < y < 0.6 | (0.60, 0.50, 0.50) | 0.400 | 0 |
 
-These values isolate the visibility test with fixed probe irradiance.
-[Native Lit qualification](https://github.com/The-Ludus-Project/Ludus/issues/1367)
-needs scene-linear measurements during receiver movement, with the same
-baked inputs and a reference for both blocked bounce and bounce through an
-opening. A higher face resolution is a candidate if it improves both and
-fits the bake and GPU budgets.
+These values isolate the visibility test with fixed probe irradiance. The
+native qualification below measures the same dividers with baked inputs.
 
 Thanks to Michał Iwanicki and Peter-Pike Sloan, whose
 [Precomputed Lighting in Call of Duty: Infinite Warfare, SIGGRAPH 2017](https://advances.realtimerendering.com/s2017/index.html),
@@ -4958,6 +5057,112 @@ slides 55–60, motivates checking visibility before interpolation. Their
 light grid stores first-hit depth for each incident tetrahedron. Ludus
 uses a regular grid and per-probe cube faces. Their asset-space
 self-visibility in slides 14–25 is a separate approximation.
+
+#### Native Lit probe visibility qualification
+
+The hidden native editor test *Native Lit probe GI visibility qualification
+around thin and diagonal walls and a doorway*
+(`apps/editor/tests/render_native_tests.mm`, `[.render-native][probe-gi]`)
+renders the studied cell through the production World bake and native Lit
+viewport. It runs in the macOS batch jobs and locally with the Cocoa platform.
+
+- **Fixture.** A 3 × 2 × 2 grid with 1 m spacing and origin
+  (−1, 0.5, −0.5) m puts the studied cell between lit probes at x = 0 and
+  dark probes at x = 1. Black, absorbing walls 6 m wide and 3 m high
+  separate the rooms over a grey floor with albedo 0.7. A red point light of
+  15 W/sr at (−0.5, 1.2, −0.4) m is the selected always-on light. Each path
+  holds ten marked 6 cm receivers 0.1 m apart. They face +Z, away from the
+  light, so probe GI is their only illumination.
+- **Dividers.** The axis-aligned wall at x = 0.5 is the control along the
+  cell's centre line and the near-field case along x = 0.55. The diagonal wall
+  is x + 0.4(y − 1) = 0.5. The doorway wall is open for 0.9 < y < 1.1. In
+  the embedded case the floor and a ceiling sit 3 mm outside the two probe
+  layers, so every probe touches geometry and is invalid.
+- **Measurement.** Each receiver is read from a 3 × 3 block of presented
+  pixels. sRGB decoding and `InvertPbrNeutral` at exposure 1 give
+  scene-linear radiance. Dividing by the albedo and Schlick transmission
+  (1 − F) for the view angle, then multiplying by π, recovers probe
+  irradiance. A CPU copy of the shader's lookup reads the same atlas and
+  evaluates it at the pixels' receiver-plane positions. A second copy
+  replaces the depth test with an exact probe-to-receiver segment test.
+- **Reference.** The bake's own probe transport evaluates the receiver
+  positions: the selected light only, at least one bounce, receivers
+  excluded and a maximum depth of 4. The +Z ambient-cube faces of a 0.1 m
+  reference grid at the receivers average 16 seeds of 256 sphere samples.
+  Each seed is RGBA8-quantized.
+- **Tolerances.** Native and CPU lookups agree within 0.02 + 3 %. A closed-off
+  receiver leaks if it exceeds the reference by more than 0.01, about 2.5 %
+  of the lit half's reference irradiance (0.37–0.40). Bounce just past the
+  opening must keep at least half of the reference.
+
+Native irradiance in the fixture's units, with 4 × 4 faces before this
+qualification and 8 × 8 faces after it:
+
+| Path and position | Reference | 4 × 4 | 8 × 8 | Exact visibility |
+| --- | ---: | ---: | ---: | ---: |
+| Axis control, lit, x = 0.05–0.45 | 0.37–0.40 | 0.608 | 0.608 | 0.611 |
+| Axis control, dark, x = 0.55–0.95 | 0 | 0 | 0 | 0 |
+| Near field x = 0.55, worst y | 0 | 0.207 (y = 1.15) | 0.157 (y = 1.25) | 0 |
+| Near field, leaking receivers of ten | 0 | 4 | 4 | 0 |
+| Diagonal, dark, x = 0.65 | 0 | 0.508 | 0 | 0 |
+| Diagonal, dark, x = 0.75 | 0 | 0.041 | 0 | 0 |
+| Doorway, lit, x = 0.35 | 0.358 | 0.608 | 0.401 | 0.611 |
+| Doorway, past the opening, x = 0.55 | 0.157 | 0.009 | 0.279 | 0.279 |
+| Doorway, dark, x = 0.65 | 0.024 | 0.009 | 0.219 | 0.009 |
+| Embedded layers, lit, x = 0.05–0.45 | 1.96–3.43 | 0 | 0 | 0 |
+
+Native values matched the CPU lookup to within 0.003 except at one 4 × 4
+texel boundary (0.041 against 0.022), so the table measures the
+representation rather than the shader. Moving one receiver through the
+doorway at x = 0.25, 0.45, 0.55 and 0.75 changes the World lighting key and
+rebakes. Each step presented its new bounce in 355–413 ms, matching the
+static receiver at that position. In the embedded case no neighbour
+remains, and receivers fall back to live lighting with no probe term.
+
+Cost on an Apple M5 (Metal 4) with the macOS Clang debug build:
+
+| Measure | 4 × 4 | 8 × 8 |
+| --- | ---: | ---: |
+| Unpadded atlas bytes per probe | 408 | 1,560 |
+| Atlas bytes, 12 probes | 5,120 | 19,456 |
+| Atlas bytes, 12 × 12 × 12 probes | 705,536 | 2,696,192 |
+| Visibility rays per probe | 96 | 384 |
+| CPU bake, 40 probes, four workers | 18–44 ms | 36–63 ms |
+| GPU frame, receiver covering the view | 2.30 ms | 1.94 ms |
+| GPU frame, lookups outside the volume | 1.65 ms | 1.74 ms |
+
+The GPU rows are 30-frame means at 1024 × 697 physical pixels, with 95th
+percentiles up to 5.8 ms. The two layouts did not differ beyond run-to-run
+variation.
+
+**Decision.** The bake uses 8 × 8 faces. They remove the diagonal leak and
+keep the bounce through the opening at the exact-visibility value, for 3.8
+times the atlas bytes and no measurable GPU cost. Worlds saved with 4 × 4
+atlases fail the atlas extent check on open, so the editor rebakes them in
+the background. Two errors remain. A receiver 5 cm (5 % of the spacing) from
+an axis-aligned wall leaked at four of ten heights, where a lit probe's
+dominant face texel misses the wall. Just past an opening, one wrongly admitted probe outweighs the
+reference by 0.2. The exact-visibility lookup has neither error with the
+same weights, so both belong to the single nearest-texel depth comparison.
+A seam-aware variant also tested each face within one edge texel of the
+dominant axis. In the CPU lookup it removed two of the four near-field leaks
+but not the largest, so it was not adopted. A filtered distance
+representation, such as the mean and second-moment test of Majercik et al.
+§5, is the next candidate and should be measured with this fixture.
+
+Usable limits from the 1 m qualification:
+
+- Keep probe layers more than 1.6 % of the spacing from surfaces, the
+  bake's minimum clearance of 2/255 of its two-cell depth range. A probe
+  closer than that is invalid. Where every neighbour is invalid, receivers
+  lose all baked bounce; the embedded case lost 1.96–3.43.
+- Expect leaks at receivers about 5 % of the spacing from a wall and just
+  past an opening. Choose a spacing whose cells do not straddle a thin divider near
+  where receivers move, or move the volume so walls fall near cell centres.
+- Trilinear interpolation across 1 m cells overestimated the lit half by
+  51–62 %. Probes nearer the light and floor contributed brighter bounce.
+  Visibility does not cause this error. Smaller spacing reduces it but was
+  not qualified here.
 
 ### Material debug views
 

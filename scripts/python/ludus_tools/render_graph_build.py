@@ -71,6 +71,7 @@ MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 # Cache-missed stages compile in this many concurrent compiler processes at most (also
 # bounded by half the host's CPU count). Each stage is one mostly single-threaded compiler.
 MAX_PARALLEL_STAGES = 8
+MAX_TRACED_STAGES = 64
 SOURCE_LIMIT_REPAIR = ('Remove shader programs and sources that the package no longer uses (in the editor, '
                        'right-click the Subgraph node of a template you no longer need and choose Delete Subgraph '
                        'and Library, or right-click the canvas and choose Remove Unused Shaders) and build again.')
@@ -981,8 +982,15 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
+def trace_ticks():
+    """Host monotonic nanoseconds matching the editor steady clock on supported hosts."""
+    if sys.platform == 'darwin':
+        return time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+    return time.monotonic_ns()
+
+
 def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker_socket=None, worker_identity=None,
-                   worker_lanes=1, lanes=None):
+                   worker_lanes=1, lanes=None, stage_timings=None):
     """Compile cache-missed stages concurrently; return one outcome per job, in job order.
 
     jobs holds (program, closure, target) in build order. Each stage writes only its own
@@ -1003,6 +1011,7 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
     worker = threading.BoundedSemaphore(max(1, worker_lanes)) if worker_socket else None
     first_failure = [len(jobs)]
     failure_lock = threading.Lock()
+    queued_at = trace_ticks() if stage_timings is not None else 0
 
     def compile_one(index):
         program, closure, target = jobs[index]
@@ -1016,10 +1025,14 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
                 # Short stage names keep deep Windows build trees under the path limit.
                 work = stage / (program['id'] + '-' + target)
                 work.mkdir()
+                should_trace = stage_timings is not None and index < len(stage_timings)
+                helper_started = trace_ticks() if should_trace else 0
                 compile_started = time.monotonic()
                 artifacts, result = compile_program(program, schemas, closure, snapshot, work, helper, tools, target,
                                                     stopped, worker_socket, worker_identity)
                 seconds = time.monotonic() - compile_started
+                if should_trace:
+                    stage_timings[index] = (queued_at, helper_started, trace_ticks())
             files = {p.name: digest(read(p, 2 * 1024 * 1024)) for p in artifacts.iterdir() if p.is_file()}
             return artifacts, result, files, seconds
         except BaseException:
@@ -1205,7 +1218,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
 
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
-                  ray_path_capture=False, capture_profile=False, luslc=None, lusl_style=None, dxc=None):
+                  ray_path_capture=False, capture_profile=False, luslc=None, lusl_style=None, dxc=None,
+                  trace_shader_stages=False):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -1332,8 +1346,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                     require(result['target'] == target and result['stage'] == program['stage'], 'Cache', key, 'cached stage identity mismatch')
                     compiled[(pid, target)] = result
             # Cache misses compile concurrently, then publish in build order like a serial build.
+            stage_timings = [None] * min(len(pending), MAX_TRACED_STAGES) if trace_shader_stages else None
             outcomes = compile_stages([job[:3] for job in pending], stage, schemas, snapshot, helper, tool_paths, cancel,
-                                      worker_socket, worker_identity, worker_lanes)
+                                      worker_socket, worker_identity, worker_lanes, stage_timings=stage_timings)
             built = {}
             for (program, _, target, key, key_data), outcome in zip(pending, outcomes):
                 if isinstance(outcome, BaseException):
@@ -1494,6 +1509,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             snapshot.verify()
             require(all(hash_file(p) == tool_hashes[k] for k, p in tool_paths.items()), 'Stale', 'toolchain', 'toolchain changed before publication')
             atomic(output / 'current.json', encoded({'version': VERSION, 'generation': generation_key}))
+            if stage_timings is not None:
+                report['shader_stage_timing'] = {'stages': stage_timings,
+                                                 'omitted': len(pending) - len(stage_timings)}
             return report
 
 

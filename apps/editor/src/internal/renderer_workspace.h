@@ -20,6 +20,7 @@
 #include "internal/render_graph_source.h"
 #include "internal/render_graph_source_watch.h"
 #include "internal/viewport_frame_pump.h"
+#include "internal/viewport_trace.h"
 #include "internal/world_lighting_coverage.h"
 
 #include <QByteArray>
@@ -691,6 +692,11 @@ private:
     /// Report the capture-library job's outcome to mLibraryCaptureOrNull.
     void finishLibraryCaptureBuild(const RenderGraphJobResult& result);
     /// Append the shader worker endpoint a capture build shares with graph builds, when one is available.
+    QByteArray mQueuedGraphEditInput;
+    GraphEditTrace mQueuedGraphEdit;
+    ViewportTraceToken mQueuedGraphEditStage;
+    ViewportTraceToken mWorkerStartupTrace;
+    void queueGraphEditTrace(RenderGraphSource source);
     void appendWorkerSocketArgument(QStringList& inoutArguments);
     /// Shader tool selection shared by graph builds and capture builds.
     void appendBuildToolArguments(QStringList& inoutArguments) const;

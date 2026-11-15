@@ -14,9 +14,13 @@ using namespace foundation;
 namespace
 {
 constexpr int32 VIEWPORT_PROCESS_ID = 3;
+// Keep tool-stage tracks apart from the per-viewport lane numbers and within
+// the signed 32-bit thread IDs accepted by trace viewers.
+constexpr uint64 SHADER_STAGE_TRACK_BASE = uint64{1} << 30;
 constexpr float64 NANOSECONDS_PER_MICROSECOND = 1000;
 uint64 gCapture = 0;
 uint64 gNextViewportId = 0;
+uint64 gNextCandidateId = 0;
 bool isRecording = false;
 ViewportTraceSnapshot gSnapshot;
 const char* GetLaneName(ViewportTraceLane lane) noexcept
@@ -37,14 +41,30 @@ const char* GetLaneName(ViewportTraceLane lane) noexcept
             return "Qt paint handler";
         case ViewportTraceLane::Interval:
             return "Paint intervals";
+        case ViewportTraceLane::Edit:
+            return "Shader edit to first paint";
+        case ViewportTraceLane::Candidate:
+            return "Graph replacement";
+        case ViewportTraceLane::ShaderStage:
+            return "Shader build stage";
         case ViewportTraceLane::Count:
             break;
     }
     return "Unknown";
 }
-uint64 GetTrackId(ViewportTraceIdentity identity, ViewportTraceLane lane) noexcept
+int64 GetTrackId(ViewportTraceIdentity identity, ViewportTraceLane lane) noexcept
 {
-    return identity.ViewportId * static_cast<uint64>(ViewportTraceLane::Count) + static_cast<uint64>(lane);
+    if (lane == ViewportTraceLane::ShaderStage)
+    {
+        return static_cast<int64>(SHADER_STAGE_TRACK_BASE + identity.ShaderStage);
+    }
+    return static_cast<int64>(identity.ViewportId * static_cast<uint64>(ViewportTraceLane::Count) +
+                              static_cast<uint64>(lane));
+}
+bool IsPending(ViewportTraceToken token) noexcept
+{
+    return isRecording == true && token.Capture == gCapture && token.Index < gSnapshot.Spans.GetSize() &&
+           gSnapshot.Spans[token.Index].EndTicks == 0;
 }
 } // namespace
 bool StartViewportTrace() noexcept
@@ -114,18 +134,47 @@ BeginViewportTrace(const char* name, ViewportTraceLane lane, ViewportTraceIdenti
 }
 void EndViewportTrace(ViewportTraceToken token, const char* outcomeOrNull) noexcept
 {
-    if (isRecording == false || token.Capture != gCapture || token.Index >= gSnapshot.Spans.GetSize())
+    if (IsPending(token) == false)
     {
         return;
     }
     ViewportTraceSpan& span = gSnapshot.Spans[token.Index];
-    if (span.EndTicks == 0)
+    span.EndTicks = profiling::NowTicks();
+    if (outcomeOrNull != nullptr)
     {
-        span.EndTicks = profiling::NowTicks();
-        if (outcomeOrNull != nullptr)
-        {
-            span.Outcome = outcomeOrNull;
-        }
+        span.Outcome = outcomeOrNull;
+    }
+}
+GraphEditTrace BeginGraphEditTrace() noexcept
+{
+    if (isRecording == false)
+    {
+        return {};
+    }
+    GraphEditTrace edit{++gNextCandidateId};
+    edit.Lifetime = BeginViewportTrace("Graph edit to first Qt paint", ViewportTraceLane::Edit, { .Edit = edit });
+    return edit;
+}
+ViewportTraceToken BeginGraphEditStage(GraphEditTrace edit, const char* name) noexcept
+{
+    return IsPending(edit.Lifetime) == true ? BeginViewportTrace(name, ViewportTraceLane::Candidate, { .Edit = edit })
+                                            : ViewportTraceToken{};
+}
+void RecordShaderStageTrace(GraphEditTrace edit,
+                            uint64 stage,
+                            const char* name,
+                            uint64 beginTicks,
+                            uint64 endTicks) noexcept
+{
+    if (IsPending(edit.Lifetime) == false || endTicks < gSnapshot.StartedTicks || beginTicks > endTicks)
+    {
+        return;
+    }
+    const ViewportTraceToken token =
+        BeginViewportTrace(name, ViewportTraceLane::ShaderStage, { .Edit = edit, .ShaderStage = stage }, beginTicks);
+    if (IsPending(token) == true)
+    {
+        gSnapshot.Spans[token.Index].EndTicks = endTicks;
     }
 }
 void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& snapshot)
@@ -144,7 +193,7 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
     QJsonArray tracks;
     for (const ViewportTraceSpan& span : snapshot.Spans)
     {
-        const uint64 trackId = GetTrackId(span.Identity, span.Lane);
+        const int64 trackId = GetTrackId(span.Identity, span.Lane);
         if (tracks.contains(QJsonValue(static_cast<qint64>(trackId))) == false)
         {
             tracks.append(static_cast<qint64>(trackId));
@@ -155,9 +204,11 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
                 {QStringLiteral("name"), QStringLiteral("thread_name")},
                 {QStringLiteral("args"),
                  QJsonObject{{QStringLiteral("name"),
-                              QStringLiteral("Viewport %1 / %2")
-                                  .arg(span.Identity.ViewportId)
-                                  .arg(QString::fromUtf8(GetLaneName(span.Lane)))}}},
+                              span.Lane == ViewportTraceLane::ShaderStage
+                                  ? QStringLiteral("Shader build stage %1").arg(span.Identity.ShaderStage)
+                                  : QStringLiteral("Viewport %1 / %2")
+                                        .arg(span.Identity.ViewportId)
+                                        .arg(QString::fromUtf8(GetLaneName(span.Lane)))}}},
             });
         }
         events.append(QJsonObject{
@@ -174,6 +225,9 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
                  {QStringLiteral("viewportId"), static_cast<qint64>(span.Identity.ViewportId)},
                  {QStringLiteral("frameId"), static_cast<qint64>(span.Identity.FrameId)},
                  {QStringLiteral("deviceSession"), static_cast<qint64>(span.Identity.DeviceSession)},
+                 {QStringLiteral("candidateId"), static_cast<qint64>(span.Identity.Edit.CandidateId)},
+                 {QStringLiteral("graphGeneration"), static_cast<qint64>(span.Identity.GraphGeneration)},
+                 {QStringLiteral("shaderStage"), static_cast<qint64>(span.Identity.ShaderStage)},
                  {QStringLiteral("outcome"), QString::fromUtf8(span.Outcome)},
              }},
         });
@@ -209,6 +263,8 @@ void ViewportFrameTrace::BeginService(uint64 nextFrameId, uint64 deviceSession) 
     {
         mIdentity.FrameId = nextFrameId;
         mIdentity.DeviceSession = deviceSession;
+        mIdentity.Edit = {};
+        mIdentity.GraphGeneration = 0;
     }
     else if (mFrame.Capture != gCapture && isRecording == true)
     {
@@ -222,7 +278,7 @@ void ViewportFrameTrace::EndService() noexcept
     mServiceEndTicks = profiling::NowTicks();
     mGap = BeginViewportTrace(mStageName, ViewportTraceLane::Scheduling, mIdentity, mServiceEndTicks);
 }
-void ViewportFrameTrace::BeginFrame() noexcept
+void ViewportFrameTrace::BeginFrame(GraphEditTrace edit, uint64 graphGeneration) noexcept
 {
     if (mHasFrame == true)
     {
@@ -230,6 +286,8 @@ void ViewportFrameTrace::BeginFrame() noexcept
         return;
     }
     mHasFrame = true;
+    mIdentity.Edit = edit;
+    mIdentity.GraphGeneration = graphGeneration;
     mFrameBeginTicks = mServiceBeginTicks;
     mFrame = BeginViewportTrace("Frame to image ready", ViewportTraceLane::Frame, mIdentity, mFrameBeginTicks);
     EndViewportTrace(mStage);
@@ -323,6 +381,12 @@ void ViewportPaintTrace::EndPaint() noexcept
     {
         EndViewportTrace(mPaint);
         EndViewportTrace(mLatency);
+        if (IsPending(mIdentity.Edit.Lifetime) == true)
+        {
+            ViewportTraceSpan& edit = gSnapshot.Spans[mIdentity.Edit.Lifetime.Index];
+            edit.Identity = mIdentity;
+            EndViewportTrace(mIdentity.Edit.Lifetime, "first matching image painted");
+        }
         if (isRecording == true && mInterval.Capture == gCapture && mInterval.Index < gSnapshot.Spans.GetSize())
         {
             // Attribute a completed paint interval to the image at its end.

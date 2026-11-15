@@ -7,6 +7,7 @@
 // separating light-space shadow boundaries from viewer-space hidden surface removal.
 // https://www.cs.rpi.edu/~cutler/classes/advancedgraphics/S10/papers/crow77_shadows.pdf
 
+#include "../src/internal/raster_mesh_light_shadows.h"
 #include "render_graph_gpu_fixture.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
@@ -17,17 +18,24 @@
 #include "renderer_reference_reduce.h"
 #include "renderer_shadow.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
+#include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/gpu_scope.h>
+
+#include <string_view>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -43,7 +51,10 @@ namespace
 using S = rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
 constexpr usize CHANNEL_COUNT = 4;
+constexpr usize HYBRID_RAY_PASS_INDEX = 1;
 constexpr float32 MAXIMUM_CODE = 255;
+constexpr float32 LINEAR_COLOR_CODE = 1.0F / MAXIMUM_CODE;
+constexpr float32 LIT_RADIANCE_RELATIVE_TOLERANCE = .01F;
 constexpr float32 PIXEL_WIDTH_CLIP = 2.0F / static_cast<float32>(WIDTH);
 
 /// The receiver plane faces the camera, which looks along +Z from the near plane z = 0.
@@ -78,12 +89,12 @@ struct BlockerMesh final
 };
 
 /// Six outward faces with their own corners and normals, so the box is closed and flat shaded.
-BlockerMesh BuildBlocker()
+BlockerMesh BuildBlocker(math::Vector3 minimumWorld = BLOCKER_MINIMUM_WORLD,
+                         math::Vector3 maximumWorld = BLOCKER_MAXIMUM_WORLD)
 {
     BlockerMesh result;
     const StaticArray<StaticArray<float32, 3>, 2> bounds{
-        {{{BLOCKER_MINIMUM_WORLD.X, BLOCKER_MINIMUM_WORLD.Y, BLOCKER_MINIMUM_WORLD.Z}},
-         {{BLOCKER_MAXIMUM_WORLD.X, BLOCKER_MAXIMUM_WORLD.Y, BLOCKER_MAXIMUM_WORLD.Z}}}};
+        {{{minimumWorld.X, minimumWorld.Y, minimumWorld.Z}}, {{maximumWorld.X, maximumWorld.Y, maximumWorld.Z}}}};
     usize face = 0;
     for (usize axis = 0; axis < 3; ++axis)
     {
@@ -132,12 +143,13 @@ math::Vector3d GetTowardLightWorld()
 }
 
 /// Slab test of the ray origin + t direction, t > 0, against the blocker: the independent geometric oracle.
-bool DoesRayHitBlocker(math::Vector3d originWorld, math::Vector3d directionWorld)
+bool DoesRayHitBlocker(math::Vector3d originWorld,
+                       math::Vector3d directionWorld,
+                       math::Vector3d minimumWorld = Widen(BLOCKER_MINIMUM_WORLD),
+                       math::Vector3d maximumWorld = Widen(BLOCKER_MAXIMUM_WORLD))
 {
     const StaticArray<float64, 3> origin{{originWorld.X, originWorld.Y, originWorld.Z}};
     const StaticArray<float64, 3> direction{{directionWorld.X, directionWorld.Y, directionWorld.Z}};
-    const math::Vector3d minimumWorld = Widen(BLOCKER_MINIMUM_WORLD);
-    const math::Vector3d maximumWorld = Widen(BLOCKER_MAXIMUM_WORLD);
     const StaticArray<float64, 3> minimum{{minimumWorld.X, minimumWorld.Y, minimumWorld.Z}};
     const StaticArray<float64, 3> maximum{{maximumWorld.X, maximumWorld.Y, maximumWorld.Z}};
     float64 entry = 0;
@@ -317,12 +329,13 @@ struct Device final
     rhi::DeviceHandle Handle{};
     rhi::SurfaceHandle Surface{};
     bool HasRays = false;
-    Device()
+    explicit Device(bool shouldRequestRays = true, bool shouldEnableGpuTiming = false)
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Required.Compute = true;
-        description.Preferred.RayQueries = true;
+        description.Preferred.RayQueries = shouldRequestRays;
+        description.EnableGpuTiming = shouldEnableGpuTiming;
         description.Storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
@@ -395,8 +408,7 @@ S Poll(renderer::RenderGraph& inoutGraph, S status)
     return status;
 }
 
-/// Draw one frame and read the red channel of an exported linear RGBA8 resource.
-void ReadGraphImage(const Device& device, renderer::RenderGraph& inoutGraph, uint32 resource, LinearImage& outImage)
+void DrawGraphAndWait(const Device& device, renderer::RenderGraph& inoutGraph)
 {
     rhi::SubmissionToken completion;
     REQUIRE(inoutGraph.Render(device.Surface, WIDTH, HEIGHT, completion) == S::Ready);
@@ -404,20 +416,44 @@ void ReadGraphImage(const Device& device, renderer::RenderGraph& inoutGraph, uin
     S status = rhi::GetStatus(device.Handle, completion);
     while (status == S::Pending && time::NowTicks() - beginning < TIMEOUT_NANOSECONDS)
     {
+        threading::YieldThread();
         status = rhi::GetStatus(device.Handle, completion);
     }
     REQUIRE(status == S::Ready);
+}
+
+void UpdateGraph(renderer::RenderGraph& inoutGraph, const GraphScene& scene, uint64 revision)
+{
+    renderer::RenderGraphReport report;
+    REQUIRE(Poll(inoutGraph,
+                 inoutGraph.Update({scene.Meshes.GetData(), scene.Meshes.GetSize()},
+                                   {scene.Items.GetData(), scene.Items.GetSize()},
+                                   {scene.Cameras.GetData(), scene.Cameras.GetSize()},
+                                   revision,
+                                   renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                   report,
+                                   &scene.Inputs,
+                                   revision)) == S::Ready);
+    REQUIRE(inoutGraph.GetDrawableSceneRevision() == revision);
+}
+
+/// Draw one frame and read the red channel of an exported linear RGBA8 resource.
+void ReadGraphImage(const Device& device, renderer::RenderGraph& inoutGraph, uint32 resource, LinearImage& outImage)
+{
+    DrawGraphAndWait(device, inoutGraph);
     rhi::TextureHandle texture;
     rhi::TextureAspect aspect;
     REQUIRE(inoutGraph.GetExport(resource, texture, aspect) == S::Ready);
     rhi::ReadbackTicket ticket;
-    status = rhi::RequestTextureReadback(device.Handle,
-                                         texture,
-                                         {0, 0, 0, WIDTH, HEIGHT},
-                                         static_cast<usize>(WIDTH) * CHANNEL_COUNT,
-                                         ticket);
+    const uint64 beginning = time::NowTicks();
+    S status = rhi::RequestTextureReadback(device.Handle,
+                                           texture,
+                                           {0, 0, 0, WIDTH, HEIGHT},
+                                           static_cast<usize>(WIDTH) * CHANNEL_COUNT,
+                                           ticket);
     while (status == S::Pending && time::NowTicks() - beginning < TIMEOUT_NANOSECONDS)
     {
+        threading::YieldThread();
         status = rhi::GetStatus(device.Handle, ticket);
     }
     REQUIRE(status == S::Ready);
@@ -457,28 +493,24 @@ bool RenderGraphImages(const Device& device,
         return false;
     }
     REQUIRE(initialized == S::Ready);
-    constexpr usize RAY_PASS = 1;
-    REQUIRE((source == ColorSource::FirstResource || RAY_PASS < plan.Passes.GetSize()));
-    const uint32 colorResource = source == ColorSource::FirstResource ? 0 : plan.Passes[RAY_PASS].Color;
+    REQUIRE((source == ColorSource::FirstResource || HYBRID_RAY_PASS_INDEX < plan.Passes.GetSize()));
+    const uint32 colorResource = source == ColorSource::FirstResource ? 0 : plan.Passes[HYBRID_RAY_PASS_INDEX].Color;
     uint64 revision = 0;
     for (LinearImage* image : {&outBlockerVisible, &outBlockerOffscreen})
     {
         const float32 offsetWorld = image == &outBlockerVisible ? BLOCKER_VISIBLE_CAMERA_OFFSET_WORLD : 0;
         scene.Cameras[0].WorldToClip = BuildCamera(offsetWorld);
         ++revision;
-        renderer::RenderGraphReport report;
-        REQUIRE(Poll(graph,
-                     graph.Update({scene.Meshes.GetData(), scene.Meshes.GetSize()},
-                                  {scene.Items.GetData(), scene.Items.GetSize()},
-                                  {scene.Cameras.GetData(), scene.Cameras.GetSize()},
-                                  revision,
-                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
-                                  report,
-                                  &scene.Inputs,
-                                  revision)) == S::Ready);
-        // The default graph draws its directional map before the first resolve; read the second frame.
+        UpdateGraph(graph, scene, revision);
+        LinearImage firstFrame{};
+        // The second raster frame uses the cached map. The ray pass must give the same
+        // visibility on the first and second frame immediately after the camera move.
+        ReadGraphImage(device, graph, colorResource, firstFrame);
         ReadGraphImage(device, graph, colorResource, *image);
-        ReadGraphImage(device, graph, colorResource, *image);
+        if (source == ColorSource::RayPassColor)
+        {
+            CHECK(firstFrame == *image);
+        }
     }
     return true;
 }
@@ -594,14 +626,12 @@ void RenderReferenceImages(const Device& device,
 }
 } // namespace
 
-TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 direct output",
+TEST_CASE("Raster shadows and RT1 keep an offscreen blocker's shadow",
           "[render-graph][gpu][hybrid-shadows][reference-compute]")
 {
-    Device device;
+    Device device(false);
     const float32 litRadiance = ComputeLitRadiance();
     INFO("expected lit radiance=" << litRadiance);
-    // One 8-bit code of linear RGBA8, the graph outputs' resolution.
-    constexpr float32 CODE = 1.0F / MAXIMUM_CODE;
     for (const float32 offsetWorld : {BLOCKER_VISIBLE_CAMERA_OFFSET_WORLD, 0.0F})
     {
         // The probes of the oracle itself: the blocker is inside the first window and outside the second.
@@ -650,21 +680,34 @@ TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 d
                                      << ", edge displacement " << evidence.EdgeDisplacement << " px");
         // The map is fitted to the whole scene's casters and receivers, so the shadow survives the camera move.
         CAPTURE(offsetWorld);
-        RequireNoMisclassification(evidence, CODE + .01F * litRadiance, CODE);
+        RequireNoMisclassification(evidence,
+                                   LINEAR_COLOR_CODE + LIT_RADIANCE_RELATIVE_TOLERANCE * litRadiance,
+                                   LINEAR_COLOR_CODE);
     }
+}
+
+TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 direct output",
+          "[gpu][hybrid-shadows][native-ray-queries][reference-compute]")
+{
+    Device device;
+    if (device.HasRays == false)
+    {
+        SKIP("Native ray queries are unavailable; the portable shadow test covers raster and RT1");
+    }
+
+    const float32 litRadiance = ComputeLitRadiance();
+    LinearImage gpuVisible{};
+    LinearImage gpuOffscreen{};
+    RenderReferenceImages(device, renderer::ReferenceTraversal::GpuCompute, gpuVisible, gpuOffscreen);
 
     // Hybrid shadows: raster first hits, one shadow ray per light.
     LinearImage hybridVisible{};
     LinearImage hybridOffscreen{};
-    if (device.HasRays == false ||
-        RenderGraphImages(device,
-                          {LUDUS_RG3_HYBRID_SHADOWS_LINEAR_DIRECTORY, "rg2_hybrid_shadows_linear.lurgrt"},
-                          ColorSource::RayPassColor,
-                          hybridVisible,
-                          hybridOffscreen) == false)
-    {
-        SKIP("Native ray tracing is unavailable; the raster default graph is this device's shadow route");
-    }
+    REQUIRE(RenderGraphImages(device,
+                              {LUDUS_RG3_HYBRID_SHADOWS_LINEAR_DIRECTORY, "rg2_hybrid_shadows_linear.lurgrt"},
+                              ColorSource::RayPassColor,
+                              hybridVisible,
+                              hybridOffscreen) == true);
     for (const LinearImage* image : {&hybridVisible, &hybridOffscreen})
     {
         const bool isVisibleWindow = image == &hybridVisible;
@@ -674,7 +717,9 @@ TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 d
         WARN("hybrid window offset " << offsetWorld << ": misclassified " << evidence.Misclassified << " of "
                                      << evidence.InteriorPixels << ", largest lit error " << evidence.MaximumLitError
                                      << ", edge displacement " << evidence.EdgeDisplacement << " px");
-        RequireNoMisclassification(evidence, CODE + .01F * litRadiance, CODE);
+        RequireNoMisclassification(evidence,
+                                   LINEAR_COLOR_CODE + LIT_RADIANCE_RELATIVE_TOLERANCE * litRadiance,
+                                   LINEAR_COLOR_CODE);
         // Paired with RT1 at every interior receiver pixel.
         const LinearImage& paired = isVisibleWindow == true ? gpuVisible : gpuOffscreen;
         float32 maximumDifference = 0;
@@ -691,6 +736,426 @@ TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 d
             }
         }
         WARN("largest hybrid/RT1 difference " << maximumDifference);
-        CHECK(maximumDifference <= CODE + .01F * litRadiance);
+        CHECK(maximumDifference <= LINEAR_COLOR_CODE + LIT_RADIANCE_RELATIVE_TOLERANCE * litRadiance);
     }
+}
+
+namespace
+{
+// Thanks to Lance Williams, "Casting Curved Shadows on Curved Surfaces", SIGGRAPH 1978, pp. 270–274,
+// Figs. 1–6, for distinguishing false self-shadowing from a bias-induced shift of the contact boundary.
+// https://cg.informatik.uni-freiburg.de/intern/seminar/shadowMapping_1978_Williams.pdf
+constexpr usize CURVED_STRIP_COUNT = 16;
+constexpr usize CURVED_VERTEX_COUNT = 2 * (CURVED_STRIP_COUNT + 1);
+constexpr usize TRIANGLE_INDEX_COUNT = 3;
+constexpr usize CURVED_INDEX_COUNT = 2 * TRIANGLE_INDEX_COUNT * CURVED_STRIP_COUNT;
+constexpr float32 CURVATURE_PER_METER = .34F;
+constexpr float32 CURVED_CENTER_DEPTH_WORLD = .54F;
+constexpr math::Vector3 CONTACT_MINIMUM_WORLD{-.46F, -.35F, .41F};
+constexpr math::Vector3 CONTACT_MAXIMUM_WORLD{-.30F, .35F, .55F};
+constexpr float64 PIXEL_WIDTH_WORLD = 2.0 / WIDTH;
+
+struct CurvedShadowScene final
+{
+    GraphScene Scene;
+    StaticArray<math::Vector3, CURVED_VERTEX_COUNT> Positions{};
+    StaticArray<math::Vector3, CURVED_VERTEX_COUNT> Normals{};
+    StaticArray<uint32, CURVED_INDEX_COUNT> Indices{};
+    math::Vector3d TowardLightWorld;
+
+    explicit CurvedShadowScene(math::Vector3 lightTravelWorld) : TowardLightWorld(-Widen(lightTravelWorld))
+    {
+        for (usize strip = 0; strip <= CURVED_STRIP_COUNT; ++strip)
+        {
+            const float32 x = -1 + 2 * static_cast<float32>(strip) / CURVED_STRIP_COUNT;
+            const float32 z = CURVED_CENTER_DEPTH_WORLD + CURVATURE_PER_METER * x * x;
+            const float32 slope = 2 * CURVATURE_PER_METER * x;
+            const math::Vector3 normalWorld = math::Vector3{slope, 0, -1} / math::Sqrt(1 + slope * slope);
+            Positions[2 * strip] = {x, -1, z};
+            Positions[2 * strip + 1] = {x, 1, z};
+            Normals[2 * strip] = normalWorld;
+            Normals[2 * strip + 1] = normalWorld;
+        }
+        for (usize strip = 0; strip < CURVED_STRIP_COUNT; ++strip)
+        {
+            const uint32 left = 2 * static_cast<uint32>(strip);
+            const uint32 right = left + 2;
+            const StaticArray<uint32, 2 * TRIANGLE_INDEX_COUNT> quad{
+                {left, left + 1, right, right, left + 1, right + 1}};
+            for (usize index = 0; index < quad.GetSize(); ++index)
+            {
+                Indices[strip * quad.GetSize() + index] = quad[index];
+            }
+        }
+        Scene.Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Scene.Meshes[0].Geometry.Normals = Normals.GetData();
+        Scene.Blocker = BuildBlocker(CONTACT_MINIMUM_WORLD, CONTACT_MAXIMUM_WORLD);
+        Scene.Light.Direction = lightTravelWorld;
+        Scene.Light.Intensity = 2;
+        Scene.Cameras[0].WorldToClip = BuildCamera(0);
+    }
+
+    // Each strip is an extrusion in Y and the light has no Y component. Intersecting the XZ segments
+    // therefore tests the exact triangles, including self-occlusion by a different strip.
+    PixelClass Classify(float64 column, usize row) const
+    {
+        math::Vector3d pointWorld = GetReceiverPointWorld(column, row, 0);
+        const math::Vector3d minimumWorld = Widen(CONTACT_MINIMUM_WORLD);
+        const math::Vector3d maximumWorld = Widen(CONTACT_MAXIMUM_WORLD);
+        if (DoesRayHitBlocker({pointWorld.X, pointWorld.Y, 0}, {0, 0, 1}, minimumWorld, maximumWorld) == true)
+        {
+            return PixelClass::Blocker;
+        }
+        const usize sourceStrip =
+            math::Min(static_cast<usize>((pointWorld.X + 1) * CURVED_STRIP_COUNT / 2), CURVED_STRIP_COUNT - 1);
+        const math::Vector3d startWorld = Widen(Positions[2 * sourceStrip]);
+        const math::Vector3d endWorld = Widen(Positions[2 * (sourceStrip + 1)]);
+        pointWorld.Z =
+            startWorld.Z + (endWorld.Z - startWorld.Z) * (pointWorld.X - startWorld.X) / (endWorld.X - startWorld.X);
+        if (DoesRayHitBlocker(pointWorld, TowardLightWorld, minimumWorld, maximumWorld) == true)
+        {
+            return PixelClass::Shadowed;
+        }
+        const float64 slope = TowardLightWorld.Z / TowardLightWorld.X;
+        for (usize strip = 0; strip < sourceStrip; ++strip)
+        {
+            const math::Vector3d leftWorld = Widen(Positions[2 * strip]);
+            const math::Vector3d rightWorld = Widen(Positions[2 * (strip + 1)]);
+            // A sign change in the signed light-ray height brackets an intersection on this strip.
+            const float64 leftHeight = leftWorld.Z - (pointWorld.Z + slope * (leftWorld.X - pointWorld.X));
+            const float64 rightHeight = rightWorld.Z - (pointWorld.Z + slope * (rightWorld.X - pointWorld.X));
+            if ((leftHeight < 0 && rightHeight >= 0) || (leftHeight > 0 && rightHeight <= 0))
+            {
+                return PixelClass::Shadowed;
+            }
+        }
+        return PixelClass::Lit;
+    }
+};
+
+constexpr PackageLocation RASTER_PACKAGE{LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"};
+constexpr PackageLocation HYBRID_PACKAGE{LUDUS_RG3_HYBRID_SHADOWS_LINEAR_DIRECTORY, "rg2_hybrid_shadows_linear.lurgrt"};
+
+void RenderCurvedShadowImages(const Device& device,
+                              CurvedShadowScene& inoutFixture,
+                              bool shouldSelectFallback,
+                              LinearImage& outUnoccluded,
+                              LinearImage& outShadowed)
+{
+    core::UniquePtr<renderer::RenderGraphPackage> raster = LoadPackage(RASTER_PACKAGE);
+    renderer::RenderGraphActivation activation;
+    REQUIRE(activation.Initialize(device.Handle,
+                                  raster->GetInterfaceIdentity(),
+                                  shaders::renderer_composite::Vertex(),
+                                  shaders::renderer_composite::Fragment()) == S::Ready);
+    REQUIRE(activation.Resize(WIDTH, HEIGHT) == S::Ready);
+    const renderer::RenderGraphPreference preference = device.HasRays == true
+                                                           ? renderer::RenderGraphPreference::ForceRaster
+                                                           : renderer::RenderGraphPreference::Automatic;
+    S status = shouldSelectFallback == true
+                   ? activation.StageSelected(core::Move(raster), LoadPackage(HYBRID_PACKAGE), preference)
+                   : activation.Stage(core::Move(raster));
+    const uint64 beginning = time::NowTicks();
+    while ((status == S::Pending || status == S::Ready) && activation.GetActiveOrNull() == nullptr &&
+           time::NowTicks() - beginning < TIMEOUT_NANOSECONDS)
+    {
+        threading::SleepFor(time::Milliseconds(1));
+        status = activation.Poll();
+    }
+    REQUIRE(status == S::Ready);
+    renderer::RenderGraph* graphOrNull = activation.GetActiveOrNull();
+    REQUIRE(graphOrNull != nullptr);
+    REQUIRE(activation.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    INFO((shouldSelectFallback == false                              ? "direct raster baseline"
+          : preference == renderer::RenderGraphPreference::Automatic ? "automatic raster fallback"
+                                                                     : "forced raster"));
+    GraphScene& scene = inoutFixture.Scene;
+    uint64 revision = 0;
+    for (LinearImage* image : {&outUnoccluded, &outShadowed})
+    {
+        scene.Light.ShouldCastRasterShadows = image == &outShadowed;
+        ++revision;
+        renderer::RenderGraphReport report;
+        REQUIRE(Poll(*graphOrNull,
+                     activation.Update({scene.Meshes.GetData(), scene.Meshes.GetSize()},
+                                       {scene.Items.GetData(), scene.Items.GetSize()},
+                                       {scene.Cameras.GetData(), scene.Cameras.GetSize()},
+                                       revision,
+                                       renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                       report,
+                                       &scene.Inputs,
+                                       revision)) == S::Ready);
+        constexpr uint32 COLOR_EXPORT = 0;
+        ReadGraphImage(device, *graphOrNull, COLOR_EXPORT, *image);
+        ReadGraphImage(device, *graphOrNull, COLOR_EXPORT, *image);
+    }
+}
+
+void CheckCurvedShadow(std::string_view route,
+                       const CurvedShadowScene& fixture,
+                       const LinearImage& unoccluded,
+                       const LinearImage& shadowed,
+                       bool isGrazing)
+{
+    // Ignore probes below eight linear codes, where a one-code error moves the visibility ratio by over 12%.
+    constexpr float32 MINIMUM_CONTROL_CODES = 8;
+    constexpr float32 MINIMUM_CONTROL_RADIANCE = MINIMUM_CONTROL_CODES / MAXIMUM_CODE;
+    constexpr float64 CONTACT_SEARCH_PIXELS = 3;
+    constexpr float32 MINIMUM_LIT_VISIBILITY = .5F;
+    constexpr float32 MAXIMUM_INTERIOR_VISIBILITY_LOSS = .05F;
+    constexpr float64 MAXIMUM_CONTACT_DISPLACEMENT_PIXELS = 1.5;
+    constexpr usize CONTACT_ROW = HEIGHT / 2;
+    usize litProbes = 0;
+    usize falseOcclusions = 0;
+    usize attenuatedLitProbes = 0;
+    usize shadowedProbes = 0;
+    usize falseLights = 0;
+    float32 maximumLitLoss = 0;
+    float32 maximumShadowVisibility = 0;
+    for (usize row = 1; row + 1 < HEIGHT; ++row)
+    {
+        for (usize column = 1; column + 1 < WIDTH; ++column)
+        {
+            const usize pixel = row * WIDTH + column;
+            const float64 probe = static_cast<float64>(column);
+            const PixelClass expected = fixture.Classify(probe, row);
+            if (expected == PixelClass::Blocker || unoccluded[pixel] < MINIMUM_CONTROL_RADIANCE ||
+                fixture.Classify(probe - 1, row) != expected || fixture.Classify(probe + 1, row) != expected ||
+                fixture.Classify(probe, row - 1) != expected || fixture.Classify(probe, row + 1) != expected)
+            {
+                continue;
+            }
+            const float32 visibility = shadowed[pixel] / unoccluded[pixel];
+            if (expected == PixelClass::Lit)
+            {
+                ++litProbes;
+                if (visibility <= MINIMUM_LIT_VISIBILITY)
+                {
+                    if (falseOcclusions == 0)
+                    {
+                        WARN("first darkened lit probe: column " << column << ", row " << row << ", unoccluded "
+                                                                 << unoccluded[pixel] << ", visibility " << visibility);
+                    }
+                    ++falseOcclusions;
+                }
+                const float32 litLoss = 1 - visibility;
+                attenuatedLitProbes += litLoss > MAXIMUM_INTERIOR_VISIBILITY_LOSS ? 1 : 0;
+                maximumLitLoss = math::Max(maximumLitLoss, litLoss);
+            }
+            else
+            {
+                ++shadowedProbes;
+                falseLights += visibility > MINIMUM_LIT_VISIBILITY ? 1 : 0;
+                maximumShadowVisibility = math::Max(maximumShadowVisibility, visibility);
+            }
+        }
+    }
+    REQUIRE(litProbes > 0);
+    REQUIRE(shadowedProbes > 0);
+
+    // Use the right edge of the nearby blocker's shadow, where the camera sees both sides of the edge.
+    // Locate its subpixel oracle location and the raster's half-visibility crossing independently.
+    bool hasContactEdge = false;
+    float64 expectedEdge = 0;
+    for (usize column = 1; column < WIDTH; ++column)
+    {
+        float64 left = static_cast<float64>(column) - 1;
+        float64 right = static_cast<float64>(column);
+        if (fixture.Classify(left, CONTACT_ROW) != PixelClass::Shadowed ||
+            fixture.Classify(right, CONTACT_ROW) != PixelClass::Lit)
+        {
+            continue;
+        }
+        constexpr float64 EDGE_PRECISION_PIXELS = 1e-4;
+        while (right - left > EDGE_PRECISION_PIXELS)
+        {
+            const float64 middle = (left + right) / 2;
+            if (fixture.Classify(middle, CONTACT_ROW) == PixelClass::Shadowed)
+            {
+                left = middle;
+            }
+            else
+            {
+                right = middle;
+            }
+        }
+        expectedEdge = (left + right) / 2;
+        hasContactEdge = true;
+        break;
+    }
+    REQUIRE(hasContactEdge == true);
+    usize crossings = 0;
+    float64 edgeDisplacement = 0;
+    for (usize column = 1; column < WIDTH; ++column)
+    {
+        const float64 probe = static_cast<float64>(column);
+        const usize pixel = CONTACT_ROW * WIDTH + column;
+        if (math::Abs(probe - expectedEdge) > CONTACT_SEARCH_PIXELS ||
+            fixture.Classify(probe - 1, CONTACT_ROW) == PixelClass::Blocker ||
+            fixture.Classify(probe, CONTACT_ROW) == PixelClass::Blocker ||
+            unoccluded[pixel - 1] < MINIMUM_CONTROL_RADIANCE || unoccluded[pixel] < MINIMUM_CONTROL_RADIANCE)
+        {
+            continue;
+        }
+        const float32 left = shadowed[pixel - 1] / unoccluded[pixel - 1];
+        const float32 right = shadowed[pixel] / unoccluded[pixel];
+        if (left <= MINIMUM_LIT_VISIBILITY && right > MINIMUM_LIT_VISIBILITY)
+        {
+            ++crossings;
+            const float32 fraction = (MINIMUM_LIT_VISIBILITY - left) / (right - left);
+            edgeDisplacement = probe - 1 + static_cast<float64>(fraction) - expectedEdge;
+        }
+    }
+    WARN(route << ": lit probes " << litProbes << ", false occlusions " << falseOcclusions << ", maximum lit loss "
+               << maximumLitLoss << ", shadowed probes " << shadowedProbes << ", false lights " << falseLights
+               << ", maximum shadow visibility " << maximumShadowVisibility << ", contact edge displacement "
+               << edgeDisplacement << " px (" << edgeDisplacement * PIXEL_WIDTH_WORLD << " m), crossings "
+               << crossings);
+    // At grazing incidence, adjacent curved facets can share a shadow-map filter footprint.
+    // Bound the observed seam artifact to one column's worth of probes and half visibility,
+    // with one RGBA8 code of slack at the minimum admitted control radiance.
+    const usize allowedAttenuatedProbes = isGrazing == true ? HEIGHT - 2 : 0;
+    const float32 allowedLitLoss =
+        isGrazing == true ? .5F + 1 / MINIMUM_CONTROL_CODES : MAXIMUM_INTERIOR_VISIBILITY_LOSS;
+    CAPTURE(attenuatedLitProbes, allowedAttenuatedProbes, allowedLitLoss);
+    REQUIRE(attenuatedLitProbes <= allowedAttenuatedProbes);
+    REQUIRE(maximumLitLoss <= allowedLitLoss);
+    REQUIRE(falseLights == 0);
+    REQUIRE(crossings == 1);
+    REQUIRE(math::Abs(edgeDisplacement) <= MAXIMUM_CONTACT_DISPLACEMENT_PIXELS);
+}
+} // namespace
+
+TEST_CASE("RT2 raster fallback retains curved-receiver shadow bias and contact visibility",
+          "[render-graph][gpu][hybrid-shadows][reference-compute]")
+{
+    // Vulkan can run the actual automatic fallback with native queries unrequested. Metal may still
+    // expose them, so exercise the documented ForceRaster selection on that backend.
+    const Device device(false);
+    const bool isAutomatic = device.HasRays == false;
+    constexpr math::Vector3 STEEP_LIGHT_TRAVEL_WORLD{.5F, 0, 1};
+    constexpr math::Vector3 GRAZING_LIGHT_TRAVEL_WORLD{2.6F, 0, 1};
+    for (const math::Vector3 travelWorld : {STEEP_LIGHT_TRAVEL_WORLD, GRAZING_LIGHT_TRAVEL_WORLD})
+    {
+        WARN((isAutomatic == true ? "Automatic (native rays unavailable)" : "ForceRaster")
+             << "; light travel X/Z=" << travelWorld.X << "/" << travelWorld.Z << "; shadow slot "
+             << renderer::internal::DIRECTIONAL_SHADOW_TEXELS << " texels; normalized depth base bias "
+             << renderer::ShadowRegion{}.Bias << " plus per-tap projected reconstruction uncertainty");
+        const bool isGrazing = travelWorld == GRAZING_LIGHT_TRAVEL_WORLD;
+        CurvedShadowScene fixture(travelWorld);
+        LinearImage rasterControl{};
+        LinearImage rasterShadowed{};
+        RenderCurvedShadowImages(device, fixture, false, rasterControl, rasterShadowed);
+        CheckCurvedShadow("Default raster", fixture, rasterControl, rasterShadowed, isGrazing);
+
+        LinearImage fallbackControl{};
+        LinearImage fallbackShadowed{};
+        RenderCurvedShadowImages(device, fixture, true, fallbackControl, fallbackShadowed);
+        CheckCurvedShadow(isAutomatic == true ? "Automatic fallback" : "ForceRaster",
+                          fixture,
+                          fallbackControl,
+                          fallbackShadowed,
+                          isGrazing);
+        REQUIRE(fallbackControl == rasterControl);
+        REQUIRE(fallbackShadowed == rasterShadowed);
+    }
+}
+
+namespace
+{
+constexpr usize TIMING_SAMPLE_COUNT = 21;
+constexpr usize TIMING_TAIL_PERCENTILE = 95;
+constexpr usize PERCENTILE_DENOMINATOR = 100;
+using TimingSamples = StaticArray<float64, TIMING_SAMPLE_COUNT>;
+
+void ReportShadowTimings(std::string_view phase, TimingSamples& inoutSamples)
+{
+    Sort(inoutSamples.GetData(), inoutSamples.GetSize(), [](uint64 left, uint64 right) noexcept {
+        return left < right;
+    });
+    constexpr usize TAIL_INDEX =
+        (TIMING_TAIL_PERCENTILE * TIMING_SAMPLE_COUNT + PERCENTILE_DENOMINATOR - 1) / PERCENTILE_DENOMINATOR - 1;
+    const float64 median = inoutSamples[TIMING_SAMPLE_COUNT / 2] / time::NANOSECONDS_PER_MILLISECOND;
+    const float64 tail = inoutSamples[TAIL_INDEX] / time::NANOSECONDS_PER_MILLISECOND;
+    WARN(phase << ": " << TIMING_SAMPLE_COUNT << " samples, p50 " << median << " ms, p95 " << tail << " ms");
+}
+} // namespace
+
+TEST_CASE("Measure RT2 punctual shadow scene preparation and ray latency", "[.benchmark][hybrid-shadows]")
+{
+    const Device device(/*shouldRequestRays=*/true, /*shouldEnableGpuTiming=*/true);
+    if (device.HasRays == false)
+    {
+        SKIP("Native inline ray queries unavailable");
+    }
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(HYBRID_PACKAGE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == true);
+    REQUIRE(plan.Passes.GetSize() == HYBRID_RAY_PASS_INDEX + 1);
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraph graph;
+    REQUIRE(Poll(graph, graph.Initialize(device.Handle, plan, programs, nullptr, WIDTH, HEIGHT)) == S::Ready);
+
+    GraphScene scene;
+    scene.Cameras[0].WorldToClip = BuildCamera(0);
+    uint64 revision = 1;
+    UpdateGraph(graph, scene, revision);
+    DrawGraphAndWait(device, graph);
+
+    TimingSamples preparation{};
+    constexpr float32 EDIT_STEP_METERS = .001F;
+    for (float64& durationNanoseconds : preparation)
+    {
+        // Edit geometry to exercise new acceleration data rather than measuring a camera-only reuse path.
+        for (math::Vector3& positionWorld : scene.Blocker.Positions)
+        {
+            positionWorld.X += EDIT_STEP_METERS;
+        }
+        const uint64 beginning = time::NowTicks();
+        UpdateGraph(graph, scene, ++revision);
+        durationNanoseconds = static_cast<float64>(time::NowTicks() - beginning);
+        DrawGraphAndWait(device, graph);
+    }
+    ReportShadowTimings("Geometry edit to drawable scene (CPU wall time, includes acceleration build and polling)",
+                        preparation);
+
+    TimingSamples ray{};
+    for (float64& durationNanoseconds : ray)
+    {
+        const S armed = rhi::ArmGpuPassTimings(device.Handle);
+        if (armed == S::Unsupported)
+        {
+            SKIP("Per-pass GPU timing is unavailable");
+        }
+        REQUIRE(armed == S::Ready);
+        DrawGraphAndWait(device, graph);
+        rhi::GpuPassTimings timings;
+        const uint64 beginning = time::NowTicks();
+        REQUIRE(rhi::GetGpuPassTimings(device.Handle, timings) == S::Ready);
+        while (timings.State == rhi::GpuTimingState::Pending && time::NowTicks() - beginning < TIMEOUT_NANOSECONDS)
+        {
+            threading::YieldThread();
+            REQUIRE(rhi::GetGpuPassTimings(device.Handle, timings) == S::Ready);
+        }
+        REQUIRE(timings.State == rhi::GpuTimingState::Available);
+        REQUIRE(timings.DroppedPasses == 0);
+        constexpr uint64 RAY_SCOPE_ID = HYBRID_RAY_PASS_INDEX + 1;
+        usize matchingPasses = 0;
+        for (usize index = 0; index < timings.Count; ++index)
+        {
+            const rhi::GpuPassTiming& pass = timings.Passes[index];
+            // The ordered graph includes visibility rasterization and the image copy under this scope.
+            if (pass.Scope.Identity == RAY_SCOPE_ID && pass.Kind == rhi::GpuPassKind::Compute)
+            {
+                REQUIRE(pass.Timing.State == rhi::GpuTimingState::Available);
+                REQUIRE(math::IsFinite(pass.Timing.DurationNanoseconds) == true);
+                REQUIRE(pass.Timing.DurationNanoseconds > 0);
+                durationNanoseconds = pass.Timing.DurationNanoseconds;
+                ++matchingPasses;
+            }
+        }
+        REQUIRE(matchingPasses == 1);
+    }
+    ReportShadowTimings("Hybrid shadow compute pass (native GPU duration)", ray);
 }

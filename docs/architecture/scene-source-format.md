@@ -57,6 +57,7 @@ MIT license), which the import records like any other source license.
 | `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen, an [aperture](#aperture) whose vertical slit is 80 cm long with a 5 cm opening, and a white Lambertian wall 1 m behind the screen. The slit's long edges are knife edges; in a default World its opening is an editable entity field. The camera stands between the screen and the wall. At a design wavelength of 5 mm and the 5 cm opening, the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import and aperture-deferral checks of `ludus_scene_import_tests` and the `[aperture]` import test of `ludus_editor_tests`; no renderer test yet |
 | `materials/closure-program-block.luscene.json` | A weathered gold block on a grey floor under a square one-sided ceiling light. The block's [closure program](#closure-program) mixes a rust diffuse lobe, a gold conductor and a cosine-power sheen whose weights read the metallic and base colour inputs. | The closure-program cook check of `ludus_scene_import_tests` and the `[program]` World import test of `ludus_editor_tests` |
 | `materials/grain-mix-board.luscene.json` | A board leaning back on a grey floor under a square one-sided ceiling light. Its [closure program](#closure-program) reads a scalar grain mask from the base colour input: a white diffuse lobe takes the complement and a glossy gold conductor takes the mask. The authored base colour is an interior mask; a base texture supplies the grain. | The `[scene-source]` check of `ludus_render_graph_ray_tests`, which requires the file to compile to the [texture-weighted mixing](renderer-systems.md#texture-weighted-mixing-of-distinct-lobes) tests' program record, and the grain-mix cook check of `ludus_scene_import_tests` |
+| `materials/hair-card-patch.luscene.json` | A flat vertical [hair card](#hair-card) with a vertical strand beside an ordinary metallic/roughness control card of the same base colour and roughness, under a square one-sided ceiling light above a grey floor. | The hair-card cook check of `ludus_scene_import_tests`; import it into World to compare the strand highlight with the control |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
 All but the single slit and the large line grid use the Cornell room camera of the GPU tests: eye at
@@ -155,10 +156,11 @@ value.
 | Member | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique name that objects refer to. |
-| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). `"program"` selects a [closure program](#closure-program). `"medium_interface"` makes the material the boundary of an [absorbing medium](#medium-interface) and takes only `name`, `model` and `medium`. |
+| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). `"program"` selects a [closure program](#closure-program). `"hair_card"` selects a two-sided [hair card](#hair-card). `"medium_interface"` makes the material the boundary of an [absorbing medium](#medium-interface) and takes only `name`, `model` and `medium`. |
 | `base_color` | yes, except for a medium interface | Linear Rec. 709 reflectance, each channel in [0, 1]. |
 | `metallic` | no | `metallic_roughness` and `program` only; [0, 1], default 0. |
-| `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness` and `program`, default 1. |
+| `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness`, `program` and `hair_card`, default 1. |
+| `hair` | no | `hair_card` only: the strand controls described below. |
 | `brdf` | for project BRDF | Versioned reflection program described below. |
 | `program` | for program | Versioned closure program described below. |
 | `weight` | for Mix | Conductor fraction in [0, 1]. The Lambertian lobe uses the complementary weight and `base_color`. |
@@ -265,6 +267,31 @@ It drops parameters that no lobe uses, and it reuses a register after the last
 read of its value. A program that exceeds a limit fails with `LIMIT_EXCEEDED`
 and a message that names the fix. The cook stores programs in LUSCN version 11; see
 [closure programs in the renderer](renderer-systems.md#material-closure-programs).
+
+### Hair card
+
+A `hair_card` material shades a two-sided card whose highlights follow an authored
+strand direction. Base colour and roughness keep their usual meaning; hair has no
+`metallic` member. Every `hair` member is optional.
+
+```json
+{"name": "Hair", "model": "hair_card", "base_color": [0.35, 0.22, 0.12], "roughness": 0.35,
+ "hair": {"strand_direction_degrees": 90, "primary_shift_degrees": -5,
+          "secondary_shift_degrees": 7.5, "primary_weight": 0.1, "secondary_weight": 0.05}}
+```
+
+| Member | Meaning |
+| --- | --- |
+| `hair.strand_direction_degrees` | Strand direction in the card's plane, in [−180, 180]. Zero follows the surface tangent (increasing texture U) and 90 the bitangent. A card without tangents or texture coordinates uses the horizontal tangent `+Y × normal`, so 90 runs up a vertical card. Default 0. |
+| `hair.primary_shift_degrees` | Tilt of the untinted primary highlight toward the card normal, in [−30, 30]. Default −5. |
+| `hair.secondary_shift_degrees` | Tilt of the base-colour-tinted secondary highlight, in [−30, 30]. Default 7.5. |
+| `hair.primary_weight` | Primary highlight weight in [0, 1]. Default 0.1. |
+| `hair.secondary_weight` | Secondary highlight weight in [0, 1]. Default 0.05. |
+
+The cook stores the material as a LUSCN v13 `HairCard` record. Scene sources have
+no texture coordinates or masks; import a textured, alpha-masked card from glTF for
+coverage. See [raster hair cards](renderer-systems.md#raster-hair-cards) for the
+shading model and its limits.
 
 ### Medium interface
 

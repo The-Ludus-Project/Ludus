@@ -405,11 +405,16 @@ class BuildTests(unittest.TestCase):
         jobs = [({'id': f'Program{i}', 'native_ray_pipeline': i % 2 == 1}, [], 'metal') for i in range(8)]
         stage = self.root / 'stage'
         stage.mkdir()
+        timings = [None] * len(jobs)
         with patch.object(build, 'compile_program', compile_program):
             outcomes = build.compile_stages(jobs, stage, {}, None, self.helper, {}, None, worker_socket='worker',
-                                            worker_identity='0' * 64, worker_lanes=2, lanes=8)
+                                            worker_identity='0' * 64, worker_lanes=2, lanes=8, stage_timings=timings)
         self.assertTrue(all(not isinstance(outcome, BaseException) for outcome in outcomes))
         self.assertEqual(peaks[0], 2)
+        self.assertTrue(all(queued <= start < end for queued, start, end in timings))
+        # With two lanes, the third worker stage must await at least one completion.
+        native = sorted(timings[::2], key=lambda row: row[1])
+        self.assertGreaterEqual(native[2][1], min(native[0][2], native[1][2]))
         # Native Metal ray pipelines compile in their own process, beside the worker's lanes.
         self.assertGreater(peaks[1], 1)
 

@@ -699,8 +699,11 @@ create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Dir
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
-colour, intensity, range and spot angles, then **Apply Changes**. Save the World
-to retain the objects; duplication and deletion use the regular entity commands.
+colour, intensity, range and spot angles, then **Apply Changes**. Every entity's
+Transform, like a scene instance's, shows Position, Rotation and Scale as one
+X Y Z row each with four significant digits, such as 1.878; the field's tooltip
+gives the stored value, and **Apply Changes** keeps it unless you edit that field.
+Save the World to retain the objects; duplication and deletion use the regular entity commands.
 Lights start two metres above and in front of the origin, aimed down 45 degrees.
 **Sun** is a directional light of 10 lux, placed and aimed as described in
 [Lighting a World that renders black](#lighting-a-world-that-renders-black).
@@ -1013,6 +1016,39 @@ reports no data instead of producing a misleading successful capture.
 See the [GPU timing contract](../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
 and [graphics-debugging plan](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
 for pass timing, clock calibration and later process targets.
+
+### Trace a shader edit to its first paint
+
+Start a CPU or Both recording, change a graph shader, and build a preview. For
+Live Preview, save the shader to start the build. In Perfetto, find **Graph edit
+to first Qt paint** and follow its `candidateId` through the replacement tracks.
+The terminal slice for a painted candidate also carries the rendered
+`graphGeneration`, `viewportId`, `deviceSession` and `frameId`. A stale build or
+superseded candidate has its own outcome. Paints of the retained graph keep
+their own frame and generation identities.
+
+**Await shader build lane** measures dispatch to the build executor and, when
+used, admission to the shader worker's advertised lanes. **Compile and validate
+shader stage** covers the stage helper, which includes invoking the compiler or
+exchanging with the native worker, dependency checks and reflection validation.
+Internal worker queue and compiler boundaries are unavailable separately. The
+trace records up to 64 cache-miss stages from a successful build. A cache hit
+adds no stage compile slice. Failed builds or incompatible process clocks can
+leave only the observed tool process interval.
+
+**Prepare graph pipelines (observed)** runs from staging the decoded candidate
+until the editor observes setup readiness. **Await graph activation** covers
+the remaining admission and publication wait. Frame and paint tracks then
+record output production and delivery to Qt. These are CPU monotonic wall-clock
+intervals and may include time between callbacks. Use the device pipeline
+report for native creation and queue time by [recipe](render-graph-authoring.md#device-pipeline-preparation).
+
+On macOS, the editor's `[shader-edit-trace]` test exercises a warm reload and
+two overlapping replacements with native pipeline work paused. Set
+`LUDUS_EDITOR_SHADER_EDIT_TRACE_OUTPUT` to a new file under `out/` to save its
+Qt wall-clock trace. The fixture starts from a cooked generation, so its
+tool-process intervals are absent. The regular CPU or Both recording captures
+the build stages when editing sources in the editor.
 
 ## Closing and shortcuts
 
@@ -1988,8 +2024,8 @@ example, use `tests/scenes/materials/closure-program-block.luscene.json`. Select
 the program's object. The **Material** group shows **Closure program** as its
 model, then one row per lobe with its operation and parameters, the size of
 the weight and roughness program, and the capabilities that pass requirements
-test. **Metallic (program input)** and **Roughness (program input)** are the
-values the program reads. The raster viewport draws them as a
+test. **Metallic** and **Roughness** are the values the program reads; their
+tooltips say so. The raster viewport draws them as a
 metallic-roughness approximation. The reference paths, Wave Tracing and
 Metropolis evaluate the program itself.
 
@@ -2329,14 +2365,23 @@ Outside the volume, or where no nearby probe has recorded visibility, receivers 
 realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. Save again after the bake is ready to retain the
 atlas alongside the charts. If an older cache contains only charts, the native
-editor prepares the missing atlas in the background. The prototype uses coarse
-directional visibility. Move a GI Probe Receiver along both sides of a wall
-and through any doorway while checking the Lit viewport. If bounce crosses a
+editor prepares the missing atlas in the background. A cache saved with the
+earlier 4 × 4 visibility faces is also rebaked in the background; save again
+to keep the new atlas.
+
+Probe visibility is directional and coarse. Keep the volume's probe planes
+more than 1.6 % of the spacing from floors, ceilings and walls: a probe that
+touches geometry is ignored, and a receiver whose eight neighbours are all
+ignored gets no baked bounce. Receivers within about 5 % of the spacing of a
+wall can still pick up bounce from the far side, and so can receivers just
+past an opening. Move a GI Probe Receiver along both sides of a wall
+and through any doorway while checking the Lit viewport. Each move rebakes,
+which takes about half a second for a small volume. If bounce crosses a
 closed wall or disappears in the opening, adjust the volume's position or
 spacing, let it rebake, and repeat the same movement. Use the result that
 preserves bounce through the opening while keeping the closed wall dark where
 the neighbouring room is the only source of bounced light.
-[Probe visibility limits and test cases](../architecture/renderer-systems.md#probe-visibility-near-walls-and-openings)
+[Probe visibility limits and measurements](../architecture/renderer-systems.md#native-lit-probe-visibility-qualification)
 
 ### Switching lights
 

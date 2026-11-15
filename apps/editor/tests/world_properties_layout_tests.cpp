@@ -189,8 +189,8 @@ void CheckNothingClipped(const QWidget& panel)
         const QLabel* labelOrNull = qobject_cast<const QLabel*>(widget);
         if (inspectorLabelOrNull != nullptr && inspectorLabelOrNull->IsElided() == true)
         {
-            // A label shortened by the shared column keeps its whole text in the tooltip.
-            CHECK(inspectorLabelOrNull->toolTip() == inspectorLabelOrNull->text());
+            // A label shortened by the shared column keeps its whole text in the tooltip, before any detail.
+            CHECK(inspectorLabelOrNull->toolTip().startsWith(inspectorLabelOrNull->text()) == true);
         }
         else if (elidedOrNull != nullptr)
         {
@@ -296,7 +296,7 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
     REQUIRE(QTest::qWaitFor(
                 [&dock]() {
                     const QWidget* thumbnailOrNull =
-                        dock.findChild<QWidget*>(QStringLiteral("worldMaterialThumbnail:Base colour map"));
+                        dock.findChild<QWidget*>(QStringLiteral("worldMaterialThumbnail:Base colour"));
                     return thumbnailOrNull != nullptr && thumbnailOrNull->isVisible() == true;
                 },
                 SETTLE_TIMEOUT_MILLISECONDS) == true);
@@ -352,6 +352,19 @@ TEST_CASE("Properties keeps every field, label and value whole from the narrowes
                   SETTLE_TIMEOUT_MILLISECONDS) == true);
         CHECK(dock.width() == width);
         CheckNothingClipped(*panelOrNull);
+        // The Material section's labels read whole at every width, beside their values or above them ("Reflectance",
+        // not "Reflectance (li…" or "Mod…"), and from the narrow dock up the texture reads whole beside its thumbnail.
+        InspectorSection* materialOrNull = dock.findChild<InspectorSection*>(QStringLiteral("worldMaterial"));
+        REQUIRE(materialOrNull != nullptr);
+        for (const InspectorLabel* label : materialOrNull->GetFields().findChildren<InspectorLabel*>())
+        {
+            INFO(label->text().toStdString());
+            CHECK((label->isVisible() == false || label->IsElided() == false));
+        }
+        const ElidedLabel* textureOrNull = dock.findChild<ElidedLabel*>(QStringLiteral("worldMaterial:Base colour"));
+        REQUIRE(textureOrNull != nullptr);
+        CHECK((width < NARROW_DOCK_WIDTH || textureOrNull->IsElided() == false));
+        CHECK(textureOrNull->toolTip().startsWith(QStringLiteral("Base colour map: texture")) == true);
         if (qEnvironmentVariableIsSet("LUDUS_PROPERTIES_SCREENSHOT_DIRECTORY") == true)
         {
             const QDir shots(qEnvironmentVariable("LUDUS_PROPERTIES_SCREENSHOT_DIRECTORY"));
@@ -660,4 +673,183 @@ TEST_CASE("A Properties section folds away, keeps that state and offers its acti
         again.SetCollapsed(false);
     }
     CHECK(QSettings().contains(QStringLiteral("inspector/collapsedSections/") + key) == false);
+}
+
+namespace
+{
+/// The Position, Rotation and Scale fields of one Transform, by their World field keys.
+struct TransformFieldKeys final
+{
+    const char* Name;
+    QStringList Position;
+    QStringList Rotation;
+    QStringList Scale;
+};
+
+/// Types text into the field with key, as a person does.
+void TypeInto(QWidget& inoutDock, const QString& key, const QString& text)
+{
+    QLineEdit* fieldOrNull = inoutDock.findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
+    INFO(key.toStdString());
+    REQUIRE(fieldOrNull != nullptr);
+    fieldOrNull->selectAll();
+    QTest::keyClicks(fieldOrNull, text);
+}
+
+/// Each of the Transform's vectors is one shared vector row, X, Y and Z side by side on one line.
+void CheckCompactTransform(QWidget& inoutDock, const TransformFieldKeys& keys)
+{
+    INFO(keys.Name);
+    for (const QStringList& vector : {keys.Position, keys.Rotation, keys.Scale})
+    {
+        QVector<const QLineEdit*> fields;
+        for (const QString& key : vector)
+        {
+            INFO(key.toStdString());
+            const QLineEdit* fieldOrNull = inoutDock.findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
+            REQUIRE(fieldOrNull != nullptr);
+            REQUIRE(fieldOrNull->parentWidget() != nullptr);
+            const QWidget* rowOrNull = fieldOrNull->parentWidget()->parentWidget();
+            REQUIRE(rowOrNull != nullptr);
+            CHECK(rowOrNull->objectName() == QStringLiteral("inspectorVectorRow"));
+            const WrappingRowLayout* layoutOrNull = dynamic_cast<const WrappingRowLayout*>(rowOrNull->layout());
+            REQUIRE(layoutOrNull != nullptr);
+            CHECK(layoutOrNull->IsStacked() == false);
+            // The whole shown number fits its field.
+            CHECK(fieldOrNull->width() >= ComputeLineEditWidth(*fieldOrNull, fieldOrNull->text()));
+            fields.append(fieldOrNull);
+        }
+        REQUIRE(fields.size() == 3);
+        CHECK(GetRectangleIn(inoutDock, *fields[0]).top() == GetRectangleIn(inoutDock, *fields[1]).top());
+        CHECK(GetRectangleIn(inoutDock, *fields[1]).top() == GetRectangleIn(inoutDock, *fields[2]).top());
+    }
+}
+} // namespace
+
+TEST_CASE("Every entity kind's Transform uses the same compact vector rows", "[editor][world][inspector][layout]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString projectPath = QDir(directory.path()).filePath(QStringLiteral("project"));
+    REQUIRE(QDir().mkpath(projectPath) == true);
+    const QString root = QFileInfo(projectPath).canonicalFilePath();
+    const QString source = directory.filePath(QStringLiteral("source/textured.pbrt"));
+    WriteTexturedSource(source);
+    const QString path = QDir(root).filePath(QStringLiteral("kinds.world.json"));
+    CreateImportedWorld(root, path, source);
+
+    WorldWorkspace workspace(MakeSceneTools(), nullptr);
+    workspace.SetProject(root, 1);
+    QWidget dock;
+    QVBoxLayout* dockLayout = new QVBoxLayout(&dock);
+    dockLayout->setContentsMargins(0, 0, 0, 0);
+    QWidget* panelOrNull = workspace.TakePropertiesPanel(&dock);
+    REQUIRE(panelOrNull != nullptr);
+    dockLayout->addWidget(panelOrNull);
+    ApplyWorkspaceStyle(&dock);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForWorld(workspace);
+    dock.resize(NARROW_DOCK_WIDTH, DOCK_HEIGHT);
+    dock.show();
+
+    // Long stored numbers, as the Mac capture's Sun showed them (1.8778648, -100.82808).
+    const QStringList longValues{QStringLiteral("1.8778648"), QStringLiteral("18.757229"), QStringLiteral("2.4809227")};
+    const QStringList longAngles{QStringLiteral("-55.906113"), QStringLiteral("-100.82808"), QStringLiteral("0.5")};
+    const TransformFieldKeys sceneKeys{
+        "scene instance",
+        {QStringLiteral("scene/position0"), QStringLiteral("scene/position1"), QStringLiteral("scene/position2")},
+        {QStringLiteral("scene/rotation0"), QStringLiteral("scene/rotation1"), QStringLiteral("scene/rotation2")},
+        {QStringLiteral("scene/scale0"), QStringLiteral("scene/scale1"), QStringLiteral("scene/scale2")}};
+    const TransformFieldKeys componentKeys{
+        "transform component",
+        {QStringLiteral("transform/x"), QStringLiteral("transform/y"), QStringLiteral("transform/z")},
+        {QStringLiteral("transform/rx"), QStringLiteral("transform/ry"), QStringLiteral("transform/rz")},
+        {QStringLiteral("transform/sx"), QStringLiteral("transform/sy"), QStringLiteral("transform/sz")}};
+    const auto enterLongValues = [&dock, &workspace, &longValues, &longAngles](const TransformFieldKeys& keys) {
+        for (qsizetype axis = 0; axis < longValues.size(); ++axis)
+        {
+            TypeInto(dock, keys.Position[axis], longValues[axis]);
+            TypeInto(dock, keys.Rotation[axis], longAngles[axis]);
+        }
+        ApplyChanges(dock, workspace);
+    };
+
+    // An imported scene instance.
+    QString floor;
+    for (const QJsonValue value : workspace.Document().Draft().value(QStringLiteral("entities")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("scene")).isObject() == true && floor.isEmpty() == true)
+        {
+            floor = workspace.Document().GetEntityKey(value.toObject());
+        }
+    }
+    REQUIRE(floor.isEmpty() == false);
+    REQUIRE(workspace.SelectEntity(floor) == true);
+    enterLongValues(sceneKeys);
+    REQUIRE(workspace.SelectEntity(floor) == true);
+    QTest::qWait(0);
+    CheckCompactTransform(dock, sceneKeys);
+    const QString captures = qEnvironmentVariable("LUDUS_PROPERTIES_SCREENSHOT_DIRECTORY");
+    const QScrollArea* scrollOrNull = dock.findChild<QScrollArea*>(QStringLiteral("worldInspectorScroll"));
+    REQUIRE(scrollOrNull != nullptr);
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(scrollOrNull->widget()->grab().save(QDir(captures).filePath(QStringLiteral("transform-scene.png"))));
+    }
+
+    // Lights, a player, a probe volume and plain geometry share the same row, with the same number formatting.
+    for (const char* preset : {"worldCreateSun",
+                               "worldCreatePointLight",
+                               "worldCreateSpotLight",
+                               "worldCreateFirstPersonPlayer",
+                               "worldCreateGIProbeVolume",
+                               "worldCreateCube"})
+    {
+        INFO(preset);
+        QAction* createOrNull = workspace.findChild<QAction*>(QString::fromLatin1(preset));
+        REQUIRE(createOrNull != nullptr);
+        REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave() == true; }, SETTLE_TIMEOUT_MILLISECONDS));
+        createOrNull->trigger();
+        WaitForWorld(workspace);
+        const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+        const QString entity = workspace.Document().GetEntityKey(entities.last().toObject());
+        REQUIRE(workspace.SelectEntity(entity) == true);
+        if (dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x")) == nullptr)
+        {
+            continue;
+        }
+        enterLongValues(componentKeys);
+        REQUIRE(workspace.SelectEntity(entity) == true);
+        QTest::qWait(0);
+        CheckCompactTransform(dock, componentKeys);
+        if (QString::fromLatin1(preset) == QStringLiteral("worldCreateSun"))
+        {
+            // Short numbers on screen, every stored digit in the tooltip and in the World: an unrelated Apply leaves
+            // the stored position exactly as it was.
+            const auto getStoredX = [&workspace, &entity]() {
+                return workspace.Document()
+                    .Entity(entity)
+                    .value(QStringLiteral("components"))
+                    .toObject()
+                    .value(QStringLiteral("transform"))
+                    .toObject()
+                    .value(QStringLiteral("x"));
+            };
+            const QLineEdit* xOrNull = dock.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));
+            REQUIRE(xOrNull != nullptr);
+            CHECK(xOrNull->text() == QStringLiteral("1.878"));
+            CHECK(xOrNull->toolTip().contains(QStringLiteral("Stored value: 1.8778648")) == true);
+            const QJsonValue stored = getStoredX();
+            REQUIRE(stored.isDouble() == true);
+            TypeInto(dock, QStringLiteral("transform/sz"), QStringLiteral("2"));
+            ApplyChanges(dock, workspace);
+            CHECK(getStoredX() == stored);
+        }
+        if (captures.isEmpty() == false)
+        {
+            REQUIRE(scrollOrNull->widget()->grab().save(
+                QDir(captures).filePath(QStringLiteral("transform-%1.png").arg(QString::fromLatin1(preset)))));
+        }
+    }
+    workspace.StopPreview();
 }

@@ -1,0 +1,56 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Hair card patch",
+  "description": "A flat vertical hair card beside an ordinary metallic/roughness control card of the same base colour and roughness, both facing the camera under a square one-sided ceiling light above a grey floor. The hair card's strand runs vertically (ninety degrees from the horizontal tangent its flat frame derives from the normal), with the default longitudinally shifted highlights. Rotating the strand direction rotates the highlight; the control card keeps its isotropic highlight.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "Floor", "model": "diffuse", "base_color": [0.5, 0.5, 0.5]},
+    {
+      "name": "Hair",
+      "model": "hair_card",
+      "base_color": [0.35, 0.22, 0.12],
+      "roughness": 0.35,
+      "hair": {
+        "strand_direction_degrees": 90,
+        "primary_shift_degrees": -5,
+        "secondary_shift_degrees": 7.5,
+        "primary_weight": 0.1,
+        "secondary_weight": 0.05
+      }
+    },
+    {"name": "Control", "model": "metallic_roughness", "base_color": [0.35, 0.22, 0.12], "roughness": 0.35},
+    {"name": "Light", "model": "metallic_roughness", "base_color": [1, 1, 1], "roughness": 1, "emission": {"radiance": [12, 12, 12], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "Floor",
+      "positions": [[-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Hair card",
+      "material": "Hair",
+      "positions": [[-0.8, -0.7, -0.2], [-0.1, -0.7, -0.2], [-0.1, 0.5, -0.2], [-0.8, 0.5, -0.2]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Control card",
+      "material": "Control",
+      "positions": [[0.1, -0.7, -0.2], [0.8, -0.7, -0.2], [0.8, 0.5, -0.2], [0.1, 0.5, -0.2]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [[-0.25, 0.99, -0.25], [0.25, 0.99, -0.25], [0.25, 0.99, 0.25], [-0.25, 0.99, 0.25]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}
