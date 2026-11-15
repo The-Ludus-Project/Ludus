@@ -872,6 +872,9 @@ keeps older trusted batch workflows complete when a new editor suite is added.
 The mandatory Vulkan pixel proof selects `[render-graph]` and rejects skipped
 cases. Portable bilinear upscaling stays in that set; optional MetalFX variants
 use `[render-graph-metalfx]` and remain in the full GPU and macOS suites.
+The offscreen blocker test for raster shadows and RT1 also stays in that set.
+Its hybrid shadow comparison uses `[native-ray-queries]` and runs in the full GPU
+suite and on macOS, where it skips only if the required device is unavailable.
 
 ## Scheduled runtime profiling
 
