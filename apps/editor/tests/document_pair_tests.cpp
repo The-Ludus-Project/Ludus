@@ -1,4 +1,5 @@
 #include "internal/document_well.h"
+#include "internal/tab_modified.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -12,6 +13,7 @@
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QString>
+#include <QTabWidget>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QWidget>
@@ -139,4 +141,59 @@ TEST_CASE("Invalid document pair requests preserve the accepted arrangement", "[
     CHECK(well.ShowDocumentsSideBySide(code, code) == false);
     CHECK(well.SaveState() == saved);
     CHECK(well.GetActiveDocumentOrNull() == code);
+}
+
+TEST_CASE("A document's unsaved mark stays with it across close, reopen and tab groups", "[editor][documents][tabs]")
+{
+    DocumentWell well;
+    QWidget* world = new QWidget;
+    world->setObjectName(QStringLiteral("world"));
+    QWidget* graph = new QWidget;
+    graph->setObjectName(QStringLiteral("graph"));
+    well.AddDocument(world, QStringLiteral("sponza.world.json"));
+    well.AddDocument(graph, QStringLiteral("main.lurender.json"));
+    well.resize(1000, 600);
+    well.show();
+    REQUIRE(well.OpenDocument(world) == true);
+    REQUIRE(well.OpenDocument(graph) == true);
+    const auto tabOf = [&well](QWidget* document, QTabWidget*& outGroup) {
+        outGroup = nullptr;
+        for (QTabWidget* group : well.findChildren<QTabWidget*>(QStringLiteral("documentGroup")))
+        {
+            if (group->indexOf(document) >= 0)
+            {
+                outGroup = group;
+                return static_cast<int32>(group->indexOf(document));
+            }
+        }
+        return -1;
+    };
+    QTabWidget* group = nullptr;
+    CHECK(well.IsDocumentModified(world) == false);
+    well.SetDocumentModified(world, true);
+    CHECK(well.IsDocumentModified(world) == true);
+    int32 index = tabOf(world, group);
+    REQUIRE(index >= 0);
+    // The title stays the file name; the dot and the tooltip carry the unsaved state.
+    CHECK(group->tabText(index) == QStringLiteral("sponza.world.json"));
+    CHECK(group->tabToolTip(index) == QStringLiteral("sponza.world.json (unsaved changes)"));
+    CHECK(IsTabModified(*group->tabBar(), index) == true);
+    CHECK(IsTabModified(*group->tabBar(), tabOf(graph, group)) == false);
+
+    well.CloseDocument(world);
+    CHECK(tabOf(world, group) < 0);
+    CHECK(well.IsDocumentModified(world) == true);
+    REQUIRE(well.OpenDocument(world) == true);
+    index = tabOf(world, group);
+    REQUIRE(index >= 0);
+    CHECK(IsTabModified(*group->tabBar(), index) == true);
+
+    REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
+    index = tabOf(world, group);
+    REQUIRE(index >= 0);
+    CHECK(IsTabModified(*group->tabBar(), index) == true);
+
+    well.SetDocumentModified(world, false);
+    CHECK(IsTabModified(*group->tabBar(), index) == false);
+    CHECK(group->tabToolTip(index) == QStringLiteral("sponza.world.json"));
 }

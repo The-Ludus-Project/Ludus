@@ -521,8 +521,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
 - **Documents** occupy the centre. Opening a project opens its **World**, with
   **Project Settings** as a background tab. Open other documents from **Project
   Explorer**, **Project → Project Settings** or the document list at the bottom of
-  the **Window** menu. A tab shows the document's file and a `*` while it has
-  unsaved changes. Closing a tab (**Window → Close Document**, Ctrl+W) hides
+  the **Window** menu. A tab shows the document's file; while it has unsaved
+  changes a dot stands where its close cross would be (the cross returns when
+  the pointer reaches it), its tooltip says so, and the **Window** menu entry
+  ends in `*`. The close cross shows on the open tab and the tab under the
+  pointer only. Closing a tab (**Window → Close Document**, Ctrl+W) hides
   that view only; its draft stays open and quitting still asks about unsaved work.
 - **Tab groups.** **Window → New Vertical Tab Group** puts the active document
   beside the others (for example a render graph next to the World);

@@ -1164,6 +1164,11 @@ void MainWindow::renderWindowDocuments(QMenu* menu)
         }
         QString title = mDocuments->GetDocumentTitle(document);
         title.replace(QStringLiteral("&"), QStringLiteral("&&"));
+        // A menu has no tab to carry the unsaved dot, so the entry keeps the `*` the tab no longer needs.
+        if (mDocuments->IsDocumentModified(document) == true)
+        {
+            title.append(QStringLiteral("*"));
+        }
         QAction* action = menu->addAction(QStringLiteral("&%1 %2").arg(number).arg(title));
         action->setProperty("windowDocument", document->objectName());
         action->setCheckable(true);

@@ -762,7 +762,8 @@ ludus_editor_add_objects(ludus_editor_project_explorer
     src/internal/project_files.h src/project_files.cpp)
 target_link_libraries(ludus_editor_project_explorer PUBLIC ludus_editor_presentation)
 
-ludus_editor_add_objects(ludus_editor_document_well src/internal/document_well.h src/document_well.cpp)
+ludus_editor_add_objects(ludus_editor_document_well src/internal/document_well.h src/document_well.cpp
+                         src/internal/tab_modified.h)
 target_link_libraries(ludus_editor_document_well PUBLIC Qt6::Widgets Ludus::FoundationBase Ludus::FoundationContainers)
 
 if(NOT EMSCRIPTEN AND (LUDUS_EDITOR_RENDER_PREVIEW OR LUDUS_BUILD_TESTS))
