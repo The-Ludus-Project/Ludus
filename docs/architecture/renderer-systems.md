@@ -2809,11 +2809,20 @@ faster than the tabulated lobe (tolerance 8%). Normalized RGB stays within
 0.002). The spread of gold's normalized channels shrinks monotonically from 60°,
 and the achromatic control stays neutral to 1e-6.
 
-**Cost.** In a debug build on the shared Apple M5, the rough-metal scene
-(32 × 24 px, 16 spp, depth 6, including setup) took 1.04–1.25 s on the CPU
-oracle and 0.22–0.28 s on GPU compute with single scattering, and 1.13–1.29 s
-and 0.28–0.30 s with the compensated profile. A release-build measurement is
-pending.
+**Cost.** The rough-metal scene is a gold-like conductor sphere (α = 0.6) in
+front of a rough legacy metal wall (roughness 0.8), with a directional light, an
+environment and two emitters. It renders at 32 × 24 px, 16 spp and depth 6. In
+a release build on the shared Apple M5 (load average about 7), the wall time of
+each capture, including scene packing and setup, was:
+
+| Traversal | Single scattering | Compensated | Change |
+| --- | ---: | ---: | ---: |
+| CPU oracle | 683–690 ms | 723–745 ms | +6% |
+| GPU compute | 88–96 ms | 99–101 ms | +8% |
+
+These are three runs of two seeds, excluding the first cold GPU capture. The
+added work is two table lookups per evaluation and, for complex-IOR conductors,
+17 Fresnel evaluations per channel for `F_avg`.
 
 **Limits.** This is a reference prototype. It has no raster, render-graph or
 GPU-preview implementation, and the LTC and environment preintegrations are not
