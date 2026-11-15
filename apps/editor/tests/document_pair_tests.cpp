@@ -168,32 +168,32 @@ TEST_CASE("A document's unsaved mark stays with it across close, reopen and tab 
         }
         return -1;
     };
-    QTabWidget* group = nullptr;
+    QTabWidget* groupOrNull = nullptr;
     CHECK(well.IsDocumentModified(world) == false);
     well.SetDocumentModified(world, true);
     CHECK(well.IsDocumentModified(world) == true);
-    int32 index = tabOf(world, group);
+    int32 index = tabOf(world, groupOrNull);
     REQUIRE(index >= 0);
     // The title stays the file name; the dot and the tooltip carry the unsaved state.
-    CHECK(group->tabText(index) == QStringLiteral("sponza.world.json"));
-    CHECK(group->tabToolTip(index) == QStringLiteral("sponza.world.json (unsaved changes)"));
-    CHECK(IsTabModified(*group->tabBar(), index) == true);
-    CHECK(IsTabModified(*group->tabBar(), tabOf(graph, group)) == false);
+    CHECK(groupOrNull->tabText(index) == QStringLiteral("sponza.world.json"));
+    CHECK(groupOrNull->tabToolTip(index) == QStringLiteral("sponza.world.json (unsaved changes)"));
+    CHECK(IsTabModified(*groupOrNull->tabBar(), index) == true);
+    CHECK(IsTabModified(*groupOrNull->tabBar(), tabOf(graph, groupOrNull)) == false);
 
     well.CloseDocument(world);
-    CHECK(tabOf(world, group) < 0);
+    CHECK(tabOf(world, groupOrNull) < 0);
     CHECK(well.IsDocumentModified(world) == true);
     REQUIRE(well.OpenDocument(world) == true);
-    index = tabOf(world, group);
+    index = tabOf(world, groupOrNull);
     REQUIRE(index >= 0);
-    CHECK(IsTabModified(*group->tabBar(), index) == true);
+    CHECK(IsTabModified(*groupOrNull->tabBar(), index) == true);
 
     REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
-    index = tabOf(world, group);
+    index = tabOf(world, groupOrNull);
     REQUIRE(index >= 0);
-    CHECK(IsTabModified(*group->tabBar(), index) == true);
+    CHECK(IsTabModified(*groupOrNull->tabBar(), index) == true);
 
     well.SetDocumentModified(world, false);
-    CHECK(IsTabModified(*group->tabBar(), index) == false);
-    CHECK(group->tabToolTip(index) == QStringLiteral("sponza.world.json"));
+    CHECK(IsTabModified(*groupOrNull->tabBar(), index) == false);
+    CHECK(groupOrNull->tabToolTip(index) == QStringLiteral("sponza.world.json"));
 }
