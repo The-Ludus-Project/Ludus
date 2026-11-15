@@ -7,6 +7,7 @@
 #include <ludus/foundation/logging/log.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
+#include <ludus/foundation/profiling/memory_gauges.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
 #include <ludus/graphics/rhi/rhi.h>
@@ -122,6 +123,8 @@ bool LogPacingReport(const ludus::world_demo::PacingReport& report) noexcept
     LogDistribution("present return interval", summary.PresentReturn);
     return true;
 }
+// Thanks to Milos Tosic and the MTuner contributors for correlating memory behavior with a timeline
+// (https://github.com/RudjiGames/MTuner#features). Use Ludus domain samples at run boundaries here.
 // --trace-output arms a FoundationProfiling capture for the whole run. A
 // profiling-disabled (Release) build cannot honour it, so the request fails
 // instead of silently producing no trace for automated profiling.
@@ -138,6 +141,7 @@ bool BeginRequestedTrace(std::string_view traceOutput) noexcept
                         "--trace-output requires a profiling-enabled Debug, Development or Profile build");
         return false;
     }
+    (void)ludus::foundation::profiling::RecordMemoryGauges();
     return true;
 }
 bool WriteRequestedTrace(std::string_view traceOutput) noexcept
@@ -146,6 +150,7 @@ bool WriteRequestedTrace(std::string_view traceOutput) noexcept
     {
         return true;
     }
+    (void)ludus::foundation::profiling::RecordMemoryGauges();
     ludus::foundation::profiling::EndCapture();
     // Read only by the info log, which a Release build's log level compiles out.
     [[maybe_unused]] const ludus::foundation::profiling::TraceHealth health =
@@ -356,6 +361,10 @@ int main(int argc, char** argv)
         {
             return 1;
         }
+        if (traceOutput.empty() == false)
+        {
+            (void)ludus::foundation::profiling::RecordMemoryGauges();
+        }
         // --frames selects the headless tick count; the reference run keeps 120.
         const uint64 tickCount = frameLimit != 0 ? frameLimit : HEADLESS_DEFAULT_TICKS;
         // --frame-rate paces each headless iteration: a graphics-free measurement of operating-system
@@ -440,6 +449,10 @@ int main(int argc, char** argv)
                    "Reference presented {} frames",
                    application.GetPresentedFrames());
     const AppState state = application.GetState();
+    if (traceOutput.empty() == false)
+    {
+        (void)ludus::foundation::profiling::RecordMemoryGauges();
+    }
     application.Shutdown();
     const bool isReportWritten = isPacingReported == false || LogPacingReport(pacingReport) == true;
     const bool isTraceWritten = WriteRequestedTrace(traceOutput);
