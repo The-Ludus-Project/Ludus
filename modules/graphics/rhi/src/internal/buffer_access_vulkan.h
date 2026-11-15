@@ -46,6 +46,10 @@ LUDUS_INLINE constexpr VulkanBufferAccess GetVulkanBufferAccess(GraphAccessMode 
         case GraphAccessMode::ColorWrite:
         case GraphAccessMode::ColorReadWrite:
         case GraphAccessMode::StorageTextureWrite:
+        // Acceleration-structure uses name imported ray scenes, never buffers; their completed
+        // builds are ordered by the build command buffer's own barrier.
+        case GraphAccessMode::AccelerationStructureRead:
+        case GraphAccessMode::AccelerationStructureBuild:
             break;
     }
     return {};
