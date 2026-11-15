@@ -138,6 +138,12 @@ glTF is right-handed with +Y up and metres, matching the engine's world
 convention, so nodes are not converted. glTF texture coordinates already have a
 top-left origin.
 
+For a file without a `scenes` array, Ludus imports every root node. A cyclic
+group of nodes cannot reach a root, so the import fails with `MALFORMED_INPUT`
+even if another root has drawable geometry. If the report says a node is
+unreachable from any root, fix the cyclic parenting in the source scene and
+re-export the asset.
+
 If a material uses optional [`KHR_materials_iridescence`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_iridescence),
 the World Import Report shows `MATERIAL_APPROXIMATED`. The cooked scene
 retains the base metallic-roughness material, so both the viewport and a game
