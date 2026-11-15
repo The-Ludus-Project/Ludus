@@ -68,10 +68,20 @@ private:
     QListWidget* List_ = nullptr;
     QLabel* Message_ = nullptr;
     QWidget* Wave_ = nullptr;
-    QLineEdit *Id_ = nullptr, *Bus_ = nullptr, *Group_ = nullptr, *Sources_ = nullptr, *Begin_ = nullptr,
-              *End_ = nullptr;
-    QSpinBox *Priority_ = nullptr, *Cooldown_ = nullptr;
-    QDoubleSpinBox *Gain_ = nullptr, *Rate_ = nullptr, *Min_ = nullptr, *Max_ = nullptr;
-    QCheckBox *Loop_ = nullptr, *Spatial_ = nullptr, *Suppress_ = nullptr;
+    QLineEdit* mId;
+    QLineEdit* mBus;
+    QLineEdit* mGroup;
+    QLineEdit* mSources;
+    QLineEdit* mLoopBegin;
+    QLineEdit* mLoopEnd;
+    QSpinBox* mPriority;
+    QSpinBox* mCooldown;
+    QDoubleSpinBox* mGain;
+    QDoubleSpinBox* mRate;
+    QDoubleSpinBox* mMinimumDistance;
+    QDoubleSpinBox* mMaximumDistance;
+    QCheckBox* mLoop;
+    QCheckBox* mSpatial;
+    QCheckBox* mSuppress;
 };
 } // namespace ludus::editor
