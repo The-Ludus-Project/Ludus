@@ -339,7 +339,7 @@ ComputeCapabilities ComputeLimits() noexcept
 // ray kernels lost private values of whole SIMD groups at random on an Apple M5, although their MSL is well
 // defined: wave exports returned exact zeros and a closure program read a zeroed register. The repetition
 // test in wave_scene_graph_tests.cpp exposed it in every run; safe math removed it in thousands of captures.
-// Render stages keep fast math. The native ray library uses the same mode.
+// Safe math still contracts a*b + c written as one MSL expression. Render stages keep fast math.
 // See docs/architecture/renderer-systems.md#metal-compute-floating-point.
 void ConfigureMetalComputeMath(MTLCompileOptions* options) noexcept
 {

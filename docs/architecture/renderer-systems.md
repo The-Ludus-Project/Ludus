@@ -2743,9 +2743,23 @@ thousands of captures.
 (`ludus_wave_graph_tests`) is the regression. It alternates the default-material
 wave export and the program's geometric export on one device at 64 x 64 for 16
 rounds and requires every capture to repeat the first bit for bit. With fast math
-it failed every run, with at least 160 wrong pixels. Compute kernels may now run
-slower on Metal; performance-sensitive compute work needs its own measurement
-before it opts back into fast math.
+it failed every run, with at least 160 wrong pixels.
+
+Safe math still contracts `a * b + c` when it is written as one MSL expression;
+fast and relaxed math also contract across statements. Slang's `precise` does not
+reach the translated MSL, so shared code whose bits must match the CPU oracle, which
+FoundationMath builds without contraction, keeps the product in its own
+translated statement. `TryMutateMetropolisPrimary` gives its step a second use
+for this, and the `ludus_renderer_metropolis_parity` case checks the bits.
+Turning contraction off for every compute library instead made 2,816 of 4,096
+pixels of the 64 x 64 wave capture exceed `WavePropagationCapacity`, so the wave
+connection's region stepping depends on contraction
+([#1546](https://github.com/The-Ludus-Project/Ludus/issues/1546)).
+
+Three GPU-transport cases (`L6 depth 4`, one-more-vertex HGS and conditional ReSTIR
+final gather) took the same warm wall time with fast and safe math, within run
+noise. Those cases include CPU oracle work, so they are not a GPU benchmark.
+Measure performance-sensitive compute work before it opts back into fast math.
 
 ### Traversal capability and backend boundary
 

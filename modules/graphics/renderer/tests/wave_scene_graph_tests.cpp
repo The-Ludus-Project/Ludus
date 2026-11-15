@@ -181,6 +181,20 @@ void CaptureSceneWavePass(const WaveDevice& device,
         threading::SleepFor(COMPLETION_POLL_INTERVAL);
     }
     const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
+    renderer::RenderGraphRayFailures failures;
+    if (capture.GetProblem() == renderer::RenderGraphCaptureProblem::LatchedPixels)
+    {
+        RasterStatus polled = capture.PollRayFailures(pass, failures);
+        while (polled == RasterStatus::Pending &&
+               time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
+        {
+            capture.Service();
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            polled = capture.PollRayFailures(pass, failures);
+        }
+    }
+    INFO("latched pixels " << failures.TotalPixels << ", main reason " << failures.MainReason << ": "
+                           << renderer::DescribeRenderGraphFailureReason(failures.MainReason));
     CAPTURE(pass,
             screen,
             capture.GetPhase(),

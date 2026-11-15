@@ -71,7 +71,13 @@ bool TryMutateMetropolisPrimary(float current, float ticket, float radius, bool 
     if (isfinite(current) == false || isfinite(ticket) == false || isfinite(radius) == false || current < 0 ||
         current >= 1 || ticket < 0 || ticket >= 1 || radius <= 0 || radius > 0.5)
         return false;
-    float sample = isLargeStep == true ? ticket : current + (2 * ticket - 1) * radius;
+    // Metal contracts a multiply-add written as one MSL expression, which rounds differently from the CPU oracle
+    // (built without contraction). The finiteness test gives the product a second use, so translated sources keep it
+    // in its own statement; the Metropolis parity case checks the bits.
+    float offset = (2 * ticket - 1) * radius;
+    if (isfinite(offset) == false)
+        return false;
+    float sample = isLargeStep == true ? ticket : current + offset;
     if (sample < 0)
         sample += 1;
     if (sample >= 1)
