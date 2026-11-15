@@ -107,6 +107,7 @@ public:
     /// @param alpha GGX alpha in (0, 1].
     /// @param eta Real index per channel.
     /// @param extinction Extinction per channel; a large value with eta = 0 gives unit Fresnel.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the real and imaginary parts of one complex index.
     MicrofacetRandomWalk(foundation::float64 alpha, Double3 eta, Double3 extinction, bool isLossless) noexcept
         : mAlpha(alpha), mEta(eta), mExtinction(extinction), mIsLossless(isLossless)
     {
@@ -277,8 +278,10 @@ private:
         inoutEnergy = Multiply(inoutEnergy, computeFresnel(inNormal));
         return normal * (2 * inNormal) + ray;
     }
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters): incoming then outgoing direction, as in Evaluate.
     [[nodiscard]] Double3
     evaluateWalk(Double3 in, Double3 out, foundation::uint32 maximumOrder, OracleRandom& inoutRandom) const noexcept
+    // NOLINTEND(bugprone-easily-swappable-parameters)
     {
         if (out.Z <= 0)
         {

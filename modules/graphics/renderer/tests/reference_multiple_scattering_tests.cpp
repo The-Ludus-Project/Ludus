@@ -62,10 +62,12 @@ rr::ReferenceBsdf MakeWhiteMetal(float32 roughness, rr::ReferenceMaterialProfile
     bsdf.Profile = profile;
     return bsdf;
 }
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the real and imaginary parts of one complex index.
 rr::ReferenceBsdf MakeConductor(float32 alpha,
                                 const StaticArray<float32, 3>& eta,
                                 const StaticArray<float32, 3>& extinction,
                                 rr::ReferenceMaterialProfile profile)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     rr::ReferenceBsdf bsdf;
     bsdf.Scattering.Model = format::MaterialModel::Conductor;
@@ -82,6 +84,7 @@ rr::ReferenceBsdf MakeConductor(float32 alpha,
 /// Unit-Fresnel directional albedo of RT1's single-scattering lobe by classical GGX normal sampling (Bruce Walter et
 /// al., "Microfacet Models for Refraction through Rough Surfaces", EGSR 2007), on a float64 midpoint grid.
 /// Independent of the table generator's visible-normal integration.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): GGX alpha, the view cosine, then the grid resolution.
 float64 IntegrateSingleScatteringAlbedo(float64 alpha, float64 cosine, uint32 strata)
 {
     const float64 sine = std::sqrt(std::fmax(0.0, 1 - cosine * cosine));
@@ -112,6 +115,7 @@ float64 IntegrateSingleScatteringAlbedo(float64 alpha, float64 cosine, uint32 st
     return sum / (float64(strata) * strata);
 }
 /// Radical inverse of index in base: the Halton sequence's coordinate for that base.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the sequence index, then the radix.
 float32 ComputeRadicalInverse(uint32 index, uint32 base)
 {
     float64 result = 0;

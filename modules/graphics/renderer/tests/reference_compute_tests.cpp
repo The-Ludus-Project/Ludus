@@ -2421,6 +2421,7 @@ rr::ReferenceBsdf MakeConductorBsdf(float32 alpha,
 }
 /// Orthographic view of the test plane at `viewTangent`, a direction in the x = 0 plane of its tangent frame. The clip
 /// window spans +-halfExtentWorld across the view and +-2 m along it, centred on the origin.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the window's half extent in metres, then its pixel count.
 rr::ReferenceCaptureDescription MakeTiltedCapture(math::Vector3 viewTangent, float32 halfExtentWorld, uint32 extent)
 {
     constexpr float32 DEPTH_SCALE = 0.25F;
@@ -2479,10 +2480,12 @@ struct DirectionalResponse final
     math::Vector3 Cpu{};
     math::Vector3 Gpu{};
 };
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the view then the light, as EvaluateReferenceBsdf orders them.
 DirectionalResponse CaptureDirectionalResponse(PairedSessions& inoutSessions,
                                                math::Vector3 viewTangent,
                                                math::Vector3 lightTangent,
                                                rr::ReferenceMaterialProfile profile)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     rr::ReferenceCaptureDescription capture = MakeTiltedCapture(viewTangent, 0.01F, 1);
     capture.MaxDepth = 1;

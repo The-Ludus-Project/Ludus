@@ -19,7 +19,8 @@ using foundation::usize;
 
 constexpr uint32 ROUGHNESS_COUNT = LUDUS_GGX_ALBEDO_TABLE_ROUGHNESS_COUNT;
 constexpr uint32 VIEW_COUNT = LUDUS_GGX_ALBEDO_TABLE_VIEW_COUNT;
-constexpr usize DEFICIT_OFFSET = LUDUS_GGX_ALBEDO_TABLE_DEFICIT_OFFSET;
+// The layout macro multiplies in int; index the table in usize.
+constexpr usize DEFICIT_OFFSET = usize{ROUGHNESS_COUNT} * VIEW_COUNT;
 static_assert(ROUGHNESS_COUNT >= 2 && VIEW_COUNT >= 2);
 
 /// Fractional row of alpha: rows are linear in sqrt(alpha) over [0, 1].
