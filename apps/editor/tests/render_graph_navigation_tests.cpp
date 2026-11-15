@@ -9,12 +9,14 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFrame>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
+#include <QGraphicsSimpleTextItem>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -22,10 +24,14 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
+#include <QPushButton>
 #include <QSignalSpy>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -509,4 +515,234 @@ TEST_CASE("wires of a hub card rest dimmed until it is focused", "[editor][rende
     // Selecting the hub brings its wires back to full strength.
     canvas.SelectNode(QStringLiteral("hub"));
     CHECK(FindEdge(canvas, QStringLiteral("hub.texture → export0.texture")).opacity() == 1);
+}
+
+namespace
+{
+/// A Target card with the defaults the canvas tests share.
+QJsonObject MakeTarget(const QString& identity)
+{
+    return QJsonObject{{QStringLiteral("id"), identity},
+                       {QStringLiteral("kind"), QStringLiteral("Target")},
+                       {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                       {QStringLiteral("format"), QStringLiteral("RGBA8Unorm")},
+                       {QStringLiteral("extent"), QJsonArray{96, 64}},
+                       {QStringLiteral("samples"), 1},
+                       {QStringLiteral("imported"), false},
+                       {QStringLiteral("initialized"), false},
+                       {QStringLiteral("presentation"), false}};
+}
+QJsonObject MakeExport(const QString& identity)
+{
+    return QJsonObject{{QStringLiteral("id"), identity},
+                       {QStringLiteral("kind"), QStringLiteral("Export")},
+                       {QStringLiteral("type"), QStringLiteral("ColorTexture")}};
+}
+void WriteGraph(const QTemporaryDir& project, const QJsonArray& nodes, const QJsonArray& edges)
+{
+    const QJsonObject graph{{QStringLiteral("version"), 2},
+                            {QStringLiteral("id"), QStringLiteral("Main")},
+                            {QStringLiteral("default"), QStringLiteral("Default")},
+                            {QStringLiteral("configurations"),
+                             QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("Default")},
+                                                    {QStringLiteral("inputs"), QJsonArray{}},
+                                                    {QStringLiteral("outputs"), QJsonArray{}},
+                                                    {QStringLiteral("nodes"), nodes},
+                                                    {QStringLiteral("edges"), edges}}}}};
+    QFile file(QDir(project.path()).filePath(GetRootFile()));
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    const QByteArray bytes = EncodeCanonicalJson(graph);
+    REQUIRE(file.write(bytes) == bytes.size());
+}
+/// The title label of a card: the text item whose tooltip is the card's full "id : kind" title.
+QGraphicsSimpleTextItem& FindTitle(const RenderGraphCanvas& canvas, const QString& identity)
+{
+    QGraphicsSimpleTextItem* resultOrNull = nullptr;
+    for (QGraphicsItem* item : canvas.scene()->items())
+    {
+        QGraphicsSimpleTextItem* textOrNull = qgraphicsitem_cast<QGraphicsSimpleTextItem*>(item);
+        if (textOrNull != nullptr && textOrNull->toolTip().startsWith(identity + QStringLiteral(" : ")) == true)
+        {
+            resultOrNull = textOrNull;
+            break;
+        }
+    }
+    REQUIRE(resultOrNull != nullptr);
+    return *resultOrNull;
+}
+} // namespace
+
+TEST_CASE("a long card title wraps at its words and reads from its start", "[editor][render-graph][navigation][title]")
+{
+    constexpr float64 OVERVIEW_ZOOM = 0.5;
+    const QString identity = QStringLiteral("computeRayTracingAccumulatedHistory");
+    QTemporaryDir project;
+    WriteGraph(project,
+               QJsonArray{MakeTarget(identity), MakeExport(QStringLiteral("output"))},
+               QJsonArray{QJsonObject{{QStringLiteral("from"), identity + QStringLiteral(".texture")},
+                                      {QStringLiteral("to"), QStringLiteral("output.texture")}}});
+    RenderGraphDocument document;
+    REQUIRE(document.Load(project.path(), GetRootFile()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    ShowCanvas(canvas);
+    REQUIRE(canvas.RestoreViewState({{}, canvas.GetNodePosition(identity), OVERVIEW_ZOOM, {}, {}}) == true);
+    QCoreApplication::processEvents();
+    const QString overview = FindTitle(canvas, identity).text();
+    INFO(overview.toStdString());
+    // Split where a reader would (compute / Ray / Tracing ...), never shortened from the middle.
+    CHECK(overview.contains(QLatin1Char('\n')) == true);
+    CHECK(overview.startsWith(QStringLiteral("compute")) == true);
+    CHECK(overview.section(QLatin1Char('\n'), 0, 0).contains(QChar(0x2026)) == false);
+    REQUIRE(canvas.RestoreViewState({{}, canvas.GetNodePosition(identity), 1, {}, {}}) == true);
+    QCoreApplication::processEvents();
+    const QString detailed = FindTitle(canvas, identity).text();
+    INFO(detailed.toStdString());
+    // The detailed header has one line; it keeps the start and shortens only the end.
+    CHECK(detailed.contains(QLatin1Char('\n')) == false);
+    CHECK(detailed.startsWith(QStringLiteral("computeRay")) == true);
+}
+
+TEST_CASE("a dense graph's resting wires recede and a focused card's wires stand out",
+          "[editor][render-graph][navigation][wires]")
+{
+    constexpr int PAIRS = 40;
+    QJsonArray nodes;
+    QJsonArray edges;
+    for (int index = 0; index < PAIRS; ++index)
+    {
+        nodes.append(MakeTarget(QStringLiteral("source%1").arg(index)));
+        nodes.append(MakeExport(QStringLiteral("sink%1").arg(index)));
+        edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("source%1.texture").arg(index)},
+                                 {QStringLiteral("to"), QStringLiteral("sink%1.texture").arg(index)}});
+    }
+    QTemporaryDir project;
+    WriteGraph(project, nodes, edges);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(project.path(), GetRootFile()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    ShowCanvas(canvas);
+    QGraphicsPathItem& focused = FindEdge(canvas, QStringLiteral("source0.texture → sink0.texture"));
+    QGraphicsPathItem& other = FindEdge(canvas, QStringLiteral("source1.texture → sink1.texture"));
+    const float64 resting = other.opacity();
+    CHECK(resting < 1);
+    CHECK(focused.opacity() == resting);
+    canvas.SelectNode(QStringLiteral("source0"));
+    CHECK(focused.opacity() == 1);
+    CHECK(focused.pen().widthF() > other.pen().widthF());
+    CHECK(other.opacity() < resting);
+    canvas.SelectNode({});
+    CHECK(other.opacity() == resting);
+}
+
+TEST_CASE("the canvas toolbar groups framing under Fit and tracing under Trace",
+          "[editor][render-graph][navigation][toolbar]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), GetRootFile()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    ShowCanvas(canvas);
+    QToolBar* toolbarOrNull = canvas.findChild<QToolBar*>(QStringLiteral("renderGraphFramingToolbar"));
+    QToolButton* fitOrNull = canvas.findChild<QToolButton*>(QStringLiteral("renderGraphFit"));
+    QToolButton* traceOrNull = canvas.findChild<QToolButton*>(QStringLiteral("renderGraphTrace"));
+    REQUIRE(toolbarOrNull != nullptr);
+    REQUIRE(fitOrNull != nullptr);
+    REQUIRE(traceOrNull != nullptr);
+    QAction& upstream = FindAction(canvas, QStringLiteral("renderGraphTraceUpstream"));
+    QAction& downstream = FindAction(canvas, QStringLiteral("renderGraphTraceDownstream"));
+    QAction& clear = FindAction(canvas, QStringLiteral("renderGraphClearTrace"));
+    QAction& fitGraph = FindAction(canvas, QStringLiteral("renderGraphFitGraph"));
+    REQUIRE(fitOrNull->menu() != nullptr);
+    CHECK(fitOrNull->menu()->actions() ==
+          QList<QAction*>{&fitGraph,
+                          &FindAction(canvas, QStringLiteral("renderGraphFitSelection")),
+                          &FindAction(canvas, QStringLiteral("renderGraphResetZoom"))});
+    CHECK(fitOrNull->defaultAction() == &fitGraph);
+    CHECK(fitGraph.text() == QStringLiteral("Fit Graph"));
+    REQUIRE(traceOrNull->menu() != nullptr);
+    CHECK(traceOrNull->menu()->actions().contains(&upstream) == true);
+    CHECK(traceOrNull->menu()->actions().contains(&downstream) == true);
+    CHECK(traceOrNull->menu()->actions().contains(&clear) == true);
+    // The grouped commands are not also loose buttons.
+    for (QAction* action : {&upstream, &downstream, &clear, &fitGraph})
+    {
+        CHECK(toolbarOrNull->actions().contains(action) == false);
+    }
+    CHECK(traceOrNull->isEnabled() == false);
+    canvas.SelectNode(QStringLiteral("tone"));
+    CHECK(traceOrNull->isEnabled() == true);
+    CHECK(traceOrNull->text() == QStringLiteral("Trace"));
+    upstream.trigger();
+    CHECK(traceOrNull->text() == QStringLiteral("Trace: Upstream"));
+    CHECK(traceOrNull->isChecked() == true);
+    clear.trigger();
+    CHECK(traceOrNull->text() == QStringLiteral("Trace"));
+    CHECK(traceOrNull->isChecked() == false);
+    // With no report, diagnostic stepping takes no room.
+    CHECK(FindAction(canvas, QStringLiteral("renderGraphNextDiagnostic")).isVisible() == false);
+    CHECK(FindAction(canvas, QStringLiteral("renderGraphPreviousDiagnostic")).isVisible() == false);
+}
+
+TEST_CASE("Properties summarizes the graph at rest and connects the selection through port pickers",
+          "[editor][render-graph][navigation][properties]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootFile())) == true);
+    workspace.SetLivePreview(false);
+    QWidget side;
+    QVBoxLayout* layout = new QVBoxLayout(&side);
+    layout->addWidget(workspace.TakeInspectorPanel(&side));
+    side.resize(300, 700);
+    side.show();
+    workspace.show();
+    QCoreApplication::processEvents();
+    QLabel* summaryOrNull = side.findChild<QLabel*>(QStringLiteral("renderGraphSummary"));
+    QWidget* connectionsOrNull = side.findChild<QWidget*>(QStringLiteral("renderGraphConnections"));
+    QWidget* nodeToolsOrNull = side.findChild<QWidget*>(QStringLiteral("renderGraphNodeTools"));
+    QComboBox* fromOrNull = side.findChild<QComboBox*>(QStringLiteral("renderGraphConnectFrom"));
+    QComboBox* toOrNull = side.findChild<QComboBox*>(QStringLiteral("renderGraphConnectTo"));
+    QPushButton* connectOrNull = side.findChild<QPushButton*>(QStringLiteral("renderGraphConnect"));
+    QTableWidget* edgesOrNull = side.findChild<QTableWidget*>(QStringLiteral("renderGraphEdges"));
+    REQUIRE(summaryOrNull != nullptr);
+    REQUIRE(connectionsOrNull != nullptr);
+    REQUIRE(nodeToolsOrNull != nullptr);
+    REQUIRE(fromOrNull != nullptr);
+    REQUIRE(toOrNull != nullptr);
+    REQUIRE(connectOrNull != nullptr);
+    REQUIRE(edgesOrNull != nullptr);
+    CHECK(summaryOrNull->isVisible() == true);
+    CHECK(summaryOrNull->text().startsWith(QStringLiteral("5 nodes · 3 connections")) == true);
+    CHECK(summaryOrNull->text().contains(QStringLiteral("Outputs: display")) == true);
+    CHECK(summaryOrNull->text().contains(QStringLiteral("Exports: output, branch")) == true);
+    CHECK(connectionsOrNull->isVisible() == false);
+    CHECK(nodeToolsOrNull->isVisible() == false);
+    REQUIRE(workspace.SelectNode(GetRootFile(), GetConfiguration(), QStringLiteral("unused")) == true);
+    QCoreApplication::processEvents();
+    CHECK(summaryOrNull->isVisible() == false);
+    CHECK(connectionsOrNull->isVisible() == true);
+    CHECK(nodeToolsOrNull->isVisible() == true);
+    CHECK(edgesOrNull->rowCount() == 0);
+    CHECK(fromOrNull->isEditable() == false);
+    CHECK(toOrNull->isEditable() == false);
+    // The selection's own ports lead; every entry is a real endpoint.
+    CHECK(fromOrNull->currentText() == QStringLiteral("unused.texture"));
+    CHECK(fromOrNull->findText(QStringLiteral("texture.texture")) >= 0);
+    CHECK(toOrNull->findText(QStringLiteral("tone.color")) >= 0);
+    CHECK(toOrNull->findText(QStringLiteral("#outputs.display")) >= 0);
+    toOrNull->setCurrentIndex(toOrNull->findText(QStringLiteral("branch.texture")));
+    connectOrNull->click();
+    QCoreApplication::processEvents();
+    REQUIRE(workspace.SelectNode(GetRootFile(), GetConfiguration(), QStringLiteral("unused")) == true);
+    QCoreApplication::processEvents();
+    REQUIRE(edgesOrNull->rowCount() == 1);
+    CHECK(edgesOrNull->item(0, 0)->text() == QStringLiteral("unused.texture"));
+    CHECK(edgesOrNull->item(0, 1)->text() == QStringLiteral("branch.texture"));
+    // Without a preview failure there is nothing to point at in the Error List.
+    CHECK(workspace.IsRenderProblemInErrorList() == false);
+    QToolButton* chipOrNull = workspace.findChild<QToolButton*>(QStringLiteral("renderGraphProblemChip"));
+    REQUIRE(chipOrNull != nullptr);
+    CHECK(chipOrNull->isVisible() == false);
 }

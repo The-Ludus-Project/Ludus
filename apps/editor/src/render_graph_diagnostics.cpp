@@ -222,8 +222,13 @@ void RenderGraphDiagnostics::refreshControls()
         freshness = QStringLiteral("Cancelled");
     }
     const qsizetype index = mAvailableRows.indexOf(mCurrentRow);
-    mState->setText(
-        QStringLiteral("%1/%2 canvas · %3").arg(index < 0 ? 0 : index + 1).arg(mAvailableRows.size()).arg(freshness));
+    // Position only when there is somewhere to step; no report at all says nothing rather than "No report".
+    mState->setText(mAvailableRows.isEmpty() == false
+                        ? QStringLiteral("%1/%2 canvas · %3")
+                              .arg(index < 0 ? 0 : index + 1)
+                              .arg(mAvailableRows.size())
+                              .arg(freshness)
+                        : (mFreshness == RenderGraphDiagnosticFreshness::None ? QString() : freshness));
     mState->setToolTip(
         QStringLiteral("%1. Report: %2 sources, revision %3. Navigation never changes document undo.")
             .arg(freshness,

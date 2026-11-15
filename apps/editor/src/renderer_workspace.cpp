@@ -4008,18 +4008,36 @@ void RendererWorkspace::renderEdges()
     {
         outputNames.append(output.toObject().value(QStringLiteral("id")).toString());
     }
-    mGraphSummary->setText(
-        QStringLiteral("%1 · %2 · %3\n%4%5\n\nSelect a node to edit its fields and connections, or right-click the "
-                       "canvas to add one.")
+    QStringList exportNames;
+    for (const QJsonValueConstRef node : nodes)
+    {
+        if (node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("Export"))
+        {
+            exportNames.append(node.toObject().value(QStringLiteral("id")).toString());
+        }
+    }
+    // Plain counts first, then what the configuration produces, then the next step.
+    QStringList summary{
+        QStringLiteral("%1 · %2")
             .arg(nodes.size() == 1 ? QStringLiteral("1 node") : QStringLiteral("%1 nodes").arg(nodes.size()))
             .arg(edges.size() == 1 ? QStringLiteral("1 connection")
-                                   : QStringLiteral("%1 connections").arg(edges.size()))
-            .arg(inputs.size() == 1 ? QStringLiteral("1 input") : QStringLiteral("%1 inputs").arg(inputs.size()))
-            .arg(outputNames.isEmpty() == true ? QStringLiteral("No outputs")
-                                               : QStringLiteral("Outputs: ") + outputNames.join(QStringLiteral(", ")))
-            .arg(mSelectedConfiguration.isEmpty() == true
-                     ? QString()
-                     : QStringLiteral(" (configuration %1)").arg(mSelectedConfiguration)));
+                                   : QStringLiteral("%1 connections").arg(edges.size()))};
+    if (inputs.isEmpty() == false)
+    {
+        summary.append(QStringLiteral("Inputs: %1").arg(inputs.size()));
+    }
+    if (outputNames.isEmpty() == false)
+    {
+        summary.append(QStringLiteral("Outputs: ") + outputNames.join(QStringLiteral(", ")));
+    }
+    if (exportNames.isEmpty() == false)
+    {
+        summary.append(QStringLiteral("Exports: ") + exportNames.join(QStringLiteral(", ")));
+    }
+    summary.append(QString());
+    summary.append(QStringLiteral("Select a node to edit its fields and connections, or right-click the canvas to "
+                                  "add one."));
+    mGraphSummary->setText(summary.join(QLatin1Char('\n')));
     if (hasSelection == false)
     {
         // Pickers and the filtered list are built only for a selection: no per-node port lookups at rest.
@@ -4101,7 +4119,8 @@ void RendererWorkspace::renderEdges()
             outPicker.insertSeparator(outPicker.count());
         }
         outPicker.addItems(rest);
-        const int32 index = outPicker.findText(previous);
+        // An empty previous choice would match the separator, which has no text.
+        const int32 index = previous.isEmpty() == true ? -1 : outPicker.findText(previous);
         outPicker.setCurrentIndex(index >= 0 ? index : (outPicker.count() > 0 ? 0 : -1));
     };
     fill(*mEdgeFrom, selectedProducers, otherProducers);
