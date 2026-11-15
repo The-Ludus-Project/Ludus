@@ -271,7 +271,7 @@ TEST_CASE("Hair cards store strand controls in LUSCN v13 and reflect as metallic
     CHECK(isValidWith([](format::HairCardParameters& inoutValue) { inoutValue.StrandDirectionDegrees = 181; }) ==
           false);
     CHECK(isValidWith([](format::HairCardParameters& inoutValue) {
-              inoutValue.StrandDirectionDegrees = __builtin_nanf("");
+              inoutValue.StrandDirectionDegrees = std::numeric_limits<format::float32>::quiet_NaN();
           }) == false);
     CHECK(isValidWith([](format::HairCardParameters& inoutValue) {
               inoutValue.PrimaryShiftDegrees = format::MAX_HAIR_CARD_SHIFT_DEGREES + 1;
@@ -280,8 +280,9 @@ TEST_CASE("Hair cards store strand controls in LUSCN v13 and reflect as metallic
               inoutValue.SecondaryShiftDegrees = -format::MAX_HAIR_CARD_SHIFT_DEGREES - 1;
           }) == false);
     CHECK(isValidWith([](format::HairCardParameters& inoutValue) { inoutValue.PrimaryWeight = -0.5F; }) == false);
-    CHECK(isValidWith([](format::HairCardParameters& inoutValue) { inoutValue.SecondaryWeight = __builtin_inff(); }) ==
-          false);
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) {
+              inoutValue.SecondaryWeight = std::numeric_limits<format::float32>::infinity();
+          }) == false);
     // Unused slots keep their defaults so equal controls cook to equal bytes.
     format::MaterialScattering changed = scattering;
     changed.K[2] = 1;

@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <limits>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -226,7 +228,8 @@ TEST_CASE("Hair-card exponents and fallback frames are bounded and deterministic
 {
     CHECK(renderer::ComputeHairCardExponent(1) == renderer::MIN_HAIR_CARD_EXPONENT);
     CHECK(renderer::ComputeHairCardExponent(0.045F) == renderer::MAX_HAIR_CARD_EXPONENT);
-    CHECK(renderer::ComputeHairCardExponent(__builtin_nanf("")) == renderer::MIN_HAIR_CARD_EXPONENT);
+    CHECK(renderer::ComputeHairCardExponent(std::numeric_limits<float32>::quiet_NaN()) ==
+          renderer::MIN_HAIR_CARD_EXPONENT);
     const float32 alpha = ROUGHNESS * ROUGHNESS;
     CHECK(renderer::ComputeHairCardExponent(ROUGHNESS) == Catch::Approx(2 / (alpha * alpha) - 2));
     // A vertical card facing +Z takes +X as its tangent, so ninety degrees runs up the card.
