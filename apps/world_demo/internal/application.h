@@ -4,6 +4,7 @@
 #include "world.h"
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/hosted_recorder.h>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/input/keyboard.h>
 #include <ludus/platform/base/window.h>
@@ -18,6 +19,11 @@ enum class AppState : uint8
     Failed
 };
 /// The World-demo player: one window, one explicit RHI device and the engine Renderer.
+///
+/// In a hosted window (`LUDUS_HOSTED_WINDOW`, Play in the editor's World viewport) the
+/// device is created with GPU timing and a HostedGpuRecorder answers the editor's GPU
+/// recordings with the Renderer's named viewport passes. The game never arms pass timing
+/// itself; the recorder owns it.
 class Application final
 {
 public:
@@ -64,6 +70,9 @@ public:
     }
 
 private:
+    [[nodiscard]] AppState playFrame(const graphics::rhi::StartupInfo& startup,
+                                     bool isWindowVisible,
+                                     foundation::time::Timestamp now) noexcept;
     [[nodiscard]] bool render(const platform::browser::WindowState& window) noexcept;
     void browserInput(const platform::browser::WindowState& window) noexcept;
     input::InputSystem mInput;
@@ -74,6 +83,8 @@ private:
     graphics::rhi::SurfaceHandle mSurface;
     graphics::rhi::Backend mSelectedBackend = graphics::rhi::Backend::Vulkan;
     FrameRenderer mFrameRenderer;
+    /// Attached only in a hosted window; a detached recorder ignores every frame.
+    graphics::rhi::HostedGpuRecorder mRecorder;
     bool mIsRendererReady = false;
     LoopPacing mPacing;
     foundation::time::Timestamp mPresentReturn;

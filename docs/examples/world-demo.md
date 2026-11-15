@@ -346,6 +346,21 @@ authored horizontal bounds visible. The item and view builders have no window,
 device or Qt dependency, so an Editor view of a World-demo World can draw the same
 geometry from the same extraction.
 
+### Record GPU passes from the Editor
+
+When the Editor plays the game in its World viewport (**Play saved World** with
+**Play mode** set to **In viewport**), the game runs in a hosted window. Only then does it
+create its device with GPU timing and attach a `rhi::HostedGpuRecorder` that
+reports as `ludus_world_demo`. Recording **GPU** in the
+[Profiling window](../development/editor-workspace.md#recording-cpu-and-gpu-profiling)
+while it plays saves a trace of the game's own passes:
+`Viewport/Scene`, `Viewport/Composite` and `Viewport/Present`. Its process is
+named after the game and its process ID. A standalone window pays nothing for
+this: it has no recorder and no timing queries. The recorder owns pass timing
+while it records, and the game never arms it. The
+[Hosted recording](../architecture/editor-gui-systems.md#hosted-recording)
+contract describes coverage, disconnection and the export.
+
 Native tests cover identity retirement, stale/foreign handles, sparse removal,
 compiled and JSON definitions, canonical round trips, candidate ownership,
 input/catch-up/pause, commands, combat/contacts, completions and replay. The

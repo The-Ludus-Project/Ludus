@@ -899,7 +899,9 @@ While a game plays in the World viewport, the window's **Target** row names it
 and its process, and **GPU** records the game instead of the editor viewport.
 The game measures its own passes, so it must render through a
 `rhi::HostedGpuRecorder` with GPU timing enabled and name its passes with
-`GpuScope`. A game without a recorder fails the recording with that reason.
+`GpuScope`. The [World-demo game](../examples/world-demo.md#record-gpu-passes-from-the-editor)
+does both, so Play it and record **GPU** to see its viewport passes. A game
+without a recorder fails the recording with that reason.
 **CPU** still records the editor; **Both** is refused while a game plays. The
 saved trace belongs to the game: Perfetto names its GPU process after the game
 and its process ID, and `ludusHostedProducer` in the JSON lists the recorded

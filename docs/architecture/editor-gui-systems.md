@@ -1242,6 +1242,13 @@ side of the [graphics-debugging P2 phase](graphics-debugging.md#perfetto-recordi
   covered frame; Stop's reports the last one and the coverage counts. Stop waits
   up to eight frames for a batch already measuring a covered frame, then reports
   it unresolved.
+- **Games.** The World-demo game attaches a recorder only when it runs in a
+  hosted window, and creates only that device with GPU timing. It calls the
+  recorder's `BeginFrame` once its device is ready and before the Renderer opens
+  the frame, then `EndFrame` with whether the frame was presented. It never arms
+  pass timing itself. Its samples are the Renderer's `RasterViewport` scopes:
+  `Viewport/Scene`, `Viewport/Composite` and `Viewport/Present`. A recorder that
+  cannot attach leaves the game playing and its Starts answered Unsupported.
 - **Frame ownership.** Recording messages travel on the same ordered stream as
   frames but never take the 1 KiB of send room the window keeps for Images and
   Present, so a recording cannot make Present report Busy sooner. A sample that
@@ -1276,7 +1283,11 @@ delayed samples of an earlier recording and the surface send reserve. The
 editor's `[profiling][hosted]` cases script the channel to check admission,
 refusal and export. The `[native-hosted-frames]` Play case records the RHI test
 producer's named surface pass. It kills the game after a sample and checks the
-incomplete export, then reconnects and records a complete second trace.
+incomplete export, then reconnects and records a complete second trace. The
+`[.play-native]` World-demo recording case plays the World-demo game in the
+World viewport, records it, and checks the three viewport pass names, the game's
+process identifier and producer name, and a complete export with an
+acknowledged Stop.
 
 ### Separate window mode
 

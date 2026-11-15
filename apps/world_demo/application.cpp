@@ -1,4 +1,5 @@
 #include "internal/application.h"
+#include "internal/hosted_producer.h"
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
@@ -102,20 +103,27 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
         return false;
     }
     mWindow->AttachKeyboardSink({ .OnRecord = Record, .OnReset = Reset, .UserData = &mInput });
+    const platform::NativeWindowInfo native = mWindow->GetNativeWindowInfo();
+    // Only the editor records a hosted game, so only a hosted game pays for timing queries.
+    const bool isHosted = native.System == platform::WindowSystem::Hosted;
     rhi::DeviceDescription description;
     description.Selection = selection;
     description.Required.PortableRaster = true;
-    const rhi::DeviceStatus status = rhi::CreateDevice({ .Name = "World reference", .Version = 1 },
-                                                       mWindow->GetNativeWindowInfo(),
-                                                       description,
-                                                       mDevice,
-                                                       mSurface);
+    description.EnableGpuTiming = isHosted;
+    const rhi::DeviceStatus status =
+        rhi::CreateDevice({ .Name = "World reference", .Version = 1 }, native, description, mDevice, mSurface);
     mHasDevice = status == rhi::DeviceStatus::Ready || status == rhi::DeviceStatus::Pending;
     if (mHasDevice == false)
     {
         Shutdown();
         mState = AppState::Failed;
         return false;
+    }
+    // A game that cannot answer recordings still plays; the editor reports its Starts as unsupported.
+    if (isHosted == true &&
+        mRecorder.Attach(native, {HOSTED_PRODUCER_NAME.data(), HOSTED_PRODUCER_NAME.size()}) == false)
+    {
+        LUDUS_LOG_WARN(logging::LOG_CORE, "Hosted GPU recorder could not attach; editor recordings are unavailable");
     }
     if (mSession.RequestLoad(levelBytes != nullptr ? std::string_view(levelBytes, levelSize) : ExampleLevel()).Error !=
         LevelError::None)
@@ -129,6 +137,8 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
 }
 void Application::Shutdown() noexcept
 {
+    // A recording in progress ends without a Stop acknowledgement; the editor marks it incomplete.
+    mRecorder.Detach();
     // Renderer handles must be released before the device is destroyed.
     mFrameRenderer.Reset();
     mIsRendererReady = false;
@@ -300,7 +310,17 @@ AppState Application::Frame() noexcept
         mState = AppState::Failed;
         return mState;
     }
-    const rhi::StartupInfo& startup = device.Startup;
+    // Between frames: answer the editor's recording requests and arm the frame presented below.
+    // A Shutdown during the frame detaches the recorder, which then ignores EndFrame.
+    mRecorder.BeginFrame(mDevice);
+    const uint64 presentedBefore = mPresentedFrames;
+    const AppState state = playFrame(device.Startup, isWindowVisible, now);
+    mRecorder.EndFrame(mPresentedFrames != presentedBefore);
+    return state;
+}
+AppState
+Application::playFrame(const rhi::StartupInfo& startup, bool isWindowVisible, foundation::time::Timestamp now) noexcept
+{
     mSelectedBackend = startup.SelectedBackend;
     const rhi::RasterStatus prepared = mFrameRenderer.Prepare(mDevice);
     if (mIsRendererReady == false && prepared == rhi::RasterStatus::Ready &&
