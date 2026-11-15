@@ -115,11 +115,12 @@ TEST_CASE("D6c attachment depth is sampled through a depth view; stencil loads s
     CHECK(rhi::Destroy(owner.Device, texture) == rhi::RasterStatus::Ready);
 }
 
-TEST_CASE("D6c fragment stages read structured storage buffers while storage writes stay in compute",
+TEST_CASE("D6c fragment stages read structured storage buffers and R12b admits fragment storage writes",
           "[rhi][windows][d6c]")
 {
     // The deferred lighting resolve reads its mesh-light words and LTC table as structured SRVs
-    // from a fragment stage. The portable contract admits that read; writes remain compute-only.
+    // from a fragment stage. The portable contract admits that read; R12b also admits fragment
+    // storage writes because Direct3D 12 reports HasFragmentStorageWrites.
     rhi::Shutdown();
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
@@ -157,8 +158,12 @@ TEST_CASE("D6c fragment stages read structured storage buffers while storage wri
     REQUIRE(rhi::CreateBindingSet(device, layout, {&resource, 1}, set) == rhi::RasterStatus::Ready);
     rhi::RasterBinding write = read;
     write.Kind = rhi::RasterBindingKind::StorageReadWrite;
-    rhi::BindingLayoutHandle rejected;
-    CHECK(rhi::CreateBindingLayout(device, {&write, 1}, rejected) == rhi::RasterStatus::InvalidDescription);
+    rhi::DeviceInfo information;
+    REQUIRE(rhi::GetDeviceInfo(device, information) == rhi::DeviceStatus::Ready);
+    REQUIRE(information.Profile.RasterStorage.HasFragmentStorageWrites == true);
+    rhi::BindingLayoutHandle writeLayout;
+    CHECK(rhi::CreateBindingLayout(device, {&write, 1}, writeLayout) == rhi::RasterStatus::Ready);
+    CHECK(rhi::Destroy(device, writeLayout) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, set) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, layout) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, buffer) == rhi::RasterStatus::Ready);

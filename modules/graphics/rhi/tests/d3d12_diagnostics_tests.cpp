@@ -128,7 +128,8 @@ TEST_CASE("Direct3D 12 frame and pass timestamps follow submission fences", "[rh
         rhi::GpuScopeDescription scope;
         REQUIRE(rhi::MakeGpuScope(17, {SCOPE_NAME, sizeof(SCOPE_NAME) - 1}, scope, 2) == true);
         REQUIRE(rhi::BeginGpuScope(device, scope) == rhi::RasterStatus::Ready);
-        CHECK(rhi::BeginGpuScope(device, scope) == rhi::RasterStatus::InvalidState);
+        // G0 scopes nest; timing stays with the outermost scope and submission closes both.
+        CHECK(rhi::BeginGpuScope(device, scope) == rhi::RasterStatus::Ready);
         REQUIRE(rhi::BeginRasterPass(device, {}) == rhi::RasterStatus::Ready);
         // Submission closes the last physical pass and its enclosing scope.
         gate.Hold();
@@ -190,7 +191,9 @@ TEST_CASE("Direct3D 12 frame and pass timestamps follow submission fences", "[rh
     REQUIRE(rhi::MakeGpuScope(1, {SCOPE_NAME, sizeof(SCOPE_NAME) - 1}, annotation) == true);
     {
         const rhi::GpuScope scope(session.Device, annotation);
-        CHECK(rhi::BeginGpuScope(session.Device, annotation) == rhi::RasterStatus::InvalidState);
+        // Annotation-only scopes nest without timing as well.
+        CHECK(rhi::BeginGpuScope(session.Device, annotation) == rhi::RasterStatus::Ready);
+        CHECK(rhi::EndGpuScope(session.Device) == rhi::RasterStatus::Ready);
     }
     REQUIRE(rhi::EndFrame(session.Device) == rhi::DeviceStatus::Ready);
 }
