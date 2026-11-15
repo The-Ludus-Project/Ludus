@@ -1301,7 +1301,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     const QLabel* modelOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Model"));
     REQUIRE(modelOrNull != nullptr);
     CHECK(modelOrNull->text().isEmpty() == false);
-    CHECK(workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Reflectance (linear RGB)")) != nullptr);
+    CHECK(workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Reflectance")) != nullptr);
     Type(Field(workspace, QStringLiteral("transform/x")), QStringLiteral("0.25"));
     REQUIRE(workspace.Apply());
     drain();
@@ -5049,7 +5049,11 @@ Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer in
     CHECK(label(QStringLiteral("Lobe 2")).startsWith(QStringLiteral("Conductor")) == true);
     CHECK(label(QStringLiteral("Lobe 3")) == QStringLiteral("Cosine power 12"));
     CHECK(label(QStringLiteral("Capabilities")) == QStringLiteral("Continuous reflection, fixed three-value sampler"));
-    CHECK(label(QStringLiteral("Metallic (program input)")) == QStringLiteral("0.7"));
+    CHECK(label(QStringLiteral("Metallic")) == QStringLiteral("0.7"));
+    // The short label leaves its qualifier to the tooltip.
+    const QLabel* metallicOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Metallic"));
+    REQUIRE(metallicOrNull != nullptr);
+    CHECK(metallicOrNull->toolTip().contains(QStringLiteral("an input of the closure program")) == true);
 
     // Map the unsupported PBRT material to the imported program.
     const QStringList unsupported = findObjects(workspace, format::MaterialModel::Unresolved);

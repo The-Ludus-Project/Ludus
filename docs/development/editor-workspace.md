@@ -699,8 +699,11 @@ create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Dir
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
-colour, intensity, range and spot angles, then **Apply Changes**. Save the World
-to retain the objects; duplication and deletion use the regular entity commands.
+colour, intensity, range and spot angles, then **Apply Changes**. Every entity's
+Transform, like a scene instance's, shows Position, Rotation and Scale as one
+X Y Z row each with four significant digits, such as 1.878; the field's tooltip
+gives the stored value, and **Apply Changes** keeps it unless you edit that field.
+Save the World to retain the objects; duplication and deletion use the regular entity commands.
 Lights start two metres above and in front of the origin, aimed down 45 degrees.
 **Sun** is a directional light of 10 lux, placed and aimed as described in
 [Lighting a World that renders black](#lighting-a-world-that-renders-black).
@@ -2021,8 +2024,8 @@ example, use `tests/scenes/materials/closure-program-block.luscene.json`. Select
 the program's object. The **Material** group shows **Closure program** as its
 model, then one row per lobe with its operation and parameters, the size of
 the weight and roughness program, and the capabilities that pass requirements
-test. **Metallic (program input)** and **Roughness (program input)** are the
-values the program reads. The raster viewport draws them as a
+test. **Metallic** and **Roughness** are the values the program reads; their
+tooltips say so. The raster viewport draws them as a
 metallic-roughness approximation. The reference paths, Wave Tracing and
 Metropolis evaluate the program itself.
 

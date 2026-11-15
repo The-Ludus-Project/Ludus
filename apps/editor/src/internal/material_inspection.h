@@ -55,13 +55,16 @@ inline const CoatingField COATING_FIELDS[] = {
 /// One read-only row of the World inspector's Material group.
 struct MaterialPropertyRow final
 {
-    QString Label;                   ///< Property name, with its unit or space where it has one.
+    QString Label;                   ///< Short property name; a short unit such as "(lm)" stays, the rest is Detail.
     QString Value;                   ///< Displayed value; colours are comma-separated linear RGB.
     bool IsCoatingParameter = false; ///< Editable separately in an imported coated-diffuse slot.
     /// Display colour of a colour row, shown as a swatch beside Value; invalid for other rows.
     QColor Swatch{};
     /// Small preview of a texture row, shown beside Value; null for other rows and for missing textures.
     QImage Thumbnail{};
+    /// What the short Label leaves out (its colour space, unit or meaning) and, for a texture, which texture it is;
+    /// shown as the row's tooltip. Empty when Label and Value say everything.
+    QString Detail{};
 };
 
 /// Edge of a texture thumbnail in pixels; the longer side of the texture is scaled to it.
