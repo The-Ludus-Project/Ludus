@@ -1547,7 +1547,9 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
     }
     if (primitive.Get("targets").Valid() == true)
     {
-        warn(codes::ANIMATION_IGNORED, "morph targets ignored; the base geometry is imported");
+        warn(codes::ANIMATION_IGNORED,
+             "Morph targets are ignored. The importer uses the base geometry. "
+             "For a still pose, bake the desired pose to a static mesh and re-export it.");
     }
     const JsonValue primitiveExtensions = primitive.Get("extensions");
     const bool isDraco =

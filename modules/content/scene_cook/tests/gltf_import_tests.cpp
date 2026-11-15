@@ -456,6 +456,53 @@ TEST_CASE("glTF JSON with external files and the equivalent GLB cook identical b
     CHECK(jpegReport.find("\"texture_width\": 8") != std::string_view::npos);
 }
 
+TEST_CASE("glTF morph fallback reports how to retain a static pose", "[scene_cook][gltf]")
+{
+    ScratchDirectory scratch;
+    const std::string source = scratch.GetPath("morph.gltf");
+    // The default weight is 1 and the target raises the third vertex out of the base triangle's plane.
+    WriteFile(source, R"gltf({
+        "asset":{"version":"2.0"},
+        "scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+        "meshes":[{"weights":[1],"primitives":[{"attributes":{"POSITION":0},"targets":[{"POSITION":1}]}]}],
+        "buffers":[{"byteLength":72,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/"}],
+        "bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36}],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[0,0,1]}
+        ]
+    })gltf");
+
+    for (const bool isDryRun : {true, false})
+    {
+        CAPTURE(isDryRun);
+        BestEffortOptions options;
+        options.IsDryRun = isDryRun;
+        BestEffortResult result;
+        CookError error;
+        REQUIRE(ImportGltfBestEffort(source, options, result, error) == true);
+        const std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
+        CHECK(report.find("\"code\": \"ANIMATION_IGNORED\"") != std::string_view::npos);
+        CHECK(report.find("Morph targets are ignored. The importer uses the base geometry.") != std::string_view::npos);
+        CHECK(report.find("bake the desired pose to a static mesh and re-export it") != std::string_view::npos);
+
+        if (isDryRun == true)
+        {
+            CHECK(result.Bundle.IsEmpty() == true);
+            continue;
+        }
+        ludus::resources::SceneDefinition decoded;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+                ludus::resources::Status::Ok);
+        REQUIRE(decoded.Meshes.GetSize() == 1);
+        REQUIRE(decoded.Meshes[0].Positions.GetSize() == 3);
+        for (const math::Vector3& positionMesh : decoded.Meshes[0].Positions)
+        {
+            CHECK(positionMesh.Z == 0);
+        }
+    }
+}
+
 TEST_CASE("glTF extension policy: required unsupported fails, optional is reported", "[scene_cook][gltf]")
 {
     SceneIr scene;
