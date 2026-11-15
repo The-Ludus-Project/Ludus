@@ -3344,6 +3344,8 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
 
     driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
     CHECK(timeOrNull->isHidden() == false);
+    // The World's first Earth preset starts at the current time; pin the epoch for a deterministic sample.
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-01T12:00:00Z"), Qt::ISODate));
     REQUIRE(reopened.Apply() == true);
     REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
     REQUIRE(scene.AuthoredLights.Count == 1);
@@ -3386,11 +3388,196 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     CHECK(saved.Draft() == reopened.Document().Draft());
     const QJsonObject savedLight =
         saved.Entity(id).value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
-    CHECK(savedLight.value(WORLD_CELESTIAL_TIME).toDouble() == 0.5);
+    const QJsonObject savedObserver = saved.Draft().value(WORLD_EARTH_OBSERVER).toObject();
+    CHECK(savedObserver.value(WORLD_CELESTIAL_TIME).toDouble() == 0.5);
+    CHECK(savedObserver.value(WORLD_CELESTIAL_LATITUDE).toDouble() == 0);
+    CHECK(savedObserver.value(WORLD_CELESTIAL_LONGITUDE).toDouble() == 0);
+    // The World stores the Earth date, time and location once, not on the light.
+    CHECK(savedLight.contains(WORLD_CELESTIAL_TIME) == false);
     CHECK(savedLight.contains(WORLD_CELESTIAL_LATITUDE) == false);
     CHECK(savedLight.contains(WORLD_CELESTIAL_LONGITUDE) == false);
     workspace.StopPreview();
     reopened.StopPreview();
+}
+
+TEST_CASE("Earth lights share one World date, time and location that starts at the current time",
+          "[editor][world][celestial]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("shared-earth.world.json"))) == true);
+    QAction* sunActionOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    QAction* atmosphereActionOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateAtmosphere"));
+    REQUIRE(sunActionOrNull != nullptr);
+    REQUIRE(atmosphereActionOrNull != nullptr);
+    sunActionOrNull->trigger();
+    const QJsonObject sunEntity =
+        workspace.Document().Draft().value(QStringLiteral("entities")).toArray().last().toObject();
+    const QString sunId = workspace.Document().GetEntityKey(sunEntity);
+    const QString sunName = sunEntity.value(QStringLiteral("name")).toString();
+    atmosphereActionOrNull->trigger();
+    const QString atmosphereId = workspace.Document().GetEntityKey(
+        workspace.Document().Draft().value(QStringLiteral("entities")).toArray().last().toObject());
+
+    // A Sun with an authored direction uses the Atmosphere's disk radius.
+    REQUIRE(workspace.SelectEntity(atmosphereId) == true);
+    QComboBox* atmosphereSunOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:atmosphere/sun"));
+    REQUIRE(atmosphereSunOrNull != nullptr);
+    atmosphereSunOrNull->setCurrentIndex(atmosphereSunOrNull->findData(sunId));
+    REQUIRE(workspace.Apply() == true);
+    QWidget* radiusOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldField:atmosphere/solarRadius"));
+    QLabel* skyOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldAtmosphereEarthObserver"));
+    REQUIRE(radiusOrNull != nullptr);
+    REQUIRE(skyOrNull != nullptr);
+    CHECK(radiusOrNull->isVisibleTo(&workspace) == true);
+    CHECK(skyOrNull->isVisibleTo(&workspace) == false);
+
+    // The World's first Earth preset starts at the current UTC time.
+    const ludus::foundation::float64 before = WorldEarthTimeField::GetCurrentDaysSinceEpoch();
+    REQUIRE(workspace.SelectEntity(sunId) == true);
+    QComboBox* roleOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    QLabel* sharedOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldEarthSharedObserver"));
+    REQUIRE(sharedOrNull != nullptr);
+    CHECK(sharedOrNull->isVisibleTo(&workspace) == true);
+    CHECK(sharedOrNull->text().startsWith(QStringLiteral("Every Earth Sun and Earth Moon light")) == true);
+    REQUIRE(workspace.Apply() == true);
+    const ludus::foundation::float64 after = WorldEarthTimeField::GetCurrentDaysSinceEpoch();
+    const QJsonObject observer = workspace.Document().Draft().value(WORLD_EARTH_OBSERVER).toObject();
+    const ludus::foundation::float64 sharedDays = observer.value(WORLD_CELESTIAL_TIME).toDouble();
+    CHECK(sharedDays >= before);
+    CHECK(sharedDays <= after);
+
+    // A second Earth light shows and keeps the shared instant instead of starting its own clock.
+    sunActionOrNull->trigger();
+    const QJsonObject moonEntity =
+        workspace.Document().Draft().value(QStringLiteral("entities")).toArray().last().toObject();
+    const QString moonId = workspace.Document().GetEntityKey(moonEntity);
+    REQUIRE(workspace.SelectEntity(moonId) == true);
+    roleOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    driverOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    WorldEarthTimeField* timeOrNull =
+        workspace.findChild<WorldEarthTimeField*>(QStringLiteral("worldField:light/celestialTime"));
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(timeOrNull != nullptr);
+    CHECK(timeOrNull->GetDaysSinceEpoch() == sharedDays);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Earth Moon"));
+    sharedOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldEarthSharedObserver"));
+    REQUIRE(sharedOrNull != nullptr);
+    CHECK(sharedOrNull->text().startsWith(QStringLiteral("Shared with %1.").arg(sunName)) == true);
+    REQUIRE(workspace.Apply() == true);
+    CHECK(workspace.Document().Draft().value(WORLD_EARTH_OBSERVER).toObject() == observer);
+
+    // Changing the date on the Moon changes it for the Sun and the night sky.
+    QDateTimeEdit* dateTimeOrNull = timeOrNull->findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    REQUIRE(dateTimeOrNull != nullptr);
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-02T00:00:00Z"), Qt::ISODate));
+    REQUIRE(workspace.Apply() == true);
+    CHECK(workspace.Document().Draft().value(WORLD_EARTH_OBSERVER).toObject().value(WORLD_CELESTIAL_TIME).toDouble() ==
+          0.5);
+    for (const QJsonValue entity : workspace.Document().Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject light =
+            entity.toObject().value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+        CHECK(light.contains(WORLD_CELESTIAL_TIME) == false);
+    }
+
+    // The Earth Sun preset sets its own disk size, and the Atmosphere names the shared instant.
+    REQUIRE(workspace.SelectEntity(atmosphereId) == true);
+    radiusOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldField:atmosphere/solarRadius"));
+    skyOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldAtmosphereEarthObserver"));
+    REQUIRE(radiusOrNull != nullptr);
+    REQUIRE(skyOrNull != nullptr);
+    CHECK(radiusOrNull->isVisibleTo(&workspace) == false);
+    CHECK(skyOrNull->isVisibleTo(&workspace) == true);
+    CHECK(skyOrNull->text().contains(QStringLiteral("2000-01-02 00:00:00 UTC")) == true);
+    workspace.StopPreview();
+}
+
+TEST_CASE("Older Worlds keep per-light Earth observers until an Earth light edit makes them shared",
+          "[editor][world][celestial]")
+{
+    using namespace ludus::foundation;
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    const WorldSunPlacement placement
+    {
+        .RotationDegrees = {-90, 0, 0},
+        .IlluminanceLux = 10,
+    };
+    QString sunId;
+    QString moonId;
+    REQUIRE(CreateWorldSun(document, entropy, placement, sunId, error) == true);
+    REQUIRE(CreateWorldSun(document, entropy, placement, moonId, error) == true);
+
+    // Write a World as an earlier editor saved it: each Earth light holds its own observer.
+    QJsonObject legacy = document.Draft();
+    QJsonArray entities = legacy.value(QStringLiteral("entities")).toArray();
+    for (qsizetype i = 0; i < entities.size(); ++i)
+    {
+        QJsonObject entity = entities[i].toObject();
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        QJsonObject light = components.value(QStringLiteral("light")).toObject();
+        const bool isSun = document.GetEntityKey(entity) == sunId;
+        light.insert(WORLD_CELESTIAL_ROLE, WORLD_CELESTIAL_DYNAMIC);
+        light.insert(WORLD_CELESTIAL_DRIVER, isSun == true ? WORLD_CELESTIAL_EARTH_SUN : WORLD_CELESTIAL_EARTH_MOON);
+        light.insert(WORLD_CELESTIAL_TIME, isSun == true ? 1.0 : 2.0);
+        light.insert(WORLD_CELESTIAL_LATITUDE, isSun == true ? 10.0 : 20.0);
+        components.insert(QStringLiteral("light"), light);
+        entity.insert(QStringLiteral("components"), components);
+        entities[i] = entity;
+    }
+    legacy.insert(QStringLiteral("entities"), entities);
+    WorldDocument reopened;
+    REQUIRE(reopened.LoadSchema(schema, error) == true);
+    REQUIRE(reopened.Load(QJsonDocument(legacy).toJson(), error) == true);
+    CHECK(reopened.Draft() == legacy);
+    const auto getLight = [&reopened](const QString& id) {
+        return reopened.Entity(id)
+            .value(QStringLiteral("components"))
+            .toObject()
+            .value(QStringLiteral("light"))
+            .toObject();
+    };
+    CHECK(MakeWorldLightValues(getLight(sunId), reopened.Draft()).value(WORLD_CELESTIAL_TIME).toDouble() == 1);
+    CHECK(MakeWorldLightValues(getLight(moonId), reopened.Draft()).value(WORLD_CELESTIAL_TIME).toDouble() == 2);
+
+    // An unrelated Moon edit makes the values it showed the World's.
+    QJsonObject moonComponents = reopened.Entity(moonId).value(QStringLiteral("components")).toObject();
+    QJsonObject moonLight = moonComponents.value(QStringLiteral("light")).toObject();
+    moonLight.insert(QStringLiteral("intensity"), 0.5);
+    moonComponents.insert(QStringLiteral("light"), moonLight);
+    REQUIRE(reopened.Edit(moonId, moonComponents, QStringLiteral("Moon"), error) == true);
+    const QJsonObject observer = reopened.Draft().value(WORLD_EARTH_OBSERVER).toObject();
+    CHECK(observer.value(WORLD_CELESTIAL_TIME).toDouble() == 2);
+    CHECK(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble() == 20);
+    CHECK(getLight(sunId).contains(WORLD_CELESTIAL_TIME) == false);
+    CHECK(getLight(moonId).contains(WORLD_CELESTIAL_LATITUDE) == false);
+    CHECK(MakeWorldLightValues(getLight(sunId), reopened.Draft()).value(WORLD_CELESTIAL_TIME).toDouble() == 2);
+    REQUIRE(reopened.Undo() == true);
+    CHECK(reopened.Draft() == legacy);
+
+    // The shared observer holds only finite Earth dates and coordinates.
+    QJsonObject invalid = reopened.Draft();
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_LATITUDE, 91}});
+    CHECK(reopened.Validate(invalid, error) == false);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{QStringLiteral("spin"), 1}});
+    CHECK(reopened.Validate(invalid, error) == false);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME, 3}, {WORLD_CELESTIAL_LONGITUDE, -80}});
+    CHECK(reopened.Validate(invalid, error) == true);
 }
 
 TEST_CASE("Earth preview time preserves the saved offset and copies the UTC clock", "[editor][world][celestial]")
@@ -3492,18 +3679,9 @@ TEST_CASE("Earth location selection fills one World draft and cancel preserves i
     CHECK(longitudeOrNull->text() == QStringLiteral("-79.5"));
     CHECK(workspace.Document().Draft() == original);
     REQUIRE(workspace.Apply() == true);
-    const QJsonObject light = workspace.Document()
-                                  .Draft()
-                                  .value(QStringLiteral("entities"))
-                                  .toArray()
-                                  .last()
-                                  .toObject()
-                                  .value(QStringLiteral("components"))
-                                  .toObject()
-                                  .value(QStringLiteral("light"))
-                                  .toObject();
-    CHECK(light.value(WORLD_CELESTIAL_LATITUDE).toDouble() == 43.5);
-    CHECK(light.value(WORLD_CELESTIAL_LONGITUDE).toDouble() == -79.5);
+    const QJsonObject observer = workspace.Document().Draft().value(WORLD_EARTH_OBSERVER).toObject();
+    CHECK(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble() == 43.5);
+    CHECK(observer.value(WORLD_CELESTIAL_LONGITUDE).toDouble() == -79.5);
     workspace.StopPreview();
 }
 
@@ -6341,7 +6519,10 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
                                                   .toObject()
                                                   .value(QStringLiteral("light"))
                                                   .toObject();
-    CHECK(synchronizedMoonLight.value(WORLD_CELESTIAL_TIME).toDouble() == 19.69);
+    CHECK(reopened.Draft().value(WORLD_EARTH_OBSERVER).toObject().value(WORLD_CELESTIAL_TIME).toDouble() == 19.69);
+    CHECK(synchronizedMoonLight.contains(WORLD_CELESTIAL_TIME) == false);
+    CHECK(MakeWorldLightValues(synchronizedMoonLight, reopened.Draft()).value(WORLD_CELESTIAL_TIME).toDouble() ==
+          19.69);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance > 0);
     CHECK(scene.Atmosphere.Celestial.Planets[0].Illuminance.X > 0);
