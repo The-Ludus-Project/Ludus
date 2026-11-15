@@ -11,6 +11,7 @@
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
@@ -393,14 +394,35 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
     {
         extraction.SurfaceBake = surfaceBake;
         extraction.SurfaceCharts.reserve(extraction.Items.size());
+        // The atlas belongs to the bake's grid, which the lighting key covers; a mismatched extent supplies none.
+        const WorldProbeAtlas& atlas = surfaceBake->ProbeAtlas;
+        const bool hasProbeAtlas = atlas.Pixels.isEmpty() == false &&
+                                   renderer::HasGiProbeAtlasExtent(scene.ProbeGrid, atlas.Width, atlas.Height);
+        if (hasProbeAtlas == true)
+        {
+            renderer::SceneGiProbeVolume& volume = extraction.ShaderInputs.ProbeVolume;
+            volume.Grid = scene.ProbeGrid;
+            volume.IrradianceScale = atlas.IrradianceScale;
+            volume.Atlas = {reinterpret_cast<const uint8*>(atlas.Pixels.constData()),
+                            static_cast<usize>(atlas.Pixels.size()),
+                            static_cast<usize>(atlas.Width) * content::scene_format::TEXEL_BYTES,
+                            atlas.Width,
+                            atlas.Height,
+                            rhi::RasterFormat::Rgba8Unorm};
+        }
         for (qsizetype index = 0; index < extraction.Items.size(); ++index)
         {
             const renderer::RenderGraphItem& item = extraction.Items.at(index);
             const resources::SceneObject& sourceObject = definitionOrNull->Objects[static_cast<usize>(index)];
             if (scene.GiProbeReceiverIds.contains(sourceObject.SourceId) == true)
             {
-                // Keep the chart table aligned with the draw list and use realtime shading for this receiver.
+                // Keep the chart table aligned with the draw list. Deferred Baked Lighting passes sample the probe
+                // volume for this receiver; other passes shade it in realtime.
                 extraction.SurfaceCharts.append(renderer::SceneSurfaceChart{});
+                if (hasProbeAtlas == true)
+                {
+                    extraction.ProbeReceiverIds.append(item.SourceId);
+                }
                 continue;
             }
             const WorldSurfaceChart& source = surfaceBake->Charts.at(index);
@@ -1591,6 +1613,8 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                                       static_cast<usize>(state.Extraction.SurfaceCharts.size())};
         shaderInputs.BakedLightIds = {state.Extraction.Scene.AlwaysOnLightIds.constData(),
                                       static_cast<usize>(state.Extraction.Scene.AlwaysOnLightIds.size())};
+        shaderInputs.ProbeReceiverIds = {state.Extraction.ProbeReceiverIds.constData(),
+                                         static_cast<usize>(state.Extraction.ProbeReceiverIds.size())};
         shaderInputs.Lights = {state.Extraction.Lights.constData(), static_cast<usize>(state.Extraction.Lights.size())};
         shaderInputs.Luminaires = {state.Extraction.Scene.Luminaires.Luminaires,
                                    state.Extraction.Scene.Luminaires.Count};
@@ -2107,6 +2131,12 @@ usize RenderGraphPreview::GetSurfaceChartDrawCount() const noexcept
 {
     const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
     return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.SurfaceChartDraws : 0;
+}
+
+usize RenderGraphPreview::GetProbeReceiverDrawCount() const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.ProbeReceiverDraws : 0;
 }
 
 QString RenderGraphPreview::GetDisplayStatus() const

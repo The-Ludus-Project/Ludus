@@ -99,6 +99,8 @@ enum MeshKeyPart : uint8
     MESH_KEY_PART_COUNT,
 };
 constexpr usize NO_RESOURCE = ~usize{0};
+/// Largest probe irradiance multiplier the renderer's bounded-colour admission accepts.
+constexpr float32 MAX_PROBE_IRRADIANCE_SCALE = 10000;
 // Separate CPU identity-copy budget, covering current/pending/idle assets together.
 // RHI independently admits GPU allocations and upload staging against its device budgets.
 constexpr usize CACHE_IDENTITY_BYTES = usize{128} * 1024 * 1024 * (sizeof(usize) > sizeof(uint32) ? 8 : 1);
@@ -115,6 +117,17 @@ bool AreBytesEqual(const Array<uint8>& left, const Array<uint8>& right) noexcept
 {
     return left.GetSize() == right.GetSize() &&
            (left.IsEmpty() == true || std::memcmp(left.GetData(), right.GetData(), left.GetSize()) == 0);
+}
+bool ContainsSourceId(BorrowedView<const uint64> sourceIds, uint64 sourceId) noexcept
+{
+    for (const uint64 candidate : sourceIds)
+    {
+        if (candidate == sourceId)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 template <typename T>
 bool Append(Array<uint8>& inoutBytes, const T* valuesOrNull, usize count) noexcept
@@ -268,9 +281,12 @@ struct ForwardSceneResources::State final
     Renderer* RendererOrNull = nullptr;
     MaterialProgram Program{};
     MaterialProgram SurfaceChartProgram{};
+    /// Deferred program whose G-buffer fragment adds the baked probe volume's diffuse bounce.
+    MaterialProgram ProbeProgram{};
     bool IsClustered = false;
     bool HasMeshLights = false;
     bool HasSurfaceCharts = false;
+    bool HasProbeGi = false;
     StaticArray<MeshEntry, CACHE_MESH_COUNT> Meshes{};
     StaticArray<TextureEntry, CACHE_TEXTURE_COUNT> Textures{};
     usize IdentityBytes = 0;
@@ -503,6 +519,7 @@ struct ForwardSceneGeneration::State final
     Array<DirectLight> Lights;
     Array<uint64> BakedLightIds;
     usize SurfaceChartDraws = 0;
+    usize ProbeReceiverDraws = 0;
     Array<math::Vector4> MeshLightWords;
     rhi::BufferHandle MeshLightBuffer{};
     uint32 MeshLightCount = 0;
@@ -559,7 +576,8 @@ Status ForwardSceneResources::Initialize(rhi::DeviceHandle device,
                                          MaterialProgram program,
                                          bool isClustered,
                                          bool hasMeshLights,
-                                         MaterialProgram surfaceChartProgram) noexcept
+                                         MaterialProgram surfaceChartProgram,
+                                         MaterialProgram probeProgram) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -575,6 +593,8 @@ Status ForwardSceneResources::Initialize(rhi::DeviceHandle device,
     allocationOrNull->Program = program;
     allocationOrNull->SurfaceChartProgram = surfaceChartProgram;
     allocationOrNull->HasSurfaceCharts = inoutRenderer.GetStatus(surfaceChartProgram) == Status::Ready;
+    allocationOrNull->ProbeProgram = probeProgram;
+    allocationOrNull->HasProbeGi = inoutRenderer.GetStatus(probeProgram) == Status::Ready;
     allocationOrNull->IsClustered = isClustered;
     allocationOrNull->HasMeshLights = hasMeshLights;
     mState.Reset(allocationOrNull);
@@ -638,6 +658,10 @@ BorrowedView<const MeshLightShadowCaster> ForwardSceneGeneration::GetMeshLightSh
 usize ForwardSceneGeneration::GetSurfaceChartDrawCount() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->SurfaceChartDraws;
+}
+usize ForwardSceneGeneration::GetProbeReceiverDrawCount() const noexcept
+{
+    return mState.Get() == nullptr ? 0 : mState->ProbeReceiverDraws;
 }
 rhi::TextureViewHandle ForwardSceneGeneration::GetShadowAtlasView() const noexcept
 {
@@ -743,8 +767,9 @@ Status ForwardSceneGeneration::Poll() noexcept
         }
         description.Clusters = owner.IsClustered == true ? &state.Clusters : nullptr;
         LightSelection selection;
-        const MaterialProgram program =
-            rhi::IsNull(description.Bake.Texture) == false ? owner.SurfaceChartProgram : owner.Program;
+        const MaterialProgram program = rhi::IsNull(description.Bake.Texture) == false ? owner.SurfaceChartProgram
+                                        : rhi::IsNull(description.ProbeVolume.Texture) == false ? owner.ProbeProgram
+                                                                                                : owner.Program;
         const ShadowRegion& directional = state.Shadows.Directional;
         const bool hasDirectionalShadow = directional.Light.SourceId != 0;
         const Status status =
@@ -835,9 +860,24 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     {
         return Status::OutOfMemory;
     }
-    // Reserve pin arrays before any acquisition, so failed allocation cannot leak pins.
+    // A receiver identity list without a usable volume, or the reverse, is a caller error; a pass without the probe
+    // G-buffer ignores both and keeps realtime lighting.
+    const SceneGiProbeVolume& probeVolume = scene.Inputs.ProbeVolume;
+    const bool hasProbeVolume = probeVolume.Atlas.Bytes != nullptr || probeVolume.Atlas.Width != 0;
+    if (owner.HasProbeGi == true &&
+        (scene.Inputs.ProbeReceiverIds.IsValid() == false ||
+         scene.Inputs.ProbeReceiverIds.GetSize() > format::MAX_ITEMS ||
+         (hasProbeVolume == true &&
+          (probeVolume.Atlas.Format != rhi::RasterFormat::Rgba8Unorm ||
+           HasGiProbeAtlasExtent(probeVolume.Grid, probeVolume.Atlas.Width, probeVolume.Atlas.Height) == false ||
+           math::IsFinite(probeVolume.IrradianceScale) == false || probeVolume.IrradianceScale < 0 ||
+           probeVolume.IrradianceScale > MAX_PROBE_IRRADIANCE_SCALE))))
+    {
+        return Status::InvalidDescription;
+    }
+    // Reserve pin arrays before any acquisition, so failed allocation cannot leak pins. The probe atlas adds one pin.
     if (candidate.MeshPins.TryEnsureCapacity(format::MAX_ITEMS) == false ||
-        candidate.TexturePins.TryEnsureCapacity(format::MAX_ITEMS * DRAW_TEXTURE_COUNT) == false ||
+        candidate.TexturePins.TryEnsureCapacity(format::MAX_ITEMS * DRAW_TEXTURE_COUNT + 1) == false ||
         candidate.Items.TryEnsureCapacity(format::MAX_ITEMS) == false ||
         candidate.Descriptions.TryEnsureCapacity(format::MAX_ITEMS) == false ||
         candidate.Lights.TryAddRange({normalized.Lights, normalized.Count}) == false)
@@ -879,6 +919,16 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             return status;
         }
         candidate.HasEnvironment = true;
+    }
+    usize probeTexture = NO_RESOURCE;
+    if (owner.HasProbeGi == true && hasProbeVolume == true && scene.Inputs.ProbeReceiverIds.IsEmpty() == false)
+    {
+        const Status status = owner.AcquireTexture(probeVolume.Atlas, false, probeTexture);
+        if (IsAccepted(status) == false)
+        {
+            return status;
+        }
+        static_cast<void>(candidate.TexturePins.TryAdd(probeTexture));
     }
     for (usize itemIndex = 0; itemIndex < scene.Items.GetSize(); ++itemIndex)
     {
@@ -1101,6 +1151,14 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 description.Bake.AreTriangleChartsEnabled = true;
                 description.Bake.ShouldAddToEnvironment = true;
                 ++candidate.SurfaceChartDraws;
+            }
+            else if (probeTexture != NO_RESOURCE && item.SourceId != 0 &&
+                     ContainsSourceId(scene.Inputs.ProbeReceiverIds, item.SourceId) == true)
+            {
+                description.ProbeVolume.Texture = owner.Textures[probeTexture].Handle;
+                description.ProbeVolume.Grid = probeVolume.Grid;
+                description.ProbeVolume.IrradianceScale = probeVolume.IrradianceScale;
+                ++candidate.ProbeReceiverDraws;
             }
             static_cast<void>(candidate.Items.TryAdd(drawing));
             static_cast<void>(candidate.Descriptions.TryAdd(description));

@@ -158,6 +158,11 @@ struct RenderGraphPrograms final
     /// format::OPAQUE_GBUFFER_PACKAGE_VERSION; empty in earlier packages, which draw every material through
     /// DeferredGBufferFragment.
     rhi::RasterShaderDescription DeferredOpaqueGBufferFragment{};
+    /// Optional G-buffer fragment for GI Probe Receivers of a deferred pass with a connected Baked Lighting input.
+    /// It applies alpha-masked coverage and adds the baked probe volume's diffuse bounce to the emission target.
+    /// Present with HasClusteredDeferred in packages from format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION that connect
+    /// Baked Lighting; empty otherwise, which draws every receiver with realtime lighting.
+    rhi::RasterShaderDescription DeferredProbeGBufferFragment{};
     /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
     rhi::RasterShaderDescription DeferredLightingVertex{};
     /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.
@@ -485,6 +490,8 @@ struct RenderGraphSceneResourceReport final
 {
     /// Draw items using the specialized surface-chart shader in the currently drawable scene.
     foundation::usize SurfaceChartDraws = 0;
+    /// Draw items sampling the baked probe volume through the deferred probe G-buffer in the currently drawable scene.
+    foundation::usize ProbeReceiverDraws = 0;
     foundation::uint64 CreatedMeshes = 0;     ///< Immutable mesh uploads admitted by the cache.
     foundation::uint64 ReusedMeshes = 0;      ///< Exact cached mesh acquisitions.
     foundation::uint64 CreatedTextures = 0;   ///< Immutable texture uploads admitted by the cache.

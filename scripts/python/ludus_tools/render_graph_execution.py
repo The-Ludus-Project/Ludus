@@ -334,7 +334,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
 # Version 33: per-callback capture warm-up counts follow the scene resource word.
 # Version 34 adds the optional forward surface-chart fragment and a chart-free realtime fragment.
-PACKAGE_VERSION = 35
+# Version 36 adds the optional deferred probe G-buffer fragment for passes with Baked Lighting connected.
+PACKAGE_VERSION = 36
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -364,6 +365,9 @@ def role(program, stage):
         return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
     if program == 'ForwardSurfaceChart':
         return role('DeferredOpaqueGBuffer', 'fragment') + 1
+    if program == 'DeferredProbeGBuffer':
+        # Follows ForwardSurfaceChart and the ForwardRealtime fragment.
+        return role('ForwardSurfaceChart', 'fragment') + 2
     if program.startswith('Deferred'):
         return FORWARD_DEPTH_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage)) - forward.ROLE_KEYS.index(('DeferredGBuffer', 'fragment'))
     if (program, stage) in forward.ROLE_KEYS:
@@ -502,7 +506,9 @@ def _runtime_contents(path, configuration):
         build.require(any(p['Program'] == 'ColorAndDepth' for p in passes) and
                       all(p['Program'] in allowed and p['SceneData'] == graph.scene_bundle.ALL_DATA for p in passes),
                       'Capability', configuration, 'forward-lit requires opaque color passes with the complete Scene bundle')
-        bake_modes = {operation.get('baked_lighting', False) for operation in plan['passes'] if operation['kind'] == 'Raster'}
+        # A depth-only prepass has no lighting and never connects Baked Lighting.
+        bake_modes = {operation.get('baked_lighting', False) for operation in plan['passes']
+                      if operation['kind'] == 'Raster' and operation.get('configuration') != 'DepthOnly'}
         build.require(len(bake_modes) <= 1, 'Capability', configuration,
                       'Forward lighting passes must agree on Baked Lighting. Connect it to every forward lighting pass or disconnect it.')
         has_surface_charts = True in bake_modes
@@ -511,7 +517,7 @@ def _runtime_contents(path, configuration):
                 continue
             for identity, key in recipe.get('forward_stages', {}).items():
                 group, stage = identity.split(':')
-                if group == 'ForwardSurfaceChart' and not has_surface_charts:
+                if group in forward.BAKED_LIGHTING_GROUPS and not has_surface_charts:
                     continue
                 matches = [program for program in package['programs'] if program['key'] == key and program['profile'] == recipe['profile']]
                 build.require(len(matches) == 1, 'Package', identity, 'missing forward support artifact')

@@ -6216,9 +6216,37 @@ depth and sixteen binding slots. Unsupported devices fail explicitly. The initia
 profile admits one clear/store opaque color node and its optional immediately
 preceding prepass with the same camera/depth.
 The profile retains the graph adapter's conventional-depth requirement. Transparent
-deferred materials, MSAA, baked lighting, GPU cluster assignment, image
+deferred materials, MSAA, baked surface charts, GPU cluster assignment, image
 upscale integration and arbitrary MRT graph authoring remain outside this initial
 offline profile.
+
+<a id="deferred-baked-probe-gi"></a>
+
+### Baked probe GI for receivers
+
+The engine default and the **Raster** starter connect **Baked Lighting** from
+**Scene** to the color subgraph in both configurations. This is the graph that
+the World viewport's **Force raster** draws. With the wire connected, the native
+editor supplies the World's ready
+[probe volume](editor-workspace.md#baking-probe-gi-for-moving-objects) and the
+placed GI Probe Receivers. The package then carries a third G-buffer fragment,
+`DeferredProbeGBufferFragment` (runtime package version 36), compiled with
+`LUDUS_GRAPH_PROBE_GI`. Scene preparation draws receivers through it. It samples
+the probe volume as the built-in Lit viewport does and stores the receiver's
+diffuse bounce in the emission target, which the lighting resolve adds once.
+Live direct light, specular and environment still come from the resolve.
+Other draws keep the realtime G-buffer fragments, so a missing, stale or
+mismatched bake leaves every draw in realtime. The preview status reports
+"Probe GI in use on N receiver draws."
+
+Disconnect the wire and rebuild to draw receivers in realtime. Packages built
+before version 36 decode unchanged and render in realtime. The SDK accepts the
+same inputs through `SceneShaderInputs::ProbeVolume` and `ProbeReceiverIds`.
+A receiver list with an atlas that does not match its grid rejects the
+candidate and keeps the last drawable scene. Static surfaces' baked charts are
+not yet read by this profile. The receiver probe fragment applies the
+alpha-masked coverage test for opaque receivers too, so receivers do not get
+the opaque G-buffer's hidden-surface removal on Apple GPUs.
 
 The package compiles the G-buffer stage twice from the same `MaterialMain`. The
 `DeferredGBufferFragment` applies an alpha-masked material's cutoff with a `discard`;
@@ -10029,7 +10057,9 @@ compiled chart fragment for matching draws. A chart samples incoming diffuse
 irradiance and replaces realtime diffuse for the covered lights. The material
 still supplies albedo and live specular. Ordinary draws use the realtime
 fragment, which has no chart texture binding. The first profile requires all
-forward raster passes in a configuration to agree on the bake connection.
+forward raster passes in a configuration to agree on the bake connection. A
+depth-only prepass has no lighting and is exempt. The `ClusteredForward`
+profile does not accept the connection.
 
 The SDK accepts the same typed chart inputs through `SceneShaderInputs`.
 Callers supply charts matching the submitted scene revision and item order.

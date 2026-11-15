@@ -2305,7 +2305,11 @@ The native [Forward lit template](render-graph-authoring.md#use-the-forward-lit-
 can use these charts through its **Baked Lighting** connection. Its preview
 status reports when surface charts are ready and how many draws use them.
 GI Probe Receivers use realtime lighting in this graph. The built-in Lit
-viewport samples the probe volume for those receivers.
+viewport samples the probe volume for those receivers. So does the engine's
+default raster graph, which **Force raster** and the **Raster** starter use. Its
+status reports how many receiver draws use the probe volume. That graph does not
+yet read the surface charts, so static surfaces stay in realtime there
+([Baked probe GI for receivers](render-graph-authoring.md#deferred-baked-probe-gi)).
 Browser and packaged game hosts continue to use their existing inputs.
 
 ### Baking probe GI for moving objects

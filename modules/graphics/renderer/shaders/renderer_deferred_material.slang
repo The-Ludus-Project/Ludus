@@ -19,4 +19,24 @@ GBufferOutput PackDeferredMaterial(in SurfaceSample surface)
     output.EmissionCoverage = float4(min(surface.Emission, float3(DEFERRED_MAX_HALF)), 1);
     return output;
 }
+#ifdef LUDUS_GRAPH_PROBE_GI
+// Normal-incidence reflectance of dielectrics, as in ShadeMaterial's diffuse Fresnel weight.
+static const float DEFERRED_PROBE_DIELECTRIC_F0 = 0.04;
+// GI Probe Receivers of a pass with Baked Lighting connected. The resolve adds emission once, so storing the
+// receiver's probe bounce there as ShadeMaterial's forward diffuse term keeps both paths' radiance equal, while the
+// live direct, specular and environment terms still come from the resolve. Materials without a probe volume
+// (BakeScale.w >= 0) pack unchanged.
+GBufferOutput PackDeferredProbeMaterial(in SurfaceSample surface, in Varying input)
+{
+    float nv = max(dot(surface.NormalWorld, surface.ViewDirectionWorld), 0);
+    if (nv > 0 && material.BakeScale.w < 0)
+    {
+        float3 f0 = lerp(float3(DEFERRED_PROBE_DIELECTRIC_F0), surface.BaseColor.rgb, surface.Metallic);
+        float3 f = f0 + (1 - f0) * ComputeFifth(1 - nv);
+        surface.Emission += EvaluateGiProbeIrradiance(input.PositionWorld, surface.NormalWorld) *
+                            surface.BaseColor.rgb * (1 - surface.Metallic) * (1 - f) / PI;
+    }
+    return PackDeferredMaterial(surface);
+}
+#endif
 [shader("fragment")] GBufferOutput GBufferMain(in Varying input) { return PackDeferredMaterial(SampleMaterial(input)); }

@@ -1,6 +1,7 @@
 // Default-graph pixel suite: clustered deferred against forward shading, the forward-lit graph,
 // bilinear and spatial upscaling (MetalFX where available) and deferred mesh area lights.
 
+#include "../shaders/probe_volume_layout.h"
 #include "../src/internal/camera_inverse.h"
 #include "../src/internal/raster_mesh_lights.h"
 #include "../src/internal/render_graph_metalfx.h"
@@ -20,6 +21,7 @@
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/views.hpp>
@@ -538,6 +540,133 @@ TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene 
     render();
     CHECK(fixture.Pixels[center] < 10);
     CHECK(fixture.Pixels[center + 2] > bakedBlue);
+}
+
+TEST_CASE("default clustered deferred adds the baked probe volume to GI Probe Receivers only",
+          "[render-graph][clustered-deferred][probe-gi][gpu]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(programs.HasClusteredDeferred == true);
+    // The engine default connects Baked Lighting, so its package carries the probe G-buffer.
+    const rhi::ShaderDescription& probeArtifact = programs.DeferredProbeGBufferFragment.Artifact;
+    REQUIRE((probeArtifact.Msl.empty() == false || probeArtifact.Spirv.IsEmpty() == false ||
+             probeArtifact.Wgsl.empty() == false || probeArtifact.Dxil.IsEmpty() == false));
+    constexpr usize POLL_ATTEMPTS = 10000;
+    const auto poll = [&](rhi::RasterStatus status) {
+        for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            threading::SleepFor(timing::Milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    fixture.Items[0].Material.Color = {1, 1, 1, 1};
+    fixture.Cameras[0].CameraPosition = {0, 0, 2};
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {1, 1, 1};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+
+    // Eight valid probes with red irradiance on every face and unoccluded depth faces enclose the receiver.
+    renderer::GiProbeGrid grid;
+    grid.OriginWorld = {-10, -10, -10};
+    grid.Spacing = 20;
+    grid.Counts = {2, 2, 2};
+    constexpr uint32 PROBE_COUNT = 8;
+    constexpr uint32 ATLAS_WIDTH = LUDUS_GI_PROBE_ATLAS_WIDTH;
+    constexpr uint32 PROBE_TEXELS = LUDUS_GI_PROBE_TEXELS;
+    constexpr uint32 ATLAS_HEIGHT = (PROBE_COUNT * PROBE_TEXELS + ATLAS_WIDTH - 1) / ATLAS_WIDTH;
+    REQUIRE(renderer::HasGiProbeAtlasExtent(grid, ATLAS_WIDTH, ATLAS_HEIGHT) == true);
+    Array<uint8> atlasPixels;
+    REQUIRE(atlasPixels.TryResize(usize{ATLAS_WIDTH} * ATLAS_HEIGHT * TEXEL_BYTES, 0) == true);
+    constexpr uint32 AMBIENT_CUBE_TEXELS = LUDUS_GI_PROBE_FACES;
+    for (uint32 probe = 0; probe < PROBE_COUNT; ++probe)
+    {
+        for (uint32 texel = 0; texel < PROBE_TEXELS; ++texel)
+        {
+            const usize offset = (usize{probe} * PROBE_TEXELS + texel) * TEXEL_BYTES;
+            atlasPixels[offset] = 255;
+            atlasPixels[offset + 3] = texel < AMBIENT_CUBE_TEXELS ? 255 : 0;
+        }
+    }
+    inputs.ProbeVolume.Grid = grid;
+    inputs.ProbeVolume.IrradianceScale = 2;
+    inputs.ProbeVolume.Atlas = {atlasPixels.GetData(),
+                                atlasPixels.GetSize(),
+                                usize{ATLAS_WIDTH} * TEXEL_BYTES,
+                                ATLAS_WIDTH,
+                                ATLAS_HEIGHT,
+                                rhi::RasterFormat::Rgba8Unorm};
+    uint64 receiverId = fixture.Items[0].SourceId;
+    inputs.ProbeReceiverIds = {&receiverId, 1};
+    renderer::RenderGraphReport report;
+    const auto update = [&](uint64 revision) {
+        return poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                         {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                         {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                         revision,
+                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                         report,
+                                         &inputs,
+                                         revision));
+    };
+    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.ProbeReceiverDraws == 1);
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect;
+    REQUIRE(fixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+    renderer::Renderer compositor;
+    REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                       shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::Presentation presentation;
+    REQUIRE(compositor.PreparePresentation(texture, mapping, presentation) == rhi::RasterStatus::Ready);
+    const auto render = [&]() {
+        REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+        REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
+        REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
+    };
+    render();
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    // Without lights, environment or emission, only the probe term lights the white receiver.
+    CHECK(fixture.Pixels[center] > 100);
+    CHECK(fixture.Pixels[center + 1] < 10);
+    CHECK(fixture.Pixels[center + 2] < 10);
+
+    // A draw that is not a receiver keeps the realtime G-buffer and stays dark.
+    receiverId = fixture.Items[0].SourceId + 1;
+    REQUIRE(update(2) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.ProbeReceiverDraws == 0);
+    render();
+    CHECK(fixture.Pixels[center] < 10);
+
+    // A receiver list with an atlas that does not match its grid is rejected.
+    receiverId = fixture.Items[0].SourceId;
+    inputs.ProbeVolume.Atlas.Height = ATLAS_HEIGHT + 1;
+    CHECK(update(3) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Graph.GetReport().Resources.ProbeReceiverDraws == 0);
 }
 
 TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges", "[render-graph][gpu][bilinear]")
