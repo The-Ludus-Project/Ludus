@@ -4922,7 +4922,19 @@ correctly in both windows. The template's and the shadow map's lit radiance lie 
 of the GPU RT1 image, and both graphs measure the edge 0.2 and 0.4 pixels from the
 projection, the pixel-centre quantization. This fixture does not separate the two
 graphs: the default graph's whole-scene shadow fit also keeps the offscreen shadow.
-Curved receivers, bias and timing comparisons remain open in issue 1248.
+The same tag covers a curved-receiver regression with the default directional
+shadow atlas and the raster route selected by RT2 activation. It compares
+visibility against rays on the tessellated receiver at steep and grazing angles
+and checks both interior occlusion and the contact edge. See the
+[fixture and bias contract](../architecture/renderer-systems.md#hybrid-and-real-time-transport).
+
+Run `ludus_renderer_render_tests "[.benchmark][hybrid-shadows]"` for punctual
+shadow timings on a native device. After warmup, the benchmark reports the
+median and 95th percentile over 21 geometry edits and 21 steady-state frames.
+The edit interval starts at the new extraction and ends at drawable publication.
+It includes scene preparation, acceleration structure work and the polling
+interval. The device's pass timestamps measure the shadow-ray compute pass.
+This template has no filter pass.
 
 Extend the manifest's `RendererStatic` vertex schema with these two fields:
 
