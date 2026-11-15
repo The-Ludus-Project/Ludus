@@ -925,10 +925,10 @@ ImportGraphBuffer(DeviceHandle device, OrderedGraph handle, BufferHandle buffer,
     return added;
 }
 RasterStatus
-ImportGraphRayScene(DeviceHandle device, OrderedGraph handle, RaySceneHandle scene, GraphVersion& outVersion) noexcept
+ImportGraphRayScene(DeviceHandle device, OrderedGraph graph, RaySceneHandle scene, GraphVersion& outVersion) noexcept
 {
     GraphRecord* graphOrNull = nullptr;
-    const RasterStatus admission = GraphAdmission(device, handle, graphOrNull);
+    const RasterStatus admission = GraphAdmission(device, graph, graphOrNull);
     if (admission != RasterStatus::Ready)
     {
         return admission;
@@ -950,7 +950,7 @@ ImportGraphRayScene(DeviceHandle device, OrderedGraph handle, RaySceneHandle sce
     {
         return sourceOrNull->Status == RasterStatus::Pending ? RasterStatus::NotReady : sourceOrNull->Status;
     }
-    return AddImport(*graphOrNull, handle, RasterKind::RayScene, RasterAccess::Slot(scene), outVersion);
+    return AddImport(*graphOrNull, graph, RasterKind::RayScene, RasterAccess::Slot(scene), outVersion);
 }
 RasterStatus ImportGraphTexture(DeviceHandle device,
                                 OrderedGraph handle,
