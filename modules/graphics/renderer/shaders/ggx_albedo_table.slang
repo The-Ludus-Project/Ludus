@@ -15,14 +15,16 @@
 #include "raster_bindings.slang"
 
 #ifndef LUDUS_GGX_ALBEDO_TABLE_BINDING
-#    error "Define LUDUS_GGX_ALBEDO_TABLE_BINDING, the slot of the GGX albedo table, before including ggx_albedo_table.slang"
+#    error                                                                                                             \
+        "Define LUDUS_GGX_ALBEDO_TABLE_BINDING, the slot of the GGX albedo table, before including ggx_albedo_table.slang"
 #endif
 LUDUS_SHADER_BINDING(LUDUS_GGX_ALBEDO_TABLE_BINDING)
 StructuredBuffer<float4> LudusGgxAlbedoTable LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_GGX_ALBEDO_TABLE_BINDING);
 
 float ReadGgxAlbedoTable(uint index)
 {
-    return LudusGgxAlbedoTable[index / LUDUS_GGX_ALBEDO_TABLE_ENTRY_FLOATS][index % LUDUS_GGX_ALBEDO_TABLE_ENTRY_FLOATS];
+    return LudusGgxAlbedoTable[index / LUDUS_GGX_ALBEDO_TABLE_ENTRY_FLOATS]
+                              [index % LUDUS_GGX_ALBEDO_TABLE_ENTRY_FLOATS];
 }
 // Fractional row of alpha: rows are linear in sqrt(alpha) over [0, 1].
 float GetGgxAlbedoRowCoordinate(float alpha)
