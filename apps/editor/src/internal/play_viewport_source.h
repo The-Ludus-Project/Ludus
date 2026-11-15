@@ -7,6 +7,7 @@
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/platform/hosted_window.h>
 
+#include "internal/hosted_profiling_session.h"
 #include "internal/viewport_frame_source.h"
 
 #include <QString>
@@ -49,7 +50,11 @@ enum class PlaySourceState : foundation::uint8
 /// and focus go to the game through GetEndpoint(). GUI thread only; the device whose
 /// identity Start() receives must outlive Stop(). See
 /// docs/architecture/editor-gui-systems.md, "Play in the editor viewport".
-class PlayViewportSource final : public ViewportFrameSource
+///
+/// It is also the game's HostedRecordingTarget: recording events are delivered to the sink
+/// as each pump receives them, and the sink learns of a disconnection or Stop() only after
+/// every event that arrived before it (docs/architecture/editor-gui-systems.md, "Hosted recording").
+class PlayViewportSource final : public ViewportFrameSource, public HostedRecordingTarget
 {
     Q_OBJECT
 public:
@@ -108,6 +113,14 @@ public:
                                                             ViewportFrameRead& outRead) noexcept override;
     [[nodiscard]] graphics::rhi::RasterStatus EndFrameRead(ViewportFrameRead& inoutRead) noexcept override;
     void DrainFrameRead(ViewportFrameRead& inoutRead) noexcept override;
+
+    [[nodiscard]] bool IsRecordingConnected() const noexcept override;
+    [[nodiscard]] platform::HostedEndpointStatus
+    SendRecordingRequest(const platform::HostedRecordingRequest& request) noexcept override;
+    [[nodiscard]] foundation::uint64 GetProducerProcessId() const noexcept override;
+    [[nodiscard]] foundation::uint64 GetConsumedFrames() const noexcept override;
+    [[nodiscard]] foundation::uint64 GetDroppedRecordingEvents() const noexcept override;
+    void SetRecordingSink(HostedRecordingSink* sinkOrNull) noexcept override;
 Q_SIGNALS:
     /// GetState() changed.
     void StateChanged();
@@ -124,12 +137,17 @@ private:
     void setState(PlaySourceState state);
     void makeUnavailable(const QString& reason);
     [[nodiscard]] HeldRead* findReadOrNull(const ViewportFrameRead& read) noexcept;
+    /// Deliver every received recording event to the sink.
+    void deliverRecordingEvents() noexcept;
+    /// Deliver the remaining events, then tell the sink that the channel ended.
+    void endRecordingChannel() noexcept;
     platform::HostedWindowEndpoint mEndpoint;
     graphics::rhi::HostedSurfaceConsumer mConsumer;
     graphics::rhi::NativeDeviceIdentity mDevice{};
     foundation::StaticArray<HeldRead, MAX_FRAME_READS> mReads{};
     QTimer mPumpTimer;
     QString mUnavailableReason;
+    HostedRecordingSink* mRecordingSinkOrNull = nullptr;
     PlaySourceState mState = PlaySourceState::Stopped;
     foundation::uint64 mNextToken = 1;
     foundation::uint64 mTakenFrames = 0;

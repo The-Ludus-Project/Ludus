@@ -74,10 +74,10 @@ math::Vector4 GpuVector(math::Vector3 value, float32 w = 0) noexcept
     return {value.X, value.Y, value.Z, w};
 }
 // AreCapturesEqual names every field; extend it whenever ReferenceCaptureDescription changes.
-// The description holds two borrowed pointers and a usize, so its size follows the pointer width:
-// 168 bytes on 64-bit targets and 152 bytes on 32-bit targets such as wasm32.
-constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT = 168;
-constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_32_BIT = 152;
+// The description holds three borrowed pointers and a usize, so its size follows the pointer width:
+// 176 bytes on 64-bit targets and 160 bytes on 32-bit targets such as wasm32 (eight-byte aligned).
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT = 176;
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_32_BIT = 160;
 constexpr usize POINTER_BYTES_64_BIT = 8;
 constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = sizeof(void*) == POINTER_BYTES_64_BIT
                                                          ? EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT
@@ -85,7 +85,7 @@ constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = sizeof(void*) == POINTER_BY
 static_assert(sizeof(ReferenceCaptureDescription) == EXPECTED_CAPTURE_DESCRIPTION_BYTES,
               "compare every ReferenceCaptureDescription field in AreCapturesEqual");
 /// Every field: equal captures of one scene build, fingerprint and pack identical GPU scene data.
-/// Borrowed environment and light inputs compare by identity, as one graph update passes them.
+/// Borrowed environment, light and medium inputs compare by identity, as one graph update passes them.
 bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCaptureDescription& right) noexcept
 {
     return left.WorldToClip == right.WorldToClip && left.CameraPosition == right.CameraPosition &&
@@ -97,7 +97,7 @@ bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCa
            left.Lights == right.Lights && left.LightCount == right.LightCount && left.TextureMip == right.TextureMip &&
            left.Seed == right.Seed && left.CenterRays == right.CenterRays &&
            left.LightSampling == right.LightSampling && left.MaterialProfile == right.MaterialProfile &&
-           left.OpticalWavelengthWorld == right.OpticalWavelengthWorld;
+           left.OpticalWavelengthWorld == right.OpticalWavelengthWorld && left.MediumOrNull == right.MediumOrNull;
 }
 bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuContent& b) noexcept
 {

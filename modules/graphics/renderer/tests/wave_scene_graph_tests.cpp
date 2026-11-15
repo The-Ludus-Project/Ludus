@@ -61,7 +61,18 @@ void LoadPackage(renderer::RenderGraphPackage& outPackage)
     REQUIRE(outPackage.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
 }
 using ludus::content::scene_format::MaterialModel;
-void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::MetallicRoughness)
+/// Passes after the primary pass: wave, geometric and aperture exports.
+constexpr uint32 EXPORT_PASSES = 3;
+/// The geometric-optics export, which shadow-tests its light sample instead of propagating a wave field.
+constexpr uint32 GEOMETRIC_PASS = 2;
+/// Mean radiance of one exported pass's pixels.
+using ExportedPixels = StaticArray<math::Vector3, usize{EXTENT} * EXTENT>;
+/// Capture the scene wave graph once per exported pass with an optional receiver material.
+/// @param materialOrNull The receiver's material, or null for the neutral default.
+/// @param outGeometricOrNull When non-null, captures only GEOMETRIC_PASS and receives its pixel means.
+void RunSceneWaveGraph(uint32 screen,
+                       const renderer::SceneShaderMaterial* materialOrNull,
+                       ExportedPixels* outGeometricOrNull = nullptr)
 {
     Session session;
     rhi::DeviceHandle device;
@@ -82,7 +93,7 @@ void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::Met
     const renderer::RenderGraphPrograms programs = package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
                                                                        ludus::shaders::renderer_composite::Fragment());
     REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
-    REQUIRE(plan.Passes.GetSize() == 4);
+    REQUIRE(plan.Passes.GetSize() == EXPORT_PASSES + 1);
     const StaticArray<math::Vector3, QUAD_VERTICES> receiverWorld{{{-1, -1, 1}, {1, -1, 1}, {-1, 1, 1}, {1, 1, 1}}};
     const float32 screenRightWorld = screen == 1 ? 1.0F : 0.0F;
     const StaticArray<math::Vector3, QUAD_VERTICES> screenWorld{
@@ -112,37 +123,18 @@ void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::Met
     renderer::SceneShaderInputs inputs;
     inputs.Lights = {&source, 1};
     const uint32 materialIndex = 0;
-    renderer::SceneShaderMaterial material;
-    if (model != MaterialModel::MetallicRoughness)
+    if (materialOrNull != nullptr)
     {
-        material.BaseColor = {0.8F, 0.7F, 0.6F};
-        material.Scattering.Model = model;
-        if (model == MaterialModel::Program)
-        {
-            material.Roughness = 0.35F;
-            material.Metallic = 0.6F;
-            material.Program = ludus::renderer_tests::MakeParityProgram();
-        }
-        else if (model == MaterialModel::ProjectBrdf)
-        {
-            material.Roughness = 0.35F;
-            material.Scattering.Eta = {{0.25F, 0.5F, 0.25F}};
-            material.Scattering.K = {{0, 4, 12}};
-            material.Scattering.CoatingThickness = 0;
-        }
-        else
-        {
-            material.Metallic = 0.25F;
-            material.Scattering.AlphaU = 0.2F;
-            material.Scattering.AlphaV = material.Scattering.AlphaU;
-            material.Scattering.K = {{3, 4, 5}};
-        }
-        inputs.Materials = {&material, 1};
+        inputs.Materials = {materialOrNull, 1};
         items[0].MaterialOverrides = {&materialIndex, 1};
     }
     // Primary pass index zero only writes shared hits. The following passes export wave, geometric and aperture.
     for (uint32 pass = 1; pass < plan.Passes.GetSize(); ++pass)
     {
+        if (outGeometricOrNull != nullptr && pass != GEOMETRIC_PASS)
+        {
+            continue;
+        }
         renderer::RenderGraphCapture capture;
         renderer::RenderGraphCaptureSettings settings;
         settings.Output = plan.Passes[pass].Color;
@@ -185,6 +177,10 @@ void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::Met
         REQUIRE(pixels.GetSize() == usize{EXTENT} * EXTENT);
         for (usize index = 0; index < pixels.GetSize(); ++index)
         {
+            if (outGeometricOrNull != nullptr)
+            {
+                (*outGeometricOrNull)[index] = pixels[index].Mean;
+            }
             const float32 value = pixels[index].Mean.X;
             REQUIRE(math::IsFinite(value) == true);
             if (screen == 1)
@@ -205,6 +201,33 @@ void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::Met
             }
         }
     }
+}
+void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::MetallicRoughness)
+{
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {0.8F, 0.7F, 0.6F};
+    material.Scattering.Model = model;
+    if (model == MaterialModel::Program)
+    {
+        material.Roughness = 0.35F;
+        material.Metallic = 0.6F;
+        material.Program = ludus::renderer_tests::MakeParityProgram();
+    }
+    else if (model == MaterialModel::ProjectBrdf)
+    {
+        material.Roughness = 0.35F;
+        material.Scattering.Eta = {{0.25F, 0.5F, 0.25F}};
+        material.Scattering.K = {{0, 4, 12}};
+        material.Scattering.CoatingThickness = 0;
+    }
+    else
+    {
+        material.Metallic = 0.25F;
+        material.Scattering.AlphaU = 0.2F;
+        material.Scattering.AlphaV = material.Scattering.AlphaU;
+        material.Scattering.K = {{3, 4, 5}};
+    }
+    RunSceneWaveGraph(screen, model == MaterialModel::MetallicRoughness ? nullptr : &material);
 }
 } // namespace
 
@@ -229,6 +252,56 @@ TEST_CASE("Scene wave graph renders a closure program through the transport inte
           "[renderer][gpu][wave-tracing][graph][program]")
 {
     CheckSceneWaveGraph(0, MaterialModel::Program);
+}
+
+TEST_CASE("Scene wave graph mixes two distinct lobes by a grain mask without a graph edit",
+          "[renderer][gpu][wave-tracing][graph][program]")
+{
+    namespace fixtures = ludus::renderer_tests;
+    // The lone receiver is lit by one point light and its continuations escape, so each geometric-optics pixel is the
+    // BSDF at one pair of directions times fixed factors: here the gold's mirror peak, at normal incidence. The CPU
+    // oracle and the CPU/GPU parity case cover off-specular directions. The wave export propagates a field instead,
+    // and on Metal it has returned zero or unbounded pixels on some runs regardless of the material, so the exact
+    // comparison uses the deterministic geometric export.
+    renderer::SceneShaderMaterial grain;
+    grain.Scattering.Model = MaterialModel::Program;
+    grain.Roughness = fixtures::GRAIN_MIX_ROUGHNESS;
+    grain.Program = fixtures::MakeGrainMixProgram();
+    renderer::SceneShaderMaterial diffuse;
+    diffuse.BaseColor = {1, 1, 1};
+    diffuse.Scattering.Model = MaterialModel::Diffuse;
+    renderer::SceneShaderMaterial conductor;
+    conductor.Scattering.Model = MaterialModel::Conductor;
+    conductor.Scattering.AlphaU = fixtures::GRAIN_MIX_ROUGHNESS * fixtures::GRAIN_MIX_ROUGHNESS;
+    conductor.Scattering.AlphaV = conductor.Scattering.AlphaU;
+    conductor.Scattering.Eta = fixtures::GOLD_ETA;
+    conductor.Scattering.K = fixtures::GOLD_K;
+    ExportedPixels matte{};
+    ExportedPixels gold{};
+    RunSceneWaveGraph(0, &diffuse, &matte);
+    RunSceneWaveGraph(0, &conductor, &gold);
+    usize distinctCount = 0;
+    for (usize index = 0; index < matte.GetSize(); ++index)
+    {
+        distinctCount += math::Distance(matte[index], gold[index]) > 0.1F * math::Length(matte[index]) ? 1 : 0;
+    }
+    CHECK(distinctCount > 0);
+    // The program evaluates the same lobes through the interpreter; Metal's fast math bounds the difference.
+    constexpr float32 RELATIVE_TOLERANCE = 1e-3F;
+    constexpr float32 INTERIOR_MASK = 0.35F;
+    for (const float32 mask : {0.0F, 1.0F, INTERIOR_MASK})
+    {
+        CAPTURE(mask);
+        grain.BaseColor = {mask, mask, mask};
+        ExportedPixels mixed{};
+        RunSceneWaveGraph(0, &grain, &mixed);
+        for (usize index = 0; index < mixed.GetSize(); ++index)
+        {
+            CAPTURE(index);
+            const math::Vector3 expected = matte[index] * (1 - mask) + gold[index] * mask;
+            CHECK(math::Distance(mixed[index], expected) <= RELATIVE_TOLERANCE * (1 + math::Length(expected)));
+        }
+    }
 }
 
 TEST_CASE("Scene wave graph blocks an opaque screen from the current World", "[renderer][gpu][wave-tracing][graph]")

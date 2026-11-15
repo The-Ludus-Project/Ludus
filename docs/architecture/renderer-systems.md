@@ -1575,6 +1575,56 @@ program converge to the same mean luminance. The limits keep their starting
 values: 8 registers, 8 constants, 32 instructions and 8 lobes. Release-build
 measurements remain open.
 
+#### Texture-weighted mixing of distinct lobes
+
+Robert L. Cook's wood in *Shade Trees* (SIGGRAPH ’84, pp. 223–231,
+[Fig. 1b](https://graphics.pixar.com/library/ShadeTrees/paper.pdf)) uses a
+grain texture to mix two separately shaded responses. Blending their
+appearance parameters instead can lose each response's directional behaviour.
+A version-1 program expresses Cook's choice directly. It mixes lobes, not
+parameters. The grain mix reads a scalar mask $m$ from the base colour input,
+after its texture. A white diffuse lobe takes the weight $1 - m$, and a glossy
+gold conductor with roughness 0.3 takes $m$. The surface value is
+$(1 - m) f_d + m f_c$, and the mixture density is $(1 - m) p_d + m p_c$.
+
+The composition is authored once, in
+[`grain-mix-board.luscene.json`](scene-source-format.md#engine-test-scenes).
+A `[scene-source]` check requires its compiled record to equal the renderer
+tests' fixture byte for byte. Every test then loads that record without editing
+a graph or shader:
+
+- The CPU oracle compares the program at masks 0, 1 and 0.35 with the typed
+  Diffuse and Conductor models, evaluated independently and weighted. The
+  directions include the mirror direction and two off-specular directions.
+  Each sampled continuation has the full mixture density and weight. The
+  sampled albedo equals the weighted sum of the lobes' sampled albedos.
+- The CPU/Metal parity case renders an opaque board whose linear base texture
+  holds stripes of the three masks. It meets the typed-material parity bounds
+  for matched raw linear radiance.
+- The Wave Tracing graph is the general transport graph. Its geometric-optics
+  export of the program at each mask matches the same weighted sum of its typed
+  Diffuse and Conductor exports within 1e-3, at the gold's mirror peak. On
+  Metal the wave export has returned zero or unbounded pixels on some runs
+  regardless of the material, so the check does not use it.
+- The Rao-Blackwellized Metropolis graph is the restricted estimator. It admits
+  the program under the fixed-dimension requirement at every mask and
+  completes its capture.
+
+`ludus_reference_benchmark` measured the cooked board against the same board
+as a built-in Mix with weight 0.4. That Mix is the same BSDF as the program at
+the authored mask of 0.4. The build, device and minimum-of-nine method match
+the table above. GPU captures are 256×256 at 64 spp and depth 8. CPU captures
+are 64×64 at 16 spp.
+
+| Board material | GPU transport device time | GPU total | CPU oracle total | GPU mean luminance |
+| --- | --- | --- | --- | --- |
+| Built-in Mix | 54 ms | 221 ms | 153 ms | 0.16715 |
+| Grain mix program | 104 ms | 333 ms | 170 ms | 0.16706 |
+
+The board has six triangles, so material evaluation takes a larger share of
+the time than in the Cornell box. The program's median device time was about
+1.5 times the Mix's, within this GPU's run-to-run variance.
+
 ### Preparation and publication
 
 Validate the candidate definition and overrides, resolve its exact dependencies,
@@ -2292,10 +2342,11 @@ that profile identity and cannot be compared as the same integral. Emission is t
 shading upper hemispheres. Textured RGB decodes sRGB before fixed-mip filtering;
 alpha stays linear. The capture mip overrides per-material LOD/mip filtering
 and LOD clamps. Transmission is limited to the
-[smooth dielectric reference](#smooth-dielectric-reference); there is no rough
-transmission, volume, spectral transport, coat or shading-normal energy
-correction. Multiple-scattering energy compensation is the opt-in
-[multiple-scattering GGX profile](#multiple-scattering-ggx-profile).
+[smooth dielectric reference](#smooth-dielectric-reference), and participating
+media to the [homogeneous absorbing medium reference](#homogeneous-absorbing-medium-reference);
+there is no rough transmission, scattering medium, spectral transport, coat or
+shading-normal energy correction. Multiple-scattering energy compensation is the
+opt-in [multiple-scattering GGX profile](#multiple-scattering-ggx-profile).
 
 The rough-metal white-furnace regression measures the energy missing from the
 single-scatter model. It views a white metallic-roughness plane (`metallic = 1`,
@@ -2621,7 +2672,7 @@ integrals and compared:
 - `ReferenceCaptureDescription::MaterialProfile` selects it for every traversal.
   It is part of the integral key, so changing it resets accumulation, and values
   outside the enumeration are rejected. `ReferenceCaptureInfo::MaterialProfile`
-  and `LUHDR01` flag 512 record it.
+  and `LUHDR01` flag 1024 record it.
 - `ReferenceBsdf::Profile` selects it for direct `EvaluateReferenceBsdf` and
   `SampleReferenceBsdf` calls.
 - `SingleScattering` remains the default and is bit-identical to the earlier
@@ -2785,12 +2836,13 @@ column-major world-to-clip floats at 96–159, eye at 160–171 and environment 
 172–183. Optical wavelength in metres occupies byte 92 (zero for geometric transport);
 remaining header bytes are reserved zero. Flags encode CPU (1), center
 rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
-GPU compute (64), resampled light sampling (128), scalar optical connections (256) and the
-[multiple-scattering GGX profile](#multiple-scattering-ggx-profile) (512); neither
+GPU compute (64), resampled light sampling (128), scalar optical connections (256), an
+absorbing medium (512, with its absorption at bytes 184–195 and boundary triangle count at 196) and the
+[multiple-scattering GGX profile](#multiple-scattering-ggx-profile) (1024); neither
 traversal bit marks native queries. The sampler field is 1 for `UniformArea`,
 2 and 3 for the resampled modes with flag 128, and 4 for
 `SeparateDirectional` without that flag. `scripts/reference-hdr` rejects other pairings and records
-`light_sampling` in its manifest, with `center_rays` for flag 2 and `material_profile` for flag 512.
+`light_sampling` in its manifest, with `center_rays` for flag 2 and `material_profile` for flag 1024.
 The scalar optical connection profile and its CPU/GPU contract are described in
 [render-graph authoring](../development/render-graph-authoring.md#trace-scene-optical-connections).
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32
@@ -2924,9 +2976,11 @@ The first reference profile is RGB, triangle surfaces, diffuse/GGX reflection,
 opaque and explicitly alpha-masked materials, finite area emitters, analytic
 point/spot/directional lights and an environment. Profile 8 adds smooth
 transmission with Fresnel, inside/outside index tracking and total internal
-reflection ([smooth dielectric reference](#smooth-dielectric-reference)); rough
-transmission, volumes, subsurface scattering, hair and spectral transport are
-further features.
+reflection ([smooth dielectric reference](#smooth-dielectric-reference)). One
+bounded homogeneous absorber attenuates every segment
+([homogeneous absorbing medium reference](#homogeneous-absorbing-medium-reference));
+rough transmission, scattering media, subsurface scattering, hair and spectral
+transport are further features.
 Raster alpha blending is not a physically specified transmission model. Unsupported
 materials make a capture incomplete or fail its requested reference profile;
 an error-material preview must never be labeled a reference image.
@@ -4267,6 +4321,103 @@ and pbrt-v4 revision `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`
 (`DielectricBxDF`, `ThinDielectricBxDF`, `FrDielectric`, `Refract`; Apache-2.0,
 `third_party/pbrt/LICENSE.txt`), for the adapted smooth dielectric estimators and
 the specular-bounce MIS convention of §13.4.
+
+### Homogeneous absorbing medium reference
+
+RT1's first participating-media profile is one bounded homogeneous absorber.
+`ReferenceCaptureDescription::MediumOrNull` borrows a
+`ReferenceMediumDescription`: world-space boundary triangles (at most
+`MAX_REFERENCE_MEDIUM_TRIANGLES`, 4096) and a linear RGB absorption coefficient
+per world metre, finite and at most `MAX_MEDIUM_ABSORPTION_PER_WORLD` (10000).
+Begin and Update copy it, and it joins the integral key, the scene fingerprint
+and the raw capture. A null medium is vacuum and leaves every earlier capture
+bit for bit. Scattering, emission, density grids and overlapping or nested media
+are outside this profile and are the follow-up work of the participating-media
+plan.
+
+The boundary is pbrt-v4's invisible `interface`: it neither scatters nor occludes,
+and it is not part of the snapshot, so raster, GPU preview and render-graph passes
+never see it. It must be closed and consistently oriented, with its oriented front
+side (counterclockwise corners) facing the outside. Admission sorts the directed
+edges and requires every edge to appear once with its reverse once, on
+bit-identical corners. Disjoint closed pieces form one medium. Admission rejects an
+open, nonmanifold or inconsistently wound boundary, degenerate or out-of-range
+corners and invalid absorption with `InvalidDescription`.
+
+Both tracers follow every camera, continuation and light-visibility segment through
+the boundary's ordered crossings. A crossing against the outward normal enters the
+medium and one along it leaves. The inside count at the camera follows from every
+crossing of its primary ray, so a pinhole or orthographic origin inside the medium
+needs no extra input. Each path carries the count at its current vertex. Shadow rays
+start with the receiver's count and need no traversal change, because the boundary
+does not occlude. With crossing signs `s_i` at distances `t_i` inside a segment of
+length `L`, the length inside is `w(L) L - Σ s_i t_i`, where `w(L)` is the count at
+the segment end. That form keeps float32 accuracy on long escaping segments. Each
+segment multiplies the path throughput, or the pending light contribution, by
+`exp(-σ_a · inside)` per channel, applied before the emission it reaches. A count
+outside {0, 1} fails the path with `ReferenceFailure::InvalidMediumCrossing`
+(GPU failure code 18) instead of guessing. Overlapping media and a ray through an
+unresolved boundary edge produce such a count.
+
+Each crossing uses the float32 watertight edge test of the BVH traversal, in its
+canonical vertex order. A tie rule decides exactly zero edge functions: the
+triangle that traverses the shared edge in the edge's lexicographic direction
+class keeps the hit when its winding agrees. Exactly one of the triangles meeting
+at an edge then counts a ray through it, as rasterization's top-left rule assigns
+shared edges. Center rays through box-face diagonals exercise this rule. The CPU
+oracle (`reference_medium.cpp`) and the GPU kernel
+(`shaders/reference_medium.slang`) repeat the same float32 arithmetic in the same
+triangle order. The CPU evaluates `exp` in float64 and rounds the result. Every
+segment tests every boundary triangle, so cost grows linearly with the boundary.
+The GPU kernel reads the boundary after the packed scene words, at the offset and
+triangle count in `Parameters.Tile.yz`. GPU preview kernel version 16 marks that
+layout, so kernels cooked earlier fail with `InvalidSceneLayout`.
+
+Supported traversals are `CpuOracle` and `GpuCompute`. `NativeQueries`, the GPU
+preview and positive `OpticalWavelengthWorld` report `Unsupported` for a capture
+with a medium, so an application selects one of the two supported paths
+explicitly; there is no fallback. Every `ReferenceLightSampling` mode is
+supported, because transmittance only scales the visibility of each light sample.
+`EncodeReferenceHdr` sets LUHDR flag 512 and writes the absorption at bytes
+184–195 and the boundary triangle count at byte 196. `scripts/reference-hdr`
+validates both and records `medium` in its manifest.
+
+Cooked scenes carry the medium as a LUSCN v12 `MediumInterface` material whose
+objects are the boundary, and the authored source as a
+[`medium_interface` material](scene-source-format.md#medium-interface). The
+[installed-SDK reference-scene sample](../examples/reference-scene.md#absorbing-medium-capture)
+turns those objects into the capture's medium.
+
+**Evidence.** On Apple M5 Metal (macOS 26.6, debug build), the `[medium]` cases of
+the [renderer test](../../modules/graphics/renderer/tests/reference_compute_tests.cpp)
+capture 16×16-pixel matched scenes with both implementations:
+
+- **Different segment lengths and RGB coefficients.** Orthographic center rays
+  see an emitter through two disjoint boxes, one and a quarter metre thick, with
+  `σ_a = (0.5, 1, 2)`. Each pixel's emission matches `L_e exp(-σ_a d)` within a
+  relative 1e-4 plus 1e-7.
+- **Vacuum.** Zero absorption, and no medium at all, both reproduce the
+  unattenuated emitter bit for bit on both implementations.
+- **Camera inside the medium.** Orthographic origins inside a box match
+  `exp(-3 σ_a)`. A jittered pinhole inside it stays within the analytic range set
+  by its field of view.
+- **Light paths.** A point light lights a Lambertian wall through a slab that the
+  camera rays also cross. Next-event estimation matches the closed form with both
+  attenuations, and also with zero absorption. With an opaque blocker, the wall's
+  shadowed pixels are exactly zero.
+- **Admission and failures.** Open, inconsistently wound, empty and oversized
+  boundaries and invalid absorption are rejected. A medium change replaces the
+  integral. Two nested boxes fail both implementations with
+  `InvalidMediumCrossing` before any sample commits.
+
+The largest RGB distance between CPU and GPU means is zero in every case. Closest
+and visibility query counts and scene fingerprints are equal. Vulkan and WebGPU
+compile the kernel, but their pixel parity is unqualified.
+
+Thanks to Julian Fong, Magnus Wrenninge, Christopher Kulla and Ralf Habel,
+[*Production Volume Rendering*, SIGGRAPH 2017 course, §§2.3.1, 3.2 and 3.4](https://doi.org/10.1145/3084873.3084907),
+for the closed-form homogeneous transmittance and for transmittance accumulated over
+ordered boundary crossings.
 
 ## Implementation phases and acceptance
 

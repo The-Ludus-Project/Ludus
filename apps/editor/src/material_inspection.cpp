@@ -119,6 +119,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Closure program");
         case format::MaterialModel::Unresolved:
             return QStringLiteral("Unsupported imported material");
+        case format::MaterialModel::MediumInterface:
+            return QStringLiteral("Absorbing medium boundary");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }

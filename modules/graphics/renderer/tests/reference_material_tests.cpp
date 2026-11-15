@@ -1,3 +1,5 @@
+#include "material_program_fixtures.h"
+
 #include <ludus/content/scene_format/material.h>
 #include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/types.h>
@@ -914,6 +916,114 @@ TEST_CASE("Closure-program sampling matches its density, energy and reciprocity"
         // The density integrates to the accepted fraction; the conductor's null proposals keep their mass.
         CHECK(math::Abs(densityIntegral / sampleCount - static_cast<float64>(accepted) / sampleCount) < 0.01);
         CHECK(math::Abs(energyIntegral / sampleCount - sampledEnergy / sampleCount) < 0.02);
+    }
+}
+
+TEST_CASE("A grain mask weights two distinct lobes by itself and its complement", "[renderer][rt1][materials][program]")
+{
+    namespace fixtures = ludus::renderer_tests;
+    const MaterialProgram program = fixtures::MakeGrainMixProgram();
+    REQUIRE(program_format::IsMaterialProgramValid(program) == true);
+    rr::ReferenceBsdf grain;
+    grain.Scattering.Model = program_format::MaterialModel::Program;
+    grain.ProgramOrNull = &program;
+    grain.Roughness = fixtures::GRAIN_MIX_ROUGHNESS;
+    CHECK(program_format::SupportsFixedDimensionReflection(grain.Scattering, program) == true);
+    // The two lobes evaluated independently as typed models: a white Lambertian and the glossy gold conductor.
+    rr::ReferenceBsdf diffuse;
+    diffuse.Scattering.Model = program_format::MaterialModel::Diffuse;
+    rr::ReferenceBsdf conductor;
+    conductor.Scattering.Model = program_format::MaterialModel::Conductor;
+    conductor.Scattering.AlphaU = fixtures::GRAIN_MIX_ROUGHNESS * fixtures::GRAIN_MIX_ROUGHNESS;
+    conductor.Scattering.AlphaV = conductor.Scattering.AlphaU;
+    conductor.Scattering.Eta = fixtures::GOLD_ETA;
+    conductor.Scattering.K = fixtures::GOLD_K;
+    const math::Vector3 normalWorld{0, 0, 1};
+    const math::Vector3 viewWorld = MakeHemisphereDirection(0.8F, 0);
+    // The mirror direction, where the gold peaks, and two off-specular directions.
+    constexpr usize LIGHT_COUNT = 3;
+    const StaticArray<math::Vector3, LIGHT_COUNT> lightsWorld{{
+        {-viewWorld.X, -viewWorld.Y, viewWorld.Z},
+        MakeHemisphereDirection(0.5F, 2.0F),
+        MakeHemisphereDirection(0.95F, 1.0F),
+    }};
+    constexpr float32 INTERIOR_MASK = 0.35F;
+    constexpr float32 RELATIVE_TOLERANCE = 1e-5F;
+    for (const float32 mask : {0.0F, 1.0F, INTERIOR_MASK})
+    {
+        CAPTURE(mask);
+        grain.BaseColor = {mask, mask, mask};
+        for (const math::Vector3& lightWorld : lightsWorld)
+        {
+            CAPTURE(lightWorld.X, lightWorld.Y, lightWorld.Z);
+            rr::ReferenceBsdfEvaluation mixed;
+            rr::ReferenceBsdfEvaluation matte;
+            rr::ReferenceBsdfEvaluation gold;
+            REQUIRE(rr::EvaluateReferenceBsdf(grain, normalWorld, viewWorld, lightWorld, mixed) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(diffuse, normalWorld, viewWorld, lightWorld, matte) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(conductor, normalWorld, viewWorld, lightWorld, gold) ==
+                    rhi::RasterStatus::Ready);
+            // The selection weights are the weights' means, 1 - m and m, so they already sum to one.
+            const math::Vector3 value = matte.Value * (1 - mask) + gold.Value * mask;
+            const float32 density = matte.Pdf * (1 - mask) + gold.Pdf * mask;
+            CHECK(math::Distance(mixed.Value, value) <= RELATIVE_TOLERANCE * (1 + math::Length(value)));
+            CHECK(mixed.Pdf == Catch::Approx(density).epsilon(RELATIVE_TOLERANCE));
+        }
+        // Continuation proposes from the full mixture: each sample's density and weight are the mixture's at the
+        // sampled direction, and the sampled albedo is the weighted sum of the lobes' sampled albedos.
+        constexpr usize SIDE = 64;
+        float64 mixedAlbedo = 0;
+        float64 matteAlbedo = 0;
+        float64 goldAlbedo = 0;
+        for (usize y = 0; y < SIDE; ++y)
+        {
+            for (usize x = 0; x < SIDE; ++x)
+            {
+                const float32 first = (static_cast<float32>(x) + 0.5F) / static_cast<float32>(SIDE);
+                const float32 second = (static_cast<float32>(y) + 0.5F) / static_cast<float32>(SIDE);
+                // A lattice offset decorrelates the lobe selector from both direction values.
+                constexpr usize SELECTOR_X_STRIDE = 37;
+                constexpr usize SELECTOR_Y_STRIDE = 11;
+                const float32 selector =
+                    (static_cast<float32>((x * SELECTOR_X_STRIDE + y * SELECTOR_Y_STRIDE) % SIDE) + 0.5F) /
+                    static_cast<float32>(SIDE);
+                rr::ReferenceBsdfSample sampled;
+                REQUIRE(rr::SampleReferenceBsdf(grain, normalWorld, viewWorld, {selector, first, second}, sampled) ==
+                        rhi::RasterStatus::Ready);
+                if (sampled.Accepted == true)
+                {
+                    rr::ReferenceBsdfEvaluation matte;
+                    rr::ReferenceBsdfEvaluation gold;
+                    REQUIRE(rr::EvaluateReferenceBsdf(diffuse, normalWorld, viewWorld, sampled.Direction, matte) ==
+                            rhi::RasterStatus::Ready);
+                    REQUIRE(rr::EvaluateReferenceBsdf(conductor, normalWorld, viewWorld, sampled.Direction, gold) ==
+                            rhi::RasterStatus::Ready);
+                    const float32 density = matte.Pdf * (1 - mask) + gold.Pdf * mask;
+                    const math::Vector3 value = matte.Value * (1 - mask) + gold.Value * mask;
+                    CHECK(sampled.MisPdf == Catch::Approx(density).epsilon(RELATIVE_TOLERANCE));
+                    CHECK(math::Distance(sampled.Weight, value * (sampled.Direction.Z / density)) <=
+                          RELATIVE_TOLERANCE * (1 + math::Length(sampled.Weight)));
+                    mixedAlbedo += static_cast<float64>(sampled.Weight.X);
+                }
+                for (const bool isGold : {false, true})
+                {
+                    rr::ReferenceBsdfSample lobe;
+                    REQUIRE(rr::SampleReferenceBsdf(isGold == true ? conductor : diffuse,
+                                                    normalWorld,
+                                                    viewWorld,
+                                                    {selector, first, second},
+                                                    lobe) == rhi::RasterStatus::Ready);
+                    (isGold == true ? goldAlbedo : matteAlbedo) += static_cast<float64>(lobe.Weight.X);
+                }
+            }
+        }
+        const float64 sampleCount = static_cast<float64>(SIDE * SIDE);
+        const float64 weight = static_cast<float64>(mask);
+        constexpr float64 ALBEDO_TOLERANCE = 0.01;
+        CHECK(math::Abs(mixedAlbedo / sampleCount - ((1 - weight) * matteAlbedo + weight * goldAlbedo) / sampleCount) <
+              ALBEDO_TOLERANCE);
     }
 }
 

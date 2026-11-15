@@ -56,6 +56,9 @@ constexpr float64 MAX_FINITE_FLOAT64 = 1.7976931348623157e308;
 constexpr usize MAX_PATH_BYTES = MAX_MESSAGE_BYTES / 2;
 constexpr std::string_view DIFFUSE_MODEL = "diffuse";
 constexpr std::string_view METALLIC_ROUGHNESS_MODEL = "metallic_roughness";
+constexpr std::string_view MEDIUM_INTERFACE_MODEL = "medium_interface";
+/// The one supported medium type: constant absorption without scattering or emission.
+constexpr std::string_view HOMOGENEOUS_MEDIUM_TYPE = "homogeneous";
 
 /// @brief Bounded JSON path of the member being read, for diagnostics.
 class JsonPath final
@@ -891,9 +894,65 @@ struct ProgramNames final
     return inoutFailure.Fail(SceneSourceStatus::InvalidValue, "does not compile to a valid closure program", path);
 }
 
+/// Read a medium interface: a name and the enclosed medium, with no surface terms.
+[[nodiscard]] SceneSourceStatus
+ReadMediumInterface(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMaterial& outMaterial) noexcept
+{
+    SceneSourceStatus status = CheckMembers(value, {"name", "model", "medium"}, {}, path, inoutFailure);
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadText(value.Get("name"), false, JsonPath(path, "name"), inoutFailure, outMaterial.Name);
+    }
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    const JsonPath mediumPath(path, "medium");
+    const JsonValue medium = value.Get("medium");
+    if (medium.Object() == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed, "must be an object", mediumPath);
+    }
+    // Name an unsupported type before its members, which belong to that type.
+    std::string_view type;
+    if (medium.Get("type").String(type) == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed, "must be a string", JsonPath(mediumPath, "type"));
+    }
+    if (type != HOMOGENEOUS_MEDIUM_TYPE)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "is an unsupported medium type; only \"homogeneous\" absorption is supported, "
+                                 "without scattering, emission or density grids",
+                                 JsonPath(mediumPath, "type"));
+    }
+    status = CheckMembers(medium, {"type", "absorption"}, {}, mediumPath, inoutFailure);
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadVector(medium.Get("absorption"),
+                            0.0,
+                            static_cast<float64>(scene_format::MAX_MEDIUM_ABSORPTION_PER_WORLD),
+                            JsonPath(mediumPath, "absorption"),
+                            inoutFailure,
+                            outMaterial.MediumAbsorptionPerWorld);
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        outMaterial.Model = SourceMaterialModel::MediumInterface;
+        outMaterial.BaseColor = {};
+    }
+    return status;
+}
+
 [[nodiscard]] SceneSourceStatus
 ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMaterial& outMaterial) noexcept
 {
+    std::string_view requestedModel;
+    if (value.Object() == true && value.Get("model").String(requestedModel) == true &&
+        requestedModel == MEDIUM_INTERFACE_MODEL)
+    {
+        return ReadMediumInterface(value, path, inoutFailure, outMaterial);
+    }
     SceneSourceStatus status =
         CheckMembers(value,
                      {"name", "model", "base_color"},
@@ -978,7 +1037,7 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     else
     {
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
-                                 "must be diffuse, metallic_roughness, mix, project_brdf or program",
+                                 "must be diffuse, metallic_roughness, mix, project_brdf, program or medium_interface",
                                  JsonPath(path, "model"));
     }
     status = ReadVector(value.Get("base_color"),
@@ -1491,6 +1550,19 @@ template <typename Entry>
             return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
                                      "repeats a material name",
                                      JsonPath(path, "name"));
+        }
+        if (outScene.Materials[i].Model == SourceMaterialModel::MediumInterface)
+        {
+            for (usize earlier = 0; earlier < i; ++earlier)
+            {
+                if (outScene.Materials[earlier].Model == SourceMaterialModel::MediumInterface)
+                {
+                    return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                             "declares a second medium; one bounded medium per scene is supported, "
+                                             "so give every boundary object the same medium_interface material",
+                                             JsonPath(path, "model"));
+                }
+            }
         }
     }
 

@@ -5,6 +5,7 @@
 #include "../src/internal/render_graph_ray_scene.h"
 
 #include "ltc_lookup_cases.h"
+#include "material_program_fixtures.h"
 #include "one_more_vertex_oracle.h"
 #include "renderer_composite.h"
 #include "rg2_compute_mixed.h"
@@ -43,6 +44,7 @@
 #include "shadow_occlusion_oracle.h"
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/content/scene_source/scene_source.h>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
@@ -7546,6 +7548,37 @@ TEST_CASE("The Cornell box test scene files match the Cornell room", "[render-gr
     ReadTestScene("cornell_box/cornell-box-glossy.luscene.json", glossy);
     CheckCornellCamera(glossy.Camera, room.Cameras[0]);
     CheckSceneMatchesMesh(glossy, room.Meshes[0], room.Inputs.Materials);
+}
+
+TEST_CASE("The grain mix test scene file compiles to the renderer's grain mix program",
+          "[render-graph][scene-source][program]")
+{
+    namespace format = ludus::content::scene_format;
+    scene_source::SceneSource scene;
+    ReadTestScene("materials/grain-mix-board.luscene.json", scene);
+    usize programCount = 0;
+    for (const scene_source::SourceMaterial& material : scene.Materials)
+    {
+        if (material.Model != scene_source::SourceMaterialModel::Program)
+        {
+            continue;
+        }
+        ++programCount;
+        // The CPU oracle, the GPU reference and both graphs load the fixture, so it must be the file's record.
+        CHECK(static_cast<float32>(material.Roughness) == ludus::renderer_tests::GRAIN_MIX_ROUGHNESS);
+        format::MaterialProgramBytes compiled{};
+        format::MaterialProgramBytes expected{};
+        format::EncodeMaterialProgram(material.Program, compiled);
+        format::EncodeMaterialProgram(ludus::renderer_tests::MakeGrainMixProgram(), expected);
+        usize mismatch = 0;
+        while (mismatch < compiled.GetSize() && compiled[mismatch] == expected[mismatch])
+        {
+            ++mismatch;
+        }
+        CAPTURE(mismatch);
+        CHECK(mismatch == compiled.GetSize());
+    }
+    CHECK(programCount == 1);
 }
 
 TEST_CASE("The many-emitter test scene file matches its room",

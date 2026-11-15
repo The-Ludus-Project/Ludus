@@ -5,6 +5,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -206,6 +207,43 @@ struct ReferenceRenderingOptions final
     /// least both tables' size for GpuCompute; other traversals ignore it.
     ludus::foundation::usize GpuByteBudget = 0;
 };
+/// Corners of one ReferenceMediumDescription boundary triangle.
+inline constexpr ludus::foundation::usize REFERENCE_MEDIUM_TRIANGLE_CORNERS = 3;
+/// Most boundary triangles of one ReferenceMediumDescription. Both implementations test every
+/// boundary triangle on every path segment and visibility ray, so cost grows linearly with it.
+inline constexpr ludus::foundation::usize MAX_REFERENCE_MEDIUM_TRIANGLES = 4096;
+/// One bounded homogeneous absorbing medium for CpuOracle and GpuCompute reference captures.
+///
+/// The boundary is an invisible, index-matched interface (pbrt-v4's `interface` material): it
+/// neither scatters nor occludes, and it is not part of the snapshot, so raster, GPU preview and
+/// render-graph passes never see it. It must be a closed, consistently oriented triangle mesh whose
+/// oriented front side (counterclockwise corners, right-hand normal) faces the outside: every
+/// directed edge appears exactly once and its reverse exactly once, with bit-identical corners.
+/// Several disjoint closed pieces form one medium; overlapping or nested media are unsupported.
+///
+/// Both tracers follow every camera, continuation and light-visibility segment through the
+/// boundary's ordered crossings. A crossing against the outward normal enters the medium, one
+/// along it leaves; the camera's initial state is the crossing count along its primary ray, so
+/// camera origins inside the medium need no extra input. Each segment is attenuated by the
+/// Beer-Lambert transmittance exp(-AbsorptionPerWorld * length inside), per RGB channel. Light
+/// sources and scattering surfaces inside the medium are allowed. A segment whose crossings leave
+/// the inside count outside {0, 1}, for example through an open boundary or a ray through an edge
+/// that was not resolved, fails its path with ReferenceFailure::InvalidMediumCrossing.
+///
+/// Thanks to Julian Fong, Magnus Wrenninge, Christopher Kulla and Ralf Habel, "Production
+/// Volume Rendering", SIGGRAPH 2017 course, sections 2.3.1, 3.2 and 3.4,
+/// https://doi.org/10.1145/3084873.3084907, for closed-form homogeneous transmittance and
+/// transmittance accumulated over ordered boundary crossings.
+struct ReferenceMediumDescription final
+{
+    /// Borrowed world-space corners, REFERENCE_MEDIUM_TRIANGLE_CORNERS per triangle for
+    /// 1..MAX_REFERENCE_MEDIUM_TRIANGLES triangles, copied during Begin/Update. Each corner is finite and within
+    /// +/-1000000 metres; every triangle has positive area.
+    ludus::foundation::BorrowedView<const ludus::foundation::math::Vector3> BoundaryCornersWorld;
+    /// Linear RGB absorption coefficient sigma_a of the enclosed medium, per world metre. Each channel
+    /// is finite and in [0, content::scene_format::MAX_MEDIUM_ABSORPTION_PER_WORLD]; zero is vacuum.
+    ludus::foundation::math::Vector3 AbsorptionPerWorld{};
+};
 /// Immutable reference integral and stop target. Camera coordinates and matrices
 /// match raster canonical XY [-1,1], depth [0,1], Y up, top-left image rows.
 struct ReferenceCaptureDescription final
@@ -273,6 +311,13 @@ struct ReferenceCaptureDescription final
     /// Lattice, projection and range limits are documented in render-graph-authoring.md, "Wave tracing".
     /// Changing wavelength resets accumulation. Nonfinite/negative values are rejected. No silent fallback.
     foundation::float32 OpticalWavelengthWorld = 0;
+    /// Optional borrowed bounded absorbing medium, validated and copied during Begin/Update; null is
+    /// vacuum and keeps every existing capture bit for bit. The medium joins the integral key:
+    /// changing its corners or absorption replaces the job. CpuOracle and GpuCompute only:
+    /// NativeQueries, GPU preview and positive OpticalWavelengthWorld report Unsupported, so an
+    /// application selects one of the two supported traversals explicitly. Invalid boundaries and
+    /// coefficients report InvalidDescription.
+    const ReferenceMediumDescription* MediumOrNull = nullptr;
 };
 /// Renderer-scoped progressive job identity; copies borrow, Release cancels future
 /// work and detaches accepted query uses through their native completion.
@@ -340,6 +385,8 @@ enum class ReferenceFailure : ludus::foundation::uint8
     OpticalRegionCapacity,
     /// Optical propagation or ballistic escape exhausted the bounded interaction steps.
     OpticalPropagationCapacity,
+    /// A segment's ordered medium-boundary crossings left the inside count outside {0, 1}.
+    InvalidMediumCrossing,
 };
 
 /// Bounded capture progress, reproducibility and failure evidence.

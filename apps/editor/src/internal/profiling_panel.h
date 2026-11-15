@@ -30,6 +30,7 @@ private:
     QAction* mRecordAction;
     QComboBox* mMode;
     QLineEdit* mDestination;
+    QLabel* mTarget;
     QLabel* mStatus;
     QPushButton* mRetry;
     QPushButton* mDiscard;

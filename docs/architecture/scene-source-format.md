@@ -56,6 +56,7 @@ MIT license), which the import records like any other source license.
 | `many_lights/emitter-field-specular.luscene.json` | The same field over glossy metal (roughness 0.2), which mirrors the emitters. | The specular variant of `[.ris-projected-solid-angle-benchmark]` |
 | `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen, an [aperture](#aperture) whose vertical slit is 80 cm long with a 5 cm opening, and a white Lambertian wall 1 m behind the screen. The slit's long edges are knife edges; in a default World its opening is an editable entity field. The camera stands between the screen and the wall. At a design wavelength of 5 mm and the 5 cm opening, the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import and aperture-deferral checks of `ludus_scene_import_tests` and the `[aperture]` import test of `ludus_editor_tests`; no renderer test yet |
 | `materials/closure-program-block.luscene.json` | A weathered gold block on a grey floor under a square one-sided ceiling light. The block's [closure program](#closure-program) mixes a rust diffuse lobe, a gold conductor and a cosine-power sheen whose weights read the metallic and base colour inputs. | The closure-program cook check of `ludus_scene_import_tests` and the `[program]` World import test of `ludus_editor_tests` |
+| `materials/grain-mix-board.luscene.json` | A board leaning back on a grey floor under a square one-sided ceiling light. Its [closure program](#closure-program) reads a scalar grain mask from the base colour input: a white diffuse lobe takes the complement and a glossy gold conductor takes the mask. The authored base colour is an interior mask; a base texture supplies the grain. | The `[scene-source]` check of `ludus_render_graph_ray_tests`, which requires the file to compile to the [texture-weighted mixing](renderer-systems.md#texture-weighted-mixing-of-distinct-lobes) tests' program record, and the grain-mix cook check of `ludus_scene_import_tests` |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
 All but the single slit and the large line grid use the Cornell room camera of the GPU tests: eye at
@@ -154,8 +155,8 @@ value.
 | Member | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique name that objects refer to. |
-| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). `"program"` selects a [closure program](#closure-program). |
-| `base_color` | yes | Linear Rec. 709 reflectance, each channel in [0, 1]. |
+| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). `"program"` selects a [closure program](#closure-program). `"medium_interface"` makes the material the boundary of an [absorbing medium](#medium-interface) and takes only `name`, `model` and `medium`. |
+| `base_color` | yes, except for a medium interface | Linear Rec. 709 reflectance, each channel in [0, 1]. |
 | `metallic` | no | `metallic_roughness` and `program` only; [0, 1], default 0. |
 | `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness` and `program`, default 1. |
 | `brdf` | for project BRDF | Versioned reflection program described below. |
@@ -264,6 +265,35 @@ It drops parameters that no lobe uses, and it reuses a register after the last
 read of its value. A program that exceeds a limit fails with `LIMIT_EXCEEDED`
 and a message that names the fix. The cook stores programs in LUSCN version 11; see
 [closure programs in the renderer](renderer-systems.md#material-closure-programs).
+
+### Medium interface
+
+A `medium_interface` material is the invisible, index-matched boundary of one
+bounded homogeneous absorbing medium, like pbrt-v4's `interface` material with an
+interior medium. Its objects neither reflect nor occlude. Together they must form
+a closed surface whose polygons are wound counterclockwise seen from outside, so
+their front faces point out of the medium. Several disjoint closed pieces may share
+the material.
+
+```json
+{"name": "Ink", "model": "medium_interface",
+ "medium": {"type": "homogeneous", "absorption": [0.5, 1, 2]}}
+```
+
+| Member | Meaning |
+| --- | --- |
+| `medium.type` | `"homogeneous"`, the only supported type. Any other type, such as a density grid, is rejected as `is an unsupported medium type`. |
+| `medium.absorption` | Linear Rec. 709 absorption coefficient `σ_a` of the enclosed medium per metre, each channel in [0, 10000]. Transmittance along a length `d` inside is `exp(-σ_a d)`; zero is vacuum. |
+
+A document declares at most one medium interface material, because overlapping
+and nested media are unsupported. Scattering, emission and density members are
+not part of version 1. The cook stores the material as a LUSCN v12
+`MediumInterface` record. RT1 CPU-oracle and GPU-compute reference captures
+render it as described in the
+[homogeneous absorbing medium reference](renderer-systems.md#homogeneous-absorbing-medium-reference).
+The World viewport cannot show media yet: opening a cooked bundle with a medium in
+the Editor names the material and asks you to remove its objects or use a
+reference capture.
 
 ### Object
 

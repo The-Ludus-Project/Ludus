@@ -6,8 +6,11 @@
 // window. It then writes its frame statistics (ProducerStatistics) to standard
 // output.
 //
-// Usage: ludus_rhi_hosted_producer [render|forged]
+// Usage: ludus_rhi_hosted_producer [render|record|forged]
 //   render  Render frames as described above.
+//   record  Render as above with GPU timing enabled, inside one named surface pass
+//           (HOSTED_TEST_PASS_NAME), and answer the editor's recording requests with
+//           a HostedGpuRecorder (the hosted recording acceptance).
 //   forged  Publish one generation whose adapter UUIDs and handles belong to no
 //           real image, so the consumer must refuse it, then wait for the close.
 
@@ -16,6 +19,10 @@
 
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/gpu_scope.h>
+#include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/hosted_recorder.h>
+#include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/hosted_surface.h>
@@ -114,15 +121,45 @@ int32 RunForged(platform::Window& inoutWindow)
     return WriteStatistics({}) == true ? 0 : EXIT_STATISTICS;
 }
 
-int32 RunRender(platform::Window& inoutWindow)
+/// Encode the recorded frame's one named pass: clear the acquired surface to the test colour.
+/// The scope stays open until EndFrame submits the frame, which closes it.
+void EncodeRecordedPass(rhi::DeviceHandle device, const rhi::GpuScopeDescription& scope)
+{
+    // Annotation statuses never fail rendering; an unnamed pass is counted, not sampled.
+    static_cast<void>(rhi::BeginGpuScope(device, scope));
+    rhi::RasterPassDescription pass;
+    for (usize i = 0; i < hosted_test::HOSTED_TEST_COLOR.GetSize(); ++i)
+    {
+        pass.Clear[i] = static_cast<float32>(hosted_test::HOSTED_TEST_COLOR[i]);
+    }
+    // A pass that cannot be encoded leaves the frame's own clear, in the same colour.
+    static_cast<void>(rhi::BeginRasterPass(device, pass));
+}
+
+int32 RunRender(platform::Window& inoutWindow, bool shouldRecord)
 {
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     rhi::ApplicationInfo application;
-    application.Name = "ludus_rhi_hosted_producer";
-    if (rhi::CreateDevice(application, inoutWindow.GetNativeWindowInfo(), {}, device, surface) !=
+    application.Name = hosted_test::HOSTED_TEST_PRODUCER_NAME.data();
+    rhi::DeviceDescription description;
+    description.EnableGpuTiming = shouldRecord;
+    if (rhi::CreateDevice(application, inoutWindow.GetNativeWindowInfo(), description, device, surface) !=
         rhi::DeviceStatus::Ready)
     {
+        return EXIT_DEVICE;
+    }
+    rhi::HostedGpuRecorder recorder;
+    rhi::GpuScopeDescription scope;
+    if (shouldRecord == true &&
+        (recorder.Attach(
+             inoutWindow.GetNativeWindowInfo(),
+             {hosted_test::HOSTED_TEST_PRODUCER_NAME.data(), hosted_test::HOSTED_TEST_PRODUCER_NAME.size()}) == false ||
+         rhi::MakeGpuScope(hosted_test::HOSTED_TEST_PASS_IDENTITY,
+                           {hosted_test::HOSTED_TEST_PASS_NAME.data(), hosted_test::HOSTED_TEST_PASS_NAME.size()},
+                           scope) == false))
+    {
+        static_cast<void>(rhi::DestroyDevice(device));
         return EXIT_DEVICE;
     }
     hosted_test::ProducerStatistics statistics;
@@ -144,21 +181,29 @@ int32 RunRender(platform::Window& inoutWindow)
             exitCode = EXIT_FRAME;
             break;
         }
+        recorder.BeginFrame(device);
         const time::Timestamp before = time::Now();
         const rhi::DeviceStatus status = rhi::BeginFrame(device, surface);
         const uint64 elapsed = time::Now().Nanoseconds - before.Nanoseconds;
         if (status == rhi::DeviceStatus::Ready)
         {
+            if (shouldRecord == true)
+            {
+                EncodeRecordedPass(device, scope);
+            }
             if (rhi::EndFrame(device) != rhi::DeviceStatus::Ready)
             {
+                recorder.EndFrame(false);
                 exitCode = EXIT_FRAME;
                 break;
             }
+            recorder.EndFrame(true);
             ++statistics.ReadyFrames;
             statistics.LastRenderedScale = info.Scale;
         }
         else if (status == rhi::DeviceStatus::Skipped)
         {
+            recorder.EndFrame(false);
             ++statistics.SkippedFrames;
             statistics.MaxSkippedNanoseconds =
                 elapsed > statistics.MaxSkippedNanoseconds ? elapsed : statistics.MaxSkippedNanoseconds;
@@ -170,6 +215,7 @@ int32 RunRender(platform::Window& inoutWindow)
         }
         WaitForNextFrame();
     }
+    recorder.Detach();
     static_cast<void>(rhi::DestroyDevice(device));
     if (WriteStatistics(statistics) == false)
     {
@@ -191,5 +237,9 @@ int main(int argumentCount, char** arguments)
     {
         return EXIT_WINDOW;
     }
-    return mode == "forged" ? RunForged(*window) : RunRender(*window);
+    if (mode == "forged")
+    {
+        return RunForged(*window);
+    }
+    return RunRender(*window, mode == "record");
 }

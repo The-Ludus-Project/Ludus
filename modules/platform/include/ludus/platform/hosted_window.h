@@ -13,6 +13,7 @@
 #include <ludus/input/key.h>
 #include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/hosted_recording.h>
 #include <ludus/platform/hosted_surface.h>
 
 #include <string_view>
@@ -247,6 +248,41 @@ public:
     /// outside the generation; InvalidState when stopped; Overflow when twelve
     /// releases are already waiting.
     HostedEndpointStatus SendRelease(foundation::uint32 generation, foundation::uint32 image) noexcept;
+
+    /// @brief Ask the window's recorder to start or stop a recording.
+    ///
+    /// The window answers each request once with a RecordingAcknowledgement event, and a
+    /// started recording streams Sample events until its Stop is acknowledged. A window
+    /// without a recorder answers a Start with Unsupported. Requests are never dropped
+    /// silently: a full send queue refuses one with Overflow.
+    /// @param request Start with a recording above every recording started this session,
+    /// or Stop of a started recording; Request above every earlier request.
+    /// @return Ok; NotConnected; InvalidArgument for zero or non-increasing identities;
+    /// InvalidState when stopped, after SendClose() or with MAX_HOSTED_RECORDING_REQUESTS
+    /// requests unacknowledged; Overflow.
+    HostedEndpointStatus SendRecordingRequest(const HostedRecordingRequest& request) noexcept;
+
+    /// @brief Take the oldest recording message the window sent.
+    ///
+    /// Pump() receives them, in arrival order and separately from surface events. They are
+    /// kept after the window disconnects, so a recording retains what arrived before the
+    /// loss, until Stop() or the next Start(). At most 128 are queued: a sample arriving at
+    /// a full queue is dropped and counted (GetDroppedRecordingEvents()); it never holds
+    /// back the window's frames. The window acknowledges only requests this endpoint sent
+    /// and samples only recordings it started; anything else is a protocol violation.
+    /// @param outEvent The event; unchanged unless true is returned.
+    /// @return true when an event was taken.
+    [[nodiscard]] bool TryTakeRecordingEvent(HostedRecordingEvent& outEvent) noexcept;
+
+    /// Recording events dropped at a full queue since Start(); zero when stopped.
+    [[nodiscard]] foundation::uint64 GetDroppedRecordingEvents() const noexcept;
+
+    /// @brief The operating system's identifier of the admitted window's process.
+    ///
+    /// Read from the connection's peer credentials at admission (the named-pipe client on
+    /// Windows), not from anything the window sends. Kept after a disconnection.
+    /// @return The process identifier, or zero before a window is admitted or when stopped.
+    [[nodiscard]] foundation::uint64 GetPeerProcessId() const noexcept;
 
 private:
     struct State;

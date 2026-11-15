@@ -7,6 +7,8 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 
+#include <string_view>
+
 namespace ludus::graphics::rhi::hosted_test
 {
 /// Extent the editor endpoint starts with, in backing pixels.
@@ -23,6 +25,13 @@ inline constexpr foundation::uint8 COLOR_TOLERANCE = 1;
 inline constexpr foundation::uint8 FORGED_UUID_BYTE = 0xFF;
 /// Allocation size the forged producer announces.
 inline constexpr foundation::uint64 FORGED_ALLOCATION_BYTES = 4096;
+/// Producer name the recording producer reports with its acknowledgements.
+inline constexpr std::string_view HOSTED_TEST_PRODUCER_NAME = "ludus_rhi_hosted_producer";
+/// Name of the recording producer's one timed pass per frame.
+inline constexpr std::string_view HOSTED_TEST_PASS_NAME = "HostedProducer/Surface";
+/// Producer-local identity of that pass's scope.
+inline constexpr foundation::uint64 HOSTED_TEST_PASS_IDENTITY =
+    0x4C48'5052; // ludus-style: magic-number "LHPR" scope tag
 
 /// What the producer reports on standard output when its window closes.
 struct ProducerStatistics final

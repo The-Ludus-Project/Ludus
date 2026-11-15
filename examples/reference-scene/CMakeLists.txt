@@ -14,6 +14,7 @@ ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_gpu_previ
 ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_lit_shadow)
 ludus_compile_ray_queries(TARGET reference_scene NAME ray_query)
 ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_gpu_preview_software)
+ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_reference renderer_reference_reduce)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(reference_scene PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wformat=2 -Wundef
@@ -38,6 +39,9 @@ if(BUILD_TESTING)
     set_tests_properties(scene_gpu_preview PROPERTIES TIMEOUT 60)
     add_test(NAME scene_capture COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_capture.py" "$<TARGET_FILE:reference_scene>")
     set_tests_properties(scene_capture PROPERTIES TIMEOUT 60)
+    add_test(NAME scene_absorbing_medium COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_medium.py" "$<TARGET_FILE:reference_scene>")
+    set_tests_properties(scene_absorbing_medium PROPERTIES TIMEOUT 120)
     add_test(NAME scene_acceptance_driver COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_acceptance.py -v)
     add_test(NAME scene_renderer_acceptance COMMAND "${Python3_EXECUTABLE}"

@@ -29,6 +29,10 @@ using scene_source::SourceObject;
     {
         return "program";
     }
+    if (model == SourceMaterialModel::MediumInterface)
+    {
+        return "medium_interface";
+    }
     return model == SourceMaterialModel::Diffuse ? "diffuse" : "metallic_roughness";
 }
 
@@ -88,6 +92,14 @@ void CopyRgb(math::Vector3d value, float64 (&outRgb)[IR_RGB_CHANNEL_COUNT]) noex
     {
         material.Scattering.Model = scene_format::MaterialModel::Program;
         material.Program = source.Program;
+    }
+    if (source.Model == SourceMaterialModel::MediumInterface)
+    {
+        // The boundary keeps every scattering default; K carries the enclosed medium's absorption.
+        material.Scattering.Model = scene_format::MaterialModel::MediumInterface;
+        material.Scattering.K = {{static_cast<float32>(source.MediumAbsorptionPerWorld.X),
+                                  static_cast<float32>(source.MediumAbsorptionPerWorld.Y),
+                                  static_cast<float32>(source.MediumAbsorptionPerWorld.Z)}};
     }
     material.SourceFile = 0;
     return inoutScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == true ? Status::Ok : Status::OutOfMemory;

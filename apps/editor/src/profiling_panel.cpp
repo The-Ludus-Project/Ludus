@@ -21,7 +21,7 @@ namespace ludus::editor
 {
 ProfilingPanel::ProfilingPanel(RenderPreview* preview, QAction* recordAction, QWidget* parentOrNull)
     : QWidget(parentOrNull), mController(preview, this), mRecordAction(recordAction), mMode(new QComboBox(this)),
-      mDestination(new QLineEdit(this)), mStatus(new QLabel(this)),
+      mDestination(new QLineEdit(this)), mTarget(new QLabel(this)), mStatus(new QLabel(this)),
       mRetry(new QPushButton(QStringLiteral("Retry Save..."), this)),
       mDiscard(new QPushButton(QStringLiteral("Discard Unsaved Recording"), this)),
       mReveal(new QPushButton(QStringLiteral("Reveal Last Trace"), this))
@@ -33,6 +33,8 @@ ProfilingPanel::ProfilingPanel(RenderPreview* preview, QAction* recordAction, QW
     mDestination->setObjectName(QStringLiteral("profilingDestination"));
     mDestination->setPlaceholderText(QStringLiteral("Automatic: project out/profiling/<unique-id>.json"));
     mStatus->setObjectName(QStringLiteral("profilingStatus"));
+    mTarget->setObjectName(QStringLiteral("profilingTarget"));
+    mTarget->setWordWrap(true);
     mReveal->setObjectName(QStringLiteral("profilingReveal"));
     mReveal->setToolTip(QStringLiteral("Available after a recording has been saved successfully."));
     mStatus->setWordWrap(true);
@@ -44,11 +46,14 @@ ProfilingPanel::ProfilingPanel(RenderPreview* preview, QAction* recordAction, QW
     QFormLayout* fields = new QFormLayout;
     fields->addRow(QStringLiteral("Record"), mMode);
     fields->addRow(QStringLiteral("Output file"), mDestination);
+    fields->addRow(QStringLiteral("Target"), mTarget);
     layout->addLayout(fields);
-    QLabel* explanation = new QLabel(QStringLiteral("CPU: editor process scopes. GPU: scene viewport device duration. "
-                                                    "GPU counters are attributed to submission, not aligned execution "
-                                                    "slices. F9 starts/stops recording; 30 seconds is the maximum."),
-                                     this);
+    QLabel* explanation =
+        new QLabel(QStringLiteral("CPU: editor process scopes. GPU: scene viewport device duration, or the "
+                                  "game's own passes while it plays in the viewport. "
+                                  "GPU counters are attributed to submission, not aligned execution "
+                                  "slices. F9 starts/stops recording; 30 seconds is the maximum."),
+                   this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
     layout->addWidget(mStatus);
@@ -125,6 +130,7 @@ void ProfilingPanel::refresh()
     mStatus->setText(mController.GetStatus().isEmpty() == true
                          ? QStringLiteral("Ready. Choose CPU, GPU or Both, then Record (F9).")
                          : mController.GetStatus());
+    mTarget->setText(mController.GetTargetDescription());
     mRetry->setEnabled(mController.HasUnsavedSnapshot());
     mDiscard->setEnabled(state == ProfilingState::Failed);
     mReveal->setEnabled(mController.GetLastPath().isEmpty() == false);

@@ -109,6 +109,8 @@ void PlayViewportSource::Stop() noexcept
     {
         return;
     }
+    // A recording keeps what the game sent before the channel closes.
+    endRecordingChannel();
     // A viewport ends its reads first; their markers are queued behind Qt's sampling.
     Q_EMIT ResettingFrames();
     for (HeldRead& held : mReads)
@@ -147,9 +149,11 @@ void PlayViewportSource::Pump()
                         DescribeRefusal(mConsumer.GetRefusal()) + QStringLiteral("."));
         return;
     }
+    deliverRecordingEvents();
     const platform::HostedConnectionState connection = mEndpoint.GetState();
     if (connection == platform::HostedConnectionState::Disconnected && mState != PlaySourceState::Disconnected)
     {
+        endRecordingChannel();
         setState(PlaySourceState::Disconnected);
         return;
     }
@@ -165,6 +169,59 @@ void PlayViewportSource::Pump()
         }
         Q_EMIT FrameReady();
     }
+}
+
+void PlayViewportSource::deliverRecordingEvents() noexcept
+{
+    platform::HostedRecordingEvent event;
+    while (mRecordingSinkOrNull != nullptr && mEndpoint.TryTakeRecordingEvent(event) == true)
+    {
+        mRecordingSinkOrNull->AcceptRecordingEvent(event);
+    }
+}
+
+void PlayViewportSource::endRecordingChannel() noexcept
+{
+    deliverRecordingEvents();
+    HostedRecordingSink* sinkOrNull = mRecordingSinkOrNull;
+    mRecordingSinkOrNull = nullptr;
+    if (sinkOrNull != nullptr)
+    {
+        sinkOrNull->EndRecordingChannel();
+    }
+}
+
+bool PlayViewportSource::IsRecordingConnected() const noexcept
+{
+    return (mState == PlaySourceState::Connected || mState == PlaySourceState::Playing) &&
+           mEndpoint.GetState() == platform::HostedConnectionState::Connected;
+}
+
+platform::HostedEndpointStatus
+PlayViewportSource::SendRecordingRequest(const platform::HostedRecordingRequest& request) noexcept
+{
+    return IsRecordingConnected() == true ? mEndpoint.SendRecordingRequest(request)
+                                          : platform::HostedEndpointStatus::NotConnected;
+}
+
+foundation::uint64 PlayViewportSource::GetProducerProcessId() const noexcept
+{
+    return mEndpoint.GetPeerProcessId();
+}
+
+foundation::uint64 PlayViewportSource::GetConsumedFrames() const noexcept
+{
+    return mTakenFrames;
+}
+
+foundation::uint64 PlayViewportSource::GetDroppedRecordingEvents() const noexcept
+{
+    return mEndpoint.GetDroppedRecordingEvents();
+}
+
+void PlayViewportSource::SetRecordingSink(HostedRecordingSink* sinkOrNull) noexcept
+{
+    mRecordingSinkOrNull = sinkOrNull;
 }
 
 bool PlayViewportSource::HasPendingFrame() const noexcept
@@ -290,6 +347,7 @@ void PlayViewportSource::setState(PlaySourceState state)
 void PlayViewportSource::makeUnavailable(const QString& reason)
 {
     mUnavailableReason = reason;
+    endRecordingChannel();
     setState(PlaySourceState::Unavailable);
 }
 

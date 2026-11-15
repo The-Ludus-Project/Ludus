@@ -10,6 +10,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/input/keyboard_event.h>
+#include <ludus/platform/hosted_recording.h>
 #include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/hosted_window.h>
 
@@ -37,6 +38,12 @@ inline constexpr usize MAX_SURFACE_EVENTS = 8;
 inline constexpr usize MAX_PENDING_DESCRIPTORS = MAX_RECEIVE_DESCRIPTORS;
 /// Releases held back while the send queue is full; at most every image of four generations.
 inline constexpr usize MAX_DEFERRED_RELEASES = 4 * HOSTED_SURFACE_IMAGE_COUNT;
+/// Recording events queued for the editor. Samples beyond the room kept for
+/// acknowledgements are dropped and counted; they never hold back surface events.
+inline constexpr usize MAX_RECORDING_EVENTS = 128;
+/// Queue entries kept for acknowledgements, one per request that may be outstanding.
+inline constexpr usize RECORDING_ACKNOWLEDGEMENT_RESERVE = MAX_HOSTED_RECORDING_REQUESTS;
+static_assert(RECORDING_ACKNOWLEDGEMENT_RESERVE < MAX_RECORDING_EVENTS);
 
 /// Lifecycle of a session.
 enum class SessionPhase : uint8
@@ -84,6 +91,26 @@ public:
     /// @return false when none is queued; `outEvent` is unchanged then.
     [[nodiscard]] bool TryTakeSurfaceEvent(HostedSurfaceEvent& outEvent) noexcept;
 
+    /// @brief Take the oldest received recording event.
+    ///
+    /// Recording events outlive a disconnection, so a recording keeps what the window sent
+    /// before it went away; Configure() discards them.
+    /// @return false when none is queued; `outEvent` is unchanged then.
+    [[nodiscard]] bool TryTakeRecordingEvent(HostedRecordingEvent& outEvent) noexcept;
+
+    /// Recording events dropped because the editor had not taken the queue, since Configure().
+    [[nodiscard]] LUDUS_INLINE foundation::uint64 GetDroppedRecordingEvents() const noexcept
+    {
+        return mDroppedRecordingEvents;
+    }
+
+    /// Process identifier of the admitted peer, read from the operating system at admission;
+    /// zero before one is admitted. Kept after a disconnection until Configure().
+    [[nodiscard]] LUDUS_INLINE foundation::uint64 GetPeerProcessId() const noexcept
+    {
+        return mAdmittedProcessId;
+    }
+
     /// @brief Take ownership of a newly connected peer.
     ///
     /// A peer under another user id is refused at once. Otherwise the session enters
@@ -116,12 +143,15 @@ public:
     HostedEndpointStatus SendKey(input::Key key, input::KeyTransition transition, bool isRepeat) noexcept;
     HostedEndpointStatus SendClose() noexcept;
     HostedEndpointStatus SendRelease(uint32 generation, uint32 image) noexcept;
+    HostedEndpointStatus SendRecordingRequest(const HostedRecordingRequest& request) noexcept;
 
 private:
     void refuse(HostedRefusal refusal) noexcept;
     void receiveHello(foundation::time::Timestamp now) noexcept;
     void receiveFromWindow() noexcept;
     [[nodiscard]] bool applyWindowMessage(const Message& message) noexcept;
+    [[nodiscard]] bool applyRecordingMessage(const Message& message) noexcept;
+    void pushRecordingEvent(const HostedRecordingEvent& event, bool isAcknowledgement) noexcept;
     [[nodiscard]] bool tryAttachHandles(const Message& message, HostedSurfaceImages& inoutImages) noexcept;
     void pushEvent(HostedSurfaceEvent&& event) noexcept;
     void clearSurfaceState() noexcept;
@@ -174,5 +204,16 @@ private:
     uint32 mLastGeneration = 0;
     foundation::StaticArray<HostedImageRelease, MAX_DEFERRED_RELEASES> mDeferredReleases = {};
     usize mDeferredReleaseCount = 0;
+    foundation::uint64 mAdmittedProcessId = 0;
+    /// Requests sent and not yet acknowledged, in send order.
+    foundation::StaticArray<HostedRecordingRequest, MAX_HOSTED_RECORDING_REQUESTS> mOutstandingRequests = {};
+    usize mOutstandingRequestCount = 0;
+    foundation::uint64 mLastRequest = 0;
+    /// Highest recording started this session: a sample of a later one violates the protocol.
+    foundation::uint64 mLastStartedRecording = 0;
+    foundation::StaticArray<HostedRecordingEvent, MAX_RECORDING_EVENTS> mRecordingEvents = {};
+    usize mRecordingFirst = 0;
+    usize mRecordingCount = 0;
+    foundation::uint64 mDroppedRecordingEvents = 0;
 };
 } // namespace ludus::platform::hosted

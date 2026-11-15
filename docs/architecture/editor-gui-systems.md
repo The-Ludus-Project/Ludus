@@ -887,10 +887,11 @@ endpoint reports Unavailable.
   message with the reason (WrongUser, BadToken, IncompatibleVersion,
   MalformedHello or HandshakeTimeout) and is disconnected. The endpoint keeps
   listening for the real window and counts each refusal.
-- **Protocol.** The protocol is version 3 on Unix and version 4 on Windows.
-  Version 4 adds NT handle values and a duplication acknowledgment. Version 1 had no hosted surface and
-  version 2 no consumer adapter in the Welcome; either side refuses another
-  version as IncompatibleVersion. Each message is
+- **Protocol.** The protocol is version 4 on Unix and version 5 on Windows.
+  Windows version 4 added NT handle values and a duplication acknowledgment.
+  Version 1 had no hosted surface, version 2 no consumer adapter in the Welcome
+  and version 3 (4 on Windows) no [hosted recording](#hosted-recording); either
+  side refuses another version as IncompatibleVersion. Each message is
   a little-endian 4-byte header (`uint16` kind, `uint16` payload size) followed
   by a fixed-size payload. A frame payload is at most 255 bytes, so a peer can
   read and refuse another version's Hello. The address keeps its own format
@@ -910,10 +911,14 @@ endpoint reports Unavailable.
 | ImagesCopied | endpoint → window | generation whose NT handles the editor duplicated, Windows only |
 | Present | window → endpoint | generation, image index, frame sequence |
 | Release | endpoint → window | generation, image index |
+| RecordingRequest | endpoint → window | Start or Stop, recording identity, request number |
+| RecordingAcknowledgement | window → endpoint | request kind, result, recording, request, frame, game clock ticks, eight coverage counts, producer name (≤ 63 bytes) |
+| RecordingSample | window → endpoint | recording, frame, submission/collection ticks, duration, scope identity, pass index, logical count, kind, calibrated interval and uncertainty, pass name (≤ 127 bytes) |
 
 Either side treats an unknown kind, a wrong size, a nonzero reserved byte or an
-out-of-range value as a violation and closes the channel. After the Hello, a
-window sends only Images and Present; the endpoint treats anything else as a
+out-of-range value as a violation and closes the channel. Names are zero-padded,
+valid UTF-8 without embedded zeros. After the Hello, a window sends only Images,
+Present and recording messages; the endpoint treats anything else as a
 violation and disconnects it.
 
 The window reproduces the Cocoa contract:
@@ -1210,6 +1215,79 @@ not interpret game keys.
 - **Close.** Stop sends a hosted close, the same as clicking a native window's
   close button, so the game shuts down along its normal path. The existing
   supervisor timeout and process-group cleanup remain the backstop.
+
+### Hosted recording
+
+A GPU recording in the [Profiling window](../development/editor-workspace.md#recording-cpu-and-gpu-profiling)
+targets the game while one plays in the World viewport. The editor's capture of
+the shared image cannot show the game's draws, so the game measures its own
+passes and returns them over its hosted-window channel. This is the producer
+side of the [graphics-debugging P2 phase](graphics-debugging.md#perfetto-recording-in-the-editor).
+
+- **Identities.** The editor gives each recording a nonzero identity that its
+  process never reuses, and each request a strictly increasing number. The
+  endpoint sends a Start only for a recording above every recording started on
+  the channel, a Stop only for a started one, and keeps at most four requests
+  unanswered. An acknowledgement must answer one outstanding request of the same
+  kind and recording, and a sample must name a recording started on the
+  channel; anything else is a violation.
+- **Producer.** `rhi::HostedGpuRecorder` (`<ludus/graphics/rhi/hosted_recorder.h>`)
+  attaches to `NativeWindowInfo::HostedRecordingOrNull`. A window without an
+  attached recorder answers a Start with Unsupported itself. The recorder owns
+  the device's per-pass batch while recording and never waits for the GPU: a
+  submitted frame whose batch cannot be armed because the previous one has not
+  resolved is counted as skipped. Every pass in a named `GpuScope` becomes one
+  sample with the scope's name and the recorder's frame number, which counts the
+  game's submitted frames from one. Start's acknowledgement reports the first
+  covered frame; Stop's reports the last one and the coverage counts. Stop waits
+  up to eight frames for a batch already measuring a covered frame, then reports
+  it unresolved.
+- **Games.** The World-demo game attaches a recorder only when it runs in a
+  hosted window, and creates only that device with GPU timing. It calls the
+  recorder's `BeginFrame` once its device is ready and before the Renderer opens
+  the frame, then `EndFrame` with whether the frame was presented. It never arms
+  pass timing itself. Its samples are the Renderer's `RasterViewport` scopes:
+  `Viewport/Scene`, `Viewport/Composite` and `Viewport/Present`. A recorder that
+  cannot attach leaves the game playing and its Starts answered Unsupported.
+- **Frame ownership.** Recording messages travel on the same ordered stream as
+  frames but never take the 1 KiB of send room the window keeps for Images and
+  Present, so a recording cannot make Present report Busy sooner. A sample that
+  does not fit is dropped and counted. The editor samples and returns presented
+  images exactly as without a recording; the recording holds none.
+- **Delivery.** The endpoint queues up to 128 recording events apart from surface
+  events, keeping four entries for acknowledgements. A sample arriving at a full
+  queue is dropped and counted. Queued events survive a disconnection until the
+  endpoint stops, and `PlayViewportSource` delivers them to the recording before
+  reporting the disconnection.
+- **Admission.** The editor accepts a sample only for the active recording's
+  identity, after its Start was acknowledged and from the acknowledged frame on.
+  Delayed samples of an earlier recording are counted as rejected, even when a
+  new game process repeats their frame numbers.
+- **Disconnect.** Losing the game, or a missing acknowledgement within two
+  seconds, finishes the recording with what it admitted. The export marks it
+  incomplete, records whether Stop was acknowledged, and keeps the game's
+  identity and captured frames.
+- **Export.** The editor writes a separate trace for the game. The GPU process is
+  named after the game and its operating-system process identifier, read from the
+  channel's peer credentials at admission. `ludusHostedProducer` holds the
+  recording, frames, coverage, rejected samples and frames the viewport consumed.
+  Every timestamp is on the game's monotonic clock. The editor's request and
+  receive ticks bracket each acknowledgement but establish no offset between
+  the two processes, so the trace is never placed on the editor's time axis.
+- **Modes.** GPU records the game. CPU still records the editor. Both is refused
+  while a game plays, because it would combine two processes on unrelated clocks.
+
+`ludus_platform_hosted_tests` checks the codec, request ordering, unsolicited
+acknowledgements, a window without a recorder, survival across a disconnection,
+delayed samples of an earlier recording and the surface send reserve. The
+editor's `[profiling][hosted]` cases script the channel to check admission,
+refusal and export. The `[native-hosted-frames]` Play case records the RHI test
+producer's named surface pass. It kills the game after a sample and checks the
+incomplete export, then reconnects and records a complete second trace. The
+`[.play-native]` World-demo recording case plays the World-demo game in the
+World viewport, records it, and checks the three viewport pass names, the game's
+process identifier and producer name, and a complete export with an
+acknowledged Stop.
 
 ### Separate window mode
 

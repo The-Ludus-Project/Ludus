@@ -227,3 +227,36 @@ TEST_CASE("Triangle bake charts are deterministic, guttered and capacity bounded
     REQUIRE(format::TryMakeBakeChartLayout(MAX_TRIANGLES + 1, layout) == false);
     REQUIRE(layout.TriangleCount == MAX_TRIANGLES);
 }
+
+TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surfaces", "[scene_format][materials][medium]")
+{
+    format::MaterialScattering scattering;
+    scattering.Model = format::MaterialModel::MediumInterface;
+    scattering.K = {{0.5F, 1, 2}};
+    CHECK(format::IsMediumInterfaceValid(scattering) == true);
+    CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
+    // Surface evaluators reject it: it neither scatters nor occludes.
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    CHECK(format::GetMaterialCapabilities(scattering) == 0);
+    CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::MediumInterface) == format::VERSION_12);
+    CHECK(format::IsSupportedVersion(format::VERSION_12) == true);
+    CHECK(format::IsSupportedVersion(format::VERSION_12 + 1) == false);
+    CHECK(format::LAST_MATERIAL_MODEL == format::MaterialModel::MediumInterface);
+    // Vacuum is admitted; negative, nonfinite and oversized absorption is not.
+    scattering.K = {};
+    CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
+    for (const format::float32 invalid :
+         {-1.0F, __builtin_nanf(""), format::MAX_MEDIUM_ABSORPTION_PER_WORLD * 2, __builtin_inff()})
+    {
+        scattering.K = {{0, invalid, 0}};
+        CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
+    }
+    // Every other field is the index-matched default.
+    scattering.K = {};
+    scattering.Eta = {{1.5F, 1.5F, 1.5F}};
+    CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
+    scattering = {};
+    scattering.Model = format::MaterialModel::MediumInterface;
+    scattering.AlphaU = .5F;
+    CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
+}

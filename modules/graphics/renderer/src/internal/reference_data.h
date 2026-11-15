@@ -21,6 +21,7 @@
 #include "../../shaders/renderer_reference_layout.h"
 #include "environment_data.h"
 #include "reference_light_sampling.h"
+#include "reference_medium.h"
 
 namespace ludus::graphics::renderer::internal
 {
@@ -181,6 +182,8 @@ struct ReferencePath final
     float32 PreviousPdf = 0;
     /// The previous scattering event was a specular delta lobe: emission it reaches takes full weight.
     bool IsPreviousSpecular = false;
+    /// Medium inside count (0 or 1) at the current ray's origin; derived from the primary ray's crossings.
+    uint32 MediumInside = 0;
     /// Resampled modes: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
     /// BSDF-hit MIS density of the emitter that the continuation reaches.
     ReferenceReceiverFrame PreviousReceiver{};
@@ -277,6 +280,8 @@ struct ReferenceJob final
     PanelLuminaire Luminaires[MAX_PANEL_LUMINAIRES];
     uint32 LuminaireCount = 0;
     EnvironmentData* EnvironmentOrNull = nullptr;
+    /// Admitted copy of Description.MediumOrNull, which the job keeps null; empty for vacuum.
+    ReferenceMediumData Medium;
     math::Matrix4 ClipToWorld;
     math::RandomKey Key;
     ReferenceSceneData Scene;

@@ -563,6 +563,16 @@ then gain absent tangents, version 3 parts dropping their stored bake UVs.
 
 ### Typed source materials (LUSCN v7)
 
+LUSCN v12 admits medium interfaces, written for a
+[`medium_interface` source material](scene-source-format.md#medium-interface).
+The tag-10 material keeps the v7 record: its K vector holds the enclosed medium's
+RGB absorption per metre, and every other scattering field keeps its default, as
+`IsMediumInterfaceValid` checks. Objects using the material are the closed medium
+boundary, not surfaces. `IsMaterialScatteringValid` rejects the tag, so renderers
+never install it as a surface material. Applications pass the boundary to RT1
+captures as a `ReferenceMediumDescription`, as the
+[reference-scene sample](../examples/reference-scene.md#absorbing-medium-capture) does.
+
 LUSCN v11 admits [closure programs](scene-source-format.md#closure-program).
 A program material keeps the v7 record with default scattering fields.
 A 656-byte `MaterialProgram` record follows its extension; no other material

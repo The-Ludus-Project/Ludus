@@ -15,6 +15,8 @@
 // Smooth dielectrics follow pbrt-v4's specular bounces (section 13.4): they skip light
 // sampling, and emission found through them takes full weight. Shadow rays stay opaque
 // to them, as in pbrt-v4, so light reaches a surface through glass only by BSDF sampling.
+// An optional bounded absorbing medium (reference_medium.cpp) attenuates every camera,
+// continuation and visibility segment by its Beer-Lambert transmittance.
 namespace ludus::graphics::renderer::internal
 {
 namespace
@@ -431,11 +433,24 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
         ++inoutInfo.VisibilityQueries;
         return rhi::RasterStatus::Ready;
     }
+    math::Vector3 transmitted = contribution;
+    if (HasReferenceMedium(job.Medium) == true)
+    {
+        // The light endpoint's medium follows from the receiver's and the crossings between them.
+        uint32 inside = path.MediumInside;
+        math::Vector3 transmittance{1, 1, 1};
+        if (AttenuateReferenceMediumSegment(job.Medium, {start, direction}, distance, false, inside, transmittance) ==
+            false)
+        {
+            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidMediumCrossing);
+        }
+        transmitted = math::Hadamard(contribution, transmittance);
+    }
     LUDUS_ASSERT(path.ShadowCount < REFERENCE_MAX_SHADOWS_PER_VERTEX);
     rhi::RayInput& shadow = path.Shadows[path.ShadowCount];
     shadow = ReferenceRay(start, direction, distance);
     shadow.VisibilityOnly = 1;
-    path.PendingDirects[path.ShadowCount] = contribution;
+    path.PendingDirects[path.ShadowCount] = transmitted;
     ++path.ShadowCount;
     path.DirectDepth = path.Depth;
     return rhi::RasterStatus::Ready;
@@ -585,6 +600,30 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
     }
     return rhi::RasterStatus::Ready;
 }
+// Attenuate the segment the path just traced, from its ray origin to the hit or the end of its range. The
+// primary segment first derives the camera's medium from all crossings along its ray.
+rhi::RasterStatus AttenuateTracedSegment(const ReferenceJob& job,
+                                         ReferenceCaptureInfo& inoutInfo,
+                                         ReferencePath& inoutPath,
+                                         float32 lengthWorld) noexcept
+{
+    if (HasReferenceMedium(job.Medium) == false)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    math::Vector3 transmittance{1, 1, 1};
+    if (AttenuateReferenceMediumSegment(job.Medium,
+                                        {ReferenceOrigin(inoutPath.Ray), ReferenceDirection(inoutPath.Ray)},
+                                        lengthWorld,
+                                        inoutPath.Depth == 0,
+                                        inoutPath.MediumInside,
+                                        transmittance) == false)
+    {
+        return FailReferencePath(inoutInfo, inoutPath, ReferenceFailure::InvalidMediumCrossing);
+    }
+    inoutPath.Throughput = math::Hadamard(inoutPath.Throughput, transmittance);
+    return rhi::RasterStatus::Ready;
+}
 } // namespace
 rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                                          ReferenceCaptureInfo& inoutInfo,
@@ -598,6 +637,10 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     const usize lights = GetReferenceLightCount(job);
     if (hit.Hit == 0)
     {
+        if (AttenuateTracedSegment(job, inoutInfo, path, path.Ray.MaxDistance) != rhi::RasterStatus::Ready)
+        {
+            return rhi::RasterStatus::Failed;
+        }
         const float32 environmentPdf =
             job.EnvironmentOrNull != nullptr
                 ? EvaluateEnvironmentPdf(*job.EnvironmentOrNull, ReferenceDirection(path.Ray))
@@ -629,6 +672,10 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     if (hit.Primitive >= instance.TriangleCount)
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidHit);
+    }
+    if (AttenuateTracedSegment(job, inoutInfo, path, hit.Distance) != rhi::RasterStatus::Ready)
+    {
+        return rhi::RasterStatus::Failed;
     }
     const auto& triangle = job.Scene.Triangles[instance.FirstTriangle + hit.Primitive];
     const auto point = Position(triangle, hit.U, hit.V);

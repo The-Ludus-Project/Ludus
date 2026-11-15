@@ -158,7 +158,11 @@ completion/deadline (10), contribution validation (11), output allocation (12),
 HDR encoding (13), and publication (14).
 Acceptance raster setup, accounting, draw, completion or readback failure is step
 15. An optional fifth argument, `acceptance`, adds raster/submission evidence to
-the CPU capture; `native` requires native ray queries and never falls back.
+the CPU capture; `native` requires native ray queries and never falls back;
+`gpu-compute` runs the GPU-compute reference with the cooked `renderer_reference`
+and `renderer_reference_reduce` kernels and requires compute storage. A bundle
+with an [absorbing medium](#absorbing-medium-capture) in a mode that cannot carry
+it is step 18.
 
 `manifest.json` records every consulted source file's SHA-256, the bundle hash,
 source and cooked geometry counts, camera, attribution and approximations.
@@ -345,6 +349,41 @@ A real editor must feed the selected project's current World extraction into
 through the RHI/Qt native-sharing bridge. The offline consumer proves the
 installed renderer API; it does not prove editor integration. See the
 [interactive viewport contract](../architecture/renderer-systems.md#interactive-world-viewport).
+
+## Absorbing medium capture
+
+A LUSCN v12 bundle can carry one bounded homogeneous absorbing medium as a
+`MediumInterface` material, cooked from a
+[`medium_interface` source material](../architecture/scene-source-format.md#medium-interface).
+The sample leaves that material and its objects out of the snapshot. It
+transforms their triangles to world space, keeping them outward under a mirroring
+transform, and passes them with the material's absorption as the capture's
+`ReferenceMediumDescription`. The renderer then validates that the boundary is
+closed.
+
+Only two traversals transport a medium, so select one of them for such a scene:
+
+| Mode | Traversal | With a medium |
+| --- | --- | --- |
+| default | `CpuOracle` | Supported. |
+| `gpu-compute` | `GpuCompute` | Supported; device creation (step 4) or reference setup (step 6) fails where compute storage is unavailable. |
+| `native` | `NativeQueries` | Stops at step 18. |
+| `acceptance`, `viewport`, `gpu` | Raster evidence or GPU preview | Stops at step 18. |
+
+The renderer reports the same rule: a medium with native queries, the GPU preview
+or optical connections returns `Unsupported`, and nothing falls back to another
+traversal. The written `capture.luhdr` sets flag 512, and `scripts/reference-hdr`
+records the absorption and boundary triangle count under `medium`.
+
+`scene_absorbing_medium` (`tests/check_medium.py`) encodes such a v12 bundle
+independently: an emitter behind a unit cube of absorber with
+`σ_a = (0.5, 1, 2)` per metre, seen along the cube's axis. Both supported modes
+must attenuate the centre pixel by `exp(-σ_a)` within 0.2 % and leave the image
+corners unattenuated. Their images must agree within 1e-5, and `acceptance` must
+stop at step 18. Where the device lacks compute storage, the test checks the CPU
+oracle alone and says so. The matched analytic and CPU/GPU parity fixtures are
+described in the
+[homogeneous absorbing medium reference](../architecture/renderer-systems.md#homogeneous-absorbing-medium-reference).
 
 ## GPU preview acceptance
 
