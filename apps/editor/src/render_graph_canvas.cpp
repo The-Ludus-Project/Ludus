@@ -73,7 +73,13 @@ namespace
 constexpr float64 NODE_BORDER_WIDTH = 1.5;
 constexpr float64 FOCUSED_EDGE_WIDTH = 3;
 constexpr float64 UNAVAILABLE_EDGE_WIDTH = 1.5;
-constexpr float64 UNRELATED_EDGE_OPACITY = 0.18;
+constexpr float64 UNRELATED_EDGE_OPACITY = 0.12;
+/// Resting wire width; focused wires use FOCUSED_EDGE_WIDTH, so the difference reads at a glance.
+constexpr float64 RESTING_EDGE_WIDTH = 1.5;
+/// A configuration with this many wires or more is dense: with nothing focused, ordinary wires rest at
+/// DENSE_EDGE_OPACITY so cards and the hovered or selected card's wires stand out of the weave.
+constexpr qsizetype DENSE_GRAPH_EDGE_COUNT = 40;
+constexpr float64 DENSE_EDGE_OPACITY = 0.55;
 /// A card with this many wires or more is a hub (scene, camera, view). Its wires rest dimmed until it is selected
 /// or hovered, so the structure between ordinary cards stays readable instead of one fan of equal lines.
 constexpr qsizetype HUB_EDGE_COUNT = 6;
@@ -108,6 +114,8 @@ constexpr float64 PERCENT_SCALE = 100;
 constexpr float64 SCENE_SCROLL_PADDING = 400;
 constexpr float64 PORT_LABEL_GAP = 4;
 constexpr int32 LABEL_POINT_SIZE = 9;
+/// Overview titles may wrap onto this many lines before the last one is shortened.
+constexpr int32 MAXIMUM_TITLE_LINES = 3;
 constexpr int32 MAX_CYCLE_SEARCH_STEPS = 1024;
 constexpr float64 INACTIVE_OPACITY = 0.55;
 constexpr float64 FEEDBACK_HEIGHT = 40;
@@ -171,9 +179,40 @@ QColor GetLabelColour()
     return GetCanvasColour(design::ThemeColour::TextHud);
 }
 
+/// Split a node name where a reader would: before a capital that follows a lower-case letter or digit
+/// ("ComputeRayTracing" reads as Compute, Ray, Tracing) and after an underscore, hyphen or space.
+QStringList SplitTitleWords(const QString& name)
+{
+    QStringList words;
+    QString word;
+    for (const QChar character : name)
+    {
+        const bool startsWord = word.isEmpty() == false && character.isUpper() == true &&
+                                (word.back().isLower() == true || word.back().isDigit() == true);
+        if (startsWord == true)
+        {
+            words.append(word);
+            word.clear();
+        }
+        word.append(character);
+        if (character == QLatin1Char('_') || character == QLatin1Char('-') || character == QLatin1Char(' '))
+        {
+            words.append(word);
+            word.clear();
+        }
+    }
+    if (word.isEmpty() == false)
+    {
+        words.append(word);
+    }
+    return words;
+}
+
 /// A node title is "name : kind". When both do not fit, the name stays whole and the kind goes (it is in the tooltip
-/// and the inspector); a name that still does not fit is shortened from the middle, so both its ends read.
-QString FitNodeTitle(const QFontMetricsF& metrics, const QString& title, float64 availableWidth)
+/// and the inspector). A name that still does not fit wraps at its word boundaries onto at most maximumLines lines;
+/// only the last line is shortened, at its end, so the name always reads from its start ("ComputeRay…", never
+/// "Compu…acing").
+QString FitNodeTitle(const QFontMetricsF& metrics, const QString& title, float64 availableWidth, int32 maximumLines)
 {
     if (metrics.horizontalAdvance(title) <= availableWidth)
     {
@@ -181,7 +220,30 @@ QString FitNodeTitle(const QFontMetricsF& metrics, const QString& title, float64
     }
     const qsizetype separator = title.indexOf(QStringLiteral(" : "));
     const QString name = separator > 0 ? title.left(separator) : title;
-    return metrics.elidedText(name, Qt::ElideMiddle, availableWidth);
+    QStringList lines;
+    for (const QString& word : SplitTitleWords(name))
+    {
+        if (lines.isEmpty() == false && metrics.horizontalAdvance(lines.back() + word) <= availableWidth)
+        {
+            lines.back() += word;
+        }
+        else
+        {
+            lines.append(word);
+        }
+    }
+    const qsizetype lineLimit = math::Max<qsizetype>(1, maximumLines);
+    if (lines.size() > lineLimit)
+    {
+        const QString rest = lines.mid(lineLimit - 1).join(QString());
+        lines.resize(lineLimit - 1);
+        lines.append(rest);
+    }
+    for (QString& line : lines)
+    {
+        line = metrics.elidedText(line.trimmed(), Qt::ElideRight, availableWidth);
+    }
+    return lines.join(QLatin1Char('\n'));
 }
 
 enum class CanvasLabelRole : uint8
@@ -190,12 +252,14 @@ enum class CanvasLabelRole : uint8
     Annotation,
 };
 
-// Compensate small labels in screen pixels while keeping their node-local geometry stable.
+// Compensate small labels in screen pixels while keeping their node-local geometry stable. A title may wrap onto as
+// many lines as availableHeight holds; annotations stay on one line.
 void SetScaledLabel(QGraphicsSimpleTextItem& inoutLabel,
                     const QString& text,
                     float64 viewScale,
                     CanvasLabelRole role,
-                    float64 availableWidth)
+                    float64 availableWidth,
+                    float64 availableHeight = 0)
 {
     const float64 minimumPixelHeight =
         role == CanvasLabelRole::Title ? MINIMUM_TITLE_PIXEL_HEIGHT : MINIMUM_LABEL_PIXEL_HEIGHT;
@@ -203,8 +267,11 @@ void SetScaledLabel(QGraphicsSimpleTextItem& inoutLabel,
         math::Max(1.0, minimumPixelHeight / (QFontMetricsF(inoutLabel.font()).height() * viewScale));
     inoutLabel.setScale(labelScale);
     const QFontMetricsF metrics(inoutLabel.font());
+    const int32 maximumLines = static_cast<int32>(
+        math::Min(static_cast<float64>(MAXIMUM_TITLE_LINES),
+                  math::Max(1.0, std::floor(availableHeight / (metrics.lineSpacing() * labelScale)))));
     inoutLabel.setText(role == CanvasLabelRole::Title
-                           ? FitNodeTitle(metrics, text, availableWidth / labelScale)
+                           ? FitNodeTitle(metrics, text, availableWidth / labelScale, maximumLines)
                            : metrics.elidedText(text, Qt::ElideRight, availableWidth / labelScale));
 }
 
@@ -735,25 +802,48 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mMinimapAction->setToolTip(QStringLiteral("Show or hide the minimap, an overview of the whole graph (M)"));
     mAutoLayoutAction->setIcon(GetEditorIcon(EditorIcon::AutoLayout));
     mMinimapAction->setIcon(GetEditorIcon(EditorIcon::Minimap));
+    mFitGraphAction->setIcon(GetEditorIcon(EditorIcon::FrameAll));
     for (QAction* action : {mFitGraphAction, mFitSelectionAction, resetZoom, mAutoLayoutAction, mMinimapAction})
     {
         action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         addAction(action);
-        mFramingToolbar->addAction(action);
     }
-    // The two commands that change the graph's view of itself lead with an icon; the framing commands stay text.
-    for (QAction* action : {mAutoLayoutAction, mMinimapAction})
-    {
-        QToolButton* buttonOrNull = qobject_cast<QToolButton*>(mFramingToolbar->widgetForAction(action));
-        if (buttonOrNull != nullptr)
-        {
-            buttonOrNull->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        }
-    }
-    mFramingToolbar->addSeparator();
+    // View group: one Fit button (its menu holds the other framing commands) beside the zoom it changes, so three
+    // framing buttons and a label read as one control. Every command keeps its own shortcut on the canvas.
+    QMenu* framingMenu = new QMenu(this);
+    framingMenu->setObjectName(QStringLiteral("renderGraphFramingMenu"));
+    framingMenu->addAction(mFitGraphAction);
+    framingMenu->addAction(mFitSelectionAction);
+    framingMenu->addAction(resetZoom);
+    QToolButton* fit = new QToolButton(mFramingToolbar);
+    fit->setObjectName(QStringLiteral("renderGraphFit"));
+    // Tool buttons show the icon text; the menu and the shortcut list keep the full "Fit Graph".
+    mFitGraphAction->setIconText(QStringLiteral("Fit"));
+    fit->setDefaultAction(mFitGraphAction);
+    fit->setMenu(framingMenu);
+    fit->setPopupMode(QToolButton::MenuButtonPopup);
+    fit->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    fit->setAccessibleName(QStringLiteral("Fit graph and zoom"));
+    mFramingToolbar->addWidget(fit);
     mZoomLabel->setObjectName(QStringLiteral("renderGraphZoomLabel"));
     mZoomLabel->setAccessibleName(QStringLiteral("Canvas zoom"));
+    mZoomLabel->setMinimumWidth(mZoomLabel->fontMetrics().horizontalAdvance(QStringLiteral("8888%")));
     mFramingToolbar->addWidget(mZoomLabel);
+    mFramingToolbar->addSeparator();
+    // Layout group: Auto Layout leads with its label; the minimap toggle is a familiar icon with a tooltip.
+    mFramingToolbar->addAction(mAutoLayoutAction);
+    mFramingToolbar->addAction(mMinimapAction);
+    if (QToolButton* layoutButtonOrNull =
+            qobject_cast<QToolButton*>(mFramingToolbar->widgetForAction(mAutoLayoutAction));
+        layoutButtonOrNull != nullptr)
+    {
+        layoutButtonOrNull->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    }
+    if (QToolButton* minimapButtonOrNull = qobject_cast<QToolButton*>(mFramingToolbar->widgetForAction(mMinimapAction));
+        minimapButtonOrNull != nullptr)
+    {
+        minimapButtonOrNull->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    }
     mAvailabilityNotice->setObjectName(QStringLiteral("renderGraphAvailabilityNotice"));
     mAvailabilityNotice->setAccessibleName(QStringLiteral("Render graph availability"));
     mAvailabilityNotice->setWordWrap(true);
@@ -1279,14 +1369,25 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
         {
             QGraphicsSimpleTextItem& title = *view->TitleLabelOrNull;
             title.setVisible(hasReadableCards);
+            // Without port labels the card body is free, so the overview title wraps into it and its header grows
+            // to hold it; with port rows showing, the title keeps to the one-line header.
             SetScaledLabel(title,
                            hasDetails == true ? view->Title
                                               : (view->Id == GetOutputsNode() ? QStringLiteral("outputs") : view->Id),
                            viewScale,
                            CanvasLabelRole::Title,
-                           NODE_WIDTH - 2 * NODE_PADDING);
-            title.setPos(NODE_PADDING,
-                         math::Max(0.0, (HEADER_HEIGHT - title.boundingRect().height() * title.scale()) / 2));
+                           NODE_WIDTH - 2 * NODE_PADDING,
+                           hasPortLabels == true ? 0 : view->Frame->rect().height() - NODE_PADDING);
+            const float64 titleHeight = title.boundingRect().height() * title.scale();
+            const float64 headerHeight =
+                hasPortLabels == true
+                    ? HEADER_HEIGHT
+                    : math::Min(view->Frame->rect().height(), math::Max(HEADER_HEIGHT, titleHeight + NODE_PADDING));
+            if (view->HeaderOrNull != nullptr)
+            {
+                view->HeaderOrNull->setRect(0, 0, NODE_WIDTH, headerHeight);
+            }
+            title.setPos(NODE_PADDING, math::Max(0.0, (headerHeight - titleHeight) / 2));
         }
         for (bool isOutput : {false, true})
         {
@@ -1369,6 +1470,7 @@ void RenderGraphCanvas::Rebuild()
     mHiddenSelection.clear();
     qDeleteAll(mEdges);
     mEdges.clear();
+    mWireCounts.clear();
     mCommentsOrNull->Clear();
     mReroutesOrNull->Clear();
     mScene->clear();
@@ -1464,7 +1566,7 @@ void RenderGraphCanvas::Rebuild()
         QFont font = label->font();
         font.setBold(true);
         label->setFont(font);
-        label->setText(FitNodeTitle(QFontMetricsF(font), title, NODE_WIDTH - 2 * NODE_PADDING));
+        label->setText(FitNodeTitle(QFontMetricsF(font), title, NODE_WIDTH - 2 * NODE_PADDING, 1));
         label->setToolTip(title);
         label->setBrush(Qt::white);
         label->setPos(NODE_PADDING, (HEADER_HEIGHT - label->boundingRect().height()) / 2);
@@ -1603,7 +1705,7 @@ void RenderGraphCanvas::Rebuild()
     }
     for (const CanvasLink& link : std::as_const(links))
     {
-        mEdges.append(new EdgeView(link, mScene->addPath(QPainterPath(), QPen(GetEdgeColour(), 2))));
+        mEdges.append(new EdgeView(link, mScene->addPath(QPainterPath(), QPen(GetEdgeColour(), RESTING_EDGE_WIDTH))));
     }
     {
         QSet<QString> savedCards;
@@ -2113,7 +2215,7 @@ void RenderGraphCanvas::notifySelection()
         edge->Path->setData(0, false);
         if (edge->IsEditable == true)
         {
-            edge->Path->setPen(QPen(GetEdgeColour(), 2));
+            edge->Path->setPen(QPen(GetEdgeColour(), RESTING_EDGE_WIDTH));
         }
     }
     updateConnectionHighlight();
@@ -2242,12 +2344,17 @@ void RenderGraphCanvas::updateConnectionHighlight()
     QSet<QString> connected;
     QSet<QString> highlightedInputs;
     QSet<QString> highlightedOutputs;
-    QHash<QString, qsizetype> wireCounts;
-    for (const EdgeView* edge : std::as_const(mEdges))
+    // Hover calls this on every card change: wire counts are built once per Rebuild, not per call.
+    if (mWireCounts.isEmpty() == true && mEdges.isEmpty() == false)
     {
-        ++wireCounts[GetEndpointNode(edge->From)];
-        ++wireCounts[GetEndpointNode(edge->To)];
+        for (const EdgeView* edge : std::as_const(mEdges))
+        {
+            ++mWireCounts[GetEndpointNode(edge->From)];
+            ++mWireCounts[GetEndpointNode(edge->To)];
+        }
     }
+    const QHash<QString, qsizetype>& wireCounts = mWireCounts;
+    const float64 restingOpacity = mEdges.size() >= DENSE_GRAPH_EDGE_COUNT ? DENSE_EDGE_OPACITY : 1;
     for (qsizetype index = 0; index < mEdges.size(); ++index)
     {
         EdgeView* edge = mEdges.at(index);
@@ -2276,9 +2383,9 @@ void RenderGraphCanvas::updateConnectionHighlight()
         edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
                                : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
                                : isHubWire == true ? math::Min(activityOpacity, HUB_EDGE_OPACITY)
-                                                   : activityOpacity);
+                                                   : math::Min(activityOpacity, restingOpacity));
         QPen pen(isHighlighted == true || isSelected == true ? GetSelectionColour() : GetEdgeColour(),
-                 isHighlighted == true || isSelected == true ? FOCUSED_EDGE_WIDTH : 2);
+                 isHighlighted == true || isSelected == true ? FOCUSED_EDGE_WIDTH : RESTING_EDGE_WIDTH);
         pen.setCosmetic(true);
         if (edge->IsEditable == false)
         {
@@ -3474,7 +3581,7 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
             edge->Path->setData(0, false);
             if (edge->IsEditable == true)
             {
-                edge->Path->setPen(QPen(GetEdgeColour(), 2));
+                edge->Path->setPen(QPen(GetEdgeColour(), RESTING_EDGE_WIDTH));
             }
         }
         updateSelection();

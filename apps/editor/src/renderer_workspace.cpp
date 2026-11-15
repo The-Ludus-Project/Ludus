@@ -13,6 +13,7 @@
 #include "internal/code_formatter.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
+#include "internal/editor_icons.h"
 #include "internal/error_list.h"
 #include "internal/item_selection.h"
 #include "internal/lusl_formatting.h"
@@ -21,6 +22,7 @@
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_execution_plan.h"
 #include "internal/render_graph_history.h"
+#include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_quick_add.h"
@@ -83,11 +85,13 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPair>
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QSet>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -583,7 +587,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mViews(new QTabWidget(this)), mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)),
       mFields(new QFormLayout), mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)),
       mNewKind(new QComboBox(mInspector)), mNodeCreationMessage(new QLabel(mInspector)),
-      mEdges(new QTableWidget(mInspector)), mEdgeFrom(new QLineEdit(mInspector)), mEdgeTo(new QLineEdit(mInspector)),
+      mEdges(new QTableWidget(mInspector)), mEdgeFrom(new QComboBox(mInspector)), mEdgeTo(new QComboBox(mInspector)),
       mSourceFile(new QComboBox(this)), mSource(new CodeEditor(this)),
       mSourceController(new CodeDocumentController(*mSource, this)),
       mSourceFormatter(new CodeFormatter(*mSourceController, this)), mSourceInterface(new QPlainTextEdit(this)),
@@ -672,18 +676,32 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mLayoutY->setObjectName(QStringLiteral("renderGraphLayoutY"));
     mLayoutX->setRange(-MAX_COORDINATE, MAX_COORDINATE);
     mLayoutY->setRange(-MAX_COORDINATE, MAX_COORDINATE);
+    // With nothing selected the panel describes the graph; node tools and its connections appear with a selection.
+    mGraphSummary = new QLabel(mInspector);
+    mGraphSummary->setObjectName(QStringLiteral("renderGraphSummary"));
+    mGraphSummary->setTextFormat(Qt::PlainText);
+    mGraphSummary->setWordWrap(true);
+    mGraphSummary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    mGraphSummary->setForegroundRole(QPalette::PlaceholderText);
+    inspectorLayout->addWidget(mGraphSummary);
+    mNodeTools = new QWidget(mInspector);
+    mNodeTools->setObjectName(QStringLiteral("renderGraphNodeTools"));
+    QVBoxLayout* nodeToolsLayout = new QVBoxLayout(mNodeTools);
+    nodeToolsLayout->setContentsMargins(0, 0, 0, 0);
     QHBoxLayout* layoutRow = new QHBoxLayout;
     layoutRow->addWidget(mLayoutX);
     layoutRow->addWidget(mLayoutY);
     QFormLayout* positionForm = new QFormLayout;
     positionForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    QLabel* positionLabel = new QLabel(QStringLiteral("Layout x/y"), mInspector);
+    QLabel* positionLabel = new QLabel(QStringLiteral("Layout x/y"), mNodeTools);
+    positionLabel->setObjectName(QStringLiteral("renderGraphLayoutLabel"));
     positionLabel->setToolTip(QStringLiteral("Canvas position; presentation only, never part of the build."));
     positionForm->addRow(positionLabel, layoutRow);
-    inspectorLayout->addLayout(positionForm);
-    QPushButton* remove = new QPushButton(QStringLiteral("Remove Node"), mInspector);
+    nodeToolsLayout->addLayout(positionForm);
+    QPushButton* remove = new QPushButton(QStringLiteral("Remove Node"), mNodeTools);
     remove->setObjectName(QStringLiteral("renderGraphRemoveNode"));
-    inspectorLayout->addWidget(remove, 0, Qt::AlignLeft);
+    nodeToolsLayout->addWidget(remove, 0, Qt::AlignLeft);
+    inspectorLayout->addWidget(mNodeTools);
     mNewKind->setObjectName(QStringLiteral("renderGraphNewKind"));
     mNewKind->setMinimumContentsLength(1);
     mNewKind->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -720,30 +738,61 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mNodeCreationMessage->hide();
     inspectorLayout->addWidget(mNodeCreationMessage);
     add->setToolTip(QStringLiteral("Add this type to the configuration shown on the canvas, with a unique ID."));
+    // Connections of the selected nodes, with pickers that offer only real ports: no endpoint is typed by hand.
+    mConnections = new QWidget(mInspector);
+    mConnections->setObjectName(QStringLiteral("renderGraphConnections"));
+    QVBoxLayout* connectionsLayout = new QVBoxLayout(mConnections);
+    connectionsLayout->setContentsMargins(0, 0, 0, 0);
+    mConnectionsHeading = new QLabel(mConnections);
+    mConnectionsHeading->setObjectName(QStringLiteral("renderGraphConnectionsHeading"));
+    mConnectionsHeading->setTextFormat(Qt::PlainText);
+    mConnectionsHeading->setWordWrap(true);
+    mConnectionsHeading->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    connectionsLayout->addWidget(mConnectionsHeading);
+    mEdges->setParent(mConnections);
     mEdges->setObjectName(QStringLiteral("renderGraphEdges"));
     ConfigureItemSelection(*mEdges);
     mEdges->setColumnCount(2);
     mEdges->setHorizontalHeaderLabels({QStringLiteral("From"), QStringLiteral("To")});
     mEdges->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    mEdges->verticalHeader()->hide();
     mEdges->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mEdges->setSelectionBehavior(QAbstractItemView::SelectRows);
-    inspectorLayout->addWidget(new QLabel(QStringLiteral("Connections in this configuration"), mInspector));
-    inspectorLayout->addWidget(mEdges, 1);
-    mEdgeFrom->setPlaceholderText(QStringLiteral("node.port"));
-    mEdgeTo->setPlaceholderText(QStringLiteral("node.port"));
-    QHBoxLayout* edgeRow = new QHBoxLayout;
-    edgeRow->addWidget(mEdgeFrom);
-    edgeRow->addWidget(mEdgeTo);
-    inspectorLayout->addLayout(edgeRow);
-    QPushButton* connectButton = new QPushButton(QStringLiteral("Connect"), mInspector);
+    mEdges->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    connectionsLayout->addWidget(mEdges, 1);
+    QFormLayout* pickers = new QFormLayout;
+    pickers->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    pickers->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    for (QComboBox* picker : {mEdgeFrom, mEdgeTo})
+    {
+        picker->setParent(mConnections);
+        picker->setEditable(false);
+        picker->setMinimumContentsLength(1);
+        picker->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    }
+    mEdgeFrom->setObjectName(QStringLiteral("renderGraphConnectFrom"));
+    mEdgeTo->setObjectName(QStringLiteral("renderGraphConnectTo"));
+    mEdgeFrom->setAccessibleName(QStringLiteral("Connect from output"));
+    mEdgeTo->setAccessibleName(QStringLiteral("Connect to input"));
+    mEdgeFrom->setToolTip(QStringLiteral("An output in this configuration; the selected nodes' outputs come first."));
+    mEdgeTo->setToolTip(QStringLiteral("An input in this configuration; the selected nodes' inputs come first. "
+                                       "Connecting to a connected input replaces its source."));
+    pickers->addRow(QStringLiteral("From"), mEdgeFrom);
+    pickers->addRow(QStringLiteral("To"), mEdgeTo);
+    connectionsLayout->addLayout(pickers);
+    QPushButton* connectButton = new QPushButton(QStringLiteral("Connect"), mConnections);
+    connectButton->setObjectName(QStringLiteral("renderGraphConnect"));
     // A short label keeps both buttons within the narrowest docked Properties width.
-    QPushButton* disconnectButton = new QPushButton(QStringLiteral("Disconnect"), mInspector);
-    disconnectButton->setToolTip(QStringLiteral("Remove the connection selected in the table above."));
+    QPushButton* disconnectButton = new QPushButton(QStringLiteral("Disconnect"), mConnections);
+    disconnectButton->setObjectName(QStringLiteral("renderGraphDisconnect"));
+    disconnectButton->setToolTip(QStringLiteral("Remove the connection selected in the list above."));
     QHBoxLayout* edgeButtons = new QHBoxLayout;
     edgeButtons->addWidget(connectButton);
     edgeButtons->addWidget(disconnectButton);
     edgeButtons->addStretch();
-    inspectorLayout->addLayout(edgeButtons);
+    connectionsLayout->addLayout(edgeButtons);
+    inspectorLayout->addWidget(mConnections, 1);
+    inspectorLayout->addStretch();
     mInspectorPanel->setWidget(mInspector);
     // Hidden until the shell takes it; a standalone workspace has no Properties window.
     mInspectorPanel->hide();
@@ -936,6 +985,22 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mStatusPanel->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     mStatusPanel->setFixedHeight(mStatus->fontMetrics().lineSpacing() * STATUS_VISIBLE_LINES + STATUS_PADDING_PIXELS);
     mStatusPanel->setWidget(mStatus);
+    // A preview failure the Error List already shows is said once: here it is a compact link to that row.
+    mProblemChip = new QToolButton(this);
+    mProblemChip->setObjectName(QStringLiteral("renderGraphProblemChip"));
+    mProblemChip->setIcon(GetEditorIcon(EditorIcon::Error));
+    mProblemChip->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mProblemChip->setAutoRaise(true);
+    mProblemChip->setText(QStringLiteral("Preview error · Show in Error List"));
+    mProblemChip->setAccessibleName(QStringLiteral("Show the preview error in the Error List"));
+    mProblemChip->hide();
+    connect(mProblemChip, &QToolButton::clicked, this, &RendererWorkspace::RequestErrorList);
+    mStatusRow = new QWidget(this);
+    mStatusRow->setObjectName(QStringLiteral("renderGraphStatusRow"));
+    QHBoxLayout* statusRowLayout = new QHBoxLayout(mStatusRow);
+    statusRowLayout->setContentsMargins(0, 0, 0, 0);
+    statusRowLayout->addWidget(mProblemChip);
+    statusRowLayout->addWidget(mStatusPanel, 1);
     QSplitter* horizontal = new QSplitter(Qt::Horizontal, this);
     horizontal->setObjectName(QStringLiteral("renderGraphSplitter"));
     horizontal->addWidget(mTree);
@@ -1021,7 +1086,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mRecovery->SetCanRestore(IsJobActive() == false);
     });
     layout->addWidget(mContent, 1);
-    layout->addWidget(mStatusPanel);
+    layout->addWidget(mStatusRow);
 
     connect(mCreateFirst, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptNewGraph()); });
     connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() {
@@ -1332,10 +1397,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(remove, &QPushButton::clicked, this, &RendererWorkspace::RemoveSelectedNodes);
     connect(add, &QPushButton::clicked, this, &RendererWorkspace::addNode);
     connect(connectButton, &QPushButton::clicked, this, [this]() {
-        documentEdited(mDocument.Connect(mSelectedFile,
-                                         mSelectedConfiguration,
-                                         mEdgeFrom->text().trimmed(),
-                                         mEdgeTo->text().trimmed()));
+        if (mEdgeFrom->currentIndex() >= 0 && mEdgeTo->currentIndex() >= 0)
+        {
+            documentEdited(mDocument.Connect(mSelectedFile,
+                                             mSelectedConfiguration,
+                                             mEdgeFrom->currentText(),
+                                             mEdgeTo->currentText()));
+        }
     });
     connect(disconnectButton, &QPushButton::clicked, this, [this]() {
         const int32 row = mEdges->currentRow();
@@ -1511,7 +1579,7 @@ void RendererWorkspace::updateChromeVisibility()
         mIsChromeVisible == true && (mShouldUseCompactSource == false || mViews->currentIndex() != SOURCE_VIEW);
     updateSourceInterfaceVisibility();
     mNavigation->setVisible(shouldShowNavigation);
-    mStatusPanel->setVisible(shouldShowNavigation);
+    mStatusRow->setVisible(shouldShowNavigation);
     mTree->setVisible(shouldShowNavigation == true && mSourcesToggle->isChecked() == true);
 }
 
@@ -2251,6 +2319,11 @@ bool RendererWorkspace::CanBuild() const
     return mDocument.IsLoaded() == true && IsJobActive() == false;
 }
 
+bool RendererWorkspace::IsRenderProblemInErrorList() const
+{
+    // MainWindow lists the activation failure as a RenderPreview error; other problems stay in the status line.
+    return mActivationProblem.isEmpty() == false && GetRenderProblem() == mActivationProblem;
+}
 QString RendererWorkspace::GetRenderProblem() const
 {
     if (mSourceProblem.isEmpty() == false)
@@ -3326,11 +3399,15 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOri
     const int32 sourceIndex = mSourceFile->findText(selectedSource);
     mSourceFile->setCurrentIndex(sourceIndex >= 0 ? sourceIndex : mSourceFile->findText(mDocument.GetRootGraph()));
     mSourceFile->blockSignals(false);
+    // The inspector lists the selection's connections itself; refresh them here only when it does not run.
     if (shouldRefreshInspector == true)
     {
         renderInspector();
     }
-    renderEdges();
+    else
+    {
+        renderEdges();
+    }
     renderCanvas();
     Q_EMIT NodeFieldsChanged(editOriginOrNull);
 }
@@ -3372,15 +3449,28 @@ void RendererWorkspace::renderInspector()
                                               : QStringLiteral("Remove Node"));
     mLayoutX->setEnabled(node.isEmpty() == false);
     mLayoutY->setEnabled(node.isEmpty() == false);
+    // Position belongs to one node; Remove also serves a multi-selection; neither means anything without one.
+    mNodeTools->setVisible(mSelectedNodes.isEmpty() == false);
+    for (QWidget* control : {static_cast<QWidget*>(mLayoutX),
+                             static_cast<QWidget*>(mLayoutY),
+                             mNodeTools->findChild<QWidget*>(QStringLiteral("renderGraphLayoutLabel"))})
+    {
+        if (control != nullptr)
+        {
+            control->setVisible(node.isEmpty() == false);
+        }
+    }
+    renderEdges();
     if (node.isEmpty() == true)
     {
-        QLabel* hint = new QLabel(
-            mSelectedNodes.size() > 1
-                ? QStringLiteral("%1 nodes selected. Drag, copy, or remove the group.").arg(mSelectedNodes.size())
-                : QStringLiteral("Select a node to inspect its authored fields."),
-            mInspector);
-        hint->setWordWrap(true);
-        mFields->addRow(hint);
+        if (mSelectedNodes.size() > 1)
+        {
+            QLabel* hint = new QLabel(
+                QStringLiteral("%1 nodes selected. Drag, copy, or remove the group.").arg(mSelectedNodes.size()),
+                mInspector);
+            hint->setWordWrap(true);
+            mFields->addRow(hint);
+        }
         populateGraphSettings(*mFields, *mInspector);
         return;
     }
@@ -3905,14 +3995,117 @@ void RendererWorkspace::editGraphSettingsOnCanvas()
 
 void RendererWorkspace::renderEdges()
 {
-    const QJsonArray edges = selectedConfiguration().value(QStringLiteral("edges")).toArray();
-    mEdges->setRowCount(static_cast<int32>(edges.size()));
-    for (qsizetype i = 0; i < edges.size(); ++i)
+    const QJsonObject configuration = selectedConfiguration();
+    const QJsonArray edges = configuration.value(QStringLiteral("edges")).toArray();
+    const QJsonArray nodes = configuration.value(QStringLiteral("nodes")).toArray();
+    const QJsonArray outputs = configuration.value(QStringLiteral("outputs")).toArray();
+    const QJsonArray inputs = configuration.value(QStringLiteral("inputs")).toArray();
+    const bool hasSelection = mSelectedNodes.isEmpty() == false;
+    mGraphSummary->setVisible(hasSelection == false && configuration.isEmpty() == false);
+    mConnections->setVisible(hasSelection == true && configuration.isEmpty() == false);
+    QStringList outputNames;
+    for (const QJsonValueConstRef output : outputs)
     {
-        const QJsonObject edge = edges.at(i).toObject();
-        mEdges->setItem(static_cast<int32>(i), 0, new QTableWidgetItem(edge.value(QStringLiteral("from")).toString()));
-        mEdges->setItem(static_cast<int32>(i), 1, new QTableWidgetItem(edge.value(QStringLiteral("to")).toString()));
+        outputNames.append(output.toObject().value(QStringLiteral("id")).toString());
     }
+    mGraphSummary->setText(
+        QStringLiteral("%1 · %2 · %3\n%4%5\n\nSelect a node to edit its fields and connections, or right-click the "
+                       "canvas to add one.")
+            .arg(nodes.size() == 1 ? QStringLiteral("1 node") : QStringLiteral("%1 nodes").arg(nodes.size()))
+            .arg(edges.size() == 1 ? QStringLiteral("1 connection")
+                                   : QStringLiteral("%1 connections").arg(edges.size()))
+            .arg(inputs.size() == 1 ? QStringLiteral("1 input") : QStringLiteral("%1 inputs").arg(inputs.size()))
+            .arg(outputNames.isEmpty() == true ? QStringLiteral("No outputs")
+                                               : QStringLiteral("Outputs: ") + outputNames.join(QStringLiteral(", ")))
+            .arg(mSelectedConfiguration.isEmpty() == true
+                     ? QString()
+                     : QStringLiteral(" (configuration %1)").arg(mSelectedConfiguration)));
+    if (hasSelection == false)
+    {
+        // Pickers and the filtered list are built only for a selection: no per-node port lookups at rest.
+        mEdges->setRowCount(0);
+        mEdgeFrom->clear();
+        mEdgeTo->clear();
+        return;
+    }
+    const QSet<QString> selected(mSelectedNodes.cbegin(), mSelectedNodes.cend());
+    const auto getNode = [](const QString& endpoint) { return endpoint.section(QLatin1Char('.'), 0, 0); };
+    QVector<QPair<QString, QString>> rows;
+    for (const QJsonValueConstRef value : edges)
+    {
+        const QString from = value.toObject().value(QStringLiteral("from")).toString();
+        const QString to = value.toObject().value(QStringLiteral("to")).toString();
+        if (selected.contains(getNode(from)) == true || selected.contains(getNode(to)) == true)
+        {
+            rows.append({from, to});
+        }
+    }
+    for (const QJsonValueConstRef value : outputs)
+    {
+        const QString source = value.toObject().value(QStringLiteral("source")).toString();
+        if (source.isEmpty() == false && selected.contains(getNode(source)) == true)
+        {
+            rows.append(
+                {source, QStringLiteral("#outputs.") + value.toObject().value(QStringLiteral("id")).toString()});
+        }
+    }
+    mConnectionsHeading->setText(
+        mSelectedNodes.size() == 1
+            ? QStringLiteral("Connections of %1 (%2)").arg(mSelectedNodes.first()).arg(rows.size())
+            : QStringLiteral("Connections of %1 selected nodes (%2)").arg(mSelectedNodes.size()).arg(rows.size()));
+    mEdges->setRowCount(static_cast<int32>(rows.size()));
+    for (qsizetype i = 0; i < rows.size(); ++i)
+    {
+        mEdges->setItem(static_cast<int32>(i), 0, new QTableWidgetItem(rows.at(i).first));
+        mEdges->setItem(static_cast<int32>(i), 1, new QTableWidgetItem(rows.at(i).second));
+    }
+    // Real endpoints only, the selection's own ports first so the common edit is the first choice.
+    QStringList selectedProducers;
+    QStringList otherProducers;
+    QStringList selectedConsumers;
+    QStringList otherConsumers;
+    for (const RenderGraphPort& port : ReadRenderGraphInterfacePorts(inputs))
+    {
+        otherProducers.append(QStringLiteral("input.") + port.Id);
+    }
+    for (const QJsonValueConstRef value : nodes)
+    {
+        const QJsonObject node = value.toObject();
+        const QString identity = node.value(QStringLiteral("id")).toString();
+        RenderGraphNodePorts ports;
+        if (GetRenderGraphNodePorts(mDocument, node, ports) == false)
+        {
+            continue;
+        }
+        const bool isSelected = selected.contains(identity);
+        for (const RenderGraphPort& port : std::as_const(ports.Outputs))
+        {
+            (isSelected == true ? selectedProducers : otherProducers).append(identity + QLatin1Char('.') + port.Id);
+        }
+        for (const RenderGraphPort& port : std::as_const(ports.Inputs))
+        {
+            (isSelected == true ? selectedConsumers : otherConsumers).append(identity + QLatin1Char('.') + port.Id);
+        }
+    }
+    for (const QString& output : std::as_const(outputNames))
+    {
+        otherConsumers.append(QStringLiteral("#outputs.") + output);
+    }
+    const auto fill = [](QComboBox& outPicker, const QStringList& first, const QStringList& rest) {
+        const QString previous = outPicker.currentText();
+        const QSignalBlocker blocker(&outPicker);
+        outPicker.clear();
+        outPicker.addItems(first);
+        if (first.isEmpty() == false && rest.isEmpty() == false)
+        {
+            outPicker.insertSeparator(outPicker.count());
+        }
+        outPicker.addItems(rest);
+        const int32 index = outPicker.findText(previous);
+        outPicker.setCurrentIndex(index >= 0 ? index : (outPicker.count() > 0 ? 0 : -1));
+    };
+    fill(*mEdgeFrom, selectedProducers, otherProducers);
+    fill(*mEdgeTo, selectedConsumers, otherConsumers);
 }
 
 void RendererWorkspace::updateSourceInterfaceVisibility()
@@ -4200,6 +4393,11 @@ void RendererWorkspace::renderStatus()
     {
         mStatus->setText(GetRenderProblem());
     }
+    const bool isListed = IsRenderProblemInErrorList();
+    mProblemChip->setVisible(isListed);
+    mStatusPanel->setVisible(isListed == false);
+    mProblemChip->setToolTip(
+        isListed == true ? GetRenderProblem() + QStringLiteral("\n\nClick to show it in the Error List.") : QString());
     updateActions();
 }
 

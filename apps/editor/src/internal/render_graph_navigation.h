@@ -17,6 +17,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QToolBar;
+class QToolButton;
 class QWidget;
 QT_END_NAMESPACE
 
@@ -91,6 +92,8 @@ private:
     QAction* mUpstreamAction;
     QAction* mDownstreamAction;
     QAction* mClearAction;
+    /// Toolbar menu button holding the three trace actions; owned by the toolbar.
+    QToolButton* mTraceButton;
     QFrame* mPopup;
     QLineEdit* mSearch;
     QListWidget* mResults;

@@ -186,14 +186,21 @@ void RenderGraphDiagnostics::Refresh(RenderGraphDiagnosticFreshness freshness)
 
 void RenderGraphDiagnostics::refreshControls()
 {
-    mCounts->setText(QStringLiteral("Errors %1 · Warnings %2").arg(mErrors).arg(mWarnings));
+    // A clean report is one quiet phrase; counts appear only when there is something to count.
+    mCounts->setText(mErrors == 0 && mWarnings == 0
+                         ? QStringLiteral("No problems")
+                         : QStringLiteral("Errors %1 · Warnings %2").arg(mErrors).arg(mWarnings));
     mCounts->setToolTip(QStringLiteral("Report errors: %1; warnings: %2; available canvas targets: %3. "
                                        "Source-only or unavailable targets remain in Error List.")
                             .arg(mErrors)
                             .arg(mWarnings)
                             .arg(mAvailableRows.size()));
-    mNext->setEnabled(mAvailableRows.isEmpty() == false);
-    mPrevious->setEnabled(mAvailableRows.isEmpty() == false);
+    // Previous and Next take toolbar room only when there is a canvas target to step to.
+    for (QAction* action : {mPrevious, mNext})
+    {
+        action->setEnabled(mAvailableRows.isEmpty() == false);
+        action->setVisible(mAvailableRows.isEmpty() == false);
+    }
     QString freshness;
     switch (mFreshness)
     {

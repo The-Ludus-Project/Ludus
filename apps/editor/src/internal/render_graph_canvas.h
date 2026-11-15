@@ -388,6 +388,8 @@ private:
     QStringList mExpandedSceneBundles;
     QStringList mHiddenSelection;
     QVector<EdgeView*> mEdges;
+    /// Wires per card, built lazily from mEdges and cleared with them; marks hub cards for dimming.
+    QHash<QString, qsizetype> mWireCounts;
     QStringList mDragNodes;
     QHash<QString, QPointF> mDragOrigins;
     QPointF mDragOffset;
