@@ -601,3 +601,50 @@ TEST_CASE("Scene source prefix detection needs the leading format member", "[sce
     CHECK(IsSceneSourcePrefix("{\"asset\": {\"version\": \"2.0\"}}") == false);
     CHECK(IsSceneSourcePrefix("") == false);
 }
+
+TEST_CASE("Scene source reads one homogeneous absorbing medium interface", "[scene-source][medium]")
+{
+    constexpr std::string_view MODEL = R"({"name": "Wall", "model": "diffuse", "base_color": [0.8, 0.5, 0.25]})";
+    constexpr std::string_view INK =
+        R"({"name": "Wall", "model": "medium_interface", "medium": {"type": "homogeneous", "absorption": [0.5, 1, 2]}})";
+    SceneSource scene;
+    SceneSourceError error;
+    REQUIRE(ParseSceneSource(ReplaceInValid(MODEL, INK), scene, error) == SceneSourceStatus::Success);
+    CHECK(scene.Materials[0].Model == SourceMaterialModel::MediumInterface);
+    CHECK(scene.Materials[0].MediumAbsorptionPerWorld == math::Vector3d{0.5, 1, 2});
+    // Unsupported media are named as such, before their type-specific members are checked.
+    RequireFailure(
+        ReplaceInValid(
+            MODEL,
+            R"({"name": "Wall", "model": "medium_interface", "medium": {"type": "grid", "density": "fog.vdb"}})"),
+        SceneSourceStatus::InvalidValue,
+        "medium.type: is an unsupported medium type");
+    RequireFailure(ReplaceInValid(MODEL,
+                                  R"({"name": "Wall", "model": "medium_interface",
+                                      "medium": {"type": "homogeneous", "absorption": [1, 1, 1], "scattering": [1, 1, 1]}})"),
+                   SceneSourceStatus::Malformed,
+                   "scattering");
+    RequireFailure(ReplaceInValid(MODEL,
+                                  R"({"name": "Wall", "model": "medium_interface",
+                                      "medium": {"type": "homogeneous", "absorption": [-1, 1, 1]}})"),
+                   SceneSourceStatus::InvalidValue,
+                   "medium.absorption[0]");
+    // A medium boundary has no surface terms.
+    RequireFailure(ReplaceInValid(MODEL,
+                                  R"({"name": "Wall", "model": "medium_interface", "base_color": [1, 1, 1],
+                                      "medium": {"type": "homogeneous", "absorption": [1, 1, 1]}})"),
+                   SceneSourceStatus::Malformed,
+                   "base_color");
+    // One bounded medium per scene.
+    constexpr std::string_view LIGHT =
+        R"({"name": "Light", "model": "metallic_roughness", "base_color": [0, 0, 0], "metallic": 0.25, "roughness": 0.5,
+     "emission": {"radiance": [6, 5, 4], "two_sided": true}})";
+    std::string twoMedia = ReplaceInValid(MODEL, INK);
+    const usize light = twoMedia.find(LIGHT);
+    REQUIRE(light != std::string::npos);
+    twoMedia.replace(
+        light,
+        LIGHT.size(),
+        R"({"name": "Light", "model": "medium_interface", "medium": {"type": "homogeneous", "absorption": [1, 1, 1]}})");
+    RequireFailure(twoMedia, SceneSourceStatus::InvalidValue, "declares a second medium");
+}

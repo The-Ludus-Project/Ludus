@@ -36,6 +36,8 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_UNRESOLVED = 7;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROJECT_BRDF = 8;
 /// Bounded closure program (material_program.h): a weighted mixture of leaf lobes.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROGRAM = 9;
+/// Invisible boundary of a bounded homogeneous absorbing medium; content storage only.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_MEDIUM_INTERFACE = 10;
 /// Maximum authored cosine exponent before applying perceptual roughness.
 static const MaterialScalar LUDUS_PROJECT_BRDF_MAX_POWER = 32;
 /// Minimum total lobe weight, to keep normalization bounded in binary32.
@@ -88,7 +90,16 @@ enum class MaterialModel : foundation::uint32
     /// Closure program stored beside the material (material_program.h). Its capabilities come from
     /// the program, and its MaterialScattering fields keep their defaults.
     Program = LUDUS_MATERIAL_MODEL_PROGRAM,
+    /// Invisible, index-matched boundary of one bounded homogeneous absorbing medium (pbrt-v4's
+    /// `interface` material with an interior medium). It neither scatters nor occludes. K holds the
+    /// enclosed medium's linear RGB absorption coefficient per world metre; every other scattering
+    /// field keeps its default (IsMediumInterfaceValid). The closed boundary mesh's oriented front
+    /// side faces the outside. Only content storage accepts this tag: surface evaluators reject it,
+    /// and RT1 reference captures receive the boundary as a renderer ReferenceMediumDescription.
+    MediumInterface = LUDUS_MATERIAL_MODEL_MEDIUM_INTERFACE,
 };
+/// Highest stored MaterialModel tag; readers reject larger tags.
+inline constexpr MaterialModel LAST_MATERIAL_MODEL = MaterialModel::MediumInterface;
 /// Report whether the model uses the complex-IOR GGX lobe and its authored alpha.
 [[nodiscard]] constexpr bool HasRoughConductorLobe(MaterialModel model) noexcept
 {
@@ -117,6 +128,7 @@ enum class MaterialModel : foundation::uint32
             return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION;
         case MaterialModel::Unresolved:
         case MaterialModel::Program:
+        case MaterialModel::MediumInterface:
             break;
     }
     return 0;
@@ -160,6 +172,9 @@ inline constexpr foundation::usize MAX_MATERIAL_NAME_BYTES = 128;
 inline constexpr foundation::float32 MIN_MATERIAL_ALPHA = 0.0001F;
 /// Optical constants are finite and bounded to avoid overflow in Fresnel evaluation.
 inline constexpr foundation::float32 MAX_MATERIAL_OPTICAL_CONSTANT = 10000;
+/// Largest admitted medium absorption coefficient per world metre: transmittance through one
+/// millimetre is then exp(-10), and larger values add no reference evidence before underflow.
+inline constexpr foundation::float32 MAX_MEDIUM_ABSORPTION_PER_WORLD = 10000;
 /// Default PBRT coated-diffuse dielectric index of refraction.
 inline constexpr foundation::float32 DEFAULT_COATING_ETA = 1.5F;
 /// Default PBRT coated-diffuse optical thickness.
@@ -266,9 +281,35 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
     }
     return true;
 }
-/// Validate cooked optical storage, including the import-only unresolved marker.
+/// Validate a medium interface: model MediumInterface, unit Eta, finite K in
+/// [0, MAX_MEDIUM_ABSORPTION_PER_WORLD] and every other field at its default.
+[[nodiscard]] constexpr bool IsMediumInterfaceValid(const MaterialScattering& scattering) noexcept
+{
+    const MaterialScattering defaults;
+    if (scattering.Model != MaterialModel::MediumInterface || scattering.AlphaU != defaults.AlphaU ||
+        scattering.AlphaV != defaults.AlphaV || scattering.CoatingEta != defaults.CoatingEta ||
+        scattering.CoatingThickness != defaults.CoatingThickness)
+    {
+        return false;
+    }
+    for (foundation::usize channel = 0; channel < MATERIAL_RGB_CHANNELS; ++channel)
+    {
+        if (scattering.Eta[channel] != defaults.Eta[channel] ||
+            (scattering.K[channel] >= 0 && scattering.K[channel] <= MAX_MEDIUM_ABSORPTION_PER_WORLD) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+/// Validate cooked optical storage, including the import-only unresolved marker and medium interfaces,
+/// which IsMaterialScatteringValid rejects because neither is a surface.
 [[nodiscard]] constexpr bool IsStoredMaterialScatteringValid(MaterialScattering scattering) noexcept
 {
+    if (scattering.Model == MaterialModel::MediumInterface)
+    {
+        return IsMediumInterfaceValid(scattering);
+    }
     if (scattering.Model == MaterialModel::Unresolved)
     {
         scattering.Model = MaterialModel::MetallicRoughness;

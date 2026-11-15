@@ -320,6 +320,7 @@ bool IsOpaque(uint instance, float2 uv, float vertexAlpha)
 // --- BVH traversal (TraceReferenceOracle) ------------------------------------
 // The node walk and watertight triangle test are shared with render-graph ComputeBvh passes.
 #include "ray_bvh_traversal.slang"
+#include "reference_medium.slang"
 struct Ray
 {
     float3 OriginWorld;
@@ -831,6 +832,7 @@ struct PathSample
     float3 Indirect;
     uint Status;
     uint Failure;
+    uint MediumInside; // Medium inside count (0 or 1) at the current vertex; see reference_medium.slang.
 };
 // SelectReferenceLight in reference_path.cpp owns the same category and CDF draws.
 enum ReferenceLightChoiceKind : uint
@@ -1099,7 +1101,7 @@ bool TraceProposal(inout PathSample inoutPath,
                    uint triangle,
                    float3 positionWorld,
                    uint depth,
-                   out float outTransmission)
+                   out float3 outTransmission)
 {
     outTransmission = 0;
     Ray shadow;
@@ -1149,8 +1151,22 @@ bool TraceProposal(inout PathSample inoutPath,
             }
             return false;
         }
-        outTransmission = dot(field, field);
-        return isfinite(outTransmission) == true && outTransmission >= 0;
+        float waveTransmission = dot(field, field);
+        outTransmission = waveTransmission;
+        return isfinite(waveTransmission) == true && waveTransmission >= 0;
+    }
+    // The light endpoint's medium follows from the receiver's and the crossings between them.
+    uint inside = inoutPath.MediumInside;
+    float3 mediumTransmittance;
+    if (AttenuateMediumSegment(shadow.OriginWorld,
+                               shadow.DirectionWorld,
+                               shadow.MaximumDistanceWorld,
+                               false,
+                               inside,
+                               mediumTransmittance) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_MEDIUM_CROSSING);
+        return false;
     }
     Hit blocker = TraceScene(shadow, true);
     if (blocker.HasExceededStack == true)
@@ -1158,7 +1174,7 @@ bool TraceProposal(inout PathSample inoutPath,
         inoutPath.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
         return false;
     }
-    outTransmission = blocker.Triangle == NO_TRIANGLE ? 1 : 0;
+    outTransmission = blocker.Triangle == NO_TRIANGLE ? mediumTransmittance : float3(0);
     return true;
 }
 // --- Resampled emitter light (reference_light_sampling.cpp) ----------------------
@@ -1257,7 +1273,7 @@ bool EvaluateDirectProposal(inout PathSample inoutPath,
         return false;
     if (HasPositiveComponent(contribution) == false)
         return true;
-    float transmission;
+    float3 transmission;
     if (TraceProposal(inoutPath, proposal, triangle, positionWorld, depth, transmission) == false)
     {
         MarkInvalid(inoutPath,
@@ -1267,7 +1283,7 @@ bool EvaluateDirectProposal(inout PathSample inoutPath,
                         : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
         return false;
     }
-    if (transmission > 0)
+    if (HasPositiveComponent(transmission) == true)
         AddTransport(inoutPath, contribution * transmission, depth, false);
     return true;
 }
@@ -1687,7 +1703,7 @@ struct ResampledLightSample
         proposal.IsDelta = false;
         proposal.HasFiniteEndpoint = true;
         proposal.IsEmissiveCategory = false;
-        float transmission;
+        float3 transmission;
         if (TraceProposal(inoutPath, proposal, triangle, positionWorld, depth, transmission) == false)
         {
             MarkInvalid(inoutPath,
@@ -1697,7 +1713,7 @@ struct ResampledLightSample
                             : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
             return false;
         }
-        if (transmission > 0)
+        if (HasPositiveComponent(transmission) == true)
             AddTransport(inoutPath, contribution * transmission, depth, false);
     }
     return true;
@@ -1747,6 +1763,7 @@ PathSample TracePath(uint pixel, uint sample)
     path.Indirect = 0;
     path.Status = 0;
     path.Failure = LUDUS_REFERENCE_FAILURE_NONE;
+    path.MediumInside = 0;
     if (SurfaceLayout.x != LUDUS_GPU_PREVIEW_SURFACE_WORDS || SurfaceLayout.z != LUDUS_GPU_PREVIEW_KERNEL_VERSION)
     {
         MarkInvalid(path, 0, LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT);
@@ -1778,6 +1795,19 @@ PathSample TracePath(uint pixel, uint sample)
             MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED);
             return path;
         }
+        // Attenuate the traced segment to its hit or range end; the primary first derives the camera's medium.
+        float3 segmentTransmittance;
+        if (AttenuateMediumSegment(ray.OriginWorld,
+                                   ray.DirectionWorld,
+                                   hit.Triangle == NO_TRIANGLE ? ray.MaximumDistanceWorld : hit.DistanceWorld,
+                                   depth == 0,
+                                   path.MediumInside,
+                                   segmentTransmittance) == false)
+        {
+            MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_MEDIUM_CROSSING);
+            return path;
+        }
+        throughput *= segmentTransmittance;
         if (hit.Triangle == NO_TRIANGLE)
         {
             float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld);
@@ -2060,7 +2090,7 @@ PathSample TracePath(uint pixel, uint sample)
         }
         if (hasShadow == true)
         {
-            float transmission;
+            float3 transmission;
             if (TraceProposal(path, proposal, triangle, positionWorld, depth, transmission) == false)
             {
                 MarkInvalid(path,
@@ -2070,7 +2100,7 @@ PathSample TracePath(uint pixel, uint sample)
                                 : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
                 return path;
             }
-            if (transmission > 0)
+            if (HasPositiveComponent(transmission) == true)
                 AddTransport(path, pendingDirect * transmission, directDepth, false);
         }
         if (hasNext == false)

@@ -414,3 +414,76 @@ TEST_CASE("Scene detection tells Ludus scene sources from glTF JSON", "[scene_co
           SceneSourceFormat::Gltf);
     CHECK(DetectSceneSourceFormat({}, "room.LUSCENE.JSON") == SceneSourceFormat::LudusScene);
 }
+
+TEST_CASE("Ludus scene import cooks an absorbing medium boundary into LUSCN version 12",
+          "[scene_cook][ludus-scene][medium]")
+{
+    namespace format = ludus::content::scene_format;
+    ScratchDirectory scratch;
+    const std::string entry = scratch.GetPath("medium.luscene.json");
+    // A unit cube of absorber in front of a wall; each face is wound counterclockwise seen from outside.
+    WriteFile(entry, R"({"format": "ludus.scene", "version": 1, "name": "Ink cube",
+        "materials": [
+          {"name": "Wall", "model": "diffuse", "base_color": [0.25, 0.5, 0.75]},
+          {"name": "Ink", "model": "medium_interface", "medium": {"type": "homogeneous", "absorption": [0.5, 1, 2]}}],
+        "objects": [
+          {"name": "Wall", "material": "Wall", "positions": [[-2, -2, 2], [2, -2, 2], [2, 2, 2], [-2, 2, 2]],
+           "polygons": [[0, 3, 2, 1]]},
+          {"name": "Cube", "material": "Ink",
+           "positions": [[-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5],
+                         [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]],
+           "polygons": [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]]}]})");
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
+    uint32 version = 0;
+    REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
+                {result.Bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                version) == true);
+    CHECK(version == format::VERSION_12);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    const ludus::resources::SceneMaterial* mediumOrNull = nullptr;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        if (material.Scattering.Model == format::MaterialModel::MediumInterface)
+        {
+            mediumOrNull = &material;
+        }
+    }
+    REQUIRE(mediumOrNull != nullptr);
+    CHECK(mediumOrNull->Scattering.K[0] == .5F);
+    CHECK(mediumOrNull->Scattering.K[1] == 1);
+    CHECK(mediumOrNull->Scattering.K[2] == 2);
+    CHECK(mediumOrNull->Emission == math::Vector3{});
+    // The boundary keeps its twelve outward triangles with bit-identical shared corners.
+    usize boundaryTriangles = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        if (decoded.Materials[object.Material].Scattering.Model == format::MaterialModel::MediumInterface)
+        {
+            const ludus::resources::SceneMesh& mesh = decoded.Meshes[object.Mesh];
+            boundaryTriangles += mesh.Indices.GetSize() / 3;
+            for (usize first = 0; first < mesh.Indices.GetSize(); first += 3)
+            {
+                const math::Vector3 a = mesh.Positions[mesh.Indices[first]];
+                const math::Vector3 b = mesh.Positions[mesh.Indices[first + 1]];
+                const math::Vector3 c = mesh.Positions[mesh.Indices[first + 2]];
+                const math::Vector3 centroid = (a + b + c) * (1.F / 3);
+                CHECK(math::Dot(math::Cross(b - a, c - a), centroid) > 0); // Outward.
+            }
+        }
+    }
+    CHECK(boundaryTriangles == 12);
+
+    // An unsupported medium type fails the import with the reader's explicit message.
+    WriteFile(entry, R"({"format": "ludus.scene", "version": 1, "name": "Fog",
+        "materials": [{"name": "Fog", "model": "medium_interface", "medium": {"type": "nanovdb", "file": "fog.nvdb"}}],
+        "objects": [{"name": "Fog", "material": "Fog", "positions": [[0, 0, 0], [1, 0, 0], [0, 0, 1]],
+                     "polygons": [[0, 1, 2]]}]})");
+    BestEffortResult failed;
+    CHECK(ImportSceneBestEffort(entry, {}, failed, error) == false);
+    CHECK(ReportHasCode(failed, codes::MALFORMED_INPUT) == true);
+    CHECK(GetReport(failed).find("is an unsupported medium type") != std::string_view::npos);
+}
