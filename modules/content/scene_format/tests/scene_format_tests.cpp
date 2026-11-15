@@ -306,8 +306,10 @@ TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surface
     // Vacuum is admitted; negative, nonfinite and oversized absorption is not.
     scattering.K = {};
     CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
-    for (const format::float32 invalid :
-         {-1.0F, __builtin_nanf(""), format::MAX_MEDIUM_ABSORPTION_PER_WORLD * 2, __builtin_inff()})
+    for (const format::float32 invalid : {-1.0F,
+                                          std::numeric_limits<format::float32>::quiet_NaN(),
+                                          format::MAX_MEDIUM_ABSORPTION_PER_WORLD * 2,
+                                          std::numeric_limits<format::float32>::infinity()})
     {
         scattering.K = {{0, invalid, 0}};
         CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
