@@ -57,6 +57,7 @@ constexpr usize MAX_PATH_BYTES = MAX_MESSAGE_BYTES / 2;
 constexpr std::string_view DIFFUSE_MODEL = "diffuse";
 constexpr std::string_view METALLIC_ROUGHNESS_MODEL = "metallic_roughness";
 constexpr std::string_view MEDIUM_INTERFACE_MODEL = "medium_interface";
+constexpr std::string_view HAIR_CARD_MODEL = "hair_card";
 constexpr std::string_view SKIN_MODEL = "skin";
 /// The one supported medium type: constant absorption without scattering or emission.
 constexpr std::string_view HOMOGENEOUS_MEDIUM_TYPE = "homogeneous";
@@ -945,6 +946,62 @@ ReadMediumInterface(JsonValue value, const JsonPath& path, Failure& inoutFailure
     return status;
 }
 
+/// Read a hair card's optional `hair` controls; omitted members keep their defaults.
+[[nodiscard]] SceneSourceStatus ReadHairCard(JsonValue value,
+                                             const JsonPath& path,
+                                             Failure& inoutFailure,
+                                             scene_format::HairCardParameters& outParameters) noexcept
+{
+    SceneSourceStatus status = CheckMembers(value,
+                                            {},
+                                            {"strand_direction_degrees",
+                                             "primary_shift_degrees",
+                                             "secondary_shift_degrees",
+                                             "primary_weight",
+                                             "secondary_weight"},
+                                            path,
+                                            inoutFailure);
+    constexpr float64 STRAND_LIMIT = static_cast<float64>(scene_format::MAX_HAIR_CARD_STRAND_DEGREES);
+    constexpr float64 SHIFT_LIMIT = static_cast<float64>(scene_format::MAX_HAIR_CARD_SHIFT_DEGREES);
+    struct HairMember final
+    {
+        std::string_view Name;
+        float64 Minimum = 0.0;
+        float64 Maximum = 0.0;
+        float32 scene_format::HairCardParameters::* Field = nullptr;
+    };
+    constexpr usize HAIR_MEMBER_COUNT = 5;
+    const StaticArray<HairMember, HAIR_MEMBER_COUNT> members{{
+        {"strand_direction_degrees",
+         -STRAND_LIMIT,
+         STRAND_LIMIT,
+         &scene_format::HairCardParameters::StrandDirectionDegrees},
+        {"primary_shift_degrees", -SHIFT_LIMIT, SHIFT_LIMIT, &scene_format::HairCardParameters::PrimaryShiftDegrees},
+        {"secondary_shift_degrees",
+         -SHIFT_LIMIT,
+         SHIFT_LIMIT,
+         &scene_format::HairCardParameters::SecondaryShiftDegrees},
+        {"primary_weight", 0.0, 1.0, &scene_format::HairCardParameters::PrimaryWeight},
+        {"secondary_weight", 0.0, 1.0, &scene_format::HairCardParameters::SecondaryWeight},
+    }};
+    for (const HairMember& member : members)
+    {
+        const JsonValue number = value.Get(member.Name);
+        if (status != SceneSourceStatus::Success || number.Valid() == false)
+        {
+            continue;
+        }
+        float64 read = 0.0;
+        status =
+            ReadBoundedNumber(number, member.Minimum, member.Maximum, JsonPath(path, member.Name), inoutFailure, read);
+        if (status == SceneSourceStatus::Success)
+        {
+            outParameters.*member.Field = static_cast<float32>(read);
+        }
+    }
+    return status;
+}
+
 [[nodiscard]] SceneSourceStatus
 ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMaterial& outMaterial) noexcept
 {
@@ -957,7 +1014,7 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     SceneSourceStatus status = CheckMembers(
         value,
         {"name", "model", "base_color"},
-        {"metallic", "roughness", "emission", "weight", "conductor", "brdf", "program", "scattering_distance"},
+        {"metallic", "roughness", "emission", "weight", "conductor", "brdf", "program", "hair", "scattering_distance"},
         path,
         inoutFailure);
     if (status == SceneSourceStatus::Success)
@@ -995,6 +1052,13 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     if (isProgram == true && value.Get("program").Valid() == false)
     {
         return inoutFailure.Fail(SceneSourceStatus::Malformed, "missing member", JsonPath(path, "program"));
+    }
+    const bool isHairCard = model == HAIR_CARD_MODEL;
+    if (isHairCard == false && value.Get("hair").Valid() == true)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "hair requires the hair_card model",
+                                 JsonPath(path, "hair"));
     }
     const bool isSkin = model == SKIN_MODEL;
     if (isSkin == false && value.Get("scattering_distance").Valid() == true)
@@ -1048,6 +1112,17 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     {
         outMaterial.Model = SourceMaterialModel::Program;
     }
+    else if (isHairCard == true)
+    {
+        // Hair is a dielectric fibre: its highlights follow the strand, not a metallic fraction.
+        if (value.Get("metallic").Valid() == true)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "metallic does not apply to hair_card; remove it",
+                                     JsonPath(path, "metallic"));
+        }
+        outMaterial.Model = SourceMaterialModel::HairCard;
+    }
     else if (isSkin == true)
     {
         if (value.Get("metallic").Valid() == true)
@@ -1061,7 +1136,7 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     else
     {
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
-                                 "must be diffuse, metallic_roughness, mix, project_brdf, program, skin or "
+                                 "must be diffuse, metallic_roughness, mix, project_brdf, program, hair_card, skin or "
                                  "medium_interface",
                                  JsonPath(path, "model"));
     }
@@ -1094,6 +1169,11 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     if (status == SceneSourceStatus::Success && isMix == true)
     {
         status = ReadMix(value, path, inoutFailure, outMaterial);
+    }
+    const JsonValue hair = value.Get("hair");
+    if (status == SceneSourceStatus::Success && hair.Valid() == true)
+    {
+        status = ReadHairCard(hair, JsonPath(path, "hair"), inoutFailure, outMaterial.HairCard);
     }
     if (status == SceneSourceStatus::Success && isProgram == true)
     {

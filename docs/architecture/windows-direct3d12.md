@@ -433,10 +433,12 @@ Windows hardware or the production MSVC toolchain.
 
 `ludus_compile_shader` compiles DXIL **only when CMake runs on a Windows host
 and targets Windows**: it runs Slang's `dxil` target, which has the pinned DXC
-(`dxcompiler.dll`) compile shader model 6.0 and its validator (`dxil.dll`)
-sign the result. Retail Direct3D 12 runtimes reject unsigned DXIL, and the
-signing library ships only as a Windows binary, so Linux and macOS builds never
-need DXC and cross-compiled Windows configurations stop with a setup error.
+(`dxcompiler.dll`) compile shader model 6.0. Ludus's Windows toolchain
+requires the matching validator DLL (`dxil.dll`) and signed output for retail
+Direct3D 12. [Upstream DXC](https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609)
+also publishes Linux builds. Ludus currently supports offline DXIL production
+on Windows hosts. Linux and macOS native builds use their own shader targets,
+and cross-compiled Windows configurations stop with a setup error.
 The helper supports fullscreen shaders, scalar `RASTER` vertex/fragment stages
 and scalar `COMPUTE` stages. Pass `COMPUTE` with the Slang entry name and use
 the generated `Compute()` description. Stage headers carry target-specific
@@ -461,8 +463,12 @@ whose hash is zero or a constant bypass value, and writes a header with
 `SV_VulkanVertexID` to HLSL unchanged, so shaders spell the fullscreen vertex
 index `LUDUS_SHADER_VERTEX_ID` from the RHI's `raster_bindings.slang`, which
 selects `SV_VertexID` for DXIL. DXC is licensed under NCSA and MIT terms;
-`dxil.dll` is covered by Microsoft's DirectX Shader Compiler license, and the
-tools are used at build time only, never installed with an SDK.
+`dxil.dll` is covered by Microsoft's DirectX Shader Compiler license. The
+[Windows runtime SDK](../development/project-sdk-workflow.md#windows-runtime-sdk)
+uses Slang and DXC as prerequisites for offline shader compilation. Games
+consume cooked DXIL at runtime. The separate
+[Windows shader-worker install](../development/render-graph-authoring.md#windows-worker)
+includes the two DLLs and their license texts for authoring and reload.
 
 ## DirectX 12 Agility runtime
 

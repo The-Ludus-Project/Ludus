@@ -228,6 +228,68 @@ TEST_CASE("Triangle bake charts are deterministic, guttered and capacity bounded
     REQUIRE(layout.TriangleCount == MAX_TRIANGLES);
 }
 
+TEST_CASE("Hair cards store strand controls in LUSCN v13 and reflect as metallic/roughness",
+          "[scene_format][materials][hair]")
+{
+    format::HairCardParameters parameters;
+    parameters.StrandDirectionDegrees = 90;
+    parameters.PrimaryShiftDegrees = -8;
+    parameters.SecondaryShiftDegrees = 12;
+    parameters.PrimaryWeight = 0.25F;
+    parameters.SecondaryWeight = 0.5F;
+    const format::MaterialScattering scattering = format::MakeHairCardScattering(parameters);
+    CHECK(scattering.Model == format::MaterialModel::HairCard);
+    CHECK(format::IsHairCardValid(scattering) == true);
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
+    const format::HairCardParameters read = format::GetHairCardParameters(scattering);
+    CHECK(read.StrandDirectionDegrees == 90);
+    CHECK(read.PrimaryShiftDegrees == -8);
+    CHECK(read.SecondaryShiftDegrees == 12);
+    CHECK(read.PrimaryWeight == 0.25F);
+    CHECK(read.SecondaryWeight == 0.5F);
+    CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::HairCard) == format::VERSION_13);
+    CHECK(format::IsSupportedVersion(format::VERSION_13) == true);
+    CHECK(format::SupportsFixedDimensionReflection(scattering) == true);
+    // Ray and reference evaluators receive the metallic/roughness lobes; other models pass through.
+    CHECK(format::GetSurfaceReflectionScattering(scattering).Model == format::MaterialModel::MetallicRoughness);
+    format::MaterialScattering conductor;
+    conductor.Model = format::MaterialModel::Conductor;
+    conductor.AlphaU = 0.25F;
+    conductor.AlphaV = 0.25F;
+    CHECK(format::GetSurfaceReflectionScattering(conductor).AlphaU == 0.25F);
+    CHECK(format::GetHairCardParameters(conductor).StrandDirectionDegrees == 0);
+    // Every control is range checked, including non-finite values.
+    const auto isValidWith = [&](auto edit) {
+        format::HairCardParameters changed = parameters;
+        edit(changed);
+        return format::IsHairCardValid(format::MakeHairCardScattering(changed));
+    };
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) { inoutValue.StrandDirectionDegrees = 180; }) == true);
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) { inoutValue.StrandDirectionDegrees = 181; }) ==
+          false);
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) {
+              inoutValue.StrandDirectionDegrees = std::numeric_limits<format::float32>::quiet_NaN();
+          }) == false);
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) {
+              inoutValue.PrimaryShiftDegrees = format::MAX_HAIR_CARD_SHIFT_DEGREES + 1;
+          }) == false);
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) {
+              inoutValue.SecondaryShiftDegrees = -format::MAX_HAIR_CARD_SHIFT_DEGREES - 1;
+          }) == false);
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) { inoutValue.PrimaryWeight = -0.5F; }) == false);
+    CHECK(isValidWith([](format::HairCardParameters& inoutValue) {
+              inoutValue.SecondaryWeight = std::numeric_limits<format::float32>::infinity();
+          }) == false);
+    // Unused slots keep their defaults so equal controls cook to equal bytes.
+    format::MaterialScattering changed = scattering;
+    changed.K[2] = 1;
+    CHECK(format::IsHairCardValid(changed) == false);
+    changed = scattering;
+    changed.AlphaU = 0.5F;
+    CHECK(format::IsMaterialScatteringValid(changed) == false);
+}
+
 TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surfaces", "[scene_format][materials][medium]")
 {
     format::MaterialScattering scattering;
@@ -243,8 +305,10 @@ TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surface
     // Vacuum is admitted; negative, nonfinite and oversized absorption is not.
     scattering.K = {};
     CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
-    for (const format::float32 invalid :
-         {-1.0F, __builtin_nanf(""), format::MAX_MEDIUM_ABSORPTION_PER_WORLD * 2, __builtin_inff()})
+    for (const format::float32 invalid : {-1.0F,
+                                          std::numeric_limits<format::float32>::quiet_NaN(),
+                                          format::MAX_MEDIUM_ABSORPTION_PER_WORLD * 2,
+                                          std::numeric_limits<format::float32>::infinity()})
     {
         scattering.K = {{0, invalid, 0}};
         CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
@@ -259,7 +323,7 @@ TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surface
     CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
 }
 
-TEST_CASE("Skin stores scattering distances in LUSCN v13 and reflects like metallic-roughness",
+TEST_CASE("Skin stores scattering distances in LUSCN v14 and reflects like metallic-roughness",
           "[scene_format][materials][skin]")
 {
     format::MaterialScattering scattering;
@@ -271,9 +335,11 @@ TEST_CASE("Skin stores scattering distances in LUSCN v13 and reflects like metal
     CHECK(format::GetMaterialCapabilities(scattering) ==
           format::GetMaterialCapabilities(format::MaterialModel::MetallicRoughness));
     CHECK(format::SupportsFixedDimensionReflection(scattering) == true);
-    CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::Skin) == format::VERSION_13);
-    CHECK(format::IsSupportedVersion(format::VERSION_13) == true);
-    CHECK(format::IsSupportedVersion(format::VERSION_13 + 1) == false);
+    CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::Skin) == format::VERSION_14);
+    CHECK(format::IsSupportedVersion(format::VERSION_14) == true);
+    CHECK(format::IsSupportedVersion(format::VERSION_14 + 1) == false);
+    // Ray and reference evaluators receive the metallic/roughness dielectric lobes.
+    CHECK(format::GetSurfaceReflectionScattering(scattering).Model == format::MaterialModel::MetallicRoughness);
     CHECK(format::LAST_MATERIAL_MODEL == format::MaterialModel::Skin);
     // Zero distance is admitted: it reproduces the unfiltered metallic-roughness lighting.
     scattering.K = {};

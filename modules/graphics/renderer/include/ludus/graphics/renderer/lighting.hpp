@@ -335,7 +335,9 @@ struct LitMaterialDescription final
     /// Diagnostic output for debug-view programs; ignored by ordinary lit programs.
     /// Values outside the enumeration are rejected.
     MaterialDebugView DebugView = MaterialDebugView::None;
-    /// Typed optical parameters; default preserves the legacy metallic/roughness model.
+    /// Typed optical parameters; default preserves the legacy metallic/roughness model. A HairCard requires zero
+    /// Metallic: authored lit programs shade its strand highlight two-sided (hair_card.hpp), other programs and
+    /// reference captures its metallic/roughness lobes.
     content::scene_format::MaterialScattering Scattering{};
     /// Closure program read when Scattering.Model is Program; it must satisfy IsMaterialProgramValid.
     content::scene_format::MaterialProgram Program{};

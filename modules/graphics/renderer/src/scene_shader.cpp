@@ -107,6 +107,8 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
            internal::IsReferenceDielectricSupported(material.Scattering) == true &&
            (material.Scattering.Model != content::scene_format::MaterialModel::Conductor ||
             material.Scattering.AlphaU == material.Scattering.AlphaV) &&
+           (content::scene_format::RequiresZeroMetallic(material.Scattering.Model) == false ||
+            material.Metallic == 0) &&
            material.HasError == false && ReferenceColor(material.BaseColor, 1) &&
            ReferenceColor(material.Emission, MAX_EMISSION) && math::IsFinite(material.Metallic) &&
            material.Metallic >= 0 && material.Metallic <= 1 && math::IsFinite(material.Roughness) &&
@@ -455,7 +457,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                                      math::Vector3{item.SurfaceTint.X, item.SurfaceTint.Y, item.SurfaceTint.Z}),
                 material.Metallic,
                 material.Roughness,
-                material.Scattering};
+                // A hair card's strand highlight is a raster technique; ray evaluators shade its surface lobes.
+                content::scene_format::GetSurfaceReflectionScattering(material.Scattering)};
             surface.Program = material.Program;
             surface.Emission = material.Emission;
             surface.IsEmissionTwoSided = material.IsEmissionTwoSided;

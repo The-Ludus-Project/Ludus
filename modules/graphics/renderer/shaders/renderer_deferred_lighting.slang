@@ -87,6 +87,8 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     surface.Roughness = normalRoughness.w;
     surface.Emission = emissionCoverage.rgb;
     surface.Alpha = 1;
+    // The G-buffer keeps no strand: a hair card resolves with its facing normal and the ordinary lobes.
+    surface.StrandWorld = float3(0);
     input.NormalWorld = surface.NormalWorld;
     output.Color = ShadeMaterial(surface, input);
     output.Color.rgb += EvaluateRasterMeshLights(surface,

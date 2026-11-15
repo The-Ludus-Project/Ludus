@@ -169,7 +169,8 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
                                                                           cornerWorld.Z,
                                                                           0};
         }
-        static_assert(LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS == 3, "one corner per word");
+        static_assert(LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS == REFERENCE_MEDIUM_TRIANGLE_CORNERS,
+                      "one corner per word");
         uniform.Tile[1] = static_cast<uint32>(first);
         uniform.Tile[2] = static_cast<uint32>(medium.CornersWorld.GetSize() / LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS);
     }
@@ -637,7 +638,8 @@ Status Renderer::State::PrepareReferenceSurface(const MaterialDescription& surfa
         return Status::OutOfMemory;
     }
     data->Bsdf = {{surface.Tint.X, surface.Tint.Y, surface.Tint.Z}, lighting->Metallic, lighting->Roughness};
-    data->Bsdf.Scattering = lighting->Scattering;
+    // A hair card's strand highlight is a raster technique; reference evaluators shade its surface lobes.
+    data->Bsdf.Scattering = content::scene_format::GetSurfaceReflectionScattering(lighting->Scattering);
     data->Program = lighting->Program;
     data->Tint = surface.Tint;
     data->UvTransform = surface.UvTransform;

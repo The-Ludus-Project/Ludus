@@ -132,11 +132,17 @@ names only, because JSON values carry no line numbers.
 | Cameras | the first perspective camera in scene order (`yfov`, `aspectRatio`, `znear`, `zfar`); orthographic is approximated |
 | Lights | `KHR_lights_punctual` directional (lux), point and spot (candela) with colour, intensity and cone angles; `range` reported |
 | Extensions | `KHR_lights_punctual`, `KHR_materials_emissive_strength` and `KHR_mesh_quantization` are implemented. The importer rejects other required extensions with `EXTENSION_REQUIRED` and reports ignored optional extensions with `EXTENSION_IGNORED`. It also reports approximated texture transforms with `TEXTURE_APPROXIMATED`. |
-| Not imported (reported) | skins and animation (`ANIMATION_IGNORED`, rest pose), morph targets, sparse accessors, Draco/meshopt without an uncompressed fallback, `KHR_texture_basisu`/WebP images, `KHR_materials_*` other than emissive strength |
+| Not imported (reported) | skins and animation (`ANIMATION_IGNORED`, undeformed mesh with static node transforms), morph targets, sparse accessors, Draco/meshopt without an uncompressed fallback, `KHR_texture_basisu`/WebP images, `KHR_materials_*` other than emissive strength |
 
 glTF is right-handed with +Y up and metres, matching the engine's world
 convention, so nodes are not converted. glTF texture coordinates already have a
 top-left origin.
+
+For a file without a `scenes` array, Ludus imports every root node. A cyclic
+group of nodes cannot reach a root, so the import fails with `MALFORMED_INPUT`
+even if another root has drawable geometry. If the report says a node is
+unreachable from any root, fix the cyclic parenting in the source scene and
+re-export the asset.
 
 If a material uses optional [`KHR_materials_iridescence`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_iridescence),
 the World Import Report shows `MATERIAL_APPROXIMATED`. The cooked scene

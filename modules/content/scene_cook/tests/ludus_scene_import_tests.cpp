@@ -437,6 +437,48 @@ TEST_CASE("Ludus scene import cooks the engine's grain-mix test scene", "[scene_
     CHECK(programs == 1);
 }
 
+TEST_CASE("Ludus scene import cooks the engine's hair-card test scene into LUSCN version 13",
+          "[scene_cook][ludus-scene][hair]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/hair-card-patch.luscene.json"), {}, result, error) == true);
+    uint32 version = 0;
+    REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
+                {result.Bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                version) == true);
+    CHECK(version == format::VERSION_13);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize hairCards = 0;
+    usize controls = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        if (material.Scattering.Model == format::MaterialModel::MetallicRoughness && material.Name.View() == "Control")
+        {
+            ++controls;
+        }
+        if (material.Scattering.Model != format::MaterialModel::HairCard)
+        {
+            continue;
+        }
+        ++hairCards;
+        const format::HairCardParameters hair = format::GetHairCardParameters(material.Scattering);
+        CHECK(hair.StrandDirectionDegrees == 90);
+        CHECK(hair.PrimaryShiftDegrees == -5);
+        CHECK(hair.SecondaryShiftDegrees == 7.5F);
+        CHECK(hair.PrimaryWeight == 0.1F);
+        CHECK(hair.SecondaryWeight == 0.05F);
+        CHECK(material.Metallic == 0);
+        CHECK(material.Roughness == 0.35F);
+    }
+    CHECK(hairCards == 1);
+    CHECK(controls == 1);
+}
+
 TEST_CASE("Scene detection tells Ludus scene sources from glTF JSON", "[scene_cook][ludus-scene]")
 {
     CHECK(DetectSceneSourceFormat(AsBytes("{\n  \"format\": \"ludus.scene\",\n  \"version\": 1"), "a.json") ==
@@ -523,7 +565,7 @@ TEST_CASE("Ludus scene import cooks an absorbing medium boundary into LUSCN vers
     CHECK(GetReport(failed).find("is an unsupported medium type") != std::string_view::npos);
 }
 
-TEST_CASE("Ludus scene import cooks the engine's skin bench into LUSCN version 13", "[scene_cook][ludus-scene][skin]")
+TEST_CASE("Ludus scene import cooks the engine's skin bench into LUSCN version 14", "[scene_cook][ludus-scene][skin]")
 {
     namespace format = ludus::content::scene_format;
     BestEffortResult result;
@@ -535,7 +577,7 @@ TEST_CASE("Ludus scene import cooks the engine's skin bench into LUSCN version 1
     REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
                 {result.Bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
                 version) == true);
-    CHECK(version == format::VERSION_13);
+    CHECK(version == format::VERSION_14);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);

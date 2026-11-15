@@ -969,6 +969,11 @@ jobs:
           set -o pipefail
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/build/linux-clang-development/modules/graphics/rhi/ludus_rhi_render_tests 2>&1 | tee out/raster-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/raster-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'
+          # R13a: whole-buffer control and buffer-range trial under synchronization validation.
+          # The layer reads validate_sync from the settings file or, on newer layers, the variable.
+          printf 'khronos_validation.validate_sync = true\n' > out/r13a-vk_layer_settings.txt
+          VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_SETTINGS_PATH="$PWD/out/r13a-vk_layer_settings.txt" VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true out/build/linux-clang-development/modules/graphics/rhi/ludus_rhi_render_tests '[synchronization-trial]' 2>&1 | tee out/r13a-vulkan-sync-validation.log
+          python3 -c 'from pathlib import Path; text=Path("out/r13a-vulkan-sync-validation.log").read_text(); assert "All tests passed" in text and "skipped" not in text and "R13A control" in text and "R13A trial" in text and "Validation Error" not in text and "VUID-" not in text and "SYNC-HAZARD" not in text, text'
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/build/linux-clang-development/modules/graphics/rhi/ludus_rhi_native_interop_consumer 2>&1 | tee out/native-interop-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/native-interop-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/build/linux-clang-development/modules/graphics/rhi/ludus_rhi_r11_consumer 2>&1 | tee out/r11-vulkan-validation.log

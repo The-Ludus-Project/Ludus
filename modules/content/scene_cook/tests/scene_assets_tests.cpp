@@ -8,6 +8,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/runtime/resources/scene.h>
 
@@ -995,6 +996,51 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         std::error_code ignored;
         std::filesystem::remove_all(work, ignored);
     }
+}
+
+TEST_CASE("Editor import explains the glTF skinning fallback and retains static placement", "[scene_assets]")
+{
+    const std::filesystem::path work = MakeWorkDirectory();
+    const std::string root = work.string();
+    const std::string source = (std::filesystem::path(LUDUS_SCENE_IMPORT_FIXTURES_DIR) / "gltf/skinned").string();
+    SequentialUuids counter;
+    UuidSource uuids{&SequentialUuids::Generate, &counter};
+    AssetOptions options;
+    options.UuidsOrNull = &uuids;
+    options.SourceOrigin = VIRTUAL_ORIGIN;
+    options.SourceEntry = "scene.gltf";
+    AssetError error;
+    Array<uint8> level;
+    REQUIRE(CreateLevel("Skinned glTF", options, level, error) == true);
+
+    EditorSceneRequest request;
+    request.Root = root;
+    request.Source = source;
+    request.Level = ToSpan(level);
+    request.Operation = EditorSceneOperation::PreviewImport;
+    EditorSceneResult preview;
+    REQUIRE(OperateEditorScene(request, options, preview, error) == true);
+    const std::string previewText = ToText(preview.Response);
+    CHECK(previewText.find("\"code\":\"ANIMATION_IGNORED\"") != std::string::npos);
+    CHECK(previewText.find("\"severity\":\"warning\"") != std::string::npos);
+    CHECK(previewText.find("places the undeformed mesh using the node transform") != std::string::npos);
+    CHECK(previewText.find("Bake the desired pose to a static mesh and re-export") != std::string::npos);
+    CHECK(previewText.find("bind pose") == std::string::npos);
+
+    request.Operation = EditorSceneOperation::Import;
+    EditorSceneResult imported;
+    REQUIRE(OperateEditorScene(request, options, imported, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(imported.Scene.GetData(), imported.Scene.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Objects.GetSize() == 1);
+    const ludus::resources::SceneObject& object = decoded.Objects[0];
+    const ludus::resources::SceneMesh& mesh = decoded.Meshes[object.Mesh];
+    REQUIRE(mesh.Positions.GetSize() == 3);
+    CHECK(math::TransformPoint(object.Transform, mesh.Positions[0]) == math::Vector3{1, 0, 0});
+
+    std::error_code ignored;
+    std::filesystem::remove_all(work, ignored);
 }
 
 TEST_CASE("Editor import keeps closure programs through the catalog and assembly", "[scene_assets][program]")

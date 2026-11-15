@@ -623,8 +623,66 @@ pattern-based edge blending in their HPG 2017 retrospective.
 [Reshetov, “Pros and cons”](https://www.highperformancegraphics.org/wp-content/uploads/2017/Retrospective/HPG2017_Reshetov_MLAARetrospective.pdf) ·
 [Jimenez, slides 18–20](https://www.iryoku.com/research-impact-retrospective-mlaa-from-2009-to-2017/)
 
-Measure missed coverage, stair steps and corner softening independently in the
-[analytic coverage benchmark](https://github.com/The-Ludus-Project/Ludus/issues/1414).
+#### Measured coverage of spatial antialiasing
+
+The [analytic coverage benchmark](../../modules/graphics/renderer/tests/viewport_antialiasing_coverage_tests.cpp)
+measures missed coverage, stair steps and corner softening separately. It
+renders flat unlit polygons through the normal `RasterViewport` output pass in
+Off, Fast and Balanced (Linear8, Reinhard, no backdrop) over a blue background.
+The polygons are an oblique edge about 20° from vertical, an isolated strip
+10/32 pixel wide, two overlapping strips at distinct depths, an acute wedge of
+about 20° and a staircase rising one pixel in eight. The camera moves them right
+and down over one pixel in sixteen equal steps.
+
+The comparator follows Catmull: the expected pixel value is the box-filtered
+visible area of each surface. Each polygon is clipped against the pixel square
+and the area hidden by a nearer polygon is subtracted. The expected linear
+composite then passes through the documented output conversion (clip to [0,1],
+per-channel Reinhard, sRGB encode) before it is compared with the capture. A
+64 × 64 stratified point estimate cross-checks the three-surface areas and their
+partition of the pixel. Each surface of the overlapping strips has its own
+primary colour, so each captured channel recovers one visible weight. Errors
+are in 8-bit display steps over each region's edge band: pixels with fractional
+coverage and their eight neighbours. A background patch and a feature interior
+are flat controls.
+
+Measured on Metal (Apple GPU) at 128 × 64:
+
+| Measurement | Off | Fast | Balanced |
+| --- | --- | --- | --- |
+| Oblique edge, mean / max error | 17.85 / 156.1 | 14.60 / 109.1 | 14.76 / 109.1 |
+| Staircase, mean / max error | 19.72 / 155.8 | 16.93 / 111.0 | 17.54 / 91.8 |
+| Acute corner, mean / max error | 23.75 / 155.8 | 22.89 / 151.4 | 25.15 / 151.4 |
+| Contrast lost inside the corner | 0 | 0.100 | 0.157 |
+| Thin strip: frames vanished of 16 | 11 | 11 | 11 |
+| Thin strip: total contrast / expected, visible frames' maximum | 1.40 | 1.11 | 0.96 |
+| Strips: far / near / background weight mean error | 0.102 / 0.135 / 0.145 | 0.056 / 0.080 / 0.169 | 0.056 / 0.097 / 0.180 |
+| Strips: recovered weights' sum, mean deviation from one | 0.012 | 0.176 | 0.215 |
+| Strips: frames missing the far / near colour | 12 / 9 | 12 / 9 | 12 / 9 |
+| Flat controls, maximum error | 0.48 | 0.48 | 0.48 |
+
+Off agrees with point sampling at every pixel centre farther than 1/32 pixel
+from an edge. The filtered modes reduce the error of the oblique edge and the
+staircase. Balanced's 16-pixel walk lowers the staircase's worst pixel below
+Fast's. Neither mode improves the acute corner. Both soften contrast inside it.
+
+All modes share the sampling limit. The thin strip vanishes in the 11 phases in
+which no pixel centre falls inside it. Each strip colour is missing in exactly
+the phases in which no centre sample reaches it, including phases in which the
+centre misses the overlap. A filter that reads only the display image has
+nothing there to blend. Where a surface was sampled, blending toward a
+neighbour recovers part of the strips' visible weights. Blending in display
+space does not preserve the partition, so the recovered weights of the three
+surfaces no longer sum to one. Recovering missed coverage needs more samples
+per pixel, such as MSAA or temporal accumulation, not a better display-space
+filter.
+
+The test asserts exact agreement of Off with point sampling and unchanged flat
+controls. It asserts the analytic dropout counts in every mode, the improvements
+and limits above, and bounds with about a quarter of headroom over these
+measurements. Set `LUDUS_RENDERER_COVERAGE_REPORT=1` to print the backend,
+viewport size and every value per mode. Linux CI runs the same assertions on
+Vulkan. Its values are not recorded here.
 
 Default renderer budgets are eight prepared views (four shadow views plus scene/UI
 and overlap), two atlases, two programs, eight materials, four snapshots and four
@@ -1707,14 +1765,15 @@ without eyes or hair, so bleed tests add their own eye and hair geometry.
   textures and existing colour, depth and shadow passes. Verify matching
   coverage across those passes and supported ray hit and shadow queries.
   Compare GPU time and overdraw against the same cards with ordinary masked
-  shading. [Hair cards #1371](https://github.com/The-Ludus-Project/Ludus/issues/1371)
+  shading. [Raster hair cards](#raster-hair-cards) ·
+  [Hair cards #1371](https://github.com/The-Ludus-Project/Ludus/issues/1371)
 - **Raster skin.** Adapt the two separable convolutions in Jorge Jimenez et
   al., *Separable Subsurface Scattering* (Computer Graphics Forum, 2015),
   to the deferred lighting path. Filter diffuse lighting only, with depth and
   skin profile boundaries, and preserve specular detail. Expose base colour,
   roughness and RGB scattering distances in world units. Compare against
   ordinary PBR on the bust and measure GPU time and transient memory.
-  Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v13
+  Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14
   and shades as its metallic-roughness surface; the diffusion filter is next.
   [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
   [Real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)
@@ -1730,6 +1789,76 @@ without eyes or hair, so bleed tests add their own eye and hair geometry.
   isolation. Use the backlit ear to decide whether to add thin-feature
   transmission. [Technical memo](https://www.seanet.com/~myandper/abstract/memo1504.htm) ·
   [Reference skin #1373](https://github.com/The-Ludus-Project/Ludus/issues/1373)
+
+#### Raster hair cards
+
+A `HairCard` material (`content::scene_format::MaterialModel::HairCard`, LUSCN
+v13) stores a strand direction, two highlight shifts and two highlight weights in
+its typed scattering slots (`HairCardParameters`). Its record keeps zero metallic,
+and base colour, roughness, textures and the alpha mask keep their usual meaning.
+Author it in a [scene source](scene-source-format.md#hair-card) or from code.
+
+The forward raster profile with authored inputs, which the World viewport uses,
+shades a hair card as follows:
+
+- **Strand frame.** The authored tangent sets the frame. Without one, the
+  texture-coordinate derivatives give dP/du and the handedness. A card with
+  neither uses `ComputeHairCardFallbackTangent`. The strand is rotated from the
+  tangent toward the bitangent in the front-side frame, so both sides of a card
+  share one physical direction.
+- **Two sides.** A back face turns its shading normal toward the viewer and is
+  shaded like a front face. A light on the far side of the card contributes
+  nothing; transmission through the card is not modelled.
+- **Lobe.** Per light, the result is
+  `cos · (baseColor/π + w₁ S(s₁) + w₂ baseColor S(s₂))`. Here `cos` is the cosine
+  with the facing normal, and `S(s)` is the Kajiya–Kay highlight
+  `(p + 2)/(2π) · sin^p(strand′, half vector)`. The strand is tilted toward the
+  normal by the shift `s`, and `p = 2/α² − 2` for `α = roughness²`, clamped to
+  [1, 65536]. James T. Kajiya and Timothy L. Kay, *Rendering Fur with Three
+  Dimensional Textures* (SIGGRAPH ’89, pp. 271–280, “The specular component”,
+  Fig. 8) supply the highlight cone around the fibre tangent. Stephen R. Marschner
+  et al., *Light Scattering from Human Hair Fibers* (ACM TOG 22(3), 2003) supply
+  the opposite shifts of the surface and internal reflections, which set the
+  defaults. Thanks to the authors. The card normalization, the gating and the
+  Lambertian diffuse term are Ludus's raster approximation, not either paper's
+  model.
+- **Environment.** Environment and baked terms use the ordinary dielectric
+  approximation about the facing normal.
+
+`hair_card.hpp` evaluates the same lobe on the CPU. The `[hair-card]` tests in
+`ludus_reference_material_tests` sweep the view through the predicted
+longitudinal peak at two incident angles and three shifts. They check the peak
+value, rotation with the strand direction, both sides and finite output near
+tangent-aligned directions. The `[hair-card][gpu]` forward-lit test in `ludus_renderer_render_tests` checks the
+same behaviour in raster pixels: the highlight moves with the strand, back faces
+match front faces where an ordinary card is dark, far-side lights are gated, and
+masks discard. It also checks that a metallic hair card is rejected while the
+last drawable scene is kept.
+
+Coverage reuses the material's mask in every pass. Colour, depth and shadow
+casting discard through `SampleBaseTexel` with the same cutoff. Ray scenes apply
+the record's mask in closest-hit and shadow queries as for any masked material.
+
+Other paths make declared approximations:
+
+- **Clustered deferred profile.** It packs the facing normal and resolves the
+  ordinary lobes, because the G-buffer stores no strand.
+- **Lit programs without authored inputs.** They have no hair parameters and
+  shade a hair card with the ordinary lobes.
+- **Ray previews and reference captures.** They receive the metallic/roughness
+  dielectric lobes (`GetSurfaceReflectionScattering`). Hair transport waits for
+  the [strand prototype](https://github.com/The-Ludus-Project/Ludus/issues/1374).
+- **Raster mesh lights.** Deferred raster mesh lights shade a hair card with the
+  ordinary lobes.
+
+The editor inspector lists the strand controls but cannot edit them yet. Still
+open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
+
+- World assignment and editing with undo, save and reimport.
+- The shared static bust.
+- The matched-cutoff and mismatched-cutoff coverage comparison across raster
+  passes and ray queries.
+- GPU time and overdraw measurements against an ordinary masked material.
 
 Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
 An artist must be able to import the bust, assign and edit hair and skin
@@ -3154,10 +3283,40 @@ The first RT2 effect is the [hybrid shadows template](../development/render-grap
 raster first hits and one shadow ray for each of up to 16 contributing analytic
 lights per pixel. Its regression compares an offscreen blocker's shadow with a
 geometric projection, the default graph's shadow map and the paired RT1 direct
-output. Hard punctual shadows need no history or filter, so this step does not yet
-qualify reconstruction, temporal behavior, area-light penumbrae, reflections or
-indirect diffuse. [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248)
-tracks those fixtures.
+output. A second `[hybrid-shadows]` fixture compares the default graph's directional
+atlas with the same graph selected by RT2 activation. It fixes the camera over
+a tessellated curved receiver and nearby blocker, with light angles of roughly
+63° and 21° above the receiver's center tangent. The unoccluded render keeps the
+same geometry and light, with raster shadow casting disabled. The ratio to this
+control isolates shadow visibility from the receiver's changing direct response.
+The fixture checks interior false occlusion and false light against independent
+rays on the tessellation and measures the signed contact-edge displacement in
+screen pixels separately. It exercises Automatic on a device without enabled
+native rays and ForceRaster when the device still exposes them.
+
+The directional atlas uses a 1024 × 1024 slot with a one-texel gutter. The
+effective comparison tolerance adds the 0.001 normalized light-depth bias,
+projected receiver depth uncertainty, and the dot product of the absolute
+stored caster slope and projected texel uncertainty for each filter tap.
+The slope also reprojects sampled depth to the receiver's position in the map.
+The fixture measures the combined effect of these terms on visibility. Lance
+Williams's 1978 study motivates measuring both self-shadowing and changes at the
+contact. [Casting Curved Shadows on Curved Surfaces, pp. 270–274](https://cg.informatik.uni-freiburg.de/intern/seminar/shadowMapping_1978_Williams.pdf)
+
+On Apple M5 with Metal, the default graph and ForceRaster give identical linear
+output. At the steep angle, all 5,520 lit probes retained full visibility. At
+grazing incidence, 62 of 3,720 lit probes returned half visibility along one
+column beside a tessellation seam. The fixture permits one column's worth of
+lit probes to lose over 5% visibility at grazing incidence, with a peak loss
+limit of half the signal plus one RGBA8 code relative to the minimum admitted
+control. Both angles had zero falsely lit probes. The contact edge moved
+0.156 pixels inward at the steep angle and 0.051 pixels at the grazing angle,
+within a 1.5-pixel limit.
+
+Hard punctual shadows need no history or reconstruction filter.
+[Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
+remaining area-light penumbrae, reflections, indirect diffuse, reconstruction
+and temporal fixtures.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)

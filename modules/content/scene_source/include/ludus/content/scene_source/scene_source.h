@@ -150,6 +150,9 @@ enum class SourceMaterialModel : uint8
     /// Invisible boundary of a bounded homogeneous absorbing medium (`"model": "medium_interface"`). Its objects
     /// neither reflect nor occlude; their closed, outward-facing polygons enclose the medium.
     MediumInterface,
+    /// Two-sided hair card with an authored strand direction (`"model": "hair_card"`). BaseColor and
+    /// Roughness shade it; the optional `hair` member holds its strand controls.
+    HairCard,
     /// Dielectric reflection of BaseColor and Roughness whose diffuse lighting the raster deferred profile
     /// spreads over ScatteringDistance (`"model": "skin"`). A zero distance shades as MetallicRoughness.
     Skin,
@@ -205,6 +208,9 @@ struct SourceMaterial final
     /// MediumInterface only: linear Rec. 709 absorption coefficient of the enclosed medium per metre, each
     /// channel in [0, scene_format::MAX_MEDIUM_ABSORPTION_PER_WORLD]; zero for other models.
     foundation::math::Vector3d MediumAbsorptionPerWorld{};
+    /// HairCard only: strand direction, highlight shifts and weights, valid by
+    /// scene_format::IsHairCardParametersValid; defaults for other models.
+    scene_format::HairCardParameters HairCard{};
     /// Skin only: linear Rec. 709 scattering distance in metres, each channel in
     /// [0, scene_format::MAX_SKIN_SCATTERING_DISTANCE]; zero for other models.
     foundation::math::Vector3d ScatteringDistance{};

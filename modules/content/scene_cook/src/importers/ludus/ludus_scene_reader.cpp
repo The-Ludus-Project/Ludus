@@ -33,6 +33,10 @@ using scene_source::SourceObject;
     {
         return "medium_interface";
     }
+    if (model == SourceMaterialModel::HairCard)
+    {
+        return "hair_card";
+    }
     if (model == SourceMaterialModel::Skin)
     {
         return "skin";
@@ -104,6 +108,12 @@ void CopyRgb(math::Vector3d value, float64 (&outRgb)[IR_RGB_CHANNEL_COUNT]) noex
         material.Scattering.K = {{static_cast<float32>(source.MediumAbsorptionPerWorld.X),
                                   static_cast<float32>(source.MediumAbsorptionPerWorld.Y),
                                   static_cast<float32>(source.MediumAbsorptionPerWorld.Z)}};
+    }
+    if (source.Model == SourceMaterialModel::HairCard)
+    {
+        // Hair reflects as a dielectric; the scattering slots carry the strand controls.
+        material.Metallic = 0.0;
+        material.Scattering = scene_format::MakeHairCardScattering(source.HairCard);
     }
     if (source.Model == SourceMaterialModel::Skin)
     {

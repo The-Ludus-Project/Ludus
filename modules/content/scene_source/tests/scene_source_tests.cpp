@@ -154,6 +154,52 @@ TEST_CASE("Scene source checks the versioned project BRDF program", "[scene-sour
                    "brdf.powers");
 }
 
+TEST_CASE("Scene source reads hair cards and checks their strand controls", "[scene-source][hair]")
+{
+    namespace format = ludus::content::scene_format;
+    constexpr std::string_view MATERIAL = R"("name": "Wall", "model": "diffuse")";
+    const std::string text = ReplaceInValid(MATERIAL, R"("name":"Wall","model":"hair_card",
+        "roughness":0.4,"hair":{"strand_direction_degrees":90,"primary_shift_degrees":-6,
+                                "secondary_shift_degrees":9,"primary_weight":0.2,"secondary_weight":0.15})");
+    SceneSource scene;
+    SceneSourceError error;
+    const SceneSourceStatus status = ParseSceneSource(text, scene, error);
+    INFO(error.Message.View());
+    REQUIRE(status == SceneSourceStatus::Success);
+    const ludus::content::scene_source::SourceMaterial& material = scene.Materials[0];
+    CHECK(material.Model == SourceMaterialModel::HairCard);
+    CHECK(material.Roughness == 0.4);
+    CHECK(material.HairCard.StrandDirectionDegrees == 90);
+    CHECK(material.HairCard.PrimaryShiftDegrees == -6);
+    CHECK(material.HairCard.SecondaryShiftDegrees == 9);
+    CHECK(material.HairCard.PrimaryWeight == 0.2F);
+    CHECK(material.HairCard.SecondaryWeight == 0.15F);
+    // Omitted controls keep the documented defaults.
+    const std::string defaults = ReplaceInValid(MATERIAL, R"("name":"Wall","model":"hair_card")");
+    REQUIRE(ParseSceneSource(defaults, scene, error) == SceneSourceStatus::Success);
+    CHECK(scene.Materials[0].HairCard.PrimaryShiftDegrees == format::DEFAULT_HAIR_CARD_PRIMARY_SHIFT_DEGREES);
+    CHECK(scene.Materials[0].HairCard.SecondaryWeight == format::DEFAULT_HAIR_CARD_SECONDARY_WEIGHT);
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"Wall","model":"hair_card",
+                                  "hair":{"strand_direction_degrees":200})"),
+                   SceneSourceStatus::InvalidValue,
+                   "hair.strand_direction_degrees");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"Wall","model":"hair_card",
+                                  "hair":{"primary_shift_degrees":-45})"),
+                   SceneSourceStatus::InvalidValue,
+                   "hair.primary_shift_degrees");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"Wall","model":"hair_card",
+                                  "hair":{"secondary_weight":2})"),
+                   SceneSourceStatus::InvalidValue,
+                   "hair.secondary_weight");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"Wall","model":"hair_card",
+                                  "metallic":0.5)"),
+                   SceneSourceStatus::InvalidValue,
+                   "metallic");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"Wall","model":"diffuse","hair":{})"),
+                   SceneSourceStatus::InvalidValue,
+                   "hair");
+}
+
 TEST_CASE("Scene source compiles closure programs into bounded register code", "[scene-source][program]")
 {
     namespace format = ludus::content::scene_format;

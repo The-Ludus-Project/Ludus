@@ -46,6 +46,15 @@ profiling-disabled Release build and is not available for the browser window.
 [Runtime profiling](../development/runtime-profiling.md) runs these modes on a
 schedule.
 
+In Perfetto, the trace includes [allocation-domain gauges](../modules/foundation/profiling.md#memory-gauges)
+on the main thread alongside the timing events. Headless runs sample before
+loading the World, after activation and after the last tick while the session is
+still alive. Native windowed runs sample before application startup and on
+both sides of explicit shutdown. Use `LiveRequestedBytes` to compare the
+covered footprint and the change in `AllocatedBytes` and `FreedBytes` to see
+cumulative traffic between samples. The memory coverage manifest lists excluded
+paths. Concurrent activity can affect the consistency of a sample.
+
 The native loop is [paced](../architecture/high-resolution-time.md#native-frame-pacing).
 The FIFO swapchain paces presented frames. Frames that present nothing (startup,
 loading) wait at 60 Hz instead of polling. While the window is minimized or

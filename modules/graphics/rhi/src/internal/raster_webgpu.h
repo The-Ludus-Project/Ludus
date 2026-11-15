@@ -267,6 +267,8 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     return result;
 }
 
+// Defined with the compute entry points below; raster storage and indirect limits require compute.
+ComputeCapabilities ComputeLimits() noexcept;
 // Thanks to W3C GPU for the Web Working Group, "WebGPU", Limits and "Texture Format
 // Capabilities": core devices admit read-only vertex storage, fragment storage writes and
 // write-only rgba8unorm/rgba16float storage textures in fragment and compute stages.

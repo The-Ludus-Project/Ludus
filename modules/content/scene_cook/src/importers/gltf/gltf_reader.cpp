@@ -819,9 +819,20 @@ Status GltfReader::checkAssetAndExtensions() noexcept
             inform(codes::EXTENSION_IGNORED, message.GetView());
         }
     }
-    if (CountArray(mRoot, "animations") != 0 || CountArray(mRoot, "skins") != 0)
+    if (CountArray(mRoot, "animations") != 0)
     {
-        warn(codes::ANIMATION_IGNORED, "animations and skins ignored; the static node transforms are imported");
+        warn(codes::ANIMATION_IGNORED,
+             "Animation clips are ignored. The importer uses the static node transforms. "
+             "Apply the desired pose and re-export as a static scene.");
+    }
+    if (CountArray(mRoot, "skins") != 0)
+    {
+        // Thanks to the Khronos 3D Formats Working Group, glTF 2.0, "Skins".
+        // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skins
+        // The static fallback uses node transforms in place of joint deformation.
+        warn(codes::ANIMATION_IGNORED,
+             "Skinning is ignored. The importer places the undeformed mesh using the node transform. "
+             "Bake the desired pose to a static mesh and re-export.");
     }
     return hasRejectedExtension == true ? Status::Invalid : Status::Ok;
 }
@@ -1547,7 +1558,9 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
     }
     if (primitive.Get("targets").Valid() == true)
     {
-        warn(codes::ANIMATION_IGNORED, "morph targets ignored; the base geometry is imported");
+        warn(codes::ANIMATION_IGNORED,
+             "Morph targets are ignored. The importer uses the base geometry. "
+             "For a still pose, bake the desired pose to a static mesh and re-export it.");
     }
     const JsonValue primitiveExtensions = primitive.Get("extensions");
     const bool isDraco =
@@ -1987,10 +2000,6 @@ Status GltfReader::visitNode(usize node, const math::Matrix4d& world) noexcept
                 ++mMeshes[static_cast<usize>(meshIndex)].References;
             }
         }
-        if (object.Get("skin").Valid() == true)
-        {
-            inform(codes::ANIMATION_IGNORED, "skinned node imported in its bind pose without skinning");
-        }
         const JsonValue camera = object.Get("camera");
         if (camera.Valid() == true)
         {
@@ -2064,7 +2073,6 @@ Status GltfReader::traverseScene() noexcept
         return Status::Ok;
     }
     // No scenes: every node without a parent is a root.
-    inform(codes::DIRECTIVE_IGNORED, "the asset declares no scene; all root nodes are imported");
     Array<uint8> hasParent;
     if (hasParent.TryResize(mIsNodeVisited.GetSize(), uint8{0}) == false)
     {
@@ -2095,6 +2103,26 @@ Status GltfReader::traverseScene() noexcept
             return status;
         }
     }
+    if (mLog.HasErrors() == true || mHasOverflowed == true)
+    {
+        return Status::Ok; // An earlier traversal error may have left descendants unvisited.
+    }
+    // Thanks to Juan Linietsky, A small defense of glTF 2.0 on its comparison
+    // against OpenGEX, for calling out child-index hierarchy validation.
+    // https://godotengine.org/article/small-defense-gltf/#hierarchial-node-relationships
+    // In Khronos glTF 2.0 §3.5.2's forest, traversing every root reaches every node.
+    // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#nodes-and-hierarchy
+    for (usize n = 0; n < mIsNodeVisited.GetSize(); ++n)
+    {
+        if (mIsNodeVisited[n] == 0)
+        {
+            failAt("nodes",
+                   n,
+                   "no root reaches this node. Re-export after fixing cyclic parenting in the source scene.");
+            return mHasOverflowed == true ? Status::OutOfMemory : Status::Invalid;
+        }
+    }
+    inform(codes::DIRECTIVE_IGNORED, "the asset declares no scene; all root nodes are imported");
     return Status::Ok;
 }
 
