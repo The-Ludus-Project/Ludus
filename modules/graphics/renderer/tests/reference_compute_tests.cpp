@@ -2403,3 +2403,509 @@ TEST_CASE("An emitter seen through smooth glass keeps the Fresnel-transmitted ra
         }
     }
 }
+
+namespace
+{
+/// Append the twelve outward-wound triangles of the axis-aligned box [minimum, maximum]. Each face is a quad
+/// c0..c3 with outward normal cross(c1 - c0, c3 - c0), split along its c0-c2 diagonal like BuildQuadSnapshot.
+void AppendMediumBox(math::Vector3 minimum, math::Vector3 maximum, Array<math::Vector3>& inoutCorners)
+{
+    const float32 x0 = minimum.X;
+    const float32 y0 = minimum.Y;
+    const float32 z0 = minimum.Z;
+    const float32 x1 = maximum.X;
+    const float32 y1 = maximum.Y;
+    const float32 z1 = maximum.Z;
+    const StaticArray<StaticArray<math::Vector3, 4>, 6> faces{{
+        {{{x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}}},
+        {{{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}}},
+        {{{x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}}},
+        {{{x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}}},
+        {{{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}}},
+        {{{x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}}},
+    }};
+    for (const StaticArray<math::Vector3, 4>& face : faces)
+    {
+        for (const usize corner : {0, 1, 2, 0, 2, 3})
+        {
+            inoutCorners.Add(face[corner]);
+        }
+    }
+}
+rr::ReferenceMediumDescription MakeMedium(const Array<math::Vector3>& corners, math::Vector3 absorptionPerWorld)
+{
+    rr::ReferenceMediumDescription medium;
+    medium.BoundaryCornersWorld = {corners.GetData(), corners.GetSize()};
+    medium.AbsorptionPerWorld = absorptionPerWorld;
+    return medium;
+}
+/// Orthographic center rays along +z from the near plane z = -3 to the far plane z = 3, one per pixel of a
+/// 16 x 16 image covering x, y in [-1, 1]. No pixel centre lies on x or y = +/-0.05, 0.5 or 0.75.
+constexpr uint32 MEDIUM_IMAGE_EXTENT = 16;
+constexpr float32 MEDIUM_NEAR_WORLD = -3;
+rr::ReferenceCaptureDescription MakeMediumCapture()
+{
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = MEDIUM_IMAGE_EXTENT;
+    capture.Height = MEDIUM_IMAGE_EXTENT;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[2].Z = 1.F / 6;
+    capture.WorldToClip.Columns[3].Z = .5F;
+    capture.CenterRays = true;
+    capture.TargetSamples = 2;
+    capture.MaxDepth = 1;
+    capture.RouletteDepth = 64;
+    capture.Seed = 1369;
+    return capture;
+}
+/// World x and y of a pixel centre of MakeMediumCapture.
+math::Vector2 GetMediumPixelCenter(usize pixel)
+{
+    const float64 column = static_cast<float64>(pixel % MEDIUM_IMAGE_EXTENT) + .5;
+    const float64 row = static_cast<float64>(pixel / MEDIUM_IMAGE_EXTENT) + .5;
+    return {static_cast<float32>(2 * column / MEDIUM_IMAGE_EXTENT - 1),
+            static_cast<float32>(1 - 2 * row / MEDIUM_IMAGE_EXTENT)};
+}
+float64 Widen(float32 value)
+{
+    return static_cast<float64>(value);
+}
+float64 GetBeerLambert(float32 absorptionPerWorld, float64 insideWorld)
+{
+    return math::Exp(-static_cast<float64>(absorptionPerWorld) * insideWorld);
+}
+/// Check one channel against an analytic value within a relative float32 rounding allowance.
+void CheckAnalytic(float32 actual, float64 expected)
+{
+    constexpr float64 RELATIVE_TOLERANCE = 1e-4;
+    constexpr float64 ABSOLUTE_TOLERANCE = 1e-7;
+    CAPTURE(actual, expected);
+    CHECK(math::Abs(static_cast<float64>(actual) - expected) <= RELATIVE_TOLERANCE * expected + ABSOLUTE_TOLERANCE);
+}
+struct MediumDevice final
+{
+    rhi::DeviceHandle Device;
+    rhi::SurfaceHandle Surface;
+    Session Cpu;
+    Session Gpu;
+    bool HasGpu = false;
+};
+/// Start one device with a CPU-oracle session and, where compute storage exists, a GPU-compute session.
+bool StartMediumDevice(MediumDevice& outDevice)
+{
+    if (StartComputeDevice(outDevice.Device, outDevice.Surface) == false)
+    {
+        return false;
+    }
+    const S enabled = Prepare(outDevice.Device, rr::ReferenceTraversal::GpuCompute, outDevice.Gpu);
+    REQUIRE((enabled == S::Ready || enabled == S::Unsupported));
+    outDevice.HasGpu = enabled == S::Ready;
+    if (outDevice.HasGpu == false)
+    {
+        WARN("GPU compute storage is unavailable; checking the CPU oracle only");
+    }
+    REQUIRE(Prepare(outDevice.Device, rr::ReferenceTraversal::CpuOracle, outDevice.Cpu) == S::Ready);
+    return true;
+}
+/// Rebuild every session's snapshot from the same quads.
+void BuildMediumScene(MediumDevice& inoutDevice, const QuadItem* quads, usize count)
+{
+    for (Session* session : {&inoutDevice.Cpu, &inoutDevice.Gpu})
+    {
+        if (session == &inoutDevice.Gpu && inoutDevice.HasGpu == false)
+        {
+            continue;
+        }
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer, session->Program, quads, count, session->Snapshot) == S::Ready);
+    }
+}
+/// Capture with both implementations, check matched counts and per-pixel parity, and return both images.
+void CaptureMediumPair(MediumDevice& inoutDevice,
+                       const rr::ReferenceCaptureDescription& capture,
+                       Array<rr::ReferencePixel>& outCpu,
+                       Array<rr::ReferencePixel>& outGpu)
+{
+    // Float32 crossing distances and exp differ by rounding only; matched samples follow matched paths.
+    constexpr float32 PARITY_TOLERANCE = 1e-5F;
+    rr::ReferenceCaptureInfo cpuInfo;
+    Capture(inoutDevice.Cpu, capture, inoutDevice.Surface, outCpu, cpuInfo);
+    CHECK(cpuInfo.InvalidContributions == 0);
+    if (inoutDevice.HasGpu == false)
+    {
+        return;
+    }
+    rr::ReferenceCaptureInfo gpuInfo;
+    Capture(inoutDevice.Gpu, capture, inoutDevice.Surface, outGpu, gpuInfo);
+    CHECK(gpuInfo.InvalidContributions == 0);
+    CHECK(gpuInfo.ClosestQueries == cpuInfo.ClosestQueries);
+    CHECK(gpuInfo.VisibilityQueries == cpuInfo.VisibilityQueries);
+    CHECK(gpuInfo.SceneFingerprintLow == cpuInfo.SceneFingerprintLow);
+    const Comparison comparison = Compare(outCpu, outGpu, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, comparison.MaximumEmission, comparison.MaximumDirect);
+    CHECK(comparison.MaximumRadiance <= PARITY_TOLERANCE);
+}
+QuadItem MakeMediumEmitter()
+{
+    // One-sided toward the camera, reflecting nothing.
+    QuadItem emitter;
+    emitter.CornersWorld = {{{-2, -2, 2.5F}, {-2, 2, 2.5F}, {2, 2, 2.5F}, {2, -2, 2.5F}}};
+    emitter.Emission = {2, 3, 4};
+    emitter.IsEmissionTwoSided = false;
+    emitter.BaseColor = {};
+    emitter.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    return emitter;
+}
+} // namespace
+
+TEST_CASE("A bounded absorbing medium attenuates camera rays by Beer-Lambert transmittance on CPU and GPU",
+          "[renderer][gpu][reference-compute][medium]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    MediumDevice devices;
+    if (StartMediumDevice(devices) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    const QuadItem emitter = MakeMediumEmitter();
+    BuildMediumScene(devices, &emitter, 1);
+    const math::Vector3 absorption{.5F, 1, 2};
+    // Two disjoint boxes form one medium: unit thickness at negative x and a quarter at positive x. Their face
+    // diagonals pass through pixel centres, which the crossing tie rule must count once.
+    constexpr float32 THICK_WORLD = 1;
+    constexpr float32 THIN_WORLD = .25F;
+    Array<math::Vector3> corners;
+    AppendMediumBox({-.75F, -.5F, -.5F}, {-.05F, .5F, .5F}, corners);
+    AppendMediumBox({.05F, -.5F, 0}, {.75F, .5F, THIN_WORLD}, corners);
+    const rr::ReferenceMediumDescription medium = MakeMedium(corners, absorption);
+    rr::ReferenceCaptureDescription capture = MakeMediumCapture();
+    capture.MediumOrNull = &medium;
+    Array<rr::ReferencePixel> cpu;
+    Array<rr::ReferencePixel> gpu;
+    CaptureMediumPair(devices, capture, cpu, gpu);
+    for (const Array<rr::ReferencePixel>* pixels : {&cpu, &gpu})
+    {
+        if (pixels->GetSize() == 0)
+        {
+            continue;
+        }
+        for (usize pixel = 0; pixel < pixels->GetSize(); ++pixel)
+        {
+            const math::Vector2 center = GetMediumPixelCenter(pixel);
+            const bool isInsideFootprintY = math::Abs(center.Y) < .5F;
+            float64 inside = 0;
+            if (isInsideFootprintY == true && center.X > -.75F && center.X < -.05F)
+            {
+                inside = Widen(THICK_WORLD);
+            }
+            else if (isInsideFootprintY == true && center.X > .05F && center.X < .75F)
+            {
+                inside = Widen(THIN_WORLD);
+            }
+            CAPTURE(pixel, center.X, center.Y, inside);
+            const rr::ReferencePixel& value = (*pixels)[pixel];
+            CheckAnalytic(value.Emission.X, Widen(emitter.Emission.X) * GetBeerLambert(absorption.X, inside));
+            CheckAnalytic(value.Emission.Y, Widen(emitter.Emission.Y) * GetBeerLambert(absorption.Y, inside));
+            CheckAnalytic(value.Emission.Z, Widen(emitter.Emission.Z) * GetBeerLambert(absorption.Z, inside));
+            CHECK(value.Direct == math::Vector3{});
+        }
+    }
+    // A vacuum medium (zero absorption) and no medium at all keep the unattenuated pixels bit for bit. Without a
+    // medium the GPU kernel must also ignore the preview tile words that share the medium's parameters.
+    Array<rr::ReferencePixel> vacuumCpu;
+    Array<rr::ReferencePixel> vacuumGpu;
+    const rr::ReferenceMediumDescription clear = MakeMedium(corners, {});
+    capture.MediumOrNull = &clear;
+    CaptureMediumPair(devices, capture, vacuumCpu, vacuumGpu);
+    Array<rr::ReferencePixel> noneCpu;
+    Array<rr::ReferencePixel> noneGpu;
+    capture.MediumOrNull = nullptr;
+    CaptureMediumPair(devices, capture, noneCpu, noneGpu);
+    for (usize pixel = 0; pixel < noneCpu.GetSize(); ++pixel)
+    {
+        CHECK(vacuumCpu[pixel].Radiance == noneCpu[pixel].Radiance);
+        CHECK(noneCpu[pixel].Emission == emitter.Emission);
+    }
+    for (usize pixel = 0; pixel < noneGpu.GetSize(); ++pixel)
+    {
+        CHECK(vacuumGpu[pixel].Radiance == noneGpu[pixel].Radiance);
+        CHECK(noneGpu[pixel].Emission == emitter.Emission);
+    }
+}
+
+TEST_CASE("Camera origins inside an absorbing medium follow its boundary crossings on CPU and GPU",
+          "[renderer][gpu][reference-compute][medium]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    MediumDevice devices;
+    if (StartMediumDevice(devices) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    const QuadItem emitter = MakeMediumEmitter();
+    BuildMediumScene(devices, &emitter, 1);
+    const math::Vector3 absorption{.1F, .2F, .4F};
+    // The near plane z = -3 lies inside; every ray leaves through z = 0 after three metres.
+    Array<math::Vector3> corners;
+    AppendMediumBox({-2, -2, -4}, {2, 2, 0}, corners);
+    const rr::ReferenceMediumDescription medium = MakeMedium(corners, absorption);
+    rr::ReferenceCaptureDescription capture = MakeMediumCapture();
+    capture.MediumOrNull = &medium;
+    Array<rr::ReferencePixel> cpu;
+    Array<rr::ReferencePixel> gpu;
+    CaptureMediumPair(devices, capture, cpu, gpu);
+    const float64 inside = -Widen(MEDIUM_NEAR_WORLD);
+    for (const Array<rr::ReferencePixel>* pixels : {&cpu, &gpu})
+    {
+        for (const rr::ReferencePixel& value : *pixels)
+        {
+            CheckAnalytic(value.Emission.X, Widen(emitter.Emission.X) * GetBeerLambert(absorption.X, inside));
+            CheckAnalytic(value.Emission.Z, Widen(emitter.Emission.Z) * GetBeerLambert(absorption.Z, inside));
+        }
+    }
+    // A jittered pinhole inside the medium: each ray stays inside for 3 / cos(theta) metres before z = 0.
+    capture.OrthographicCamera = false;
+    capture.CenterRays = false;
+    capture.TargetSamples = 16;
+    math::Matrix4 view;
+    math::Matrix4 projection;
+    capture.CameraPosition = {0, 0, MEDIUM_NEAR_WORLD};
+    REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) == math::MathStatus::Success);
+    constexpr float32 VERTICAL_FIELD_RADIANS = .5F;
+    REQUIRE(math::TryPerspectiveReverseZ(VERTICAL_FIELD_RADIANS, 1, .1F, 20, projection) == math::MathStatus::Success);
+    capture.WorldToClip = projection * view;
+    capture.ReverseZ = true;
+    CaptureMediumPair(devices, capture, cpu, gpu);
+    // The image corners subtend at most this cosine with the optical axis.
+    const float64 halfAngle = Widen(VERTICAL_FIELD_RADIANS) / 2;
+    const float64 halfTangent = math::Sin(halfAngle) / math::Cos(halfAngle);
+    const float64 minimumCosine = 1 / math::Sqrt(1 + 2 * halfTangent * halfTangent);
+    for (const rr::ReferencePixel& value : cpu)
+    {
+        CHECK(Widen(value.Emission.X) <= Widen(emitter.Emission.X) * GetBeerLambert(absorption.X, inside) * (1 + 1e-5));
+        CHECK(Widen(value.Emission.X) >=
+              Widen(emitter.Emission.X) * GetBeerLambert(absorption.X, inside / minimumCosine));
+    }
+}
+
+TEST_CASE("Light paths through an absorbing medium attenuate next-event estimation unless an opaque blocker occludes",
+          "[renderer][gpu][reference-compute][medium]")
+{
+    namespace format = ludus::content::scene_format;
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    MediumDevice devices;
+    if (StartMediumDevice(devices) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    // A white Lambertian wall at z = 1 faces the camera; a point light at z = -1 lights it through a slab
+    // medium at z in [0, 0.5], which the camera rays also cross.
+    QuadItem wall;
+    wall.CornersWorld = {{{-2, -2, 1}, {-2, 2, 1}, {2, 2, 1}, {2, -2, 1}}};
+    wall.BaseColor = {.8F, .6F, .4F};
+    wall.Model = format::MaterialModel::Diffuse;
+    // A black square at z = -0.5 of half size 0.1 shadows the wall within half size 0.4.
+    QuadItem blocker;
+    blocker.CornersWorld = {{{-.1F, -.1F, -.5F}, {-.1F, .1F, -.5F}, {.1F, .1F, -.5F}, {.1F, -.1F, -.5F}}};
+    blocker.BaseColor = {};
+    blocker.Model = format::MaterialModel::Diffuse;
+    rr::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = rr::LightKind::Point;
+    light.Intensity = 2;
+    light.Position = {0, 0, -1};
+    light.Range = 1000000;
+    const math::Vector3 absorption{.5F, 1, 2};
+    constexpr float32 SLAB_WORLD = .5F;
+    Array<math::Vector3> corners;
+    AppendMediumBox({-2, -2, 0}, {2, 2, SLAB_WORLD}, corners);
+    rr::ReferenceCaptureDescription capture = MakeMediumCapture();
+    capture.Lights = &light;
+    capture.LightCount = 1;
+    for (const bool hasBlocker : {false, true})
+    {
+        const QuadItem quads[]{wall, blocker};
+        BuildMediumScene(devices, quads, hasBlocker == true ? 2 : 1);
+        for (const bool hasAbsorption : {false, true})
+        {
+            CAPTURE(hasBlocker, hasAbsorption);
+            const math::Vector3 sigma = hasAbsorption == true ? absorption : math::Vector3{};
+            const rr::ReferenceMediumDescription medium = MakeMedium(corners, sigma);
+            capture.MediumOrNull = &medium;
+            Array<rr::ReferencePixel> cpu;
+            Array<rr::ReferencePixel> gpu;
+            CaptureMediumPair(devices, capture, cpu, gpu);
+            for (const Array<rr::ReferencePixel>* pixels : {&cpu, &gpu})
+            {
+                for (usize pixel = 0; pixel < pixels->GetSize(); ++pixel)
+                {
+                    const math::Vector2 center = GetMediumPixelCenter(pixel);
+                    const float32 extent = math::Max(math::Abs(center.X), math::Abs(center.Y));
+                    if (hasBlocker == true && extent < .1F)
+                    {
+                        continue; // The camera sees the black blocker.
+                    }
+                    const rr::ReferencePixel& value = (*pixels)[pixel];
+                    CAPTURE(pixel, center.X, center.Y);
+                    if (hasBlocker == true && extent < .4F)
+                    {
+                        CHECK(value.Direct == math::Vector3{});
+                        continue;
+                    }
+                    const float64 dx = Widen(center.X);
+                    const float64 dy = Widen(center.Y);
+                    const float64 distance = math::Sqrt(dx * dx + dy * dy + 4);
+                    const float64 cosine = 2 / distance;
+                    // The camera crosses the slab normally, the light ray obliquely.
+                    const float64 lightInside = Widen(SLAB_WORLD) * distance / 2;
+                    const float64 irradiance = Widen(light.Intensity) * cosine / (distance * distance) / math::kPi;
+                    const StaticArray<float32, 3> albedo{{wall.BaseColor.X, wall.BaseColor.Y, wall.BaseColor.Z}};
+                    const StaticArray<float32, 3> sigmas{{sigma.X, sigma.Y, sigma.Z}};
+                    const StaticArray<float32, 3> actual{{value.Direct.X, value.Direct.Y, value.Direct.Z}};
+                    for (usize channel = 0; channel < 3; ++channel)
+                    {
+                        CheckAnalytic(actual[channel],
+                                      Widen(albedo[channel]) * irradiance *
+                                          GetBeerLambert(sigmas[channel], Widen(SLAB_WORLD)) *
+                                          GetBeerLambert(sigmas[channel], lightInside));
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("Reference captures admit only closed bounded media on the supported traversals",
+          "[renderer][gpu][reference-compute][medium]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    MediumDevice devices;
+    if (StartMediumDevice(devices) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    const QuadItem emitter = MakeMediumEmitter();
+    BuildMediumScene(devices, &emitter, 1);
+    Session& session = devices.Cpu;
+    Array<math::Vector3> box;
+    AppendMediumBox({-.5F, -.5F, -.5F}, {.5F, .5F, .5F}, box);
+    rr::ReferenceCaptureDescription capture = MakeMediumCapture();
+    const auto begin = [&](const rr::ReferenceMediumDescription& medium) {
+        capture.MediumOrNull = &medium;
+        rr::ReferenceCapture handle;
+        const S status = session.Renderer.BeginReferenceCapture(session.Snapshot, capture, handle);
+        if (status == S::Ready || status == S::Pending)
+        {
+            REQUIRE(session.Renderer.Release(handle) == S::Ready);
+        }
+        return status;
+    };
+    const S admitted = begin(MakeMedium(box, {1, 1, 1}));
+    CHECK((admitted == S::Ready || admitted == S::Pending));
+    // Open: one missing triangle leaves an unmatched edge.
+    Array<math::Vector3> open;
+    for (usize corner = 3; corner < box.GetSize(); ++corner)
+    {
+        open.Add(box[corner]);
+    }
+    CHECK(begin(MakeMedium(open, {1, 1, 1})) == S::InvalidDescription);
+    // Inconsistent orientation: one triangle wound against its neighbours.
+    Array<math::Vector3> flipped;
+    for (const math::Vector3 corner : box)
+    {
+        flipped.Add(corner);
+    }
+    const math::Vector3 swapped = flipped[1];
+    flipped[1] = flipped[2];
+    flipped[2] = swapped;
+    CHECK(begin(MakeMedium(flipped, {1, 1, 1})) == S::InvalidDescription);
+    // Absorption must be finite, nonnegative and bounded.
+    CHECK(begin(MakeMedium(box, {-1, 0, 0})) == S::InvalidDescription);
+    CHECK(begin(MakeMedium(box, {__builtin_nanf(""), 0, 0})) == S::InvalidDescription);
+    CHECK(begin(MakeMedium(box, {ludus::content::scene_format::MAX_MEDIUM_ABSORPTION_PER_WORLD * 2, 0, 0})) ==
+          S::InvalidDescription);
+    rr::ReferenceMediumDescription empty = MakeMedium(box, {1, 1, 1});
+    empty.BoundaryCornersWorld = {};
+    CHECK(begin(empty) == S::InvalidDescription);
+    empty.BoundaryCornersWorld = {nullptr, box.GetSize()};
+    CHECK(begin(empty) == S::InvalidDescription);
+    // A partial triangle and too many triangles.
+    empty.BoundaryCornersWorld = {box.GetData(), box.GetSize() - 1};
+    CHECK(begin(empty) == S::InvalidDescription);
+    Array<math::Vector3> many;
+    while (many.GetSize() / rr::REFERENCE_MEDIUM_TRIANGLE_CORNERS <= rr::MAX_REFERENCE_MEDIUM_TRIANGLES)
+    {
+        AppendMediumBox({-.5F, -.5F, -.5F}, {.5F, .5F, .5F}, many);
+    }
+    CHECK(begin(MakeMedium(many, {1, 1, 1})) == S::InvalidDescription);
+    // Wave connections have no medium transport and report it rather than ignoring the medium.
+    capture.OpticalWavelengthWorld = 5e-7F;
+    CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::Unsupported);
+    capture.OpticalWavelengthWorld = 0;
+    // Changing the medium replaces the integral.
+    const rr::ReferenceMediumDescription first = MakeMedium(box, {1, 1, 1});
+    const rr::ReferenceMediumDescription second = MakeMedium(box, {2, 1, 1});
+    capture.MediumOrNull = &first;
+    rr::ReferenceCapture handle;
+    const S begun = session.Renderer.BeginReferenceCapture(session.Snapshot, capture, handle);
+    REQUIRE((begun == S::Ready || begun == S::Pending));
+    rr::ReferenceCaptureInfo info;
+    const S same = session.Renderer.UpdateReferenceCapture(handle, session.Snapshot, capture);
+    CHECK((same == S::Ready || same == S::Pending));
+    REQUIRE(session.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+    CHECK(info.Revision == 1);
+    capture.MediumOrNull = &second;
+    const S updated = session.Renderer.UpdateReferenceCapture(handle, session.Snapshot, capture);
+    CHECK((updated == S::Ready || updated == S::Pending));
+    REQUIRE(session.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+    CHECK(info.Revision == 2);
+    REQUIRE(session.Renderer.Release(handle) == S::Ready);
+    // Two nested closed boxes overlap: the camera inside both counts two and fails explicitly.
+    Array<math::Vector3> nested;
+    AppendMediumBox({-2, -2, -4}, {2, 2, 0}, nested);
+    AppendMediumBox({-1, -1, -3.5F}, {1, 1, -.5F}, nested);
+    const rr::ReferenceMediumDescription overlapping = MakeMedium(nested, {1, 1, 1});
+    capture.MediumOrNull = &overlapping;
+    for (Session* traversal : {&devices.Cpu, &devices.Gpu})
+    {
+        if (traversal == &devices.Gpu && devices.HasGpu == false)
+        {
+            continue;
+        }
+        const S started = traversal->Renderer.BeginReferenceCapture(traversal->Snapshot, capture, handle);
+        REQUIRE((started == S::Ready || started == S::Pending));
+        CHECK(Run(traversal->Renderer, handle, devices.Surface) == S::Failed);
+        REQUIRE(traversal->Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+        CHECK(info.Failure == rr::ReferenceFailure::InvalidMediumCrossing);
+        CHECK(info.CommittedSamples == 0);
+        REQUIRE(traversal->Renderer.Release(handle) == S::Ready);
+    }
+}

@@ -1730,7 +1730,7 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     constexpr uint32 MAXIMUM_SOURCE_IDENTITY = ~uint32{0};
     if (identity.Kind != JsonKind::Integer || identity.Integer < 0 ||
         identity.Integer > static_cast<int64>(MAXIMUM_SOURCE_IDENTITY) || model.Kind != JsonKind::Integer ||
-        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::Program) ||
+        model.Integer < 0 || model.Integer > static_cast<int64>(format::LAST_MATERIAL_MODEL) ||
         tree.GetKind(name) != JsonKind::String || tree.GetText(name).size() > format::MAX_MATERIAL_NAME_BYTES)
     {
         return inoutFailure.FailInvalid("invalid source material identity or model");
@@ -3068,7 +3068,7 @@ struct MaterialVariant final
             const JsonIndex model = description.Tree.GetMember(source, "model");
             const JsonNode& value = description.Tree.GetNode(model);
             if (value.Kind == JsonKind::Integer && value.Integer >= 0 &&
-                value.Integer <= static_cast<int64>(format::MaterialModel::Program))
+                value.Integer <= static_cast<int64>(format::LAST_MATERIAL_MODEL))
             {
                 typedVersion =
                     math::Max(typedVersion,

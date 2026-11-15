@@ -147,6 +147,9 @@ enum class SourceMaterialModel : uint8
     ProjectBrdf,
     /// Weighted mixture of leaf lobes with computed parameters (`"model": "program"`).
     Program,
+    /// Invisible boundary of a bounded homogeneous absorbing medium (`"model": "medium_interface"`). Its objects
+    /// neither reflect nor occlude; their closed, outward-facing polygons enclose the medium.
+    MediumInterface,
 };
 
 /// Constant rough conductor lobe of a source Mix. RGB channels use the engine's optical proxy.
@@ -196,6 +199,9 @@ struct SourceMaterial final
     foundation::math::Vector3d EmittedRadiance{};
     /// True when polygons emit from both faces; false emits from the front face only.
     bool IsEmissionTwoSided = false;
+    /// MediumInterface only: linear Rec. 709 absorption coefficient of the enclosed medium per metre, each
+    /// channel in [0, scene_format::MAX_MEDIUM_ABSORPTION_PER_WORLD]; zero for other models.
+    foundation::math::Vector3d MediumAbsorptionPerWorld{};
 };
 
 /// @brief Placement and size of an `aperture` object's screen.

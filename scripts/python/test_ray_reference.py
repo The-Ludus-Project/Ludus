@@ -90,6 +90,25 @@ class ReferenceExportTests(unittest.TestCase):
                 struct.pack_into('<f', data, 92, wavelength)
                 with self.assertRaises(ValueError): hdr.decode(data)
 
+    def test_medium_capture_reports_its_absorption_and_boundary(self):
+        data = self.capture()
+        struct.pack_into('<I', data, 44, 32 | 64 | 512)
+        struct.pack_into('<3f', data, 184, 0.5, 1, 2)
+        struct.pack_into('<I', data, 196, 12)
+        metadata, _ = hdr.decode(data)
+        self.assertEqual(metadata['medium'], dict(absorption_per_world=[0.5, 1, 2], boundary_triangles=12))
+        vacuum, _ = hdr.decode(self.capture())
+        self.assertIsNone(vacuum['medium'])
+        # The flag needs a boundary, finite nonnegative absorption and a medium-capable traversal; fields need the flag.
+        for flags, absorption, triangles in ((32 | 64 | 512, (0.5, 1, 2), 0), (32 | 64 | 512, (-1, 0, 0), 12),
+                                             (32 | 64 | 512, (float('nan'), 0, 0), 12), (32 | 512, (0.5, 1, 2), 12),
+                                             (32 | 64, (0.5, 1, 2), 12), (32 | 64, (0, 0, 0), 12)):
+            with self.subTest(flags=flags, absorption=absorption, triangles=triangles):
+                struct.pack_into('<I', data, 44, flags)
+                struct.pack_into('<3f', data, 184, *absorption)
+                struct.pack_into('<I', data, 196, triangles)
+                with self.assertRaises(ValueError): hdr.decode(data)
+
     def test_light_sampling_pairs_the_sampler_version_with_its_flag(self):
         for sampler, flags, light_sampling in ((1, 96, 'uniform_area'), (2, 224, 'resampled_projected_solid_angle'),
                                                (2, 161, 'resampled_projected_solid_angle'),

@@ -2237,6 +2237,16 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
     }
     for (const auto& source : scene.Materials)
     {
+        if (source.Scattering.Model == format::MaterialModel::MediumInterface)
+        {
+            // The boundary is invisible and only RT1 reference captures transport its medium.
+            return Fail(error,
+                        QStringLiteral("Material '%1' is the boundary of an absorbing medium, which the World viewport "
+                                       "cannot show yet. Remove its medium_interface objects from the scene source, or "
+                                       "render the cooked bundle with a CPU-oracle or GPU-compute reference capture.")
+                            .arg(QString::fromUtf8(source.Name.View().data(),
+                                                   static_cast<qsizetype>(source.Name.View().size()))));
+        }
         PreviewSurface surface;
         surface.Texture = source.Texture == ~uint32{0} ? -1 : static_cast<int32>(source.Texture);
         surface.Tint = surface.Texture < 0 ? math::Vector4{0, 0, 0, 1} : math::Vector4{1, 1, 1, 1};

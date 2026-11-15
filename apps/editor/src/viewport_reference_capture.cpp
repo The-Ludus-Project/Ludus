@@ -103,6 +103,9 @@ QString DescribeReferenceFailure(renderer::ReferenceFailure failure)
                                   "select the geometric renderer; no partial field was accepted.");
         case renderer::ReferenceFailure::TraversalCapacityExceeded:
             return QStringLiteral("GPU traversal stack capacity exceeded");
+        case renderer::ReferenceFailure::InvalidMediumCrossing:
+            return QStringLiteral("A path crossed the medium boundary inconsistently. Close the boundary mesh and "
+                                  "orient its front faces outward; no sample was accepted.");
         case renderer::ReferenceFailure::None:
             return QStringLiteral("no path validation failure recorded");
     }

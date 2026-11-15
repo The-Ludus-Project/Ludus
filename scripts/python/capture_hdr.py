@@ -64,7 +64,7 @@ def decode(data, *, keep_pixels=True):
     schema, profile, sampler, header, width, height, target, depth, roulette, flags = struct.unpack_from('<10I', data, 8)
     # Sampler 1 is UniformArea light sampling; flag 128 marks the resampled samplers, 2 for
     # ResampledProjectedSolidAngle and 3 for ResampledFormFactor. Sampler 4 separates directional lights.
-    if (schema, header) != (1, HEADER_BYTES) or profile not in (1, 2, 3, 4, 5, 6, 7, 8) or not width or not height or flags & ~511 or (flags & 1 and flags & 64):
+    if (schema, header) != (1, HEADER_BYTES) or profile not in (1, 2, 3, 4, 5, 6, 7, 8) or not width or not height or flags & ~1023 or (flags & 1 and flags & 64):
         raise ValueError('Unsupported capture profile/header')
     if (sampler, bool(flags & 128)) not in ((1, False), (2, True), (3, True), (4, False)):
         raise ValueError('Unsupported sampler version or light-sampling flag')
@@ -77,6 +77,16 @@ def decode(data, *, keep_pixels=True):
         raise ValueError('Invalid optical wavelength/flag')
     if flags & 256 and (sampler != 1 or not flags & (1 | 64)):
         raise ValueError('Optical captures require UniformArea and CPU oracle or GPU compute')
+    # Flag 512 marks a bounded absorbing medium: RGB absorption per metre at byte 184, boundary triangles at 196.
+    absorption = list(struct.unpack_from('<3f', data, 184))
+    medium_triangles = struct.unpack_from('<I', data, 196)[0]
+    if flags & 512:
+        if not 1 <= medium_triangles <= 4096 or not all(math.isfinite(value) and 0 <= value <= 10000 for value in absorption):
+            raise ValueError('Invalid medium absorption or boundary')
+        if not flags & (1 | 64) or flags & 256:
+            raise ValueError('Medium captures require CPU oracle or GPU compute without optical connections')
+    elif medium_triangles != 0 or any(absorption):
+        raise ValueError('Medium fields without the medium flag')
     minimum, maximum, pixels = read_pixels(data, 16777215, keep_pixels)
     if not flags & 32 and minimum < target:
         raise ValueError('Complete capture has uncommitted pixels')
@@ -92,5 +102,6 @@ def decode(data, *, keep_pixels=True):
                     secondary_distance=struct.unpack_from('<f', data, 80)[0], texture_mip=struct.unpack_from('<I', data, 84)[0],
                     light_count=struct.unpack_from('<I', data, 88)[0], world_to_clip=list(struct.unpack_from('<16f', data, 96)),
                     camera_position=list(struct.unpack_from('<3f', data, 160)), environment=list(struct.unpack_from('<3f', data, 172)),
+                    medium=dict(absorption_per_world=absorption, boundary_triangles=medium_triangles) if flags & 512 else None,
                     sha256=hashlib.sha256(data).hexdigest())
     return metadata, pixels

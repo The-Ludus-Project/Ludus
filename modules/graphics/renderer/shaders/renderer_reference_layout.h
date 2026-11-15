@@ -4,7 +4,7 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 9
+#define LUDUS_REFERENCE_KERNEL_VERSION 10
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
@@ -15,6 +15,13 @@
 // declared last: Slang numbers Metal buffers in declaration order.
 #define LUDUS_REFERENCE_LTC_TABLE_BINDING 5
 #define LUDUS_REFERENCE_BINDING_COUNT 6
+
+// An optional bounded absorbing medium (ReferenceMediumDescription) follows the packed scene words: one header
+// word with the absorption per world metre in XYZ, then LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS corner words per
+// boundary triangle. Parameters Tile.y holds the header's word offset and Tile.z the triangle count; zero
+// triangles is vacuum.
+#define LUDUS_REFERENCE_MEDIUM_HEADER_WORDS 1
+#define LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS 3
 
 // Parameters Sampling.z flag selecting ReferenceLightSampling::ResampledProjectedSolidAngle; the low bits keep the
 // camera and opacity flags of renderer_gpu_preview_layout.h. ResampledFormFactor sets both flags.
@@ -92,3 +99,4 @@
 #define LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED 15
 #define LUDUS_REFERENCE_FAILURE_OPTICAL_REGION_CAPACITY 16
 #define LUDUS_REFERENCE_FAILURE_OPTICAL_PROPAGATION_CAPACITY 17
+#define LUDUS_REFERENCE_FAILURE_INVALID_MEDIUM_CROSSING 18

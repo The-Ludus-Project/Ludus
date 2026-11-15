@@ -31,6 +31,8 @@ constexpr usize FINGERPRINT_INSTANCE_BYTES = 7 * sizeof(uint64) + 14 * sizeof(fl
 constexpr usize FINGERPRINT_SURFACE_MAP_BYTES = 3 * sizeof(uint64) + sizeof(float32) + 5 * sizeof(uint32);
 constexpr usize FINGERPRINT_LIGHT_BYTES = sizeof(uint64) + sizeof(uint32) + 13 * sizeof(float32);
 constexpr usize FINGERPRINT_ENVIRONMENT_BYTES = 3 * sizeof(float32);
+/// Serialized width of one fingerprinted RGB or world-space vector.
+constexpr usize FINGERPRINT_VECTOR_BYTES = 3 * sizeof(float32);
 // Panel luminaire: source ID, center/tangent/bitangent, half extent and the five beam scalars. A scene without
 // luminaires hashes no luminaire bytes, so its fingerprint is unchanged.
 constexpr usize FINGERPRINT_LUMINAIRE_BYTES = sizeof(uint64) + 15 * sizeof(float32);
@@ -102,6 +104,11 @@ constexpr uint32 HDR_GPU_COMPUTE_FLAG = 64;
 /// ResampledFormFactor (sampler version 3), which the sampler field distinguishes.
 constexpr uint32 HDR_RESAMPLED_LIGHT_FLAG = 128;
 constexpr uint32 HDR_OPTICAL_FLAG = 256;
+/// LUHDR01 flags bit identifying a capture through a bounded absorbing medium.
+constexpr uint32 HDR_MEDIUM_FLAG = 512;
+/// Medium absorption RGB (three float32) and boundary triangle count (uint32) in the LUHDR01 header.
+constexpr usize HDR_MEDIUM_ABSORPTION_OFFSET = 184;
+constexpr usize HDR_MEDIUM_TRIANGLES_OFFSET = 196;
 constexpr usize HDR_SCENE_FINGERPRINT_OFFSET = 64;
 constexpr usize HDR_OPTICAL_WAVELENGTH_OFFSET = 92;
 
@@ -131,6 +138,34 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     }
     uniform.Options.Y = inoutJob.Description.OpticalWavelengthWorld;
     uniform.Tile[0] = inoutJob.DirectionalLightCount;
+    // The preview packer leaves its row band in the other Tile words; the reference kernel reads them as the medium.
+    for (usize word = 1; word < internal::GPU_PREVIEW_TILE_COMPONENT_COUNT; ++word)
+    {
+        uniform.Tile[word] = 0;
+    }
+    if (internal::HasReferenceMedium(inoutJob.Medium) == true)
+    {
+        // The medium follows the packed scene (renderer_reference_layout.h): its header, then the corners.
+        const internal::ReferenceMediumData& medium = inoutJob.Medium;
+        const usize first = data.GetSize();
+        const usize words = LUDUS_REFERENCE_MEDIUM_HEADER_WORDS + medium.CornersWorld.GetSize();
+        if (first > ~uint32{0} - words || data.TryResize(first + words) == false)
+        {
+            return Status::OutOfMemory;
+        }
+        data[first] = {medium.AbsorptionPerWorld.X, medium.AbsorptionPerWorld.Y, medium.AbsorptionPerWorld.Z, 0};
+        for (usize corner = 0; corner < medium.CornersWorld.GetSize(); ++corner)
+        {
+            const math::Vector3 cornerWorld = medium.CornersWorld[corner];
+            data[first + LUDUS_REFERENCE_MEDIUM_HEADER_WORDS + corner] = {cornerWorld.X,
+                                                                          cornerWorld.Y,
+                                                                          cornerWorld.Z,
+                                                                          0};
+        }
+        static_assert(LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS == 3, "one corner per word");
+        uniform.Tile[1] = static_cast<uint32>(first);
+        uniform.Tile[2] = static_cast<uint32>(medium.CornersWorld.GetSize() / LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS);
+    }
     const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
     const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
     usize zeroBytes = 0;
@@ -173,7 +208,8 @@ bool SameReferenceIntegral(const ReferenceJob& a,
         d.SecondaryDistance != b.SecondaryDistance || d.Environment != b.Environment ||
         a.EnvironmentOrNull != Access::GetEnvironment(b.EnvironmentTextureOrNull) || d.TextureMip != b.TextureMip ||
         d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightSampling != b.LightSampling ||
-        d.OpticalWavelengthWorld != b.OpticalWavelengthWorld || d.LightCount != lights.Count)
+        d.OpticalWavelengthWorld != b.OpticalWavelengthWorld || d.LightCount != lights.Count ||
+        internal::IsSameReferenceMedium(a.Medium, b.MediumOrNull) == false)
     {
         return false;
     }
@@ -209,6 +245,14 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
     {
         return Status::InvalidDescription;
     }
+    if (d.MediumOrNull != nullptr)
+    {
+        const Status medium = internal::ValidateReferenceMedium(*d.MediumOrNull);
+        if (medium != Status::Ready)
+        {
+            return medium;
+        }
+    }
     return NormalizeDirectLights(d.Lights, d.LightCount, lights);
 }
 void Put32(uint8* output, uint32 value) noexcept
@@ -225,6 +269,11 @@ void PutFloat(uint8* output, float32 value) noexcept
     std::memcpy(&bits, &value, sizeof(bits));
     Put32(output, bits);
 }
+/// Fingerprint bytes of a medium with `corners` boundary corners: count, absorption and corners; zero for vacuum.
+constexpr usize GetMediumFingerprintBytes(usize corners) noexcept
+{
+    return corners == 0 ? 0 : sizeof(uint32) + (corners + 1) * FINGERPRINT_VECTOR_BYTES;
+}
 bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagnostics* diagnosticsOrNull) noexcept
 {
     // One bounded cold scratch stream, serialized without padding or host byte order.
@@ -235,7 +284,8 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         inoutJob.Description.LightCount * FINGERPRINT_LIGHT_BYTES +
         (inoutJob.LuminaireCount != 0 ? sizeof(uint32) + inoutJob.LuminaireCount * FINGERPRINT_LUMINAIRE_BYTES : 0) +
         FINGERPRINT_ENVIRONMENT_BYTES +
-        (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
+        (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
+        GetMediumFingerprintBytes(inoutJob.Medium.CornersWorld.GetSize());
     for (usize i = 0; i < inoutJob.Scene.InstanceCount; ++i)
     {
         if (inoutJob.Scene.Instances[i].Surface->Bsdf.Scattering.Model !=
@@ -431,6 +481,16 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         offset += sizeof(uint64);
         word(inoutJob.EnvironmentOrNull->Width);
         word(inoutJob.EnvironmentOrNull->Height);
+    }
+    // Vacuum keeps earlier fingerprints; a medium extends the declared scene.
+    if (internal::HasReferenceMedium(inoutJob.Medium) == true)
+    {
+        word(static_cast<uint32>(inoutJob.Medium.CornersWorld.GetSize()));
+        vector(inoutJob.Medium.AbsorptionPerWorld);
+        for (const math::Vector3 corner : inoutJob.Medium.CornersWorld)
+        {
+            vector(corner);
+        }
     }
     if (offset != bytes)
     {
@@ -809,6 +869,17 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     {
         return Status::Unsupported;
     }
+    // Native queries, the GPU preview and wave connections have no medium transport; there is no fallback.
+    if (description.MediumOrNull != nullptr &&
+        (gpuSetup == true || Reference->Options.Traversal == ReferenceTraversal::NativeQueries ||
+         description.OpticalWavelengthWorld > 0))
+    {
+        return Status::Unsupported;
+    }
+    const usize mediumTriangles =
+        description.MediumOrNull != nullptr
+            ? description.MediumOrNull->BoundaryCornersWorld.GetSize() / REFERENCE_MEDIUM_TRIANGLE_CORNERS
+            : 0;
     const auto& snapshot = SnapshotRecords[snapshotSlot];
     usize triangles = 0;
     usize instances = 0;
@@ -925,19 +996,22 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         sizeof(ReferenceJob) + uint64(instances) * sizeof(internal::ReferenceInstance) +
         uint64(pixels) * sizeof(internal::ReferenceAccumulator) + uint64(tile) * sizeof(internal::ReferencePath) +
         uint64(tile) * raysPerPath * (sizeof(rhi::RayInput) + sizeof(rhi::RayResult)) +
-        uint64(triangles) * sizeof(ReferenceTriangle) + bvhBytes + uint64(emitters) * 2 * sizeof(uint32);
+        uint64(triangles) * sizeof(ReferenceTriangle) + bvhBytes + uint64(emitters) * 2 * sizeof(uint32) +
+        uint64(mediumTriangles) * REFERENCE_MEDIUM_TRIANGLE_CORNERS * sizeof(math::Vector3);
     const uint64 signatureBytes =
         uint64(triangles) * FINGERPRINT_TRIANGLE_BYTES + uint64(instances) * FINGERPRINT_INSTANCE_BYTES +
         uint64(typedMaterials) *
             (sizeof(uint32) + content::scene_format::MATERIAL_SCATTERING_FLOATS * sizeof(float32)) +
         uint64(surfaceMaps) * FINGERPRINT_SURFACE_MAP_BYTES + uint64(lights.Count) * FINGERPRINT_LIGHT_BYTES +
-        FINGERPRINT_ENVIRONMENT_BYTES + (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
+        FINGERPRINT_ENVIRONMENT_BYTES + (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
+        GetMediumFingerprintBytes(mediumTriangles * REFERENCE_MEDIUM_TRIANGLE_CORNERS);
     const uint64 nativeSetup =
         isOracle ? 0
                  : uint64(instances) * (sizeof(rhi::RayInstanceDescription) + sizeof(Array<float32>)) +
                        alphaScalars * sizeof(float32);
     const uint64 transientWide =
-        math::Max(signatureBytes, math::Max(nativeSetup, isOracle ? uint64(triangles) * sizeof(uint32) : uint64{0}));
+        math::Max(math::Max(signatureBytes, uint64(internal::GetReferenceMediumValidationBytes(mediumTriangles))),
+                  math::Max(nativeSetup, isOracle ? uint64(triangles) * sizeof(uint32) : uint64{0}));
     usize fixed = 0;
     usize transient = 0;
     // Bounded source counts fit uint64; convert only at the wasm32 allocation boundary.
@@ -962,6 +1036,15 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     job->Device = Device;
     job->Description = description;
     job->Description.EnvironmentTextureOrNull = nullptr;
+    job->Description.MediumOrNull = nullptr;
+    if (description.MediumOrNull != nullptr)
+    {
+        status = internal::CopyReferenceMedium(*description.MediumOrNull, job->Medium);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
     job->Description.Lights = job->Lights;
     job->Description.LightCount = lights.Count;
     for (usize i = 0; i < lights.Count; ++i)
@@ -1894,7 +1977,8 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
         (job.Description.ReverseZ ? 8U : 0U) | (job.Description.InfiniteFar ? 16U : 0U) |
         (job.Info.Complete == false ? 32U : 0U) |
         (internal::IsReferenceResampled(job.Description.LightSampling) == true ? HDR_RESAMPLED_LIGHT_FLAG : 0U) |
-        (job.Description.OpticalWavelengthWorld > 0 ? HDR_OPTICAL_FLAG : 0U);
+        (job.Description.OpticalWavelengthWorld > 0 ? HDR_OPTICAL_FLAG : 0U) |
+        (internal::HasReferenceMedium(job.Medium) == true ? HDR_MEDIUM_FLAG : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);
@@ -1919,6 +2003,14 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
     PutFloat(output + 172, job.Description.Environment.X);
     PutFloat(output + 176, job.Description.Environment.Y);
     PutFloat(output + 180, job.Description.Environment.Z);
+    if (internal::HasReferenceMedium(job.Medium) == true)
+    {
+        PutFloat(output + HDR_MEDIUM_ABSORPTION_OFFSET, job.Medium.AbsorptionPerWorld.X);
+        PutFloat(output + HDR_MEDIUM_ABSORPTION_OFFSET + sizeof(float32), job.Medium.AbsorptionPerWorld.Y);
+        PutFloat(output + HDR_MEDIUM_ABSORPTION_OFFSET + 2 * sizeof(float32), job.Medium.AbsorptionPerWorld.Z);
+        Put32(output + HDR_MEDIUM_TRIANGLES_OFFSET,
+              static_cast<uint32>(job.Medium.CornersWorld.GetSize() / REFERENCE_MEDIUM_TRIANGLE_CORNERS));
+    }
     for (usize i = 0; i < job.Pixels.GetSize(); ++i)
     {
         const auto& pixel = job.Pixels[i];

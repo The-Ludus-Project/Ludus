@@ -7,6 +7,7 @@
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/foundation/math/projection.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/time/time.hpp>
 
 #include <ludus/content/content.h>
@@ -26,6 +27,8 @@
 #include "renderer_lit.h"
 #include "renderer_lit_shadow.h"
 #include "renderer_output.h"
+#include "renderer_reference.h"
+#include "renderer_reference_reduce.h"
 #include "renderer_shadow.h"
 
 #include <cstring>
@@ -45,6 +48,8 @@ constexpr usize RGBA8_PIXEL_BYTES = 4;
 constexpr usize ACCEPTANCE_MAGIC_BYTES = 8;
 /// Fixed LUSAC01 values: seven scene counts, six submission counters and the backend.
 constexpr usize ACCEPTANCE_FIXED_VALUE_COUNT = 14;
+/// Exit step of a bundle with an absorbing medium in a mode without medium transport.
+constexpr int MEDIUM_UNSUPPORTED_STEP = 18;
 /// Longest wait for a progressive GPU preview or reference capture to converge.
 constexpr uint64 CAPTURE_TIMEOUT_SECONDS = 1800;
 /// `gpu-preview.bin` layout: width, height and samples, then the scene fingerprint.
@@ -72,6 +77,37 @@ struct SceneEvidence final
     // Textures, materials, meshes, objects, vertices, stored and instanced triangles.
     uint64 Counts[7]{};
 };
+/// World-space boundary of the bundle's absorbing medium (MaterialModel::MediumInterface objects), if any.
+struct SceneMedium final
+{
+    Array<math::Vector3> CornersWorld;
+    rr::ReferenceMediumDescription Description;
+    bool HasMedium = false;
+};
+/// Append an object's triangles in world space, keeping their outward orientation under a mirroring transform.
+bool AppendMediumBoundary(const ludus::resources::SceneMesh& mesh,
+                          const math::Affine3& meshToWorld,
+                          Array<math::Vector3>& inoutCorners) noexcept
+{
+    constexpr usize TRIANGLE_CORNERS = rr::REFERENCE_MEDIUM_TRIANGLE_CORNERS;
+    const math::Vector3 x = meshToWorld.Columns[0];
+    const math::Vector3 y = meshToWorld.Columns[1];
+    const math::Vector3 z = meshToWorld.Columns[2];
+    const bool isMirrored = math::Dot(math::Cross(x, y), z) < 0;
+    for (usize first = 0; first + TRIANGLE_CORNERS <= mesh.Indices.GetSize(); first += TRIANGLE_CORNERS)
+    {
+        const usize second = isMirrored == true ? 2 : 1;
+        for (const usize corner : {usize{0}, second, TRIANGLE_CORNERS - second})
+        {
+            const math::Vector3 positionMesh = mesh.Positions[mesh.Indices[first + corner]];
+            if (inoutCorners.TryAdd(math::TransformPoint(meshToWorld, positionMesh)) == false)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 template <typename Handle>
 Status Wait(rr::Renderer& renderer, const Handle& handle, Status status) noexcept
@@ -92,7 +128,8 @@ bool Load(const uint8* bytes,
           rr::Snapshot& snapshot,
           rr::ReferenceCaptureDescription& capture,
           SceneEvidence& evidence,
-          rr::Snapshot* identitySnapshot) noexcept
+          rr::Snapshot* identitySnapshot,
+          SceneMedium& outMedium) noexcept
 {
     ludus::resources::SceneDefinition scene;
     if (ludus::resources::SceneDefinition::Decode(bytes, count, scene) != ludus::resources::Status::Ok)
@@ -131,9 +168,28 @@ bool Load(const uint8* bytes,
     }
     ludus::foundation::StaticArray<rr::MaterialVersion, ludus::content::scene_format::IMPORT_LIMITS.Materials>
         materials;
+    namespace format = ludus::content::scene_format;
+    const auto isMediumInterface = [&scene](uint32 material) noexcept {
+        return scene.Materials[material].Scattering.Model == format::MaterialModel::MediumInterface;
+    };
     for (usize i = 0; i < scene.Materials.GetSize(); ++i)
     {
         const auto& source = scene.Materials[i];
+        if (isMediumInterface(static_cast<uint32>(i)) == true)
+        {
+            // A medium interface is not a surface: its objects become the capture's medium boundary.
+            if (outMedium.HasMedium == true)
+            {
+                return false; // One bounded medium per capture.
+            }
+            outMedium.HasMedium = true;
+            outMedium.Description.AbsorptionPerWorld = {
+                source.Scattering.K[0],
+                source.Scattering.K[1],
+                source.Scattering.K[2],
+            };
+            continue;
+        }
         rr::LitMaterialDescription description;
         description.Metallic = source.Metallic;
         description.Roughness = source.Roughness;
@@ -184,19 +240,34 @@ bool Load(const uint8* bytes,
         }
     }
     Array<rr::SceneItem> items;
-    if (items.TryResize(scene.Objects.GetSize()) == false)
-    {
-        return false;
-    }
     for (usize i = 0; i < scene.Objects.GetSize(); ++i)
     {
         const auto& source = scene.Objects[i];
-        auto& item = items[i];
+        if (isMediumInterface(source.Material) == true)
+        {
+            if (AppendMediumBoundary(scene.Meshes[source.Mesh], source.Transform, outMedium.CornersWorld) == false)
+            {
+                return false;
+            }
+            continue;
+        }
+        if (items.TryAdd({}) == false)
+        {
+            return false;
+        }
+        rr::SceneItem& item = items[items.GetSize() - 1];
         item.Geometry = meshes[source.Mesh];
         item.Surface = materials[source.Material];
         item.Transform = source.Transform;
         item.SourceId = i + 1;
         evidence.Counts[6] += scene.Meshes[source.Mesh].Indices.GetSize() / 3;
+    }
+    if (outMedium.HasMedium == true)
+    {
+        // The corner array is complete; point the description at its final storage.
+        outMedium.Description.BoundaryCornersWorld = {outMedium.CornersWorld.GetData(),
+                                                      outMedium.CornersWorld.GetSize()};
+        capture.MediumOrNull = &outMedium.Description;
     }
     if (renderer.CreateSnapshot(items.GetData(), items.GetSize(), snapshot) != Status::Ready)
     {
@@ -228,7 +299,10 @@ bool Load(const uint8* bytes,
     }
     for (usize i = 0; i < scene.Materials.GetSize(); ++i)
     {
-        (void)renderer.Release(materials[i]);
+        if (isMediumInterface(static_cast<uint32>(i)) == false)
+        {
+            (void)renderer.Release(materials[i]);
+        }
     }
     for (usize i = 0; i < scene.Textures.GetSize(); ++i)
     {
@@ -579,8 +653,10 @@ int Run(int argc, char** argv) noexcept
     const bool isViewportMode = hasMode && std::string_view(argv[MODE_ARGUMENT]) == "viewport";
     const bool isGpuMode = hasMode && std::string_view(argv[MODE_ARGUMENT]) == "gpu";
     const bool isNativeMode = hasMode && std::string_view(argv[MODE_ARGUMENT]) == "native";
+    const bool isGpuComputeMode = hasMode && std::string_view(argv[MODE_ARGUMENT]) == "gpu-compute";
     const bool isAcceptanceMode = hasMode && (isNativeMode || std::string_view(argv[MODE_ARGUMENT]) == "acceptance");
-    if (hasMode && isAcceptanceMode == false && isGpuMode == false && isViewportMode == false)
+    if (hasMode && isAcceptanceMode == false && isGpuMode == false && isViewportMode == false &&
+        isGpuComputeMode == false)
     {
         return 1;
     }
@@ -603,7 +679,7 @@ int Run(int argc, char** argv) noexcept
     request.Storage.ResourcesPerKind = REFERENCE_RESOURCES_PER_KIND;
     request.Required.PortableRaster = true;
     request.Required.RayQueries = isNativeMode;
-    request.Required.Compute = isGpuMode;
+    request.Required.Compute = isGpuMode || isGpuComputeMode;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     if (rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, request, device, surface) != rhi::DeviceStatus::Ready)
@@ -634,18 +710,23 @@ int Run(int argc, char** argv) noexcept
     {
         return 5;
     }
-    const rr::ReferenceRenderingOptions options{isNativeMode ? rr::ReferenceTraversal::NativeQueries
-                                                             : rr::ReferenceTraversal::CpuOracle,
+    const rr::ReferenceRenderingOptions options{isNativeMode       ? rr::ReferenceTraversal::NativeQueries
+                                                : isGpuComputeMode ? rr::ReferenceTraversal::GpuCompute
+                                                                   : rr::ReferenceTraversal::CpuOracle,
                                                 usize{128} * 1024 * 1024,
                                                 usize{128} * 1024 * 1024,
-                                                512};
-    const Status enabled = isViewportMode ? Status::Ready
-                           : isGpuMode
-                               ? renderer.EnableGpuPreview(ludus::shaders::renderer_gpu_preview_software::Compute(),
-                                                           ludus::shaders::renderer_gpu_preview_image::Vertex(),
-                                                           ludus::shaders::renderer_gpu_preview_image::Fragment(),
-                                                           {usize{128} * 1024 * 1024, usize{128} * 1024 * 1024, 1})
-                               : renderer.EnableReferenceRendering(ludus::shaders::ray_query::Query(), options);
+                                                512,
+                                                usize{128} * 1024 * 1024};
+    const Status enabled =
+        isViewportMode     ? Status::Ready
+        : isGpuMode        ? renderer.EnableGpuPreview(ludus::shaders::renderer_gpu_preview_software::Compute(),
+                                                       ludus::shaders::renderer_gpu_preview_image::Vertex(),
+                                                       ludus::shaders::renderer_gpu_preview_image::Fragment(),
+                                                       {usize{128} * 1024 * 1024, usize{128} * 1024 * 1024, 1})
+        : isGpuComputeMode ? renderer.EnableReferenceRendering(ludus::shaders::renderer_reference::Compute(),
+                                                               ludus::shaders::renderer_reference_reduce::Compute(),
+                                                               options)
+                           : renderer.EnableReferenceRendering(ludus::shaders::ray_query::Query(), options);
     if (enabled != Status::Ready)
     {
         return 6;
@@ -663,6 +744,7 @@ int Run(int argc, char** argv) noexcept
     rr::Snapshot snapshot;
     rr::Snapshot identitySnapshot;
     SceneEvidence evidence;
+    SceneMedium medium;
     if (Load(bundle.Data().data(),
              bundle.Data().size(),
              renderer,
@@ -671,9 +753,15 @@ int Run(int argc, char** argv) noexcept
              snapshot,
              description,
              evidence,
-             isAcceptanceMode ? &identitySnapshot : nullptr) == false)
+             isAcceptanceMode ? &identitySnapshot : nullptr,
+             medium) == false)
     {
         return 8;
+    }
+    // Only CpuOracle and GpuCompute transport a medium; the other modes would drop it, so stop explicitly.
+    if (description.MediumOrNull != nullptr && (isAcceptanceMode || isViewportMode || isGpuMode))
+    {
+        return MEDIUM_UNSUPPORTED_STEP;
     }
     filesystem::WriteDirectory directory;
     if (directory.Open(argv[2]).Succeeded() == false)
@@ -714,7 +802,7 @@ int Run(int argc, char** argv) noexcept
     while (status == Status::Pending &&
            time::NowTicks() - started < CAPTURE_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND)
     {
-        status = renderer.AdvanceReferenceCapture(capture);
+        status = renderer.AdvanceReferenceCapture(capture, surface);
     }
     if (status != Status::Ready)
     {
@@ -757,7 +845,8 @@ int main(int argc, char** argv)
     {
         LUDUS_LOG_ERROR(LOG_SCENE,
                         "Scene capture failed at step {}. Usage: reference_scene <cooked-directory> <output-directory> "
-                        "<extent:1..1024> <samples:1..4096> [acceptance|native|gpu]. See the reference-scene guide for "
+                        "<extent:1..1024> <samples:1..4096> [acceptance|native|gpu|gpu-compute|viewport]. See the "
+                        "reference-scene guide for "
                         "step meanings.",
                         result);
     }
