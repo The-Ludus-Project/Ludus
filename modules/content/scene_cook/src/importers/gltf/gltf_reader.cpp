@@ -2064,7 +2064,6 @@ Status GltfReader::traverseScene() noexcept
         return Status::Ok;
     }
     // No scenes: every node without a parent is a root.
-    inform(codes::DIRECTIVE_IGNORED, "the asset declares no scene; all root nodes are imported");
     Array<uint8> hasParent;
     if (hasParent.TryResize(mIsNodeVisited.GetSize(), uint8{0}) == false)
     {
@@ -2095,6 +2094,26 @@ Status GltfReader::traverseScene() noexcept
             return status;
         }
     }
+    if (mLog.HasErrors() == true || mHasOverflowed == true)
+    {
+        return Status::Ok; // An earlier traversal error may have left descendants unvisited.
+    }
+    // Thanks to Juan Linietsky, A small defense of glTF 2.0 on its comparison
+    // against OpenGEX, for calling out child-index hierarchy validation.
+    // https://godotengine.org/article/small-defense-gltf/#hierarchial-node-relationships
+    // In Khronos glTF 2.0 §3.5.2's forest, traversing every root reaches every node.
+    // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#nodes-and-hierarchy
+    for (usize n = 0; n < mIsNodeVisited.GetSize(); ++n)
+    {
+        if (mIsNodeVisited[n] == 0)
+        {
+            failAt("nodes",
+                   n,
+                   "no root reaches this node. Re-export after fixing cyclic parenting in the source scene.");
+            return mHasOverflowed == true ? Status::OutOfMemory : Status::Invalid;
+        }
+    }
+    inform(codes::DIRECTIVE_IGNORED, "the asset declares no scene; all root nodes are imported");
     return Status::Ok;
 }
 

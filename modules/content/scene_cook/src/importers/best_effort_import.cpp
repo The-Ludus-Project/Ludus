@@ -2300,6 +2300,17 @@ void ReportDisabledLights(const SceneIr& scene, const CookedLighting& lighting, 
     if (status != Status::Ok)
     {
         outResult.Bundle.Clear();
+        if (status == Status::Invalid)
+        {
+            // Callers such as the Editor preview also surface the short error directly.
+            for (const Diagnostic& entry : log.GetEntries())
+            {
+                if (entry.Severity == DiagnosticSeverity::Error)
+                {
+                    return FailWith(outError, status, entry.Message.GetView());
+                }
+            }
+        }
         return FailWith(outError, status, DescribeStatus(status));
     }
     std::string_view licenseName;
