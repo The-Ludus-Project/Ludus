@@ -400,6 +400,69 @@ TEST_CASE("A reference capture traces pixel centres when asked and records it in
     }
 }
 
+TEST_CASE("Reference capture lights the scene with the World Atmosphere's sky as the raster does",
+          "[editor][reference-capture][gpu][atmosphere]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(root.path(), scene);
+    const QSize extent = ComputeReferenceExtent(QSize(640, 480), TEST_LONG_SIDE);
+    renderer::ViewDescription view;
+    DescribeTestView(scene, extent, view);
+    ViewportReferenceSettings settings;
+    settings.LongSide = TEST_LONG_SIDE;
+    settings.Samples = TEST_SAMPLES;
+    settings.MaxDepth = TEST_DEPTH;
+    settings.Traversal = renderer::ReferenceTraversal::CpuOracle;
+    const auto captureRadiance = [&](const RenderScene& source, bool& outHasSky) {
+        ViewportReferenceCapture capture;
+        QString error;
+        REQUIRE(capture.Start(device.Device, device.Surface, source, view, extent, settings, error) == true);
+        const ViewportReferencePhase phase = RunToEnd(capture);
+        INFO(capture.GetError().toStdString());
+        REQUIRE(phase == ViewportReferencePhase::Complete);
+        Array<renderer::ReferencePixel> pixels;
+        REQUIRE(capture.CopyPixels(pixels, error) == true);
+        float64 total = 0;
+        for (const renderer::ReferencePixel& pixel : pixels)
+        {
+            total += static_cast<float64>(pixel.Radiance.X + pixel.Radiance.Y + pixel.Radiance.Z);
+        }
+        outHasSky = capture.HasAtmosphereSky();
+        return total;
+    };
+    bool hasSky = true;
+    const float64 withoutAtmosphere = captureRadiance(scene, hasSky);
+    CHECK(hasSky == false);
+
+    // A clear sky with its ground ten metres below the camera and a Sun linked to no scene light.
+    constexpr float32 ANCHOR_DEPTH_METRES = 10;
+    constexpr float32 SOLAR_ILLUMINANCE = 4;
+    RenderScene sky = scene;
+    sky.Atmosphere.IsEnabled = true;
+    sky.Atmosphere.ShouldLightScene = true;
+    sky.Atmosphere.SurfaceAnchorWorld = view.CameraPosition - math::Vector3{0, ANCHOR_DEPTH_METRES, 0};
+    sky.Atmosphere.DirectionToSunWorld = math::Vector3{.3F, .8F, .2F} / math::Length(math::Vector3{.3F, .8F, .2F});
+    sky.Atmosphere.SolarIlluminance = {SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE};
+    const float64 withAtmosphere = captureRadiance(sky, hasSky);
+    CHECK(hasSky == true);
+    CAPTURE(withoutAtmosphere, withAtmosphere);
+    CHECK(withAtmosphere > withoutAtmosphere);
+
+    // Below the Atmosphere's ground the raster adds no sky, and neither does the reference.
+    RenderScene buried = sky;
+    buried.Atmosphere.SurfaceAnchorWorld = view.CameraPosition + math::Vector3{0, ANCHOR_DEPTH_METRES, 0};
+    const float64 belowGround = captureRadiance(buried, hasSky);
+    CHECK(hasSky == false);
+    CHECK(belowGround == withoutAtmosphere);
+}
+
 TEST_CASE("GPU compute reference capture completes with more emissive patches than raster lights",
           "[editor][reference-capture][gpu][reference-compute][emissive-patches]")
 {

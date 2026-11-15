@@ -49,7 +49,7 @@ target_link_libraries(ludus_renderer_probe_volume PRIVATE
 target_compile_options(ludus_renderer_probe_volume PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_renderer_probe_volume)
 
-add_library(ludus_graphics_renderer STATIC src/light_transformer_graph.cpp src/light_transformer_encoded_queries.cpp src/light_transformer_encoder.cpp src/light_transformer_topology.cpp src/light_transformer.cpp src/point_neighbors.cpp src/surface_points.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/raster_mesh_light_shadows.cpp src/render_graph_scene_resources.cpp src/texture_mip_chain.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/selection_outline.cpp src/lighting.cpp src/static_lighting.cpp "$<TARGET_OBJECTS:ludus_renderer_probe_volume>" src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/reference_dielectric.cpp src/reference_medium.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" src/ggx_albedo_table.cpp "${ludus_ggx_albedo_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp)
+add_library(ludus_graphics_renderer STATIC src/light_transformer_graph.cpp src/light_transformer_encoded_queries.cpp src/light_transformer_encoder.cpp src/light_transformer_topology.cpp src/light_transformer.cpp src/point_neighbors.cpp src/surface_points.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/raster_mesh_light_shadows.cpp src/render_graph_scene_resources.cpp src/texture_mip_chain.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/selection_outline.cpp src/lighting.cpp src/static_lighting.cpp "$<TARGET_OBJECTS:ludus_renderer_probe_volume>" src/environment.cpp src/atmosphere_environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/reference_dielectric.cpp src/reference_medium.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" src/ggx_albedo_table.cpp "${ludus_ggx_albedo_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp)
 target_sources(ludus_graphics_renderer PRIVATE src/render_graph_atmosphere.cpp)
 # Minimal SDK builds can omit offline shader tools and reject explicit atmosphere requests.
 if(LUDUS_SLANG_COMPILER)
@@ -166,6 +166,10 @@ set_property(GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_FILES "${default_render_
 install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/render-graphs/default")
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
+    # Independent Earth clear-sky quadrature shared by the CPU reference-sky and GPU atmosphere pixel tests.
+    add_library(ludus_renderer_earth_sky_quadrature OBJECT tests/earth_sky_quadrature.cpp)
+    target_link_libraries(ludus_renderer_earth_sky_quadrature PRIVATE Ludus::FoundationContainers Ludus::FoundationMath)
+    ludus_apply_project_defaults(ludus_renderer_earth_sky_quadrature)
     add_executable(ludus_metropolis_tests tests/metropolis_tests.cpp ../../foundation/math/tests/metropolis_tests.cpp)
     target_link_libraries(ludus_metropolis_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationContainers Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_metropolis_tests)
@@ -209,6 +213,8 @@ if(LUDUS_BUILD_TESTS)
         tests/texture_mip_chain_tests.cpp
         tests/wave_tracing_tests.cpp
         tests/wave_scene_queries_tests.cpp
+        tests/atmosphere_environment_tests.cpp
+        "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>"
     )
     target_include_directories(ludus_renderer_tests PRIVATE ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::GraphicsRenderer ludus_rhi_reference_backend
@@ -273,7 +279,8 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp
         tests/hybrid_shadow_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
-    target_sources(ludus_renderer_render_tests PRIVATE tests/viewport_antialiasing_coverage_tests.cpp)
+    target_sources(ludus_renderer_render_tests PRIVATE tests/viewport_antialiasing_coverage_tests.cpp
+        "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>")
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -595,7 +602,8 @@ endfunction()
 if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND LUDUS_SLANG_COMPILER)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_render_graph_dxil_tests tests/render_graph_dxil_tests.cpp tests/render_graph_render_tests.cpp
-        tests/render_graph_pool_render_tests.cpp tests/render_graph_default_render_tests.cpp)
+        tests/render_graph_pool_render_tests.cpp tests/render_graph_default_render_tests.cpp
+        "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>")
     target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::GraphicsRenderer Ludus::FoundationContainers
         Ludus::FoundationMath Catch2::Catch2WithMain)
     target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE LUDUS_TEST_DXIL=1)

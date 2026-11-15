@@ -19,6 +19,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -476,6 +477,9 @@ struct ReferenceRawAovCase final
     bool IsFarConventional = false;
     rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
     bool HasSecondDirectionalLight = false;
+    /// Replace the environment map with a World Atmosphere's sky and attenuate the first light as its Sun,
+    /// as the editor's reference capture does.
+    bool HasAtmosphereSky = false;
 };
 
 void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
@@ -550,11 +554,36 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     {
         pixel = pixel * 16;
     }
+    // A clear sky above an anchor below the scene, with a Sun forty degrees up.
+    constexpr uint32 ATMOSPHERE_WIDTH = 32;
+    constexpr uint32 ATMOSPHERE_HEIGHT = ATMOSPHERE_WIDTH / 2;
+    constexpr float32 ATMOSPHERE_ANCHOR_DEPTH = 5;
+    constexpr float32 SOLAR_ILLUMINANCE = 6;
+    StaticArray<math::Vector4, static_cast<usize>(ATMOSPHERE_WIDTH) * ATMOSPHERE_HEIGHT> atmospherePixels{};
+    rr::AtmosphereDescription atmosphere;
+    atmosphere.IsEnabled = true;
+    atmosphere.ShouldLightScene = true;
+    atmosphere.SurfaceAnchorWorld = {0, -ATMOSPHERE_ANCHOR_DEPTH, 0};
+    atmosphere.DirectionToSunWorld = math::Vector3{.4F, .64F, .3F} / math::Length(math::Vector3{.4F, .64F, .3F});
+    atmosphere.SolarIlluminance = {SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE};
+    math::Vector3 sunIlluminance{};
     rr::EnvironmentMap environment;
     rr::EnvironmentDescription environmentDescription;
     environmentDescription.PixelsOrNull = environmentPixels.GetData();
     environmentDescription.Width = 2;
     environmentDescription.Height = 2;
+    if (test.HasAtmosphereSky == true)
+    {
+        REQUIRE(rr::ResolveAtmosphereEnvironment(atmosphere,
+                                                 {0, 0, 0},
+                                                 ATMOSPHERE_WIDTH,
+                                                 ATMOSPHERE_HEIGHT,
+                                                 {atmospherePixels.GetData(), atmospherePixels.GetSize()},
+                                                 sunIlluminance) == rr::AtmosphereEnvironmentStatus::Ready);
+        environmentDescription.PixelsOrNull = atmospherePixels.GetData();
+        environmentDescription.Width = ATMOSPHERE_WIDTH;
+        environmentDescription.Height = ATMOSPHERE_HEIGHT;
+    }
     environmentDescription.FilterWidth = 16;
     environmentDescription.FilterSamples = 16;
     environmentDescription.CpuByteBudget = CPU_BUDGET;
@@ -596,6 +625,13 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
         lights[3].Kind = rr::LightKind::Directional;
         lights[3].Direction = {0, 0, 1};
     }
+    if (test.HasAtmosphereSky == true)
+    {
+        lights[0].Direction = -atmosphere.DirectionToSunWorld;
+        lights[0].Intensity = math::Max(sunIlluminance.X, math::Max(sunIlluminance.Y, sunIlluminance.Z));
+        REQUIRE(lights[0].Intensity > 0);
+        lights[0].Color = sunIlluminance / lights[0].Intensity;
+    }
 
     rr::ReferenceCaptureDescription capture;
     capture.Width = CAPTURE_WIDTH_PIXELS;
@@ -606,8 +642,9 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     capture.RouletteDepth = test.RouletteDepth;
     capture.Seed = test.Seed;
     capture.LightSampling = test.LightSampling;
-    capture.Environment = {.3F, .4F, .5F};
-    capture.EnvironmentTextureOrNull = test.HasEnvironmentMap == true ? &environment : nullptr;
+    capture.Environment = test.HasAtmosphereSky == true ? math::Vector3{} : math::Vector3{.3F, .4F, .5F};
+    capture.EnvironmentTextureOrNull =
+        test.HasEnvironmentMap == true || test.HasAtmosphereSky == true ? &environment : nullptr;
     capture.Lights = lights.GetData();
     capture.LightCount = test.LightCount;
     if (test.IsPerspective == true)
@@ -753,6 +790,23 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: independent directional pr
         .HasEnvironmentMap = true,
         .LightSampling = rr::ReferenceLightSampling::SeparateDirectional,
         .HasSecondDirectionalLight = true,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: World Atmosphere sky and attenuated Sun",
+          "[renderer][gpu][reference-compute][atmosphere]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "World Atmosphere sky and attenuated Sun",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 2718,
+        .LightCount = 1,
+        .HasEnvironmentMap = false,
+        .LightSampling = rr::ReferenceLightSampling::SeparateDirectional,
+        .HasAtmosphereSky = true,
     });
 }
 
@@ -3113,7 +3167,8 @@ rr::ReferenceCaptureDescription MakeMediumCapture()
 math::Vector2 GetMediumPixelCenter(usize pixel)
 {
     const float64 column = static_cast<float64>(pixel % MEDIUM_IMAGE_EXTENT) + .5;
-    const float64 row = static_cast<float64>(pixel / MEDIUM_IMAGE_EXTENT) + .5;
+    const usize rowIndex = pixel / MEDIUM_IMAGE_EXTENT;
+    const float64 row = static_cast<float64>(rowIndex) + .5;
     return {static_cast<float32>(2 * column / MEDIUM_IMAGE_EXTENT - 1),
             static_cast<float32>(1 - 2 * row / MEDIUM_IMAGE_EXTENT)};
 }

@@ -2052,9 +2052,41 @@ The deferred resolve integrates extinction and in-scattering over the finite
 camera-to-surface segment, clipped to the shell or ground. It applies that
 result to lit surface radiance before exposure and tone mapping. The
 renderer-owned resolve reuses texture slots after the G-buffer pass and keeps
-the graph package interface intact. Transparent surfaces, other renderer
-profiles, and reference path tracing remain outside this integration. If the
+the graph package interface intact. Transparent surfaces and other renderer
+profiles remain outside this integration. If the
 camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
+
+### Reference capture of an Atmosphere
+
+RT1 receives the same distant lighting as the opaque raster resolve. When an
+Atmosphere lights the scene and the camera is inside its shell,
+`ResolveAtmosphereEnvironment` evaluates the transmittance, multiple-scattering
+and sky-view tables on the CPU, at the camera's altitude and solar zenith, with
+the shader's parameterizations, quadrature and bilinear lookups in binary64. The
+profile constants and step counts come from `renderer_atmosphere_layout.h`, which
+the Slang tables also read. The function writes a latitude/longitude image of
+the disk-free sky, averaged over 2 × 2 directions per texel. The editor uses
+512 × 256 texels, about one sky-table texel each. It also returns the linked Sun's
+illuminance after transmittance at the observer, zero below the geometric horizon.
+The editor's reference capture supplies the image as the capture's environment
+map. It replaces the imported environment, as the raster's atmosphere lighting
+does. The capture also gives the `SunSourceId` directional light that illuminance.
+The CPU oracle and GPU compute therefore sample one input through their existing
+environment and directional-light estimators. Other lights are unchanged. A camera
+below the ground or above the shell, or an Atmosphere that does not light the scene,
+leaves the capture's inputs unchanged.
+
+This is a distant-environment approximation of the raster's lighting. RT1 traces
+visibility for the sky and the Sun, where the raster's cosine and GGX sky
+quadrature is unshadowed. It omits aerial perspective along scene segments, the
+variation of altitude across the scene, the solar disk as an emitter and the
+night-sky boundary. Tests cover four agreements. The CPU sky matches the
+independent single-scattering quadrature within 8%. Its higher orders match the
+24-order solution within 20%. The zenith Sun matches analytic optical depth
+within 0.2%. The GPU sky pixels match the CPU tables within 8-bit quantization
+plus 2%. A matched CPU-oracle and GPU-compute capture of the resolved sky and
+attenuated Sun meets the raw-AOV tolerances of the
+[GPU-compute reference](#gpu-compute-reference).
 
 ### Celestial background and orbital views
 
