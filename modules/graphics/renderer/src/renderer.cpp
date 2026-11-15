@@ -4813,18 +4813,24 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
                                    MaterialVersion& output,
                                    LightSelection& report) noexcept
 {
-    return createLitMaterial(program, description, output, report, nullptr, 0);
+    return createLitMaterial(program, description, output, report, nullptr, 0, 0);
 }
 Status Renderer::createLitMaterial(MaterialProgram program,
                                    const LitMaterialDescription& description,
                                    MaterialVersion& outMaterial,
                                    LightSelection& outSelection,
-                                   const ShadowRegion* directionalShadowOrNull,
+                                   const ShadowRegion* directionalShadowsOrNull,
+                                   usize directionalShadowCount,
                                    uint32 shadowAtlasTexels) noexcept
 {
     if (mState.Get() == nullptr || mState->LightingSetup != Status::Ready)
     {
         return Status::NotReady;
+    }
+    if (directionalShadowCount > SHADOW_REGION_CAPACITY ||
+        (directionalShadowCount != 0 && (directionalShadowsOrNull == nullptr || shadowAtlasTexels == 0)))
+    {
+        return Status::InvalidDescription;
     }
     auto& s = *mState;
     const auto* p = Resolve(s.Programs, s.Owner, program);
@@ -5113,7 +5119,7 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                       description.Roughness,
                       static_cast<float32>(selected.Count),
                       atlas != nullptr ? static_cast<float32>(atlas->Count)
-                                       : (directionalShadowOrNull != nullptr ? 1.0F : 0.0F)};
+                                       : static_cast<float32>(directionalShadowCount)};
     parameters.Emission = {description.Emission.X,
                            description.Emission.Y,
                            description.Emission.Z,
@@ -5215,10 +5221,13 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                              static_cast<float32>(atlas->Height));
         }
     }
-    else if (directionalShadowOrNull != nullptr)
+    else
     {
         const float32 extent = static_cast<float32>(shadowAtlasTexels);
-        packShadowRegion(0, *directionalShadowOrNull, extent, extent);
+        for (usize i = 0; i < directionalShadowCount; ++i)
+        {
+            packShadowRegion(i, directionalShadowsOrNull[i], extent, extent);
+        }
     }
     uint8* legacy = s.LitScratch->Legacy.GetData();
     std::memset(legacy, 0, s.LitScratch->Legacy.GetSize());
@@ -5644,11 +5653,11 @@ Status Renderer::prepareDeferredShadows(Snapshot snapshot,
             outDraw = draw;
             return Status::Ready;
         };
-        const ShadowRegion& directional = inoutAtlas.Directional;
-        if (directional.Light.SourceId != 0)
+        for (uint32 index = 0; index < inoutAtlas.DirectionalCount; ++index)
         {
+            const ShadowRegion& directional = inoutAtlas.Directional[index];
             const Status status =
-                buildFace(directional.WorldToClip, directional.Interior, nullptr, inoutAtlas.DirectionalDraw);
+                buildFace(directional.WorldToClip, directional.Interior, nullptr, inoutAtlas.DirectionalDraws[index]);
             if (status != Status::Ready)
             {
                 return status;
@@ -5734,8 +5743,7 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         inoutAtlas.Recording.IsCleared = true;
     }
-    const bool shouldDrawDirectional =
-        inoutAtlas.Directional.Light.SourceId != 0 && inoutAtlas.Recording.HasDrawnDirectional == false;
+    const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < inoutAtlas.DirectionalCount;
     if (shouldDrawDirectional == false && inoutAtlas.Recording.NextFace >= inoutAtlas.Faces.GetSize())
     {
         return Status::Ready;
@@ -5792,17 +5800,25 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         return Status::Ready;
     };
-    const bool canDrawDirectional = shouldDrawDirectional == true && inoutAtlas.DirectionalDraw.PacketCount <= budget;
-    if (canDrawDirectional == true)
+    // Directional maps come first, each whole within the draw budget; the triangle budget only paces cube faces.
+    bool canDrawDirectional = false;
+    while (inoutAtlas.Recording.DrawnDirectional < inoutAtlas.DirectionalCount)
     {
-        const Status status = drawFace(inoutAtlas.DirectionalDraw);
+        const internal::MeshLightShadowFaceDraw& draw =
+            inoutAtlas.DirectionalDraws[inoutAtlas.Recording.DrawnDirectional];
+        if (draw.PacketCount > budget)
+        {
+            break;
+        }
+        const Status status = drawFace(draw);
         if (status != Status::Ready)
         {
             return status;
         }
-        budget -= inoutAtlas.DirectionalDraw.PacketCount;
-        triangleBudget -= math::Min(inoutAtlas.DirectionalDraw.Triangles, triangleBudget);
-        inoutAtlas.Recording.HasDrawnDirectional = true;
+        budget -= draw.PacketCount;
+        triangleBudget -= math::Min(draw.Triangles, triangleBudget);
+        ++inoutAtlas.Recording.DrawnDirectional;
+        canDrawDirectional = true;
     }
     for (uint32 drawnFaces = 0; inoutAtlas.Recording.NextFace < inoutAtlas.Faces.GetSize() &&
                                 drawnFaces < MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME;

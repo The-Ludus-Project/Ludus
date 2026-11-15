@@ -530,9 +530,10 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                     {QStringLiteral("default"), true},
                     {QStringLiteral("unit"), QString()},
                     {QStringLiteral("help"),
-                     QStringLiteral("Allow this light to receive a raster shadow map. The default Raster graph "
-                                    "assigns one map to the eligible directional light with the lowest source ID. "
-                                    "Ray-traced visibility and baked lighting use scene geometry.")},
+                     QStringLiteral(
+                         "Allow this light to receive a raster shadow map. The default Raster graph "
+                         "assigns maps to the two brightest eligible directional lights, such as a Sun and Moon. "
+                         "Ray-traced visibility and baked lighting use scene geometry.")},
                 });
                 properties.append(QJsonObject{
                     {QStringLiteral("id"), QStringLiteral("staticTransform")},

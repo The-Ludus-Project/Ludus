@@ -42,49 +42,91 @@ constexpr usize DRAW_TEXTURE_COUNT = MATERIAL_TEXTURE_COUNT + 1;
 constexpr usize CACHE_TEXTURE_COUNT = format::MAX_ITEMS * DRAW_TEXTURE_COUNT * RETAINED_GENERATION_COUNT;
 constexpr usize CHANNEL_COUNT = 4;
 constexpr usize TRIANGLE_CORNER_COUNT = 3;
-constexpr uint32 DIRECTIONAL_SHADOW_GUTTER_TEXELS = 1;
-constexpr uint32 DIRECTIONAL_SHADOW_INTERIOR_TEXELS = DIRECTIONAL_SHADOW_TEXELS - 2 * DIRECTIONAL_SHADOW_GUTTER_TEXELS;
 /// Padding keeps degenerate scene bounds projectable even with the light parallel to the plane.
 constexpr math::Vector3 DIRECTIONAL_SHADOW_PADDING_METERS{0.5F, 0.5F, 0.5F};
 
-Status BuildDirectionalShadowRegion(BorrowedView<const DirectLight> lights,
-                                    const math::Aabb3& boundsWorld,
-                                    ShadowRegion& outRegion) noexcept
+bool IsDirectionalShadowCandidate(const DirectLight& light) noexcept
 {
-    if (math::IsEmpty(boundsWorld) == true)
+    return light.Kind == LightKind::Directional && light.ShouldCastRasterShadows == true && light.Intensity > 0 &&
+           light.Color != math::Vector3{};
+}
+float32 GetDirectionalShadowPriority(const DirectLight& light) noexcept
+{
+    return light.Intensity * math::Max(light.Color.X, math::Max(light.Color.Y, light.Color.Z));
+}
+/// Whether left takes a directional map before right: brighter first, then the lower source ID.
+bool PrecedesDirectionalShadow(const DirectLight& left, const DirectLight& right) noexcept
+{
+    const float32 leftPriority = GetDirectionalShadowPriority(left);
+    const float32 rightPriority = GetDirectionalShadowPriority(right);
+    return leftPriority > rightPriority || (leftPriority == rightPriority && left.SourceId < right.SourceId);
+}
+/// Give up to MAX_DIRECTIONAL_SHADOW_REGIONS eligible directional lights a map fitted to the scene bounds, brightest
+/// first. Every map an Atmosphere's Sun and Moon need is present, so neither lights the scene through its casters.
+/// @return Ready with the regions, their count and the eligible lights left without a map; failure preserves outputs.
+Status BuildDirectionalShadowRegions(BorrowedView<const DirectLight> lights,
+                                     const math::Aabb3& boundsWorld,
+                                     DeferredShadowAtlas& outAtlas,
+                                     uint32& outUnshadowed) noexcept
+{
+    StaticArray<ShadowRegion, MAX_DIRECTIONAL_SHADOW_REGIONS> regions{};
+    uint32 count = 0;
+    uint32 unshadowed = 0;
+    if (math::IsEmpty(boundsWorld) == false)
     {
-        return Status::Ready;
-    }
-    const DirectLight* selectedOrNull = nullptr;
-    for (usize index = 0; index < lights.GetSize(); ++index)
-    {
-        const DirectLight& light = lights[index];
-        if (light.Kind == LightKind::Directional && light.ShouldCastRasterShadows == true && light.Intensity > 0 &&
-            light.Color != math::Vector3{} && (selectedOrNull == nullptr || light.SourceId < selectedOrNull->SourceId))
+        StaticArray<const DirectLight*, MAX_DIRECTIONAL_SHADOW_REGIONS> selected{};
+        for (usize index = 0; index < lights.GetSize(); ++index)
         {
-            selectedOrNull = &light;
+            const DirectLight& light = lights[index];
+            if (IsDirectionalShadowCandidate(light) == false)
+            {
+                continue;
+            }
+            // Insert into the brightest-first selection; a light pushed past the capacity stays unshadowed.
+            usize position = count;
+            while (position > 0 && PrecedesDirectionalShadow(light, *selected[position - 1]) == true)
+            {
+                --position;
+            }
+            if (position == MAX_DIRECTIONAL_SHADOW_REGIONS)
+            {
+                ++unshadowed;
+                continue;
+            }
+            if (count == MAX_DIRECTIONAL_SHADOW_REGIONS)
+            {
+                ++unshadowed;
+            }
+            else
+            {
+                ++count;
+            }
+            for (usize slot = count - 1; slot > position; --slot)
+            {
+                selected[slot] = selected[slot - 1];
+            }
+            selected[position] = &light;
+        }
+        for (uint32 index = 0; index < count; ++index)
+        {
+            ShadowRegion& region = regions[index];
+            region.Light = *selected[index];
+            region.Interior = GetDirectionalShadowInterior(index);
+            const Status status = BuildDirectionalShadowMatrix({boundsWorld.Min - DIRECTIONAL_SHADOW_PADDING_METERS,
+                                                                boundsWorld.Max + DIRECTIONAL_SHADOW_PADDING_METERS},
+                                                               region.Light.Direction,
+                                                               region.Interior.Width,
+                                                               region.WorldToClip);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
         }
     }
-    if (selectedOrNull == nullptr)
-    {
-        return Status::Ready;
-    }
-    ShadowRegion region;
-    region.Light = *selectedOrNull;
-    region.Interior = {DIRECTIONAL_SHADOW_GUTTER_TEXELS,
-                       DIRECTIONAL_SHADOW_GUTTER_TEXELS,
-                       DIRECTIONAL_SHADOW_INTERIOR_TEXELS,
-                       DIRECTIONAL_SHADOW_INTERIOR_TEXELS};
-    const Status status = BuildDirectionalShadowMatrix(
-        {boundsWorld.Min - DIRECTIONAL_SHADOW_PADDING_METERS, boundsWorld.Max + DIRECTIONAL_SHADOW_PADDING_METERS},
-        region.Light.Direction,
-        DIRECTIONAL_SHADOW_INTERIOR_TEXELS,
-        region.WorldToClip);
-    if (status == Status::Ready)
-    {
-        outRegion = region;
-    }
-    return status;
+    outAtlas.Directional = regions;
+    outAtlas.DirectionalCount = count;
+    outUnshadowed = unshadowed;
+    return Status::Ready;
 }
 enum MeshKeyPart : uint8
 {
@@ -511,6 +553,8 @@ struct ForwardSceneGeneration::State final
     Array<MeshLightShadowCaster> MeshLightShadowCasters;
     /// Shared directional and mesh-light atlas. It exists only when at least one projection is needed.
     DeferredShadowAtlas Shadows;
+    /// Eligible directional lights beyond MAX_DIRECTIONAL_SHADOW_REGIONS, which illuminate unshadowed.
+    uint32 UnshadowedDirectionalLights = 0;
     LightClusterDescription Clusters;
     math::Aabb3 BoundsWorld = math::EmptyAabb3();
     EnvironmentMap Environment;
@@ -616,7 +660,10 @@ uint32 ForwardSceneGeneration::FindDirectionalLightIndex(uint64 sourceId) const 
     for (usize index = 0; index < state.Lights.GetSize(); ++index)
     {
         const DirectLight& light = state.Lights[index];
-        if (light.SourceId == sourceId && light.Kind == LightKind::Directional)
+        // A Sun the scene does not light (below the horizon) gets no shadow map, so the atmosphere must not light
+        // it either: its transmittance at the dipped horizon would reach every receiver unshadowed.
+        if (light.SourceId == sourceId && light.Kind == LightKind::Directional && light.Intensity > 0 &&
+            light.Color != math::Vector3{})
         {
             return static_cast<uint32>(index + 1);
         }
@@ -745,15 +792,13 @@ Status ForwardSceneGeneration::Poll() noexcept
         LightSelection selection;
         const MaterialProgram program =
             rhi::IsNull(description.Bake.Texture) == false ? owner.SurfaceChartProgram : owner.Program;
-        const ShadowRegion& directional = state.Shadows.Directional;
-        const bool hasDirectionalShadow = directional.Light.SourceId != 0;
-        const Status status =
-            owner.RendererOrNull->createLitMaterial(program,
-                                                    description,
-                                                    state.Materials[state.PreparedMaterials],
-                                                    selection,
-                                                    hasDirectionalShadow == true ? &directional : nullptr,
-                                                    state.Shadows.ExtentTexels);
+        const Status status = owner.RendererOrNull->createLitMaterial(program,
+                                                                      description,
+                                                                      state.Materials[state.PreparedMaterials],
+                                                                      selection,
+                                                                      state.Shadows.Directional.GetData(),
+                                                                      state.Shadows.DirectionalCount,
+                                                                      state.Shadows.ExtentTexels);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -1119,14 +1164,15 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         if (owner.IsClustered == true)
         {
             const Status directional =
-                BuildDirectionalShadowRegion({candidate.Lights.GetData(), candidate.Lights.GetSize()},
-                                             candidate.BoundsWorld,
-                                             candidate.Shadows.Directional);
+                BuildDirectionalShadowRegions({candidate.Lights.GetData(), candidate.Lights.GetSize()},
+                                              candidate.BoundsWorld,
+                                              candidate.Shadows,
+                                              candidate.UnshadowedDirectionalLights);
             if (directional != Status::Ready)
             {
                 return directional;
             }
-            const bool hasDirectionalShadow = candidate.Shadows.Directional.Light.SourceId != 0;
+            const uint32 directionalCount = candidate.Shadows.DirectionalCount;
             // Casters come first: they tag each record, and the grid lists each caster's records together.
             if (candidate.MeshLightCount != 0)
             {
@@ -1157,7 +1203,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             {
                 if (AllocateRasterMeshLightShadowFaces(candidate.MeshLightShadowCasters,
                                                        MESH_LIGHT_SHADOW_ATLAS_TEXELS,
-                                                       hasDirectionalShadow) == false)
+                                                       directionalCount) == false)
                 {
                     return Status::OutOfMemory;
                 }
@@ -1174,11 +1220,12 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 candidate.MeshLightWords[candidate.MeshLightGridWord + MESH_LIGHT_GRID_CULL_WORD].Y =
                     static_cast<float32>(tableWord);
             }
-            if (hasDirectionalShadow == true || candidate.MeshLightShadowCasters.IsEmpty() == false)
+            if (directionalCount != 0 || candidate.MeshLightShadowCasters.IsEmpty() == false)
             {
-                // One packed-depth colour attachment and its private depth. Pure directional scenes need one square.
+                // One packed-depth colour attachment and its private depth. Pure directional scenes need only
+                // their squares.
                 const uint32 atlasTexels = candidate.MeshLightShadowCasters.IsEmpty() == true
-                                               ? DIRECTIONAL_SHADOW_TEXELS
+                                               ? GetDirectionalShadowAtlasTexels(directionalCount)
                                                : MESH_LIGHT_SHADOW_ATLAS_TEXELS;
                 candidate.Shadows.ExtentTexels = atlasTexels;
                 const Status atlas = rhi::CreateTexture(owner.Device,
@@ -1209,7 +1256,10 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         owner.Report.MeshLightShadowCasters = static_cast<uint32>(candidate.MeshLightShadowCasters.GetSize());
         owner.Report.UnshadowedMeshLights = shadows.UnshadowedRecords;
         owner.Report.MeshLightShadowFaces = shadows.Faces;
-        owner.Report.DirectionalShadowLightSourceId = candidate.Shadows.Directional.Light.SourceId;
+        owner.Report.DirectionalShadowLightSourceId =
+            candidate.Shadows.DirectionalCount == 0 ? 0 : candidate.Shadows.Directional[0].Light.SourceId;
+        owner.Report.DirectionalShadowLights = candidate.Shadows.DirectionalCount;
+        owner.Report.UnshadowedDirectionalLights = candidate.UnshadowedDirectionalLights;
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

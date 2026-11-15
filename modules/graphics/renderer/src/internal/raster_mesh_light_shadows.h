@@ -67,8 +67,18 @@ struct MeshLightShadowFaceDraw final
     /// Triangles its packets submit, which bounds the faces drawn per frame.
     foundation::uint64 Triangles = 0;
 };
-/// Side of the directional slot at atlas origin. Cube faces are packed after this power-of-two square.
+/// Side of each directional slot. Directional squares lead the atlas and cube faces are packed after them.
 inline constexpr foundation::uint32 DIRECTIONAL_SHADOW_TEXELS = 1024;
+/// Directional lights given a map in one prepared scene, brightest first: an Atmosphere's Sun and Moon. Further
+/// eligible directional lights illuminate unshadowed and are counted in the report. The squares share the
+/// MESH_LIGHT_SHADOW_ATLAS_TEXELS atlas with cube faces, so each one halves the space those faces can use.
+inline constexpr foundation::uint32 MAX_DIRECTIONAL_SHADOW_REGIONS = 2;
+
+/// Directional slot index's interior, inside a one-texel gutter. Slots follow the Z-order of
+/// DIRECTIONAL_SHADOW_TEXELS squares from the atlas origin, the order AllocateRasterMeshLightShadowFaces reserves.
+[[nodiscard]] rhi::RasterRectangle GetDirectionalShadowInterior(foundation::uint32 index) noexcept;
+/// Side of a square atlas holding directionalCount directional slots and no cube faces.
+[[nodiscard]] foundation::uint32 GetDirectionalShadowAtlasTexels(foundation::uint32 directionalCount) noexcept;
 
 /// Atlas progress before or during one recorded frame.
 struct ShadowAtlasProgress final
@@ -76,19 +86,22 @@ struct ShadowAtlasProgress final
     /// Index of the first mesh-light face still to render.
     foundation::uint32 NextFace = 0;
     bool IsCleared = false;
-    bool HasDrawnDirectional = false;
+    /// Leading directional regions already drawn.
+    foundation::uint32 DrawnDirectional = 0;
 };
 
 /// GPU state of one prepared scene's shadow atlas. The scene generation creates the texture and its sampled view;
 /// Renderer::prepareDeferredShadows builds the face packets from the scene snapshot, and
-/// Renderer::drawDeferredShadows clears the atlas to the far depth (unoccluded) and then draws the directional region
+/// Renderer::drawDeferredShadows clears the atlas to the far depth (unoccluded) and then draws the directional regions
 /// and whole cube faces in caster order (brightest first), over as many frames as the per-frame draw and triangle
 /// budgets require.
 struct DeferredShadowAtlas final
 {
-    /// Optional directional region, drawn before any mesh-light faces. Source ID zero means absent.
-    ShadowRegion Directional;
-    MeshLightShadowFaceDraw DirectionalDraw;
+    /// Directional regions, brightest light first, drawn before any mesh-light faces.
+    foundation::StaticArray<ShadowRegion, MAX_DIRECTIONAL_SHADOW_REGIONS> Directional{};
+    foundation::StaticArray<MeshLightShadowFaceDraw, MAX_DIRECTIONAL_SHADOW_REGIONS> DirectionalDraws{};
+    /// Leading Directional entries in use.
+    foundation::uint32 DirectionalCount = 0;
     foundation::uint32 ExtentTexels = 0;
     rhi::TextureHandle Texture{};
     rhi::TextureViewHandle Sampled{};
@@ -131,11 +144,12 @@ BuildRasterMeshLightShadowCasters(foundation::Array<foundation::math::Vector4>& 
 /// Give every caster power-of-two face slots of MIN_MESH_LIGHT_SHADOW_FACE_TEXELS to
 /// MAX_MESH_LIGHT_SHADOW_FACE_TEXELS texels, by the square root of its share of the brightest caster's flux, halving
 /// every slot until all faces fit an atlas of atlasTexels squared, and pack them without overlap.
-/// The optional leading directional square is excluded from cube-face allocation.
+/// The leading directionalCount directional squares (at most MAX_DIRECTIONAL_SHADOW_REGIONS) are excluded from
+/// cube-face allocation.
 /// @return False, leaving the casters unchanged, when even the smallest slots do not fit.
 [[nodiscard]] bool AllocateRasterMeshLightShadowFaces(foundation::Array<MeshLightShadowCaster>& inoutCasters,
                                                       foundation::uint32 atlasTexels,
-                                                      bool hasDirectionalShadow = false) noexcept;
+                                                      foundation::uint32 directionalCount = 0) noexcept;
 /// Append the caster table (deferred_layout.h, MESH_LIGHT_SHADOW_HEADER_WORDS) and report its first word.
 /// @return Ready, or OutOfMemory preserving both outputs.
 [[nodiscard]] rhi::RasterStatus
