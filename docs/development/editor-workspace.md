@@ -2329,14 +2329,23 @@ Outside the volume, or where no nearby probe has recorded visibility, receivers 
 realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. Save again after the bake is ready to retain the
 atlas alongside the charts. If an older cache contains only charts, the native
-editor prepares the missing atlas in the background. The prototype uses coarse
-directional visibility. Move a GI Probe Receiver along both sides of a wall
-and through any doorway while checking the Lit viewport. If bounce crosses a
+editor prepares the missing atlas in the background. A cache saved with the
+earlier 4 × 4 visibility faces is also rebaked in the background; save again
+to keep the new atlas.
+
+Probe visibility is directional and coarse. Keep the volume's probe planes
+more than 1.6 % of the spacing from floors, ceilings and walls: a probe that
+touches geometry is ignored, and a receiver whose eight neighbours are all
+ignored gets no baked bounce. Receivers within about 5 % of the spacing of a
+wall can still pick up bounce from the far side, and so can receivers just
+past an opening. Move a GI Probe Receiver along both sides of a wall
+and through any doorway while checking the Lit viewport. Each move rebakes,
+which takes about half a second for a small volume. If bounce crosses a
 closed wall or disappears in the opening, adjust the volume's position or
 spacing, let it rebake, and repeat the same movement. Use the result that
 preserves bounce through the opening while keeping the closed wall dark where
 the neighbouring room is the only source of bounced light.
-[Probe visibility limits and test cases](../architecture/renderer-systems.md#probe-visibility-near-walls-and-openings)
+[Probe visibility limits and measurements](../architecture/renderer-systems.md#native-lit-probe-visibility-qualification)
 
 ### Switching lights
 
