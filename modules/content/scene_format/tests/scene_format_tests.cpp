@@ -346,8 +346,10 @@ TEST_CASE("Skin stores scattering distances in LUSCN v14 and reflects like metal
     CHECK(format::IsMaterialScatteringValid(scattering) == true);
     scattering.K = {{format::MAX_SKIN_SCATTERING_DISTANCE, 0, 0}};
     CHECK(format::IsMaterialScatteringValid(scattering) == true);
-    for (const format::float32 invalid :
-         {-0.001F, __builtin_nanf(""), format::MAX_SKIN_SCATTERING_DISTANCE * 2, __builtin_inff()})
+    for (const format::float32 invalid : {-0.001F,
+                                          std::numeric_limits<format::float32>::quiet_NaN(),
+                                          format::MAX_SKIN_SCATTERING_DISTANCE * 2,
+                                          std::numeric_limits<format::float32>::infinity()})
     {
         scattering.K = {{0, 0, invalid}};
         CHECK(format::IsMaterialScatteringValid(scattering) == false);

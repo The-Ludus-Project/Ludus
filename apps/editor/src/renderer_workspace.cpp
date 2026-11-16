@@ -2323,10 +2323,11 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // Cheap per-tick identity: the draft revision covers the root's default configuration and every placement source.
-    const QByteArray identity = scene.Identity + '\n' + mDocument.GetPackageRoot().toUtf8() + '\n' +
-                                mDocument.GetRootGraph().toUtf8() + '\n' + mConfiguration->currentText().toUtf8() +
-                                '\n' + QByteArray::number(mDocument.GetRevision()) + '\n' +
-                                (mIsDefaultPreview == true ? '1' : '0');
+    const QByteArray identity =
+        scene.Identity + '\n' + mDocument.GetPackageRoot().toUtf8() + '\n' + mDocument.GetRootGraph().toUtf8() + '\n' +
+        mConfiguration->currentText().toUtf8() + '\n' + QByteArray::number(mDocument.GetRevision()) + '\n' +
+        (mIsDefaultPreview == true ? '1' : '0') +
+        (mPreviewOrNull != nullptr && mPreviewOrNull->IsAtmosphereOmitted() == true ? '1' : '0');
     if (identity == mRenderWarningIdentity)
     {
         return;
@@ -2358,9 +2359,15 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
     {
         warning = mWorldLighting.Warning;
     }
-    if (warning != mRenderWarning)
+    // The drawing graph reports the omission once it accepts the extraction, which the identity above follows.
+    const QString omittedFeatureWarning =
+        mPreviewOrNull != nullptr && mPreviewOrNull->IsAtmosphereOmitted() == true
+            ? DescribeOmittedAtmosphere(mIsDefaultPreview == true ? QString{} : configuration)
+            : QString{};
+    if (warning != mRenderWarning || omittedFeatureWarning != mOmittedFeatureWarning)
     {
         mRenderWarning = warning;
+        mOmittedFeatureWarning = omittedFeatureWarning;
         Q_EMIT RenderProblemChanged();
     }
 #else
@@ -5529,6 +5536,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         };
         connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::RasterExposureChanged, this, refreshView);
+        connect(mPreviewSourceOrNull, &RenderPreview::LightingViewChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
             mArePreviewInputsDirty = true;
             refreshDeviceProfile();
@@ -5697,9 +5705,13 @@ void RendererWorkspace::ServicePreview()
                 setProblem(mExtractionProblem, error);
             }
             view.RasterExposureStops = mPreviewSourceOrNull->GetRasterExposureStops();
-            if (hasView == true && (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
-                                    AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
-                                    view.RasterExposureStops != mPreviewExposureStops))
+            view.LightingView = mPreviewSourceOrNull->GetLightingView();
+            view.LightingViewSourceId = mPreviewSourceOrNull->GetLightingViewSourceId();
+            if (hasView == true &&
+                (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
+                 AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
+                 view.RasterExposureStops != mPreviewExposureStops || view.LightingView != mPreviewLightingView ||
+                 view.LightingViewSourceId != mPreviewLightingViewSourceId))
             {
                 LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
                 bool hasUpdatedInputs = false;
@@ -5731,6 +5743,8 @@ void RendererWorkspace::ServicePreview()
                     mPreviewSurfaceBake = surfaceBake;
                     mPreviewWorldToClip = view.WorldToClip;
                     mPreviewExposureStops = view.RasterExposureStops;
+                    mPreviewLightingView = view.LightingView;
+                    mPreviewLightingViewSourceId = view.LightingViewSourceId;
                 }
             }
         }
@@ -5784,10 +5798,18 @@ void RendererWorkspace::renderPreview()
         if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->Scene().AlwaysOnLightIds.isEmpty() == false)
         {
             const usize chartDraws = mPreviewOrNull->GetSurfaceChartDrawCount();
+            const usize probeDraws = mPreviewOrNull->GetProbeReceiverDrawCount();
             const QString failure = mPreviewSourceOrNull->GetSurfaceBakeFailure();
-            if (chartDraws != 0)
+            if (chartDraws != 0 || probeDraws != 0)
             {
-                previewStatus += QStringLiteral("\nSurface charts in use on %1 draws.").arg(chartDraws);
+                if (chartDraws != 0)
+                {
+                    previewStatus += QStringLiteral("\nSurface charts in use on %1 draws.").arg(chartDraws);
+                }
+                if (probeDraws != 0)
+                {
+                    previewStatus += QStringLiteral("\nProbe GI in use on %1 receiver draws.").arg(probeDraws);
+                }
             }
             else if (failure.isEmpty() == false)
             {

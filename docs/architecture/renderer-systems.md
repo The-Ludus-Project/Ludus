@@ -1867,16 +1867,21 @@ Still open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
 
 A `Skin` material (`content::scene_format::MaterialModel::Skin`, LUSCN v14)
 stores a linear RGB scattering distance in metres in `MaterialScattering::K`.
-Its record keeps zero metallic and no emission, and base colour, roughness and
-textures keep their usual meaning. Author it in a
+Its record keeps zero metallic, and base colour, roughness, emission and textures
+keep their usual meaning. Author it in a
 [scene source](scene-source-format.md#skin) or from code
 (`LitMaterialDescription::Scattering`, `SceneShaderMaterial::Scattering`).
 
-The clustered deferred profile marks a skin pixel in the G-buffer with coverage
-`DEFERRED_SKIN_COVERAGE` and stores its scattering distance in the emission
-channels, which skin never uses, so the G-buffer layout and size are unchanged.
-A view whose opaque packets draw skin with a nonzero distance runs three passes
-in place of the single lighting resolve:
+The renderer gives each distinct nonzero scattering distance of its live skin
+materials a profile slot, at most `DEFERRED_MAX_SKIN_PROFILES` (64) at once;
+creating a material with another distance when every slot is taken returns
+`CapacityExceeded`. A skin pixel stores −(its one-based slot) in the G-buffer's
+metallic channel, which a dielectric does not need, and the diffusion passes read
+the slot's distance from a per-view profile table. The G-buffer layout and size
+are unchanged, and emission, baked probe and chart terms and coverage keep their
+meaning. A view whose opaque packets draw skin with a nonzero distance runs three
+passes in place of the single lighting resolve, for its final colour; lighting
+views (`DeferredLightingView`) keep the ordinary resolve:
 
 1. **Deferred/Lighting.** A built-in variant of the resolve
    (`renderer_skin_deferred.slang`, or `renderer_atmosphere_skin_deferred.slang`
@@ -1921,6 +1926,8 @@ another depth neither bleed in nor darken the edge. Departures from the paper:
 - The filtered diffuse radiance already carries the base colour, so texture
   detail spreads with the light.
 - There is no transmission through thin features.
+- Emission and the baked probe and chart irradiance that the G-buffer stores with
+  it are not spread; only live sky, analytic-light and mesh-light diffuse is.
 
 The skin targets are three RGBA16F attachments with private depth at the
 G-buffer's extent, 36 bytes per pixel. They are allocated on a view's first skin
@@ -1933,8 +1940,9 @@ form of the marginal, the bins and the per-channel weights. The `[skin][gpu]`
 tests in `ludus_renderer_render_tests` render quads through the default graph
 and compare each with the same scene at zero distance. They check that light
 crosses an albedo edge with red reaching furthest, that flat lighting is
-conserved, that spreading stops at a non-skin material and at a depth edge, and
-that the skin targets appear only with skin.
+conserved, that spreading stops at a non-skin material and at a depth edge, that
+each material spreads by its own profile, that the skin targets appear only with
+skin, and that emissive skin draws while metallic skin is rejected.
 
 Other paths make declared approximations:
 
@@ -2225,6 +2233,13 @@ renderer-owned resolve reuses texture slots after the G-buffer pass and keeps
 the graph package interface intact. Transparent surfaces and other renderer
 profiles remain outside this integration. If the
 camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
+
+An Atmosphere is an optional World feature. `RenderGraph::Update` admits a
+camera with an enabled Atmosphere in a graph without the clustered deferred
+programs. It clears that camera's Atmosphere, draws the World with its ordinary
+background and unattenuated directional lights, and sets
+`RenderGraphReport::IsAtmosphereOmitted`. The editor reports the omission as a
+warning, not a rejection.
 
 ### Reference capture of an Atmosphere
 

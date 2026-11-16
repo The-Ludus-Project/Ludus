@@ -52,6 +52,8 @@ extern slang
         DiffuseConductorMix = 6,
         ProjectBrdf = 8,
         Program = 9,
+        HairCard = 11,
+        Skin = 12,
     };
     enum class IncidentLightMeasure : uint32
     {

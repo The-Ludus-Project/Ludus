@@ -204,6 +204,16 @@ QList<ErrorListEntry> MakeRenderPreviewWarningEntries(const QString& warning, co
     }};
 }
 
+QList<ErrorListEntry> MakeRenderGraphFeatureWarningEntries(const QString& warning, const QString& file)
+{
+    QList<ErrorListEntry> entries = MakeRenderPreviewWarningEntries(warning, file);
+    for (ErrorListEntry& entry : entries)
+    {
+        entry.Code = QStringLiteral("RenderGraphFeatureNotRendered");
+    }
+    return entries;
+}
+
 QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result)
 {
     // SourceIndex stays the RendererWorkspace diagnostic row (the first one a merged row stands

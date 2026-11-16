@@ -189,6 +189,7 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.TransformBinding = authored.TransformBinding;
     // Disabled authored lights stay listed, and switchable, beside the imported ones.
     inoutScene.LightBinding = authored.LightBinding;
+    inoutScene.LightNames = authored.LightNames;
     inoutScene.RasterUnshadowedLightIds = authored.RasterUnshadowedLightIds;
     inoutScene.AlwaysOnLightIds = authored.AlwaysOnLightIds;
     inoutScene.ProbeGrid = authored.ProbeGrid;
@@ -1214,6 +1215,7 @@ bool RenderScene::Load(const QString& root,
                     return Fail(outError, QStringLiteral("World exceeds the authored-light capacity."));
                 }
                 candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++] = light;
+                candidate.LightNames.insert(light.SourceId, name.isEmpty() == true ? id : name);
                 const bool isBuiltInLight =
                     IsBuiltInWorld(world) == true &&
                     lightBinding.value(QStringLiteral("component")) == QJsonValue(QStringLiteral("light"));

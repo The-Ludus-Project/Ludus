@@ -664,25 +664,26 @@ natively against an installed native SDK.
 ## Explore as Player
 
 The editor's [Explore as Player](../development/editor-workspace.md#explore-from-a-first-person-player)
-preview (`apps/editor/src/viewport_walk_collision.cpp`) is the first consumer.
-When a walk starts it transforms the triangles of every entity with **Static
-Collider** into world space and cooks them, so mesh space is World space and
+preview is the first consumer. Its adapter collects the visible meshes of
+entities with **Static Collider** and submits their positions, indices and
+transforms to the shared first-person walking controller. The controller
+transforms and cooks the triangles in world space, so mesh space is World space and
 the 100 km coordinate envelope applies to the collider geometry and to the
 player. The cook uses `DegenerateTrianglePolicy::Skip`, because imported
 meshes often carry slivers the preview has always ignored.
 
-The walk rules stay in the editor: the 0.48 × 1.75 × 0.48 m box, step-up,
+The Qt-free walking controller owns the 0.48 × 1.75 × 0.48 m box, step-up,
 ground snap, slide, jump, the 45° slope limit and the fall reset. A contact
 supports the player only when both its separating normal and the triangle's
 face are within 45° of up. Because the module reports a triangle index rather
-than the triangle, the editor cooks two meshes instead of one: the triangles
+than the triangle, the controller cooks two partitions: the triangles
 whose face can support the player, and every other triangle. Each walk cast
 queries both with `InitialOverlapPolicy::Report` and takes the earlier contact.
 
 That split also keeps the stair-tread preference. A box falling onto a step
 edge meets the riser's top edge and the tread at the same landing time, and
 rounding can make either fraction the smaller. For a straight-down cast the
-editor treats fractions within 1e-12 of each other as one landing and uses
+controller treats fractions within 1e-12 of each other as one landing and uses
 the tread's support normal; the module's exact ordering is unchanged.
 
 A query that fails validation blocks the move like an initial overlap, so the

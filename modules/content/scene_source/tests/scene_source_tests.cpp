@@ -734,10 +734,4 @@ TEST_CASE("Scene source reads skin scattering distances", "[scene-source][skin]"
                                       "scattering_distance": [0, 0, 0]})"),
                    SceneSourceStatus::InvalidValue,
                    "scattering_distance requires the skin model");
-    // The deferred G-buffer stores a skin pixel's scattering distance where emission would go.
-    RequireFailure(ReplaceInValid(MODEL,
-                                  R"({"name": "Wall", "model": "skin", "base_color": [0.8, 0.5, 0.4],
-                                      "scattering_distance": [0, 0, 0], "emission": {"radiance": [1, 1, 1]}})"),
-                   SceneSourceStatus::InvalidValue,
-                   "skin does not emit");
 }

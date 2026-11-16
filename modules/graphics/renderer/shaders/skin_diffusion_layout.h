@@ -30,13 +30,14 @@
 #define LUDUS_SKIN_SURFACE_SLOPE_LIMIT 0.5
 
 // Bindings of the diffusion passes. The blur reads the lighting pass's diffuse target; the composite reads the
-// blurred diffuse and the remaining radiance.
+// blurred diffuse and the remaining radiance. Both read a skin pixel's profile from the G-buffer's base/metallic
+// target and the profile's scattering distance from the view's profile table.
 #define LUDUS_SKIN_SOURCE_BINDING 0
 #define LUDUS_SKIN_RADIANCE_BINDING 1
 #define LUDUS_SKIN_NORMAL_BINDING 2
-#define LUDUS_SKIN_COVERAGE_BINDING 3
+#define LUDUS_SKIN_BASE_BINDING 3
 #define LUDUS_SKIN_DEPTH_BINDING 4
 #define LUDUS_SKIN_VIEW_BINDING 5
 #define LUDUS_SKIN_KERNEL_BINDING 6
-#define LUDUS_SKIN_BLUR_BINDING_COUNT 6
-#define LUDUS_SKIN_COMPOSITE_BINDING_COUNT 7
+#define LUDUS_SKIN_PROFILE_BINDING 7
+#define LUDUS_SKIN_BINDING_COUNT 8

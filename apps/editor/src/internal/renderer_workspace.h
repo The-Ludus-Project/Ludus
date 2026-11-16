@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
 
 #include "internal/controller.h"
 #include "internal/external_code_editor.h"
@@ -363,6 +364,13 @@ public:
     {
         return mRenderWarning;
     }
+    /// Advisory naming a World feature the drawing graph does not render, such as an Atmosphere under a graph without
+    /// the clustered deferred programs (DescribeOmittedAtmosphere). The graph still draws the rest of the World; empty
+    /// when it renders every feature the World uses. Refreshed with GetRenderWarning; RenderProblemChanged reports it.
+    [[nodiscard]] LUDUS_INLINE const QString& GetOmittedFeatureWarning() const noexcept
+    {
+        return mOmittedFeatureWarning;
+    }
     /// The World edit that resolves GetRenderWarning, fitted around the viewport's current camera; Repair is None
     /// when the warning offers none. The caller confirms it with the user and applies it to the World as one
     /// undoable edit (WorldWorkspace::ApplyLuminaireRepair). GUI thread only.
@@ -643,6 +651,7 @@ private:
     QString mExtractionProblem;
     QString mActivationProblem;
     QString mRenderWarning;
+    QString mOmittedFeatureWarning;
     /// Whether mRenderWarning is the slice-sampling-luminaire coverage warning, which offers a repair.
     bool mIsLuminaireWarning = false;
     /// The World lighting check mRenderWarning reports when it is not the luminaire warning.
@@ -719,5 +728,7 @@ private:
     RenderGraphSource mPreviewSourceVersion = RenderGraphSource::Draft;
     foundation::math::Matrix4 mPreviewWorldToClip = foundation::math::Matrix4::Identity();
     foundation::float32 mPreviewExposureStops = 0;
+    graphics::renderer::DeferredLightingView mPreviewLightingView = graphics::renderer::DeferredLightingView::Final;
+    foundation::uint64 mPreviewLightingViewSourceId = 0;
 };
 } // namespace ludus::editor

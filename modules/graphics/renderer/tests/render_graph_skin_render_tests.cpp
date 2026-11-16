@@ -61,7 +61,10 @@ enum class LeftQuad : uint8
     BlackSkin,        ///< Skin of zero albedo beside the white skin: an albedo edge on one surface.
     BlackMetallic,    ///< A non-skin dielectric beside the skin: a material (profile) edge.
     DistantBlackSkin, ///< Black skin 0.3 m behind the white skin: a depth edge.
+    ShortBlackSkin,   ///< Black skin a tenth as far-scattering as the white skin: its own skin profile.
 };
+// Scale of the short-scattering black skin's distance relative to the white skin's.
+constexpr float32 SHORT_DISTANCE_SCALE = .1F;
 
 struct SkinScene final
 {
@@ -76,8 +79,8 @@ float32 GetChannel(const StaticArray<uint8, PIXEL_BYTES>& pixels, usize column, 
 
 // Draw the two quads through the clustered deferred default graph, the left one as `left` and the right one white
 // skin, both with the scattering distance times `distanceScale`, lit head-on by one directional light. With
-// shouldCheckRejection, then edit the skin to emit and then to be metallic: each edit is rejected and the drawn scene
-// stays published.
+// shouldCheckRejection, then edit the skin to emit, which is drawn, and to be metallic, which is rejected while the
+// drawn scene stays published.
 SkinScene RenderSkinScene(LeftQuad left, float32 distanceScale, bool shouldCheckRejection = false)
 {
     GraphGpuFixture fixture;
@@ -120,6 +123,11 @@ SkinScene RenderSkinScene(LeftQuad left, float32 distanceScale, bool shouldCheck
     if (left == LeftQuad::BlackMetallic)
     {
         materials[0].Scattering = {};
+    }
+    if (left == LeftQuad::ShortBlackSkin)
+    {
+        materials[0].Scattering.K = {
+            {distance.X * SHORT_DISTANCE_SCALE, distance.Y * SHORT_DISTANCE_SCALE, distance.Z * SHORT_DISTANCE_SCALE}};
     }
     materials[1].BaseColor = {WHITE, WHITE, WHITE};
     StaticArray<renderer::RenderGraphItem, QUAD_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
@@ -184,11 +192,11 @@ SkinScene RenderSkinScene(LeftQuad left, float32 distanceScale, bool shouldCheck
     scene.Allocation = fixture.Graph.GetAllocationReport();
     if (shouldCheckRejection == true)
     {
-        // The G-buffer stores skin's scattering distance where emission would go, and skin is a dielectric.
-        const uint64 drawable = fixture.Graph.GetDrawableSceneRevision();
+        // Skin may emit like any surface; the G-buffer keeps its profile in the metallic channel, since skin is a
+        // dielectric.
         materials[1].Emission = {1, 1, 1};
-        CHECK(update() != rhi::RasterStatus::Ready);
-        CHECK(fixture.Graph.GetDrawableSceneRevision() == drawable);
+        CHECK(update() == rhi::RasterStatus::Ready);
+        const uint64 drawable = fixture.Graph.GetDrawableSceneRevision();
         materials[1].Emission = {};
         materials[1].Metallic = .5F;
         CHECK(update() != rhi::RasterStatus::Ready);
@@ -246,4 +254,21 @@ TEST_CASE("Deferred skin diffusion stops at other materials and at depth discont
         RequireFlat(skin, control, RIGHT_EDGE_COLUMN);
         RequireFlat(skin, control, RIGHT_INTERIOR_COLUMN);
     }
+}
+
+TEST_CASE("Deferred skin spreads each material by its own scattering distance",
+          "[render-graph][clustered-deferred][skin][gpu]")
+{
+    // The black skin takes its own profile, a tenth of the white skin's distance, so far less light crosses into it
+    // than when both share the white skin's profile; the white side spreads by its own profile either way.
+    const SkinScene shared = RenderSkinScene(LeftQuad::BlackSkin, 1);
+    const SkinScene own = RenderSkinScene(LeftQuad::ShortBlackSkin, 1);
+    const SkinScene control = RenderSkinScene(LeftQuad::BlackSkin, 0);
+    const float32 sharedBleed =
+        GetChannel(shared.Pixels, LEFT_EDGE_COLUMN, RED) - GetChannel(control.Pixels, LEFT_EDGE_COLUMN, RED);
+    const float32 ownBleed =
+        GetChannel(own.Pixels, LEFT_EDGE_COLUMN, RED) - GetChannel(control.Pixels, LEFT_EDGE_COLUMN, RED);
+    CHECK(ownBleed < sharedBleed / 2);
+    RequireFlat(own, shared, RIGHT_EDGE_COLUMN);
+    RequireFlat(own, control, LEFT_INTERIOR_COLUMN);
 }
