@@ -190,6 +190,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Shared scene, material and lighting shader contract](architecture/shared-scene-shader-contract.md)
 - [Skeletal animation architecture](architecture/skeletal-animation.md)
 - [Smart pointer architecture](architecture/smart-pointers.md)
+- [Terrain foliage architecture](architecture/foliage.md)
 - [Terrain generation architecture](architecture/terrain-generation.md)
 - [Terrain systems architecture](architecture/terrain.md)
 - [Threading architecture](architecture/threading.md)
