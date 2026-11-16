@@ -2996,10 +2996,10 @@ TEST_CASE("The simple triangle-loop template keeps the nearest instance in eithe
 namespace
 {
 /// Bilinear radiance of a latitude/longitude sky image toward a unit world direction, with the texel addressing of
-/// TryEvaluateAtmosphereSky in scene_shader.slang (longitude wraps, latitude clamps).
-math::Vector3
-SampleSkyImage(const Array<math::Vector4>& pixels, uint32 width, uint32 height, math::Vector3 directionWorld)
+/// TryEvaluateAtmosphereSky in scene_shader.slang (longitude wraps, latitude clamps). The image is width texels wide.
+math::Vector3 SampleSkyImage(const Array<math::Vector4>& pixels, uint32 width, math::Vector3 directionWorld)
 {
+    const uint32 height = static_cast<uint32>(pixels.GetSize() / width);
     constexpr float32 TWO_PI = 2 * math::kPiF;
     float32 longitude = std::atan2(directionWorld.Z, directionWorld.X) / TWO_PI;
     longitude -= std::floor(longitude);
@@ -3111,8 +3111,7 @@ TEST_CASE("A ray template draws a World's Atmosphere sky through EvaluateEnviron
     REQUIRE(math::TryNormalize(math::Vector3{farWorld.X, farWorld.Y, farWorld.Z} / farWorld.W -
                                    math::Vector3{nearWorld.X, nearWorld.Y, nearWorld.Z} / nearWorld.W,
                                directionWorld) == math::MathStatus::Success);
-    const math::Vector3 expected =
-        SampleSkyImage(sky, LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH, LUDUS_ATMOSPHERE_SKY_TABLE_HEIGHT, directionWorld);
+    const math::Vector3 expected = SampleSkyImage(sky, LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH, directionWorld);
     REQUIRE(expected.Z > 0);
     for (const usize pixel : {GetPixel(0, 0), GetPixel(WIDTH / 2, HEIGHT / 2), GetPixel(WIDTH - 1, HEIGHT - 1)})
     {
