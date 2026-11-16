@@ -400,9 +400,9 @@ struct ShadowAtlasDescription final
     ludus::foundation::usize Count = 0;
 };
 /// Fit a stabilized directional light projection to finite receiver/caster bounds.
-/// Snaps XY center to the inner-resolution texel grid, pads one texel and uses conventional
-/// depth. Call with unjittered cascade bounds; no camera split policy is hidden here.
-/// Invalid/degenerate/nonrepresentable input preserves output. Allocation-free.
+/// Snaps the light-space XY center to the texel grid, widens collapsed axes in light space
+/// and leaves a texel of margin. Depth is conventional. Use unjittered bounds for a cascade.
+/// Invalid or nonrepresentable input preserves output. Allocation-free.
 [[nodiscard]] rhi::RasterStatus BuildDirectionalShadowMatrix(const ludus::foundation::math::Aabb3& bounds,
                                                              ludus::foundation::math::Vector3 direction,
                                                              ludus::foundation::uint32 resolution,
