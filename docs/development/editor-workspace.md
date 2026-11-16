@@ -2278,31 +2278,53 @@ Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
 Set **Dynamic Celestial → Celestial Preset** to **Transform** to use the entity's
 rotation, including rotation supplied by a game. Choose **Earth Sun** or
 **Earth Moon** to sample direction, colour, illuminance and apparent disk size
-from **Date & Time (UTC)** and the observer's coordinates. Earth Moon also
+from **Date & Time** and the observer's coordinates. Earth Moon also
 samples lunar phase using the Sun at that time. Open the calendar to pick a date or type into
 the date and time field. **Use Now** copies the current instant into the draft.
 The supported dates span approximately 1950–2050.
 
-A World has one Earth date, time and location. Every Earth Sun and Earth Moon
-light shows the same values, and the note above **Date & Time (UTC)** names the
+**Date & Time** shows the clock of the World's **Time Zone**, and its caption
+names the zone and its UTC offset at that instant, such as
+`Asia/Seoul, UTC+09:00`. A World that names no zone shows UTC. Choosing a
+different zone keeps the clock reading: 12:00 in Seoul becomes 12:00 in
+Toronto, so the chosen time of day stays put at the new place. The World still
+stores the instant in UTC. Zone names come from the IANA time zone database
+bundled with the editor; Qt converts them with the operating system's zone
+rules. A build without zone rules, such as a browser without time zone data,
+shows UTC and says that the zone's data is unavailable.
+
+A World has one Earth date, time, time zone and location. Every Earth Sun and Earth Moon
+light shows the same values, and the note above **Date & Time** names the
 other lights that share them. Editing them on any Earth light changes them for
 all Earth lights and the Atmosphere night sky in one undoable change. The first
 Earth preset in a World starts at the current UTC time; later Earth lights
 start at the World's existing values. The World root stores them once as
 `earth_observer`, in fractional UTC days since January 1, 2000 at 12:00 UTC,
-so existing Earth Time values open at the same instant. In a World saved
+so existing Earth Time values open at the same instant. Its optional
+`celestialTimeZone` holds the IANA zone identifier; an omitted zone means UTC. In a World saved
 before `earth_observer` existed, each Earth light keeps its saved values until
 an Earth light is next edited; the values that light showed then become the
 World's.
 
 Use **Choose Earth Location…** to search for a city, landmark, or address.
 Clicking **Search** sends the query to Photon, which uses OpenStreetMap data.
-Select a result to review its latitude and longitude. **Use my location**
+Select a result to review its latitude, longitude and time zone. **Use my location**
 requests the device's position once with permission. On desktop this action
 requires Qt Positioning and a system location provider. On the web it requires
 a secure browser context and location access. Choose **Use Coordinates** to
-copy the selected result into the inspector, then **Apply Changes** to apply
-the draft. Saved Worlds store the coordinates. Manual entry works offline and
+copy the selected result into the inspector and select its **Time Zone**,
+keeping the clock reading as described above, then **Apply Changes** to apply
+the draft. The editor finds the zone offline: it picks the zone whose principal
+city in the time zone database is nearest the place, among the zones of the
+place's country when the search result names one. Near a zone border inside
+one country, such as between US Mountain and Pacific time, check the zone and
+choose another from **Time Zone** if needed. Typing coordinates does not change
+the zone.
+
+The zone list is `zone.tab` from the [IANA time zone database](https://www.iana.org/time-zones)
+release 2026f, copied unchanged to `apps/editor/resources/time_zones/zone.tab`.
+Thanks to the time zone database contributors; the file is in the public
+domain. Replace it with a newer release's `zone.tab` to update the list. Saved Worlds store the coordinates. Manual entry works offline and
 when device location is unavailable. North latitude and east longitude are
 positive. A **Custom Orbit** light keeps its own observer coordinates. The
 World frame is +X east, +Y up, and −Z north.

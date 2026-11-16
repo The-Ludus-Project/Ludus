@@ -11,6 +11,7 @@
 #include "internal/world_celestial_light.h"
 #include "internal/world_earth_location.h"
 #include "internal/world_earth_time_field.h"
+#include "internal/world_earth_time_zone.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_probe_volume.h"
 
@@ -397,6 +398,7 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup,
     }
     QLineEdit* latitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LATITUDE)));
     QLineEdit* longitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LONGITUDE)));
+    QComboBox* timeZoneOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_TIME_ZONE)));
     if (latitudeOrNull != nullptr && longitudeOrNull != nullptr)
     {
         QPushButton* location = new QPushButton(QStringLiteral("Choose Earth Location…"), &inoutGroup);
@@ -406,14 +408,24 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup,
         inoutRows.getWidgetPosition(longitudeOrNull, &longitudeRow, &longitudeRole);
         inoutRows.insertRow(longitudeRow + 1, location);
         celestialRows.append({WorldCelestialFieldGroup::Earth, location});
-        QObject::connect(location, &QPushButton::clicked, location, [location, latitudeOrNull, longitudeOrNull]() {
-            OpenWorldEarthLocation(*location, *latitudeOrNull, *longitudeOrNull);
-        });
+        QObject::connect(location,
+                         &QPushButton::clicked,
+                         location,
+                         [location, latitudeOrNull, longitudeOrNull, timeZoneOrNull]() {
+                             OpenWorldEarthLocation(*location, *latitudeOrNull, *longitudeOrNull, timeZoneOrNull);
+                         });
     }
     QCheckBox* manualOrNull =
         qobject_cast<QCheckBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_MANUAL_PHOTOMETRY)));
     WorldEarthTimeField* timeOrNull =
         qobject_cast<WorldEarthTimeField*>(fields.value(FieldKey(component, WORLD_CELESTIAL_TIME)));
+    if (timeOrNull != nullptr && timeZoneOrNull != nullptr)
+    {
+        // A different zone keeps the clock reading, so a chosen time of day stays put at the new place.
+        QObject::connect(timeZoneOrNull, &QComboBox::currentIndexChanged, timeOrNull, [timeOrNull, timeZoneOrNull]() {
+            timeOrNull->SetTimeZoneKeepingClock(timeZoneOrNull->currentData().toString());
+        });
+    }
     if (manualOrNull == nullptr || timeOrNull == nullptr || latitudeOrNull == nullptr || longitudeOrNull == nullptr)
     {
         return;
@@ -3482,14 +3494,23 @@ void WorldWorkspace::RenderInspector()
             QWidget* field = nullptr;
             if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light") && pid == WORLD_CELESTIAL_TIME)
             {
-                WorldEarthTimeField* time = new WorldEarthTimeField(current.toDouble(), *group);
+                const QString timeZone =
+                    values.value(WORLD_CELESTIAL_TIME_ZONE).toString(QString(WORLD_EARTH_UTC_TIME_ZONE));
+                WorldEarthTimeField* time = new WorldEarthTimeField(current.toDouble(), timeZone, *group);
                 time->setObjectName(QStringLiteral("worldField:") + FieldKey(cid, pid));
                 connect(time, &WorldEarthTimeField::Edited, this, [this]() { markInspectorPending(); });
                 Fields_.insert(FieldKey(cid, pid), time);
                 rows->addRow(time);
                 continue;
             }
-            if (type == QStringLiteral("boolean"))
+            if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light") &&
+                pid == WORLD_CELESTIAL_TIME_ZONE)
+            {
+                QComboBox* timeZone = MakeEarthTimeZoneField(current.toString(), *group);
+                connect(timeZone, &QComboBox::currentIndexChanged, this, [this]() { markInspectorPending(); });
+                field = timeZone;
+            }
+            else if (type == QStringLiteral("boolean"))
             {
                 auto* check = new QCheckBox(group);
                 check->setChecked(current.toBool());
@@ -4369,8 +4390,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
         {
             // Only an Earth light writes the shared observer; other lights keep their own stored values.
             const QJsonObject stored = c.value().toObject();
-            for (const QLatin1StringView property :
-                 {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+            for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
             {
                 if (IsWorldCustomOrbitLight(values) == true && property != WORLD_CELESTIAL_TIME)
                 {
