@@ -2109,6 +2109,7 @@ void WorldWorkspace::addMaterialGroup()
     const bool canEditCoating = materialOrNull != nullptr &&
                                 materialOrNull->Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse;
     const bool isHairCardSlot = scene.contains(QStringLiteral("hair_card"));
+    const bool isSkinSlot = scene.contains(QStringLiteral("skin"));
     QVector<MaterialPropertyRow> properties;
     if (DescribeSceneObjectMaterial(presented, Selected_, properties) == false)
     {
@@ -2120,7 +2121,8 @@ void WorldWorkspace::addMaterialGroup()
     for (const MaterialPropertyRow& property : properties)
     {
         if ((canEditCoating == true && property.IsCoatingParameter == true) ||
-            (isHairCardSlot == true && property.IsHairCardParameter == true))
+            (isHairCardSlot == true && property.IsHairCardParameter == true) ||
+            (isSkinSlot == true && property.IsSkinParameter == true))
         {
             continue;
         }
@@ -2240,6 +2242,7 @@ void WorldWorkspace::addMaterialGroup()
         rows->addRow(restore);
     }
     addHairCardControls(*rows, materialOrNull, scene);
+    addSkinControls(*rows, materialOrNull, scene);
     addProjectBrdfControls(*rows, materialOrNull, scene);
     Inspector_->addWidget(section);
 }
@@ -2254,6 +2257,7 @@ void WorldWorkspace::addHairCardControls(QFormLayout& inoutRows,
     {
         // Any resolved surface can become a card; a project BRDF slot first returns to its inherited material.
         if (materialOrNull == nullptr || placement.contains(QStringLiteral("project_brdf")) == true ||
+            placement.contains(QStringLiteral("skin")) == true ||
             materialOrNull->Scattering.Model == MaterialModel::Unresolved ||
             materialOrNull->Scattering.Model == MaterialModel::MediumInterface ||
             materialOrNull->Scattering.Model == MaterialModel::HairCard)
@@ -2423,6 +2427,171 @@ void WorldWorkspace::showHairCardError(const QWidget* invalidOrNull, const QStri
                                                                  QStringLiteral("worldField:scene/hair_card/")) == true;
     labelOrNull->setText(isHairCardField == true ? error : QString());
     labelOrNull->setVisible(isHairCardField == true);
+}
+
+void WorldWorkspace::addSkinControls(QFormLayout& inoutRows,
+                                     const resources::SceneMaterial* materialOrNull,
+                                     const QJsonObject& placement)
+{
+    using content::scene_format::MaterialModel;
+    QWidget* group = inoutRows.parentWidget();
+    if (placement.contains(QStringLiteral("skin")) == false)
+    {
+        // Any resolved surface can become skin; a project BRDF or hair-card slot first returns to its inherited
+        // material.
+        if (materialOrNull == nullptr || placement.contains(QStringLiteral("project_brdf")) == true ||
+            placement.contains(QStringLiteral("hair_card")) == true ||
+            materialOrNull->Scattering.Model == MaterialModel::Unresolved ||
+            materialOrNull->Scattering.Model == MaterialModel::MediumInterface ||
+            materialOrNull->Scattering.Model == MaterialModel::HairCard)
+        {
+            return;
+        }
+        QPushButton* assign = new QPushButton(QStringLiteral("Make Skin"), group);
+        assign->setObjectName(QStringLiteral("worldAssignSkin"));
+        assign->setToolTip(
+            QStringLiteral("Shade this slot as skin, whose diffuse light spreads under the surface over a per-channel "
+                           "scattering distance. Its base colour, roughness, emission and textures are kept; "
+                           "skin is not metallic."));
+        connect(assign, &QPushButton::clicked, this, [this]() { assignSkin(true); });
+        inoutRows.addRow(assign);
+        return;
+    }
+    const QJsonArray distance =
+        placement.value(QStringLiteral("skin")).toObject().value(QString::fromLatin1(SKIN_DISTANCE_KEY)).toArray();
+    QLabel* help = new QLabel(QStringLiteral("This slot is skin. Light spreads under its surface over each colour's "
+                                             "scattering distance, so model the object at real scale; human skin "
+                                             "spreads red furthest, a few millimetres. The default render graph "
+                                             "shows the spread. Apply Changes updates the viewport."),
+                              group);
+    help->setWordWrap(true);
+    inoutRows.addRow(help);
+    for (const SkinDistanceField& field : SKIN_DISTANCE_FIELDS)
+    {
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input, distance.at(static_cast<qsizetype>(field.Channel)).toDouble() * MILLIMETRES_PER_METRE);
+        const QString fieldKey = QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key);
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, QString::fromUtf8(field.Label), *input);
+    }
+    QLabel* error = new QLabel(group);
+    error->setObjectName(QStringLiteral("worldSkinError"));
+    error->setTextFormat(Qt::PlainText);
+    error->setWordWrap(true);
+    error->setVisible(false);
+    inoutRows.addRow(error);
+    QPushButton* restore = new QPushButton(QStringLiteral("Use Inherited Material"), group);
+    restore->setObjectName(QStringLiteral("worldRestoreSkin"));
+    connect(restore, &QPushButton::clicked, this, [this]() { assignSkin(false); });
+    inoutRows.addRow(restore);
+}
+
+void WorldWorkspace::assignSkin(bool isAssigned)
+{
+    if (Pending_ == true || SceneBusy() == true)
+    {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+    if (isAssigned == true && scene.contains(QStringLiteral("coating")) == true)
+    {
+        QMessageBox confirmation(QMessageBox::Question,
+                                 QStringLiteral("Make skin"),
+                                 QStringLiteral("Replace this slot's coating with skin?"),
+                                 QMessageBox::Cancel,
+                                 this);
+        confirmation.setInformativeText(
+            QStringLiteral("The slot's own coating instance is removed. Undo restores it."));
+        QPushButton* replace = confirmation.addButton(QStringLiteral("Replace Coating"), QMessageBox::AcceptRole);
+        replace->setObjectName(QStringLiteral("worldConfirmSkin"));
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.exec();
+        if (confirmation.clickedButton() != replace)
+        {
+            Changed(QStringLiteral("The slot keeps its coating."));
+            return;
+        }
+        scene.remove(QStringLiteral("coating"));
+    }
+    if (isAssigned == true)
+    {
+        scene.insert(QStringLiteral("skin"),
+                     MakeDefaultSkin(GetSceneObjectMaterialOrNull(Scene_->PreviewScene(), Selected_)));
+    }
+    else
+    {
+        scene.remove(QStringLiteral("skin"));
+    }
+    QString error;
+    if (Document_.Edit(Selected_,
+                       entity.value(QStringLiteral("components")).toObject(),
+                       entity.value(QStringLiteral("name")).toString(),
+                       error,
+                       &scene,
+                       isAssigned == true ? "Make Skin" : "Restore Material") == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(isAssigned == true ? QStringLiteral("Skin assigned to this slot. Undo is available.")
+                               : QStringLiteral("Inherited material restored. Undo is available."));
+}
+
+bool WorldWorkspace::readSkinFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
+{
+    if (inoutScene.contains(QStringLiteral("skin")) == false)
+    {
+        return true;
+    }
+    QJsonObject skin = inoutScene.value(QStringLiteral("skin")).toObject();
+    QJsonArray distance = skin.value(QString::fromLatin1(SKIN_DISTANCE_KEY)).toArray();
+    bool hasChanged = false;
+    for (const SkinDistanceField& field : SKIN_DISTANCE_FIELDS)
+    {
+        QLineEdit* fieldOrNull =
+            qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key)));
+        if (fieldOrNull == nullptr)
+        {
+            continue;
+        }
+        QJsonValue millimetres;
+        bool hasFieldChanged = false;
+        if (ReadMaterialNumberInput(field.MakeNumberProperty(), *fieldOrNull, millimetres, hasFieldChanged, outError) ==
+            false)
+        {
+            outInvalidOrNull = fieldOrNull;
+            return false;
+        }
+        // An unchanged field keeps the stored metres exactly.
+        if (hasFieldChanged == true)
+        {
+            distance.replace(static_cast<qsizetype>(field.Channel), millimetres.toDouble() / MILLIMETRES_PER_METRE);
+            hasChanged = true;
+        }
+    }
+    if (hasChanged == true)
+    {
+        skin.insert(QString::fromLatin1(SKIN_DISTANCE_KEY), distance);
+        inoutScene.insert(QStringLiteral("skin"), skin);
+    }
+    return true;
+}
+
+void WorldWorkspace::showSkinError(const QWidget* invalidOrNull, const QString& error)
+{
+    QLabel* labelOrNull = findChild<QLabel*>(QStringLiteral("worldSkinError"));
+    if (labelOrNull == nullptr)
+    {
+        return;
+    }
+    const bool isSkinField =
+        invalidOrNull != nullptr && invalidOrNull->objectName().startsWith(QStringLiteral("worldField:scene/skin/"));
+    labelOrNull->setText(isSkinField == true ? error : QString());
+    labelOrNull->setVisible(isSkinField == true);
 }
 
 void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
@@ -4267,7 +4436,8 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
     }
     if (shouldReadMaterial == true && (readCoatingFields(scene, outError, outInvalidOrNull) == false ||
                                        readProjectBrdfRoughness(scene, outError, outInvalidOrNull) == false ||
-                                       readHairCardFields(scene, outError, outInvalidOrNull) == false))
+                                       readHairCardFields(scene, outError, outInvalidOrNull) == false ||
+                                       readSkinFields(scene, outError, outInvalidOrNull) == false))
     {
         return false;
     }
@@ -4451,10 +4621,12 @@ bool WorldWorkspace::Apply()
             invalid->setFocus();
         }
         showHairCardError(invalid, error);
+        showSkinError(invalid, error);
         Changed(error);
         return false;
     }
     showHairCardError(nullptr, {});
+    showSkinError(nullptr, {});
     const QJsonObject previousComponents = Document_.Entity(Selected_).value(QStringLiteral("components")).toObject();
     const QJsonObject appliedComponents = candidate.Entity(Selected_).value(QStringLiteral("components")).toObject();
     const QString probeComponent = GetGiProbeVolumeComponentId();

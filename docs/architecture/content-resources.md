@@ -629,6 +629,14 @@ material. Slots with equal controls share a record. Validation rejects a card
 combined with a coating or project BRDF, out-of-range controls, and a cutoff on an
 unmasked material, each with a message that names the repair.
 
+A slot can instead carry a `skin` object holding exactly a
+[`scattering_distance`](scene-source-format.md#skin): three linear RGB metres in
+[0, 0.1]. Assembly writes it as a LUSCN v14 `Skin` record with zero metallic,
+keeping the inherited base colour, roughness, emission and textures. The inherited
+material keeps its own metallic for slots that still use it. Equal distances share a record. Validation rejects
+skin combined with a coating, a project BRDF or a hair card, and out-of-range or
+missing distances, each with a message that names the repair.
+
 Version 7 keeps all version 6 records and appends a `MaterialExtensionV7` after
 **each** material. Its width is derived from the explicit wire fields in
 `ludus/content/scene_format/luscn.h`; never serialize host padding. The extension
