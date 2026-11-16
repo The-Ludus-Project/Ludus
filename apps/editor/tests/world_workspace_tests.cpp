@@ -5380,6 +5380,202 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
     reopened.StopPreview();
 }
 
+TEST_CASE("World document validates skin slots and writes them to the level", "[editor][world][skin]")
+{
+    QTemporaryDir directory;
+    static_cast<void>(Fixture(directory));
+    const QString external = directory.filePath(QStringLiteral("external"));
+    QString error;
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external) == true);
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       error) == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(directory.filePath(QStringLiteral("scenes/room.lulevel")))).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString id =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    const QJsonObject entity = document.Entity(id);
+    const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    const QString name = entity.value(QStringLiteral("name")).toString();
+    const QJsonObject placement = entity.value(QStringLiteral("scene")).toObject();
+    const auto edit = [&](const QJsonObject& skin, QString& outError, const QJsonObject* hairOrNull = nullptr) {
+        QJsonObject scene = placement;
+        scene.insert(QStringLiteral("skin"), skin);
+        if (hairOrNull != nullptr)
+        {
+            scene.insert(QStringLiteral("hair_card"), *hairOrNull);
+        }
+        return document.Edit(id, components, name, outError, &scene, "Edit Skin");
+    };
+    const auto makeSkin = [](const QJsonArray& distance) {
+        return QJsonObject{{QString::fromLatin1(SKIN_DISTANCE_KEY), distance}};
+    };
+    CHECK(edit(makeSkin({0.2, 0, 0}), error) == false);
+    CHECK(error.contains(QStringLiteral("Scattering red (mm)")) == true);
+    CHECK(error.contains(QStringLiteral("0 to 100")) == true);
+    CHECK(edit(makeSkin({0, 0, -0.001}), error) == false);
+    CHECK(error.contains(QStringLiteral("Scattering blue (mm)")) == true);
+    CHECK(edit(makeSkin({0.001, 0.001}), error) == false);
+    CHECK(error.contains(QStringLiteral("red, green and blue scattering distance")) == true);
+    const QJsonObject hair = MakeDefaultHairCard();
+    CHECK(edit(MakeDefaultSkin(nullptr), error, &hair) == false);
+    CHECK(error.contains(QStringLiteral("cannot also hold")) == true);
+    CHECK(document.ScenePlacement(document.Entity(id)).contains(QStringLiteral("skin")) == false);
+
+    const QJsonObject skin = makeSkin({0.004, 0.0015, 0.0007});
+    REQUIRE(edit(skin, error) == true);
+    bool isWritten = false;
+    for (const QJsonValue value : document.SceneLevel().value(QStringLiteral("objects")).toArray())
+    {
+        const QJsonObject object = value.toObject();
+        if (object.value(QStringLiteral("id")).toString() == id)
+        {
+            CHECK(object.value(QStringLiteral("skin")).toObject() == skin);
+            isWritten = true;
+        }
+    }
+    CHECK(isWritten == true);
+}
+
+TEST_CASE("World makes the engine's bust skin and keeps its edits across save, reopen and reimport",
+          "[editor][world][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    using ludus::foundation::float32;
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    static_cast<void>(OpenPlacementWorld(directory, workspace));
+    WaitForValidatedScene(workspace);
+    const QString path = workspace.Path();
+    // The engine's Infinite head scan: one "Skin" slot that imports as metallic-roughness.
+    const QDir bust(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("tests/scenes/characters/infinite-head")));
+    const QDir copy(directory.filePath(QStringLiteral("infinite-head")));
+    REQUIRE(QDir().mkpath(copy.path()) == true);
+    for (const QString& file : bust.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(bust.filePath(file), copy.filePath(file)) == true);
+    }
+    const QString source = copy.filePath(QStringLiteral("infinite-head.gltf"));
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    QString head;
+    for (const PreviewObject& object : GetLevel(workspace).PreviewScene().Objects)
+    {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(workspace).PreviewScene(), object.Id);
+        REQUIRE(materialOrNull != nullptr);
+        if (materialOrNull->Name.View() == "Skin")
+        {
+            head = object.Id;
+        }
+    }
+    REQUIRE(head.isEmpty() == false);
+    const auto getMaterial = [&head](const WorldWorkspace& view) -> const ludus::resources::SceneMaterial& {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(view).PreviewScene(), head);
+        REQUIRE(materialOrNull != nullptr);
+        return *materialOrNull;
+    };
+    const auto checkSkin = [&](const WorldWorkspace& view, float32 red, float32 green, float32 blue) {
+        const ludus::resources::SceneMaterial& material = getMaterial(view);
+        REQUIRE(material.Scattering.Model == format::MaterialModel::Skin);
+        CHECK(material.Metallic == 0);
+        CHECK(material.Scattering.K[0] == red);
+        CHECK(material.Scattering.K[1] == green);
+        CHECK(material.Scattering.K[2] == blue);
+        // The scan's colour and normal maps are kept.
+        CHECK(material.Texture != format::NO_TEXTURE);
+        CHECK(material.SurfaceTexture != format::NO_TEXTURE);
+    };
+    CHECK(getMaterial(workspace).Scattering.Model == format::MaterialModel::MetallicRoughness);
+
+    // Make Skin starts from human skin's diffuse mean free path, in metres.
+    REQUIRE(workspace.SelectEntity(head) == true);
+    QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin"));
+    REQUIRE(assignOrNull != nullptr);
+    REQUIRE(assignOrNull->isEnabled() == true);
+    assignOrNull->click();
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.00367F, 0.00137F, 0.00068F);
+    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin")) == nullptr);
+    // A skin slot is not offered as a hair card.
+    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard")) == nullptr);
+
+    // The fields edit millimetres; an unchanged field keeps its stored metres.
+    const QString redField = QStringLiteral("scene/skin/scattering_red_mm");
+    CHECK(Field(workspace, redField)->text() == QStringLiteral("3.67"));
+    Type(Field(workspace, redField), QStringLiteral("8"));
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+
+    // An out-of-range distance is rejected beside the field, and the viewport keeps the last applied skin.
+    Type(Field(workspace, redField), QStringLiteral("200"));
+    CHECK(workspace.Apply() == false);
+    QLabel* errorOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldSkinError"));
+    REQUIRE(errorOrNull != nullptr);
+    CHECK(errorOrNull->isHidden() == false);
+    CHECK(errorOrNull->text().contains(QStringLiteral("Scattering red (mm)")) == true);
+    CHECK(errorOrNull->text().contains(QStringLiteral("0 to 100")) == true);
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+    Type(Field(workspace, redField), QStringLiteral("5"));
+    REQUIRE(workspace.Apply() == true);
+    CHECK(errorOrNull->isHidden() == true);
+    CHECK(errorOrNull->text().isEmpty() == true);
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.005F, 0.00137F, 0.00068F);
+
+    // Undo and redo the distance edit.
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+    REQUIRE(workspace.CanRedo() == true);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.005F, 0.00137F, 0.00068F);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    workspace.StopPreview();
+    workspace.hide();
+
+    // Save, reopen and reimport keep the slot's skin and its edits.
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    REQUIRE(reopened.ImportScene(source) == true);
+    WaitForValidatedScene(reopened);
+    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    REQUIRE(reopened.SelectEntity(head) == true);
+    CHECK(Field(reopened, redField)->text() == QStringLiteral("5"));
+
+    // Use Inherited Material restores the imported material in one undoable edit.
+    QPushButton* restoreOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreSkin"));
+    REQUIRE(restoreOrNull != nullptr);
+    restoreOrNull->click();
+    WaitForValidatedScene(reopened);
+    CHECK(getMaterial(reopened).Scattering.Model == format::MaterialModel::MetallicRoughness);
+    reopened.Undo();
+    WaitForValidatedScene(reopened);
+    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    reopened.StopPreview();
+}
+
 TEST_CASE("World imports, inspects and maps closure programs across save, reopen and reimport",
           "[editor][world][program]")
 {

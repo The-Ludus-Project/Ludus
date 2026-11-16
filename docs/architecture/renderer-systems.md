@@ -1773,8 +1773,10 @@ without eyes or hair, so bleed tests add their own eye and hair geometry.
   skin profile boundaries, and preserve specular detail. Expose base colour,
   roughness and RGB scattering distances in world units. Compare against
   ordinary PBR on the bust and measure GPU time and transient memory.
-  Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14
-  and shades as its metallic-roughness surface; the diffusion filter is next.
+  Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14,
+  and the clustered deferred profile spreads its diffuse lighting
+  ([raster skin diffusion](#raster-skin-diffusion)), and World slots become skin
+  in the editor. The bust measurements remain.
   [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
   [Real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)
 - **Reference skin.** Use the normalized diffusion profile in Per H.
@@ -1860,6 +1862,104 @@ Still open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
 - The matched-cutoff and mismatched-cutoff coverage comparison across raster
   passes and ray queries.
 - GPU time and overdraw measurements against an ordinary masked material.
+
+#### Raster skin diffusion
+
+A `Skin` material (`content::scene_format::MaterialModel::Skin`, LUSCN v14)
+stores a linear RGB scattering distance in metres in `MaterialScattering::K`.
+Its record keeps zero metallic, and base colour, roughness, emission and textures
+keep their usual meaning. Author it in a
+[scene source](scene-source-format.md#skin) or from code
+(`LitMaterialDescription::Scattering`, `SceneShaderMaterial::Scattering`).
+
+The renderer gives each distinct nonzero scattering distance of its live skin
+materials a profile slot, at most `DEFERRED_MAX_SKIN_PROFILES` (64) at once;
+creating a material with another distance when every slot is taken returns
+`CapacityExceeded`. A skin pixel stores −(its one-based slot) in the G-buffer's
+metallic channel, which a dielectric does not need, and the diffusion passes read
+the slot's distance from a per-view profile table. The G-buffer layout and size
+are unchanged, and emission, baked probe and chart terms and coverage keep their
+meaning. A view whose opaque packets draw skin with a nonzero distance runs three
+passes in place of the single lighting resolve, for its final colour; lighting
+views (`DeferredLightingView`) keep the ordinary resolve:
+
+1. **Deferred/Lighting.** A built-in variant of the resolve
+   (`renderer_skin_deferred.slang`, or `renderer_atmosphere_skin_deferred.slang`
+   with the atmosphere) writes two RGBA16F targets. One holds the linear
+   radiance without skin diffuse; the other holds the skin pixels' diffuse
+   radiance from the environment, analytic lights and mesh lights. With an
+   atmosphere, the diffuse part takes the view segment's transmittance and the
+   inscattered light is added once, to the first target.
+2. **Deferred/SkinBlur.** A horizontal convolution of the skin diffuse.
+3. **Deferred/SkinComposite.** The vertical convolution, added to the first
+   target, then the graph's ToneMap into the RGBA8 output with the sky, as the
+   ordinary resolve writes it.
+
+Views without skin, or with only zero distances, keep the ordinary resolve.
+
+The kernel adapts Jorge Jimenez, Károly Zsolnai, Adrian Jarabo, Christian
+Freude, Thomas Auzinger, Xian-Chun Wu, Javier von der Pahlen, Michael Wimmer
+and Diego Gutierrez, *Separable Subsurface Scattering* (Computer Graphics
+Forum 34(6), 2015). Section 4, equations 4 and 5, give the pre-integrated
+kernel: the 1D marginal of a radially symmetric profile, applied as one
+horizontal and one vertical convolution of the diffuse layer only. The profile
+is Brent Burley's normalized diffusion as given by Per H. Christensen,
+*An Approximate Reflectance Profile for Efficient Subsurface Scattering*
+(SIGGRAPH 2015 Talks, section 2): `R(r) = (e^(−r/ℓ) + e^(−r/(3ℓ)))/(8πℓr)`,
+with each channel's scattering distance as `ℓ`. Thanks to the authors.
+Following section 6 of the paper, the seven taps are shared by the three
+channels and placed by the dominant channel. Its 1D kernel is cut into a centre
+bin and three pairs of side bins of equal energy, truncated at 99 percent, with
+each side tap at its bin's energy median, about 0.31, 1.04 and 3.15 scattering
+distances out. Each channel weights a tap by its own profile's energy in the
+tap's bin, read from a 32-entry strip-energy table. A tap's world offset becomes
+pixels through the footprint of one pixel at the centre's depth.
+
+A tap counts only when it is skin and lies within half its offset of the
+centre's tangent plane. The weights of the taps that count are renormalized.
+Flat lighting is therefore unchanged, and other materials and surfaces at
+another depth neither bleed in nor darken the edge. Departures from the paper:
+
+- The filtering axes are not rotated per pixel (the paper's jittering), so
+  small bright features can show the separable kernel's cross.
+- The footprint is screen-aligned rather than on the surface's tangent plane.
+- The filtered diffuse radiance already carries the base colour, so texture
+  detail spreads with the light.
+- There is no transmission through thin features.
+- Emission and the baked probe and chart irradiance that the G-buffer stores with
+  it are not spread; only live sky, analytic-light and mesh-light diffuse is.
+
+The skin targets are three RGBA16F attachments with private depth at the
+G-buffer's extent, 36 bytes per pixel. They are allocated on a view's first skin
+draw and reported apart from the G-buffer in
+`RenderGraphAllocationReport::DeferredSkinAllocations` and
+`DeferredSkinAttachmentBytes`. `src/internal/skin_diffusion.h` builds the kernel
+on the CPU and mirrors the shader's weights. The `[skin]` tests in
+`ludus_reference_material_tests` check the strip energy against the Bessel-K₀
+form of the marginal, the bins and the per-channel weights. The `[skin][gpu]`
+tests in `ludus_renderer_render_tests` render quads through the default graph
+and compare each with the same scene at zero distance. They check that light
+crosses an albedo edge with red reaching furthest, that flat lighting is
+conserved, that spreading stops at a non-skin material and at a depth edge, that
+each material spreads by its own profile, that the skin targets appear only with
+skin, and that emissive skin draws while metallic skin is rejected.
+
+Other paths make declared approximations:
+
+- **Forward raster profiles.** They shade skin as its metallic/roughness surface.
+- **Ray previews and reference captures.** They receive the metallic/roughness
+  dielectric lobes (`GetSurfaceReflectionScattering`).
+- **Builds without the renderer's built-in shaders.** They also keep the
+  ordinary resolve for skin (`LUDUS_RENDERER_SKIN_SHADERS`).
+
+The material layout gains `SkinScattering` after the hair-card words, so
+render-graph packages cooked before it are rejected until recooked, as for hair
+cards. World slots become skin in the editor, which edits the scattering distance with
+the World history. See
+[make a slot skin](../development/editor-workspace.md#make-a-slot-skin).
+Still open in [#1372](https://github.com/The-Ludus-Project/Ludus/issues/1372):
+the bust's GPU time and transient-memory measurements, and the comparison with
+ordinary PBR.
 
 Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
 An artist must be able to import the bust, assign and edit hair and skin

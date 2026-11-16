@@ -15,7 +15,10 @@ GBufferOutput PackDeferredMaterial(in SurfaceSample surface)
 {
     GBufferOutput output;
     output.NormalRoughnessWorld = float4(surface.NormalWorld, surface.Roughness);
-    output.BaseMetallic = float4(surface.BaseColor.rgb, surface.Metallic);
+    // Skin is a dielectric, so its metallic channel holds its skin profile instead: -(one-based slot)
+    // (DEFERRED_MAX_SKIN_PROFILES). Emission and coverage keep their usual meaning.
+    output.BaseMetallic =
+        float4(surface.BaseColor.rgb, surface.SkinProfile > .5 ? -surface.SkinProfile : surface.Metallic);
     output.EmissionCoverage = float4(min(surface.Emission, float3(DEFERRED_MAX_HALF)), float(DEFERRED_COVERED));
     return output;
 }

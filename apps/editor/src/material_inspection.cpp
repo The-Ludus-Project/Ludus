@@ -16,6 +16,7 @@
 #include <limits>
 #include <string_view>
 
+#include <QJsonArray>
 #include <QStringList>
 
 namespace ludus::editor
@@ -281,6 +282,30 @@ QJsonObject MakeDefaultHairCard()
     return hair;
 }
 
+QJsonObject SkinDistanceField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromUtf8(Label)},
+            {QStringLiteral("min"), 0},
+            {QStringLiteral("max"),
+             static_cast<foundation::float64>(format::MAX_SKIN_SCATTERING_DISTANCE) * MILLIMETRES_PER_METRE}};
+}
+
+QJsonObject MakeDefaultSkin(const resources::SceneMaterial* materialOrNull)
+{
+    // Human skin's diffuse mean free path in metres (see the declaration for its source).
+    constexpr foundation::StaticArray<foundation::float64, format::MATERIAL_RGB_CHANNELS> HUMAN_SKIN_DISTANCE{
+        {0.00367, 0.00137, 0.00068}};
+    const bool isSkin = materialOrNull != nullptr && materialOrNull->Scattering.Model == format::MaterialModel::Skin;
+    QJsonArray distance;
+    for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+    {
+        distance.append(isSkin == true ? static_cast<foundation::float64>(materialOrNull->Scattering.K[channel])
+                                       : HUMAN_SKIN_DISTANCE[channel]);
+    }
+    return {{QString::fromLatin1(SKIN_DISTANCE_KEY), distance}};
+}
+
 QJsonObject CoatingField::MakeNumberProperty() const
 {
     return {{QStringLiteral("type"), QStringLiteral("number")},
@@ -431,6 +456,7 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     {
         MaterialPropertyRow distance{QStringLiteral("Scattering (m)"), FormatRgb(scattering.K)};
         distance.Detail = QStringLiteral("Subsurface scattering distance in metres, linear RGB");
+        distance.IsSkinParameter = true;
         rows.append(distance);
     }
     rows.append(MakeTextureRow(QStringLiteral("Surface map"),

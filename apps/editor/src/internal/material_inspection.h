@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <QColor>
 #include <QImage>
@@ -96,6 +97,37 @@ inline constexpr const char* HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
 /// A "hair_card" slot object with every strand control at its scene-format default and no cutoff override.
 [[nodiscard]] QJsonObject MakeDefaultHairCard();
 
+/// Key of a World skin slot's scattering distance in its "skin" object: linear RGB metres, as in the scene source
+/// format.
+inline constexpr const char* SKIN_DISTANCE_KEY = "scattering_distance";
+/// The inspector edits skin scattering distances in millimetres; slots store metres.
+inline constexpr foundation::float64 MILLIMETRES_PER_METRE = 1000;
+
+/// One channel of a World skin slot's scattering distance, edited in millimetres.
+struct SkinDistanceField final
+{
+    const char* Key;   ///< Field key below "scene/skin/".
+    const char* Label; ///< Short inspector label.
+    foundation::usize Channel;
+
+    /// Number property in millimetres, bounded by content::scene_format::MAX_SKIN_SCATTERING_DISTANCE.
+    [[nodiscard]] QJsonObject MakeNumberProperty() const;
+};
+
+/// The red, green and blue scattering-distance fields of a World skin slot, in that order.
+inline const foundation::StaticArray<SkinDistanceField, content::scene_format::MATERIAL_RGB_CHANNELS>
+    SKIN_DISTANCE_FIELDS{{
+        {"scattering_red_mm", "Scattering red (mm)", 0},
+        {"scattering_green_mm", "Scattering green (mm)", 1},
+        {"scattering_blue_mm", "Scattering blue (mm)", 2},
+    }};
+
+/// A "skin" slot object. A material that is already skin keeps its scattering distance; any other starts from human
+/// skin's diffuse mean free path, (3.67, 1.37, 0.68) mm. Thanks to Henrik Wann Jensen, Stephen R. Marschner, Marc
+/// Levoy and Pat Hanrahan, "A Practical Model for Subsurface Light Transport", SIGGRAPH 2001, whose measured skin1
+/// coefficients give it as 1 / sqrt(3 sigma_a sigma_t').
+[[nodiscard]] QJsonObject MakeDefaultSkin(const resources::SceneMaterial* materialOrNull);
+
 /// Borrow the resolved material for as long as the scene definition is retained.
 [[nodiscard]] const resources::SceneMaterial* GetSceneObjectMaterialOrNull(const RenderScene& scene,
                                                                            const QString& objectId);
@@ -115,6 +147,8 @@ struct MaterialPropertyRow final
     QString Detail{};
     /// Editable separately in a World hair-card slot.
     bool IsHairCardParameter = false;
+    /// Editable separately in a World skin slot.
+    bool IsSkinParameter = false;
 };
 
 /// Edge of a texture thumbnail in pixels; the longer side of the texture is scaled to it.
