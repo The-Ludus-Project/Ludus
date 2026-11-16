@@ -5812,13 +5812,17 @@ void RendererWorkspace::ServicePreview()
                 setProblem(mExtractionProblem, error);
             }
             view.RasterExposureStops = mPreviewSourceOrNull->GetRasterExposureStops();
+            const ViewportExposure exposure = mPreviewSourceOrNull->ResolveExposure();
+            view.Exposure = exposure.Mode;
+            view.ExposureValue100 = exposure.ExposureValue100;
             view.ShouldShowWorkLight = shouldShowWorkLight;
             view.LightingView = mPreviewSourceOrNull->GetLightingView();
             view.LightingViewSourceId = mPreviewSourceOrNull->GetLightingViewSourceId();
             if (hasView == true &&
                 (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
                  AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
-                 view.RasterExposureStops != mPreviewExposureStops || view.LightingView != mPreviewLightingView ||
+                 view.RasterExposureStops != mPreviewExposureStops || view.Exposure != mPreviewExposureMode ||
+                 view.ExposureValue100 != mPreviewExposureValue100 || view.LightingView != mPreviewLightingView ||
                  view.ShouldShowWorkLight != mShouldShowPreviewWorkLight ||
                  view.LightingViewSourceId != mPreviewLightingViewSourceId))
             {
@@ -5852,6 +5856,8 @@ void RendererWorkspace::ServicePreview()
                     mPreviewSurfaceBake = surfaceBake;
                     mPreviewWorldToClip = view.WorldToClip;
                     mPreviewExposureStops = view.RasterExposureStops;
+                    mPreviewExposureMode = view.Exposure;
+                    mPreviewExposureValue100 = view.ExposureValue100;
                     mShouldShowPreviewWorkLight = view.ShouldShowWorkLight;
                     mPreviewLightingView = view.LightingView;
                     mPreviewLightingViewSourceId = view.LightingViewSourceId;

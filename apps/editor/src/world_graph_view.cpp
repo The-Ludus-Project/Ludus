@@ -13,6 +13,7 @@
 #include <ludus/graphics/renderer/renderer.hpp>
 
 #include <QAction>
+#include <QActionGroup>
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -256,6 +257,44 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
     exposureAction->setObjectName(QStringLiteral("viewportExposureAction"));
     QMenu* exposureMenu = new QMenu(parent);
     exposureAction->setMenu(exposureMenu);
+    // Base exposure: metered, a physical camera setting, or the graph's own multiplier.
+    QActionGroup* modes = new QActionGroup(exposureMenu);
+    // Each mode is a checkable action named for tests and automation, holding its mode as data.
+    const auto addMode = [&](ViewportExposureMode mode) {
+        const QString text = mode == ViewportExposureMode::Automatic ? QStringLiteral("Automatic")
+                             : mode == ViewportExposureMode::Manual  ? QStringLiteral("Physical camera")
+                                                                     : QStringLiteral("Graph exposure");
+        const QString name = mode == ViewportExposureMode::Automatic ? QStringLiteral("viewportExposureAutomatic")
+                             : mode == ViewportExposureMode::Manual  ? QStringLiteral("viewportExposureManual")
+                                                                     : QStringLiteral("viewportExposureGraph");
+        QAction* action = exposureMenu->addAction(text);
+        action->setObjectName(name);
+        action->setCheckable(true);
+        action->setData(static_cast<foundation::int32>(mode));
+        modes->addAction(action);
+        return action;
+    };
+    QAction* automatic = addMode(ViewportExposureMode::Automatic);
+    QAction* manual = addMode(ViewportExposureMode::Manual);
+    QAction* graphExposure = addMode(ViewportExposureMode::Graph);
+    automatic->setToolTip(QStringLiteral("Meter the World's Sun, sky, Moon and directional lights like an incident "
+                                         "light meter. Worlds without an Atmosphere use the graph's exposure."));
+    manual->setToolTip(QStringLiteral("Expose like a camera at ISO 100: 15 for clear sun, 12 for overcast, "
+                                      "about -3 under a full Moon."));
+    graphExposure->setToolTip(QStringLiteral("Use the graph's ToneMap multiplier, where one nit is near white."));
+    QDoubleSpinBox* exposureValue = new QDoubleSpinBox(exposureMenu);
+    exposureValue->setObjectName(QStringLiteral("viewportExposureValue100"));
+    exposureValue->setAccessibleName(QStringLiteral("Exposure value at ISO 100"));
+    exposureValue->setPrefix(QStringLiteral("EV100 "));
+    exposureValue->setDecimals(EXPOSURE_DECIMALS);
+    exposureValue->setRange(static_cast<foundation::float64>(graphics::renderer::MIN_EXPOSURE_VALUE_100),
+                            static_cast<foundation::float64>(graphics::renderer::MAX_EXPOSURE_VALUE_100));
+    exposureValue->setSingleStep(EXPOSURE_STEP_STOPS);
+    exposureValue->setKeyboardTracking(false);
+    QWidgetAction* exposureValueField = new QWidgetAction(exposureMenu);
+    exposureValueField->setDefaultWidget(exposureValue);
+    exposureMenu->addAction(exposureValueField);
+    exposureMenu->addSeparator();
     QDoubleSpinBox* exposure = new QDoubleSpinBox(exposureMenu);
     exposure->setObjectName(QStringLiteral("viewportExposureStops"));
     exposure->setAccessibleName(QStringLiteral("Exposure compensation in stops"));
@@ -269,29 +308,66 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
     QWidgetAction* exposureField = new QWidgetAction(exposureMenu);
     exposureField->setDefaultWidget(exposure);
     exposureMenu->addAction(exposureField);
-    QAction* reset = exposureMenu->addAction(QStringLiteral("Reset to graph exposure"));
+    QAction* reset = exposureMenu->addAction(QStringLiteral("Reset compensation"));
     reset->setObjectName(QStringLiteral("viewportResetExposure"));
+    connect(modes, &QActionGroup::triggered, &inoutSource, [&inoutSource](QAction* action) {
+        const ViewportExposureMode mode = static_cast<ViewportExposureMode>(action->data().toInt());
+        // Switching from a metered exposure to the physical camera starts from the metered value.
+        const ViewportExposure current = inoutSource.ResolveExposure();
+        if (mode == ViewportExposureMode::Manual && current.Mode == graphics::renderer::ExposureMode::Physical)
+        {
+            inoutSource.SetManualExposureValue100(current.ExposureValue100);
+        }
+        inoutSource.SetExposureMode(mode);
+    });
+    connect(exposureValue, &QDoubleSpinBox::valueChanged, &inoutSource, [&inoutSource](foundation::float64 value) {
+        // Typing a value chooses the physical camera it sets.
+        inoutSource.SetManualExposureValue100(static_cast<foundation::float32>(value));
+        inoutSource.SetExposureMode(ViewportExposureMode::Manual);
+    });
     connect(exposure, &QDoubleSpinBox::valueChanged, &inoutSource, [&inoutSource](foundation::float64 stops) {
         inoutSource.SetRasterExposureStops(static_cast<foundation::float32>(stops));
     });
     connect(reset, &QAction::triggered, &inoutSource, [&inoutSource]() { inoutSource.SetRasterExposureStops(0); });
-    const auto refreshExposure = [this, exposureAction, exposure, reset, &inoutSource]() {
-        // Final output and the lighting views, which keep the pass's ToneMap, take the exposure.
-        const bool isFinalOutput = mTargets->currentIndex() == 0 || mTargets->currentData(LIGHTING_VIEW_ROLE).isValid();
-        const bool canAdjust =
-            isFinalOutput == true && mPreview.CanAdjustRasterExposure() == true &&
-            (inoutSource.Scene().Objects.isEmpty() == false || inoutSource.Scene().Atmosphere.IsEnabled == true);
-        const foundation::float32 stops = inoutSource.GetRasterExposureStops();
-        exposureAction->setEnabled(canAdjust);
-        exposure->setEnabled(canAdjust);
-        exposureAction->setToolTip(
-            canAdjust == true ? QStringLiteral("Adjust this viewport in stops relative to the graph's exposure.")
-                              : QStringLiteral("Exposure needs Final output from a clustered deferred raster "
-                                               "graph with ToneMap enabled and a World with geometry or atmosphere."));
-        const QSignalBlocker blocker(exposure);
-        exposure->setValue(static_cast<foundation::float64>(stops));
-        reset->setEnabled(canAdjust == true && stops != 0);
-    };
+    const auto refreshExposure =
+        [this, exposureAction, exposure, exposureValue, reset, automatic, manual, graphExposure, &inoutSource]() {
+            // Final output and the lighting views, which keep the pass's ToneMap, take the exposure.
+            const bool isFinalOutput =
+                mTargets->currentIndex() == 0 || mTargets->currentData(LIGHTING_VIEW_ROLE).isValid();
+            const bool canAdjust =
+                isFinalOutput == true && mPreview.CanAdjustRasterExposure() == true &&
+                (inoutSource.Scene().Objects.isEmpty() == false || inoutSource.Scene().Atmosphere.IsEnabled == true);
+            const foundation::float32 stops = inoutSource.GetRasterExposureStops();
+            const ViewportExposureMode mode = inoutSource.GetExposureMode();
+            const ViewportExposure resolved = inoutSource.ResolveExposure();
+            const bool isPhysical = resolved.Mode == graphics::renderer::ExposureMode::Physical;
+            exposureAction->setEnabled(canAdjust);
+            exposure->setEnabled(canAdjust);
+            exposureValue->setEnabled(canAdjust);
+            exposureAction->setToolTip(
+                canAdjust == false
+                    ? QStringLiteral("Exposure needs Final output from a clustered deferred raster "
+                                     "graph with ToneMap enabled and a World with geometry or atmosphere.")
+                : isPhysical == true ? QStringLiteral("Exposed at EV100 %1, adjusted in stops.")
+                                           .arg(static_cast<foundation::float64>(resolved.ExposureValue100), 0, 'f', 1)
+                                     : QStringLiteral("Graph exposure, adjusted in stops."));
+            // Automatic shows what it metered, so switching to Physical camera keeps the picture.
+            automatic->setText(mode == ViewportExposureMode::Automatic && isPhysical == true
+                                   ? QStringLiteral("Automatic (EV100 %1)")
+                                         .arg(static_cast<foundation::float64>(resolved.ExposureValue100), 0, 'f', 1)
+                               : mode == ViewportExposureMode::Automatic
+                                   ? QStringLiteral("Automatic (no Atmosphere: graph exposure)")
+                                   : QStringLiteral("Automatic"));
+            automatic->setChecked(mode == ViewportExposureMode::Automatic);
+            manual->setChecked(mode == ViewportExposureMode::Manual);
+            graphExposure->setChecked(mode == ViewportExposureMode::Graph);
+            const QSignalBlocker valueBlocker(exposureValue);
+            exposureValue->setValue(static_cast<foundation::float64>(
+                isPhysical == true ? resolved.ExposureValue100 : inoutSource.GetManualExposureValue100()));
+            const QSignalBlocker blocker(exposure);
+            exposure->setValue(static_cast<foundation::float64>(stops));
+            reset->setEnabled(canAdjust == true && stops != 0);
+        };
     connect(&mPreview, &RenderGraphPreview::Changed, exposureAction, refreshExposure);
     connect(&mPreview, &RenderGraphPreview::TargetsChanged, exposureAction, refreshExposure);
     connect(&mPreview, &RenderGraphPreview::RayPathCaptureChanged, exposureAction, refreshExposure);

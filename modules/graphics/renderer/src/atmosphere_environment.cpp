@@ -667,6 +667,73 @@ AtmosphereEnvironmentStatus ResolveAtmosphereEnvironment(const AtmosphereDescrip
     return AtmosphereEnvironmentStatus::Ready;
 }
 
+AtmosphereEnvironmentStatus MeterAtmosphereIlluminance(const AtmosphereDescription& atmosphere,
+                                                       float64& outIlluminanceLux) noexcept
+{
+    if (atmosphere.IsEnabled == false)
+    {
+        return AtmosphereEnvironmentStatus::NotLit;
+    }
+    float64 altitudeMetres = 0;
+    math::Vector3 upWorld;
+    math::Vector3 sunWorld;
+    const math::Vector3 illuminance = atmosphere.SolarIlluminance;
+    if (internal::TryGetAtmosphereObserver(atmosphere, atmosphere.SurfaceAnchorWorld, altitudeMetres, upWorld) ==
+            false ||
+        math::TryNormalize(atmosphere.DirectionToSunWorld, sunWorld) != math::MathStatus::Success ||
+        math::IsFinite(illuminance) == false || illuminance.X < 0 || illuminance.Y < 0 || illuminance.Z < 0)
+    {
+        return AtmosphereEnvironmentStatus::InvalidDescription;
+    }
+    // The anchor lies on the ground sphere; rounding may place it a hair below.
+    const float64 heightKilometres = math::Clamp(altitudeMetres / METRES_PER_KILOMETRE, 0.0, SHELL_HEIGHT);
+    const math::Vector3d wideUpWorld = Widen(upWorld);
+    const math::Vector3d wideSunWorld = Widen(sunWorld);
+    const float64 solarZenithCosine = math::Clamp(math::Dot(wideUpWorld, wideSunWorld), -1.0, 1.0);
+    internal::AtmosphereSkyTables tables;
+    if (tables.TryBuild(heightKilometres, solarZenithCosine, atmosphere.ShouldLightScene) == false)
+    {
+        return AtmosphereEnvironmentStatus::OutOfMemory;
+    }
+    // Any unit vector not parallel to up completes the tangent frame.
+    const math::Vector3d helper = math::Abs(wideUpWorld.X) < 0.5 ? math::Vector3d{1, 0, 0} : math::Vector3d{0, 0, 1};
+    const math::Vector3d crossWorld = math::Cross(helper, wideUpWorld);
+    const math::Vector3d tangentWorld = crossWorld * (1 / math::Length(crossWorld));
+    const math::Vector3d bitangentWorld = math::Cross(wideUpWorld, tangentWorld);
+    // With s = sin^2 of the zenith angle, cos * sin d(angle) = ds / 2, so the cosine-weighted hemisphere is
+    // uniform in s and azimuth. The midpoint rule then integrates a uniform sky exactly (pi times its radiance)
+    // and samples the bright horizon band most densely.
+    constexpr uint32 RING_COUNT = 48;
+    constexpr uint32 AZIMUTH_COUNT = 96;
+    const float64 sampleWeight = math::kPi / static_cast<float64>(RING_COUNT * AZIMUTH_COUNT);
+    math::Vector3d skyIlluminance{};
+    for (uint32 ring = 0; ring < RING_COUNT; ++ring)
+    {
+        const float64 sineSquared = (static_cast<float64>(ring) + 0.5) / RING_COUNT;
+        const float64 sine = math::Sqrt(sineSquared);
+        const float64 cosine = math::Sqrt(1 - sineSquared);
+        for (uint32 step = 0; step < AZIMUTH_COUNT; ++step)
+        {
+            const float64 azimuth = 2 * math::kPi * (static_cast<float64>(step) + 0.5) / AZIMUTH_COUNT;
+            const math::Vector3d directionWorld = wideUpWorld * cosine + tangentWorld * (sine * math::Cos(azimuth)) +
+                                                  bitangentWorld * (sine * math::Sin(azimuth));
+            skyIlluminance =
+                skyIlluminance + tables.SampleSky(directionWorld, wideUpWorld, wideSunWorld) * sampleWeight;
+        }
+    }
+    const math::Vector3d solar = Widen(illuminance);
+    math::Vector3d total = math::Hadamard(skyIlluminance, solar);
+    // Mirrors EvaluateAtmosphereSun: the transmitted Sun, projected onto the level plane.
+    if (solarZenithCosine > 0 && solarZenithCosine >= ComputeHorizonCosine(heightKilometres))
+    {
+        total = total + math::Hadamard(solar, tables.SampleTransmittance(heightKilometres, solarZenithCosine)) *
+                            solarZenithCosine;
+    }
+    // ITU-R BT.709 relative luminance of the renderer's linear RGB.
+    constexpr math::Vector3d LUMINANCE_WEIGHTS{0.2126, 0.7152, 0.0722};
+    outIlluminanceLux = math::Dot(total, LUMINANCE_WEIGHTS);
+    return AtmosphereEnvironmentStatus::Ready;
+}
 namespace internal
 {
 AtmosphereEnvironmentStatus ResolveAtmosphereAerialPerspective(const AtmosphereDescription& atmosphere,

@@ -4242,9 +4242,101 @@ TEST_CASE("Viewport exposure adjusts the live frame without editing the graph",
     CHECK(exposure->value() == 0);
     CHECK(workspace.IsDirty() == false);
 
+    // Without an Atmosphere, Automatic keeps the graph's exposure. Typing an EV100 selects the physical camera.
+    QAction* automatic = viewport.findChild<QAction*>(QStringLiteral("viewportExposureAutomatic"));
+    QAction* graphExposure = viewport.findChild<QAction*>(QStringLiteral("viewportExposureGraph"));
+    QDoubleSpinBox* exposureValue = viewport.findChild<QDoubleSpinBox*>(QStringLiteral("viewportExposureValue100"));
+    REQUIRE(automatic != nullptr);
+    REQUIRE(graphExposure != nullptr);
+    REQUIRE(exposureValue != nullptr);
+    CHECK(automatic->isChecked() == true);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Graph);
+    constexpr float64 MANUAL_EXPOSURE_VALUE = 3;
+    const uint64 beforeManual = graph->GetPresentedRevision();
+    exposureValue->setValue(MANUAL_EXPOSURE_VALUE);
+    REQUIRE(waitForRevision(beforeManual) == true);
+    CHECK(source.GetExposureMode() == ViewportExposureMode::Manual);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Physical);
+    CHECK(source.ResolveExposure().ExposureValue100 == static_cast<float32>(MANUAL_EXPOSURE_VALUE));
+    CHECK(graph->GetImage() != authored);
+    CHECK(graph->GetPresentedGeneration() == generation);
+    const uint64 beforeGraph = graph->GetPresentedRevision();
+    graphExposure->trigger();
+    REQUIRE(waitForRevision(beforeGraph) == true);
+    CHECK(source.GetExposureMode() == ViewportExposureMode::Graph);
+    CHECK(graph->GetImage() == authored);
+    CHECK(workspace.IsDirty() == false);
+
     source.Stop();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
+}
+
+TEST_CASE("Automatic viewport exposure meters the World's Sun, sky and Moon", "[editor][render-graph][exposure]")
+{
+    RenderPreview source;
+    RenderScene scene = MakeScene({1, 1, 1, 1});
+    constexpr float32 EARTH_SUN_LUX = 133'800;
+    constexpr uint64 SUN_SOURCE_ID = 11;
+    scene.Atmosphere.IsEnabled = true;
+    scene.Atmosphere.ShouldLightScene = true;
+    scene.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    scene.Atmosphere.SolarIlluminance = {EARTH_SUN_LUX, EARTH_SUN_LUX, EARTH_SUN_LUX};
+    scene.Atmosphere.SunSourceId = SUN_SOURCE_ID;
+    // The linked Sun's own light is metered through the Atmosphere, after transmittance, not again here.
+    scene.AuthoredLights.Lights[0] =
+    {
+        .SourceId = SUN_SOURCE_ID,
+        .Kind = renderer::LightKind::Directional,
+        .Intensity = EARTH_SUN_LUX,
+        .Direction = {0, -1, 0},
+    };
+    scene.AuthoredLights.Count = 1;
+    REQUIRE(source.SetScene(scene) == true);
+    CHECK(source.GetExposureMode() == ViewportExposureMode::Automatic);
+    const ViewportExposure noon = source.ResolveExposure();
+    CHECK(noon.Mode == renderer::ExposureMode::Physical);
+    CHECK(noon.ExposureValue100 > 14);
+    CHECK(noon.ExposureValue100 < 16);
+
+    // At night the natural night sky sets the exposure, and a full Moon overhead brightens the reading.
+    constexpr float32 NIGHT_SINE = -0.5F;
+    scene.Atmosphere.DirectionToSunWorld = {math::Sqrt(1 - NIGHT_SINE * NIGHT_SINE), NIGHT_SINE, 0};
+    scene.Identity = QByteArrayLiteral("exposure-night");
+    REQUIRE(source.SetScene(scene) == true);
+    const ViewportExposure night = source.ResolveExposure();
+    CHECK(night.ExposureValue100 == Catch::Approx(renderer::ComputeIncidentExposureValue100(0)).margin(0.01));
+    constexpr float32 FULL_MOON_LUX = 0.25F;
+    constexpr uint64 MOON_SOURCE_ID = 12;
+    scene.AuthoredLights.Lights[1] =
+    {
+        .SourceId = MOON_SOURCE_ID,
+        .Kind = renderer::LightKind::Directional,
+        .Intensity = FULL_MOON_LUX,
+        .Direction = {0, -1, 0},
+    };
+    scene.AuthoredLights.Count = 2;
+    scene.Identity = QByteArrayLiteral("exposure-moonlight");
+    REQUIRE(source.SetScene(scene) == true);
+    const ViewportExposure moonlight = source.ResolveExposure();
+    CHECK(moonlight.ExposureValue100 ==
+          Catch::Approx(renderer::ComputeIncidentExposureValue100(static_cast<float64>(FULL_MOON_LUX))).margin(0.01));
+
+    // The physical camera and graph exposure ignore the meter; invalid values preserve the camera.
+    constexpr float32 MANUAL_EXPOSURE_VALUE = 12;
+    source.SetManualExposureValue100(MANUAL_EXPOSURE_VALUE);
+    source.SetManualExposureValue100(renderer::MAX_EXPOSURE_VALUE_100 + 1);
+    source.SetExposureMode(ViewportExposureMode::Manual);
+    CHECK(source.ResolveExposure().ExposureValue100 == MANUAL_EXPOSURE_VALUE);
+    source.SetExposureMode(ViewportExposureMode::Graph);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Graph);
+
+    // Worlds without an Atmosphere keep the graph exposure their lights were authored for.
+    source.SetExposureMode(ViewportExposureMode::Automatic);
+    scene.Atmosphere.IsEnabled = false;
+    scene.Identity = QByteArrayLiteral("exposure-no-atmosphere");
+    REQUIRE(source.SetScene(scene) == true);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Graph);
 }
 
 TEST_CASE("Viewport Work Light follows the live camera without entering the scene or capture view",

@@ -5986,12 +5986,32 @@ rebuilds; a removed target returns to Final output. Discarded/undefined attachme
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
 
-Open **Exposure** next to the output selector to adjust the viewport in stops.
-Zero uses the graph's authored exposure, +1 doubles it, and −1 halves it. Use
-**Reset to graph exposure** to return to zero. The adjustment stays with this
-viewport session as you navigate. It updates the lighting resolve before the
-tone curve and 8-bit output, without a graph rebuild or a saved World or graph
-edit.
+Open **Exposure** next to the output selector to choose the viewport's base exposure
+and adjust it in stops:
+
+- **Automatic** (the default) meters the World like an incident-light meter on level
+  ground at the Atmosphere's surface anchor: the transmitted Sun and the clear sky, the
+  Moon and any other directional lights, plus the 0.002 lx of a natural moonless night.
+  The menu shows the metered exposure value, about EV100 15 under a clear midday Sun,
+  −3 under a full Moon and −10 on a moonless night. Worlds without an Atmosphere keep the
+  graph's exposure, because their lights were chosen for its scale. The meter reads the
+  light outdoors, as a photographer's incident meter does, so a shaded interior such as
+  Sponza's arcades appears several stops dark: raise the stops, or choose Physical camera
+  with a lower EV100. Metering the rendered frame instead is tracked separately.
+- **Physical camera** exposes like a camera at ISO 100 with the **EV100** value you type;
+  typing a value selects it. The base multiplier is 1 / (1.2 × 2^EV100), so EV100 −0.26
+  equals the graph's default multiplier of one.
+- **Graph exposure** uses the ToneMap node's multiplier, where one scene-linear nit is near
+  display white.
+
+Use Automatic or Physical camera with physical light units such as the Earth Sun preset's
+133,800 lx: the graph multiplier's range cannot reach daylight. With physical exposure,
+daylight hides the procedural stars and night shows them, without changing either.
+
+The stops field is compensation on top of the base exposure: +1 doubles it and −1 halves it.
+Use **Reset compensation** to return to zero. These choices stay with this viewport session
+as you navigate. They update the lighting resolve before the tone curve and 8-bit output,
+without a graph rebuild or a saved World or graph edit.
 
 Exposure is available for **Final output** and the **Lighting** views when a clustered
 deferred raster pass with an enabled ToneMap directly writes the export. For other graphs or targets,

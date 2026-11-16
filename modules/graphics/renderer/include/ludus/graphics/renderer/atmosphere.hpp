@@ -125,4 +125,21 @@ ResolveAtmosphereEnvironment(const AtmosphereDescription& atmosphere,
                              foundation::uint32 height,
                              foundation::BorrowedView<foundation::math::Vector4> outPixels,
                              foundation::math::Vector3& outSunIlluminance) noexcept;
+
+/// @brief Measure the illuminance an Earth clear-sky Atmosphere delivers to level ground at its surface anchor.
+///
+/// Integrates the raster atmosphere's sky radiance (Hillaire 2020, the CPU tables ResolveAtmosphereEnvironment
+/// uses) times the cosine to SurfaceUpWorld over the upper hemisphere, and adds the linked Sun's transmitted
+/// illuminance at its elevation. The multiple-scattering term follows ShouldLightScene, as the displayed sky does.
+/// The night-sky boundary, the Moon and other lights are not included. Pass the result, plus those sources, to
+/// ComputeIncidentExposureValue100 for an incident-light camera exposure.
+/// @param atmosphere Validated as the render graph validates it. ShouldLightScene may be false.
+/// @param outIlluminanceLux Photometric illuminance in lux on a level plane, from the linear RGB luminance
+///        (ITU-R BT.709 weights). Zero once the Sun is far enough below the horizon.
+/// @return Ready when outIlluminanceLux was written. NotLit for a disabled Atmosphere; InvalidDescription and
+///         OutOfMemory as for ResolveAtmosphereEnvironment. Every status but Ready preserves the output.
+/// @note Runs on the calling thread without device access. Building the tables dominates the cost, a few
+///       milliseconds; callers that meter every frame should cache the result per Atmosphere.
+[[nodiscard]] AtmosphereEnvironmentStatus MeterAtmosphereIlluminance(const AtmosphereDescription& atmosphere,
+                                                                     foundation::float64& outIlluminanceLux) noexcept;
 } // namespace ludus::graphics::renderer

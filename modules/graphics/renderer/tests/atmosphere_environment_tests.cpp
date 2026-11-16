@@ -5,10 +5,12 @@
 #include "../src/internal/atmosphere_sky_tables.h"
 #include "earth_sky_quadrature.hpp"
 
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/atmosphere.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -244,4 +246,108 @@ TEST_CASE("Atmosphere environment holds the observer's sky and transmitted Sun",
                                                    sun) == renderer::AtmosphereEnvironmentStatus::Ready);
     CHECK(sun == math::Vector3{});
     CHECK(pixels[0].Z > 0);
+}
+
+TEST_CASE("Atmosphere meter matches an independent integral of the resolved sky", "[atmosphere]")
+{
+    // The resolved latitude/longitude sky with +Y up, integrated by its texels' cosine-weighted solid angles.
+    constexpr uint32 WIDTH = 256;
+    constexpr uint32 HEIGHT = WIDTH / 2;
+    Array<math::Vector4> pixels;
+    REQUIRE(pixels.TryResize(static_cast<usize>(WIDTH) * HEIGHT) == true);
+    const float32 solarSine = GENERATE(1.0F, 0.5F, 0.1F, -0.05F);
+    const renderer::AtmosphereDescription atmosphere =
+        MakeAtmosphere({std::sqrt(1 - solarSine * solarSine), solarSine, 0});
+    math::Vector3 sun{};
+    REQUIRE(renderer::ResolveAtmosphereEnvironment(atmosphere,
+                                                   {},
+                                                   WIDTH,
+                                                   HEIGHT,
+                                                   {pixels.GetData(), pixels.GetSize()},
+                                                   sun) == renderer::AtmosphereEnvironmentStatus::Ready);
+    const float64 texelAngle = math::kPi / HEIGHT;
+    math::Vector3d expected{};
+    for (uint32 y = 0; y < HEIGHT / 2; ++y)
+    {
+        const float64 polar = (static_cast<float64>(y) + 0.5) * texelAngle;
+        const float64 weight = std::cos(polar) * std::sin(polar) * texelAngle * (2 * math::kPi / WIDTH);
+        for (uint32 x = 0; x < WIDTH; ++x)
+        {
+            const math::Vector4 pixel = pixels[static_cast<usize>(y) * WIDTH + x];
+            expected = expected + math::Vector3d{static_cast<float64>(pixel.X),
+                                                 static_cast<float64>(pixel.Y),
+                                                 static_cast<float64>(pixel.Z)} *
+                                      weight;
+        }
+    }
+    const float64 sunCosine = math::Max(static_cast<float64>(solarSine), 0.0);
+    expected = expected +
+               math::Vector3d{static_cast<float64>(sun.X), static_cast<float64>(sun.Y), static_cast<float64>(sun.Z)} *
+                   sunCosine;
+    const float64 expectedLux = 0.2126 * expected.X + 0.7152 * expected.Y + 0.0722 * expected.Z;
+    float64 actualLux = -1;
+    REQUIRE(renderer::MeterAtmosphereIlluminance(atmosphere, actualLux) ==
+            renderer::AtmosphereEnvironmentStatus::Ready);
+    INFO("solar sine " << solarSine << " expected " << expectedLux << " actual " << actualLux);
+    // Both are midpoint rules over the same tables; they differ in where they sample the horizon band.
+    constexpr float64 RELATIVE_TOLERANCE = 0.03;
+    CHECK(std::abs(actualLux - expectedLux) <= RELATIVE_TOLERANCE * expectedLux);
+}
+
+TEST_CASE("Atmosphere meter reads daylight, darkness and invalid inputs", "[atmosphere]")
+{
+    constexpr float32 EARTH_SUN_LUX = 133'800;
+    constexpr float64 WIDE_EARTH_SUN_LUX = static_cast<float64>(EARTH_SUN_LUX);
+    renderer::AtmosphereDescription noon = MakeAtmosphere({0, 1, 0});
+    noon.SolarIlluminance = {EARTH_SUN_LUX, EARTH_SUN_LUX, EARTH_SUN_LUX};
+    float64 noonLux = 0;
+    REQUIRE(renderer::MeterAtmosphereIlluminance(noon, noonLux) == renderer::AtmosphereEnvironmentStatus::Ready);
+    renderer::internal::AtmosphereSkyTables tables;
+    REQUIRE(tables.TryBuild(0, 1, true) == true);
+    const math::Vector3d transmittance = tables.SampleTransmittance(0, 1);
+    const float64 directLux =
+        WIDE_EARTH_SUN_LUX * (0.2126 * transmittance.X + 0.7152 * transmittance.Y + 0.0722 * transmittance.Z);
+    INFO("noon " << noonLux << " direct " << directLux);
+    // The clear sky adds diffuse light to the transmitted Sun: global horizontal illuminance at a zenith Sun is
+    // on the order of 100 klx, so the meter reads about EV100 15.
+    CHECK(noonLux > directLux);
+    CHECK(noonLux < WIDE_EARTH_SUN_LUX);
+    CHECK(renderer::ComputeIncidentExposureValue100(noonLux) > 14);
+    CHECK(renderer::ComputeIncidentExposureValue100(noonLux) < 16);
+
+    // Far below the horizon the clear sky delivers nothing, so the natural night sky sets the exposure.
+    constexpr float32 NIGHT_SINE = -0.5F;
+    renderer::AtmosphereDescription night = MakeAtmosphere({std::sqrt(1 - NIGHT_SINE * NIGHT_SINE), NIGHT_SINE, 0});
+    night.SolarIlluminance = noon.SolarIlluminance;
+    float64 nightLux = -1;
+    REQUIRE(renderer::MeterAtmosphereIlluminance(night, nightLux) == renderer::AtmosphereEnvironmentStatus::Ready);
+    CHECK(nightLux >= 0);
+    CHECK(nightLux < renderer::NATURAL_NIGHT_SKY_ILLUMINANCE_LUX);
+
+    // The displayed sky without multiple scattering is still metered.
+    renderer::AtmosphereDescription unlit = noon;
+    unlit.ShouldLightScene = false;
+    float64 unlitLux = 0;
+    REQUIRE(renderer::MeterAtmosphereIlluminance(unlit, unlitLux) == renderer::AtmosphereEnvironmentStatus::Ready);
+    CHECK(unlitLux > directLux);
+    CHECK(unlitLux < noonLux);
+
+    constexpr float64 SENTINEL = 7;
+    float64 preserved = SENTINEL;
+    renderer::AtmosphereDescription disabled = noon;
+    disabled.IsEnabled = false;
+    CHECK(renderer::MeterAtmosphereIlluminance(disabled, preserved) == renderer::AtmosphereEnvironmentStatus::NotLit);
+    renderer::AtmosphereDescription invalid = noon;
+    invalid.DirectionToSunWorld = {};
+    CHECK(renderer::MeterAtmosphereIlluminance(invalid, preserved) ==
+          renderer::AtmosphereEnvironmentStatus::InvalidDescription);
+    invalid = noon;
+    invalid.SolarIlluminance = {-1, 0, 0};
+    CHECK(renderer::MeterAtmosphereIlluminance(invalid, preserved) ==
+          renderer::AtmosphereEnvironmentStatus::InvalidDescription);
+    invalid = noon;
+    invalid.SurfaceUpWorld = {};
+    CHECK(renderer::MeterAtmosphereIlluminance(invalid, preserved) ==
+          renderer::AtmosphereEnvironmentStatus::InvalidDescription);
+    CHECK(preserved == SENTINEL);
 }

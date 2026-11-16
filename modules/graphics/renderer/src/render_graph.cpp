@@ -3382,7 +3382,9 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         const ViewDescription& camera = cameras[cameraIndex];
         if (math::IsFinite(camera.RasterExposureStops) == false ||
             math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS ||
-            static_cast<uint32>(camera.LightingView) > DEFERRED_LIGHTING_VIEW_LAST)
+            static_cast<uint32>(camera.LightingView) > DEFERRED_LIGHTING_VIEW_LAST ||
+            static_cast<uint32>(camera.Exposure) > EXPOSURE_MODE_LAST ||
+            (camera.Exposure == ExposureMode::Physical && ComputeExposureMultiplier(camera.ExposureValue100) == 0))
         {
             return Status::InvalidDescription;
         }

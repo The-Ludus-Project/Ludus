@@ -320,10 +320,19 @@ struct ViewDescription final
     /// Maximum absolute adjustment of the clustered deferred graph's exposure, in stops.
     static constexpr ludus::foundation::float32 MAXIMUM_RASTER_EXPOSURE_STOPS = 6;
     /// Finite adjustment in [-MAXIMUM_RASTER_EXPOSURE_STOPS, MAXIMUM_RASTER_EXPOSURE_STOPS].
-    /// Zero uses the authored exposure. Each positive stop doubles the authored multiplier.
+    /// Zero uses the base exposure that Exposure selects. Each positive stop doubles that multiplier.
     /// Applies to enabled ToneMap nodes on clustered deferred passes only. Invalid values reject
     /// graph updates before publication. Other renderer entry points ignore this field.
     ludus::foundation::float32 RasterExposureStops = 0;
+    /// Base exposure of enabled clustered deferred ToneMap nodes, before RasterExposureStops. Graph keeps each
+    /// node's authored multiplier; Physical replaces it with ComputeExposureMultiplier(ExposureValue100), for
+    /// scenes lit in physical units such as an Earth Sun. Values outside ExposureMode reject graph updates before
+    /// publication. Raw linear outputs, ray captures and other renderer entry points are unaffected.
+    ExposureMode Exposure = ExposureMode::Graph;
+    /// Camera exposure value at ISO 100 that ExposureMode::Physical uses, within
+    /// [MIN_EXPOSURE_VALUE_100, MAX_EXPOSURE_VALUE_100]. ComputeIncidentExposureValue100 meters one from an
+    /// illuminance. Physical views with a nonfinite or out-of-range value reject graph updates; Graph ignores it.
+    ludus::foundation::float32 ExposureValue100 = 0;
     /// Lighting term clustered deferred passes draw instead of their final colour. Values outside
     /// DeferredLightingView reject graph updates before publication. Other renderer entry points ignore it.
     DeferredLightingView LightingView = DeferredLightingView::Final;
