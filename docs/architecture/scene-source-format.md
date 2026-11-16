@@ -329,7 +329,8 @@ deferred G-buffer stores a skin pixel's scattering distance where its emission
 would go. Use a `metallic_roughness` material for a glowing surface. Distances
 are in metres, so the object must be modelled at real scale; human skin spreads
 red light furthest, over millimetres. The cook stores the material as a LUSCN
-v14 `Skin` record.
+v14 `Skin` record. An imported material becomes skin per World slot with
+[make a slot skin](../development/editor-workspace.md#make-a-slot-skin).
 
 The clustered deferred profile, which the engine's default render graph uses,
 spreads skin's diffuse lighting over the distance with a screen-space filter

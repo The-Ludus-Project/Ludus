@@ -1775,8 +1775,8 @@ without eyes or hair, so bleed tests add their own eye and hair geometry.
   ordinary PBR on the bust and measure GPU time and transient memory.
   Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14,
   and the clustered deferred profile spreads its diffuse lighting
-  ([raster skin diffusion](#raster-skin-diffusion)). Editor editing and the bust
-  measurements remain.
+  ([raster skin diffusion](#raster-skin-diffusion)), and World slots become skin
+  in the editor. The bust measurements remain.
   [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
   [Real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)
 - **Reference skin.** Use the normalized diffusion profile in Per H.
@@ -1946,13 +1946,12 @@ Other paths make declared approximations:
 
 The material layout gains `SkinScattering` after the hair-card words, so
 render-graph packages cooked before it are rejected until recooked, as for hair
-cards. Still open in
-[#1372](https://github.com/The-Ludus-Project/Ludus/issues/1372):
-
-- Assigning and editing skin in the World editor, with undo, save, reopen and
-  reimport.
-- The bust's GPU time and transient-memory measurements, and the comparison with
-  ordinary PBR.
+cards. World slots become skin in the editor, which edits the scattering distance with
+the World history. See
+[make a slot skin](../development/editor-workspace.md#make-a-slot-skin).
+Still open in [#1372](https://github.com/The-Ludus-Project/Ludus/issues/1372):
+the bust's GPU time and transient-memory measurements, and the comparison with
+ordinary PBR.
 
 Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
 An artist must be able to import the bust, assign and edit hair and skin

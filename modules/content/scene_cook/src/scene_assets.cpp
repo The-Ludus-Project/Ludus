@@ -845,6 +845,54 @@ constexpr std::string_view HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
     return true;
 }
 
+/// A World slot's skin override: its linear RGB scattering distance in metres. An unassigned override leaves the
+/// slot's resolved material unchanged.
+struct SkinOverride final
+{
+    bool IsAssigned = false;
+    foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS> Distance{};
+
+    [[nodiscard]] bool operator==(const SkinOverride& other) const noexcept
+    {
+        return IsAssigned == other.IsAssigned && Distance[0] == other.Distance[0] && Distance[1] == other.Distance[1] &&
+               Distance[2] == other.Distance[2];
+    }
+};
+/// Member of a level object's "skin" object; the name matches the scene source format's.
+constexpr std::string_view SKIN_DISTANCE_KEY = "scattering_distance";
+
+/// Read a level object's "skin" member: exactly a scattering distance of three numbers in
+/// [0, MAX_SKIN_SCATTERING_DISTANCE] metres. A missing member leaves the slot unassigned. Invalid members return false
+/// and preserve outSkin.
+[[nodiscard]] bool ReadSkinOverride(const JsonTree& tree, JsonIndex node, SkinOverride& outSkin) noexcept
+{
+    if (node == NO_JSON_NODE)
+    {
+        outSkin = {};
+        return true;
+    }
+    const JsonIndex distance = tree.GetMember(node, SKIN_DISTANCE_KEY);
+    if (tree.GetKind(node) != JsonKind::Object || tree.GetCount(node) != 1 || distance == NO_JSON_NODE ||
+        tree.GetKind(distance) != JsonKind::Array || tree.GetCount(distance) != format::MATERIAL_RGB_CHANNELS)
+    {
+        return false;
+    }
+    SkinOverride skin;
+    skin.IsAssigned = true;
+    for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+    {
+        PythonNumber number;
+        if (IsAuthoredNumber(tree, tree.GetItem(distance, channel), number) == false || number.ToFloat() < 0 ||
+            number.ToFloat() > static_cast<float64>(format::MAX_SKIN_SCATTERING_DISTANCE))
+        {
+            return false;
+        }
+        skin.Distance[channel] = static_cast<float32>(number.ToFloat());
+    }
+    outSkin = skin;
+    return true;
+}
+
 [[nodiscard]] bool ReadProjectBrdfBinding(const JsonTree& tree, JsonIndex binding, float32& outRoughness) noexcept
 {
     outRoughness = 0;
@@ -970,9 +1018,10 @@ constexpr std::string_view HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
         const JsonIndex coating = tree.GetMember(item, "coating");
         const JsonIndex binding = tree.GetMember(item, "project_brdf");
         const JsonIndex hairCard = tree.GetMember(item, "hair_card");
-        const usize optionalObjectFields = (coating == NO_JSON_NODE ? usize{0} : usize{1}) +
-                                           (binding == NO_JSON_NODE ? usize{0} : usize{1}) +
-                                           (hairCard == NO_JSON_NODE ? usize{0} : usize{1});
+        const JsonIndex skinNode = tree.GetMember(item, "skin");
+        const usize optionalObjectFields =
+            (coating == NO_JSON_NODE ? usize{0} : usize{1}) + (binding == NO_JSON_NODE ? usize{0} : usize{1}) +
+            (hairCard == NO_JSON_NODE ? usize{0} : usize{1}) + (skinNode == NO_JSON_NODE ? usize{0} : usize{1});
         if (tree.GetKind(item) != JsonKind::Object ||
             tree.GetCount(item) != REQUIRED_OBJECT_FIELDS + optionalObjectFields)
         {
@@ -1008,6 +1057,17 @@ constexpr std::string_view HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
         {
             return inoutFailure.FailInvalid("A hair card slot cannot also hold a coating or a project BRDF. Remove the "
                                             "hair card or use the inherited material.");
+        }
+        SkinOverride skin;
+        if (ReadSkinOverride(tree, skinNode, skin) == false)
+        {
+            return inoutFailure.FailInvalid("Invalid skin. Set each scattering distance in [0, 0.1] metres.");
+        }
+        if (skinNode != NO_JSON_NODE &&
+            (coating != NO_JSON_NODE || binding != NO_JSON_NODE || hairCard != NO_JSON_NODE))
+        {
+            return inoutFailure.FailInvalid("A skin slot cannot also hold a coating, a project BRDF or a hair card. "
+                                            "Remove the skin or use the inherited material.");
         }
         if (IsUuidString(tree, tree.GetMember(item, "id")) == false)
         {
@@ -2983,6 +3043,7 @@ struct MaterialVariant final
     CoatingOverride Coating;
     float32 ProjectRoughness = 0;
     HairCardOverride HairCard;
+    SkinOverride Skin;
 };
 
 /// Preserve source material ordering and share records for identical slot overrides.
@@ -3056,9 +3117,15 @@ struct MaterialVariant final
                     "A hair card's mask cutoff needs a masked material. Remove the cutoff, or reimport the card with a "
                     "base texture whose alpha masks it.");
             }
-            // A hair card replaces the slot's reflection model, so an inherited coating no longer applies.
+            SkinOverride skin;
+            if (ReadSkinOverride(tree, tree.GetMember(object, "skin"), skin) == false)
+            {
+                return inoutFailure.FailInvalid("Invalid skin. Reset its scattering distance or use the inherited "
+                                                "material.");
+            }
+            // A hair card or skin replaces the slot's reflection model, so an inherited coating no longer applies.
             const JsonIndex local = tree.GetMember(object, "coating");
-            const JsonIndex instance = binding != NO_JSON_NODE || hair.IsAssigned == true
+            const JsonIndex instance = binding != NO_JSON_NODE || hair.IsAssigned == true || skin.IsAssigned == true
                                            ? NO_JSON_NODE
                                            : (local != NO_JSON_NODE ? local : shared);
             if (ReadCoatingOverride(tree, instance, coating) == false)
@@ -3076,9 +3143,10 @@ struct MaterialVariant final
                 coating = {};
             }
             usize variantIndex = firstVariant;
-            while (variantIndex < outVariants.GetSize() && (outVariants[variantIndex].Coating != coating ||
-                                                            outVariants[variantIndex].ProjectRoughness != roughness ||
-                                                            outVariants[variantIndex].HairCard != hair))
+            while (variantIndex < outVariants.GetSize() &&
+                   (outVariants[variantIndex].Coating != coating ||
+                    outVariants[variantIndex].ProjectRoughness != roughness ||
+                    outVariants[variantIndex].HairCard != hair || outVariants[variantIndex].Skin != skin))
             {
                 ++variantIndex;
             }
@@ -3089,7 +3157,7 @@ struct MaterialVariant final
                     return inoutFailure.FailInvalid("Scene material capacity exceeded. Reset a slot override or reuse "
                                                     "existing material parameters.");
                 }
-                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating, roughness, hair}) == false)
+                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating, roughness, hair, skin}) == false)
                 {
                     return inoutFailure.FailOutOfMemory();
                 }
@@ -3200,6 +3268,12 @@ struct MaterialVariant final
             isVersion7 = true;
             typedVersion =
                 math::Max(typedVersion, format::GetMaterialModelBundleVersion(format::MaterialModel::HairCard));
+        }
+        if (variant.Skin.IsAssigned == true)
+        {
+            // A World skin slot stores its scattering distance in the typed record of LUSCN v14.
+            isVersion7 = true;
+            typedVersion = math::Max(typedVersion, format::GetMaterialModelBundleVersion(format::MaterialModel::Skin));
         }
     }
     bool isVersion6 = isVersion7;
@@ -3427,20 +3501,33 @@ struct MaterialVariant final
             // Hair reflects as a dielectric fibre; its base colour, roughness, textures and mask are kept.
             source.Scattering = format::MakeHairCardScattering(hair.Parameters);
         }
+        const SkinOverride& skin = variant.Skin;
+        if (skin.IsAssigned == true)
+        {
+            // Skin reflects as a dielectric and does not emit (IsEmissionAllowed); its base colour, roughness and
+            // textures are kept. The inherited material's metallic and emission stay authored there for Use Inherited
+            // Material to restore.
+            source.Scattering = {};
+            source.Scattering.Model = format::MaterialModel::Skin;
+            source.Scattering.K = {{skin.Distance[0], skin.Distance[1], skin.Distance[2]}};
+        }
+        const bool isDielectricOverride = hair.IsAssigned == true || skin.IsAssigned == true;
         const bool isRepeat = tree.IsString(tree.GetMember(description.Root, "address"), "repeat");
         writer.AppendUint32(texture.empty() == true ? format::NO_TEXTURE : FindIndex(textures, texture));
         writer.AppendUint32(isRepeat == true ? format::ADDRESS_REPEAT : format::ADDRESS_CLAMP);
-        writer.AppendFloat32(hair.IsAssigned == true ? 0.0
-                                                     : GetNumberMember(tree, description.Root, "metallic").ToFloat());
+        writer.AppendFloat32(
+            isDielectricOverride == true ? 0.0 : GetNumberMember(tree, description.Root, "metallic").ToFloat());
         writer.AppendFloat32(roughness);
-        const JsonIndex emission = tree.GetMember(description.Root, "emission");
+        const JsonIndex emission =
+            skin.IsAssigned == true ? NO_JSON_NODE : tree.GetMember(description.Root, "emission");
         for (usize channel = 0; channel < 3; ++channel)
         {
-            writer.AppendFloat32(GetNumberItem(tree, emission, channel).ToFloat());
+            writer.AppendFloat32(emission == NO_JSON_NODE ? 0.0 : GetNumberItem(tree, emission, channel).ToFloat());
         }
         if (isVersion3 == true)
         {
-            const bool hasLighting = tree.GetMember(description.Root, "emission_flags") != NO_JSON_NODE;
+            const bool hasLighting =
+                skin.IsAssigned == false && tree.GetMember(description.Root, "emission_flags") != NO_JSON_NODE;
             uint64 sourceId = 0;
             uint32 flags = format::EMISSION_TWO_SIDED;
             float64 power = 0;
@@ -3454,7 +3541,7 @@ struct MaterialVariant final
                 }
             }
             bool isEmissive = sourceId != 0;
-            for (usize channel = 0; channel < RGB_COMPONENTS; ++channel)
+            for (usize channel = 0; channel < RGB_COMPONENTS && emission != NO_JSON_NODE; ++channel)
             {
                 isEmissive = isEmissive == true || GetNumberItem(tree, emission, channel).ToFloat() > 0;
             }
@@ -3492,7 +3579,7 @@ struct MaterialVariant final
                 };
                 const bool hasScale = tree.GetMember(description.Root, "normal_scale") != NO_JSON_NODE;
                 writer.AppendUint32(findMap("surface_texture"));
-                writer.AppendUint32(findMap("emission_texture"));
+                writer.AppendUint32(skin.IsAssigned == true ? format::NO_TEXTURE : findMap("emission_texture"));
                 writer.AppendFloat32(
                     hasScale == true ? GetNumberMember(tree, description.Root, "normal_scale").ToFloat() : 0.0);
             }

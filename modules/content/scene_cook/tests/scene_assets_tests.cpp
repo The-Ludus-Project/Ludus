@@ -640,6 +640,93 @@ TEST_CASE("Level hair-card slots cook into LUSCN v13 and reject unusable overrid
     CHECK(std::string_view(error.Message.View()).find("strand direction in [-180, 180]") != std::string_view::npos);
 }
 
+TEST_CASE("Level skin slots cook into LUSCN v14 without metallic or emission and reject unusable overrides",
+          "[scene_assets][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    namespace resources = ludus::resources;
+    GoldenProject golden;
+    const std::string original = ToText(golden.Level);
+    const std::string transform = R"("transform":[)";
+    const auto withFirstObject = [&](std::string_view member) {
+        std::string level = original;
+        const usize at = level.find(transform);
+        REQUIRE(at != std::string::npos);
+        level.insert(at, std::string(member) + ",");
+        return level;
+    };
+    const auto decode = [&](const std::string& level, resources::SceneDefinition& outScene) {
+        AssetError error;
+        Array<uint8> bundle;
+        REQUIRE(ValidateLevel(ToSpan(level), error) == true);
+        INFO(Describe(error));
+        REQUIRE(AssembleLevel(golden.Project.string(), ToSpan(level), {}, bundle, error));
+        uint32 version = 0;
+        REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
+                    {bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                    version) == true);
+        CHECK(version == format::VERSION_14);
+        REQUIRE(resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), outScene) ==
+                resources::Status::Ok);
+    };
+    const std::string skin = R"("skin":{"scattering_distance":[0.004,0.0015,0.0007]})";
+    resources::SceneDefinition scene;
+    decode(withFirstObject(skin), scene);
+    usize skinRecords = 0;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        if (material.Scattering.Model != format::MaterialModel::Skin)
+        {
+            continue;
+        }
+        ++skinRecords;
+        CHECK(material.Scattering.K[0] == 0.004F);
+        CHECK(material.Scattering.K[1] == 0.0015F);
+        CHECK(material.Scattering.K[2] == 0.0007F);
+        CHECK(material.Metallic == 0);
+        CHECK(format::IsMaterialScatteringValid(material.Scattering) == true);
+    }
+    // Only the first slot became skin: its material record is split from the slots that inherit it.
+    CHECK(skinRecords == 1);
+
+    // Every slot made skin, the golden area lights and the brass conductor included: the decoder admits the bundle
+    // only because the skin records store no metallic and no emission, and no slot emits any more.
+    std::string everySlot = original;
+    for (usize at = everySlot.find(transform); at != std::string::npos;
+         at = everySlot.find(transform, at + skin.size() + 1 + transform.size()))
+    {
+        everySlot.insert(at, skin + ",");
+    }
+    decode(everySlot, scene);
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        CHECK(material.Scattering.Model == format::MaterialModel::Skin);
+        CHECK(material.Metallic == 0);
+        CHECK(material.Emission == ludus::foundation::math::Vector3{});
+        CHECK(material.HasEmissionPower == false);
+        CHECK(material.EmissionTexture == format::NO_TEXTURE);
+    }
+
+    // A skin slot holds exactly a scattering distance within [0, 0.1] m, and no other reflection override.
+    AssetError error;
+    const std::string coated = withFirstObject(skin + R"(,"coating":{"alpha":0.5,"eta":1.5,"thickness":0.01})");
+    CHECK_FALSE(ValidateLevel(ToSpan(coated), error));
+    CHECK(std::string_view(error.Message.View()).find("cannot also hold a coating") != std::string_view::npos);
+    const std::string hair =
+        withFirstObject(skin + R"(,"hair_card":{"strand_direction_degrees":90,"primary_shift_degrees":-8,)"
+                               R"("secondary_shift_degrees":12,"primary_weight":0.25,"secondary_weight":0.5})");
+    CHECK_FALSE(ValidateLevel(ToSpan(hair), error));
+    CHECK(std::string_view(error.Message.View()).find("hair card") != std::string_view::npos);
+    for (const std::string_view invalid : {R"("skin":{"scattering_distance":[0.2,0,0]})",
+                                           R"("skin":{"scattering_distance":[-0.001,0,0]})",
+                                           R"("skin":{"scattering_distance":[0.001,0.001]})",
+                                           R"("skin":{})"})
+    {
+        CHECK_FALSE(ValidateLevel(ToSpan(withFirstObject(invalid)), error));
+        CHECK(std::string_view(error.Message.View()).find("[0, 0.1] metres") != std::string_view::npos);
+    }
+}
+
 TEST_CASE("Composed level transforms match the assembled bundle bit for bit", "[scene_assets]")
 {
     namespace format = ludus::content::scene_format;

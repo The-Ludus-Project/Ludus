@@ -481,6 +481,36 @@ QJsonObject Defaults(const QJsonObject& component)
     return hasCutoff == false || Value(MakeHairCardCutoffProperty(), hair.value(cutoffKey), outError) == true;
 }
 
+/// Validate a slot's "skin" object: exactly a scattering distance of three numbers in
+/// [0, MAX_SKIN_SCATTERING_DISTANCE] metres.
+[[nodiscard]] bool ValidateSkin(const QJsonValue& value, QString& outError)
+{
+    const QJsonObject skin = value.toObject();
+    const QJsonValue distance = skin.value(QString::fromLatin1(SKIN_DISTANCE_KEY));
+    if (value.isObject() == false || skin.size() != 1 || distance.isArray() == false ||
+        distance.toArray().size() != static_cast<qsizetype>(content::scene_format::MATERIAL_RGB_CHANNELS))
+    {
+        return Fail(outError, QStringLiteral("A skin slot needs a red, green and blue scattering distance."));
+    }
+    const QJsonArray channels = distance.toArray();
+    for (const SkinDistanceField& field : SKIN_DISTANCE_FIELDS)
+    {
+        const QJsonValue channel = channels.at(static_cast<qsizetype>(field.Channel));
+        const foundation::float64 metres = channel.toDouble(-1);
+        if (channel.isDouble() == false || (metres >= 0) == false ||
+            metres > static_cast<foundation::float64>(content::scene_format::MAX_SKIN_SCATTERING_DISTANCE))
+        {
+            return Fail(outError,
+                        QStringLiteral("%1: enter a finite value from 0 to %2.")
+                            .arg(QString::fromUtf8(field.Label),
+                                 QString::number(static_cast<foundation::float64>(
+                                                     content::scene_format::MAX_SKIN_SCATTERING_DISTANCE) *
+                                                 MILLIMETRES_PER_METRE)));
+        }
+    }
+    return true;
+}
+
 QString GetMappedMaterialId(const QJsonObject& placement, const QJsonObject& level)
 {
     const QString source = placement.value(QStringLiteral("material")).toString();
@@ -1243,6 +1273,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         const bool hasCoating = scene.contains(QStringLiteral("coating"));
         const bool hasProjectBrdf = scene.contains(QStringLiteral("project_brdf"));
         const bool hasHairCard = scene.contains(QStringLiteral("hair_card"));
+        const bool hasSkin = scene.contains(QStringLiteral("skin"));
         constexpr qsizetype BOUND_PLACEMENT_FIELDS = 4;
         constexpr qsizetype INLINE_PLACEMENT_FIELDS = 7;
         const qsizetype placementFields = Schema_.contains(QStringLiteral("scene_transform")) == true
@@ -1260,9 +1291,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("scale"),
                     QStringLiteral("coating"),
                     QStringLiteral("project_brdf"),
-                    QStringLiteral("hair_card")}) == false ||
+                    QStringLiteral("hair_card"),
+                    QStringLiteral("skin")}) == false ||
             scene.size() != placementFields + (hasCoating == true ? 1 : 0) + (hasProjectBrdf == true ? 1 : 0) +
-                                (hasHairCard == true ? 1 : 0) ||
+                                (hasHairCard == true ? 1 : 0) + (hasSkin == true ? 1 : 0) ||
             ResourceId(scene.value(QStringLiteral("mesh")), QStringLiteral("mesh")) == false ||
             ResourceId(scene.value(QStringLiteral("material")), QStringLiteral("material")) == false ||
             scene.value(QStringLiteral("parent")).isString() == false)
@@ -1282,6 +1314,19 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                            "hair card or use the inherited material."));
             }
             if (ValidateHairCard(scene.value(QStringLiteral("hair_card")), error) == false)
+            {
+                return false;
+            }
+        }
+        if (hasSkin == true)
+        {
+            if (hasCoating == true || hasProjectBrdf == true || hasHairCard == true)
+            {
+                return Fail(error,
+                            QStringLiteral("A skin slot cannot also hold a coating, a project BRDF or a hair card. "
+                                           "Remove the skin or use the inherited material."));
+            }
+            if (ValidateSkin(scene.value(QStringLiteral("skin")), error) == false)
             {
                 return false;
             }
@@ -1818,6 +1863,10 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& outError, con
         {
             instance.insert(QStringLiteral("hair_card"), object.value(QStringLiteral("hair_card")));
         }
+        if (object.contains(QStringLiteral("skin")) == true)
+        {
+            instance.insert(QStringLiteral("skin"), object.value(QStringLiteral("skin")));
+        }
         const auto binding = Schema_.value(QStringLiteral("scene_transform")).toObject();
         if (binding.isEmpty())
         {
@@ -2137,6 +2186,10 @@ QJsonObject WorldDocument::SceneLevel() const
         if (scene.contains(QStringLiteral("hair_card")) == true)
         {
             object.insert(QStringLiteral("hair_card"), scene.value(QStringLiteral("hair_card")));
+        }
+        if (scene.contains(QStringLiteral("skin")) == true)
+        {
+            object.insert(QStringLiteral("skin"), scene.value(QStringLiteral("skin")));
         }
         objects.append(object);
     }
