@@ -4521,6 +4521,10 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
         shaders::renderer_composite::Vertex(),
         shaders::renderer_composite::Fragment());
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    const auto isSkyOmitted = [&preview]() {
+        return (preview.GetUnrenderedWorldFeatures() &
+                renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky)) != 0;
+    };
     RenderGraphExtraction extraction = MakeExtraction({.25F, .5F, .75F, 1}, 1);
     extraction.View.Atmosphere.IsEnabled = true;
     preview.SetExtraction(extraction);
@@ -4533,7 +4537,7 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
     INFO(preview.GetStatus().toStdString());
     REQUIRE(hasForwardFrame == true);
     CHECK(preview.WasExtractionRejected(1) == false);
-    CHECK(preview.IsAtmosphereOmitted() == true);
+    CHECK(isSkyOmitted() == true);
     CHECK(preview.GetActivePackagePath() == forward);
     CHECK(preview.CanSwitchToRasterFallback() == true);
 
@@ -4548,7 +4552,7 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
     CHECK(preview.GetActivePackagePath() == raster);
     CHECK(preview.GetRequestedPackagePath() == forward);
     CHECK(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
-    CHECK(preview.IsAtmosphereOmitted() == false);
+    CHECK(isSkyOmitted() == false);
     CHECK(preview.GetStatus().contains(QStringLiteral("Force raster")) == true);
     CHECK(preview.CanSwitchToRasterFallback() == false);
 
@@ -4561,7 +4565,7 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
     REQUIRE(hasRequestedFrame == true);
     CHECK(preview.GetPresentedRevision() == 1);
     CHECK(preview.GetActivePackagePath() == forward);
-    CHECK(preview.IsAtmosphereOmitted() == true);
+    CHECK(isSkyOmitted() == true);
     CHECK(preview.CanSwitchToRasterFallback() == true);
     preview.Detach();
 }
