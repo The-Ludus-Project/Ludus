@@ -385,6 +385,24 @@ history is an explicit persistent import/export with reset/invalidation policy;
 it is not a cycle hidden inside the current frame graph. A subgraph exposes its
 interface and effect summary, not permission to rewrite its internals.
 
+### Authored pass insertion
+
+Thanks to Tobias Persson, [*High-Level Rendering Using Render Graphs*](https://ruby0x1.github.io/machinery_blog_archive/post/high-level-rendering-using-render-graphs/index.html#modules-and-sub-modules),
+Our Machinery, August 28, 2017, for the idea of exposing a deliberate place
+to insert a reusable group of passes. In Ludus, the caller places a typed
+Subgraph between its producer and consumer. Child configurations with the same
+interface can forward the existing resource version or produce a new one. The
+saved choice is resolved during lowering, where output reachability and
+resource validation already apply. See the
+[optional post-process workflow](../development/render-graph-authoring.md#add-an-optional-post-process-subgraph).
+
+Persson also describes material-triggered work inside a draw layer for layered
+refraction. The [clear-glass raster trial](https://github.com/The-Ludus-Project/Ludus/issues/1387)
+can establish whether one declared scene-color input gives acceptable overlap
+for an authored consumer. Revisit per-draw scheduling only if that comparison
+shows a visible gap and a bounded copy/filter schedule fits the target's frame
+time and transient-memory budgets.
+
 ## Cameras, reusable raster graphs and scene coverage
 
 Every active presentation camera must have at least one valid graph route to its
