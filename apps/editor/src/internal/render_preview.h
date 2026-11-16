@@ -39,6 +39,24 @@
 namespace ludus::editor
 {
 class PreviewGpuGeneration;
+/// How the World viewport chooses the base exposure of its clustered deferred graph output.
+enum class ViewportExposureMode : foundation::uint8
+{
+    /// Meter the World's Earth Atmosphere and directional lights with an incident-light meter; Worlds without an
+    /// enabled Atmosphere keep the graph's exposure, whose scale their authored lights were chosen for.
+    Automatic,
+    /// A camera exposure value at ISO 100 chosen by the user.
+    Manual,
+    /// The graph's authored ToneMap multiplier.
+    Graph,
+};
+/// Base exposure resolved for one graph view (ViewDescription::Exposure and ExposureValue100).
+struct ViewportExposure final
+{
+    graphics::renderer::ExposureMode Mode = graphics::renderer::ExposureMode::Graph;
+    /// Meaningful when Mode is Physical.
+    foundation::float32 ExposureValue100 = 0;
+};
 // Main-thread renderer/device owner. Never destroys another preview's session.
 // Its frames reach PreviewViewport through the ViewportFrameSource contract.
 class RenderPreview final : public ViewportFrameSource
@@ -240,6 +258,26 @@ public:
     {
         return mRasterExposureStops;
     }
+    /// Choose how the viewport's base exposure is found. A view session choice, not persisted; Automatic by default.
+    /// Values outside ViewportExposureMode preserve the current choice. GUI thread only.
+    void SetExposureMode(ViewportExposureMode mode);
+    [[nodiscard]] LUDUS_INLINE ViewportExposureMode GetExposureMode() const noexcept
+    {
+        return mExposureMode;
+    }
+    /// Camera exposure value at ISO 100 that ViewportExposureMode::Manual uses. Values outside
+    /// [MIN_EXPOSURE_VALUE_100, MAX_EXPOSURE_VALUE_100] preserve it. GUI thread only.
+    void SetManualExposureValue100(foundation::float32 exposureValue100);
+    [[nodiscard]] LUDUS_INLINE foundation::float32 GetManualExposureValue100() const noexcept
+    {
+        return mManualExposureValue100;
+    }
+    /// Base exposure for the current scene and mode. Automatic meters level ground at the Atmosphere's surface
+    /// anchor: MeterAtmosphereIlluminance for the Sun and clear sky, plus MeterDirectionalIlluminance for the Moon
+    /// and other directional lights, converted by ComputeIncidentExposureValue100. The atmosphere reading is cached
+    /// until the Atmosphere changes. Automatic returns Graph when the scene has no enabled Atmosphere or the
+    /// Atmosphere cannot be metered. GUI thread only.
+    [[nodiscard]] ViewportExposure ResolveExposure();
     /// Lighting term the clustered deferred World output draws instead of its final colour, and the analytic light
     /// that Light and ShadowCoverage isolate (render-graph-authoring.md, "Lighting views"). A view session choice,
     /// not persisted; graphs without a clustered deferred final output ignore it. Values outside DeferredLightingView
@@ -467,6 +505,14 @@ private:
     foundation::float32 mLookSensitivity = 1;
     foundation::float32 mFlySpeed = 1;
     foundation::float32 mRasterExposureStops = 0;
+    ViewportExposureMode mExposureMode = ViewportExposureMode::Automatic;
+    /// A clear sunny day, as the Sunny 16 rule meters it.
+    static constexpr foundation::float32 DEFAULT_MANUAL_EXPOSURE_VALUE_100 = 15;
+    foundation::float32 mManualExposureValue100 = DEFAULT_MANUAL_EXPOSURE_VALUE_100;
+    /// Atmosphere the cached reading was metered for, and its level-ground illuminance in lux.
+    graphics::renderer::AtmosphereDescription mMeteredAtmosphere{};
+    foundation::float64 mMeteredAtmosphereLux = 0;
+    bool mHasMeteredAtmosphere = false;
     graphics::renderer::DeferredLightingView mLightingView = graphics::renderer::DeferredLightingView::Final;
     foundation::uint64 mLightingViewSourceId = 0;
     /// Viewport size preset index; see SetViewportSize.

@@ -706,7 +706,11 @@ bool TrySetEarthNightSky(const QJsonObject& entity,
     {
         return false;
     }
-    constexpr float32 MILKY_WAY_RADIANCE = 0.045F; // Scene-linear nits for the editor's procedural dark-sky band.
+    // Scene-linear nits for the procedural band, whose brightest point is 2.25 times this scale. That peak is set
+    // near 8e-4 cd/m^2, about four times the 2e-4 cd/m^2 (21.8 mag/arcsec^2) truly dark sky in Wikipedia's
+    // "Surface brightness" article (https://en.wikipedia.org/wiki/Surface_brightness), an estimate for the
+    // brightest star clouds. Physical values let a metered night exposure show the band without saturating it.
+    constexpr float32 MILKY_WAY_RADIANCE = 0.00036F;
     inoutCelestial.MilkyWayRadiance = MILKY_WAY_RADIANCE;
     inoutCelestial.GalacticNorthWorld = sky.GalacticNorthWorld;
     inoutCelestial.GalacticCenterWorld = sky.GalacticCenterWorld;
@@ -1667,6 +1671,33 @@ rr::AtmosphereDescription RenderScene::GetAtmosphereForView() const noexcept
         atmosphere.Celestial.LunarAngularRadiusRadians = 0;
     }
     return atmosphere;
+}
+
+float64 RenderScene::MeterDirectionalIlluminance(math::Vector3 upWorld) const noexcept
+{
+    // ITU-R BT.709 relative luminance of a display-linear light colour.
+    constexpr math::Vector3 LUMINANCE_WEIGHTS{0.2126F, 0.7152F, 0.0722F};
+    float64 illuminance = 0;
+    for (uint32 i = 0; i < AuthoredLights.Count; ++i)
+    {
+        const rr::DirectLight& light = AuthoredLights.Lights[i];
+        if (light.Kind != rr::LightKind::Directional ||
+            (Atmosphere.IsEnabled == true && light.SourceId == Atmosphere.SunSourceId))
+        {
+            continue;
+        }
+        math::Vector3 towardLightWorld;
+        if (math::TryNormalize(-light.Direction, towardLightWorld) != math::MathStatus::Success)
+        {
+            continue;
+        }
+        const float32 cosine = math::Dot(towardLightWorld, upWorld);
+        if (cosine > 0)
+        {
+            illuminance += static_cast<float64>(math::Dot(light.Color, LUMINANCE_WEIGHTS) * light.Intensity * cosine);
+        }
+    }
+    return illuminance;
 }
 
 bool RenderScene::ShouldUseEmptyWorldView() const noexcept

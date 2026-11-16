@@ -451,8 +451,11 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                   static_cast<float32>(meshLightCount),
                                   static_cast<float32>(meshLightGridWord)};
     mCamera = camera;
-    mExposure = operation.ToneMappingExposure *
-                static_cast<float32>(math::Pow(2, static_cast<float64>(camera.RasterExposureStops)));
+    // A zero multiplier marks a disabled ToneMap, whose raw linear output physical exposure must not change.
+    const float32 baseExposure = camera.Exposure == ExposureMode::Physical && operation.ToneMappingExposure > 0
+                                     ? ComputeExposureMultiplier(camera.ExposureValue100)
+                                     : operation.ToneMappingExposure;
+    mExposure = baseExposure * static_cast<float32>(math::Pow(2, static_cast<float64>(camera.RasterExposureStops)));
     mToneCurve = static_cast<uint32>(
         operation.ToneMappingCurve == content::render_graph_format::DisplayCurve::PbrNeutral ? ToneCurve::PbrNeutral
                                                                                              : ToneCurve::Reinhard);

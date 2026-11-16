@@ -1486,6 +1486,66 @@ void RenderPreview::SetRasterExposureStops(float32 stops)
     mRasterExposureStops = stops;
     Q_EMIT RasterExposureChanged();
 }
+void RenderPreview::SetExposureMode(ViewportExposureMode mode)
+{
+    if (static_cast<uint32>(mode) > static_cast<uint32>(ViewportExposureMode::Graph) || mode == mExposureMode)
+    {
+        return;
+    }
+    mExposureMode = mode;
+    Q_EMIT RasterExposureChanged();
+}
+void RenderPreview::SetManualExposureValue100(float32 exposureValue100)
+{
+    if (rr::ComputeExposureMultiplier(exposureValue100) == 0 || exposureValue100 == mManualExposureValue100)
+    {
+        return;
+    }
+    mManualExposureValue100 = exposureValue100;
+    Q_EMIT RasterExposureChanged();
+}
+ViewportExposure RenderPreview::ResolveExposure()
+{
+    if (mExposureMode == ViewportExposureMode::Graph)
+    {
+        return {};
+    }
+    if (mExposureMode == ViewportExposureMode::Manual)
+    {
+        return { .Mode = rr::ExposureMode::Physical, .ExposureValue100 = mManualExposureValue100 };
+    }
+    const rr::AtmosphereDescription atmosphere = Scene_.GetAtmosphereForView();
+    if (atmosphere.IsEnabled == false)
+    {
+        return {};
+    }
+    // Only these fields change the reading; the night-sky boundary does not light the ground.
+    const bool isCached = mHasMeteredAtmosphere == true &&
+                          mMeteredAtmosphere.ShouldLightScene == atmosphere.ShouldLightScene &&
+                          mMeteredAtmosphere.SurfaceAnchorWorld == atmosphere.SurfaceAnchorWorld &&
+                          mMeteredAtmosphere.SurfaceUpWorld == atmosphere.SurfaceUpWorld &&
+                          mMeteredAtmosphere.DirectionToSunWorld == atmosphere.DirectionToSunWorld &&
+                          mMeteredAtmosphere.SolarIlluminance == atmosphere.SolarIlluminance;
+    if (isCached == false)
+    {
+        float64 illuminance = 0;
+        if (rr::MeterAtmosphereIlluminance(atmosphere, illuminance) != rr::AtmosphereEnvironmentStatus::Ready)
+        {
+            mHasMeteredAtmosphere = false;
+            return {};
+        }
+        mMeteredAtmosphere = atmosphere;
+        mMeteredAtmosphereLux = illuminance;
+        mHasMeteredAtmosphere = true;
+    }
+    math::Vector3 upWorld;
+    if (math::TryNormalize(atmosphere.SurfaceUpWorld, upWorld) != math::MathStatus::Success)
+    {
+        return {};
+    }
+    const float64 illuminance = mMeteredAtmosphereLux + Scene_.MeterDirectionalIlluminance(upWorld);
+    return { .Mode = rr::ExposureMode::Physical, .ExposureValue100 = rr::ComputeIncidentExposureValue100(illuminance) };
+}
 void RenderPreview::SetLightingView(graphics::renderer::DeferredLightingView view, uint64 sourceId)
 {
     if (static_cast<uint32>(view) > graphics::renderer::DEFERRED_LIGHTING_VIEW_LAST ||
