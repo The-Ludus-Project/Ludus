@@ -27,8 +27,9 @@
 #include "internal/viewport_frame_source.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
-#include "internal/viewport_walk_collision.h"
 #include "internal/world_surface_bake.h"
+
+#include <walking_controller.h>
 
 #include <QElapsedTimer>
 #include <QJsonObject>
@@ -446,7 +447,7 @@ private:
     void invalidateView();
     EditorCameraController mCameraController;
     EditorCameraController mFirstPersonCamera;
-    ViewportWalkCollision mFirstPersonCollision;
+    first_person::WalkingController mFirstPersonCollision;
     bool mIsExploringFirstPerson = false;
     foundation::float32 mLookSensitivity = 1;
     foundation::float32 mFlySpeed = 1;

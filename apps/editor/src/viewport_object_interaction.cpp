@@ -4,10 +4,10 @@
 #include "internal/render_preview.h"
 #include "internal/viewport_gizmo_readout.h"
 #include "internal/viewport_overlay_layer.h"
-#include "internal/viewport_walk_collision.h"
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
+#include <walking_controller.h>
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -649,7 +649,7 @@ void ViewportObjectInteraction::appendPlayerOutline(ViewportObjectOverlay& inout
             eyeWorld = {position[0].toDouble(), position[1].toDouble(), position[2].toDouble()};
         }
     }
-    appendBoxOutline(ViewportWalkCollision::ComputeBodyBounds(eyeWorld), mWorldToClip, inoutOverlay);
+    appendBoxOutline(first_person::WalkingController::ComputeBodyBounds(eyeWorld), mWorldToClip, inoutOverlay);
 }
 
 bool ViewportObjectInteraction::refreshMeshBounds()
