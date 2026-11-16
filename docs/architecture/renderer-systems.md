@@ -2136,10 +2136,18 @@ camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
 
 An Atmosphere is an optional World feature. `RenderGraph::Update` admits a
 camera with an enabled Atmosphere in a graph without the clustered deferred
-programs. It clears that camera's Atmosphere, draws the World with its ordinary
-background and unattenuated directional lights, and sets
-`RenderGraphReport::IsAtmosphereOmitted`. The editor reports the omission as a
-warning, not a rejection.
+programs, and clears that camera's Atmosphere for the graph's raster passes.
+Ray kernels draw it through two scene functions instead.
+`EvaluateEnvironment` reads a CPU-resolved distant sky, the same one the RT1
+reference uses (below), and the linked Sun carries the transmitted illuminance.
+`ApplyAerialPerspective` reads a table of haze along view segments from the
+camera's altitude. The builder records which functions a kernel calls from its
+reflected bindings. `GetWorldFeatureSupport` reports each feature as Supported,
+Approximated or Not rendered. `RenderGraphReport::UnrenderedWorldFeatures`
+names the features the World uses and the graph does not draw. The editor
+reports those as a warning, not a rejection. The functions, their limits and the
+editor's table are described under
+[World features](../development/render-graph-authoring.md#world-features).
 
 ### Reference capture of an Atmosphere
 

@@ -8,9 +8,11 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
+#include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/light_transformer_encoder.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
+#include <ludus/graphics/renderer/world_feature.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/pipeline_preparation.h>
@@ -183,6 +185,15 @@ struct RenderGraphPrograms final
     /// renderer uploads and binds that buffer; RayCompute.Bindings must name the slot exactly when
     /// this is true. See docs/development/ltc-table.md.
     bool HasLtcTable = false;
+    /// RayCompute calls EvaluateEnvironment, so reflection kept the Atmosphere sky table at slot 15
+    /// (LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING), its last binding after the failure summary. The renderer resolves the
+    /// sky for each prepared scene and binds it; RayCompute.Bindings must name the slot exactly when this is true.
+    /// Requires HasSceneShaderInterface. See GetWorldFeatureSupport.
+    bool HasAtmosphereSky = false;
+    /// RayCompute calls ApplyAerialPerspective, so reflection kept the aerial perspective table at slot 11
+    /// (LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING). The renderer resolves and binds it for each prepared scene;
+    /// RayCompute.Bindings must name the slot exactly when this is true. Requires HasSceneShaderInterface.
+    bool HasAerialPerspective = false;
     /// RayCompute offsets its dispatch by the ray uniform's tile region (runtime package version 28 and later,
     /// and every generated header), so RenderGraph::SetRayTileCount may split a sample into row bands. Older
     /// kernels cover the whole image on every dispatch and therefore cannot be tiled.
@@ -196,6 +207,14 @@ struct RenderGraphPrograms final
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const RenderGraphRecipeKey> RecipeKeys{};
 };
+/// How much of a World feature a graph with these programs draws. The clustered deferred resolve composes every
+/// feature (Supported). Otherwise a ray kernel draws a feature as the documented approximation (Approximated) exactly
+/// when it calls the feature's scene function, which HasAtmosphereSky and HasAerialPerspective record from the compiled
+/// kernel's reflection; every other graph draws the World without it (NotRendered).
+/// @param programs Programs as RenderGraph::Initialize admits them.
+/// @param feature A WorldFeature value; values outside the enum return NotRendered.
+[[nodiscard]] WorldFeatureSupport GetWorldFeatureSupport(const RenderGraphPrograms& programs,
+                                                         WorldFeature feature) noexcept;
 /// Why a graph ray invocation failed: the scene interface's reasons, recorded by the shader function
 /// FailSceneQuery (scene_shader_layout.h, LUDUS_SCENE_FAILURE_*). Authored shaders may report their own reasons from
 /// RENDER_GRAPH_FAILURE_AUTHORED_FIRST. See docs/development/render-graph-authoring.md, "Explain failed pixels".
@@ -436,6 +455,17 @@ struct RenderGraphSceneDescription final
     /// Selected ::ludus::content::render_graph_format::SCENE_DATA_* groups; Lights retain emitter emission
     /// dependencies. Consumed before Update returns.
     foundation::uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    /// Atmosphere sky table read by EvaluateEnvironment in kernels with RenderGraphPrograms::HasAtmosphereSky, header
+    /// included, in the LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING layout of renderer_gpu_preview_layout.h. RenderGraph::Update
+    /// resolves it from the camera's Atmosphere; preparation copies it before returning. Empty binds no table.
+    // Keep partial aggregate callers warning-clean when these optional fields are omitted.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const foundation::math::Vector4> AtmosphereSkyTable{};
+    /// Aerial perspective table read by ApplyAerialPerspective in kernels with
+    /// RenderGraphPrograms::HasAerialPerspective, in the LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING layout. Copied during
+    /// preparation; empty binds no table.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const foundation::math::Vector4> AerialPerspectiveTable{};
 };
 /// Scene compatibility for a rendering role, independent of runtime culling.
 enum class RenderGraphCoverage : foundation::uint8
@@ -543,11 +573,11 @@ struct RenderGraphReport final
     foundation::uint32 Excluded = 0;           ///< Explicit omissions.
     bool IsAccepted = false;                   ///< Candidate was accepted for asynchronous preparation.
     bool IsReady = false;                      ///< Accepted scene is drawable; producer completion is separate.
-    /// The accepted extraction's cameras enable an Atmosphere that this graph cannot compose: only graphs with the
-    /// clustered deferred programs draw one. The graph still draws the World, without the sky, the
-    /// Atmosphere-attenuated Sun, aerial perspective or the night sky, so callers can tell the user what is not
-    /// rendered. False when no camera enables one, when the graph composes it, and before an extraction is accepted.
-    bool IsAtmosphereOmitted = false;
+    /// World features the accepted extraction uses and this graph does not render (GetWorldFeatureSupport returns
+    /// NotRendered). A camera that enables an Atmosphere uses AtmosphereSky; one whose Atmosphere also lights the scene
+    /// uses AerialPerspective. The graph still draws the rest of the World, so callers can tell the user what is
+    /// missing (DescribeWorldFeature). Zero when nothing is missing and before an extraction is accepted.
+    WorldFeatureMask UnrenderedWorldFeatures = 0;
     LightTransformerPreparationReport Model{}; ///< Latest model candidate diagnostics; independent of drawable output.
     /// Mesh-light shadow faces of the drawable scene not yet drawn into its atlas; each Render draws some within its
     /// per-frame budgets, and receivers of an undrawn face read as unoccluded. Zero without a drawable scene or
@@ -851,6 +881,9 @@ public:
     /// Cause of the latest Update's Unsupported result; None after any other result, before the
     /// first Update and after Reset. Diagnostic only: it never changes the drawable or pending scene.
     [[nodiscard]] RenderGraphSceneRejection GetLastRejection() const noexcept;
+    /// How much of a World feature this graph draws, derived from its programs (see GetWorldFeatureSupport).
+    /// NotRendered before Initialize succeeds.
+    [[nodiscard]] WorldFeatureSupport GetWorldFeatureSupport(WorldFeature feature) const noexcept;
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
     /// True when the last ray writer of any color target outputs individual samples or has an

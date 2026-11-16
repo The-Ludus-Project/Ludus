@@ -177,17 +177,38 @@ QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection re
     return {};
 }
 
-QString DescribeOmittedAtmosphere(const QString& configuration)
+QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::WorldFeatureMask features)
 {
+    QStringList names;
+    QStringList functions;
+    QStringList omissions;
+    for (usize index = 0; index < renderer::WORLD_FEATURE_COUNT; ++index)
+    {
+        const renderer::WorldFeature feature = static_cast<renderer::WorldFeature>(index);
+        if ((features & renderer::GetWorldFeatureBit(feature)) == 0)
+        {
+            continue;
+        }
+        const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
+        names.append(QString::fromUtf8(description.Name));
+        functions.append(QString::fromUtf8(description.Function));
+        omissions.append(QString::fromUtf8(description.Omission));
+    }
+    if (names.isEmpty() == true)
+    {
+        return {};
+    }
     const QString graph = configuration.isEmpty() == true
                               ? QStringLiteral("The selected graph configuration")
                               : QStringLiteral("Graph configuration “%1”").arg(configuration);
-    return QStringLiteral("Atmosphere not rendered. %1 has no clustered deferred raster pass, so it draws the World "
-                          "without the sky, haze and night sky: the background is the World environment and the "
-                          "Atmosphere's Sun is not dimmed by the air. Turn on Force raster in the viewport toolbar to "
-                          "see the sky with the engine's default raster graph, or disable the Atmosphere entity in "
-                          "the World.")
-        .arg(graph);
+    return QStringLiteral("World features not rendered: %1. %2 draws the World without them. %3 To draw them, call %4 "
+                          "from a ray callback, as the World features table in Render Preview shows. Or turn on Force "
+                          "raster in the viewport toolbar to see them with the engine's default raster graph, or "
+                          "disable the Atmosphere entity in the World.")
+        .arg(names.join(QStringLiteral(", ")),
+             graph,
+             omissions.join(QLatin1Char(' ')),
+             functions.join(QStringLiteral(" and ")));
 }
 
 QString DescribeRenderGraphActivationFailure(const renderer::RenderGraphActivationReport& report)
@@ -1757,8 +1778,10 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             const float64 maximumAltitude =
                 renderer::GetAtmosphereMaximumViewAltitude(atmosphere, state.Extraction.View.OrthographicCamera);
             float64 altitude = 0;
-            // A graph that omits the Atmosphere draws no sky, so its altitude range does not apply.
-            if (atmosphere.IsEnabled == true && graphReport.IsAtmosphereOmitted == false &&
+            // A graph that omits the Atmosphere sky draws none, so its altitude range does not apply.
+            if (atmosphere.IsEnabled == true &&
+                (graphReport.UnrenderedWorldFeatures &
+                 renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky)) == 0 &&
                 renderer::TryGetAtmosphereAltitude(atmosphere, state.Extraction.View.CameraPosition, altitude) ==
                     true &&
                 (altitude < 0 || altitude > maximumAltitude))
@@ -2265,10 +2288,22 @@ usize RenderGraphPreview::GetProbeReceiverDrawCount() const noexcept
     return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.ProbeReceiverDraws : 0;
 }
 
-bool RenderGraphPreview::IsAtmosphereOmitted() const noexcept
+renderer::WorldFeatureMask RenderGraphPreview::GetUnrenderedWorldFeatures() const noexcept
 {
     const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
-    return activeOrNull != nullptr && activeOrNull->GetReport().IsAtmosphereOmitted == true;
+    return activeOrNull != nullptr ? activeOrNull->GetReport().UnrenderedWorldFeatures : 0;
+}
+
+bool RenderGraphPreview::GetWorldFeatureSupport(renderer::WorldFeature feature,
+                                                renderer::WorldFeatureSupport& outSupport) const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    if (activeOrNull == nullptr)
+    {
+        return false;
+    }
+    outSupport = activeOrNull->GetWorldFeatureSupport(feature);
+    return true;
 }
 
 QString RenderGraphPreview::GetDisplayStatus() const

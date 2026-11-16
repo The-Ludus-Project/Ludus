@@ -2294,15 +2294,21 @@ with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
-Only clustered deferred raster configurations draw an Atmosphere. A
-ray-traced or forward configuration still draws the rest of the World. Its
-background is the World environment, the linked Sun lights the scene as an
-ordinary directional light that the air does not dim, and there is no haze or
-night sky. The viewport and the Error List show an **Atmosphere not rendered**
-warning (code `RenderGraphFeatureNotRendered`) that names the configuration.
-Turn on **Force raster** in the viewport toolbar to see the sky with the
-engine's default raster graph, or disable the Atmosphere entity to clear the
-warning.
+Clustered deferred raster configurations draw the whole Atmosphere. A
+ray-traced configuration draws the parts its ray kernels call
+[scene functions](render-graph-authoring.md#world-features) for. Most ray
+templates show the sky, without the night sky, and light the scene with it and
+the dimmed Sun, but add no haze. A forward configuration still draws the rest
+of the World. Its background is the World environment, and the linked Sun is
+an ordinary directional light that the air does not dim. When the World uses a
+feature the configuration does not draw, the viewport and the Error List show a
+**World features not rendered** warning (code `RenderGraphFeatureNotRendered`).
+It names the configuration, each missing feature and the function to call.
+Activate the warning row to open **Render Preview** at its **World features**
+table. It lists each feature with its support, its scene function and where to
+call it. Turn on **Force raster** in the viewport toolbar to see the full
+Atmosphere with the engine's default raster graph, or disable the Atmosphere
+entity to clear the warning.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky

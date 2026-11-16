@@ -246,6 +246,14 @@ void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
 {
     if (entry.Producer == ErrorListProducer::RenderPreview)
     {
+        // A missing World feature is repaired in the graph's code: land on the table naming the function to call.
+        if (entry.Code == QLatin1String(graphics::renderer::WORLD_FEATURE_WARNING_CODE))
+        {
+            static_cast<void>(mDocuments->OpenDocument(Renderer_));
+            showToolWindow(mRenderPreviewDock);
+            Renderer_->RevealWorldFeatures();
+            return;
+        }
         if (entry.Severity == ErrorListSeverity::Warning &&
             (offerLuminaireRepair() == true || offerSunRepair() == true))
         {

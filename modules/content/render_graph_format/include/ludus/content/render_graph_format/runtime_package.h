@@ -68,6 +68,8 @@
 /// carries a Technique, ShaderTarget (both uint32), and an IDENTITY_BYTES digest.
 /// Records are strictly ascending by (Technique, ShaderTarget). Earlier versions
 /// supply no recipe keys. Keys identify build inventory entries for diagnostics.
+/// Version 37 admits the World-feature scene resource bits SCENE_RESOURCE_ATMOSPHERE_SKY and
+/// SCENE_RESOURCE_AERIAL_PERSPECTIVE without changing any record width.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -134,8 +136,17 @@ inline constexpr foundation::uint32 RECIPE_KEY_PACKAGE_VERSION = 35;
 /// First generation carrying the optional deferred probe G-buffer fragment, which a clustered deferred pass with a
 /// connected Baked Lighting input draws for GI Probe Receivers. Earlier packages render every draw in realtime.
 inline constexpr foundation::uint32 DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION = 36;
+/// First generation admitting the World-feature scene resource bits; record widths are unchanged.
+inline constexpr foundation::uint32 WORLD_FEATURE_PACKAGE_VERSION = 37;
+/// Scene resource bit: the linked scene ray kernel calls EvaluateEnvironment and reads the renderer's Atmosphere sky
+/// table at LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING, its last binding after the failure summary
+/// (docs/development/render-graph-authoring.md, "World features").
+inline constexpr foundation::uint32 SCENE_RESOURCE_ATMOSPHERE_SKY = 8U;
+/// Scene resource bit: the linked scene ray kernel calls ApplyAerialPerspective and reads the renderer's aerial
+/// perspective table at LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING, before the LTC table.
+inline constexpr foundation::uint32 SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16U;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = WORLD_FEATURE_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

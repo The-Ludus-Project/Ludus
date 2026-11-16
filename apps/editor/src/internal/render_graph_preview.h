@@ -7,6 +7,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
+#include <ludus/graphics/renderer/world_feature.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -46,10 +47,13 @@ DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
 /// counts come from report. Empty for RenderGraphSceneRejection::None.
 [[nodiscard]] QString DescribeRenderGraphSceneRejection(graphics::renderer::RenderGraphSceneRejection rejection,
                                                         const graphics::renderer::RenderGraphReport& report);
-/// Warning for a graph that draws the World without its Atmosphere (RenderGraphReport::IsAtmosphereOmitted): what is
-/// not rendered, why, and the repairs. Never blocks drawing.
+/// Warning for a graph that draws the World without some of its features (RenderGraphReport::UnrenderedWorldFeatures):
+/// what is not rendered, the scene functions that draw it, where the World features table is, and the other repairs.
+/// Never blocks drawing. Feature text comes from graphics::renderer::DescribeWorldFeature.
 /// @param configuration Display name of the drawing graph configuration; empty omits the name.
-[[nodiscard]] QString DescribeOmittedAtmosphere(const QString& configuration);
+/// @param features Unrendered features; zero yields an empty string.
+[[nodiscard]] QString DescribeUnrenderedWorldFeatures(const QString& configuration,
+                                                      graphics::renderer::WorldFeatureMask features);
 /// Viewport status for a failed or restart-requiring candidate, naming its cause and repair when the renderer
 /// attributed one; empty while the candidate is neither Failed nor RestartRequired.
 [[nodiscard]] QString
@@ -366,9 +370,13 @@ public:
     [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
     /// Draws of the active graph sampling the baked probe volume; zero without a deferred Baked Lighting pass.
     [[nodiscard]] foundation::usize GetProbeReceiverDrawCount() const noexcept;
-    /// Whether the active graph draws the latest World extraction without its Atmosphere because it has no clustered
-    /// deferred programs; false without an active graph. See DescribeOmittedAtmosphere.
-    [[nodiscard]] bool IsAtmosphereOmitted() const noexcept;
+    /// World features the latest extraction uses that the active graph does not render; zero without an active graph.
+    /// See DescribeUnrenderedWorldFeatures.
+    [[nodiscard]] graphics::renderer::WorldFeatureMask GetUnrenderedWorldFeatures() const noexcept;
+    /// How much of a World feature the active graph draws (RenderGraph::GetWorldFeatureSupport). False, leaving
+    /// outSupport unchanged, without an active graph.
+    [[nodiscard]] bool GetWorldFeatureSupport(graphics::renderer::WorldFeature feature,
+                                              graphics::renderer::WorldFeatureSupport& outSupport) const noexcept;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
     {

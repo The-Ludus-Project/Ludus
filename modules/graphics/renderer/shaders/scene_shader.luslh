@@ -230,6 +230,10 @@ extern slang
     MaterialSample EvaluateMaterial(in SceneContext scene, in SurfaceHit hit);
     float32x3 EvaluateEmission(in SceneContext scene, in SurfaceHit hit, in float32x3 directionAwayWorld);
     float32x3 EvaluateEnvironment(in SceneContext scene, in float32x3 directionWorld);
+    float32x3 ApplyAerialPerspective(in SceneContext scene,
+                                     in float32x3 originWorld,
+                                     in float32x3 hitWorld,
+                                     in float32x3 radiance);
     SceneInfo GetSceneInfo(in SceneContext scene);
     uint32 GetLightCount(in SceneContext scene);
     LightInfo GetLightInfo(in SceneContext scene, in uint32 lightIndex);

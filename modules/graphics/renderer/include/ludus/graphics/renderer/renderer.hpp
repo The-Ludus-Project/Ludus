@@ -290,7 +290,8 @@ struct ViewDescription final
     ludus::foundation::float32 RasterExposureStops = 0;
     /// Optional Earth clear-sky background for the clustered deferred graph.
     /// Out-of-shell cameras use the graph clear. Invalid inputs reject a new candidate. A render graph without the
-    /// clustered deferred programs draws the view without it and reports RenderGraphReport::IsAtmosphereOmitted.
+    /// clustered deferred programs draws what its ray kernels call World-feature functions for
+    /// (GetWorldFeatureSupport) and reports the rest in RenderGraphReport::UnrenderedWorldFeatures.
     AtmosphereDescription Atmosphere{};
 };
 /// Packet counts and a diagnostic prefix, copied to caller storage; IDs follow draw/instance order.

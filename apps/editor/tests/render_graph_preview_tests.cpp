@@ -1277,19 +1277,34 @@ TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[edito
               .contains(QStringLiteral("memory budget")) == false);
 }
 
-TEST_CASE("a graph that omits the Atmosphere names what is not rendered and the repairs",
-          "[editor][render-graph][preview]")
+TEST_CASE("a graph that omits World features names them, the functions that draw them and the repairs",
+          "[editor][render-graph][preview][world-features]")
 {
-    const QString named = DescribeOmittedAtmosphere(QStringLiteral("main"));
-    CHECK(named.startsWith(QStringLiteral("Atmosphere not rendered. Graph configuration “main”")) == true);
-    CHECK(named.contains(QStringLiteral("clustered deferred")) == true);
-    CHECK(named.contains(QStringLiteral("World environment")) == true);
+    const renderer::WorldFeatureMask both = renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky) |
+                                            renderer::GetWorldFeatureBit(renderer::WorldFeature::AerialPerspective);
+    const QString named = DescribeUnrenderedWorldFeatures(QStringLiteral("main"), both);
+    CHECK(named.startsWith(
+              QStringLiteral("World features not rendered: Atmosphere sky, Aerial perspective. Graph configuration "
+                             "“main”")) == true);
+    // The renderer owns the feature text: the function to call and what is shown instead.
+    for (const renderer::WorldFeature feature :
+         {renderer::WorldFeature::AtmosphereSky, renderer::WorldFeature::AerialPerspective})
+    {
+        const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
+        CHECK(named.contains(QString::fromUtf8(description.Function)) == true);
+        CHECK(named.contains(QString::fromUtf8(description.Omission)) == true);
+    }
+    CHECK(named.contains(QStringLiteral("World features table in Render Preview")) == true);
     CHECK(named.contains(QStringLiteral("Force raster")) == true);
     CHECK(named.contains(QStringLiteral("disable the Atmosphere entity")) == true);
     // It is advice about a drawn frame, not a rejection.
     CHECK(named.contains(QStringLiteral("cannot draw")) == false);
-    CHECK(DescribeOmittedAtmosphere({}).startsWith(
-              QStringLiteral("Atmosphere not rendered. The selected graph configuration")) == true);
+    const QString sky =
+        DescribeUnrenderedWorldFeatures({}, renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
+    CHECK(sky.startsWith(QStringLiteral("World features not rendered: Atmosphere sky. The selected graph "
+                                        "configuration")) == true);
+    CHECK(sky.contains(QStringLiteral("ApplyAerialPerspective")) == false);
+    CHECK(DescribeUnrenderedWorldFeatures(QStringLiteral("main"), 0).isEmpty() == true);
 }
 
 TEST_CASE("a failed candidate names the World input it cannot draw and the repair", "[editor][render-graph][preview]")
