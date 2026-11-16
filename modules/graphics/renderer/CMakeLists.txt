@@ -174,13 +174,23 @@ if(LUDUS_BUILD_TESTS)
     add_library(ludus_renderer_earth_sky_quadrature OBJECT tests/earth_sky_quadrature.cpp)
     target_link_libraries(ludus_renderer_earth_sky_quadrature PRIVATE Ludus::FoundationContainers Ludus::FoundationMath)
     ludus_apply_project_defaults(ludus_renderer_earth_sky_quadrature)
+    # CPU test oracles compile once with the renderer's non-contracted arithmetic, so the
+    # deterministic oracle tests and the GPU parity suites compare against the same objects.
+    # A static archive lets each executable pull only the oracles it calls.
+    add_library(ludus_renderer_test_oracles STATIC tests/guided_fg_oracle.cpp tests/one_more_vertex_oracle.cpp
+        tests/polygonal_light_sampling_oracle.cpp tests/shadow_occlusion_oracle.cpp
+        tests/steinberg_physical_optics_oracle.cpp)
+    target_link_libraries(ludus_renderer_test_oracles PUBLIC Ludus::GraphicsRenderer Ludus::FoundationContainers
+        Ludus::FoundationMath)
+    target_compile_options(ludus_renderer_test_oracles PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
+    ludus_apply_project_defaults(ludus_renderer_test_oracles)
     add_executable(ludus_metropolis_tests tests/metropolis_tests.cpp ../../foundation/math/tests/metropolis_tests.cpp)
     target_link_libraries(ludus_metropolis_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationContainers Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_metropolis_tests)
     ludus_enable_test_exceptions(ludus_metropolis_tests)
     add_test(NAME ludus_metropolis_tests COMMAND ludus_metropolis_tests)
-    add_executable(ludus_one_more_vertex_oracle_tests tests/one_more_vertex_oracle_tests.cpp tests/one_more_vertex_oracle.cpp)
-    target_link_libraries(ludus_one_more_vertex_oracle_tests PRIVATE Ludus::GraphicsRenderer
+    add_executable(ludus_one_more_vertex_oracle_tests tests/one_more_vertex_oracle_tests.cpp)
+    target_link_libraries(ludus_one_more_vertex_oracle_tests PRIVATE ludus_renderer_test_oracles Ludus::GraphicsRenderer
         Ludus::FoundationContainers Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_one_more_vertex_oracle_tests)
     ludus_enable_test_exceptions(ludus_one_more_vertex_oracle_tests)
@@ -206,13 +216,9 @@ if(LUDUS_BUILD_TESTS)
         tests/raster_mesh_light_grid_tests.cpp
         tests/raster_mesh_light_shadows_tests.cpp
         tests/reference_bvh_tests.cpp
-        tests/polygonal_light_sampling_oracle.cpp
         tests/polygonal_light_sampling_oracle_tests.cpp
-        tests/steinberg_physical_optics_oracle.cpp
         tests/steinberg_physical_optics_oracle_tests.cpp
-        tests/guided_fg_oracle.cpp
         tests/guided_fg_oracle_tests.cpp
-        tests/shadow_occlusion_oracle.cpp
         tests/shadow_occlusion_oracle_tests.cpp
         tests/texture_mip_chain_tests.cpp
         tests/wave_tracing_tests.cpp
@@ -225,7 +231,7 @@ if(LUDUS_BUILD_TESTS)
     target_compile_definitions(ludus_renderer_tests PRIVATE
         LUDUS_RENDER_GRAPH_AUTHORING_GUIDE="${PROJECT_SOURCE_DIR}/docs/development/render-graph-authoring.md")
     target_include_directories(ludus_renderer_tests PRIVATE ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
-    target_link_libraries(ludus_renderer_tests PRIVATE Ludus::GraphicsRenderer ludus_rhi_reference_backend
+    target_link_libraries(ludus_renderer_tests PRIVATE Ludus::GraphicsRenderer ludus_rhi_reference_backend ludus_renderer_test_oracles
         Ludus::FoundationStrings Ludus::FoundationContainers Ludus::FoundationThreadingProfiling
         Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
     target_compile_options(ludus_renderer_tests PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
@@ -284,13 +290,13 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_reference_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/wave_scene_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_scene_cold_gpu_timeout_seconds}")
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_hair_card_render_tests.cpp tests/render_graph_skin_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_hair_card_render_tests.cpp tests/render_graph_skin_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp
         tests/hybrid_shadow_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/viewport_antialiasing_coverage_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>")
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
-    target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
+    target_link_libraries(ludus_renderer_render_tests PRIVATE ludus_renderer_test_oracles Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
     ludus_enable_test_exceptions(ludus_renderer_render_tests)
     if(APPLE)
@@ -739,9 +745,8 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_metropolis_graph_tests PRIVATE LUDUS_JR_TEMPLATE_DIRECTORY="${jump_restore_graph_directory}")
     add_test(NAME ludus_metropolis_graph_pixels COMMAND ludus_metropolis_graph_tests)
     set_tests_properties(ludus_metropolis_graph_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 180)
-    add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp tests/one_more_vertex_oracle.cpp
-        tests/shadow_occlusion_oracle.cpp)
-    target_link_libraries(ludus_render_graph_ray_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer
+    add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp)
+    target_link_libraries(ludus_render_graph_ray_tests PRIVATE ludus_renderer_test_oracles Ludus::FoundationThreading Ludus::GraphicsRenderer
         Ludus::FoundationFilesystem Ludus::FoundationTime Ludus::SceneSource Catch2::Catch2WithMain)
     # The engine's test scene files, which the scene-source checks compare with the fixtures.
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE LUDUS_TEST_SCENES_DIR="${PROJECT_SOURCE_DIR}/tests/scenes")
