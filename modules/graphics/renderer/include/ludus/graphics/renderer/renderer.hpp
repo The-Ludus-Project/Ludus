@@ -825,13 +825,14 @@ private:
     friend class RenderGraph;
     /// Grants the renderer-owned deferred resolve access to immutable view/material bindings.
     friend class internal::RenderGraphDeferredPass;
-    /// Allows the deferred scene generation to supply its directional shadow region during material preparation.
+    /// Allows the deferred scene generation to supply its directional shadow regions during material preparation.
     friend class internal::ForwardSceneGeneration;
     [[nodiscard]] rhi::RasterStatus createLitMaterial(MaterialProgram program,
                                                       const LitMaterialDescription& description,
                                                       MaterialVersion& outMaterial,
                                                       LightSelection& outSelection,
-                                                      const ShadowRegion* directionalShadowOrNull,
+                                                      const ShadowRegion* directionalShadowsOrNull,
+                                                      foundation::usize directionalShadowCount,
                                                       foundation::uint32 shadowAtlasTexels) noexcept;
     enum class DrawMode : foundation::uint8
     {

@@ -521,8 +521,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
 - **Documents** occupy the centre. Opening a project opens its **World**, with
   **Project Settings** as a background tab. Open other documents from **Project
   Explorer**, **Project → Project Settings** or the document list at the bottom of
-  the **Window** menu. A tab shows the document's file and a `*` while it has
-  unsaved changes. Closing a tab (**Window → Close Document**, Ctrl+W) hides
+  the **Window** menu. A tab shows the document's file; while it has unsaved
+  changes a dot stands where its close cross would be (the cross returns when
+  the pointer reaches it), its tooltip says so, and the **Window** menu entry
+  ends in `*`. The close cross shows on the open tab and the tab under the
+  pointer only. Closing a tab (**Window → Close Document**, Ctrl+W) hides
   that view only; its draft stays open and quitting still asks about unsaved work.
 - **Tab groups.** **Window → New Vertical Tab Group** puts the active document
   beside the others (for example a render graph next to the World);
@@ -699,8 +702,11 @@ create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Dir
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
-colour, intensity, range and spot angles, then **Apply Changes**. Save the World
-to retain the objects; duplication and deletion use the regular entity commands.
+colour, intensity, range and spot angles, then **Apply Changes**. Every entity's
+Transform, like a scene instance's, shows Position, Rotation and Scale as one
+X Y Z row each with four significant digits, such as 1.878; the field's tooltip
+gives the stored value, and **Apply Changes** keeps it unless you edit that field.
+Save the World to retain the objects; duplication and deletion use the regular entity commands.
 Lights start two metres above and in front of the origin, aimed down 45 degrees.
 **Sun** is a directional light of 10 lux, placed and aimed as described in
 [Lighting a World that renders black](#lighting-a-world-that-renders-black).
@@ -2021,8 +2027,8 @@ example, use `tests/scenes/materials/closure-program-block.luscene.json`. Select
 the program's object. The **Material** group shows **Closure program** as its
 model, then one row per lobe with its operation and parameters, the size of
 the weight and roughness program, and the capabilities that pass requirements
-test. **Metallic (program input)** and **Roughness (program input)** are the
-values the program reads. The raster viewport draws them as a
+test. **Metallic** and **Roughness** are the values the program reads; their
+tooltips say so. The raster viewport draws them as a
 metallic-roughness approximation. The reference paths, Wave Tracing and
 Metropolis evaluate the program itself.
 
@@ -2163,9 +2169,9 @@ Apply the edit and save the World to keep the setting. The checkbox is on by
 default, including for older Worlds.
 
 The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
-one map to the eligible directional light with the lowest source ID. In that
-graph, point and spot lights illuminate without shadow maps. The native Lit
-preview also supports shadow maps for point and spot lights. Reference path
+maps to the two brightest eligible directional lights, such as an Atmosphere's
+Sun and Moon. In that graph, point and spot lights illuminate without shadow
+maps. The native Lit preview also supports shadow maps for point and spot lights. Reference path
 tracing and baked lighting compute visibility from scene geometry independently
 of this setting.
 
@@ -2247,6 +2253,13 @@ World geometry. It attenuates the linked Sun at opaque surfaces, lights them
 with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
+
+Only clustered deferred raster configurations draw an Atmosphere. A
+ray-traced or forward configuration rejects a World that has one, and the
+viewport keeps its last good frame. Its status says that the Atmosphere entity
+needs a clustered deferred configuration. Turn on **Force raster** in the
+viewport toolbar to use the graph's Raster configuration, or disable the
+Atmosphere entity to keep the selected configuration.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
@@ -2794,6 +2807,17 @@ stop a capture. Indirect light, soft shadows and inter-reflection
 therefore appear here, where a raster profile approximates or omits them; see
 [comparison](#compare-with-the-viewports-render-graph). Zero-area triangles are left out of the reference
 geometry. They have no area to hit or emit from.
+
+When the World has an [Atmosphere](../architecture/renderer-systems.md#reference-capture-of-an-atmosphere)
+that lights the viewport, the capture uses its sky as the environment in place of
+the scene's own, as the raster does. Its linked Sun arrives dimmed and reddened
+by the air between the Sun and the camera. The progress line then names
+**Atmosphere sky**. The sky is evaluated once at the camera's altitude, so a low
+Sun that the buildings block leaves an interior lit by skylight and
+inter-reflection alone, much darker than a raster profile that does not shadow
+its sky lighting. Night-sky stars, the Moon's disk and aerial perspective over
+scene distances are left out. Move the Sun with its celestial time or rotation
+for a brighter scene.
 
 | Traversal | Use |
 | --- | --- |

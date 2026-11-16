@@ -358,13 +358,13 @@ float ComputeShadowVisibility(int light, Varying input)
             continue;
         float4 rect = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
         float2 projectedUv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-#ifdef LUDUS_DEFERRED_MESH_LIGHTS
-        // The directional projection maps clip edges to viewport edges. The
-        // atlas rectangle supplied by the host bounds legal texel centres.
+        // Every region is drawn with its interior as the viewport, so the projection maps clip edges to viewport
+        // edges. The atlas rectangle supplied by the host bounds legal texel centres.
         float2 uv = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv);
         float2 receiverTexel = uv / settings.zw;
         float2 lowerTexel = floor(receiverTexel - 0.5) + 0.5;
         float2 fraction = receiverTexel - lowerTexel;
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
         // A receiver rebuilt from depth may sit off its surface by PositionUncertaintyWorld. Express that
         // displacement in map texels and light depth, so each tap can allow for it below.
         float3 uncertaintyClip =
@@ -375,22 +375,29 @@ float ComputeShadowVisibility(int light, Varying input)
         float2 uncertaintyTexel = abs(uncertaintyClip.xy) * 0.5 * (rect.zw - rect.xy + settings.zw) / settings.zw;
         float uncertaintyDepth = abs(uncertaintyClip.z);
 #else
-        float2 uv = lerp(rect.xy, rect.zw, projectedUv);
+        // Forward passes interpolate the receiver's exact position.
+        float2 uncertaintyTexel = float2(0);
+        float uncertaintyDepth = 0;
 #endif
         float visible = 0;
         const int SHADOW_FILTER_TAP_COUNT = 4;
         for (int tap = 0; tap < SHADOW_FILTER_TAP_COUNT; ++tap)
         {
             float2 corner = float2(tap & 1, (tap >> 1) & 1);
-#ifdef LUDUS_DEFERRED_MESH_LIGHTS
             float2 sampleUv = clamp((lowerTexel + corner) * settings.zw, rect.xy, rect.zw);
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
             float4 code = meshLightShadowAtlas.SampleLevel(shadowSampler, sampleUv, 0);
+#else
+            float4 code = shadowTexture.SampleLevel(shadowSampler, sampleUv, 0);
+#endif
             float2 centerTexel = sampleUv / settings.zw;
             // Thanks to Microsoft, "Cascaded Shadow Maps", Depth Bias,
             // https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps,
             // for comparing depths at matching locations across a PCF filter.
-            // The orthographic atlas lets us project each caster plane to the
-            // receiver's location from the slope stored at the sampled texel.
+            // Light projections map planes to planes, so each caster plane is projected to the receiver's
+            // location from the slope stored at the sampled texel. A fixed bias alone cannot cover the depth
+            // a grazing light spans across one texel: Sun-lit floors then shadowed themselves in texel stripes
+            // that aliased into blotches moving with the camera.
             float2 slope = DecodeShadowSlope(code.ba);
             float stored = DecodeShadowDepth(code.rg) + dot(slope, receiverTexel - centerTexel);
             float2 weights = lerp(1 - fraction, fraction, corner);
@@ -398,12 +405,6 @@ float ComputeShadowVisibility(int light, Varying input)
             // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
             // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
             float tolerance = settings.x + uncertaintyDepth + dot(abs(slope), uncertaintyTexel);
-#else
-            float2 sampleUv = clamp(uv + (corner - 0.5) * settings.zw, rect.xy, rect.zw);
-            float stored = DecodeShadowDepth(shadowTexture.SampleLevel(shadowSampler, sampleUv, 0).rg);
-            float weight = 1.0 / SHADOW_FILTER_TAP_COUNT;
-            float tolerance = settings.x;
-#endif
             visible += ndc.z - tolerance <= stored ? weight : 0;
         }
         return visible;

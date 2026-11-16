@@ -1277,6 +1277,39 @@ TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[edito
               .contains(QStringLiteral("memory budget")) == false);
 }
 
+TEST_CASE("a failed candidate names the World input it cannot draw and the repair", "[editor][render-graph][preview]")
+{
+    renderer::RenderGraphActivationReport report;
+    CHECK(DescribeRenderGraphActivationFailure(report).isEmpty() == true);
+    report.Candidate = renderer::RenderGraphCandidateState::Failed;
+    report.CandidateGeneration = 3;
+    report.LastFailure = rhi::RasterStatus::Unsupported;
+    // Without an attributed cause the status keeps the raw outcome.
+    CHECK(DescribeRenderGraphActivationFailure(report) ==
+          QStringLiteral("Renderer activation failed (Unsupported) for generation 3; the last good scene is kept."));
+    report.CandidateRejection = renderer::RenderGraphSceneRejection::Atmosphere;
+    const QString atmosphere = DescribeRenderGraphActivationFailure(report);
+    CHECK(atmosphere.startsWith(QStringLiteral("Renderer generation 3 cannot draw this World.")) == true);
+    CHECK(atmosphere.contains(QStringLiteral("Atmosphere entity")) == true);
+    CHECK(atmosphere.contains(QStringLiteral("Force raster")) == true);
+    CHECK(atmosphere.endsWith(QStringLiteral("The last good scene is kept.")) == true);
+    report.CandidateRejection = renderer::RenderGraphSceneRejection::Coverage;
+    report.CandidateReport.Conflicting = 2;
+    report.CandidateReport.Unsupported = 5;
+    const QString coverage = DescribeRenderGraphActivationFailure(report);
+    CHECK(coverage.contains(QStringLiteral("2 item views conflict")) == true);
+    CHECK(coverage.contains(QStringLiteral("5 item views have no compatible pass")) == true);
+    for (const renderer::RenderGraphSceneRejection rejection :
+         {renderer::RenderGraphSceneRejection::CameraDepth, renderer::RenderGraphSceneRejection::MaskedDepthPrepass})
+    {
+        CHECK(DescribeRenderGraphSceneRejection(rejection, {}).isEmpty() == false);
+    }
+    CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::None, {}).isEmpty() == true);
+    report.Candidate = renderer::RenderGraphCandidateState::RestartRequired;
+    CHECK(DescribeRenderGraphActivationFailure(report).startsWith(
+              QStringLiteral("Renderer activation requires an editor restart (Unsupported) for generation 3")) == true);
+}
+
 TEST_CASE("RG3b Renderer workspace previews only explicitly requested generations", "[editor][render-graph][preview]")
 {
     QTemporaryDir project;

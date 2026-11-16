@@ -94,10 +94,10 @@ float3 GetViewDirectionWorld(in float2 positionPixel)
 // Close higher orders locally with the isotropic geometric series and a dark ground.
 [shader("fragment")] float4 AtmosphereMultipleMain(in DeferredVarying input) : SV_Target0
 {
-    const uint ZENITH_SAMPLES = 4;
-    const uint AZIMUTH_SAMPLES = 8;
-    const uint MULTIPLE_STEPS = 24;
-    const float MINIMUM_ESCAPE = 0.01;
+    const uint ZENITH_SAMPLES = LUDUS_ATMOSPHERE_MULTIPLE_ZENITH_SAMPLES;
+    const uint AZIMUTH_SAMPLES = LUDUS_ATMOSPHERE_MULTIPLE_AZIMUTH_SAMPLES;
+    const uint MULTIPLE_STEPS = LUDUS_ATMOSPHERE_MULTIPLE_STEPS;
+    const float MINIMUM_ESCAPE = LUDUS_ATMOSPHERE_MULTIPLE_MINIMUM_ESCAPE;
     float2 coordinates = (input.PositionClip.xy - 0.5) / (ATMOSPHERE_MULTIPLE_SIZE - 1);
     float height = coordinates.y * SHELL_HEIGHT;
     float solarZenithCosine = coordinates.x * 2 - 1;

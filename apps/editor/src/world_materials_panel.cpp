@@ -1,6 +1,7 @@
 #include "internal/world_materials_panel.h"
 
 #include "design_tokens.h"
+#include "internal/caption_label.h"
 #include "internal/editor_icons.h"
 #include "internal/inspector_fields.h"
 #include "internal/render_scene.h"
@@ -15,12 +16,11 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QHeaderView>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QKeyEvent>
-#include <QLabel>
-#include <QPainter>
 #include <QPushButton>
 #include <QSet>
 #include <QSignalBlocker>
@@ -36,44 +36,23 @@ namespace
 constexpr foundation::int32 NAME_COLUMN = 0;
 constexpr foundation::int32 COUNT_COLUMN = 1;
 constexpr foundation::int32 MIN_LIST_HEIGHT = 120;
+/// Characters of a resource ID's end that tell apart materials sharing a name ("metal_door · 2d6e").
+constexpr qsizetype DISTINGUISHING_ID_LENGTH = 4;
 
-/// A one-line caption under the actions: it keeps its line whether or not it shows a hint, so nothing below moves
-/// or draws over it, and a hint too long for the panel ends in an ellipsis with the whole text in the tooltip.
-class CaptionLabel final : public QLabel
+/// A row's shown name: the material's name, followed by the end of its resource ID when another listed material
+/// has the same name, so two imported "metal_door" materials read as two materials rather than one listed twice.
+QString GetShownName(const WorldMaterialRow& row, const QHash<QString, qsizetype>& nameCounts)
 {
-public:
-    explicit CaptionLabel(QWidget* parentOrNull) : QLabel(parentOrNull)
+    if (nameCounts.value(row.Name) <= 1)
     {
-        setTextFormat(Qt::PlainText);
-        setWordWrap(false);
-        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        QSizePolicy policy = sizePolicy();
-        policy.setRetainSizeWhenHidden(true);
-        setSizePolicy(policy);
-        setProperty("visualRole", QStringLiteral("secondary"));
+        return row.Name;
     }
+    return QStringLiteral("%1 · %2").arg(row.Name, row.ResourceId.right(DISTINGUISHING_ID_LENGTH));
+}
 
-    [[nodiscard]] QSize minimumSizeHint() const override
-    {
-        return {0, fontMetrics().height()};
-    }
-
-protected:
-    void paintEvent(QPaintEvent* /*event*/) override
-    {
-        QPainter painter(this);
-        painter.setPen(palette().color(foregroundRole()));
-        painter.drawText(contentsRect(),
-                         Qt::AlignLeft | Qt::AlignVCenter,
-                         fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width()));
-    }
-};
-
-/// Shows text on the caption line with the whole text in its tooltip, since a long hint is elided.
-void SetCaption(const QString& text, QLabel& inoutCaption)
+QString DescribeUsers(qsizetype count)
 {
-    inoutCaption.setText(text);
-    inoutCaption.setToolTip(text);
+    return count == 1 ? QStringLiteral("Used by 1 renderable") : QStringLiteral("Used by %1 renderables").arg(count);
 }
 
 QHash<QString, QString> CollectPresentedNames(const QJsonObject& level, const RenderScene& scene)
@@ -176,6 +155,8 @@ WorldMaterialsPanel::WorldMaterialsPanel(QWidget* parent)
     mTree->setMinimumHeight(MIN_LIST_HEIGHT);
     mTree->setUniformRowHeights(true);
     mTree->setTextElideMode(Qt::ElideRight);
+    // Keyboard focus marks the whole row: a ring around the name cell alone read as an inline text field.
+    mTree->setAllColumnsShowFocus(true);
     mTree->installEventFilter(this);
     mTree->setToolTip(QStringLiteral("Expand a material, then double-click a renderable or press Enter to select it."));
     layout->addWidget(mTree, 1);
@@ -205,7 +186,7 @@ WorldMaterialsPanel::WorldMaterialsPanel(QWidget* parent)
     });
 
     mStatus->setObjectName(QStringLiteral("worldMaterialsStatus"));
-    SetCaption(QStringLiteral("Import a scene to browse its material resources."), *mStatus);
+    mStatus->SetCaption(QStringLiteral("Import a scene to browse its material resources."));
     layout->addWidget(mStatus);
 
     connect(mTree, &QTreeWidget::currentItemChanged, this, &WorldMaterialsPanel::updateActions);
@@ -246,18 +227,28 @@ void WorldMaterialsPanel::SetRows(const QVector<WorldMaterialRow>& rows)
     const QSignalBlocker signals(mTree);
     mTree->clear();
     mRows = rows;
+    QHash<QString, qsizetype> nameCounts;
     for (const WorldMaterialRow& row : mRows)
     {
-        QTreeWidgetItem* resource = new QTreeWidgetItem(mTree, {row.Name, QString::number(row.Users.size())});
+        ++nameCounts[row.Name];
+    }
+    const QIcon materialIcon = GetEditorIcon(EditorIcon::Material);
+    const QIcon renderableIcon = GetEditorIcon(EditorIcon::Mesh);
+    for (const WorldMaterialRow& row : mRows)
+    {
+        QTreeWidgetItem* resource =
+            new QTreeWidgetItem(mTree, {GetShownName(row, nameCounts), QString::number(row.Users.size())});
+        resource->setIcon(NAME_COLUMN, materialIcon);
         resource->setData(NAME_COLUMN, Qt::UserRole, row.ResourceId);
         resource->setToolTip(NAME_COLUMN, row.Name + QLatin1Char('\n') + row.ResourceId);
         resource->setTextAlignment(COUNT_COLUMN, Qt::AlignRight | Qt::AlignVCenter);
-        resource->setToolTip(COUNT_COLUMN, QStringLiteral("Used by %1 renderables").arg(row.Users.size()));
+        resource->setToolTip(COUNT_COLUMN, DescribeUsers(row.Users.size()));
         const bool isSelectedResource = row.ResourceId == selectedResource;
         QTreeWidgetItem* selection = resource;
         for (const WorldMaterialUser& user : row.Users)
         {
             QTreeWidgetItem* renderable = new QTreeWidgetItem(resource, {user.Name});
+            renderable->setIcon(NAME_COLUMN, renderableIcon);
             renderable->setData(NAME_COLUMN, Qt::UserRole, user.EntityId);
             renderable->setToolTip(NAME_COLUMN, QStringLiteral("Select %1 in the World").arg(user.Name));
             if (user.EntityId == selectedUser)
@@ -272,7 +263,7 @@ void WorldMaterialsPanel::SetRows(const QVector<WorldMaterialRow>& rows)
         }
     }
     mTree->sortItems(NAME_COLUMN, Qt::AscendingOrder);
-    SetCaption(QStringLiteral("Import a scene to browse its material resources."), *mStatus);
+    mStatus->SetCaption(QStringLiteral("Import a scene to browse its material resources."));
     mStatus->setVisible(mRows.isEmpty());
     updateActions();
 }
@@ -292,8 +283,8 @@ void WorldMaterialsPanel::RevealResource(const QString& id)
             return;
         }
     }
-    SetCaption(QStringLiteral("This material is no longer used. Select a renderable to see its current material."),
-               *mStatus);
+    mStatus->SetCaption(
+        QStringLiteral("This material is no longer used. Select a renderable to see its current material."));
     mStatus->show();
 }
 
@@ -304,7 +295,7 @@ void WorldMaterialsPanel::ShowMissingRenderable()
 
 void WorldMaterialsPanel::ShowStatus(const QString& message)
 {
-    SetCaption(message, *mStatus);
+    mStatus->SetCaption(message);
     mStatus->show();
 }
 
