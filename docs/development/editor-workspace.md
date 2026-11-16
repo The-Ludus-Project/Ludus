@@ -2804,6 +2804,17 @@ therefore appear here, where a raster profile approximates or omits them; see
 [comparison](#compare-with-the-viewports-render-graph). Zero-area triangles are left out of the reference
 geometry. They have no area to hit or emit from.
 
+When the World has an [Atmosphere](../architecture/renderer-systems.md#reference-capture-of-an-atmosphere)
+that lights the viewport, the capture uses its sky as the environment in place of
+the scene's own, as the raster does. Its linked Sun arrives dimmed and reddened
+by the air between the Sun and the camera. The progress line then names
+**Atmosphere sky**. The sky is evaluated once at the camera's altitude, so a low
+Sun that the buildings block leaves an interior lit by skylight and
+inter-reflection alone, much darker than a raster profile that does not shadow
+its sky lighting. Night-sky stars, the Moon's disk and aerial perspective over
+scene distances are left out. Move the Sun with its celestial time or rotation
+for a brighter scene.
+
 | Traversal | Use |
 | --- | --- |
 | CPU oracle | Default when GPU compute is unavailable. Traces a CPU BVH on every platform and admits masked materials. |

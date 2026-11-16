@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
@@ -82,4 +83,46 @@ struct AtmosphereDescription final
 /// Maximum background observer altitude in metres for the given projection and celestial settings.
 [[nodiscard]] foundation::float64 GetAtmosphereMaximumViewAltitude(const AtmosphereDescription& atmosphere,
                                                                    bool isOrthographic) noexcept;
+
+/// Largest side of a distant atmosphere image, matching EnvironmentDescription's source limit.
+inline constexpr foundation::uint32 MAX_ATMOSPHERE_ENVIRONMENT_SIDE = 4096;
+
+/// Outcome of ResolveAtmosphereEnvironment.
+enum class AtmosphereEnvironmentStatus : foundation::uint8
+{
+    /// The sky image and the Sun's illuminance were written.
+    Ready,
+    /// The Atmosphere is disabled, does not light the scene, or the eye is below its ground or above its shell.
+    /// The raster applies no atmosphere surface lighting in these cases either. Outputs are preserved.
+    NotLit,
+    /// Invalid atmosphere fields, eye position, image extent or output view. Outputs are preserved.
+    InvalidDescription,
+    /// The CPU tables could not be allocated. Outputs are preserved.
+    OutOfMemory,
+};
+
+/// Resolve the distant lighting that an Earth clear-sky Atmosphere supplies to surfaces at eyeWorld.
+///
+/// Evaluates the same transmittance, multiple-scattering and sky tables as the raster atmosphere
+/// (Hillaire 2020), on the CPU, at the eye's altitude. The sky image holds the in-scattered
+/// radiance without the solar disk, which the linked Sun's analytic light supplies instead, and
+/// without the night-sky boundary. Use it as a distant environment: aerial perspective between
+/// surfaces and the eye is omitted, as is the altitude change across the scene.
+/// @param atmosphere Validated as the render graph validates it. ShouldLightScene must be true.
+/// @param eyeWorld Observer position in world metres, normally the camera position.
+/// @param width Image width in texels, 1..MAX_ATMOSPHERE_ENVIRONMENT_SIDE.
+/// @param height Image height in texels, 1..MAX_ATMOSPHERE_ENVIRONMENT_SIDE.
+/// @param outPixels width*height linear RGB radiance texels in EnvironmentDescription's latitude/longitude layout
+///        (+Y north, top row at the pole). Alpha is one.
+/// @param outSunIlluminance Linear RGB illuminance of the linked Sun at the eye, after atmospheric transmittance.
+///        Zero when the Sun is below the horizon.
+/// @return Ready when both outputs were written; every other status preserves them.
+/// @note Runs on the calling thread without device access. A 512x256 image takes tens of milliseconds.
+[[nodiscard]] AtmosphereEnvironmentStatus
+ResolveAtmosphereEnvironment(const AtmosphereDescription& atmosphere,
+                             foundation::math::Vector3 eyeWorld,
+                             foundation::uint32 width,
+                             foundation::uint32 height,
+                             foundation::BorrowedView<foundation::math::Vector4> outPixels,
+                             foundation::math::Vector3& outSunIlluminance) noexcept;
 } // namespace ludus::graphics::renderer

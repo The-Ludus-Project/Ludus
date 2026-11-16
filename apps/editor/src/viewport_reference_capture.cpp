@@ -14,6 +14,8 @@
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/ray.h>
 
+#include <ludus/graphics/renderer/atmosphere.hpp>
+#include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
@@ -32,6 +34,9 @@
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QSaveFile>
+#if !defined(Q_OS_WASM)
+#    include <QtConcurrent/QtConcurrentRun>
+#endif
 
 #include <new>
 
@@ -56,6 +61,14 @@ constexpr uint32 REFERENCE_ROULETTE_DEPTH = 3;
 #endif
 /// Largest display channel value after encoding.
 constexpr float32 DISPLAY_CHANNEL_MAXIMUM = 255;
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+/// Prefiltered width of the Atmosphere sky; RT1 samples the source texels, so this only sizes the retained mips.
+constexpr uint32 ATMOSPHERE_FILTER_WIDTH = 64;
+/// Deterministic GGX samples per prefiltered Atmosphere sky texel.
+constexpr uint32 ATMOSPHERE_FILTER_SAMPLES = 16;
+/// CPU preparation budget of the Atmosphere sky, matching the viewport's imported environments.
+constexpr usize ATMOSPHERE_CPU_BYTE_BUDGET = usize{256} * 1024 * 1024;
+#endif
 
 bool IsAreaProxy(renderer::LightKind kind) noexcept
 {
@@ -242,6 +255,28 @@ uint8 EncodeReferenceDisplayChannel(float32 greyRadiance) noexcept
     return static_cast<uint8>(EncodeReferenceDisplayValue(greyRadiance) * DISPLAY_CHANNEL_MAXIMUM + .5F);
 }
 
+ViewportAtmosphereSky ResolveViewportAtmosphereSky(const renderer::AtmosphereDescription& atmosphere,
+                                                   math::Vector3 eyeWorld) noexcept
+{
+    ViewportAtmosphereSky sky;
+    if (sky.Pixels.TryResize(usize{REFERENCE_ATMOSPHERE_WIDTH} * REFERENCE_ATMOSPHERE_HEIGHT) == false)
+    {
+        sky.Status = renderer::AtmosphereEnvironmentStatus::OutOfMemory;
+        return sky;
+    }
+    sky.Status = renderer::ResolveAtmosphereEnvironment(atmosphere,
+                                                        eyeWorld,
+                                                        REFERENCE_ATMOSPHERE_WIDTH,
+                                                        REFERENCE_ATMOSPHERE_HEIGHT,
+                                                        {sky.Pixels.GetData(), sky.Pixels.GetSize()},
+                                                        sky.SunIlluminance);
+    if (sky.Status != renderer::AtmosphereEnvironmentStatus::Ready)
+    {
+        sky.Pixels = Array<math::Vector4>{};
+    }
+    return sky;
+}
+
 ViewportReferenceCapture::ViewportReferenceCapture() noexcept = default;
 ViewportReferenceCapture::~ViewportReferenceCapture() noexcept
 {
@@ -313,6 +348,20 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
     mDescription = description;
     mExtent = extent;
     mSurface = surface;
+    // The raster lights surfaces with the Atmosphere's sky and attenuates its Sun; supply RT1 the same inputs.
+    const renderer::AtmosphereDescription atmosphere = scene.GetAtmosphereForView();
+    if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
+    {
+        const math::Vector3 eyeWorld = view.CameraPosition;
+#    if !defined(Q_OS_WASM)
+        mAtmosphereJob =
+            QtConcurrent::run([atmosphere, eyeWorld]() { return ResolveViewportAtmosphereSky(atmosphere, eyeWorld); });
+#    else
+        mAtmosphereSky = ResolveViewportAtmosphereSky(atmosphere, eyeWorld);
+#    endif
+        mAtmosphereSunSourceId = atmosphere.SunSourceId;
+        mIsAtmosphereResolving = true;
+    }
     mPhase = ViewportReferencePhase::Preparing;
     return true;
 #else
@@ -341,7 +390,24 @@ bool ViewportReferenceCapture::beginCapture() noexcept
     mLightCount = CollectReferenceLights(generation.Lighting.Lights, mLights);
     mDescription.Lights = mLightCount == 0 ? nullptr : mLights.GetData();
     mDescription.LightCount = mLightCount;
-    if (generation.HasEnvironment == true)
+    if (mHasAtmosphereSky == true)
+    {
+        // As renderer_lit.slang does, the Atmosphere's sky replaces the imported environment and its Sun
+        // arrives with the illuminance transmitted to the observer.
+        for (usize i = 0; i < mLightCount; ++i)
+        {
+            renderer::DirectLight& light = mLights[i];
+            if (light.Kind == renderer::LightKind::Directional && light.SourceId == mAtmosphereSunSourceId)
+            {
+                const math::Vector3 illuminance = mAtmosphereSky.SunIlluminance;
+                light.Intensity = math::Max(illuminance.X, math::Max(illuminance.Y, illuminance.Z));
+                light.Color = light.Intensity > 0 ? illuminance / light.Intensity : math::Vector3{1, 1, 1};
+            }
+        }
+        mDescription.EnvironmentTextureOrNull = &mAtmosphereEnvironment;
+        mDescription.Environment = {};
+    }
+    else if (generation.HasEnvironment == true)
     {
         mDescription.EnvironmentTextureOrNull = &generation.Environment;
     }
@@ -382,6 +448,15 @@ ViewportReferencePhase ViewportReferenceCapture::Service(uint64 budgetNanosecond
         }
         if (status == PreviewPreparationStatus::Ready)
         {
+            const rhi::RasterStatus sky = prepareAtmosphereSky();
+            if (sky == rhi::RasterStatus::Pending)
+            {
+                break;
+            }
+            if (sky != rhi::RasterStatus::Ready)
+            {
+                break;
+            }
             static_cast<void>(beginCapture());
         }
     }
@@ -428,8 +503,85 @@ void ViewportReferenceCapture::Release() noexcept
     }
     mHasCapture = false;
     mGeneration.Reset();
+#if !defined(Q_OS_WASM)
+    mAtmosphereJob = QFuture<ViewportAtmosphereSky>{};
+#endif
+    mAtmosphereEnvironment.Reset();
+    mAtmosphereSky = ViewportAtmosphereSky{};
+    mAtmosphereSunSourceId = 0;
+    mIsAtmosphereResolving = false;
+    mHasAtmosphereSky = false;
+    mIsAtmosphereUploadStarted = false;
     mLightCount = 0;
     mPhase = ViewportReferencePhase::Idle;
+}
+
+rhi::RasterStatus ViewportReferenceCapture::prepareAtmosphereSky() noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (mIsAtmosphereResolving == true)
+    {
+#    if !defined(Q_OS_WASM)
+        if (mAtmosphereJob.isFinished() == false)
+        {
+            return rhi::RasterStatus::Pending;
+        }
+        mAtmosphereSky = mAtmosphereJob.takeResult();
+        mAtmosphereJob = QFuture<ViewportAtmosphereSky>{};
+#    endif
+        mIsAtmosphereResolving = false;
+        switch (mAtmosphereSky.Status)
+        {
+            case renderer::AtmosphereEnvironmentStatus::Ready:
+                mHasAtmosphereSky = true;
+                break;
+            case renderer::AtmosphereEnvironmentStatus::NotLit:
+                // The camera is outside the Atmosphere's shell, where the raster adds no sky either.
+                break;
+            case renderer::AtmosphereEnvironmentStatus::InvalidDescription:
+                static_cast<void>(fail(QStringLiteral(
+                    "The World Atmosphere's sky could not be evaluated for the reference. Check the Atmosphere "
+                    "Transform and its Sun's direction and intensity in Properties.")));
+                return rhi::RasterStatus::InvalidDescription;
+            case renderer::AtmosphereEnvironmentStatus::OutOfMemory:
+                static_cast<void>(fail(QStringLiteral("Could not allocate the Atmosphere sky for the reference.")));
+                return rhi::RasterStatus::OutOfMemory;
+        }
+    }
+    if (mHasAtmosphereSky == false)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    if (mIsAtmosphereUploadStarted == false)
+    {
+        renderer::EnvironmentDescription description;
+        description.PixelsOrNull = mAtmosphereSky.Pixels.GetData();
+        description.Width = REFERENCE_ATMOSPHERE_WIDTH;
+        description.Height = REFERENCE_ATMOSPHERE_HEIGHT;
+        description.FilterWidth = ATMOSPHERE_FILTER_WIDTH;
+        description.FilterSamples = ATMOSPHERE_FILTER_SAMPLES;
+        description.CpuByteBudget = ATMOSPHERE_CPU_BYTE_BUDGET;
+        const rhi::RasterStatus status = mAtmosphereEnvironment.Initialize(mGeneration->Device, description);
+        if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::Pending)
+        {
+            static_cast<void>(
+                fail(QStringLiteral("The Atmosphere sky could not be uploaded: %1.").arg(DescribeStatus(status))));
+            return status;
+        }
+        // Initialize copied the texels.
+        mAtmosphereSky.Pixels = Array<math::Vector4>{};
+        mIsAtmosphereUploadStarted = true;
+    }
+    const rhi::RasterStatus status = mAtmosphereEnvironment.GetStatus();
+    if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::Pending)
+    {
+        static_cast<void>(
+            fail(QStringLiteral("The Atmosphere sky could not be uploaded: %1.").arg(DescribeStatus(status))));
+    }
+    return status;
+#else
+    return rhi::RasterStatus::Ready;
+#endif
 }
 
 bool ViewportReferenceCapture::GetInfo(renderer::ReferenceCaptureInfo& outInfo) const noexcept
