@@ -30,14 +30,14 @@ struct ViewportRasterSource final
 {
     /// Cooked runtime package the viewport previews.
     QString PackagePath;
-    /// Raster-only package used when the package needs unavailable ray tracing; may be empty.
+    /// Raster-only package used under Force raster or when the package needs unavailable ray tracing; may be empty.
     QString FallbackPath;
     /// Display attachment; empty selects the exported output.
     QString OutputTarget;
     /// Logical resource of OutputTarget in the live generation's catalogue; ABSENT selects the first exported
     /// colour resource, as the viewport does.
     foundation::uint32 OutputResource = content::render_graph_format::ABSENT;
-    /// Use raster even when the package and device support hardware ray tracing.
+    /// Draw FallbackPath (the engine default raster graph) instead of the package, whatever the package contains.
     bool ShouldForceRaster = false;
 };
 

@@ -687,15 +687,21 @@ struct AtmosphereLight final
     bool IsEnabled = false;
 };
 
-QJsonObject GetAtmosphereLightValues(const QJsonObject& entity)
+/// The light's values with the World's shared Earth date, time and location applied.
+QJsonObject GetAtmosphereLightValues(const QJsonObject& entity, const WorldDocument& world)
 {
-    return entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+    return MakeWorldLightValues(
+        entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject(),
+        world.Draft());
 }
 
-bool TrySetEarthNightSky(const QJsonObject& entity, rr::CelestialBackgroundDescription& inoutCelestial)
+bool TrySetEarthNightSky(const QJsonObject& entity,
+                         const WorldDocument& world,
+                         rr::CelestialBackgroundDescription& inoutCelestial)
 {
     gameplay::world::EarthNightSkySample sky;
-    if (inoutCelestial.StarRadiance == 0 || TrySampleWorldEarthNightSky(GetAtmosphereLightValues(entity), sky) == false)
+    if (inoutCelestial.StarRadiance == 0 ||
+        TrySampleWorldEarthNightSky(GetAtmosphereLightValues(entity, world), sky) == false)
     {
         return false;
     }
@@ -713,6 +719,7 @@ bool TrySetEarthNightSky(const QJsonObject& entity, rr::CelestialBackgroundDescr
 }
 
 bool ReadAtmosphereLight(const QJsonObject& entity,
+                         const WorldDocument& world,
                          const QJsonObject& transformBinding,
                          AtmosphereLight& outLight,
                          QString& outError)
@@ -727,7 +734,7 @@ bool ReadAtmosphereLight(const QJsonObject& entity,
     {
         return false;
     }
-    const QJsonObject light = GetAtmosphereLightValues(entity);
+    const QJsonObject light = GetAtmosphereLightValues(entity, world);
     bool isAboveHorizon = true;
     gameplay::world::EarthCelestialLighting earth;
     if (TryResolveWorldCelestialRotation(light, transform.Rotation, isAboveHorizon, earth) == false)
@@ -790,7 +797,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     }
     AtmosphereLight sun;
     const QJsonObject sunEntity = world.Entity(sunId);
-    if (ReadAtmosphereLight(sunEntity, transformBinding, sun, error) == false)
+    if (ReadAtmosphereLight(sunEntity, world, transformBinding, sun, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Sun. %1").arg(error);
         return;
@@ -815,7 +822,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     rr::CelestialBackgroundDescription& celestial = inoutScene.Atmosphere.Celestial;
     celestial.IsEnabled = true;
     celestial.StarRadiance = properties.value(QStringLiteral("stars")).toBool(true) == true ? 1.0F : 0.0F;
-    const bool hasEarthSky = TrySetEarthNightSky(sunEntity, celestial);
+    const bool hasEarthSky = TrySetEarthNightSky(sunEntity, world, celestial);
     const QString moonId = properties.value(QStringLiteral("moon")).toString();
     if (moonId.isEmpty() == true)
     {
@@ -828,14 +835,14 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     }
     AtmosphereLight moon;
     const QJsonObject moonEntity = world.Entity(moonId);
-    if (ReadAtmosphereLight(moonEntity, transformBinding, moon, error) == false)
+    if (ReadAtmosphereLight(moonEntity, world, transformBinding, moon, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Moon. %1").arg(error);
         return;
     }
     if (hasEarthSky == false)
     {
-        static_cast<void>(TrySetEarthNightSky(moonEntity, celestial));
+        static_cast<void>(TrySetEarthNightSky(moonEntity, world, celestial));
     }
     celestial.DirectionToMoonWorld = moon.DirectionWorld;
     if (moon.IsEnabled == false)
@@ -1172,8 +1179,9 @@ bool RenderScene::Load(const QString& root,
                 }
                 math::Quaternion lightRotation = trs.Rotation;
                 bool isAboveHorizon = true;
-                const QJsonObject lightProperties =
-                    entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+                const QJsonObject lightProperties = MakeWorldLightValues(
+                    entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject(),
+                    world.Draft());
                 if (world.HasBuiltInSchema() == true && light.Kind == rr::LightKind::Directional)
                 {
                     gameplay::world::EarthCelestialLighting earth;

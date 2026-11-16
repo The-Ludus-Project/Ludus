@@ -2019,6 +2019,39 @@ The raster viewport approximates the surface using base color and roughness.
 The reference paths and Wave Tracing evaluate the authored terms. Metropolis
 also requires the program's fixed-dimension reflection declaration.
 
+### Make a slot a hair card
+
+Import a hair card mesh, for example a glTF card whose base texture's alpha
+masks the strands. Select its slot and choose **Make Hair Card** in the
+**Material** group. The slot keeps its base colour, roughness, textures and
+mask, and the viewport shades it two-sided with highlights that follow the
+strand direction. If the slot has its own coating instance, a confirmation
+names it and **Replace Coating** removes it in the same edit. Cancel is the
+default.
+
+Edit the hair-card fields and choose **Apply Changes**:
+
+- **Strand direction (°)**: the direction in the card's plane, from the surface
+  tangent (increasing texture U) toward the bitangent, in [−180, 180].
+- **Primary highlight shift (°)** and **Secondary highlight shift (°)**: the
+  tilt of each highlight toward the card normal, in [−30, 30].
+- **Primary highlight weight** and **Tinted secondary highlight weight**, in
+  [0, 1].
+- **Mask cutoff**: shown only for a masked material, in [0, 1]. It overrides the
+  imported cutoff for this slot.
+
+A value outside its range is rejected beside the hair-card fields, with the
+field's name and accepted range. The field keeps your text so you can correct
+it, and the viewport keeps the last applied card. The message clears after a
+valid **Apply Changes**. **Use Inherited Material** restores the imported
+material. The assignment, each edit and the restore are undoable, and **Save
+World** keeps them across reopening and reimport. Slots with equal values share
+one cooked material.
+
+The raster viewport shades the strand highlight; ray previews and reference
+captures use the card's metallic/roughness surface lobes. See
+[raster hair cards](../architecture/renderer-systems.md#raster-hair-cards).
+
 ### Inspect a closure program
 
 Import a Ludus scene source whose material is a
@@ -2188,9 +2221,19 @@ rotation, including rotation supplied by a game. Choose **Earth Sun** or
 from **Date & Time (UTC)** and the observer's coordinates. Earth Moon also
 samples lunar phase using the Sun at that time. Open the calendar to pick a date or type into
 the date and time field. **Use Now** copies the current instant into the draft.
-The World stores fractional UTC days since January 1, 2000 at 12:00 UTC, so
-existing Earth Time values open at the same instant. The supported dates span
-approximately 1950–2050.
+The supported dates span approximately 1950–2050.
+
+A World has one Earth date, time and location. Every Earth Sun and Earth Moon
+light shows the same values, and the note above **Date & Time (UTC)** names the
+other lights that share them. Editing them on any Earth light changes them for
+all Earth lights and the Atmosphere night sky in one undoable change. The first
+Earth preset in a World starts at the current UTC time; later Earth lights
+start at the World's existing values. The World root stores them once as
+`earth_observer`, in fractional UTC days since January 1, 2000 at 12:00 UTC,
+so existing Earth Time values open at the same instant. In a World saved
+before `earth_observer` existed, each Earth light keeps its saved values until
+an Earth light is next edited; the values that light showed then become the
+World's.
 
 Use **Choose Earth Location…** to search for a city, landmark, or address.
 Clicking **Search** sends the query to Photon, which uses OpenStreetMap data.
@@ -2201,11 +2244,8 @@ a secure browser context and location access. Choose **Use Coordinates** to
 copy the selected result into the inspector, then **Apply Changes** to apply
 the draft. Saved Worlds store the coordinates. Manual entry works offline and
 when device location is unavailable. North latitude and east longitude are
-positive. Applying an Earth time or location edit updates all active Earth
-presets in one undoable change. A newly activated preset inherits the existing
-Earth observer unless the same edit supplies new observer values. Previously
-saved Earth lights can have different observers until the first time or location
-edit. The World frame is +X east, +Y up, and −Z north.
+positive. A **Custom Orbit** light keeps its own observer coordinates. The
+World frame is +X east, +Y up, and −Z north.
 
 Properties shows the calculated sea-level direct illuminance in lux, linear RGB
 colour and apparent diameter. The clear-sky model dims and warms direct light
@@ -2258,15 +2298,15 @@ Only clustered deferred raster configurations draw an Atmosphere. A
 ray-traced or forward configuration rejects a World that has one, and the
 viewport keeps its last good frame. Its status says that the Atmosphere entity
 needs a clustered deferred configuration. Turn on **Force raster** in the
-viewport toolbar to use the graph's Raster configuration, or disable the
+viewport toolbar to draw the engine's default raster graph, or disable the
 Atmosphere entity to keep the selected configuration.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
-Way and Mercury, Venus, Mars, Jupiter, and Saturn. The Sun preset's UTC date,
-time, latitude and longitude place the planets and rotate the star field and
-Milky Way. The linked **Earth Moon** preset supplies those settings when the Sun has
-an authored transform or a custom orbit. Look along the ecliptic after
+Way and Mercury, Venus, Mars, Jupiter, and Saturn. The World's shared Earth
+date, time and location place the planets and rotate the star field and Milky
+Way, and the Atmosphere's Properties show them. They apply when the linked Sun
+or Moon uses an Earth preset. Look along the ecliptic after
 dark for planets above the horizon. Their apparent brightness and color
 vary, and they appear as points at ordinary viewport fields of view.
 
@@ -2278,7 +2318,9 @@ For an authored Moon, colour and intensity set the full-phase brightness, and
 the linked Sun direction determines which part of the disk is lit. Atmospheric
 extinction dims the celestial background toward the horizon. Turning the linked Moon
 off in the light controls hides the disk. The presets' angular sizes drive the
-sky disks. Direct lights use the renderer's existing directional shadow path.
+sky disks. **Sun Disk Radius** sets the disk for a linked Sun with an authored
+direction; its default matches the real Sun. Properties hide it while the
+linked Sun uses an Earth preset, which sets its own size. Direct lights use the renderer's existing directional shadow path.
 
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or
@@ -2318,7 +2360,11 @@ The native [Forward lit template](render-graph-authoring.md#use-the-forward-lit-
 can use these charts through its **Baked Lighting** connection. Its preview
 status reports when surface charts are ready and how many draws use them.
 GI Probe Receivers use realtime lighting in this graph. The built-in Lit
-viewport samples the probe volume for those receivers.
+viewport samples the probe volume for those receivers. So does the engine's
+default raster graph, which **Force raster** and the **Raster** starter use. Its
+status reports how many receiver draws use the probe volume. That graph does not
+yet read the surface charts, so static surfaces stay in realtime there
+([Baked probe GI for receivers](render-graph-authoring.md#deferred-baked-probe-gi)).
 Browser and packaged game hosts continue to use their existing inputs.
 
 ### Baking probe GI for moving objects
@@ -2889,7 +2935,7 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 16-bit output. Only a ray-traced output with an **Accumulate** can be captured:
 - a raster output stores display colour, not linear radiance;
 - a ray output without an Accumulate shows individual samples;
-- **Force raster** draws the raster fallback.
+- **Force raster** draws the engine's default raster graph.
 
 The window explains which applies before you capture. Under **Graph** it says
 why the selected output cannot be captured, and **Capture viewport** stays

@@ -458,6 +458,29 @@ QJsonObject Defaults(const QJsonObject& component)
     return true;
 }
 
+/// Validate a slot's "hair_card" object: every strand control within its bounds and an optional mask cutoff.
+[[nodiscard]] bool ValidateHairCard(const QJsonValue& value, QString& outError)
+{
+    const QJsonObject hair = value.toObject();
+    constexpr qsizetype CONTROL_COUNT = sizeof(HAIR_CARD_FIELDS) / sizeof(HairCardField);
+    const QString cutoffKey = QString::fromLatin1(HAIR_CARD_CUTOFF_KEY);
+    const bool hasCutoff = hair.contains(cutoffKey);
+    if (value.isObject() == false || hair.size() != CONTROL_COUNT + (hasCutoff == true ? 1 : 0))
+    {
+        return Fail(outError,
+                    QStringLiteral("A hair card needs a strand direction, two highlight shifts and two highlight "
+                                   "weights, and at most a mask cutoff."));
+    }
+    for (const HairCardField& field : HAIR_CARD_FIELDS)
+    {
+        if (Value(field.MakeNumberProperty(), hair.value(QString::fromLatin1(field.Key)), outError) == false)
+        {
+            return false;
+        }
+    }
+    return hasCutoff == false || Value(MakeHairCardCutoffProperty(), hair.value(cutoffKey), outError) == true;
+}
+
 QString GetMappedMaterialId(const QJsonObject& placement, const QJsonObject& level)
 {
     const QString source = placement.value(QStringLiteral("material")).toString();
@@ -830,13 +853,15 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     const QStringList rootFields = hasUuidRecords == true ? QStringList{QStringLiteral("version"),
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("document"),
-                                                                        QStringLiteral("entities")}
+                                                                        QStringLiteral("entities"),
+                                                                        QString(WORLD_EARTH_OBSERVER)}
                                                           : QStringList{QStringLiteral("version"),
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("entities"),
                                                                         QStringLiteral("scene"),
                                                                         QStringLiteral("disabled_lights"),
-                                                                        QStringLiteral("shared_coatings")};
+                                                                        QStringLiteral("shared_coatings"),
+                                                                        QString(WORLD_EARTH_OBSERVER)};
     if (HasSchema() == false || (hasScopedIds == false && hasUuidRecords == false) ||
         Fields(candidate, rootFields) == false ||
         candidate.value(QStringLiteral("schema")) != Schema_.value(QStringLiteral("id")) ||
@@ -858,6 +883,14 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("World supports at most %1 entities and %2 KiB.")
                         .arg(MAX_ENTITIES)
                         .arg(MAX_BYTES / BYTES_PER_KIBIBYTE));
+    }
+    const QJsonValue earthObserver = candidate.value(WORLD_EARTH_OBSERVER);
+    if (earthObserver.isUndefined() == false &&
+        (mIsBuiltInSchema == false || IsWorldEarthObserverValid(earthObserver) == false))
+    {
+        return Fail(error,
+                    QStringLiteral("The World's Earth date, time and location must be numbers within the Earth "
+                                   "preset ranges. Set them on an Earth Sun or Earth Moon light."));
     }
     const QJsonValue sharedCoatings = candidate.value(QStringLiteral("shared_coatings"));
     if (sharedCoatings.isUndefined() == false)
@@ -1209,6 +1242,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         const QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
         const bool hasCoating = scene.contains(QStringLiteral("coating"));
         const bool hasProjectBrdf = scene.contains(QStringLiteral("project_brdf"));
+        const bool hasHairCard = scene.contains(QStringLiteral("hair_card"));
         constexpr qsizetype BOUND_PLACEMENT_FIELDS = 4;
         constexpr qsizetype INLINE_PLACEMENT_FIELDS = 7;
         const qsizetype placementFields = Schema_.contains(QStringLiteral("scene_transform")) == true
@@ -1225,8 +1259,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("rotation"),
                     QStringLiteral("scale"),
                     QStringLiteral("coating"),
-                    QStringLiteral("project_brdf")}) == false ||
-            scene.size() != placementFields + (hasCoating == true ? 1 : 0) + (hasProjectBrdf == true ? 1 : 0) ||
+                    QStringLiteral("project_brdf"),
+                    QStringLiteral("hair_card")}) == false ||
+            scene.size() != placementFields + (hasCoating == true ? 1 : 0) + (hasProjectBrdf == true ? 1 : 0) +
+                                (hasHairCard == true ? 1 : 0) ||
             ResourceId(scene.value(QStringLiteral("mesh")), QStringLiteral("mesh")) == false ||
             ResourceId(scene.value(QStringLiteral("material")), QStringLiteral("material")) == false ||
             scene.value(QStringLiteral("parent")).isString() == false)
@@ -1236,6 +1272,19 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         if (hasCoating == true && ValidateCoating(scene.value(QStringLiteral("coating")), error) == false)
         {
             return false;
+        }
+        if (hasHairCard == true)
+        {
+            if (hasCoating == true || hasProjectBrdf == true)
+            {
+                return Fail(error,
+                            QStringLiteral("A hair card slot cannot also hold a coating or a project BRDF. Remove the "
+                                           "hair card or use the inherited material."));
+            }
+            if (ValidateHairCard(scene.value(QStringLiteral("hair_card")), error) == false)
+            {
+                return false;
+            }
         }
         if (hasProjectBrdf == true)
         {
@@ -1371,62 +1420,6 @@ bool WorldDocument::commit(const QJsonObject& candidate, QString& outError, cons
     Draft_ = candidate;
     return true;
 }
-namespace
-{
-QJsonObject GetWorldEntityLight(const QJsonObject& entity)
-{
-    return entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
-}
-
-void CopyEarthObserverToEntity(const QJsonObject& observer, QJsonObject& inoutEntity)
-{
-    QJsonObject components = inoutEntity.value(QStringLiteral("components")).toObject();
-    QJsonObject light = components.value(QStringLiteral("light")).toObject();
-    CopyWorldEarthObserver(observer, light);
-    components.insert(QStringLiteral("light"), light);
-    inoutEntity.insert(QStringLiteral("components"), components);
-}
-
-void SynchronizeWorldEarthObserver(const QJsonObject& previous, qsizetype editedIndex, QJsonArray& inoutEntities)
-{
-    QJsonObject edited = inoutEntities[editedIndex].toObject();
-    const QJsonObject light = GetWorldEntityLight(edited);
-    if (IsWorldEarthLight(light) == false)
-    {
-        return;
-    }
-    const QJsonObject previousLight = GetWorldEntityLight(previous);
-    if (AreWorldEarthObserversEqual(light, previousLight) == true)
-    {
-        if (IsWorldEarthLight(previousLight) == true)
-        {
-            return;
-        }
-        // A newly activated preset inherits the existing Earth observer unless the same edit specifies one.
-        for (qsizetype i = 0; i < inoutEntities.size(); ++i)
-        {
-            const QJsonObject other = GetWorldEntityLight(inoutEntities[i].toObject());
-            if (i != editedIndex && IsWorldEarthLight(other) == true)
-            {
-                CopyEarthObserverToEntity(other, edited);
-                inoutEntities[editedIndex] = edited;
-                return;
-            }
-        }
-        return;
-    }
-    for (qsizetype i = 0; i < inoutEntities.size(); ++i)
-    {
-        QJsonObject other = inoutEntities[i].toObject();
-        if (i != editedIndex && IsWorldEarthLight(GetWorldEntityLight(other)) == true)
-        {
-            CopyEarthObserverToEntity(light, other);
-            inoutEntities[i] = other;
-        }
-    }
-}
-} // namespace
-
 bool WorldDocument::replaceEntity(const QJsonObject& entity, QString& outError, const char* name)
 {
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();
@@ -1436,12 +1429,13 @@ bool WorldDocument::replaceEntity(const QJsonObject& entity, QString& outError, 
         if (GetEntityKey(previous) == GetEntityKey(entity))
         {
             entities[i] = entity;
-            if (HasBuiltInSchema() == true)
-            {
-                SynchronizeWorldEarthObserver(previous, i, entities);
-            }
             QJsonObject candidate = Draft_;
             candidate.insert(QStringLiteral("entities"), entities);
+            if (HasBuiltInSchema() == true)
+            {
+                // Every Earth light shares the World's one date, time and location.
+                LiftWorldEarthObserver(Draft_, i, candidate);
+            }
             return commit(candidate, outError, name);
         }
     }
@@ -1820,6 +1814,10 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& outError, con
         {
             instance.insert(QStringLiteral("project_brdf"), object.value(QStringLiteral("project_brdf")));
         }
+        if (object.contains(QStringLiteral("hair_card")) == true)
+        {
+            instance.insert(QStringLiteral("hair_card"), object.value(QStringLiteral("hair_card")));
+        }
         const auto binding = Schema_.value(QStringLiteral("scene_transform")).toObject();
         if (binding.isEmpty())
         {
@@ -2135,6 +2133,10 @@ QJsonObject WorldDocument::SceneLevel() const
         if (scene.contains(QStringLiteral("project_brdf")) == true)
         {
             object.insert(QStringLiteral("project_brdf"), scene.value(QStringLiteral("project_brdf")));
+        }
+        if (scene.contains(QStringLiteral("hair_card")) == true)
+        {
+            object.insert(QStringLiteral("hair_card"), scene.value(QStringLiteral("hair_card")));
         }
         objects.append(object);
     }

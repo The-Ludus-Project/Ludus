@@ -66,6 +66,8 @@ struct RenderGraphExtraction final
     QVector<foundation::uint32> MaterialOverrides;
     QSharedPointer<const WorldSurfaceBake> SurfaceBake;
     QVector<graphics::renderer::SceneSurfaceChart> SurfaceCharts;
+    /// Placed GI Probe Receivers that sample SurfaceBake's probe atlas; empty without a ready atlas.
+    QVector<foundation::uint64> ProbeReceiverIds;
     graphics::renderer::SceneShaderInputs ShaderInputs;
     graphics::renderer::ViewDescription View{};
     /// Nonzero caller revision; a changed revision makes the preview prepare again.
@@ -153,14 +155,18 @@ public:
     void Detach() noexcept;
     [[nodiscard]] bool IsAttached() const noexcept;
     /// Explicitly preview one cooked runtime generation; the previous request is superseded.
-    /// An RT request automatically selects rasterFallbackPath when native traversal is unavailable
-    /// or Force raster is selected. The fallback must be an authored raster-only package.
+    /// While Force raster is selected, rasterFallbackPath (the engine default raster graph in the World
+    /// viewport) is drawn instead of any requested package, including raster graphs and graphs that trace
+    /// rays in authored compute pipelines. Without Force raster, an RT request selects it only when native
+    /// traversal is unavailable. The fallback must be an authored raster-only package.
     /// Optional source provenance is copied and accepted only for its exact decoded generation.
-    /// No fallback is needed for a raster request. Selection is repeated on device attachment.
+    /// Without a fallback, a raster request is drawn even under Force raster (its status says so) and a
+    /// Force raster RT request is Unsupported. Selection is repeated on device attachment.
     [[nodiscard]] RenderGraphPreviewLoad Load(const QString& runtimePackagePath,
                                               const QString& rasterFallbackPath = {},
                                               const RenderGraphPreviewSource& source = {});
-    /// Queue selection between frames; retain the last drawable image while preparing.
+    /// Draw the raster fallback instead of the requested package. Selection is queued between frames and
+    /// the last drawable image is retained while the replacement prepares.
     void SetForceRaster(bool shouldForceRaster);
     [[nodiscard]] bool ShouldForceRaster() const noexcept;
     /// Choose the World display attachment by expanded name; empty selects the exported output.
@@ -221,8 +227,8 @@ public:
     /// Package of the active graph, including a raster fallback when selected.
     [[nodiscard]] const QString& GetActivePackagePath() const noexcept;
     [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
-    /// True when a ray renderer draws the requested package and Force raster would replace it with the
-    /// authored raster fallback (the engine default raster graph in the World viewport).
+    /// True when the requested package draws and Force raster would replace it with the authored raster
+    /// fallback (the engine default raster graph in the World viewport).
     [[nodiscard]] bool CanSwitchToRasterFallback() const noexcept;
     /// Claim the suggestion announced by SlowFramesDetected. Several viewports can present one preview, so only
     /// the first visible one should ask the user. True at most once per active package for the lifetime of this
@@ -354,6 +360,8 @@ public:
     /// text (the active graph keeps drawing while its first frame is presented or a replacement prepares).
     [[nodiscard]] QString GetDisplayStatus() const;
     [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
+    /// Draws of the active graph sampling the baked probe volume; zero without a deferred Baked Lighting pass.
+    [[nodiscard]] foundation::usize GetProbeReceiverDrawCount() const noexcept;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
     {

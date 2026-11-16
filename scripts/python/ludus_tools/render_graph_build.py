@@ -1124,8 +1124,11 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                 continue
             node = operation['pipeline']
             technique = techniques[operation['technique']]
-            require(not operation.get('baked_lighting', False) or technique.get('scene_interface') == forward.PROFILE,
-                    'Capability', operation['id'], 'Baked Lighting requires the ForwardLit scene profile. Disconnect the bake input or use a Forward lit graph.')
+            require(not operation.get('baked_lighting', False) or
+                    technique.get('scene_interface') in (forward.PROFILE, forward.DEFERRED_PROFILE),
+                    'Capability', operation['id'],
+                    'Baked Lighting requires the ForwardLit or ClusteredDeferred scene profile. Disconnect the bake input '
+                    'or use a Forward lit or default raster graph.')
             if node['kind'] == 'ComputePipeline':
                 continue  # A scene compute kernel selects no recipe; lowering admitted its fixed state.
             assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
@@ -1414,7 +1417,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                                      for group, (_, stages) in forward.SUPPORT.items() for stage in stages
                                                      if (not group.startswith('Deferred') or any(forward.is_deferred(item) for item in techniques.values())) and
                                                      (group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique)) and
-                                                     (group != 'ForwardSurfaceChart' or (forward.support_program(techniques, group, stage), target) in entries)}}
+                                                     (group not in forward.BAKED_LIGHTING_GROUPS or (forward.support_program(techniques, group, stage), target) in entries)}}
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

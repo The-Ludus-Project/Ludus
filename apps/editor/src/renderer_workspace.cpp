@@ -5784,10 +5784,18 @@ void RendererWorkspace::renderPreview()
         if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->Scene().AlwaysOnLightIds.isEmpty() == false)
         {
             const usize chartDraws = mPreviewOrNull->GetSurfaceChartDrawCount();
+            const usize probeDraws = mPreviewOrNull->GetProbeReceiverDrawCount();
             const QString failure = mPreviewSourceOrNull->GetSurfaceBakeFailure();
-            if (chartDraws != 0)
+            if (chartDraws != 0 || probeDraws != 0)
             {
-                previewStatus += QStringLiteral("\nSurface charts in use on %1 draws.").arg(chartDraws);
+                if (chartDraws != 0)
+                {
+                    previewStatus += QStringLiteral("\nSurface charts in use on %1 draws.").arg(chartDraws);
+                }
+                if (probeDraws != 0)
+                {
+                    previewStatus += QStringLiteral("\nProbe GI in use on %1 receiver draws.").arg(probeDraws);
+                }
             }
             else if (failure.isEmpty() == false)
             {

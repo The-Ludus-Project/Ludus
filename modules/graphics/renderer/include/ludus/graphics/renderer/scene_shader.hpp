@@ -69,6 +69,15 @@ struct SceneSurfaceChart final
     rhi::TextureCpuContent Irradiance{};     ///< Linear RGBA8 chart in the shared triangle layout, copied on update.
     foundation::math::Vector3 Scale{};       ///< Per-channel multiplier that decodes the stored texels.
 };
+/// One ready baked probe volume, in the StaticGiProbeAtlas layout, for GI Probe Receivers of a render graph.
+/// An empty Atlas, or a grid that fails IsGiProbeGridValid, supplies no volume.
+struct SceneGiProbeVolume final
+{
+    GiProbeGrid Grid{};                      ///< World-space grid in metres that produced the atlas.
+    foundation::float32 IrradianceScale = 0; ///< Multiplier for the normalized linear RGB irradiance, [0,10000].
+    /// Linear RGBA8 atlas whose extent satisfies HasGiProbeAtlasExtent for Grid; copied on update.
+    rhi::TextureCpuContent Atlas{};
+};
 /// Optional shared scene inputs. Empty material assignments use the neutral default;
 /// malformed references use diagnostic magenta only under DiagnosticColor admission.
 /// Analytic lights have no required geometry. Raster area proxy records are rejected:
@@ -92,6 +101,11 @@ struct SceneShaderInputs final
     foundation::BorrowedView<const SceneSurfaceChart> SurfaceCharts;
     /// Analytic light identities whose diffuse contributions the supplied charts replace. Copied on update.
     foundation::BorrowedView<const foundation::uint64> BakedLightIds;
+    /// Optional probe volume for ProbeReceiverIds. Clustered deferred passes with a connected Baked Lighting input
+    /// add its diffuse bounce to those draws; other passes and draws keep realtime lighting. Copied on update.
+    SceneGiProbeVolume ProbeVolume{};
+    /// RenderGraphItem source identities that sample ProbeVolume; at most format::MAX_ITEMS. Copied on update.
+    foundation::BorrowedView<const foundation::uint64> ProbeReceiverIds;
 };
 /// Ray preparation byte ceiling that rejected a candidate; independent of allocator failure.
 enum class SceneMemoryBudget : foundation::uint8

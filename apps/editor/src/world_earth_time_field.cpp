@@ -77,6 +77,18 @@ WorldEarthTimeField::WorldEarthTimeField(float64 daysSinceEpoch, QWidget& inoutP
     connect(mDateTime, &QDateTimeEdit::dateTimeChanged, this, &WorldEarthTimeField::Edited);
 }
 
+float64 WorldEarthTimeField::GetCurrentDaysSinceEpoch()
+{
+    const float64 days = static_cast<float64>(GetEarthEpoch().msecsTo(QDateTime::currentDateTimeUtc())) /
+                         static_cast<float64>(MILLISECONDS_PER_DAY);
+    return qBound(-gameplay::world::MAX_EARTH_CELESTIAL_DAYS, days, gameplay::world::MAX_EARTH_CELESTIAL_DAYS);
+}
+
+QString WorldEarthTimeField::FormatDaysSinceEpoch(float64 daysSinceEpoch)
+{
+    return ConvertDaysToUtc(daysSinceEpoch).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'"));
+}
+
 float64 WorldEarthTimeField::GetDaysSinceEpoch() const
 {
     const QDateTime current = mDateTime->dateTime();
