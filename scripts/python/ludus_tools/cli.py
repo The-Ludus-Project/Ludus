@@ -192,8 +192,7 @@ def cmd_project_create(args) -> int:
         print(f"Created project at {result.destination}")
         if args.ci:
             from .ci_setup import WORKFLOW_RELPATH
-            print(f"Added {WORKFLOW_RELPATH}. Initialize Git, push to GitHub and set repository variables "
-                  "LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 to build and test in CI.")
+            print(f"Added {WORKFLOW_RELPATH}. Initialize Git and push to GitHub to build and test in CI.")
         if not result.lock.resolved:
             if local_prefix:
                 print("Using the selected local engine; the release lock remains unresolved until a release is published.")
@@ -391,21 +390,15 @@ def cmd_release_init(args) -> int:
 
 
 def cmd_ci_init(args) -> int:
-    from .ci_setup import describe_repository, sdk_variables, select_platforms, setup_ci
+    from .ci_setup import describe_repository, setup_ci
     files = setup_ci(Path(args.project), provider=args.provider, platform=args.platform, tools_ref=args.tools_ref)
     note = describe_repository(Path(args.project))
     _emit(args, {"files": files, "repository": note})
     if not args.json:
         print("CI setup saved: " + ", ".join(files))
         print(note)
-        platforms = select_platforms(args.platform) if args.platform else ()
-        if len(platforms) > 1:
-            for platform in platforms:
-                print("Set repository variables {0} and {1} to build and test on ".format(*sdk_variables(platform, platforms))
-                      + platform + "; without them that platform reports a notice and skips its build.")
-        else:
-            print("Set repository variables LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 to build and test; "
-                  "without them the workflow reports a notice and skips the build.")
+        print("With no SDK archive configured, CI builds the selected SDK from the commit in "
+              "config/ludus-tools-revision.txt.")
     return EXIT_OK
 
 
