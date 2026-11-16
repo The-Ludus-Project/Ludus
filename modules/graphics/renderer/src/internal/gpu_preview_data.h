@@ -24,10 +24,11 @@ inline constexpr usize GPU_PREVIEW_JOB_COUNT =
     content::render_graph_format::MAX_RAY_PASSES * (GPU_PREVIEW_RETAINED_SCENE_COUNT + 1);
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
 /// Every compute binding of one job: the frozen ABI, visibility textures, structured storage, the
-/// ray path capture buffer of a diagnostic capture-variant kernel, the LTC table and, last, the failure summary.
+/// ray path capture buffer of a diagnostic capture-variant kernel, the aerial perspective table, the LTC table, the
+/// failure summary and, last, the Atmosphere sky.
 inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY =
     LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1 +
-    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
+    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
 /// The presentation quad's four float2 corners and six uint16 indices.
 inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
 /// Components of GpuPreviewUniform::Tile: origin x, y, then exclusive end x, y.
@@ -94,6 +95,14 @@ inline constexpr usize NO_GPU_PREVIEW_SCENE = ~usize{0};
 /// native geometry. The ray jobs of one graph update that read the same scene data reference one
 /// record, so the scene is stored and charged to the preview and RHI budgets once. The last job
 /// dropped releases it, after its own producers retired.
+/// Byte ranges of a graph scene's World-feature tables in its Data buffer; zero bytes when the scene has none.
+struct GpuPreviewWorldTables final
+{
+    usize AerialPerspectiveOffset = 0;
+    usize AerialPerspectiveBytes = 0;
+    usize AtmosphereSkyOffset = 0;
+    usize AtmosphereSkyBytes = 0;
+};
 struct GpuPreviewSceneRecord final
 {
     usize References = 0;
@@ -117,6 +126,8 @@ struct GpuPreviewSceneRecord final
     GpuPreviewUniform PackedUniform{};
     /// Peak CPU bytes of the scene built for Capture; a reusing job is admitted against the same bound.
     usize SceneCpuBytes = 0;
+    /// World-feature table ranges packed with the scene; a reusing job binds the same ranges.
+    GpuPreviewWorldTables WorldTables{};
 };
 struct GpuPreviewRecord final
 {
@@ -132,6 +143,8 @@ struct GpuPreviewRecord final
     bool IsNativeSceneCreated = false;
     RenderGraphStorage Storage;
     rhi::BufferHandle Data{};
+    /// World-feature table ranges of Data, copied from the scene record.
+    GpuPreviewWorldTables WorldTables{};
     rhi::BufferHandle Texels{};
     rhi::BufferHandle Parameters{};
     rhi::BufferHandle Accumulation{};

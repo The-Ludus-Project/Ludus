@@ -83,8 +83,9 @@ inline constexpr foundation::int32 MAX_BUILD_DIAGNOSTICS = 1000;
 /// Current preview advisory (RendererWorkspace::GetRenderWarning) as one Warning row of the preview producer,
 /// to append to its error rows. Empty warning yields no row; file names the input the warning asks to edit.
 [[nodiscard]] QList<ErrorListEntry> MakeRenderPreviewWarningEntries(const QString& warning, const QString& file);
-/// World feature the drawing graph does not render (RendererWorkspace::GetOmittedFeatureWarning) as one Warning row of
-/// the preview producer with code RenderGraphFeatureNotRendered, to append to its other rows. The graph still draws
+/// World features the drawing graph does not render (RendererWorkspace::GetOmittedFeatureWarning) as one Warning row of
+/// the preview producer with code graphics::renderer::WORLD_FEATURE_WARNING_CODE (RenderGraphFeatureNotRendered), to
+/// append to its other rows. Activating it opens the World features table in Render Preview. The graph still draws
 /// the rest of the World. Empty warning yields no row; file names the authored root graph.
 [[nodiscard]] QList<ErrorListEntry> MakeRenderGraphFeatureWarningEntries(const QString& warning, const QString& file);
 /// Compiler (`file:line[:column]: error|warning|note: text`) and CMake

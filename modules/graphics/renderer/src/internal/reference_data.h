@@ -293,6 +293,9 @@ struct ReferenceJob final
     Array<math::Vector4> ShaderEmitters;
     Array<ReferenceEmitterBounds> ShaderEmitterBounds; // Parallel to ShaderEmitters.
     Array<uint8> ShaderTextureBytes;
+    /// World-feature tables of a graph ray scene (RenderGraphSceneDescription), packed after the scene words.
+    Array<math::Vector4> AtmosphereSkyTable;
+    Array<math::Vector4> AerialPerspectiveTable;
     Array<ReferenceAccumulator> Pixels;
     Array<ReferencePath> Paths;
     Array<rhi::RayInput> Rays;

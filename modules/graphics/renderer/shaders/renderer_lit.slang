@@ -490,8 +490,8 @@ static const float SKY_VISIBILITY_NORMAL_OFFSET_TEXELS = 1.5;
 static const float SKY_SPECULAR_LOBE_EXPONENT_MAXIMUM = 8;
 // Guards the reciprocal map scale and lobe width against degenerate inputs.
 static const float SKY_VISIBILITY_SCALE_EPSILON = 1e-6;
-// Smallest summed lobe weight for a reflection vector above the horizon; below it the ground visibility applies.
-static const float SKY_SPECULAR_WEIGHT_EPSILON = 1e-4;
+// Rec. 709 luminance of linear RGB, which weights the reflection lobe's sky directions by brightness.
+static const float3 SKY_LUMINANCE_WEIGHTS = float3(0.2126, 0.7152, 0.0722);
 // First sky visibility region, or -1 when the scene has no sky visibility maps.
 int GetSkyVisibilityFirstRegion()
 {
@@ -963,18 +963,25 @@ SkyVisibility EvaluateSkyVisibility(in float3 normalWorld, in float3 reflectionW
         float visible = SampleSkyVisibilityRegion(region, positionWorld);
         visibleCosine += visible * cosine;
         totalCosine += cosine;
+#    ifdef LUDUS_ATMOSPHERE_SURFACE
+        float3 skyRadiance = SampleAtmosphereEnvironment(skyWorld);
+        sky.Radiance += skyRadiance * (visible * cosine);
+        // Weight the reflection lobe by the sky's own brightness, so a blocked bright direction removes its share:
+        // under an arcade the glowing sunset horizon is hidden while the dim sky overhead is open, and an
+        // unweighted lobe let the reflected horizon through.
+        float lobeRadiance = lobe * dot(skyRadiance, SKY_LUMINANCE_WEIGHTS);
+        visibleLobe += visible * lobeRadiance;
+        totalLobe += lobeRadiance;
+#    else
         visibleLobe += visible * lobe;
         totalLobe += lobe;
-#    ifdef LUDUS_ATMOSPHERE_SURFACE
-        if (visible > 0 && cosine > 0)
-            sky.Radiance += SampleAtmosphereEnvironment(skyWorld) * (visible * cosine);
 #    endif
     }
     // The cosine-weighted visibility of the sky directions in front of the surface also scales the light it receives
     // from below the horizon, which no map measures. A surface facing straight down sees no sky direction and none.
     sky.Ground = totalCosine > 0 ? visibleCosine / totalCosine : 0;
     sky.Irradiance = sky.Ground;
-    sky.Specular = totalLobe > SKY_SPECULAR_WEIGHT_EPSILON ? visibleLobe / totalLobe : sky.Ground;
+    sky.Specular = totalLobe > 0 ? visibleLobe / totalLobe : sky.Ground;
     return sky;
 }
 #endif
@@ -998,6 +1005,19 @@ struct LightingTerms
 float ComputeLightingLuminance(in float3 radiance)
 {
     return dot(radiance, float3(0.2126, 0.7152, 0.0722));
+}
+float ComputePunctualAttenuation(float distanceSquaredMetres, float rangeMetres)
+{
+    static const float MINIMUM_DISTANCE_SQUARED_METRES = 1e-4;
+    float ratio = distanceSquaredMetres / (rangeMetres * rangeMetres);
+    float edge = max(1 - ratio * ratio, 0);
+    return edge * edge / max(distanceSquaredMetres, MINIMUM_DISTANCE_SQUARED_METRES);
+}
+float ComputeSpotConeAttenuation(float directionCosine, float innerCosine, float outerCosine)
+{
+    static const float MINIMUM_SPOT_COSINE_DELTA = 1e-6;
+    float cone = saturate((directionCosine - outerCosine) / max(innerCosine - outerCosine, MINIMUM_SPOT_COSINE_DELTA));
+    return cone * cone;
 }
 // Shade the surface and report its lighting terms. With shouldSeparateDiffuse the diffuse terms go to outTerms.Diffuse
 // instead of the returned radiance; otherwise the radiance keeps the summation order of the combined path.
@@ -1176,17 +1196,14 @@ float4 ShadeMaterialTerms(in SurfaceSample surface,
         float attenuation = 1;
         if (color.w != 0)
         {
-            float3 delta = position.xyz - input.PositionWorld;
-            float distance2 = dot(delta, delta);
-            lightDirectionWorld = NormalizeOrZero(delta);
-            float ratio = distance2 / (position.w * position.w);
-            float edge = max(1 - ratio * ratio, 0);
-            attenuation = edge * edge / max(distance2, 1e-4);
+            float3 deltaWorld = position.xyz - input.PositionWorld;
+            float distanceSquaredMetres = dot(deltaWorld, deltaWorld);
+            lightDirectionWorld = NormalizeOrZero(deltaWorld);
+            attenuation = ComputePunctualAttenuation(distanceSquaredMetres, position.w);
             if (color.w == 2)
             {
-                float cone = saturate((dot(-lightDirectionWorld, direction.xyz) - direction.w) /
-                                      max(extra.x - direction.w, 1e-6));
-                attenuation *= cone * cone;
+                attenuation *=
+                    ComputeSpotConeAttenuation(dot(-lightDirectionWorld, direction.xyz), extra.x, direction.w);
             }
             if (color.w == 3 || color.w == 4)
             {

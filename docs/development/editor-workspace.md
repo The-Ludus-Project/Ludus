@@ -829,11 +829,17 @@ preview; its input and presentation limits are documented with that workflow.
 
 The viewport toolbar reads left to right in priority order: the configuration
 and output choice, size and view, then editing (object tool, **Edit Terrain…**,
-**Frame all**), display diagnostics (**Exposure**, **Force raster**, **Stats**,
+**Frame all**), display controls (**Exposure**, **Work Light**, **Force raster**, **Stats**,
 **Reference…**) and finally navigation help. The configuration menu appears only
 when the graph defines more than one configuration. When the viewport is too
 narrow, commands from the right end move into the **»** overflow menu whole,
 rather than being squeezed until their text is cut off.
+
+Turn on **Work Light** to illuminate nearby surfaces while navigating or editing in a dark area. Its soft spotlight
+follows the editor camera and starts off each editor session. It is available on **Final output** with the default
+raster graph. Use **Force raster** to switch to that graph if a project graph is active. The spotlight has a 12 m range
+and casts no shadows. The toggle lives in the viewport session, so it never edits the World or changes lighting
+diagnostics, Play mode or reference renders.
 
 ### Apertures
 
@@ -2376,20 +2382,26 @@ with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
+Clustered deferred raster configurations draw the whole Atmosphere. A
+ray-traced configuration draws the parts its ray kernels call
+[scene functions](render-graph-authoring.md#world-features) for. Most ray
+templates show the sky, without the night sky, and light the scene with it and
+the dimmed Sun, but add no haze. A forward configuration still draws the rest
+of the World. Its background is the World environment, and the linked Sun is
+an ordinary directional light that the air does not dim. When the World uses a
+feature the configuration does not draw, the viewport and the Error List show a
+**World features not rendered** warning (code `RenderGraphFeatureNotRendered`).
+It names the configuration, each missing feature and the function to call.
+Activate the warning row to open **Render Preview** at its **World features**
+table. It lists each feature with its support, its scene function and where to
+call it. Turn on **Force raster** in the viewport toolbar to see the full
+Atmosphere with the engine's default raster graph, or disable the Atmosphere
+entity to clear the warning.
+
 RT1 reference captures from inside the atmosphere also show the Sun and Moon
 disks, stars, and planets behind World geometry in both the CPU oracle and GPU
 compute modes. Surface lighting continues to use the sky environment and
 linked lights.
-
-Only clustered deferred raster configurations draw an Atmosphere. A
-ray-traced or forward configuration still draws the rest of the World. Its
-background is the World environment, the linked Sun lights the scene as an
-ordinary directional light that the air does not dim, and there is no haze or
-night sky. The viewport and the Error List show an **Atmosphere not rendered**
-warning (code `RenderGraphFeatureNotRendered`) that names the configuration.
-Turn on **Force raster** in the viewport toolbar to see the sky with the
-engine's default raster graph, or disable the Atmosphere entity to clear the
-warning.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky

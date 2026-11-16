@@ -1402,6 +1402,11 @@ float32x3 ShadeMiss(in Ray ray)
     `rg2_bound` with its vertex, color and depth callbacks ported to LUSL,
     reading `graph_schemas.luslh`. A GPU test renders both packages with two
     draws of different material values and compares every pixel.
+    `rg2_bound_lusl_variant` cooks the same graph with the color calculation
+    extracted into a helper called with named arguments in a different order
+    from its parameters. It keeps the original arithmetic and bindings. The
+    test also compares every output byte of the two LUSL packages on the same
+    backend.
 
 ## Tests and fuzzing
 
