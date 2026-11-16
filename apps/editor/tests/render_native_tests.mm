@@ -2094,6 +2094,10 @@ TEST_CASE("Force raster's default graph adds GI Probe Receivers' baked bounce li
 namespace
 {
 constexpr float32 CHART_ROOM_HALF_WIDTH_METRES = 1.5F;
+// The room stands above the editor's World grid at y = 0. A floor in that plane depth-fights the grid in both the
+// native viewport and the graph, so a grid line can fall in a measured window at one resolution and not another:
+// at device pixel ratio 1 (the hosted macOS runner) a floor point read 0.47 natively and 0.65 in the graph.
+constexpr float32 CHART_ROOM_FLOOR_HEIGHT_METRES = .25F;
 constexpr float32 CHART_LIGHT_INTENSITY = 3;
 // A grey floor and back wall facing each other across their corner, lit by one always-on point light. Their charts
 // carry each other's bounce, which realtime lighting omits, so a draw that ignores its chart reads differently.
@@ -2110,9 +2114,10 @@ RenderScene MakeSurfaceChartScene()
     constexpr uint64 FIRST_SOURCE = 500;
     constexpr float32 HALF = CHART_ROOM_HALF_WIDTH_METRES;
     constexpr float32 SPAN = 2 * CHART_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 FLOOR_HEIGHT = CHART_ROOM_FLOOR_HEIGHT_METRES;
     REQUIRE(data.Meshes.TryResize(OBJECT_COUNT) == true);
-    AddProbeQuad(data.Meshes[FLOOR], {{-HALF, 0, -HALF}, {0, 0, SPAN}, {SPAN, 0, 0}});
-    AddProbeQuad(data.Meshes[WALL], {{-HALF, 0, -HALF}, {SPAN, 0, 0}, {0, SPAN, 0}});
+    AddProbeQuad(data.Meshes[FLOOR], {{-HALF, FLOOR_HEIGHT, -HALF}, {0, 0, SPAN}, {SPAN, 0, 0}});
+    AddProbeQuad(data.Meshes[WALL], {{-HALF, FLOOR_HEIGHT, -HALF}, {SPAN, 0, 0}, {0, SPAN, 0}});
     REQUIRE(data.Materials.TryResize(1) == true);
     REQUIRE(data.Objects.TryResize(OBJECT_COUNT) == true);
     for (uint32 index = 0; index < OBJECT_COUNT; ++index)
@@ -2121,14 +2126,14 @@ RenderScene MakeSurfaceChartScene()
         data.Objects[index].Mesh = index;
         data.Objects[index].Material = 0;
     }
-    data.Eye = {0, 1.2F, 3.5F};
-    data.Target = {0, .6F, -HALF};
+    data.Eye = {0, 1.2F + FLOOR_HEIGHT, 3.5F};
+    data.Target = {0, .6F + FLOOR_HEIGHT, -HALF};
     data.Up = {0, 1, 0};
     REQUIRE(data.Lights.TryResize(1) == true);
     SceneLight& light = data.Lights[0];
     light.SourceId = FIRST_SOURCE - 1;
     light.Kind = ludus::resources::SceneLightKind::Point;
-    light.PositionWorld = {.4F, .9F, -.6F};
+    light.PositionWorld = {.4F, .9F + FLOOR_HEIGHT, -.6F};
     light.IntensityRgb = {CHART_LIGHT_INTENSITY, 0, 0};
     light.Range = 6;
 
@@ -2273,14 +2278,15 @@ TEST_CASE("Force raster's default graph draws static surfaces' baked charts like
 
     // Points on the floor and the wall, nearer and farther from their shared corner.
     constexpr float32 HALF = CHART_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 FLOOR_HEIGHT = CHART_ROOM_FLOOR_HEIGHT_METRES;
     constexpr usize POINT_COUNT = 6;
     const StaticArray<math::Vector3, POINT_COUNT> pointsWorld{
-        math::Vector3{-.6F, 0, -.9F},
-        {.2F, 0, -1.2F},
-        {.8F, 0, -.3F},
-        {-.6F, .3F, -HALF},
-        {.2F, .8F, -HALF},
-        {.9F, 1.4F, -HALF},
+        math::Vector3{-.6F, FLOOR_HEIGHT, -.9F},
+        {.2F, FLOOR_HEIGHT, -1.2F},
+        {.8F, FLOOR_HEIGHT, -.3F},
+        {-.6F, .3F + FLOOR_HEIGHT, -HALF},
+        {.2F, .8F + FLOOR_HEIGHT, -HALF},
+        {.9F, 1.4F + FLOOR_HEIGHT, -HALF},
     };
     // Both paths sample the same chart texels and evaluate the same diffuse and live specular terms; only display
     // quantization and half-float G-buffer storage differ.

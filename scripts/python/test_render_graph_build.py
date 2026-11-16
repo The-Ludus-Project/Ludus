@@ -342,6 +342,30 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn(str(short), message)
         build.require_paths_within_windows_limit('Program', [])
 
+    def test_stage_directories_do_not_grow_with_program_ids(self):
+        # Batch 43822756663: the clustered ZPrepass cook staged
+        # DeferredSurfaceChartGBufferFragment-dxil/source/_ludus_forward/renderer_atmosphere_transport.slang
+        # at exactly 260 characters on Windows. Stage names come from the job index instead.
+        self.assertEqual(build.stage_directory_name(12, 'dxil'), '12-dxil')
+        self.assertNotEqual(build.stage_directory_name(0, 'dxil'), build.stage_directory_name(1, 'dxil'))
+        self.assertNotEqual(build.stage_directory_name(0, 'dxil'), build.stage_directory_name(0, 'metal'))
+        staged = []
+        record = self.stage
+
+        def stage(command, cancel):
+            staged.append(Path(command[command.index('--source') + 1]).parent.parent.name)
+            record(command, cancel)
+
+        program_ids = {program['id'] for program in self.value()['programs']}
+        with patch.object(build, 'run_stage', stage):
+            report = self.run_build()
+        self.assertEqual(len(staged), report['cache_misses'])
+        self.assertEqual(len(set(staged)), len(staged))
+        for name in staged:
+            self.assertRegex(name, r'^[0-9]+-(metal|wgsl)$')
+            self.assertFalse(any(identity in name for identity in program_ids), name)
+        self.assertEqual(sorted(self.output.glob('.rg1-*')), [])
+
     def test_transitive_include_invalidation_only_rebuilds_affected_stage(self):
         color = self.graph.parent / 'main_shaders/color.slang'
         include = color.with_name('surface.slang')
