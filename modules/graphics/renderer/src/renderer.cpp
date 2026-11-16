@@ -104,8 +104,8 @@ constexpr usize LIT_BYTES = FORWARD_SURFACE_OFFSET;
 constexpr usize CLUSTER_GRID_OFFSET = CLUSTERED_GRID_OFFSET;
 constexpr usize CLUSTER_BYTES = CLUSTERED_SURFACE_OFFSET;
 constexpr usize AUTHORED_PARAMETER_BYTES = LUDUS_AUTHORED_PARAMETER_WORDS * sizeof(math::Vector4);
-// Authored, IrradianceSh, HairStrand and HairHighlights.
-constexpr usize AUTHORED_MEMBER_COUNT = 4;
+// Authored, IrradianceSh, HairStrand, HairHighlights and SkinScattering.
+constexpr usize AUTHORED_MEMBER_COUNT = 5;
 constexpr usize CLUSTER_LIGHT_WORD_COUNT = static_cast<usize>(CLUSTERED_LIGHT_COUNT) * FORWARD_LIGHT_WORDS;
 constexpr usize LIGHT_GRID_ROW_COUNT = CLUSTERED_GRID_ROWS;
 constexpr usize LEGACY_LIGHT_PARAMETER_BYTES = LIT_BYTES + sizeof(math::Vector4) + AUTHORED_PARAMETER_BYTES;
@@ -132,6 +132,7 @@ struct LitMaterialParameters final
     StaticArray<math::Vector4, internal::ENVIRONMENT_SH_COUNT> IrradianceSh{};
     math::Vector4 HairStrand{};
     math::Vector4 HairHighlights{};
+    math::Vector4 SkinScattering{};
 };
 static_assert(sizeof(LitMaterialParameters) == CLUSTER_BYTES + sizeof(math::Vector4) + AUTHORED_PARAMETER_BYTES);
 struct LitMaterialScratch final
@@ -718,6 +719,9 @@ struct Renderer::State final
         bool Lit = false;
         bool HasBake = false;
         bool Clustered = false;
+        /// One-based skin profile slot of a Skin material with a nonzero scattering distance, which the clustered
+        /// deferred profile spreads; zero for every other material.
+        uint32 SkinProfile = 0;
         bool ClusterViewCreated = false;
         rhi::TextureHandle ClusterTexture{};
         rhi::TextureViewHandle ClusterView{};
@@ -750,6 +754,13 @@ struct Renderer::State final
     rhi::RasterPipelineHandle OutputPipelines[2]{}, HdrFlat[3]{}, FlatShadow{};
     Array<ProgramRecord> Programs;
     Array<MaterialRecord> Materials;
+    /// One distinct skin scattering distance, shared by the live materials that reference it.
+    struct SkinProfileRecord final
+    {
+        math::Vector3 Distance{};
+        uint32 References = 0;
+    };
+    StaticArray<SkinProfileRecord, DEFERRED_MAX_SKIN_PROFILES> SkinProfiles{};
     Array<PresentationRecord> Presentations;
     rhi::RasterShaderHandle CompositeVertex{}, CompositeFragment{};
     rhi::BindingLayoutHandle CompositeLayout{};
@@ -961,6 +972,10 @@ struct Renderer::State final
             }
             --Programs[m.ProgramSlot].References;
             DropProgram(m.ProgramSlot);
+            if (m.SkinProfile != 0)
+            {
+                --SkinProfiles[m.SkinProfile - 1].References;
+            }
             if (m.Reference && Reference)
             {
                 Reference->CpuBytes -= sizeof(internal::ReferenceSurfaceData);
@@ -970,6 +985,29 @@ struct Renderer::State final
             m = {};
             m.Generation = generation;
         }
+    }
+    /// One-based slot of the skin profile for a Skin scattering's distance: the live profile with that distance, else
+    /// the first free one. Zero when the scattering has no distance, and when all DEFERRED_MAX_SKIN_PROFILES are taken.
+    [[nodiscard]] uint32 FindSkinProfile(const content::scene_format::MaterialScattering& scattering) const noexcept
+    {
+        const math::Vector3 distance{scattering.K[0], scattering.K[1], scattering.K[2]};
+        if (scattering.Model != content::scene_format::MaterialModel::Skin || distance == math::Vector3{})
+        {
+            return 0;
+        }
+        uint32 free = 0;
+        for (usize slot = 0; slot < SkinProfiles.GetSize(); ++slot)
+        {
+            if (SkinProfiles[slot].References != 0 && SkinProfiles[slot].Distance == distance)
+            {
+                return static_cast<uint32>(slot) + 1;
+            }
+            if (free == 0 && SkinProfiles[slot].References == 0)
+            {
+                free = static_cast<uint32>(slot) + 1;
+            }
+        }
+        return free;
     }
     void DropShadow(usize index) noexcept
     {
@@ -1947,6 +1985,18 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
         outBindings.Resources[0].Size = material.ParameterSize;
         outBindings.HasMaterial = true;
     }
+    for (usize index = 0; index < view.DrawCount && outBindings.HasMaterial == true; ++index)
+    {
+        const State::Packet& packet = view.Packets[index];
+        outBindings.HasSkin =
+            outBindings.HasSkin == true || (packet.Pass == Layer::Opaque && packet.MaterialSlot != NO_MATERIAL &&
+                                            state.Materials[packet.MaterialSlot].SkinProfile != 0);
+    }
+    for (usize slot = 0; slot < state.SkinProfiles.GetSize(); ++slot)
+    {
+        const math::Vector3 distance = state.SkinProfiles[slot].Distance;
+        outBindings.SkinProfiles[slot] = {distance.X, distance.Y, distance.Z, 0};
+    }
     return Status::Ready;
 }
 Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
@@ -2703,8 +2753,9 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
         const usize authoredOffset = (isClustered == true ? CLUSTER_BYTES : LIT_BYTES) + WORD_BYTES;
         constexpr usize HAIR_STRAND_WORD = 1 + internal::ENVIRONMENT_SH_COUNT;
         const StaticArray<const char*, AUTHORED_MEMBER_COUNT> authoredNames{
-            {"Authored", "IrradianceSh", "HairStrand", "HairHighlights"}};
-        const StaticArray<usize, AUTHORED_MEMBER_COUNT> authoredWords{{0, 1, HAIR_STRAND_WORD, HAIR_STRAND_WORD + 1}};
+            {"Authored", "IrradianceSh", "HairStrand", "HairHighlights", "SkinScattering"}};
+        const StaticArray<usize, AUTHORED_MEMBER_COUNT> authoredWords{
+            {0, 1, HAIR_STRAND_WORD, HAIR_STRAND_WORD + 1, HAIR_STRAND_WORD + LUDUS_HAIR_CARD_PARAMETER_WORDS}};
         for (usize index = 0; index < AUTHORED_MEMBER_COUNT; ++index)
         {
             const rhi::RasterUniformShape shape =
@@ -3214,6 +3265,14 @@ Status Renderer::CreateMaterialData(MaterialProgram program,
     ++s.Programs[m.ProgramSlot].References;
     m.Lit = lighting != nullptr;
     m.Clustered = clusters != nullptr;
+    // createLitMaterial found the same slot for the parameters; nothing between changed the profiles.
+    m.SkinProfile = lighting != nullptr ? s.FindSkinProfile(lighting->Scattering) : 0;
+    if (m.SkinProfile != 0)
+    {
+        State::SkinProfileRecord& profile = s.SkinProfiles[m.SkinProfile - 1];
+        profile.Distance = {lighting->Scattering.K[0], lighting->Scattering.K[1], lighting->Scattering.K[2]};
+        ++profile.References;
+    }
     m.ParameterSize = size;
     if (lighting != nullptr)
     {
@@ -5191,6 +5250,21 @@ Status Renderer::createLitMaterial(MaterialProgram program,
             MakeHairCardShading(content::scene_format::GetHairCardParameters(description.Scattering));
         parameters.HairStrand = {1, hair.StrandRadians, hair.PrimaryShiftRadians, hair.SecondaryShiftRadians};
         parameters.HairHighlights = {hair.PrimaryWeight, hair.SecondaryWeight, 0, 0};
+    }
+    if (description.Scattering.Model == content::scene_format::MaterialModel::Skin)
+    {
+        // The G-buffer stores the profile slot (DEFERRED_MAX_SKIN_PROFILES); CreateMaterialData takes its reference.
+        const uint32 skinProfile = s.FindSkinProfile(description.Scattering);
+        const bool hasDistance =
+            description.Scattering.K[0] > 0 || description.Scattering.K[1] > 0 || description.Scattering.K[2] > 0;
+        if (hasDistance == true && skinProfile == 0)
+        {
+            return Status::CapacityExceeded;
+        }
+        parameters.SkinScattering = {description.Scattering.K[0],
+                                     description.Scattering.K[1],
+                                     description.Scattering.K[2],
+                                     static_cast<float32>(skinProfile)};
     }
     if (description.EnvironmentOrNull != nullptr)
     {
