@@ -1,0 +1,90 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Diffraction reference: double slit",
+  "description": "Two vertical rectangular openings in a zero-thickness screen at z = 0 are each 4 cm wide and 1 m tall, with centres at x = -0.1 and 0.1. The 5 mm square source is centred at (0, 0, 0.5) and faces -z. Sweep x at y = 0 along the receiver at z = -1 to measure the interference profile. Design wavelength 5 mm. The openings are fixed mesh geometry.",
+  "camera": {
+    "eye": [0, 0, -0.1],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 58
+  },
+  "materials": [
+    {"name": "Receiver","model": "diffuse","base_color": [0.8,0.8,0.8]},
+    {"name": "Black screen","model": "diffuse","base_color": [0,0,0]},
+    {"name": "Source","model": "metallic_roughness","base_color": [1,1,1],"roughness": 1,"emission": {"radiance": [10000,10000,10000],"two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Receiver wall",
+      "material": "Receiver",
+      "positions": [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Two-slit screen",
+      "material": "Black screen",
+      "positions": [
+        [-2, -2, 0],
+        [-0.12, -2, 0],
+        [-0.08, -2, 0],
+        [0.08, -2, 0],
+        [0.12, -2, 0],
+        [2, -2, 0],
+        [-2, -0.5, 0],
+        [-0.12, -0.5, 0],
+        [-0.08, -0.5, 0],
+        [0.08, -0.5, 0],
+        [0.12, -0.5, 0],
+        [2, -0.5, 0],
+        [-2, 0.5, 0],
+        [-0.12, 0.5, 0],
+        [-0.08, 0.5, 0],
+        [0.08, 0.5, 0],
+        [0.12, 0.5, 0],
+        [2, 0.5, 0],
+        [-2, 2, 0],
+        [-0.12, 2, 0],
+        [-0.08, 2, 0],
+        [0.08, 2, 0],
+        [0.12, 2, 0],
+        [2, 2, 0]
+      ],
+      "polygons": [
+        [0, 1, 7, 6],
+        [1, 2, 8, 7],
+        [2, 3, 9, 8],
+        [3, 4, 10, 9],
+        [4, 5, 11, 10],
+        [6, 7, 13, 12],
+        [8, 9, 15, 14],
+        [10, 11, 17, 16],
+        [12, 13, 19, 18],
+        [13, 14, 20, 19],
+        [14, 15, 21, 20],
+        [15, 16, 22, 21],
+        [16, 17, 23, 22]
+      ]
+    },
+    {
+      "name": "Source patch",
+      "material": "Source",
+      "positions": [
+        [-0.0025, -0.0025, 0.5],
+        [-0.0025, 0.0025, 0.5],
+        [0.0025, 0.0025, 0.5],
+        [0.0025, -0.0025, 0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}
