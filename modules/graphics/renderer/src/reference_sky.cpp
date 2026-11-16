@@ -144,8 +144,14 @@ constexpr uint32 TRANSMITTANCE_LAST = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES 
 }
 
 // Matches renderer_atmosphere_celestial.slang's cell addressing, star positions and filter.
-[[nodiscard]] float32 EvaluateStars(math::Vector3 directionCelestial, float32 angularFootprint, float32 peak) noexcept
+[[nodiscard]] float32 EvaluateStars(const ReferenceSkyWords& words, math::Vector3 directionCelestial) noexcept
 {
+    const float32 peak = words[LUDUS_REFERENCE_SKY_SUN_RADIANCE].W;
+    if (peak == 0)
+    {
+        return 0;
+    }
+    const float32 angularFootprint = words[LUDUS_REFERENCE_SKY_GALACTIC_CENTER_WORLD].W;
     constexpr uint32 FACE_CELLS = LUDUS_CELESTIAL_STAR_FACE_CELLS;
     constexpr float32 OCCUPANCY = LUDUS_CELESTIAL_STAR_OCCUPANCY;
     constexpr float32 RADIUS = LUDUS_CELESTIAL_STAR_CELL_RADIUS;
@@ -215,15 +221,12 @@ constexpr uint32 TRANSMITTANCE_LAST = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES 
                 static_cast<float32>(math::Pow(wideMuSquared, static_cast<float64>(exponent.Z)))};
 }
 
-[[nodiscard]] float32 EvaluateMoonPhase(math::Vector3 directionWorld,
-                                        math::Vector3 moonWorld,
-                                        math::Vector3 lunarLightWorld,
-                                        float32 sineRadius) noexcept
+[[nodiscard]] math::Vector3
+ComputeLunarNormal(math::Vector3 directionWorld, math::Vector3 moonWorld, float32 sineRadius) noexcept
 {
     const math::Vector3 transverseWorld = directionWorld * math::Dot(directionWorld, moonWorld) - moonWorld;
     const float32 root = math::Sqrt(math::Max(0.0F, sineRadius * sineRadius - math::LengthSquared(transverseWorld)));
-    const math::Vector3 normalWorld = (transverseWorld - root * directionWorld) / sineRadius;
-    return math::Max(0.0F, math::Dot(normalWorld, lunarLightWorld));
+    return (transverseWorld - root * directionWorld) / sineRadius;
 }
 
 [[nodiscard]] math::Vector3 EvaluateNightSky(const ReferenceSkyWords& words, math::Vector3 directionWorld) noexcept
@@ -239,13 +242,8 @@ constexpr uint32 TRANSMITTANCE_LAST = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES 
                               math::Dot(directionWorld, math::Cross(northWorld, centerWorld)),
                               math::Dot(directionWorld, northWorld)};
     }
-    const float32 peak = words[LUDUS_REFERENCE_SKY_SUN_RADIANCE].W;
-    math::Vector3 radiance{};
-    if (peak > 0)
-    {
-        const float32 star = EvaluateStars(directionCelestial, footprint, peak);
-        radiance = {star, star, star};
-    }
+    const float32 star = EvaluateStars(words, directionCelestial);
+    math::Vector3 radiance{star, star, star};
     const uint32 count = static_cast<uint32>(words[LUDUS_REFERENCE_SKY_LUNAR_LIGHT_WORLD].W);
     const float32 radius = math::Max(LUDUS_CELESTIAL_PLANET_MINIMUM_CHORD_RADIUS,
                                      LUDUS_CELESTIAL_PLANET_FILTER_WIDTH_IN_PIXELS * footprint);
@@ -302,16 +300,9 @@ rhi::RasterStatus PrepareReferenceSky(const ReferenceCaptureDescription& descrip
     {
         return rhi::RasterStatus::InvalidDescription;
     }
-    const float64 horizon = GetReferenceSkyHorizon(altitudeMetres);
+    const float64 horizon = WriteReferenceSkyTransmittance(altitudeMetres, words);
     words[LUDUS_REFERENCE_SKY_UP_WORLD] = MakeWord(upWorld, static_cast<float32>(horizon));
     words[LUDUS_REFERENCE_SKY_GALACTIC_CENTER_WORLD].W = ComputeAngularFootprint(description);
-    for (uint32 sample = 0; sample <= TRANSMITTANCE_LAST; ++sample)
-    {
-        const float64 fraction = static_cast<float64>(sample) / TRANSMITTANCE_LAST;
-        const float64 zenithCosine = horizon + (1 - horizon) * fraction * fraction;
-        words[LUDUS_REFERENCE_SKY_TRANSMITTANCE + sample] =
-            MakeWord(EvaluateReferenceSkyTransmittance(altitudeMetres, zenithCosine), 0);
-    }
     return rhi::RasterStatus::Ready;
 }
 
@@ -332,10 +323,9 @@ math::Vector3 EvaluateReferenceSky(const ReferenceSky& sky, math::Vector3 direct
     if (moon.W > 0 && math::Length(directionWorld - moonWorld) <= moon.W)
     {
         const math::Vector4 lunarRadiance = words[LUDUS_REFERENCE_SKY_MOON_RADIANCE];
-        const float32 phase = EvaluateMoonPhase(directionWorld,
-                                                moonWorld,
-                                                GetRgb(words[LUDUS_REFERENCE_SKY_LUNAR_LIGHT_WORLD]),
-                                                lunarRadiance.W);
+        const math::Vector3 normalWorld = ComputeLunarNormal(directionWorld, moonWorld, lunarRadiance.W);
+        const math::Vector3 lunarLightWorld = GetRgb(words[LUDUS_REFERENCE_SKY_LUNAR_LIGHT_WORLD]);
+        const float32 phase = math::Max(0.0F, math::Dot(normalWorld, lunarLightWorld));
         radiance = GetRgb(lunarRadiance) * phase;
     }
     else if (sunChord <= sun.W && GetRgb(words[LUDUS_REFERENCE_SKY_SUN_RADIANCE]) != math::Vector3{})

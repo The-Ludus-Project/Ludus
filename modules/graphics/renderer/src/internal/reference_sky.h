@@ -30,8 +30,8 @@ struct ReferenceSky final
                                                     ReferenceSky& outSky) noexcept;
 [[nodiscard]] foundation::math::Vector3 EvaluateReferenceSky(const ReferenceSky& sky,
                                                              foundation::math::Vector3 directionWorld) noexcept;
-[[nodiscard]] foundation::float64 GetReferenceSkyHorizon(foundation::float64 altitudeMetres) noexcept;
-[[nodiscard]] foundation::math::Vector3 EvaluateReferenceSkyTransmittance(foundation::float64 altitudeMetres,
-                                                                          foundation::float64 zenithCosine) noexcept;
+/// Write the observer's RGB transmittance row and return the geometric horizon cosine.
+[[nodiscard]] foundation::float64 WriteReferenceSkyTransmittance(foundation::float64 altitudeMetres,
+                                                                 ReferenceSkyWords& inoutWords) noexcept;
 } // namespace internal
 } // namespace ludus::graphics::renderer

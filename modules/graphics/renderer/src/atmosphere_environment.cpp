@@ -452,16 +452,23 @@ float64 AtmosphereSkyTables::GetHorizonCosine(float64 heightKilometres) noexcept
 }
 } // namespace internal
 
-float64 internal::GetReferenceSkyHorizon(float64 altitudeMetres) noexcept
-{
-    return ComputeHorizonCosine(altitudeMetres / METRES_PER_KILOMETRE);
-}
-
-math::Vector3 internal::EvaluateReferenceSkyTransmittance(float64 altitudeMetres, float64 zenithCosine) noexcept
+float64 internal::WriteReferenceSkyTransmittance(float64 altitudeMetres, ReferenceSkyWords& inoutWords) noexcept
 {
     const float64 height = altitudeMetres / METRES_PER_KILOMETRE;
-    const math::Vector3d value = IntegrateTransmittance(height, zenithCosine, GetDistanceToTop(height, zenithCosine));
-    return {static_cast<float32>(value.X), static_cast<float32>(value.Y), static_cast<float32>(value.Z)};
+    const float64 horizon = ComputeHorizonCosine(height);
+    constexpr uint32 LAST_SAMPLE = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES - 1;
+    for (uint32 sample = 0; sample <= LAST_SAMPLE; ++sample)
+    {
+        const float64 fraction = static_cast<float64>(sample) / LAST_SAMPLE;
+        const float64 zenithCosine = horizon + (1 - horizon) * fraction * fraction;
+        const math::Vector3d value =
+            IntegrateTransmittance(height, zenithCosine, GetDistanceToTop(height, zenithCosine));
+        inoutWords[LUDUS_REFERENCE_SKY_TRANSMITTANCE + sample] = {static_cast<float32>(value.X),
+                                                                  static_cast<float32>(value.Y),
+                                                                  static_cast<float32>(value.Z),
+                                                                  0};
+    }
+    return horizon;
 }
 
 AtmosphereEnvironmentStatus ResolveAtmosphereEnvironment(const AtmosphereDescription& atmosphere,
