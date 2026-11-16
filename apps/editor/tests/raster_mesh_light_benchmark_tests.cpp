@@ -39,6 +39,9 @@ constexpr uint32 MEASURED_FRAMES = 20;
 /// Most frames spent drawing mesh-light shadow faces before the measured frames; they are timed separately.
 constexpr uint32 MAX_SHADOW_FILL_FRAMES = 4096;
 constexpr int32 PREPARATION_TIMEOUT_MILLISECONDS = 120000;
+/// Alternating blocks of the skin control comparison (LUDUS_RASTER_BENCHMARK_SKIN_CONTROL): each block measures the
+/// control and then the World as authored, so GPU clock drift affects both alike.
+constexpr uint32 SKIN_CONTROL_BLOCKS = 8;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1000000;
 } // namespace
 
@@ -54,6 +57,9 @@ TEST_CASE("Supplied World times clustered raster passes", "[.raster-mesh-light-b
     const QString output = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_OUTPUT");
     // Optional PNG of the last measured frame's first exported colour target.
     const QString imagePath = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_IMAGE");
+    // Optional: alternate measured blocks with a control in which every skin material shades as its
+    // metallic/roughness surface, and save that control's frame beside the image as <image>-control.png.
+    const bool shouldCompareSkin = qEnvironmentVariableIsSet("LUDUS_RASTER_BENCHMARK_SKIN_CONTROL");
     // Optional JSON file holding an editor navigation state (RenderPreview::RestoreNavigation) instead of the
     // default framing of the whole World, for example an orbit pivot, yaw, pitch and zoom inside the scene.
     const QString navigationPath = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_NAVIGATION");
@@ -206,8 +212,7 @@ TEST_CASE("Supplied World times clustered raster passes", "[.raster-mesh-light-b
             }
             passFrames.append(passMilliseconds);
         }
-        if (imagePath.isEmpty() == false)
-        {
+        const auto saveImage = [&](const QString& path) {
             const renderer::RenderGraphPlan plan = package.GetPlan();
             uint32 exported = static_cast<uint32>(plan.Resources.GetSize());
             for (usize resource = 0; resource < plan.Resources.GetSize(); ++resource)
@@ -233,9 +238,74 @@ TEST_CASE("Supplied World times clustered raster passes", "[.raster-mesh-light-b
                 read = reader.Poll();
             }
             REQUIRE(read == OffscreenReadStatus::Complete);
-            REQUIRE(reader.TakeImage().save(imagePath, "PNG") == true);
+            REQUIRE(reader.TakeImage().save(path, "PNG") == true);
+        };
+        if (imagePath.isEmpty() == false)
+        {
+            saveImage(imagePath);
         }
         const renderer::RenderGraphAllocationReport allocations = graph.GetAllocationReport();
+        // The matched skin control: the same World, camera and device, with every skin material reset to its
+        // metallic/roughness surface, measured in blocks that alternate with the World as authored.
+        QJsonObject skinControl;
+        if (shouldCompareSkin == true)
+        {
+            QVector<renderer::SceneShaderMaterial> controlMaterials = extraction.Materials;
+            qsizetype skinMaterials = 0;
+            for (renderer::SceneShaderMaterial& material : controlMaterials)
+            {
+                if (material.Scattering.Model == ludus::content::scene_format::MaterialModel::Skin)
+                {
+                    material.Scattering = {};
+                    ++skinMaterials;
+                }
+            }
+            renderer::SceneShaderInputs controlInputs = extraction.ShaderInputs;
+            controlInputs.Materials = {controlMaterials.constData(), static_cast<usize>(controlMaterials.size())};
+            uint64 revision = extraction.Revision;
+            const auto prepare = [&](const renderer::SceneShaderInputs& inputs) {
+                ++revision;
+                waitReady(graph.Update({extraction.Meshes.constData(), static_cast<usize>(extraction.Meshes.size())},
+                                       {extraction.Items.constData(), static_cast<usize>(extraction.Items.size())},
+                                       {&extraction.View, 1},
+                                       revision,
+                                       renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                       report,
+                                       &inputs));
+            };
+            const auto measureBlock = [&]() {
+                QJsonArray block;
+                for (uint32 frame = 0; frame < WARMUP_FRAMES + MEASURED_FRAMES; ++frame)
+                {
+                    const float64 milliseconds = renderFrame();
+                    if (frame >= WARMUP_FRAMES)
+                    {
+                        block.append(milliseconds);
+                    }
+                }
+                return block;
+            };
+            QJsonArray controlBlocks;
+            QJsonArray authoredBlocks;
+            for (uint32 block = 0; block < SKIN_CONTROL_BLOCKS; ++block)
+            {
+                prepare(controlInputs);
+                controlBlocks.append(measureBlock());
+                prepare(extraction.ShaderInputs);
+                authoredBlocks.append(measureBlock());
+            }
+            if (imagePath.isEmpty() == false)
+            {
+                prepare(controlInputs);
+                static_cast<void>(measureBlock());
+                QString controlPath = imagePath;
+                controlPath.replace(QStringLiteral(".png"), QStringLiteral("-control.png"));
+                saveImage(controlPath);
+            }
+            skinControl = {{QStringLiteral("skin_materials"), static_cast<qint64>(skinMaterials)},
+                           {QStringLiteral("control_gpu_frame_ms"), controlBlocks},
+                           {QStringLiteral("authored_gpu_frame_ms"), authoredBlocks}};
+        }
         result = {
             {QStringLiteral("adapter"), QString::fromUtf8(adapter.Name)},
             {QStringLiteral("world"), worldName},
@@ -246,6 +316,9 @@ TEST_CASE("Supplied World times clustered raster passes", "[.raster-mesh-light-b
             {QStringLiteral("width"), static_cast<int32>(BENCHMARK_WIDTH)},
             {QStringLiteral("height"), static_cast<int32>(BENCHMARK_HEIGHT)},
             {QStringLiteral("deferred_attachment_bytes"), static_cast<qint64>(allocations.DeferredAttachmentBytes)},
+            {QStringLiteral("deferred_skin_allocations"), static_cast<qint64>(allocations.DeferredSkinAllocations)},
+            {QStringLiteral("deferred_skin_attachment_bytes"),
+             static_cast<qint64>(allocations.DeferredSkinAttachmentBytes)},
             {QStringLiteral("mesh_light_polygons"), static_cast<qint64>(graph.GetReport().Resources.MeshLightPolygons)},
             {QStringLiteral("mesh_light_bytes"), static_cast<qint64>(graph.GetReport().Resources.MeshLightBytes)},
             {QStringLiteral("mesh_light_shadow_casters"),
@@ -259,7 +332,8 @@ TEST_CASE("Supplied World times clustered raster passes", "[.raster-mesh-light-b
             {QStringLiteral("cpu_render_ms"), cpuRenderMilliseconds},
             {QStringLiteral("gpu_frame_ms"), frames},
             {QStringLiteral("pass_names"), passNames},
-            {QStringLiteral("pass_ms"), passFrames}};
+            {QStringLiteral("pass_ms"), passFrames},
+            {QStringLiteral("skin_control"), skinControl}};
     }
     static_cast<void>(rhi::DestroyDevice(device));
     rhi::Shutdown();

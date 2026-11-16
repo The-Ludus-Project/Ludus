@@ -2074,7 +2074,9 @@ Edit the skin fields and choose **Apply Changes**:
 
 - **Scattering red (mm)**, **Scattering green (mm)** and **Scattering blue (mm)**:
   how far each colour spreads under the surface, in [0, 100] mm. **Make Skin**
-  starts from human skin's diffuse mean free path, (3.67, 1.37, 0.68) mm; a
+  starts from human skin's scattering distance, (1.50, 0.94, 0.57) mm, derived from
+  measured skin coefficients
+  ([derivation](../architecture/renderer-systems.md#raster-skin-diffusion)); a
   material that is already skin keeps its own distances. Zero shades the slot like
   its metallic-roughness surface.
 
@@ -2397,6 +2399,11 @@ table. It lists each feature with its support, its scene function and where to
 call it. Turn on **Force raster** in the viewport toolbar to see the full
 Atmosphere with the engine's default raster graph, or disable the Atmosphere
 entity to clear the warning.
+
+RT1 reference captures from inside the atmosphere also show the Sun and Moon
+disks, stars, and planets behind World geometry in both the CPU oracle and GPU
+compute modes. Surface lighting continues to use the sky environment and
+linked lights.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky

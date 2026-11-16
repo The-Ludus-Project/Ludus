@@ -22,11 +22,11 @@ struct Rgba8MipChain final
 /// Count the complete levels of a width by height chain down to one texel: floor(log2(max(width, height))) + 1,
 /// bounded by MAX_TEXTURE_MIP_LEVELS. Zero extents count as one level.
 [[nodiscard]] foundation::uint32 CountRgba8MipLevels(foundation::uint32 width, foundation::uint32 height) noexcept;
-/// Build the first levelCount levels of source's mip chain with a 2x2 box filter. Level zero copies
-/// the source rows without their padding. Rgba8Srgb colour channels are averaged in linear light and
-/// re-encoded; Rgba8Unorm channels and every alpha channel average the stored codes, so linear data such
-/// as packed surface parameters keeps its mean. A level with an odd parent extent clamps the second
-/// parent texel to the edge.
+/// Build the first levelCount levels of source's mip chain. Level zero copies the source rows without
+/// their padding. Each smaller level halves the parent extents, rounding down with a minimum of one.
+/// Equal-area box footprints cover the whole parent level and weight edge texels by their fractional
+/// overlap. Rgba8Srgb RGB channels are averaged in linear light and re-encoded. Rgba8Unorm channels
+/// and every alpha channel are averaged as linear data.
 /// @param source Complete rows of level zero in Rgba8Unorm or Rgba8Srgb with RowPitch >= Width * 4.
 /// @param levelCount Levels to build, 1..CountRgba8MipLevels(source.Width, source.Height).
 /// @param outChain Receives the packed levels and their upload descriptors on Ready.

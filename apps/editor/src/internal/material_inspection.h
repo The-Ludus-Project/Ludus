@@ -123,9 +123,13 @@ inline const foundation::StaticArray<SkinDistanceField, content::scene_format::M
     }};
 
 /// A "skin" slot object. A material that is already skin keeps its scattering distance; any other starts from human
-/// skin's diffuse mean free path, (3.67, 1.37, 0.68) mm. Thanks to Henrik Wann Jensen, Stephen R. Marschner, Marc
-/// Levoy and Pat Hanrahan, "A Practical Model for Subsurface Light Transport", SIGGRAPH 2001, whose measured skin1
-/// coefficients give it as 1 / sqrt(3 sigma_a sigma_t').
+/// skin's normalized-diffusion distance d, (1.50, 0.94, 0.57) mm. It comes from the measured skin1 coefficients of
+/// Henrik Wann Jensen, Stephen R. Marschner, Marc Levoy and Pat Hanrahan, "A Practical Model for Subsurface Light
+/// Transport", SIGGRAPH 2001, Table 2 (sigma_s' = 0.74, 0.88, 1.01 and sigma_a = 0.032, 0.17, 0.48 per mm), as the
+/// mean free path l = 1 / sigma_t' over Per H. Christensen's scale s = 1.85 - A + 7 (0.8 - A)^3 with A =
+/// sigma_s' / sigma_t' ("An Approximate Reflectance Profile for Efficient Subsurface Scattering", SIGGRAPH 2015
+/// Talks, Eq. 2, DOI 10.1145/2775280.2792555). Skin1's diffuse mean free path, (3.67, 1.37, 0.68) mm, is a different
+/// distance and blurs the profile about twice as wide.
 [[nodiscard]] QJsonObject MakeDefaultSkin(const resources::SceneMaterial* materialOrNull);
 
 /// Borrow the resolved material for as long as the scene definition is retained.

@@ -9,6 +9,7 @@
 
 #include "../shaders/renderer_atmosphere_layout.h"
 #include "internal/atmosphere_sky_tables.h"
+#include "internal/reference_sky.h"
 #include "internal/render_graph_atmosphere.h"
 
 // CPU evaluation of the raster's clear-sky tables for distant reference lighting. Thanks to
@@ -521,6 +522,25 @@ void AtmosphereSkyTables::IntegrateView(float64 zenithCosine,
     }
 }
 } // namespace internal
+
+float64 internal::WriteReferenceSkyTransmittance(float64 altitudeMetres, ReferenceSkyWords& inoutWords) noexcept
+{
+    const float64 height = altitudeMetres / METRES_PER_KILOMETRE;
+    const float64 horizon = ComputeHorizonCosine(height);
+    constexpr uint32 LAST_SAMPLE = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES - 1;
+    for (uint32 sample = 0; sample <= LAST_SAMPLE; ++sample)
+    {
+        const float64 fraction = static_cast<float64>(sample) / LAST_SAMPLE;
+        const float64 zenithCosine = horizon + (1 - horizon) * fraction * fraction;
+        const math::Vector3d value =
+            IntegrateTransmittance(height, zenithCosine, GetDistanceToTop(height, zenithCosine));
+        inoutWords[LUDUS_REFERENCE_SKY_TRANSMITTANCE + sample] = {static_cast<float32>(value.X),
+                                                                  static_cast<float32>(value.Y),
+                                                                  static_cast<float32>(value.Z),
+                                                                  0};
+    }
+    return horizon;
+}
 
 namespace
 {

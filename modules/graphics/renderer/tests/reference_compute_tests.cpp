@@ -2608,6 +2608,173 @@ LobeShape MeasureLobe(const StaticArray<float64, COUNT>& degrees, const StaticAr
 }
 } // namespace
 
+TEST_CASE("RT1 draws celestial disks and planet points on CPU and GPU", "[renderer][gpu][reference-compute]")
+{
+    struct Shutdown final
+    {
+        ~Shutdown()
+        {
+            rhi::Shutdown();
+        }
+    } shutdown;
+    PairedSessions sessions;
+    const char* skipReasonOrNull = StartPairedSessions(sessions);
+    if (skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    QuadItem plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.X += 10;
+    }
+    UsePlane(sessions, plane);
+
+    const math::Vector3 directionWorld{0, 0, 1};
+    rr::ReferenceCaptureDescription capture = MakeTiltedCapture(directionWorld, 0.01F, 1);
+    capture.MaxDepth = 1;
+    capture.WorldToClip.Columns[3].Z = 0;
+    rr::AtmosphereDescription sky;
+    sky.IsEnabled = true;
+    sky.SurfaceAnchorWorld = capture.CameraPosition;
+    sky.SurfaceUpWorld = directionWorld;
+    sky.DirectionToSunWorld = directionWorld;
+    sky.SolarIlluminance = {0.02F, 0, 0};
+    capture.AtmosphereBackgroundOrNull = &sky;
+
+    const auto checkSky = [&](math::Vector3 minimum, math::Vector3 maximum) {
+        Array<rr::ReferencePixel> oracle;
+        Array<rr::ReferencePixel> compute;
+        rr::ReferenceCaptureInfo oracleInfo;
+        rr::ReferenceCaptureInfo computeInfo;
+        Capture(sessions.Cpu, capture, sessions.Surface, oracle, oracleInfo);
+        Capture(sessions.Gpu, capture, sessions.Surface, compute, computeInfo);
+        const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+        constexpr float32 PARITY_TOLERANCE = 2e-3F;
+        CHECK(comparison.MaximumRadiance <= PARITY_TOLERANCE);
+        CHECK(comparison.MaximumEmission <= PARITY_TOLERANCE);
+        CHECK(comparison.MaximumDirect == 0);
+        CHECK(comparison.MaximumIndirect == 0);
+        const rr::ReferencePixel pixel = oracle[0];
+        CHECK(pixel.Radiance == pixel.Emission);
+        CHECK(pixel.Direct == math::Vector3{});
+        CHECK(pixel.Indirect == math::Vector3{});
+        CHECK(pixel.Emission.X >= minimum.X);
+        CHECK(pixel.Emission.Y >= minimum.Y);
+        CHECK(pixel.Emission.Z >= minimum.Z);
+        CHECK(pixel.Emission.X <= maximum.X);
+        CHECK(pixel.Emission.Y <= maximum.Y);
+        CHECK(pixel.Emission.Z <= maximum.Z);
+    };
+    INFO("Sun disk at zenith");
+    checkSky({100, 0, 0}, {400, 0, 0});
+
+    sky.Celestial.IsEnabled = true;
+    sky.Celestial.DirectionToMoonWorld = directionWorld;
+    sky.Celestial.DirectionToSunAtMoonWorld = -directionWorld;
+    sky.Celestial.LunarAngularRadiusRadians = rr::CelestialBackgroundDescription::DEFAULT_LUNAR_RADIUS_RADIANS;
+    sky.Celestial.LunarPeakRadiance = {0, 4, 0};
+    INFO("Full Moon occludes the Sun");
+    checkSky({0, 3, 0}, {0, 4, 0});
+
+    sky.Celestial.DirectionToSunAtMoonWorld = directionWorld;
+    INFO("Unlit lunar disk still occludes the Sun");
+    checkSky({}, {});
+
+    sky.Celestial.LunarAngularRadiusRadians = 0;
+    sky.SolarIlluminance = {};
+    sky.Celestial.Planets[0] = { .DirectionWorld = directionWorld, .Illuminance = {0, 0, 1e-5F} };
+    INFO("Unresolved planet disappears behind the ground");
+    checkSky({0, 0, 8}, {0, 0, 14});
+    for (Session* session : {&sessions.Cpu, &sessions.Gpu})
+    {
+        rr::ReferenceCapture handle;
+        const S begun = session->Renderer.BeginReferenceCapture(session->Snapshot, capture, handle);
+        REQUIRE((begun == S::Ready || begun == S::Pending));
+        REQUIRE(Run(session->Renderer, handle, sessions.Surface) == S::Ready);
+        rr::ReferenceCaptureInfo before;
+        REQUIRE(session->Renderer.GetReferenceCaptureInfo(handle, before) == S::Ready);
+
+        // Update reads the new fields even though the caller reused the description and its address.
+        sky.Celestial.LunarAngularRadiusRadians = -1;
+        CHECK(session->Renderer.UpdateReferenceCapture(handle, session->Snapshot, capture) == S::InvalidDescription);
+        CHECK(session->Renderer.GetStatus(handle) == S::Ready);
+        sky.Celestial.LunarAngularRadiusRadians = 0;
+        sky.SurfaceUpWorld = -directionWorld;
+        const S replaced = session->Renderer.UpdateReferenceCapture(handle, session->Snapshot, capture);
+        REQUIRE((replaced == S::Ready || replaced == S::Pending));
+        REQUIRE(Run(session->Renderer, handle, sessions.Surface) == S::Ready);
+        rr::ReferenceCaptureInfo after;
+        REQUIRE(session->Renderer.GetReferenceCaptureInfo(handle, after) == S::Ready);
+        CHECK(after.Revision > before.Revision);
+        rr::ReferencePixel pixel;
+        REQUIRE(session->Renderer.CopyReferencePixels(handle, &pixel, 1) == S::Ready);
+        CHECK(pixel.Radiance == math::Vector3{});
+        CHECK(pixel.Samples == capture.TargetSamples);
+        REQUIRE(session->Renderer.Release(handle) == S::Ready);
+        sky.SurfaceUpWorld = directionWorld;
+    }
+
+    sky.SurfaceUpWorld = directionWorld;
+    plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.Z = 1;
+    }
+    UsePlane(sessions, plane);
+    INFO("Geometry occludes the celestial background");
+    checkSky({}, {});
+}
+
+TEST_CASE("RT1 draws the same procedural star field on CPU and GPU", "[renderer][gpu][reference-compute]")
+{
+    struct Shutdown final
+    {
+        ~Shutdown()
+        {
+            rhi::Shutdown();
+        }
+    } shutdown;
+    PairedSessions sessions;
+    const char* skipReasonOrNull = StartPairedSessions(sessions);
+    if (skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    QuadItem plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.X += 10;
+    }
+    UsePlane(sessions, plane);
+
+    constexpr uint32 EXTENT = 32;
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({0, 0, -2}, EXTENT, EXTENT);
+    capture.TargetSamples = 2;
+    capture.MaxDepth = 1;
+    rr::AtmosphereDescription sky;
+    sky.IsEnabled = true;
+    sky.SurfaceAnchorWorld = capture.CameraPosition;
+    sky.SurfaceUpWorld = {0, 0, 1};
+    sky.Celestial.IsEnabled = true;
+    sky.Celestial.StarRadiance = 4;
+    capture.AtmosphereBackgroundOrNull = &sky;
+
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    Capture(sessions.Cpu, capture, sessions.Surface, oracle, oracleInfo);
+    Capture(sessions.Gpu, capture, sessions.Surface, compute, computeInfo);
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    constexpr float32 PARITY_TOLERANCE = 2e-3F;
+    CHECK(comparison.MaximumRadiance <= PARITY_TOLERANCE);
+    CHECK(comparison.MaximumEmission <= PARITY_TOLERANCE);
+    CHECK(comparison.MaximumDirect == 0);
+    CHECK(comparison.MaximumIndirect == 0);
+    CHECK(comparison.CpuMean.X > 0.01F);
+}
+
 TEST_CASE("RT1 multiple-scattering GGX white furnace approaches unit radiance on CPU and GPU",
           "[renderer][gpu][reference-compute][materials][multiple-scattering]")
 {

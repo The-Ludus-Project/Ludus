@@ -140,7 +140,7 @@ def create_project(
         from .ci_setup import ci_files, platform_for_preset
 
         rendered.extend(ci_files(platform_for_preset(preset, local_identity.target_triple if local_identity else None),
-                                 tools_ref))
+                                 tools_ref, preset=preset))
     extra = [
         TemplateFile(DESCRIPTOR_NAME, _canonical_descriptor_json(descriptor)),
         TemplateFile(LOCK_NAME, lock.serialize().decode("utf-8")),

@@ -293,9 +293,9 @@ QJsonObject SkinDistanceField::MakeNumberProperty() const
 
 QJsonObject MakeDefaultSkin(const resources::SceneMaterial* materialOrNull)
 {
-    // Human skin's diffuse mean free path in metres (see the declaration for its source).
+    // Human skin's normalized-diffusion distance in metres (see the declaration for its derivation).
     constexpr foundation::StaticArray<foundation::float64, format::MATERIAL_RGB_CHANNELS> HUMAN_SKIN_DISTANCE{
-        {0.00367, 0.00137, 0.00068}};
+        {0.0015, 0.00094, 0.00057}};
     const bool isSkin = materialOrNull != nullptr && materialOrNull->Scattering.Model == format::MaterialModel::Skin;
     QJsonArray distance;
     for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)

@@ -1,10 +1,13 @@
 #include "coated_diffuse.slang"
 #include "dielectric.slang"
+#include "lighting_layout.h"
 #include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
+#include "renderer_atmosphere_celestial.slang"
 #include "renderer_gpu_preview_layout.h"
 #include "renderer_reference_layout.h"
+#include "renderer_reference_sky_layout.h"
 #include "renderer_surface_functions.slang"
 
 // GPU-compute implementation of the frozen RT1 reference integral. Each function
@@ -44,7 +47,7 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_PARAMETERS_BINDING) cbuffer Parameters
     float4 BoundsMinimumWorld;
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic light offset, profile version, environment offset + 1
-    uint4 Tile;          // x: directional prefix length; the reference kernel covers Dimensions.xy
+    uint4 Tile;          // directional prefix length, medium offset/count, optional sky offset + 1
 };
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_SCENE_BINDING) StructuredBuffer<uint4> sceneWords;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_ACCUMULATION_BINDING) RWStructuredBuffer<float4> accumulation;
@@ -628,6 +631,66 @@ float4 EvaluateEnvironmentWorld(float3 directionWorld)
     value.w = (value.w - previous) / ComputeEnvironmentSolidAngle(cell.y, width, height);
     return value;
 }
+float3 EvaluateReferenceNightSky(uint start, float3 directionWorld, float3 directionGalactic, float footprint)
+{
+    float peak = SceneValue(start + LUDUS_REFERENCE_SKY_SUN_RADIANCE).w;
+    float3 radiance = peak > 0 ? EvaluateCelestialStars(directionGalactic, footprint, peak) : float3(0);
+    uint count = uint(SceneValue(start + LUDUS_REFERENCE_SKY_LUNAR_LIGHT_WORLD).w);
+    for (uint index = 0; index < count; ++index)
+    {
+        uint word = start + LUDUS_REFERENCE_SKY_PLANETS + index * LUDUS_REFERENCE_SKY_PLANET_WORDS;
+        float weight = ComputePlanetPointWeight(directionWorld, SceneValue(word).xyz, footprint);
+        radiance += SceneValue(word + 1).xyz * weight;
+    }
+    return radiance;
+}
+
+float3 EvaluateReferenceSky(uint start, float3 directionWorld)
+{
+    float4 up = SceneValue(start + LUDUS_REFERENCE_SKY_UP_WORLD);
+    float zenithCosine = dot(directionWorld, up.xyz);
+    if (zenithCosine < up.w)
+    {
+        return 0;
+    }
+    float4 moon = SceneValue(start + LUDUS_REFERENCE_SKY_MOON_WORLD);
+    float4 sun = SceneValue(start + LUDUS_REFERENCE_SKY_SUN_WORLD);
+    float sunChord = length(directionWorld - sun.xyz);
+    float3 solarRadiance = SceneValue(start + LUDUS_REFERENCE_SKY_SUN_RADIANCE).xyz;
+    float3 radiance;
+    if (moon.w > 0 && length(directionWorld - moon.xyz) <= moon.w)
+    {
+        float4 lunarRadiance = SceneValue(start + LUDUS_REFERENCE_SKY_MOON_RADIANCE);
+        float3 lunarLightWorld = SceneValue(start + LUDUS_REFERENCE_SKY_LUNAR_LIGHT_WORLD).xyz;
+        radiance = lunarRadiance.xyz * EvaluateLunarPhase(directionWorld, moon.xyz, lunarLightWorld, lunarRadiance.w);
+    }
+    else if (sunChord <= sun.w && HasPositiveComponent(solarRadiance) == true)
+    {
+        radiance = solarRadiance * EvaluateSolarLimb(sunChord, sun.w);
+    }
+    else
+    {
+        float4 north = SceneValue(start + LUDUS_REFERENCE_SKY_GALACTIC_NORTH_WORLD);
+        float4 center = SceneValue(start + LUDUS_REFERENCE_SKY_GALACTIC_CENTER_WORLD);
+        float3 directionGalactic = directionWorld;
+        if (north.w > 0)
+        {
+            directionGalactic = float3(dot(directionWorld, center.xyz),
+                                       dot(directionWorld, cross(north.xyz, center.xyz)),
+                                       dot(directionWorld, north.xyz));
+        }
+        radiance = EvaluateReferenceNightSky(start, directionWorld, directionGalactic, center.w);
+    }
+    const uint LAST_SAMPLE = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES - 1;
+    float coordinate = sqrt(saturate((zenithCosine - up.w) / (1 - up.w))) * LAST_SAMPLE;
+    uint lower = uint(coordinate);
+    uint upper = min(lower + 1, LAST_SAMPLE);
+    float3 transmittance = lerp(SceneValue(start + LUDUS_REFERENCE_SKY_TRANSMITTANCE + lower).xyz,
+                                SceneValue(start + LUDUS_REFERENCE_SKY_TRANSMITTANCE + upper).xyz,
+                                coordinate - float(lower));
+    return radiance * transmittance;
+}
+
 void SampleEnvironmentWorld(float selector,
                             float latitude,
                             out float3 outDirectionWorld,
@@ -1866,6 +1929,10 @@ PathSample TracePath(uint pixel, uint sample)
         if (hit.Triangle == NO_TRIANGLE)
         {
             float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld);
+            if (depth == 0 && Tile.w != 0)
+            {
+                environment.xyz += EvaluateReferenceSky(Tile.w - 1, ray.DirectionWorld);
+            }
             float lightPdf = ComputeEnvironmentLightPdf(environment.w, lights);
             float weight =
                 depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));

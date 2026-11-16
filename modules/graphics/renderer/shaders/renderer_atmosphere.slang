@@ -220,8 +220,10 @@ float3 EvaluateNightSky(in float3 directionWorld, float angularFootprint)
     float3 moonWorld = atmosphereView.MoonDirectionWorld.xyz;
     float angularFootprint = max(length(ddx(directionWorld)), length(ddy(directionWorld)));
     float sunCoverage;
-    float3 solarDisk = EvaluateSolarDisk(length(directionWorld - sunWorld),
+    float sunChord = length(directionWorld - sunWorld);
+    float3 solarDisk = EvaluateSolarDisk(sunChord,
                                          atmosphereView.SolarIlluminance.w,
+                                         max(fwidth(sunChord), DIRECTION_EPSILON),
                                          angularFootprint,
                                          sunCoverage);
     float moonChord = length(directionWorld - moonWorld);

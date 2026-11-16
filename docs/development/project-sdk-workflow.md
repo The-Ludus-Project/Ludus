@@ -199,47 +199,47 @@ These files are yours: edit the triggers, branches and steps as the project grow
 Setup never overwrites a file. An existing tools pin naming the same commit, for
 example one written by `ludus project release init`, is reused. A pin naming a
 different commit is a `Conflict`. The Editor pins the commit of its trusted
-tooling checkout. The workflow installs the host tools from
-`github.com/The-Ludus-Project/Ludus` at that commit, so it must be published there.
+tooling checkout. CI checks out that exact commit from
+`github.com/The-Ludus-Project/Ludus`, so the commit must be available there.
 
-The workflow has read-only repository permissions and uses no secrets. On an
-Ubuntu 24.04 or native-architecture macOS runner, it installs the pinned LLVM,
-CMake, Ninja and host tools exactly as the
-[release workflow](game-packaging-publishing.md) does. It then builds the
-platform's Release profile (`linux-clang-release` or `macos-clang-release`) and
-runs the project's CTest tests. Building needs a Release SDK archive. Set the
-repository variables `LUDUS_RELEASE_SDK_URL` (HTTPS) and `LUDUS_RELEASE_SDK_SHA256`
-(lowercase SHA-256), the same variables the release workflow uses. If both are
-unset, a short job reports a notice and the build job is skipped. If only one is
-set, or either is malformed, the build fails.
+The workflow uses the project's selected native profile. For example, a project
+whose descriptor selects `macos-clang-development` builds and runs CTest with a
+Development SDK. If you request multiple platforms, each gets the corresponding
+preset for the same build flavor. Include that selectable preset in the project
+for each requested platform.
 
-The SDK archive may be a release asset of the game repository itself, such as
-`https://github.com/<owner>/<game>/releases/download/<tag>/<asset>`. The workflow
-fetches such an asset with `gh release download`, authenticated by the job's own
-read-only `github.token`, so it works when the repository is private. A private
-repository serves release assets only to authenticated requests, and its download
-URL redirects to signed storage that rejects a forwarded token. Any other HTTPS
-URL is downloaded directly without credentials, so it must be publicly readable.
-Either way, the archive must match the SHA-256 digest and stay within 4 GiB
-before `ludus sdk install` accepts it. The release workflow uses the same step.
+When no SDK archive is configured, CI prepares the pinned Ludus checkout, builds
+and installs its SDK for the job's profile, and uses the normal project setup
+command to configure, build, and test the game against the installed SDK. For a
+project that requires an exact SDK source revision, use that commit as the tools
+pin. The SDK and game are built with the same prepared compiler.
 
-A workflow for several platforms has one build job per platform, such as
-`build-and-test-macos-arm64`. Each platform needs its own matching Release SDK,
-so each job reads its own variables, suffixed with the platform:
-`LUDUS_RELEASE_SDK_URL_LINUX_X64` and `LUDUS_RELEASE_SDK_SHA256_LINUX_X64`, and
-likewise `_MACOS_ARM64`. A platform whose two variables are both unset is skipped
-and named in the notice job; the other platforms still build. macOS jobs run on
-`macos-15`; the SDKs keep a macOS 14.0 deployment target. Setup refuses
-`macos-x64`: Homebrew ships no Intel macOS bottles for the pinned LLVM and LLVM
-publishes no macOS x64 release binaries, so an Intel runner would build LLVM from
-source for longer than a job may run.
+To reuse a prebuilt SDK, set both repository variables for the selected flavor.
+The URL must be HTTPS and the SHA-256 must be lowercase hexadecimal.
 
-An SDK accepts only the exact compiler version it was built with, such as
-Clang 23.1.4. The workflow installs the current pinned-major LLVM from Homebrew
-or apt.llvm.org, so a new LLVM patch release makes the build fail with
-`SdkIncompatible` until the variables name an SDK built with that compiler.
-Published engine releases do not yet resolve a project lock, so CI cannot select
-an SDK by itself.
+| Build flavor | Archive variables |
+| --- | --- |
+| Debug | `LUDUS_DEBUG_SDK_URL`, `LUDUS_DEBUG_SDK_SHA256` |
+| Development | `LUDUS_DEVELOPMENT_SDK_URL`, `LUDUS_DEVELOPMENT_SDK_SHA256` |
+| Release | `LUDUS_RELEASE_SDK_URL`, `LUDUS_RELEASE_SDK_SHA256` |
+
+The Release names are shared with the [release workflow](game-packaging-publishing.md).
+If either variable is set, CI validates the pair and fails on incomplete or
+invalid input. The archive must match the game's SDK requirements, runner and
+profile, including the compiler version. For multi-platform CI, append the
+platform suffix to both variables, for example
+`LUDUS_DEVELOPMENT_SDK_URL_MACOS_ARM64` and
+`LUDUS_DEVELOPMENT_SDK_SHA256_MACOS_ARM64`.
+
+The workflow uses read-only repository permissions and no configured secrets.
+It can download a release asset from the game repository itself using the
+job's read-only token, including for private game repositories. Other archive
+URLs must be publicly readable. Every download is limited to 4 GiB and verified
+against its SHA-256 before installation.
+
+Linux jobs run on `ubuntu-24.04`. Apple silicon jobs run on `macos-15`, and
+the SDK keeps its macOS 14.0 deployment floor. Setup refuses `macos-x64`
+because hosted Intel macOS runners lack the required LLVM binaries.
 
 GitHub runs workflows only from the repository root's `.github/workflows`.
 Setup therefore refuses a project inside another Git work tree; add a workflow at
