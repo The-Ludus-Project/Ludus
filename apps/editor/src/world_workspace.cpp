@@ -2031,6 +2031,7 @@ void WorldWorkspace::addMaterialGroup()
     const QJsonObject coating = localCoating.isEmpty() == true ? sharedCoating : localCoating;
     const bool canEditCoating = materialOrNull != nullptr &&
                                 materialOrNull->Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse;
+    const bool isHairCardSlot = scene.contains(QStringLiteral("hair_card"));
     QVector<MaterialPropertyRow> properties;
     if (DescribeSceneObjectMaterial(presented, Selected_, properties) == false)
     {
@@ -2041,7 +2042,8 @@ void WorldWorkspace::addMaterialGroup()
     }
     for (const MaterialPropertyRow& property : properties)
     {
-        if (canEditCoating == true && property.IsCoatingParameter == true)
+        if ((canEditCoating == true && property.IsCoatingParameter == true) ||
+            (isHairCardSlot == true && property.IsHairCardParameter == true))
         {
             continue;
         }
@@ -2160,8 +2162,190 @@ void WorldWorkspace::addMaterialGroup()
         connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreInheritedCoating);
         rows->addRow(restore);
     }
+    addHairCardControls(*rows, materialOrNull, scene);
     addProjectBrdfControls(*rows, materialOrNull, scene);
     Inspector_->addWidget(section);
+}
+
+void WorldWorkspace::addHairCardControls(QFormLayout& inoutRows,
+                                         const resources::SceneMaterial* materialOrNull,
+                                         const QJsonObject& placement)
+{
+    using content::scene_format::MaterialModel;
+    QWidget* group = inoutRows.parentWidget();
+    if (placement.contains(QStringLiteral("hair_card")) == false)
+    {
+        // Any resolved surface can become a card; a project BRDF slot first returns to its inherited material.
+        if (materialOrNull == nullptr || placement.contains(QStringLiteral("project_brdf")) == true ||
+            materialOrNull->Scattering.Model == MaterialModel::Unresolved ||
+            materialOrNull->Scattering.Model == MaterialModel::MediumInterface ||
+            materialOrNull->Scattering.Model == MaterialModel::HairCard)
+        {
+            return;
+        }
+        QPushButton* assign = new QPushButton(QStringLiteral("Make Hair Card"), group);
+        assign->setObjectName(QStringLiteral("worldAssignHairCard"));
+        assign->setToolTip(
+            QStringLiteral("Shade this slot as a two-sided hair card whose highlights follow an authored "
+                           "strand direction. Its base colour, roughness, textures and mask are kept."));
+        connect(assign, &QPushButton::clicked, this, [this]() { assignHairCard(true); });
+        inoutRows.addRow(assign);
+        return;
+    }
+    const QJsonObject hair = placement.value(QStringLiteral("hair_card")).toObject();
+    QLabel* help = new QLabel(QStringLiteral("This slot is a hair card. Its highlights follow the strand direction, "
+                                             "measured from the surface tangent (increasing texture U) toward the "
+                                             "bitangent. Apply Changes updates the viewport."),
+                              group);
+    help->setWordWrap(true);
+    inoutRows.addRow(help);
+    for (const HairCardField& field : HAIR_CARD_FIELDS)
+    {
+        const QString key = QString::fromLatin1(field.Key);
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input, hair.value(key));
+        const QString fieldKey = QStringLiteral("scene/hair_card/") + key;
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, QString::fromUtf8(field.Label), *input);
+    }
+    if (materialOrNull != nullptr && materialOrNull->IsAlphaMasked == true)
+    {
+        // The cutoff is offered only where the imported material has a mask to cut.
+        const QString key = QString::fromLatin1(HAIR_CARD_CUTOFF_KEY);
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input,
+                        hair.contains(key) == true
+                            ? hair.value(key)
+                            : QJsonValue(static_cast<foundation::float64>(materialOrNull->AlphaCutoff)));
+        const QString fieldKey = QStringLiteral("scene/hair_card/") + key;
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, MakeHairCardCutoffProperty().value(QStringLiteral("label")).toString(), *input);
+    }
+    QLabel* error = new QLabel(group);
+    error->setObjectName(QStringLiteral("worldHairCardError"));
+    error->setTextFormat(Qt::PlainText);
+    error->setWordWrap(true);
+    error->setVisible(false);
+    inoutRows.addRow(error);
+    QPushButton* restore = new QPushButton(QStringLiteral("Use Inherited Material"), group);
+    restore->setObjectName(QStringLiteral("worldRestoreHairCard"));
+    connect(restore, &QPushButton::clicked, this, [this]() { assignHairCard(false); });
+    inoutRows.addRow(restore);
+}
+
+void WorldWorkspace::assignHairCard(bool isAssigned)
+{
+    if (Pending_ == true || SceneBusy() == true)
+    {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+    if (isAssigned == true && scene.contains(QStringLiteral("coating")) == true)
+    {
+        QMessageBox confirmation(QMessageBox::Question,
+                                 QStringLiteral("Make hair card"),
+                                 QStringLiteral("Replace this slot's coating with a hair card?"),
+                                 QMessageBox::Cancel,
+                                 this);
+        confirmation.setInformativeText(
+            QStringLiteral("The slot's own coating instance is removed. Undo restores it."));
+        QPushButton* replace = confirmation.addButton(QStringLiteral("Replace Coating"), QMessageBox::AcceptRole);
+        replace->setObjectName(QStringLiteral("worldConfirmHairCard"));
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.exec();
+        if (confirmation.clickedButton() != replace)
+        {
+            Changed(QStringLiteral("The slot keeps its coating."));
+            return;
+        }
+        scene.remove(QStringLiteral("coating"));
+    }
+    if (isAssigned == true)
+    {
+        scene.insert(QStringLiteral("hair_card"), MakeDefaultHairCard());
+    }
+    else
+    {
+        scene.remove(QStringLiteral("hair_card"));
+    }
+    QString error;
+    if (Document_.Edit(Selected_,
+                       entity.value(QStringLiteral("components")).toObject(),
+                       entity.value(QStringLiteral("name")).toString(),
+                       error,
+                       &scene,
+                       isAssigned == true ? "Make Hair Card" : "Restore Material") == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(isAssigned == true ? QStringLiteral("Hair card assigned to this slot. Undo is available.")
+                               : QStringLiteral("Inherited material restored. Undo is available."));
+}
+
+bool WorldWorkspace::readHairCardFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
+{
+    if (inoutScene.contains(QStringLiteral("hair_card")) == false)
+    {
+        return true;
+    }
+    QJsonObject hair = inoutScene.value(QStringLiteral("hair_card")).toObject();
+    bool hasChanged = false;
+    const auto readField = [&](const QString& key, const QJsonObject& property) {
+        QLineEdit* fieldOrNull = qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/hair_card/") + key));
+        if (fieldOrNull == nullptr)
+        {
+            return true;
+        }
+        QJsonValue value;
+        bool hasFieldChanged = false;
+        if (ReadMaterialNumberInput(property, *fieldOrNull, value, hasFieldChanged, outError) == false)
+        {
+            outInvalidOrNull = fieldOrNull;
+            return false;
+        }
+        if (hasFieldChanged == true)
+        {
+            hair.insert(key, value);
+            hasChanged = true;
+        }
+        return true;
+    };
+    for (const HairCardField& field : HAIR_CARD_FIELDS)
+    {
+        if (readField(QString::fromLatin1(field.Key), field.MakeNumberProperty()) == false)
+        {
+            return false;
+        }
+    }
+    if (readField(QString::fromLatin1(HAIR_CARD_CUTOFF_KEY), MakeHairCardCutoffProperty()) == false)
+    {
+        return false;
+    }
+    if (hasChanged == true)
+    {
+        inoutScene.insert(QStringLiteral("hair_card"), hair);
+    }
+    return true;
+}
+
+void WorldWorkspace::showHairCardError(const QWidget* invalidOrNull, const QString& error)
+{
+    QLabel* labelOrNull = findChild<QLabel*>(QStringLiteral("worldHairCardError"));
+    if (labelOrNull == nullptr)
+    {
+        return;
+    }
+    const bool isHairCardField = invalidOrNull != nullptr && invalidOrNull->objectName().startsWith(
+                                                                 QStringLiteral("worldField:scene/hair_card/")) == true;
+    labelOrNull->setText(isHairCardField == true ? error : QString());
+    labelOrNull->setVisible(isHairCardField == true);
 }
 
 void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
@@ -3949,7 +4133,8 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
         }
     }
     if (shouldReadMaterial == true && (readCoatingFields(scene, outError, outInvalidOrNull) == false ||
-                                       readProjectBrdfRoughness(scene, outError, outInvalidOrNull) == false))
+                                       readProjectBrdfRoughness(scene, outError, outInvalidOrNull) == false ||
+                                       readHairCardFields(scene, outError, outInvalidOrNull) == false))
     {
         return false;
     }
@@ -4129,9 +4314,11 @@ bool WorldWorkspace::Apply()
         {
             invalid->setFocus();
         }
+        showHairCardError(invalid, error);
         Changed(error);
         return false;
     }
+    showHairCardError(nullptr, {});
     const QJsonObject previousComponents = Document_.Entity(Selected_).value(QStringLiteral("components")).toObject();
     const QJsonObject appliedComponents = candidate.Entity(Selected_).value(QStringLiteral("components")).toObject();
     const QString probeComponent = GetGiProbeVolumeComponentId();

@@ -1851,10 +1851,11 @@ Other paths make declared approximations:
 - **Raster mesh lights.** Deferred raster mesh lights shade a hair card with the
   ordinary lobes.
 
-The editor inspector lists the strand controls but cannot edit them yet. Still
-open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
+World slots become hair cards in the editor, which edits the strand controls
+and mask cutoff with the World history. See
+[make a slot a hair card](../development/editor-workspace.md#make-a-slot-a-hair-card).
+Still open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
 
-- World assignment and editing with undo, save and reimport.
 - The shared static bust.
 - The matched-cutoff and mismatched-cutoff coverage comparison across raster
   passes and ray queries.
