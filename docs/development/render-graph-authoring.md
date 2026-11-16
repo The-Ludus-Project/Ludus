@@ -8928,6 +8928,29 @@ referenced graph files, shader sources and the root shader manifest must match
 in the destination. Missing or mismatched dependencies reject the paste with a
 message, preserving the destination draft and history.
 
+### Add an optional post-process subgraph
+
+Place a Subgraph on the color connection between a scene pass and the root
+Export. For a ray color route, create a library with **Bypass** and **Mapped**
+configurations and give both the same interface: a `color: ColorTexture` input
+and a required `color: ColorTexture` output.
+
+1. In **Bypass**, connect the input box's `color` directly to the output box's
+   `color`. The compiler forwards the original texture version without a copy
+   or an additional pass.
+2. In **Mapped**, wire `color` through a [ToneMap](#tone-map-ray-output-explicitly) node
+   before connecting the output box. Keep the Export in the parent graph, so it
+   observes whichever texture version the selected child returns.
+3. In the parent, connect the ray color to the Subgraph input and its output
+   to Export. Set the Subgraph's **configuration** in its canvas field editor.
+   Matching port IDs and types let you switch modes with the same parent wires.
+
+Validate each choice from the parent. In the [Execution Plan](#inspect-the-execution-plan-on-the-canvas),
+**Bypass** exports the ray pass's version directly. **Mapped** lists ToneMap
+between the ray pass and Export, and Export reads the mapped version. Use
+**Build & Preview** to try the selected route. Save that selection before
+[cooking the app's runtime package](#runtime-generations-and-activation).
+
 ### Edit configuration inputs and outputs
 
 Choose **Edit Inputs / Outputs...** above the canvas or in the source-tree/canvas
