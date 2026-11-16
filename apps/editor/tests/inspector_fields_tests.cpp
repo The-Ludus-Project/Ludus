@@ -354,6 +354,21 @@ TEST_CASE("Inspector numbers show their shortest exact text", "[editor][inspecto
     CHECK(FormatStoredNumber(STORED_LATITUDE) == QStringLiteral("43.46527099609375"));
 }
 
+TEST_CASE("Transform axes show four significant digits so a vector row stays on one line", "[editor][inspector]")
+{
+    // The Mac capture's Sun: 1.8778648 m and -100.82808 degrees.
+    CHECK(FormatCompactInspectorNumber(1.8778648) == QStringLiteral("1.878"));
+    CHECK(FormatCompactInspectorNumber(18.757229) == QStringLiteral("18.76"));
+    CHECK(FormatCompactInspectorNumber(-100.82808) == QStringLiteral("-100.8"));
+    CHECK(FormatCompactInspectorNumber(-55.906113) == QStringLiteral("-55.91"));
+    CHECK(FormatCompactInspectorNumber(1234.56) == QStringLiteral("1235"));
+    CHECK(FormatCompactInspectorNumber(0.25) == QStringLiteral("0.25"));
+    CHECK(FormatCompactInspectorNumber(1.0) == QStringLiteral("1"));
+    CHECK(FormatCompactInspectorNumber(0.0) == QStringLiteral("0"));
+    CHECK(FormatCompactInspectorNumber(-0.0001) == QStringLiteral("-0.0001"));
+    CHECK(FormatCompactInspectorNumber(-0.0004) != QStringLiteral("-0"));
+}
+
 TEST_CASE("A slider is linear over narrow ranges and logarithmic over wide ones", "[editor][inspector]")
 {
     CHECK(HasSliderRange(0.0, 1.0) == true);

@@ -2,12 +2,16 @@
 
 #include "design_tokens.h"
 #include "internal/editor_style.h"
+#include "internal/tab_modified.h"
 #include "internal/theme_fonts.h"
 #include "internal/workspace_style.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <cmath>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -130,6 +134,10 @@ public:
         {
             return Qt::AlignCenter;
         }
+        if (hint == SH_TabBar_CloseButtonPosition)
+        {
+            return QTabBar::LeftSide;
+        }
         return QCommonStyle::styleHint(hint, optionOrNull, widgetOrNull, outReturnDataOrNull);
     }
 
@@ -169,6 +177,49 @@ struct MacLikeEditorStyle final
 
     EditorStyle Style{new MacLikeStyle};
 };
+
+/// WCAG 2 relative luminance of an sRGB colour.
+double GetRelativeLuminance(const QColor& colour)
+{
+    const auto linear = [](double channel) {
+        constexpr double SRGB_LINEAR_LIMIT = 0.04045;
+        constexpr double SRGB_LINEAR_SLOPE = 12.92;
+        constexpr double SRGB_OFFSET = 0.055;
+        constexpr double SRGB_SCALE = 1.055;
+        constexpr double SRGB_GAMMA = 2.4;
+        return channel <= SRGB_LINEAR_LIMIT ? channel / SRGB_LINEAR_SLOPE
+                                            : std::pow((channel + SRGB_OFFSET) / SRGB_SCALE, SRGB_GAMMA);
+    };
+    constexpr double RED_WEIGHT = 0.2126;
+    constexpr double GREEN_WEIGHT = 0.7152;
+    constexpr double BLUE_WEIGHT = 0.0722;
+    return RED_WEIGHT * linear(static_cast<double>(colour.redF())) +
+           GREEN_WEIGHT * linear(static_cast<double>(colour.greenF())) +
+           BLUE_WEIGHT * linear(static_cast<double>(colour.blueF()));
+}
+
+/// WCAG 2 contrast ratio between two colours.
+double GetContrastRatio(const QColor& first, const QColor& second)
+{
+    constexpr double FLARE = 0.05;
+    const double firstLuminance = GetRelativeLuminance(first);
+    const double secondLuminance = GetRelativeLuminance(second);
+    return (std::max(firstLuminance, secondLuminance) + FLARE) / (std::min(firstLuminance, secondLuminance) + FLARE);
+}
+
+/// The highest contrast any pixel of rect in image has against background: for text, its solid stems.
+double GetStrongestContrast(const QImage& image, const QRect& rect, const QColor& background)
+{
+    double strongest = 1.0;
+    for (int32 y = std::max(0, rect.top()); y <= std::min(image.height() - 1, rect.bottom()); ++y)
+    {
+        for (int32 x = std::max(0, rect.left()); x <= std::min(image.width() - 1, rect.right()); ++x)
+        {
+            strongest = std::max(strongest, GetContrastRatio(image.pixelColor(x, y), background));
+        }
+    }
+    return strongest;
+}
 
 /// Pixels of exactly colour in image, which is at logical size.
 int32 CountColour(const QImage& image, const QColor& colour)
@@ -389,6 +440,131 @@ TEST_CASE("Tabs start at the leading edge where the platform centres them", "[ed
     CHECK(mac.Style.styleHint(QStyle::SH_TabBar_Alignment, nullptr, tabs, nullptr) == Qt::AlignLeft);
     const QTabBar* bar = tabs->tabBar();
     CHECK(bar->geometry().left() <= design::SPACING_EXTRA_SMALL);
+    MacLikeEditorStyle::Release(root);
+}
+
+TEST_CASE("Tab labels stay readable where the platform gives the tab bar dark text", "[editor][style][macos][tabs]")
+{
+    // On macOS the document tabs (Start Page, sponza.world.json, main.lurender.json) drew near-black labels on the
+    // dark workspace: the platform's tab bar palette, not the editor's, chose the text colour.
+    constexpr double TEXT_CONTRAST_MINIMUM = 4.5;
+    const QColor platformTabText = QColor::fromRgb(0x1b1d1f);
+    const QPalette original = QApplication::palette();
+    for (const bool isDark : {true, false})
+    {
+        INFO((isDark == true ? "dark" : "light"));
+        QWidget root;
+        ApplyWorkspaceStyle(&root);
+        QApplication::setPalette(MakeEditorPalette(QApplication::palette(), isDark, false));
+        MacLikeEditorStyle mac;
+        QVBoxLayout* layout = new QVBoxLayout(&root);
+        QTabWidget* tabs = new QTabWidget(&root);
+        tabs->setDocumentMode(true);
+        tabs->setTabsClosable(true);
+        for (const QString& title :
+             {QStringLiteral("Start Page"), QStringLiteral("sponza.world.json"), QStringLiteral("main.lurender.json")})
+        {
+            tabs->addTab(new QWidget, title);
+        }
+        tabs->setCurrentIndex(1);
+        layout->addWidget(tabs);
+        QPalette platform = tabs->tabBar()->palette();
+        for (const QPalette::ColorRole role : {QPalette::WindowText, QPalette::ButtonText, QPalette::Text})
+        {
+            platform.setColor(role, platformTabText);
+        }
+        tabs->tabBar()->setPalette(platform);
+        mac.Apply(root);
+        root.resize(QSize(720, 200));
+        root.show();
+        QApplication::processEvents();
+        QTabBar* bar = tabs->tabBar();
+        const QImage image = RenderWidgetAtLogicalSize(*bar);
+        for (int32 index = 0; index < bar->count(); ++index)
+        {
+            INFO(bar->tabText(index).toStdString());
+            const QRect tab = bar->tabRect(index);
+            QStyleOptionTab option;
+            option.initFrom(bar);
+            option.rect = tab;
+            option.shape = bar->shape();
+            option.text = bar->tabText(index);
+            const QRect text = mac.Style.subElementRect(QStyle::SE_TabBarTabText, &option, bar);
+            const QColor fill = image.pixelColor(tab.left() + 1, tab.top() + 1);
+            CHECK(GetStrongestContrast(image, text.intersected(tab), fill) >= TEXT_CONTRAST_MINIMUM);
+        }
+        MacLikeEditorStyle::Release(root);
+    }
+    QApplication::setPalette(original);
+}
+
+TEST_CASE("Tab close buttons trail the label and show on the open tab, or as a dot while unsaved",
+          "[editor][style][macos][tabs]")
+{
+    // macOS put the close button before the label and showed it only under the pointer, so the document tabs had no
+    // visible close control and an unsaved document read only as a trailing `*`.
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    MacLikeEditorStyle mac;
+    QVBoxLayout* layout = new QVBoxLayout(&root);
+    QTabWidget* tabs = new QTabWidget(&root);
+    tabs->setDocumentMode(true);
+    tabs->setTabsClosable(true);
+    tabs->addTab(new QWidget, QStringLiteral("Start Page"));
+    tabs->addTab(new QWidget, QStringLiteral("sponza.world.json"));
+    tabs->addTab(new QWidget, QStringLiteral("main.lurender.json"));
+    tabs->setCurrentIndex(0);
+    layout->addWidget(tabs);
+    mac.Apply(root);
+    root.resize(QSize(720, 200));
+    root.show();
+    QApplication::processEvents();
+    QTabBar* bar = tabs->tabBar();
+    CHECK(mac.Style.styleHint(QStyle::SH_TabBar_CloseButtonPosition, nullptr, bar, nullptr) == QTabBar::RightSide);
+    for (int32 index = 0; index < bar->count(); ++index)
+    {
+        INFO(bar->tabText(index).toStdString());
+        CHECK(bar->tabButton(index, QTabBar::LeftSide) == nullptr);
+        QWidget* button = bar->tabButton(index, QTabBar::RightSide);
+        REQUIRE(button != nullptr);
+        // Past the label's end, inside its own tab.
+        CHECK(button->geometry().center().x() > bar->tabRect(index).center().x());
+        CHECK(bar->tabRect(index).contains(button->geometry()) == true);
+    }
+    const auto inkPixels = [bar](int32 index) {
+        QWidget* button = bar->tabButton(index, QTabBar::RightSide);
+        const QImage image = RenderWidgetAtLogicalSize(*bar);
+        const QRect area = button->geometry();
+        const QColor fill = image.pixelColor(bar->tabRect(index).left() + 1, bar->tabRect(index).top() + 1);
+        int32 count = 0;
+        for (int32 y = area.top(); y <= area.bottom(); ++y)
+        {
+            for (int32 x = area.left(); x <= area.right(); ++x)
+            {
+                count += image.pixelColor(x, y).rgb() != fill.rgb() ? 1 : 0;
+            }
+        }
+        return count;
+    };
+    // The open tab shows its cross; a background tab, away from the pointer, shows nothing.
+    CHECK(inkPixels(0) > 0);
+    CHECK(inkPixels(2) == 0);
+    // A background tab with unsaved changes shows the dot: solid at the button's centre, in the label colour.
+    CHECK(IsTabModified(*bar, 2) == false);
+    SetTabModified(*bar, 2, true);
+    CHECK(IsTabModified(*bar, 2) == true);
+    CHECK(inkPixels(2) > 0);
+    const QImage marked = RenderWidgetAtLogicalSize(*bar);
+    const QColor dot = marked.pixelColor(bar->tabButton(2, QTabBar::RightSide)->geometry().center());
+    const QColor fill = marked.pixelColor(bar->tabRect(2).left() + 1, bar->tabRect(2).top() + 1);
+    constexpr double NON_TEXT_CONTRAST_MINIMUM = 3.0;
+    CHECK(GetContrastRatio(dot, fill) >= NON_TEXT_CONTRAST_MINIMUM);
+    // The mark follows the tab when it moves.
+    bar->moveTab(2, 1);
+    CHECK(IsTabModified(*bar, 1) == true);
+    CHECK(IsTabModified(*bar, 2) == false);
+    SetTabModified(*bar, 1, false);
+    CHECK(IsTabModified(*bar, 1) == false);
     MacLikeEditorStyle::Release(root);
 }
 

@@ -332,24 +332,26 @@ void MainWindow::updateContextStrip()
 
 void MainWindow::renderDocumentTitles()
 {
-    // Tabs show the document's file and a `*` while it has unsaved changes, like VS.
-    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): fallback name and file path are distinct.
-    const auto title = [](const QString& name, const QString& path, bool isDirty) {
+    // Tabs show the document's file, and a dot in place of the close cross while it has unsaved changes, like VS
+    // Code; the title itself stays the file name so it does not shift as edits come and go.
+    const auto title = [](const QString& name, const QString& path) {
         const QString file = QFileInfo(path).fileName();
-        return (file.isEmpty() == true ? name : file) + (isDirty == true ? QStringLiteral("*") : QString());
+        return file.isEmpty() == true ? name : file;
+    };
+    const auto render = [this](QWidget* document, const QString& documentTitle, bool isModified) {
+        mDocuments->SetDocumentTitle(document, documentTitle);
+        mDocuments->SetDocumentModified(document, isModified);
     };
     const RenderGraphDocument& graph = Renderer_->GetDocument();
-    mDocuments->SetDocumentTitle(World_, title(QStringLiteral("World"), World_->Path(), World_->Dirty()));
-    mDocuments->SetDocumentTitle(Renderer_,
-                                 title(QStringLiteral("Render Graph"),
-                                       graph.IsLoaded() == true ? graph.GetRootGraph() : QString(),
-                                       Renderer_->IsDirty()));
-    mDocuments->SetDocumentTitle(Scripts_, title(QStringLiteral("Scripts"), {}, Scripts_->Dirty()));
-    mDocuments->SetDocumentTitle(ProjectSettings_,
-                                 title(QStringLiteral("Project Settings"),
-                                       {},
-                                       Controller_->State().Dirty() == true || Renderer_->IsDirty() == true));
-    mDocuments->SetDocumentTitle(Configuration_, title(QStringLiteral("Configuration"), {}, Configuration_->Dirty()));
+    render(World_, title(QStringLiteral("World"), World_->Path()), World_->Dirty());
+    render(Renderer_,
+           title(QStringLiteral("Render Graph"), graph.IsLoaded() == true ? graph.GetRootGraph() : QString()),
+           Renderer_->IsDirty());
+    render(Scripts_, QStringLiteral("Scripts"), Scripts_->Dirty());
+    render(ProjectSettings_,
+           QStringLiteral("Project Settings"),
+           Controller_->State().Dirty() == true || Renderer_->IsDirty() == true);
+    render(Configuration_, QStringLiteral("Configuration"), Configuration_->Dirty());
 }
 
 void MainWindow::renderGraphCommands()

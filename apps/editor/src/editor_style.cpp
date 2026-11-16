@@ -2,6 +2,7 @@
 #include "design_tokens.h"
 #include "internal/editor_icons.h"
 #include "internal/path_text.h"
+#include "internal/tab_modified.h"
 #include "internal/theme_fonts.h"
 #include "internal/theme_preferences.h"
 
@@ -14,6 +15,7 @@
 #include <QAbstractSpinBox>
 #include <QApplication>
 #include <QComboBox>
+#include <QCursor>
 #include <QDockWidget>
 #include <QFontMetrics>
 #include <QGroupBox>
@@ -62,6 +64,12 @@ constexpr qreal CHEVRON_RIGHT_DEGREES = -90.0;
 constexpr int TAB_PADDING_VERTICAL = 7;
 constexpr int TAB_PADDING_HORIZONTAL = 12;
 constexpr int TAB_UNDERLINE_WIDTH = 2;
+/// The square a tab's close button takes, the cross drawn in it and the unsaved-changes dot that stands in for it, in
+/// logical pixels.
+constexpr int TAB_CLOSE_BUTTON_SIZE = design::SPACING_LARGE;
+constexpr qreal TAB_CLOSE_CROSS_SPAN = 7.0;
+constexpr qreal TAB_CLOSE_CROSS_STROKE = 1.5;
+constexpr qreal TAB_MODIFIED_DOT_DIAMETER = 8.0;
 constexpr int DOCK_TITLE_PADDING = 6;
 /// Space between a dock tab's icon and its text, and around an icon-only tab's icon.
 constexpr int TAB_ICON_GAP = 6;
@@ -127,6 +135,40 @@ bool IsStyledPushButton(const QStyleOptionButton* buttonOrNull)
 bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* value)
 {
     return widgetOrNull != nullptr && widgetOrNull->property(name).toString() == QLatin1String(value);
+}
+
+/// Whether tab is the north or south tab of a tab bar or tab widget, the ones the editor draws itself.
+bool IsHorizontalTab(const QStyleOptionTab* tabOrNull)
+{
+    return tabOrNull != nullptr &&
+           (tabOrNull->shape == QTabBar::RoundedNorth || tabOrNull->shape == QTabBar::TriangularNorth ||
+            tabOrNull->shape == QTabBar::RoundedSouth || tabOrNull->shape == QTabBar::TriangularSouth);
+}
+
+/// The index of the tab whose close button is button, or -1 when button is not a tab bar's close button.
+int FindCloseButtonTab(const QWidget* buttonOrNull)
+{
+    const QTabBar* tabBarOrNull =
+        buttonOrNull != nullptr ? qobject_cast<const QTabBar*>(buttonOrNull->parentWidget()) : nullptr;
+    if (tabBarOrNull == nullptr)
+    {
+        return -1;
+    }
+    for (int index = 0; index < tabBarOrNull->count(); ++index)
+    {
+        if (tabBarOrNull->tabButton(index, QTabBar::RightSide) == buttonOrNull ||
+            tabBarOrNull->tabButton(index, QTabBar::LeftSide) == buttonOrNull)
+        {
+            return index;
+        }
+    }
+    return -1;
+}
+
+/// Whether the pointer rests on tab index of tabBar.
+bool IsTabUnderPointer(const QTabBar& tabBar, int index)
+{
+    return tabBar.underMouse() == true && tabBar.tabAt(tabBar.mapFromGlobal(QCursor::pos())) == index;
 }
 
 /// Whether the control speaks the toolbar's "ghost" language (visual role "ghost"): no fill or edge at rest, the
@@ -538,6 +580,9 @@ int EditorStyle::pixelMetric(PixelMetric metric, const QStyleOption* optionOrNul
             return 2 * TAB_PADDING_HORIZONTAL;
         case PM_TabBarTabVSpace:
             return 2 * TAB_PADDING_VERTICAL + TAB_UNDERLINE_WIDTH;
+        case PM_TabCloseIndicatorWidth:
+        case PM_TabCloseIndicatorHeight:
+            return TAB_CLOSE_BUTTON_SIZE;
         case PM_MenuButtonIndicator:
             return TOOL_BUTTON_MENU_INDICATOR_WIDTH;
         case PM_ToolBarItemSpacing:
@@ -563,6 +608,12 @@ int EditorStyle::styleHint(StyleHint hint,
     if (hint == SH_TabBar_Alignment)
     {
         return Qt::AlignLeft;
+    }
+    // Close buttons sit after the label on every platform, where the unsaved-changes dot stands in for them; macOS
+    // would put them before it.
+    if (hint == SH_TabBar_CloseButtonPosition)
+    {
+        return QTabBar::RightSide;
     }
     return QProxyStyle::styleHint(hint, optionOrNull, widgetOrNull, outReturnDataOrNull);
 }
@@ -770,6 +821,57 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
                                edgeWidth,
                                *painter);
             return;
+        case PE_IndicatorTabClose: {
+            const int index = FindCloseButtonTab(widgetOrNull);
+            if (index < 0)
+            {
+                break;
+            }
+            const QTabBar& tabBar = *qobject_cast<const QTabBar*>(widgetOrNull->parentWidget());
+            const bool isButtonHovered = isEnabled == true && option->state.testFlag(State_Raised) == true;
+            const bool isPressed = option->state.testFlag(State_Sunken) == true;
+            const bool isCurrent = tabBar.currentIndex() == index;
+            const bool isTabHovered = IsTabUnderPointer(tabBar, index);
+            const bool isShown = isCurrent == true || isTabHovered == true || isButtonHovered == true;
+            QColor colour = mColours.Secondary;
+            if (isEnabled == false)
+            {
+                colour = mColours.Disabled;
+            }
+            else if (isShown == true)
+            {
+                colour = mColours.Text;
+            }
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing);
+            const QRectF bounds = QRectF(option->rect).adjusted(HALF, HALF, -HALF, -HALF);
+            if (isButtonHovered == true || isPressed == true)
+            {
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(isPressed == true ? mColours.Border : mColours.SubtleBorder);
+                painter->drawRoundedRect(bounds, design::RADIUS_CONTROL, design::RADIUS_CONTROL);
+            }
+            if (IsTabModified(tabBar, index) == true && isButtonHovered == false && isPressed == false)
+            {
+                // Unsaved changes: a dot until the pointer reaches the button, then the cross.
+                QRectF dot(QPointF(0.0, 0.0), QSizeF(TAB_MODIFIED_DOT_DIAMETER, TAB_MODIFIED_DOT_DIAMETER));
+                dot.moveCenter(bounds.center());
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(colour);
+                painter->drawEllipse(dot);
+            }
+            else if (isShown == true || isPressed == true)
+            {
+                // The cross shows on the open and pointed-at tabs only, so a row of tabs reads as names.
+                QRectF cross(QPointF(0.0, 0.0), QSizeF(TAB_CLOSE_CROSS_SPAN, TAB_CLOSE_CROSS_SPAN));
+                cross.moveCenter(bounds.center());
+                painter->setPen(QPen(colour, TAB_CLOSE_CROSS_STROKE, Qt::SolidLine, Qt::RoundCap));
+                painter->drawLine(cross.topLeft(), cross.bottomRight());
+                painter->drawLine(cross.topRight(), cross.bottomLeft());
+            }
+            painter->restore();
+            return;
+        }
         case PE_PanelStatusBar:
             painter->fillRect(option->rect, mColours.Workspace);
             painter->fillRect(QRect(option->rect.topLeft(), QSize(option->rect.width(), CONTROL_EDGE_WIDTH)),
@@ -935,8 +1037,31 @@ void EditorStyle::drawControl(ControlElement element,
             const QStyleOptionTab* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
             if (tab == nullptr || tab->icon.isNull() == true || IsIconOnlyDockTabBar(widgetOrNull, *this) == false)
             {
-                // The label in the palette's text colour; macOS would swap it for its own on the selected tab.
-                QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+                if (IsHorizontalTab(tab) == false)
+                {
+                    QCommonStyle::drawControl(element, option, painter, widgetOrNull);
+                    return;
+                }
+                // The label in a token colour, not the tab bar's palette: macOS gives the tab bar class near-black
+                // text, which vanished on the dark workspace. Primary text marks the tab that is open or pointed
+                // at; the others stay readable in the secondary colour.
+                QStyleOptionTab label = *tab;
+                QColor colour = mColours.Secondary;
+                if (isEnabled == false)
+                {
+                    colour = mColours.Disabled;
+                }
+                else if (tab->state.testFlag(State_Selected) == true || tab->state.testFlag(State_MouseOver) == true)
+                {
+                    colour = mColours.Text;
+                }
+                for (const QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled})
+                {
+                    label.palette.setColor(group, QPalette::WindowText, colour);
+                    label.palette.setColor(group, QPalette::ButtonText, colour);
+                    label.palette.setColor(group, QPalette::Text, colour);
+                }
+                QCommonStyle::drawControl(element, &label, painter, widgetOrNull);
                 return;
             }
             const QIcon::Mode mode = isEnabled == true ? QIcon::Normal : QIcon::Disabled;

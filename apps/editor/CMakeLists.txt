@@ -698,8 +698,9 @@ ludus_editor_add_objects(ludus_editor_render_graph_canvas
     src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
     src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
     src/internal/render_graph_job.h src/render_graph_job.cpp)
-target_link_libraries(ludus_editor_render_graph_canvas PUBLIC ludus_editor_render_graph_model ludus_editor_presentation
-    Ludus::RenderGraphFormat)
+target_link_libraries(ludus_editor_render_graph_canvas
+    PUBLIC ludus_editor_render_graph_model ludus_editor_presentation Ludus::RenderGraphFormat
+    PRIVATE Ludus::FoundationProfiling ludus_editor_viewport_trace)
 
 # File names and icons shared by the explorers, content browser and Renderer tab.
 ludus_editor_add_objects(ludus_editor_presentation
@@ -761,7 +762,8 @@ ludus_editor_add_objects(ludus_editor_project_explorer
     src/internal/project_files.h src/project_files.cpp)
 target_link_libraries(ludus_editor_project_explorer PUBLIC ludus_editor_presentation)
 
-ludus_editor_add_objects(ludus_editor_document_well src/internal/document_well.h src/document_well.cpp)
+ludus_editor_add_objects(ludus_editor_document_well src/internal/document_well.h src/document_well.cpp
+                         src/internal/tab_modified.h)
 target_link_libraries(ludus_editor_document_well PUBLIC Qt6::Widgets Ludus::FoundationBase Ludus::FoundationContainers)
 
 if(NOT EMSCRIPTEN AND (LUDUS_EDITOR_RENDER_PREVIEW OR LUDUS_BUILD_TESTS))
@@ -830,6 +832,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/import_report.h
     src/import_report.cpp
     src/internal/world_workspace.h
+    src/internal/caption_label.h
+    src/caption_label.cpp
     src/internal/world_lights_panel.h
     src/world_lights_panel.cpp
     src/internal/world_material_document.h

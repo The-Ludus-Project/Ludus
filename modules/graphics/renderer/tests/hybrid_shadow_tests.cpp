@@ -53,6 +53,8 @@ constexpr uint64 TIMEOUT_NANOSECONDS = LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECO
 constexpr usize CHANNEL_COUNT = 4;
 constexpr usize HYBRID_RAY_PASS_INDEX = 1;
 constexpr float32 MAXIMUM_CODE = 255;
+constexpr float32 LINEAR_COLOR_CODE = 1.0F / MAXIMUM_CODE;
+constexpr float32 LIT_RADIANCE_RELATIVE_TOLERANCE = .01F;
 constexpr float32 PIXEL_WIDTH_CLIP = 2.0F / static_cast<float32>(WIDTH);
 
 /// The receiver plane faces the camera, which looks along +Z from the near plane z = 0.
@@ -624,14 +626,12 @@ void RenderReferenceImages(const Device& device,
 }
 } // namespace
 
-TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 direct output",
+TEST_CASE("Raster shadows and RT1 keep an offscreen blocker's shadow",
           "[render-graph][gpu][hybrid-shadows][reference-compute]")
 {
-    Device device;
+    Device device(false);
     const float32 litRadiance = ComputeLitRadiance();
     INFO("expected lit radiance=" << litRadiance);
-    // One 8-bit code of linear RGBA8, the graph outputs' resolution.
-    constexpr float32 CODE = 1.0F / MAXIMUM_CODE;
     for (const float32 offsetWorld : {BLOCKER_VISIBLE_CAMERA_OFFSET_WORLD, 0.0F})
     {
         // The probes of the oracle itself: the blocker is inside the first window and outside the second.
@@ -680,21 +680,34 @@ TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 d
                                      << ", edge displacement " << evidence.EdgeDisplacement << " px");
         // The map is fitted to the whole scene's casters and receivers, so the shadow survives the camera move.
         CAPTURE(offsetWorld);
-        RequireNoMisclassification(evidence, CODE + .01F * litRadiance, CODE);
+        RequireNoMisclassification(evidence,
+                                   LINEAR_COLOR_CODE + LIT_RADIANCE_RELATIVE_TOLERANCE * litRadiance,
+                                   LINEAR_COLOR_CODE);
     }
+}
+
+TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 direct output",
+          "[gpu][hybrid-shadows][native-ray-queries][reference-compute]")
+{
+    Device device;
+    if (device.HasRays == false)
+    {
+        SKIP("Native ray queries are unavailable; the portable shadow test covers raster and RT1");
+    }
+
+    const float32 litRadiance = ComputeLitRadiance();
+    LinearImage gpuVisible{};
+    LinearImage gpuOffscreen{};
+    RenderReferenceImages(device, renderer::ReferenceTraversal::GpuCompute, gpuVisible, gpuOffscreen);
 
     // Hybrid shadows: raster first hits, one shadow ray per light.
     LinearImage hybridVisible{};
     LinearImage hybridOffscreen{};
-    if (device.HasRays == false ||
-        RenderGraphImages(device,
-                          {LUDUS_RG3_HYBRID_SHADOWS_LINEAR_DIRECTORY, "rg2_hybrid_shadows_linear.lurgrt"},
-                          ColorSource::RayPassColor,
-                          hybridVisible,
-                          hybridOffscreen) == false)
-    {
-        SKIP("Native ray tracing is unavailable; the raster default graph is this device's shadow route");
-    }
+    REQUIRE(RenderGraphImages(device,
+                              {LUDUS_RG3_HYBRID_SHADOWS_LINEAR_DIRECTORY, "rg2_hybrid_shadows_linear.lurgrt"},
+                              ColorSource::RayPassColor,
+                              hybridVisible,
+                              hybridOffscreen) == true);
     for (const LinearImage* image : {&hybridVisible, &hybridOffscreen})
     {
         const bool isVisibleWindow = image == &hybridVisible;
@@ -704,7 +717,9 @@ TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 d
         WARN("hybrid window offset " << offsetWorld << ": misclassified " << evidence.Misclassified << " of "
                                      << evidence.InteriorPixels << ", largest lit error " << evidence.MaximumLitError
                                      << ", edge displacement " << evidence.EdgeDisplacement << " px");
-        RequireNoMisclassification(evidence, CODE + .01F * litRadiance, CODE);
+        RequireNoMisclassification(evidence,
+                                   LINEAR_COLOR_CODE + LIT_RADIANCE_RELATIVE_TOLERANCE * litRadiance,
+                                   LINEAR_COLOR_CODE);
         // Paired with RT1 at every interior receiver pixel.
         const LinearImage& paired = isVisibleWindow == true ? gpuVisible : gpuOffscreen;
         float32 maximumDifference = 0;
@@ -721,7 +736,7 @@ TEST_CASE("Hybrid shadows keep an offscreen blocker's shadow and match the RT1 d
             }
         }
         WARN("largest hybrid/RT1 difference " << maximumDifference);
-        CHECK(maximumDifference <= CODE + .01F * litRadiance);
+        CHECK(maximumDifference <= LINEAR_COLOR_CODE + LIT_RADIANCE_RELATIVE_TOLERANCE * litRadiance);
     }
 }
 

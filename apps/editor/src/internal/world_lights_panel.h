@@ -18,6 +18,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+class CaptionLabel;
 struct RenderScene;
 
 // The World workspace's light list: imported emitter groups, imported analytic lights and
@@ -138,6 +139,8 @@ private:
     QPushButton* mSoloOrNull = nullptr;
     QPushButton* mEnableAllOrNull = nullptr;
     QPushButton* mRemoveMissingOrNull = nullptr;
+    /// The hint shown while the list is empty.
+    CaptionLabel* mStatusOrNull = nullptr;
     /// The light last shown at the top of the list, restored when the list is recreated.
     WorldLightRow mTopRow;
     bool mHasTopRow = false;

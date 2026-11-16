@@ -334,7 +334,7 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
 # Version 33: per-callback capture warm-up counts follow the scene resource word.
 # Version 34 adds the optional forward surface-chart fragment and a chart-free realtime fragment.
-PACKAGE_VERSION = 34
+PACKAGE_VERSION = 35
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -958,6 +958,13 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                 (SCENE_RESOURCE_FAILURE_SUMMARY if contents.get('failure_summary', False) else 0) |
                 (SCENE_RESOURCE_LIGHT_TRANSFORMER if contents.get('light_transformer', False) else 0))
     data += u32(*contents.get('capture_warmup_samples', [0] * ray.MAX_RAY_PROGRAMS))
+    keys = sorted(contents.get('recipe_keys', []),
+                  key=lambda row: (PROGRAM_CODES[row['program']], TARGET_CODES[row['profile']]))
+    data += u32(len(keys))
+    for entry in keys:
+        digest = bytes.fromhex(entry['key'])
+        build.require(len(digest) == IDENTITY_BYTES, 'Package', entry['key'], 'recipe key is not a SHA-256 digest')
+        data += u32(PROGRAM_CODES[entry['program']], TARGET_CODES[entry['profile']]) + digest
     for operation in contents['plan']['passes']:
         if operation['kind'] not in ('Raster', 'RayTracing', 'Upscale'):
             continue

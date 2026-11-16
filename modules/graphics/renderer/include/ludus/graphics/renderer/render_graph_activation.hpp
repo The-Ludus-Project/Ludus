@@ -167,6 +167,9 @@ struct RenderGraphActivationReport final
         RenderGraphRenderer::Raster;     ///< Last staged model; meaningful with CandidateGeneration.
     RenderGraphReport CandidateReport{}; ///< Latest candidate extraction diagnostics, retained after rejection
                                          ///< independently of the active graph.
+    /// True after Poll has observed the staged graph's initial preparation finish, while that graph
+    /// still awaits scene data or publication. False when no candidate remains.
+    bool IsCandidateSetupReady = false;
 };
 /// Stage a complete graph + shader + plan generation and publish it atomically
 /// between frames. The active generation keeps rendering while a candidate

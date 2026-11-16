@@ -32,7 +32,9 @@ IndentCaseLabels: true
 IndentPPDirectives: AfterHash
 IndentWidth: 4
 NamespaceIndentation: None
+# Attach '*', '&' and '&&' to the type: `const void* pointer`, `Scene& scene`.
 PointerAlignment: Left
+ReferenceAlignment: Left
 SortIncludes: CaseSensitive
 TabWidth: 4
 UseTab: Never
