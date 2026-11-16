@@ -51,7 +51,10 @@ TEST_CASE("Skin strip energy is the integral of the pre-integrated normalized-di
         CHECK(math::Abs(derivative - 2 * kernel) < 1e-6 * kernel + 1e-9);
     }
     float64 previous = 0;
-    for (float64 u = 1.0 / 256; u < 128; u *= 2)
+    // Half-widths from 1/256 to 64 scattering distances, doubling.
+    constexpr usize DOUBLINGS = 15;
+    float64 u = 1.0 / 256;
+    for (usize doubling = 0; doubling < DOUBLINGS; ++doubling, u *= 2)
     {
         const float64 energy = internal::ComputeSkinStripEnergy(u);
         CHECK(energy > previous);
