@@ -368,15 +368,16 @@ diffuse from `base_color` and a GGX specular lobe from `roughness`.
 
 `scattering_distance` is required: write `[0, 0, 0]` for no spread, which shades
 exactly like the same `metallic_roughness` material. `metallic` is rejected
-because skin is a dielectric. Distances are in metres, so the object must be
-modelled at real scale; human skin spreads red light furthest, over millimetres.
-The cook stores the material as a LUSCN v14 `Skin` record.
+because skin is a dielectric. Distances are in metres, so the object must be modelled at real scale; human skin spreads
+red light furthest, over millimetres. The cook stores the material as a LUSCN
+v14 `Skin` record. An imported material becomes skin per World slot with
+[make a slot skin](../development/editor-workspace.md#make-a-slot-skin).
 
-The real-time spread is a screen-space filter in the raster deferred profile
-([real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)),
-still in progress; until it lands, the World viewport shows skin as its
-metallic-roughness surface. Reference captures shade the surface reflection
-only, without subsurface transport, until
+The clustered deferred profile, which the engine's default render graph uses,
+spreads skin's diffuse lighting over the distance with a screen-space filter
+([raster skin diffusion](renderer-systems.md#raster-skin-diffusion)). Other
+raster profiles show skin as its metallic-roughness surface. Reference captures
+shade the surface reflection only, without subsurface transport, until
 [reference skin #1373](https://github.com/The-Ludus-Project/Ludus/issues/1373)
 adds it. See [hair and skin rendering](renderer-systems.md#hair-and-skin-rendering).
 

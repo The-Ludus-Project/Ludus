@@ -2880,6 +2880,96 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
     CHECK(fixture.Pixels[sky + 2] == original[sky + 2]);
 }
 
+TEST_CASE("default deferred sky visibility hides a blocked sunset horizon from Atmosphere reflections",
+          "[sky-visibility][atmosphere][gpu]")
+{
+    constexpr usize QUAD_VERTEX_COUNT = 4;
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    constexpr usize SCENE_COUNT = 2;
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    // A glossy wall facing the orthographic camera (+Z), whose reflections leave horizontally towards +Z, where the
+    // Sun sets. A low panel 1.1 m in front of it, beyond the camera's depth range, hides the horizon up to about 24
+    // degrees but leaves the dim sky above open, as an arcade's opposite wall does.
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> wallPositions{
+        {{-1, -1, .5F}, {1, -1, .5F}, {1, 1, .5F}, {-1, 1, .5F}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> wallNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> panelPositions{
+        {{-3, -.5F, 1.6F}, {3, -.5F, 1.6F}, {3, .5F, 1.6F}, {-3, .5F, 1.6F}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> panelNormals{{{0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1}}};
+    const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+    StaticArray<renderer::RenderGraphMesh, SCENE_COUNT> meshes{{fixture.Meshes[0], fixture.Meshes[0]}};
+    meshes[0].Geometry = {wallPositions.GetData(), wallPositions.GetSize(), quadIndices.GetData(), QUAD_INDEX_COUNT};
+    meshes[0].Geometry.Normals = wallNormals.GetData();
+    meshes[1].Geometry = {panelPositions.GetData(), panelPositions.GetSize(), quadIndices.GetData(), QUAD_INDEX_COUNT};
+    meshes[1].Geometry.Normals = panelNormals.GetData();
+    const uint32 materialIndex = 0;
+    meshes[0].MaterialBindings = {&materialIndex, 1};
+    meshes[1].MaterialBindings = {&materialIndex, 1};
+    StaticArray<renderer::RenderGraphItem, SCENE_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
+    items[1].SourceId = 2;
+    items[1].MeshIndex = 1;
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {1, 1, 1};
+    material.Metallic = 1;
+    material.Roughness = .3F;
+    material.ShouldRegisterRasterMeshLight = false;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.OrthographicCamera = true;
+    camera.CameraPosition = {0, 0, 1};
+    camera.CameraForward = {0, 0, -1};
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.ShouldLightScene = true;
+    constexpr float32 SKY_ILLUMINANCE = 4;
+    constexpr float32 SOLAR_ELEVATION_SINE = .05F;
+    camera.Atmosphere.SolarIlluminance = {SKY_ILLUMINANCE, SKY_ILLUMINANCE, SKY_ILLUMINANCE};
+    camera.Atmosphere.DirectionToSunWorld = {0,
+                                             SOLAR_ELEVATION_SINE,
+                                             std::sqrt(1 - SOLAR_ELEVATION_SINE * SOLAR_ELEVATION_SINE)};
+    camera.LightingView = renderer::DeferredLightingView::SkySpecular;
+    uint64 revision = 0;
+    const auto update = [&](usize itemCount) {
+        renderer::RenderGraphReport report;
+        ++revision;
+        return PollAtmosphereGraph(fixture,
+                                   fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                                        {items.GetData(), itemCount},
+                                                        {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                        revision,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report,
+                                                        &inputs,
+                                                        revision));
+    };
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const auto readRed = [&]() {
+        // The first frame draws the sky visibility maps; the second reads them.
+        ReadAtmosphereFrame(fixture);
+        ReadAtmosphereFrame(fixture);
+        return static_cast<float32>(fixture.Pixels[center]);
+    };
+    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+    const float32 open = readRed();
+    REQUIRE(open > 32);
+    REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
+    const float32 blocked = readRed();
+    CAPTURE(open, blocked);
+    // The panel hides the bright horizon the reflection points at. Weighting the lobe's visibility by the sky's
+    // brightness removes most of it (65 to 6 codes on Metal); counting the open dim sky above as much as the
+    // horizon kept a quarter (65 to 16).
+    constexpr float32 BLOCKED_FRACTION_LIMIT = .15F;
+    CHECK(blocked < open * BLOCKED_FRACTION_LIMIT);
+}
+
 TEST_CASE("Celestial boundary composes through ground and orbital atmosphere rays",
           "[render-graph][atmosphere][gpu][reference-compute]")
 {

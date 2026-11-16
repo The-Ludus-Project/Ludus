@@ -141,6 +141,14 @@ struct MeshLightReceiver
     float SpecularAlpha;
     bool HasSpecular;
 };
+// One record's two integrals before its emission scales them; the record's radiance is
+// Emission * (Diffuse + Specular), in that order.
+struct MeshLightLobes
+{
+    float3 Diffuse;
+    float3 Specular;
+    float3 Emission;
+};
 // Whether the record whose header starts at word first can light the receiver: enough corners, the receiver off
 // its plane and in front of a one-sided emitter, and, with a positive cull threshold, a Lambert bound at or above it.
 // The polygon's solid angle is at most area / d^2 for its nearest distance d, which is at least both the distance to
@@ -171,9 +179,9 @@ bool CanMeshLightRecordReach(uint first, float3 positionWorld, float cullThresho
 // The far-field evaluation of the record whose header starts at word first, which CanMeshLightRecordReach accepted:
 // the point form factor at its bounding sphere's centre, with the specular LTC density in that direction. False when
 // the record is too near, or too large for the receiver's specular lobe; EvaluateMeshLightRecord then integrates it.
-bool TryEvaluateMeshLightFar(in MeshLightReceiver receiver, uint first, out float3 outContribution)
+bool TryEvaluateMeshLightFar(in MeshLightReceiver receiver, uint first, out MeshLightLobes outLobes)
 {
-    outContribution = float3(0);
+    outLobes = (MeshLightLobes)0;
     float4 bound = meshLightWords[first + MESH_LIGHT_POLYGON_BOUND_WORD];
     float3 toLightWorld = bound.xyz - receiver.PositionWorld;
     float distance = length(toLightWorld);
@@ -196,18 +204,19 @@ bool TryEvaluateMeshLightFar(in MeshLightReceiver receiver, uint first, out floa
     {
         return true;
     }
-    float3 contribution = receiver.DiffuseAlbedo * (directionTangent.z * solidAngle / PI);
+    outLobes.Diffuse = receiver.DiffuseAlbedo * (directionTangent.z * solidAngle / PI);
     if (receiver.HasSpecular == true)
     {
-        contribution += receiver.SpecularAlbedo *
-                        (EvaluateLinearlyTransformedCosine(receiver.Distribution, directionTangent) * solidAngle);
+        outLobes.Specular = receiver.SpecularAlbedo *
+                            (EvaluateLinearlyTransformedCosine(receiver.Distribution, directionTangent) * solidAngle);
     }
-    outContribution = emission.rgb * contribution;
+    outLobes.Emission = emission.rgb;
     return true;
 }
 // Integrate the record whose header starts at word first; CanMeshLightRecordReach must hold.
-float3 EvaluateMeshLightRecord(in MeshLightReceiver receiver, uint first)
+MeshLightLobes EvaluateMeshLightRecord(in MeshLightReceiver receiver, uint first)
 {
+    MeshLightLobes lobes = (MeshLightLobes)0;
     float4 emission = meshLightWords[first + 1];
     uint cornerCount = min(uint(emission.w), MAX_MESH_LIGHT_POLYGON_CORNERS);
     uint cornerWord = first + MESH_LIGHT_POLYGON_HEADER_WORDS;
@@ -231,7 +240,7 @@ float3 EvaluateMeshLightRecord(in MeshLightReceiver receiver, uint first)
         previousTangent = positionTangent;
     }
     ClipMeshLightReceiverEdge(stream, previousTangent, firstTangent, receiver.Distribution, receiver.HasSpecular);
-    float3 contribution = receiver.DiffuseAlbedo * (CloseMeshLightEdgeSum(stream.Diffuse) / PI);
+    lobes.Diffuse = receiver.DiffuseAlbedo * (CloseMeshLightEdgeSum(stream.Diffuse) / PI);
     if (receiver.HasSpecular == true)
     {
         if (stream.TransformedClip.Count > 0)
@@ -240,9 +249,10 @@ float3 EvaluateMeshLightRecord(in MeshLightReceiver receiver, uint first)
                               stream.TransformedClip.FirstTangent,
                               stream.Specular);
         }
-        contribution += receiver.SpecularAlbedo * (CloseMeshLightEdgeSum(stream.Specular) / PI);
+        lobes.Specular = receiver.SpecularAlbedo * (CloseMeshLightEdgeSum(stream.Specular) / PI);
     }
-    return emission.rgb * contribution;
+    lobes.Emission = emission.rgb;
+    return lobes;
 }
 // The receiver's tangent frame, albedos and specular LTC, built once per sample that a record can reach.
 MeshLightReceiver MakeMeshLightReceiver(in SurfaceSample surface, float3 positionWorld, float nv)
@@ -437,13 +447,18 @@ uint GetMeshLightGridEntry(uint entryWord, uint entry)
 // and skips listed records whose bound at the sample is below it too. Every shaded surface lies inside the grid, so a
 // position reconstructed outside it reads the nearest boundary cell. Evaluating every record there instead made a
 // few floor pixels walk the whole record list and stall the pass. positionUncertaintyWorld is how far positionWorld may
-// lie from the surface along the view ray; the shadow comparison allows for it.
-float3 EvaluateRasterMeshLights(in SurfaceSample surface,
-                                in float3 positionWorld,
-                                in float3 positionUncertaintyWorld,
-                                uint polygonCount,
-                                uint gridWord)
+// lie from the surface along the view ray; the shadow comparison allows for it. With shouldSeparateDiffuse, the diffuse
+// integrals go to outDiffuse and the result holds only the specular ones, for a skin resolve that spreads the diffuse
+// lighting; otherwise outDiffuse is zero.
+float3 EvaluateRasterMeshLightLobes(in SurfaceSample surface,
+                                    in float3 positionWorld,
+                                    in float3 positionUncertaintyWorld,
+                                    uint polygonCount,
+                                    uint gridWord,
+                                    bool shouldSeparateDiffuse,
+                                    out float3 outDiffuse)
 {
+    outDiffuse = float3(0);
     float nv = max(dot(surface.NormalWorld, surface.ViewDirectionWorld), 0);
     if (nv <= 0 || polygonCount == 0)
     {
@@ -481,6 +496,7 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface,
     MeshLightReceiver receiver = (MeshLightReceiver)0;
     bool hasReceiver = false;
     float3 result = float3(0);
+    float3 diffuse = float3(0);
     uint first = 0;
     // Each cell lists a caster's records together, so one visibility serves a run of them.
     uint visibleCaster = ~0u;
@@ -506,11 +522,12 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface,
             receiver = MakeMeshLightReceiver(surface, positionWorld, nv);
             hasReceiver = true;
         }
-        float3 contribution;
-        if (TryEvaluateMeshLightFar(receiver, record, contribution) == false)
+        MeshLightLobes lobes;
+        if (TryEvaluateMeshLightFar(receiver, record, lobes) == false)
         {
-            contribution = EvaluateMeshLightRecord(receiver, record);
+            lobes = EvaluateMeshLightRecord(receiver, record);
         }
+        float3 contribution = lobes.Emission * (lobes.Diffuse + lobes.Specular);
         if (any(contribution > 0) == false)
         {
             continue;
@@ -526,7 +543,31 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface,
                                                           surface.NormalWorld);
             visibleCaster = casterKey;
         }
-        result += contribution * visibility;
+        if (shouldSeparateDiffuse == true)
+        {
+            result += lobes.Emission * lobes.Specular * visibility;
+            diffuse += lobes.Emission * lobes.Diffuse * visibility;
+        }
+        else
+        {
+            result += contribution * visibility;
+        }
     }
+    outDiffuse = max(diffuse, float3(0));
     return max(result, float3(0));
+}
+float3 EvaluateRasterMeshLights(in SurfaceSample surface,
+                                in float3 positionWorld,
+                                in float3 positionUncertaintyWorld,
+                                uint polygonCount,
+                                uint gridWord)
+{
+    float3 diffuse;
+    return EvaluateRasterMeshLightLobes(surface,
+                                        positionWorld,
+                                        positionUncertaintyWorld,
+                                        polygonCount,
+                                        gridWord,
+                                        false,
+                                        diffuse);
 }

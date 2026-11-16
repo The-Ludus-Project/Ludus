@@ -6406,7 +6406,11 @@ fraction of those directions that see past the scene scales the environment
 irradiance, from above and below the horizon alike; a surface facing straight down
 sees no sky direction and receives none. A cosine-power lobe about the reflection
 vector, narrowing with smoothness up to an exponent of 8, weights the visibility
-that scales the specular environment. With an Atmosphere, the visible directions
+that scales the specular environment. With an Atmosphere, each direction's weight
+also carries the sky's luminance there, so hiding a bright part of the sky removes
+its share of the reflection: under an arcade, walls no longer reflect the glowing
+sunset horizon that the opposite building hides just because the dim sky overhead
+is open. With an Atmosphere, the visible directions
 also replace the quadrature about the normal for diffuse sky light: each one adds
 its sky radiance times its cosine and solid angle, and the sky table's ground half
 adds one radiance over the projected solid angle below the horizon, scaled by the
