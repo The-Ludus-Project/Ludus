@@ -153,6 +153,9 @@ enum class SourceMaterialModel : uint8
     /// Two-sided hair card with an authored strand direction (`"model": "hair_card"`). BaseColor and
     /// Roughness shade it; the optional `hair` member holds its strand controls.
     HairCard,
+    /// Dielectric reflection of BaseColor and Roughness whose diffuse lighting the raster deferred profile
+    /// spreads over ScatteringDistance (`"model": "skin"`). A zero distance shades as MetallicRoughness.
+    Skin,
 };
 
 /// Constant rough conductor lobe of a source Mix. RGB channels use the engine's optical proxy.
@@ -208,6 +211,9 @@ struct SourceMaterial final
     /// HairCard only: strand direction, highlight shifts and weights, valid by
     /// scene_format::IsHairCardParametersValid; defaults for other models.
     scene_format::HairCardParameters HairCard{};
+    /// Skin only: linear Rec. 709 scattering distance in metres, each channel in
+    /// [0, scene_format::MAX_SKIN_SCATTERING_DISTANCE]; zero for other models.
+    foundation::math::Vector3d ScatteringDistance{};
 };
 
 /// @brief Placement and size of an `aperture` object's screen.

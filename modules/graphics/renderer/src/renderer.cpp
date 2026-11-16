@@ -4863,7 +4863,8 @@ Status Renderer::createLitMaterial(MaterialProgram program,
         internal::IsReferenceDielectricSupported(description.Scattering) == false ||
         (description.Scattering.Model == content::scene_format::MaterialModel::Conductor &&
          description.Scattering.AlphaU != description.Scattering.AlphaV) ||
-        (description.Scattering.Model == content::scene_format::MaterialModel::HairCard && description.Metallic != 0))
+        (content::scene_format::RequiresZeroMetallic(description.Scattering.Model) == true &&
+         description.Metallic != 0))
     {
         return Status::InvalidDescription;
     }
