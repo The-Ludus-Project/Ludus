@@ -1,0 +1,58 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Diffraction reference: knife edge",
+  "description": "A zero-thickness half-plane proxy covers x <= 0 at z = 0. Its straight edge follows +y through the origin. The 5 mm square source is centred at (0, 0, 0.5) and faces -z. Sweep x at y = 0 along the receiver at z = -1; the source centre's geometric shadow boundary is x = 0. Design wavelength 5 mm. See the scene source guide for the Sommerfeld comparison.",
+  "camera": {
+    "eye": [0, 0, -0.1],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 58
+  },
+  "materials": [
+    {"name": "Receiver","model": "diffuse","base_color": [0.8,0.8,0.8]},
+    {"name": "Black screen","model": "diffuse","base_color": [0,0,0]},
+    {"name": "Source","model": "metallic_roughness","base_color": [1,1,1],"roughness": 1,"emission": {"radiance": [10000,10000,10000],"two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Receiver wall",
+      "material": "Receiver",
+      "positions": [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Half-plane screen",
+      "material": "Black screen",
+      "positions": [
+        [-2, -2, 0],
+        [0, -2, 0],
+        [0, 2, 0],
+        [-2, 2, 0]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Source patch",
+      "material": "Source",
+      "positions": [
+        [-0.0025, -0.0025, 0.5],
+        [-0.0025, 0.0025, 0.5],
+        [0.0025, 0.0025, 0.5],
+        [0.0025, -0.0025, 0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}

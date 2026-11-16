@@ -180,6 +180,74 @@ TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene",
     CHECK(triangles == 12);
 }
 
+TEST_CASE("Ludus scene import cooks the edge diffraction reference scenes", "[scene_cook][ludus-scene][diffraction]")
+{
+    // See the scene source guide for the Sommerfeld, conducting wedge and double-slit references.
+    constexpr usize SCENE_COUNT = 3;
+    constexpr usize QUAD_TRIANGLES = 2;
+    constexpr ludus::foundation::StaticArray<ExpectedScene, SCENE_COUNT> SCENES{{
+        { .File = "diffraction/knife-edge.luscene.json", .Triangles = 6 },
+        { .File = "diffraction/right-angle-wedge.luscene.json", .Triangles = 8 },
+        { .File = "diffraction/double-slit.luscene.json", .Triangles = 30 },
+    }};
+    for (const ExpectedScene& expected : SCENES)
+    {
+        INFO(expected.File);
+        const std::string entry = GetTestScene(expected.File);
+        BestEffortResult result;
+        CookError error;
+        REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
+        CHECK(result.Summary.Errors == 0);
+        CHECK(result.Summary.SourceAreaLights == 1);
+
+        ludus::resources::SceneDefinition decoded;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+                ludus::resources::Status::Ok);
+        REQUIRE(decoded.Objects.GetSize() == 3);
+        usize triangles = 0;
+        usize emitters = 0;
+        usize receivers = 0;
+        for (const ludus::resources::SceneObject& object : decoded.Objects)
+        {
+            const ludus::resources::SceneMesh& mesh = decoded.Meshes[object.Mesh];
+            REQUIRE(mesh.Positions.IsEmpty() == false);
+            const usize meshTriangles = mesh.Indices.GetSize() / 3;
+            triangles += meshTriangles;
+            const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+            if (material.Emission.X > 0)
+            {
+                ++emitters;
+                CHECK(meshTriangles == QUAD_TRIANGLES);
+                CHECK(material.IsEmissionTwoSided == false);
+                for (const math::Vector3& normal : mesh.Normals)
+                {
+                    CHECK(normal == math::Vector3{0, 0, -1});
+                }
+                for (const math::Vector3& position : mesh.Positions)
+                {
+                    CHECK(position.Z == 0.5F);
+                }
+            }
+            else if (mesh.Positions[0].Z == -1)
+            {
+                ++receivers;
+                CHECK(meshTriangles == QUAD_TRIANGLES);
+                for (const math::Vector3& normal : mesh.Normals)
+                {
+                    CHECK(normal == math::Vector3{0, 0, 1});
+                }
+                for (const math::Vector3& position : mesh.Positions)
+                {
+                    CHECK(position.Z == -1);
+                }
+            }
+        }
+        CHECK(emitters == 1);
+        CHECK(receivers == 1);
+        CHECK(triangles == expected.Triangles);
+    }
+}
+
 TEST_CASE("Ludus scene import can leave the slit's aperture to the importing World", "[scene_cook][ludus-scene]")
 {
     const std::string entry = GetTestScene("diffraction/single-slit.luscene.json");
