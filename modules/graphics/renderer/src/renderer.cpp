@@ -1882,6 +1882,8 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
     State& state = *mState;
     const State::ViewRecord& view = state.ViewRecords[Access::Slot(handle)];
     outBindings = {};
+    // The first chart material, else the first opaque packet's material, supplies the resolve's light words.
+    usize selected = view.DrawCount;
     for (usize index = 0; index < view.DrawCount; ++index)
     {
         const State::Packet& packet = view.Packets[index];
@@ -1889,6 +1891,19 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
         {
             continue;
         }
+        if (selected == view.DrawCount)
+        {
+            selected = index;
+        }
+        if (packet.MaterialSlot != NO_MATERIAL && state.Materials[packet.MaterialSlot].HasBake == true)
+        {
+            selected = index;
+            break;
+        }
+    }
+    if (selected < view.DrawCount)
+    {
+        const State::Packet& packet = view.Packets[selected];
         if (packet.MaterialSlot == NO_MATERIAL)
         {
             return Status::Unsupported;
@@ -1931,7 +1946,6 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
         outBindings.Resources[0].Buffer = material.Parameters;
         outBindings.Resources[0].Size = material.ParameterSize;
         outBindings.HasMaterial = true;
-        break;
     }
     return Status::Ready;
 }

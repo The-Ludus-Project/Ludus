@@ -101,6 +101,11 @@ static const LightingLayoutValue MESH_LIGHT_SHADOW_GUTTER_TEXELS = 4;
 static const LightingLayoutValue DEFERRED_MESH_LIGHT_SHADOW_BINDING = LUDUS_DEFERRED_MESH_LIGHT_SHADOW_BINDING;
 /// Largest finite half-float value; emission is nonnegative and saturates before G-buffer storage.
 static const LightingLayoutValue DEFERRED_MAX_HALF = 65504;
+/// Emission/coverage alpha of a covered G-buffer pixel; empty pixels keep the cleared zero and the resolve skips them.
+static const LightingLayoutValue DEFERRED_COVERED = 1;
+/// Emission/coverage alpha of a covered pixel whose emission already holds its surface chart's baked diffuse. The
+/// resolve omits the baked lights' live diffuse there, exactly once, and keeps their live specular.
+static const LightingLayoutValue DEFERRED_SURFACE_CHART_COVERED = 2;
 #ifdef __cplusplus
 static_assert(DEFERRED_NORMAL_BINDING == CLUSTERED_AUTHORED_BINDING_COUNT);
 } // namespace ludus::graphics::renderer
