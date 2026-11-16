@@ -107,7 +107,8 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
            internal::IsReferenceDielectricSupported(material.Scattering) == true &&
            (material.Scattering.Model != content::scene_format::MaterialModel::Conductor ||
             material.Scattering.AlphaU == material.Scattering.AlphaV) &&
-           (material.Scattering.Model != content::scene_format::MaterialModel::HairCard || material.Metallic == 0) &&
+           (content::scene_format::RequiresZeroMetallic(material.Scattering.Model) == false ||
+            material.Metallic == 0) &&
            material.HasError == false && ReferenceColor(material.BaseColor, 1) &&
            ReferenceColor(material.Emission, MAX_EMISSION) && math::IsFinite(material.Metallic) &&
            material.Metallic >= 0 && material.Metallic <= 1 && math::IsFinite(material.Roughness) &&

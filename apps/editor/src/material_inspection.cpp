@@ -123,6 +123,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Absorbing medium boundary");
         case format::MaterialModel::HairCard:
             return QStringLiteral("Hair card");
+        case format::MaterialModel::Skin:
+            return QStringLiteral("Skin");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
@@ -394,6 +396,12 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         weights.Detail = QStringLiteral("Highlight weights, primary / tinted secondary");
         rows.append(shifts);
         rows.append(weights);
+    }
+    else if (scattering.Model == format::MaterialModel::Skin)
+    {
+        MaterialPropertyRow distance{QStringLiteral("Scattering (m)"), FormatRgb(scattering.K)};
+        distance.Detail = QStringLiteral("Subsurface scattering distance in metres, linear RGB");
+        rows.append(distance);
     }
     rows.append(MakeTextureRow(QStringLiteral("Surface map"),
                                QStringLiteral("Surface map"),

@@ -1754,7 +1754,11 @@ Start with a static character bust shared by the renderer, World editor and
 installed SDK consumer. Use the same authored assets and lighting when
 comparing techniques. The first milestone uses the existing triangle scene
 and typed materials, with no dependency on skeletal deformation or native
-curve traversal.
+curve traversal. The bust is the
+[engine's Infinite head scan](scene-source-format.md#character-bust)
+(`tests/scenes/characters/infinite-head`, Creative Commons Attribution 3.0),
+which the Separable Subsurface Scattering demo also used. It is one skin slot
+without eyes or hair, so bleed tests add their own eye and hair geometry.
 
 - **Raster hair.** Render a hairstyle as two-sided, alpha-masked cards with an
   authored strand direction for directional highlights. Reuse mesh slots,
@@ -1769,6 +1773,8 @@ curve traversal.
   skin profile boundaries, and preserve specular detail. Expose base colour,
   roughness and RGB scattering distances in world units. Compare against
   ordinary PBR on the bust and measure GPU time and transient memory.
+  Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14
+  and shades as its metallic-roughness surface; the diffusion filter is next.
   [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
   [Real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)
 - **Reference skin.** Use the normalized diffusion profile in Per H.
