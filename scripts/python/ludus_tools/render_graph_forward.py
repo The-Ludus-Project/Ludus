@@ -70,12 +70,14 @@ def material_layout(snapshot, build, is_clustered_profile=False):
     offsets = {name: index * word for index, name in enumerate(names)}
     coefficients = constant(environment, 'LUDUS_ENVIRONMENT_SH_COEFFICIENTS')
     hair_words = constant(environment, 'LUDUS_HAIR_CARD_PARAMETER_WORDS')
+    skin_words = constant(environment, 'LUDUS_SKIN_PARAMETER_WORDS')
     offsets.update(ShadowData=shadow_offset, SurfaceMap=surface_offset, Authored=surface_offset + word, IrradianceSh=surface_offset + 2 * word,
-                   HairStrand=surface_offset + (2 + coefficients) * word, HairHighlights=surface_offset + (3 + coefficients) * word)
+                   HairStrand=surface_offset + (2 + coefficients) * word, HairHighlights=surface_offset + (3 + coefficients) * word,
+                   SkinScattering=surface_offset + (2 + coefficients + hair_words) * word)
     if is_clustered_profile:
         offsets.update(GridRows=grid_offset, GridMinimum=grid_offset + 3 * word, GridScale=grid_offset + 4 * word)
     shapes = {name: 'Float4Array' if name in ('Lights', 'ShadowData', 'IrradianceSh', 'GridRows') else 'Float4' for name in offsets}
-    return {'offsets': offsets, 'shapes': shapes, 'size': surface_offset + (2 + coefficients + hair_words) * word}
+    return {'offsets': offsets, 'shapes': shapes, 'size': surface_offset + (2 + coefficients + hair_words + skin_words) * word}
 
 
 def expand(programs, techniques, snapshot, helper, build, has_surface_charts=False):

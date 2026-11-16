@@ -14,6 +14,11 @@ namespace ludus::graphics::renderer
 #endif
 /// RGBA16F G-buffer attachments: world normal/roughness, base color/metallic and emission/coverage.
 static const LightingLayoutValue DEFERRED_TARGET_COUNT = 3;
+/// Coverage word of an ordinary covered G-buffer pixel; zero is uncovered.
+static const LightingLayoutValue DEFERRED_SURFACE_COVERAGE = 1;
+/// Coverage word of a skin pixel (content::scene_format::MaterialModel::Skin). Its emission channels hold the linear
+/// RGB scattering distance in metres instead of emission, which skin never stores.
+static const LightingLayoutValue DEFERRED_SKIN_COVERAGE = 2;
 /// Rows of the inverse world-to-clip transform in the per-view uniform block.
 static const LightingLayoutValue DEFERRED_VIEW_ROWS = 4;
 /// Inverse transform, packed eye, target dimensions and view options, in Float4 words.

@@ -619,6 +619,12 @@ struct RenderGraphAllocationReport final
     foundation::uint32 DeferredAllocations = 0;
     /// Logical color plus private depth bytes of those allocations; excludes native padding and per-view bindings.
     foundation::uint64 DeferredAttachmentBytes = 0;
+    /// Live skin diffusion allocations: three RGBA16F targets with private depth per deferred view that draws skin
+    /// (a Skin material with a nonzero scattering distance), allocated on its first such view. Separate from the
+    /// G-buffer allocations above.
+    foundation::uint32 DeferredSkinAllocations = 0;
+    /// Logical color plus private depth bytes of the skin allocations, 36 per pixel of the view.
+    foundation::uint64 DeferredSkinAttachmentBytes = 0;
 };
 /// How Render and Encode record the raster passes of the drawable scene.
 /// See "Logical resource uses and submitted work" in docs/architecture/render-graph-authoring.md.

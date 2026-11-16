@@ -340,6 +340,13 @@ struct HairCardParameters final
 {
     return model == MaterialModel::HairCard || model == MaterialModel::Skin;
 }
+/// Report whether a material of the model may store emission: every model except skin. The raster deferred
+/// profile stores a skin pixel's scattering distance in the G-buffer's emission channels, so decoders and
+/// renderers reject a skin record with nonzero emission, an emission power or an emission texture.
+[[nodiscard]] constexpr bool IsEmissionAllowed(MaterialModel model) noexcept
+{
+    return model != MaterialModel::Skin;
+}
 /// The scattering a ray or reference evaluator applies to a surface. Hair cards and skin reflect through
 /// the metallic/roughness dielectric lobes there, since the strand highlight and the skin diffusion are
 /// raster techniques; every other model is returned unchanged.

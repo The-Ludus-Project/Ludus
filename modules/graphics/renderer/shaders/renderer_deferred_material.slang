@@ -17,6 +17,11 @@ GBufferOutput PackDeferredMaterial(in SurfaceSample surface)
     output.NormalRoughnessWorld = float4(surface.NormalWorld, surface.Roughness);
     output.BaseMetallic = float4(surface.BaseColor.rgb, surface.Metallic);
     output.EmissionCoverage = float4(min(surface.Emission, float3(DEFERRED_MAX_HALF)), 1);
+    // Skin stores no emission (IsEmissionAllowed), so its emission channels carry the scattering distance.
+    if (surface.SkinScattering.w > .5)
+    {
+        output.EmissionCoverage = float4(surface.SkinScattering.xyz, float(DEFERRED_SKIN_COVERAGE));
+    }
     return output;
 }
 [shader("fragment")] GBufferOutput GBufferMain(in Varying input) { return PackDeferredMaterial(SampleMaterial(input)); }

@@ -104,8 +104,8 @@ constexpr usize LIT_BYTES = FORWARD_SURFACE_OFFSET;
 constexpr usize CLUSTER_GRID_OFFSET = CLUSTERED_GRID_OFFSET;
 constexpr usize CLUSTER_BYTES = CLUSTERED_SURFACE_OFFSET;
 constexpr usize AUTHORED_PARAMETER_BYTES = LUDUS_AUTHORED_PARAMETER_WORDS * sizeof(math::Vector4);
-// Authored, IrradianceSh, HairStrand and HairHighlights.
-constexpr usize AUTHORED_MEMBER_COUNT = 4;
+// Authored, IrradianceSh, HairStrand, HairHighlights and SkinScattering.
+constexpr usize AUTHORED_MEMBER_COUNT = 5;
 constexpr usize CLUSTER_LIGHT_WORD_COUNT = static_cast<usize>(CLUSTERED_LIGHT_COUNT) * FORWARD_LIGHT_WORDS;
 constexpr usize LIGHT_GRID_ROW_COUNT = CLUSTERED_GRID_ROWS;
 constexpr usize LEGACY_LIGHT_PARAMETER_BYTES = LIT_BYTES + sizeof(math::Vector4) + AUTHORED_PARAMETER_BYTES;
@@ -132,6 +132,7 @@ struct LitMaterialParameters final
     StaticArray<math::Vector4, internal::ENVIRONMENT_SH_COUNT> IrradianceSh{};
     math::Vector4 HairStrand{};
     math::Vector4 HairHighlights{};
+    math::Vector4 SkinScattering{};
 };
 static_assert(sizeof(LitMaterialParameters) == CLUSTER_BYTES + sizeof(math::Vector4) + AUTHORED_PARAMETER_BYTES);
 struct LitMaterialScratch final
@@ -718,6 +719,8 @@ struct Renderer::State final
         bool Lit = false;
         bool HasBake = false;
         bool Clustered = false;
+        /// A Skin material with a nonzero scattering distance, which the clustered deferred profile spreads.
+        bool IsSkin = false;
         bool ClusterViewCreated = false;
         rhi::TextureHandle ClusterTexture{};
         rhi::TextureViewHandle ClusterView{};
@@ -1933,6 +1936,13 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
         outBindings.HasMaterial = true;
         break;
     }
+    for (usize index = 0; index < view.DrawCount && outBindings.HasMaterial == true; ++index)
+    {
+        const State::Packet& packet = view.Packets[index];
+        outBindings.HasSkin =
+            outBindings.HasSkin == true || (packet.Pass == Layer::Opaque && packet.MaterialSlot != NO_MATERIAL &&
+                                            state.Materials[packet.MaterialSlot].IsSkin == true);
+    }
     return Status::Ready;
 }
 Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
@@ -2689,8 +2699,9 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
         const usize authoredOffset = (isClustered == true ? CLUSTER_BYTES : LIT_BYTES) + WORD_BYTES;
         constexpr usize HAIR_STRAND_WORD = 1 + internal::ENVIRONMENT_SH_COUNT;
         const StaticArray<const char*, AUTHORED_MEMBER_COUNT> authoredNames{
-            {"Authored", "IrradianceSh", "HairStrand", "HairHighlights"}};
-        const StaticArray<usize, AUTHORED_MEMBER_COUNT> authoredWords{{0, 1, HAIR_STRAND_WORD, HAIR_STRAND_WORD + 1}};
+            {"Authored", "IrradianceSh", "HairStrand", "HairHighlights", "SkinScattering"}};
+        const StaticArray<usize, AUTHORED_MEMBER_COUNT> authoredWords{
+            {0, 1, HAIR_STRAND_WORD, HAIR_STRAND_WORD + 1, HAIR_STRAND_WORD + LUDUS_HAIR_CARD_PARAMETER_WORDS}};
         for (usize index = 0; index < AUTHORED_MEMBER_COUNT; ++index)
         {
             const rhi::RasterUniformShape shape =
@@ -3200,6 +3211,8 @@ Status Renderer::CreateMaterialData(MaterialProgram program,
     ++s.Programs[m.ProgramSlot].References;
     m.Lit = lighting != nullptr;
     m.Clustered = clusters != nullptr;
+    m.IsSkin = lighting != nullptr && lighting->Scattering.Model == content::scene_format::MaterialModel::Skin &&
+               (lighting->Scattering.K[0] > 0 || lighting->Scattering.K[1] > 0 || lighting->Scattering.K[2] > 0);
     m.ParameterSize = size;
     if (lighting != nullptr)
     {
@@ -4864,7 +4877,9 @@ Status Renderer::createLitMaterial(MaterialProgram program,
         (description.Scattering.Model == content::scene_format::MaterialModel::Conductor &&
          description.Scattering.AlphaU != description.Scattering.AlphaV) ||
         (content::scene_format::RequiresZeroMetallic(description.Scattering.Model) == true &&
-         description.Metallic != 0))
+         description.Metallic != 0) ||
+        (content::scene_format::IsEmissionAllowed(description.Scattering.Model) == false &&
+         (description.Emission != math::Vector3{} || rhi::IsNull(description.EmissionMap) == false)))
     {
         return Status::InvalidDescription;
     }
@@ -5175,6 +5190,13 @@ Status Renderer::createLitMaterial(MaterialProgram program,
             MakeHairCardShading(content::scene_format::GetHairCardParameters(description.Scattering));
         parameters.HairStrand = {1, hair.StrandRadians, hair.PrimaryShiftRadians, hair.SecondaryShiftRadians};
         parameters.HairHighlights = {hair.PrimaryWeight, hair.SecondaryWeight, 0, 0};
+    }
+    if (description.Scattering.Model == content::scene_format::MaterialModel::Skin)
+    {
+        parameters.SkinScattering = {description.Scattering.K[0],
+                                     description.Scattering.K[1],
+                                     description.Scattering.K[2],
+                                     1};
     }
     if (description.EnvironmentOrNull != nullptr)
     {

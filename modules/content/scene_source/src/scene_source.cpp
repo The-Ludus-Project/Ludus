@@ -1131,6 +1131,12 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
                                      "skin is a dielectric; remove metallic",
                                      JsonPath(path, "metallic"));
         }
+        if (value.Get("emission").Valid() == true)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "skin does not emit; remove emission or use metallic_roughness",
+                                     JsonPath(path, "emission"));
+        }
         outMaterial.Model = SourceMaterialModel::Skin;
     }
     else

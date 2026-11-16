@@ -41,12 +41,22 @@ struct DeferredLightingOutput
     float4 Color : SV_Target0;
     float Depth : SV_Depth;
 };
-DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
+// A covered pixel's linear radiance and depth. With shouldSeparateSkin, a skin pixel's diffuse radiance, after the
+// atmosphere's transmittance, goes to Diffuse for the diffusion passes and Radiance keeps the rest; otherwise Diffuse
+// is zero and Radiance is the whole. Uncovered pixels are discarded.
+struct DeferredRadiance
+{
+    float3 Radiance;
+    float3 Diffuse;
+    float Depth;
+};
+DeferredRadiance ResolveDeferredRadiance(in DeferredVarying value, bool shouldSeparateSkin)
 {
     int2 positionPixel = int2(value.PositionClip.xy);
     float4 emissionCoverage = emissionCoverageTexture.Load(int3(positionPixel, 0));
-    DeferredLightingOutput output;
-    output.Color = float4(0, 0, 0, 1);
+    DeferredRadiance output;
+    output.Radiance = float3(0);
+    output.Diffuse = float3(0);
     output.Depth = deferredView.Options.y;
     if (emissionCoverage.w == 0)
     {
@@ -77,6 +87,8 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     input.IsDirectReference = deferredView.Options.x;
     float4 normalRoughness = normalRoughnessTexture.Load(int3(positionPixel, 0));
     float4 baseMetallic = baseMetallicTexture.Load(int3(positionPixel, 0));
+    // A skin pixel's emission channels hold its scattering distance; skin itself never emits (IsEmissionAllowed).
+    bool isSkin = emissionCoverage.w == float(DEFERRED_SKIN_COVERAGE);
     SurfaceSample surface;
     surface.BaseColor = float4(baseMetallic.rgb, 1);
     surface.NormalWorld = NormalizeOrZero(normalRoughness.xyz);
@@ -85,29 +97,72 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
                                      : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
     surface.Metallic = baseMetallic.w;
     surface.Roughness = normalRoughness.w;
-    surface.Emission = emissionCoverage.rgb;
+    surface.Emission = isSkin == true ? float3(0) : emissionCoverage.rgb;
     surface.Alpha = 1;
     // The G-buffer keeps no strand: a hair card resolves with its facing normal and the ordinary lobes.
     surface.StrandWorld = float3(0);
     input.NormalWorld = surface.NormalWorld;
-    output.Color = ShadeMaterial(surface, input);
-    output.Color.rgb += EvaluateRasterMeshLights(surface,
-                                                 input.PositionWorld,
-                                                 input.PositionUncertaintyWorld,
-                                                 uint(deferredView.TargetSizePixel.z),
-                                                 uint(deferredView.TargetSizePixel.w));
+    bool shouldSeparate = shouldSeparateSkin == true && isSkin == true;
+    float3 diffuse;
+    float3 meshLightDiffuse;
+    output.Radiance = ShadeMaterialLobes(surface, input, shouldSeparate, diffuse).rgb;
+    output.Radiance += EvaluateRasterMeshLightLobes(surface,
+                                                    input.PositionWorld,
+                                                    input.PositionUncertaintyWorld,
+                                                    uint(deferredView.TargetSizePixel.z),
+                                                    uint(deferredView.TargetSizePixel.w),
+                                                    shouldSeparate,
+                                                    meshLightDiffuse);
+    output.Diffuse = diffuse + meshLightDiffuse;
 #ifdef LUDUS_ATMOSPHERE_SURFACE
-    output.Color.rgb = ComposeAtmosphereSegment(output.Color.rgb, input.PositionWorld);
+    if (shouldSeparate == true)
+    {
+        // The segment is affine in the surface radiance: the spread diffuse light is attenuated like the rest, and
+        // the inscattered light is added once, to the unspread part.
+        float3 transmittance;
+        float3 inscattered;
+        IntegrateAtmosphereViewSegment(input.PositionWorld, transmittance, inscattered);
+        output.Radiance = output.Radiance * transmittance + inscattered;
+        output.Diffuse *= transmittance;
+    }
+    else
+    {
+        output.Radiance = ComposeAtmosphereSegment(output.Radiance, input.PositionWorld);
+    }
 #endif
+    output.Depth = depth;
+    return output;
+}
+DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
+{
+    DeferredRadiance radiance = ResolveDeferredRadiance(value, false);
+    DeferredLightingOutput output;
+    output.Color = float4(radiance.Radiance, 1);
     // An authored ToneMap after this pass is fused here, before the RGBA8 target quantizes the radiance.
     if (deferredView.Options.z > 0)
     {
         output.Color.rgb =
             MapSceneToDisplay(output.Color.rgb, deferredView.Options.z, uint(deferredView.Options.w + 0.5));
     }
-    output.Depth = depth;
+    output.Depth = radiance.Depth;
     return output;
 }
 [shader("fragment")] DeferredLightingOutput DeferredLightingMain(in DeferredVarying value) {
     return ResolveDeferredLighting(value);
 }
+#ifdef LUDUS_DEFERRED_SKIN
+// The resolve of a view with skin (renderer_skin_deferred.slang): linear radiance without the skin diffuse, and the
+// skin diffuse that renderer_skin_diffusion.slang spreads and adds back before tone mapping. Both are RGBA16F.
+struct DeferredSkinLightingOutput
+{
+    float4 Radiance : SV_Target0;
+    float4 Diffuse : SV_Target1;
+};
+[shader("fragment")] DeferredSkinLightingOutput DeferredSkinLightingMain(in DeferredVarying value) {
+    DeferredRadiance radiance = ResolveDeferredRadiance(value, true);
+    DeferredSkinLightingOutput output;
+    output.Radiance = float4(radiance.Radiance, 1);
+    output.Diffuse = float4(radiance.Diffuse, 1);
+    return output;
+}
+#endif
