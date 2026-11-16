@@ -2959,7 +2959,9 @@ TEST_CASE("Raster comparison reports a terminal failure for an infinite-far view
     INFO(capture.GetError().toStdString());
     CHECK(phase == ViewportRasterPhase::Failed);
     CHECK(capture.GetError().contains(QStringLiteral("failed to prepare for capture")) == true);
-    CHECK(capture.GetError().contains(QStringLiteral("The World extraction was rejected (Unsupported)")) == true);
+    // The rejection names the camera-depth cause and its repair, not only the extraction status.
+    CHECK(capture.GetError().contains(QStringLiteral("infinite far plane")) == true);
+    CHECK(capture.GetError().contains(QStringLiteral("Give the camera a finite far plane")) == true);
 }
 
 TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",
