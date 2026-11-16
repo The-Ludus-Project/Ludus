@@ -457,8 +457,8 @@ static const float SKY_VISIBILITY_NORMAL_OFFSET_TEXELS = 1.5;
 static const float SKY_SPECULAR_LOBE_EXPONENT_MAXIMUM = 8;
 // Guards the reciprocal map scale and lobe width against degenerate inputs.
 static const float SKY_VISIBILITY_SCALE_EPSILON = 1e-6;
-// Smallest summed lobe weight for a reflection vector above the horizon; below it the ground visibility applies.
-static const float SKY_SPECULAR_WEIGHT_EPSILON = 1e-4;
+// Rec. 709 luminance of linear RGB, which weights the reflection lobe's sky directions by brightness.
+static const float3 SKY_LUMINANCE_WEIGHTS = float3(0.2126, 0.7152, 0.0722);
 // First sky visibility region, or -1 when the scene has no sky visibility maps.
 int GetSkyVisibilityFirstRegion()
 {
@@ -927,18 +927,25 @@ SkyVisibility EvaluateSkyVisibility(in float3 normalWorld, in float3 reflectionW
         float visible = SampleSkyVisibilityRegion(region, positionWorld);
         visibleCosine += visible * cosine;
         totalCosine += cosine;
+#    ifdef LUDUS_ATMOSPHERE_SURFACE
+        float3 skyRadiance = SampleAtmosphereEnvironment(skyWorld);
+        sky.Radiance += skyRadiance * (visible * cosine);
+        // Weight the reflection lobe by the sky's own brightness, so a blocked bright direction removes its share:
+        // under an arcade the glowing sunset horizon is hidden while the dim sky overhead is open, and an
+        // unweighted lobe let the reflected horizon through.
+        float lobeRadiance = lobe * dot(skyRadiance, SKY_LUMINANCE_WEIGHTS);
+        visibleLobe += visible * lobeRadiance;
+        totalLobe += lobeRadiance;
+#    else
         visibleLobe += visible * lobe;
         totalLobe += lobe;
-#    ifdef LUDUS_ATMOSPHERE_SURFACE
-        if (visible > 0 && cosine > 0)
-            sky.Radiance += SampleAtmosphereEnvironment(skyWorld) * (visible * cosine);
 #    endif
     }
     // The cosine-weighted visibility of the sky directions in front of the surface also scales the light it receives
     // from below the horizon, which no map measures. A surface facing straight down sees no sky direction and none.
     sky.Ground = totalCosine > 0 ? visibleCosine / totalCosine : 0;
     sky.Irradiance = sky.Ground;
-    sky.Specular = totalLobe > SKY_SPECULAR_WEIGHT_EPSILON ? visibleLobe / totalLobe : sky.Ground;
+    sky.Specular = totalLobe > 0 ? visibleLobe / totalLobe : sky.Ground;
     return sky;
 }
 #endif
