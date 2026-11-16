@@ -2454,7 +2454,12 @@ realtime lighting.
 
 The native built-in **Lit** viewport computes a shared diffuse bake for the
 selected lights. It stores coarse per-triangle irradiance for the current
-placed geometry, including their bounced light. Environment lighting, other
+placed geometry, including their bounced light. Each triangle receives one
+irradiance value, evaluated at its centre, so a large surface made of few
+triangles shows flat facets instead of a smooth falloff. For example, a
+two-triangle floor quad bakes as two flat halves split along its diagonal.
+Subdivide large static surfaces near baked lights for a smoother result.
+Environment lighting, other
 lights, and specular highlights stay live. Edits that change bake inputs
 prepare a fresh result. The viewport keeps the last presented view until the
 current World can render in realtime, then swaps in the baked lighting when it

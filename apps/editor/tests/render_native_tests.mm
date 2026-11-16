@@ -2099,6 +2099,26 @@ constexpr float32 CHART_ROOM_HALF_WIDTH_METRES = 1.5F;
 // at device pixel ratio 1 (the hosted macOS runner) a floor point read 0.47 natively and 0.65 in the graph.
 constexpr float32 CHART_ROOM_FLOOR_HEIGHT_METRES = .25F;
 constexpr float32 CHART_LIGHT_INTENSITY = 3;
+// The always-on bake stores one irradiance per triangle, evaluated at its centroid, so a two-triangle quad bakes as
+// two flat halves split along its diagonal. Six cells per side give each surface 72 chart tiles over several chart
+// rows, a stepped falloff and distinct values at the measured points.
+constexpr uint32 CHART_ROOM_CELLS_PER_SIDE = 6;
+// Adds a quad as cellsPerSide x cellsPerSide sub-quads, each split like AddProbeQuad.
+void AddSubdividedQuad(ludus::resources::SceneMesh& inoutMesh, const ProbeQuad& quad, uint32 cellsPerSide)
+{
+    const float32 cellScale = 1.F / static_cast<float32>(cellsPerSide);
+    const math::Vector3 cellEdgeU = quad.EdgeU * cellScale;
+    const math::Vector3 cellEdgeV = quad.EdgeV * cellScale;
+    for (uint32 v = 0; v < cellsPerSide; ++v)
+    {
+        for (uint32 u = 0; u < cellsPerSide; ++u)
+        {
+            const math::Vector3 cornerWorld =
+                quad.CornerWorld + cellEdgeU * static_cast<float32>(u) + cellEdgeV * static_cast<float32>(v);
+            AddProbeQuad(inoutMesh, {cornerWorld, cellEdgeU, cellEdgeV});
+        }
+    }
+}
 // A grey floor and back wall facing each other across their corner, lit by one always-on point light. Their charts
 // carry each other's bounce, which realtime lighting omits, so a draw that ignores its chart reads differently.
 RenderScene MakeSurfaceChartScene()
@@ -2116,8 +2136,12 @@ RenderScene MakeSurfaceChartScene()
     constexpr float32 SPAN = 2 * CHART_ROOM_HALF_WIDTH_METRES;
     constexpr float32 FLOOR_HEIGHT = CHART_ROOM_FLOOR_HEIGHT_METRES;
     REQUIRE(data.Meshes.TryResize(OBJECT_COUNT) == true);
-    AddProbeQuad(data.Meshes[FLOOR], {{-HALF, FLOOR_HEIGHT, -HALF}, {0, 0, SPAN}, {SPAN, 0, 0}});
-    AddProbeQuad(data.Meshes[WALL], {{-HALF, FLOOR_HEIGHT, -HALF}, {SPAN, 0, 0}, {0, SPAN, 0}});
+    AddSubdividedQuad(data.Meshes[FLOOR],
+                      {{-HALF, FLOOR_HEIGHT, -HALF}, {0, 0, SPAN}, {SPAN, 0, 0}},
+                      CHART_ROOM_CELLS_PER_SIDE);
+    AddSubdividedQuad(data.Meshes[WALL],
+                      {{-HALF, FLOOR_HEIGHT, -HALF}, {SPAN, 0, 0}, {0, SPAN, 0}},
+                      CHART_ROOM_CELLS_PER_SIDE);
     REQUIRE(data.Materials.TryResize(1) == true);
     REQUIRE(data.Objects.TryResize(OBJECT_COUNT) == true);
     for (uint32 index = 0; index < OBJECT_COUNT; ++index)
@@ -2276,7 +2300,8 @@ TEST_CASE("Force raster's default graph draws static surfaces' baked charts like
     rr::ViewDescription realtimeView;
     CHECK(renderGraph({}, realtime, realtimeView) == 0);
 
-    // Points on the floor and the wall, nearer and farther from their shared corner.
+    // Points on the floor and the wall, nearer and farther from their shared corner. On each surface the first point
+    // lies far from the light and a later one near it.
     constexpr float32 HALF = CHART_ROOM_HALF_WIDTH_METRES;
     constexpr float32 FLOOR_HEIGHT = CHART_ROOM_FLOOR_HEIGHT_METRES;
     constexpr usize POINT_COUNT = 6;
@@ -2286,7 +2311,7 @@ TEST_CASE("Force raster's default graph draws static surfaces' baked charts like
         {.8F, FLOOR_HEIGHT, -.3F},
         {-.6F, .3F + FLOOR_HEIGHT, -HALF},
         {.2F, .8F + FLOOR_HEIGHT, -HALF},
-        {.9F, 1.4F + FLOOR_HEIGHT, -HALF},
+        {.8F, 1.4F + FLOOR_HEIGHT, -HALF},
     };
     // Both paths sample the same chart texels and evaluate the same diffuse and live specular terms; only display
     // quantization and half-float G-buffer storage differ.
@@ -2294,11 +2319,16 @@ TEST_CASE("Force raster's default graph draws static surfaces' baked charts like
     constexpr float32 RELATIVE_TOLERANCE = .03F;
     float32 largestRealtimeError = 0;
     QString table = QStringLiteral("x\ty\tz\tnative\tforced\trealtime\n");
-    for (const math::Vector3& pointWorld : pointsWorld)
+    StaticArray<float32, POINT_COUNT> nativeRed{};
+    StaticArray<float32, POINT_COUNT> realtimeRed{};
+    for (usize i = 0; i < POINT_COUNT; ++i)
     {
+        const math::Vector3& pointWorld = pointsWorld[i];
         const float32 native = MeasureSceneRed(lit, litView, pointWorld);
         const float32 forced = MeasureSceneRed(baked, bakedView, pointWorld);
         const float32 live = MeasureSceneRed(realtime, realtimeView, pointWorld);
+        nativeRed[i] = native;
+        realtimeRed[i] = live;
         CAPTURE(pointWorld.X, pointWorld.Y, pointWorld.Z, native, forced, live);
         CHECK(math::Abs(forced - native) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native);
         largestRealtimeError = math::Max(largestRealtimeError,
@@ -2314,6 +2344,17 @@ TEST_CASE("Force raster's default graph draws static surfaces' baked charts like
     WARN(table.toStdString());
     // Realtime lighting misses the bounce and the chart reconstruction, so this comparison discriminates.
     CHECK(largestRealtimeError > 1);
+    // The bake follows the light's falloff: a chart that drew a two-triangle quad's flat halves, or read another
+    // triangle's tile, would not separate these points as the realtime render does.
+    constexpr usize FLOOR_FAR = 0;
+    constexpr usize FLOOR_NEAR = 2;
+    constexpr usize WALL_FAR = 3;
+    constexpr usize WALL_NEAR = 4;
+    constexpr float32 FALLOFF_RATIO = 2;
+    CHECK(realtimeRed[FLOOR_NEAR] > FALLOFF_RATIO * realtimeRed[FLOOR_FAR]);
+    CHECK(realtimeRed[WALL_NEAR] > FALLOFF_RATIO * realtimeRed[WALL_FAR]);
+    CHECK(nativeRed[FLOOR_NEAR] > FALLOFF_RATIO * nativeRed[FLOOR_FAR]);
+    CHECK(nativeRed[WALL_NEAR] > FALLOFF_RATIO * nativeRed[WALL_FAR]);
     preview.Stop();
 }
 
