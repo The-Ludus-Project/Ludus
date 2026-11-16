@@ -312,11 +312,11 @@ Status RenderGraphDeferredProgram::PrepareSkin() noexcept
     {
         return Status::InvalidState;
     }
-#if defined(LUDUS_RENDERER_SKIN_SHADERS)
     static_assert(SKIN_STAGE_COUNT == static_cast<usize>(SkinStage::Count));
     if (mHasSkinResources == false)
     {
         mHasSkinResources = true;
+#if defined(LUDUS_RENDERER_SKIN_SHADERS)
         const StaticArray<rhi::RasterShaderDescription, SKIN_STAGE_COUNT> descriptions{
             {shaders::renderer_skin_deferred::Fragment(),
              shaders::renderer_atmosphere_skin_deferred::Fragment(),
@@ -342,6 +342,10 @@ Status RenderGraphDeferredProgram::PrepareSkin() noexcept
                                        mSkinKernel);
         }
         mSkinStatus = status;
+#else
+        // Builds without offline shader tools have no built-in skin shaders.
+        mSkinStatus = Status::Unsupported;
+#endif
     }
     if (IsAccepted(mSkinStatus) == false)
     {
@@ -407,9 +411,6 @@ Status RenderGraphDeferredProgram::PrepareSkin() noexcept
         }
     }
     return mSkinStatus = Status::Ready;
-#else
-    return mSkinStatus = Status::Unsupported;
-#endif
 }
 const RenderGraphDeferredProgram::SkinStageResources&
 RenderGraphDeferredProgram::getSkinStage(SkinStage stage) const noexcept

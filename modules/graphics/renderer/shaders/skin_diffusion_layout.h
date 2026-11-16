@@ -13,7 +13,7 @@
 // Strip-energy table: entries at half-widths 2^x, x evenly spaced over [LOG2_MIN, LOG2_MAX], in units of the
 // scattering distance.
 #define LUDUS_SKIN_ENERGY_ENTRIES 32
-#define LUDUS_SKIN_ENERGY_LOG2_MIN -8.0
+#define LUDUS_SKIN_ENERGY_LOG2_MIN (-8.0)
 #define LUDUS_SKIN_ENERGY_LOG2_MAX 7.0
 #define LUDUS_SKIN_ENERGY_WORDS (LUDUS_SKIN_ENERGY_ENTRIES / 4)
 // Word holding the side taps' offsets (x, y, z) in units of the dominant channel's scattering distance.
