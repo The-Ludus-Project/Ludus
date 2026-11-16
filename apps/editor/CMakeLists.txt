@@ -742,7 +742,7 @@ target_link_libraries(ludus_editor_render_graph_authoring
         Ludus::FoundationProfiling
     PRIVATE
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
-        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:Ludus::PhysicsCollision>")
+        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:ludus_first_person_walking>")
 
 # The content browser, its catalog and imports. The job scheduler (content_jobs.cpp)
 # differs between the native editor and the browser scheduler test.
@@ -935,8 +935,8 @@ target_link_libraries(ludus_editor_application
         Ludus::GameplayCamera
         Ludus::GameplayWorld
         Ludus::GraphicsRenderer
-        # Explore as Player sweeps its box against Static Collider meshes.
-        Ludus::PhysicsCollision
+        # Explore as Player uses the same walking controller as the built-in player.
+        ludus_first_person_walking
         Ludus::Resources
         Ludus::FoundationParsingJson
         Ludus::Platform
@@ -1727,7 +1727,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling
         Catch2::Catch2
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
-        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:Ludus::PhysicsCollision>")
+        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:ludus_first_person_walking>")
     ludus_apply_project_defaults(ludus_render_graph_configuration_tests)
     ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
     # The combined canvas suite exceeds 180 s on macOS, including ASan; keep every case
