@@ -25,6 +25,10 @@ inline constexpr int RECENT_PROJECT_ITEM_PADDING = 8;
 /// or while open, and the focus ring, so its menus read like the row's tool buttons). Toolbar separators are a short
 /// rule in the subtle border colour.
 ///
+/// Tab labels take the primary text colour on the selected or hovered tab and the secondary one elsewhere, whatever
+/// palette the platform gives the tab bar class (macOS gives it near-black text). Close buttons sit at the trailing
+/// edge on every platform and show on the selected and hovered tab only, or as a dot on a modified tab.
+///
 /// The controls the editor draws itself (push and tool buttons, check boxes, group boxes and the tabs of a tab widget)
 /// take their geometry from the common style, not the platform one, so they look and measure the same everywhere. On
 /// macOS the platform style would otherwise draw them natively: inset bevels that clip compact buttons, grey toggles,

@@ -18,6 +18,7 @@
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
 #include "internal/selection_outline_request.h"
+#include "internal/tab_modified.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_document.h"
@@ -1148,12 +1149,16 @@ TEST_CASE("World tab titles follow document changes without a render graph refre
     // The well owns the actual tab strip as well as the title used when reopening it.
     QTabWidget* group = window.findChild<QTabWidget*>(QStringLiteral("documentGroup"));
     REQUIRE(group != nullptr);
-    const auto checkTitle = [&well, world, group](const QString& expected) {
+    // The title stays the file name; unsaved changes show as the tab's dot and in its tooltip.
+    const auto checkTitle = [&well, world, group](const QString& expected, bool isModified = false) {
         CHECK(well.GetDocumentTitle(world) == expected);
+        CHECK(well.IsDocumentModified(world) == isModified);
         const ludus::foundation::int32 index = group->indexOf(world);
         REQUIRE(index >= 0);
         CHECK(group->tabText(index) == expected);
-        CHECK(group->tabToolTip(index) == expected);
+        CHECK(IsTabModified(*group->tabBar(), index) == isModified);
+        CHECK(group->tabToolTip(index) ==
+              (isModified == true ? expected + QStringLiteral(" (unsaved changes)") : expected));
     };
 
     REQUIRE(world->Open(firstPath));
@@ -1173,7 +1178,7 @@ TEST_CASE("World tab titles follow document changes without a render graph refre
     REQUIRE(addOrNull->isEnabled());
     addOrNull->trigger();
     REQUIRE(world->Dirty());
-    checkTitle(QStringLiteral("staircase2.world.json*"));
+    checkTitle(QStringLiteral("staircase2.world.json"), true);
     world->Undo();
     REQUIRE(world->Dirty() == false);
     checkTitle(QStringLiteral("staircase2.world.json"));
@@ -1184,7 +1189,7 @@ TEST_CASE("World tab titles follow document changes without a render graph refre
     REQUIRE(well.OpenDocument(world));
     checkTitle(QStringLiteral("starter.world.json"));
     REQUIRE(world->Create(QFileInfo(firstPath).dir().filePath(QStringLiteral("new.world.json"))));
-    checkTitle(QStringLiteral("new.world.json*"));
+    checkTitle(QStringLiteral("new.world.json"), true);
     REQUIRE(world->Save());
     checkTitle(QStringLiteral("new.world.json"));
     world->SetProject({}, 2);
