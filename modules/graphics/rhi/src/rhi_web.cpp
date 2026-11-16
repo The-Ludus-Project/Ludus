@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
@@ -135,6 +136,16 @@ bool RasterAllocationBytes(internal::RasterKind kind, usize slot, uint64& bytes)
 Backend Kind() noexcept
 {
     return gActive;
+}
+// R14a: WebGPU requests one adapter through the browser and WebGL 2 has none to list,
+// so the browser build publishes no catalog and rejects explicit adapter identities.
+AdapterStatus EnumerateAdapters(AdapterCatalog&) noexcept
+{
+    return AdapterStatus::Unsupported;
+}
+bool GetSelectedAdapter(AdapterInfo&) noexcept
+{
+    return false;
 }
 bool Supports(BackendSelection selection) noexcept
 {

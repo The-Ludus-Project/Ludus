@@ -1,6 +1,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/device.h>
 
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/device.h"
 #include "internal/gpu_scope_backend.h"
@@ -103,6 +104,42 @@ ResourceStatus ResourceResult(ResourceStatus result) noexcept
 {
     return State() == DeviceStatus::DeviceLost ? ResourceStatus::DeviceLost : result;
 }
+// R14a: an explicit adapter must be a catalog entry meeting its backend baseline,
+// checked before any backend request so failure publishes no device.
+bool IsRequestedAdapterAvailable(const AdapterIdentity& adapter) noexcept
+{
+    AdapterCatalog catalog;
+    if (GetAdapterCatalog(catalog) != AdapterStatus::Ready)
+    {
+        return false;
+    }
+    for (foundation::usize i = 0; i < catalog.Count; ++i)
+    {
+        if (catalog.Adapters[i].Identity == adapter)
+        {
+            return catalog.Adapters[i].HasBackendBaseline;
+        }
+    }
+    return false;
+}
+// The backend honours the request during selection; an imported native device or a
+// backend that ignored it is caught here after Ready.
+bool IsSelectedAdapterRequested(const AdapterIdentity& adapter) noexcept
+{
+    AdapterInfo selected;
+    return adapter.IsAutomatic() == true ||
+           (backend::GetSelectedAdapter(selected) == true && selected.Identity == adapter);
+}
+void ReportAdapterUnavailable(StartupInfo* failureOrNull) noexcept
+{
+    if (failureOrNull != nullptr)
+    {
+        *failureOrNull = {};
+        failureOrNull->SelectedBackend = backend::Kind();
+        failureOrNull->State = StartupState::Failed;
+        failureOrNull->Error = StartupError::AdapterUnavailable;
+    }
+}
 } // namespace
 DeviceStatus ValidateDeviceDescription(const DeviceDescription& description) noexcept
 {
@@ -118,6 +155,19 @@ DeviceStatus ValidateDeviceDescription(const DeviceDescription& description) noe
         return DeviceStatus::InvalidDescription;
     }
     const auto compiled = GetCompiledBackends();
+    if (description.Adapter.IsAutomatic() == false)
+    {
+        // R14a: only native backends publish a catalog; WebGPU exposes one requested adapter.
+        const bool isNative = compiled.Vulkan == true || compiled.Metal == true || compiled.HasDirect3D12 == true;
+        if (isNative == false)
+        {
+            return DeviceStatus::Unsupported;
+        }
+        if (description.Adapter.Api != backend::Kind())
+        {
+            return DeviceStatus::InvalidDescription;
+        }
+    }
     if (description.Required.BindlessTextureIndexing == true &&
         ((compiled.Metal == false && compiled.Vulkan == false) || description.Selection != BackendSelection::Auto))
     {
@@ -171,7 +221,13 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
     {
         return DeviceStatus::IdentityExhausted;
     }
+    if (description.Adapter.IsAutomatic() == false && IsRequestedAdapterAvailable(description.Adapter) == false)
+    {
+        ReportAdapterUnavailable(failure);
+        return DeviceStatus::Failed;
+    }
     internal::SetGpuTimingRequest(description.EnableGpuTiming);
+    internal::SetAdapterRequest(description.Adapter);
     internal::SetBindlessRequest(description.Required.BindlessTextureIndexing == true ||
                                      description.Preferred.BindlessTextureIndexing == true,
                                  description.Required.BindlessTextureIndexing);
@@ -204,6 +260,12 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
             *failure = GetStartup();
         }
         Shutdown();
+        return DeviceStatus::Failed;
+    }
+    if (result == StartStatus::Ready && IsSelectedAdapterRequested(description.Adapter) == false)
+    {
+        Shutdown();
+        ReportAdapterUnavailable(failure);
         return DeviceStatus::Failed;
     }
     if (result == StartStatus::Ready && description.Required.RayQueries && backend::RayLimits().InlineQueries == false)
@@ -287,6 +349,7 @@ DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
         info.Supported.FullscreenRaster = true;
         info.Enabled.FullscreenRaster = true;
         info.Profile = internal::CurrentDeviceProfile();
+        static_cast<void>(backend::GetSelectedAdapter(info.Adapter));
         info.Supported.BindlessTextureIndexing = info.Profile.Binding.HasBindlessTextureIndexing;
         info.Enabled.BindlessTextureIndexing = info.Supported.BindlessTextureIndexing;
         info.Supported.HasRuntimeTextureArrays = info.Profile.Binding.HasRuntimeTextureArrays;

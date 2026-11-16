@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
@@ -25,13 +26,46 @@ Backend Kind() noexcept
 {
     return ActiveKind;
 }
+/// R14a fake catalog: CatalogStatus is returned and Catalog copied on Ready.
+AdapterStatus CatalogStatus = AdapterStatus::Unsupported;
+AdapterCatalog Catalog;
+/// Adapter reported for the live session; HasSelectedAdapter false reports none.
+bool HasSelectedAdapter = false;
+AdapterInfo SelectedAdapter;
+/// Identity the facade requested when Start was last called; automatic when none.
+AdapterIdentity StartedAdapter;
+/// Complete startup inside Start, as the synchronous native backends do.
+bool ShouldCompleteDuringStart = false;
+AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
+{
+    if (CatalogStatus == AdapterStatus::Ready)
+    {
+        outCatalog = Catalog;
+    }
+    return CatalogStatus;
+}
+bool GetSelectedAdapter(AdapterInfo& outAdapter) noexcept
+{
+    if (HasSelectedAdapter == true)
+    {
+        outAdapter = SelectedAdapter;
+    }
+    return HasSelectedAdapter;
+}
 bool Supports(BackendSelection) noexcept
 {
     return SelectionSupported;
 }
 StartupError Start(const ApplicationInfo&, const WindowInfo&, uint32 token, BackendSelection) noexcept
 {
+    const AdapterIdentity* requestedOrNull = internal::GetRequestedAdapterOrNull();
+    StartedAdapter = requestedOrNull != nullptr ? *requestedOrNull : AdapterIdentity{};
     PendingToken = token;
+    if (ShouldCompleteDuringStart == true && ImmediateError == StartupError::None)
+    {
+        // Native backends publish Ready synchronously from Start.
+        internal::Complete(token, StartupError::None, { .MaxFrameDimension2D = 4096, .MaxUniformBufferSize = 16384 });
+    }
     return ImmediateError;
 }
 void Shutdown() noexcept

@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/gpu_scope_backend.h"
 #include "internal/hosted_metal.h"
@@ -15,6 +16,7 @@
 #    include "internal/readback.h"
 #endif
 
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
@@ -240,10 +242,92 @@ FrameStatus FrameFailure() noexcept
     }
     return FrameStatus::Failed;
 }
+// R14a adapter catalog. Thanks to Apple, "MTLCopyAllDevices()" and "registryID",
+// Metal documentation, for enumerating adapters and their stable identities:
+// https://developer.apple.com/documentation/metal/mtlcopyalldevices()
+// https://developer.apple.com/documentation/metal/mtldevice/registryid
+// The raw edge claims follow Apple's "Metal Feature Set Tables": Mac2 and Apple3
+// and later support 16384-texel 2D textures, earlier Apple families 8192.
+constexpr uint32 EARLY_APPLE_TEXTURE_DIMENSION = 8192;
+bool MeetsMetalBaseline(id<MTLDevice> device) noexcept
+{
+    return [device supportsFamily:MTLGPUFamilyMac2] == true || [device supportsFamily:MTLGPUFamilyApple4] == true;
+}
+AdapterIdentity GetMetalIdentity(id<MTLDevice> device) noexcept
+{
+    AdapterIdentity identity{ .Api = Backend::Metal };
+    const bool isWritten = TryWriteLittleEndian<uint64>(device.registryID, {identity.Bytes.GetData(), sizeof(uint64)});
+    LUDUS_REQUIRE(isWritten == true);
+    return identity;
+}
+void DescribeMetalAdapter(id<MTLDevice> device, AdapterInfo& outAdapter) noexcept
+{
+    outAdapter = {};
+    outAdapter.Identity = GetMetalIdentity(device);
+    const char* nameOrNull = device.name.UTF8String;
+    if (nameOrNull != nullptr)
+    {
+        internal::AssignAdapterName(nameOrNull, outAdapter.Name);
+    }
+    outAdapter.Kind =
+        device.hasUnifiedMemory == YES || device.isLowPower == YES ? AdapterKind::Integrated : AdapterKind::Discrete;
+    outAdapter.LocalMemoryBytes = device.recommendedMaxWorkingSetSize;
+    outAdapter.MaxTextureDimension2D =
+        [device supportsFamily:MTLGPUFamilyMac2] == true || [device supportsFamily:MTLGPUFamilyApple3] == true
+            ? MAX_DIMENSION
+            : EARLY_APPLE_TEXTURE_DIMENSION;
+    outAdapter.HasBackendBaseline = MeetsMetalBaseline(device);
+}
+/// The requested catalog adapter, or nil when no system device has its identity.
+id<MTLDevice> FindMetalDeviceOrNil(const AdapterIdentity& adapter) noexcept
+{
+    NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
+    for (id<MTLDevice> device in devices)
+    {
+        if (GetMetalIdentity(device) == adapter)
+        {
+            return device;
+        }
+    }
+    return nil;
+}
 } // namespace
 Backend Kind() noexcept
 {
     return Backend::Metal;
+}
+AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
+{
+    @autoreleasepool
+    {
+        NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
+        if (devices == nil)
+        {
+            return AdapterStatus::Failed;
+        }
+        outCatalog = { .Api = Backend::Metal };
+        for (id<MTLDevice> device in devices)
+        {
+            AdapterInfo* entryOrNull = internal::ReserveCatalogEntryOrNull(outCatalog);
+            if (entryOrNull != nullptr)
+            {
+                DescribeMetalAdapter(device, *entryOrNull);
+            }
+        }
+        return AdapterStatus::Ready;
+    }
+}
+bool GetSelectedAdapter(AdapterInfo& outAdapter) noexcept
+{
+    @autoreleasepool
+    {
+        if (gDevice == nil)
+        {
+            return false;
+        }
+        DescribeMetalAdapter(gDevice, outAdapter);
+        return true;
+    }
 }
 bool Supports(BackendSelection selection) noexcept
 {
@@ -300,13 +384,14 @@ bool Initialize(const ApplicationInfo&) noexcept
         }
         else
         {
-            gDevice = MTLCreateSystemDefaultDevice();
+            const AdapterIdentity* requestedOrNull = internal::GetRequestedAdapterOrNull();
+            gDevice =
+                requestedOrNull != nullptr ? FindMetalDeviceOrNil(*requestedOrNull) : MTLCreateSystemDefaultDevice();
         }
         // Thanks to Apple's "Metal Feature Set Tables" (resource limits),
         // https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf:
         // Mac2 / Apple4 and later guarantee the conservative 16384 texture limit.
-        if (gDevice == nil || ([gDevice supportsFamily:MTLGPUFamilyMac2] == false &&
-                               [gDevice supportsFamily:MTLGPUFamilyApple4] == false))
+        if (gDevice == nil || MeetsMetalBaseline(gDevice) == false)
         {
             gDevice = nil;
             return false;

@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/gpu_scope_backend.h"
 #include "internal/hosted_adapter.h"
@@ -613,10 +614,161 @@ ResourceStatus ResourceFailure() noexcept
     }
     return ResourceStatus::Failed;
 }
+// R14a adapter catalog. Thanks to Khronos Group, Vulkan Specification,
+// "VkPhysicalDeviceIDProperties" and "VkPhysicalDeviceProperties", for the stable
+// device UUID and the raw adapter properties reported here:
+// https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceIDProperties.html
+// https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceProperties.html
+static_assert(VK_UUID_SIZE == ADAPTER_IDENTITY_BYTES);
+AdapterIdentity GetVulkanIdentity(VkPhysicalDevice device) noexcept
+{
+    AdapterIdentity identity{ .Api = Backend::Vulkan };
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device, &properties);
+    // Vulkan 1.0 adapters keep a zero identity: they cannot be selected explicitly.
+    if (properties.apiVersion >= VK_API_VERSION_1_1 && vkGetPhysicalDeviceProperties2 != nullptr)
+    {
+        platform::HostedAdapterIdentity uuids;
+        ReadHostedAdapterIdentity(device, uuids);
+        std::memcpy(identity.Bytes.GetData(), uuids.DeviceUuid.GetData(), ADAPTER_IDENTITY_BYTES);
+    }
+    return identity;
+}
+AdapterKind GetVulkanKind(VkPhysicalDeviceType type) noexcept
+{
+    switch (type)
+    {
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+            return AdapterKind::Integrated;
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+            return AdapterKind::Discrete;
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+            return AdapterKind::Virtual;
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:
+            return AdapterKind::Software;
+        default:
+            return AdapterKind::Unknown;
+    }
+}
+bool HasGraphicsQueue(VkPhysicalDevice device) noexcept
+{
+    constexpr uint32 MAX_QUEUE_FAMILIES = 32;
+    uint32 count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
+    count = count < MAX_QUEUE_FAMILIES ? count : MAX_QUEUE_FAMILIES;
+    StaticArray<VkQueueFamilyProperties, MAX_QUEUE_FAMILIES> families{};
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &count, families.GetData());
+    for (uint32 i = 0; i < count; ++i)
+    {
+        if (families[i].queueCount != 0 && (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+void DescribeVulkanAdapter(VkPhysicalDevice device, AdapterInfo& outAdapter) noexcept
+{
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device, &properties);
+    outAdapter = {};
+    outAdapter.Identity = GetVulkanIdentity(device);
+    internal::AssignAdapterName(
+        {properties.deviceName, strnlen(properties.deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE)},
+        outAdapter.Name);
+    outAdapter.Kind = GetVulkanKind(properties.deviceType);
+    outAdapter.VendorId = properties.vendorID;
+    outAdapter.DeviceId = properties.deviceID;
+    outAdapter.MaxTextureDimension2D = properties.limits.maxImageDimension2D;
+    VkPhysicalDeviceMemoryProperties memory{};
+    vkGetPhysicalDeviceMemoryProperties(device, &memory);
+    for (uint32 i = 0; i < memory.memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; ++i)
+    {
+        if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
+        {
+            outAdapter.LocalMemoryBytes += memory.memoryHeaps[i].size;
+        }
+    }
+    outAdapter.HasBackendBaseline = outAdapter.Identity.IsAutomatic() == false && HasGraphicsQueue(device) == true;
+}
+AdapterStatus ListAdapters(VkInstance instance, AdapterCatalog& outCatalog) noexcept
+{
+    uint32 count = 0;
+    if (vkEnumeratePhysicalDevices(instance, &count, nullptr) != VK_SUCCESS)
+    {
+        return AdapterStatus::Failed;
+    }
+    StaticArray<VkPhysicalDevice, MAX_PHYSICAL_DEVICES> devices{};
+    uint32 listed = count < MAX_PHYSICAL_DEVICES ? count : MAX_PHYSICAL_DEVICES;
+    const VkResult result = vkEnumeratePhysicalDevices(instance, &listed, devices.GetData());
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE)
+    {
+        return AdapterStatus::Failed;
+    }
+    outCatalog = { .Api = Backend::Vulkan };
+    for (uint32 i = 0; i < listed; ++i)
+    {
+        AdapterInfo* entryOrNull = internal::ReserveCatalogEntryOrNull(outCatalog);
+        if (entryOrNull != nullptr)
+        {
+            DescribeVulkanAdapter(devices[i], *entryOrNull);
+        }
+    }
+    outCatalog.ReportedCount = count > outCatalog.ReportedCount ? count : outCatalog.ReportedCount;
+    return AdapterStatus::Ready;
+}
 } // namespace
 Backend Kind() noexcept
 {
     return Backend::Vulkan;
+}
+AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
+{
+    if (gInstance != VK_NULL_HANDLE)
+    {
+        return ListAdapters(gInstance, outCatalog);
+    }
+    // Without a session, list through a temporary instance and unload it again, so the
+    // next Initialize loads the loader and its instance functions from a clean state.
+    if (volkInitialize() != VK_SUCCESS)
+    {
+        return AdapterStatus::Failed;
+    }
+    uint32 loaderVersion = VK_API_VERSION_1_0;
+    if (vkEnumerateInstanceVersion != nullptr)
+    {
+        static_cast<void>(vkEnumerateInstanceVersion(&loaderVersion));
+    }
+    const VkApplicationInfo application
+    {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .apiVersion = loaderVersion >= VK_API_VERSION_1_1 ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0,
+    };
+    const VkInstanceCreateInfo info
+    {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &application,
+    };
+    VkInstance instance = VK_NULL_HANDLE;
+    if (vkCreateInstance(&info, nullptr, &instance) != VK_SUCCESS)
+    {
+        volkFinalize();
+        return AdapterStatus::Failed;
+    }
+    volkLoadInstance(instance);
+    const AdapterStatus status = ListAdapters(instance, outCatalog);
+    vkDestroyInstance(instance, nullptr);
+    volkFinalize();
+    return status;
+}
+bool GetSelectedAdapter(AdapterInfo& outAdapter) noexcept
+{
+    if (gPhysical == VK_NULL_HANDLE)
+    {
+        return false;
+    }
+    DescribeVulkanAdapter(gPhysical, outAdapter);
+    return true;
 }
 bool Supports(BackendSelection selection) noexcept
 {
@@ -1128,9 +1280,15 @@ bool ConnectWindow(const WindowInfo& window) noexcept
     {
         LUDUS_LOG_WARN(LOG_RHI, "No Vulkan adapter matches the hosting editor's; it will refuse this game's images");
     }
+    // R14a: an explicit catalog identity restricts selection to that adapter.
+    const AdapterIdentity* requestedOrNull = internal::GetRequestedAdapterOrNull();
     for (usize position = 0; position < count; ++position)
     {
         const usize i = order[position];
+        if (requestedOrNull != nullptr && GetVulkanIdentity(devices[i]) != *requestedOrNull)
+        {
+            continue;
+        }
         uint32 families = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &families, nullptr);
         if (families > 32)

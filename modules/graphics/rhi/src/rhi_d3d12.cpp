@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/d3d12_diagnostics.h"
 #include "internal/d3d12_raster.h"
@@ -17,6 +18,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/platform/native_window.h>
 
@@ -352,6 +354,95 @@ void EnableDebugLayer() noexcept
     return true;
 }
 
+// R14a adapter catalog. Thanks to Microsoft, DXGI API reference,
+// "IDXGIFactory1::EnumAdapters1" and "DXGI_ADAPTER_DESC1", and Direct3D 12 API
+// reference, "D3D12CreateDevice", whose null device output tests support without
+// creating a device:
+// https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgifactory1-enumadapters1
+// https://learn.microsoft.com/windows/win32/api/dxgi/ns-dxgi-dxgi_adapter_desc1
+// https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-d3d12createdevice
+static_assert(platform::HOSTED_ADAPTER_UUID_BYTES == ADAPTER_IDENTITY_BYTES);
+[[nodiscard]] AdapterIdentity GetD3D12Identity(LUID adapter) noexcept
+{
+    AdapterIdentity identity{ .Api = Backend::Direct3D12 };
+    const platform::HostedAdapterIdentity encoded = EncodeHostedAdapter(adapter);
+    std::memcpy(identity.Bytes.GetData(), encoded.DeviceUuid.GetData(), ADAPTER_IDENTITY_BYTES);
+    return identity;
+}
+[[nodiscard]] LUID GetD3D12Luid(const AdapterIdentity& identity) noexcept
+{
+    platform::HostedAdapterIdentity encoded;
+    std::memcpy(encoded.DeviceUuid.GetData(), identity.Bytes.GetData(), ADAPTER_IDENTITY_BYTES);
+    return DecodeHostedAdapter(encoded);
+}
+[[nodiscard]] bool SupportsMinimumFeatureLevel(IDXGIAdapter1* adapter) noexcept
+{
+    ID3D12Device* probeOrNull = nullptr;
+    return SUCCEEDED(D3D12CreateDevice(adapter, MINIMUM_FEATURE_LEVEL, GetInterfaceId(probeOrNull), nullptr)) == true;
+}
+void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
+                          bool hasBackendBaseline,
+                          AdapterInfo& outAdapter) noexcept
+{
+    outAdapter = {};
+    outAdapter.Identity = GetD3D12Identity(description.AdapterLuid);
+    // DXGI names hold 128 UTF-16 units; UTF-8 needs at most three bytes for each.
+    constexpr usize ADAPTER_NAME_UNITS = sizeof(description.Description) / sizeof(description.Description[0]);
+    StaticArray<char, ADAPTER_NAME_UNITS * MAX_UTF8_BYTES_PER_UTF16_UNIT + 1> name{};
+    const int32 bytes = WideCharToMultiByte(CP_UTF8,
+                                            0,
+                                            description.Description,
+                                            -1,
+                                            name.GetData(),
+                                            static_cast<int32>(name.GetSize()),
+                                            nullptr,
+                                            nullptr);
+    if (bytes > 1)
+    {
+        // The converted length counts the terminating zero.
+        internal::AssignAdapterName({name.GetData(), static_cast<usize>(bytes - 1)}, outAdapter.Name);
+    }
+    outAdapter.Kind =
+        (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ? AdapterKind::Software : AdapterKind::Unknown;
+    outAdapter.VendorId = description.VendorId;
+    outAdapter.DeviceId = description.DeviceId;
+    outAdapter.LocalMemoryBytes = description.DedicatedVideoMemory;
+    outAdapter.MaxTextureDimension2D = hasBackendBaseline == true ? D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION : 0;
+    outAdapter.HasBackendBaseline = hasBackendBaseline;
+}
+/// Start on the explicitly requested catalog adapter, honouring the test adapter class.
+[[nodiscard]] bool SelectRequestedAdapter(const AdapterIdentity& requested,
+                                          const platform::HostedSurfaceChannel* channelOrNull,
+                                          bool shouldUseWarp,
+                                          bool isHardwareRequired) noexcept
+{
+    platform::HostedAdapterIdentity preferred;
+    if (channelOrNull != nullptr && channelOrNull->TryGetConsumerAdapter(preferred) == true &&
+        GetD3D12Identity(DecodeHostedAdapter(preferred)) != requested)
+    {
+        LUDUS_LOG_WARN(LOG_RHI, "Direct3D 12: the requested adapter differs from the hosting editor's");
+    }
+    IDXGIAdapter1* adapterOrNull = nullptr;
+    const HRESULT found = gFactory->EnumAdapterByLuid(GetD3D12Luid(requested),
+                                                      GetInterfaceId(adapterOrNull),
+                                                      GetInterfaceOutput(adapterOrNull));
+    ComOwner<IDXGIAdapter1> adapter = Adopt(adapterOrNull);
+    DXGI_ADAPTER_DESC1 description{};
+    if (FAILED(found) == true || adapter.Get() == nullptr || FAILED(adapter->GetDesc1(&description)) == true)
+    {
+        return false;
+    }
+    const bool isSoftware = (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+    if ((shouldUseWarp == true && isSoftware == false) || (isHardwareRequired == true && isSoftware == true) ||
+        CreateDeviceOn(adapter.Get()) == false)
+    {
+        return false;
+    }
+    gAdapter = Move(adapter);
+    isSoftwareAdapter = isSoftware;
+    return true;
+}
+
 /// Test builds can require one adapter class for reproducible qualification.
 [[nodiscard]] bool IsTestAdapterRequired(const wchar_t* variable) noexcept
 {
@@ -372,6 +463,11 @@ void EnableDebugLayer() noexcept
     {
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: set only one test adapter requirement");
         return false;
+    }
+    const AdapterIdentity* requestedOrNull = internal::GetRequestedAdapterOrNull();
+    if (requestedOrNull != nullptr)
+    {
+        return SelectRequestedAdapter(*requestedOrNull, channelOrNull, shouldUseWarp, isHardwareRequired);
     }
     platform::HostedAdapterIdentity preferred;
     if (channelOrNull != nullptr && channelOrNull->TryGetConsumerAdapter(preferred) == true)
@@ -899,6 +995,57 @@ bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept
 Backend Kind() noexcept
 {
     return Backend::Direct3D12;
+}
+AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
+{
+    // Without a session, list through a temporary factory released on return.
+    ComOwner<IDXGIFactory6> temporary;
+    IDXGIFactory6* factory = gFactory.Get();
+    if (factory == nullptr)
+    {
+        IDXGIFactory6* createdOrNull = nullptr;
+        if (FAILED(CreateDXGIFactory2(0, GetInterfaceId(createdOrNull), GetInterfaceOutput(createdOrNull))) == true ||
+            createdOrNull == nullptr)
+        {
+            return AdapterStatus::Failed;
+        }
+        temporary = Adopt(createdOrNull);
+        factory = temporary.Get();
+    }
+    AdapterCatalog catalog{ .Api = Backend::Direct3D12 };
+    for (UINT index = 0;; ++index)
+    {
+        IDXGIAdapter1* adapterOrNull = nullptr;
+        const HRESULT found = factory->EnumAdapters1(index, &adapterOrNull);
+        ComOwner<IDXGIAdapter1> adapter = Adopt(adapterOrNull);
+        if (found == DXGI_ERROR_NOT_FOUND)
+        {
+            break;
+        }
+        DXGI_ADAPTER_DESC1 description{};
+        if (FAILED(found) == true || adapter.Get() == nullptr || FAILED(adapter->GetDesc1(&description)) == true)
+        {
+            return AdapterStatus::Failed;
+        }
+        AdapterInfo* entryOrNull = internal::ReserveCatalogEntryOrNull(catalog);
+        if (entryOrNull != nullptr)
+        {
+            DescribeD3D12Adapter(description, SupportsMinimumFeatureLevel(adapter.Get()), *entryOrNull);
+        }
+    }
+    outCatalog = catalog;
+    return AdapterStatus::Ready;
+}
+bool GetSelectedAdapter(AdapterInfo& outAdapter) noexcept
+{
+    DXGI_ADAPTER_DESC1 description{};
+    if (gAdapter.Get() == nullptr || FAILED(gAdapter->GetDesc1(&description)) == true)
+    {
+        return false;
+    }
+    // The live device already proves the minimum feature level.
+    DescribeD3D12Adapter(description, true, outAdapter);
+    return true;
 }
 bool Supports(BackendSelection selection) noexcept
 {

@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
+#include <ludus/graphics/rhi/adapter.h>
 #include <ludus/graphics/rhi/profile.h>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
@@ -87,6 +88,11 @@ struct DeviceDescription final
 {
     /// Native accepts Auto; browser supports Auto or a forced browser backend.
     BackendSelection Selection = BackendSelection::Auto;
+    /// Native adapter to start on, from GetAdapterCatalog (R14a). All-zero bytes keep the
+    /// automatic choice. A foreign backend returns InvalidDescription, browser builds
+    /// Unsupported, and an identity absent from the catalog or below its backend baseline
+    /// fails with StartupError::AdapterUnavailable before any device is published.
+    AdapterIdentity Adapter{};
     /// Minimum effective fullscreen limits; checked on each backend attempt.
     DeviceRequirements Limits;
     /// Required workloads; unimplemented operations reject before startup, while the
@@ -148,6 +154,9 @@ struct DeviceInfo final
     DeviceFeatures Enabled;
     /// Immutable enabled limit/format snapshot; zero before Ready and after failure/loss.
     DeviceProfile Profile;
+    /// Raw catalog entry of the adapter this native session runs on, separate from the
+    /// enabled Profile; populated only while Ready, and zero on browser backends.
+    AdapterInfo Adapter{};
     /// Preferred workloads absent from Enabled; populated only while Ready.
     DeviceFeatures UnmetPreferences;
     /// First unmet preferred profile constraint; populated only while Ready.

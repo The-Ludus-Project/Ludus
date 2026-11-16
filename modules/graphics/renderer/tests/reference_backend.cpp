@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
@@ -20,6 +21,15 @@ Backend Kind() noexcept
 bool Supports(BackendSelection) noexcept
 {
     return SelectionSupported;
+}
+// R14a: the renderer's reference backend publishes no adapter catalog.
+AdapterStatus EnumerateAdapters(AdapterCatalog&) noexcept
+{
+    return AdapterStatus::Unsupported;
+}
+bool GetSelectedAdapter(AdapterInfo&) noexcept
+{
+    return false;
 }
 StartupError Start(const ApplicationInfo&, const WindowInfo&, uint32 token, BackendSelection) noexcept
 {

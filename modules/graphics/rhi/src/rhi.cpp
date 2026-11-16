@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/dxil_container.h"
 #include "internal/graphics_capture.h"
@@ -447,6 +448,7 @@ void Shutdown() noexcept
     gRayProfileRequest = false;
     internal::SetBindlessRequest(false);
     internal::SetRuntimeTextureArrayRequest(false);
+    internal::SetAdapterRequest({});
     gFallback = nullptr;
     gToken = 0;
     if (internal::DeferNativeInteropShutdown())

@@ -1,6 +1,8 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/graphics/rhi/adapter.h>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -412,4 +414,72 @@ TEST_CASE("Metal labels named textures and balances nested scopes across submiss
     REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
     rhi::Shutdown();
     CHECK(source.Retained == source.Released);
+}
+
+TEST_CASE("R14a Metal lists system adapters and starts on the selected one", "[rhi][macos][gpu][adapter]")
+{
+    Guard guard;
+    rhi::AdapterCatalog catalog;
+    REQUIRE(rhi::GetAdapterCatalog(catalog) == rhi::AdapterStatus::Ready);
+    CHECK(catalog.Api == rhi::Backend::Metal);
+    CHECK(catalog.ReportedCount >= catalog.Count);
+    if (catalog.Count == 0)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    @autoreleasepool
+    {
+        // The system default device must be in the catalog under its registry ID.
+        id<MTLDevice> systemDevice = MTLCreateSystemDefaultDevice();
+        REQUIRE(systemDevice != nil);
+        bool hasSystemDevice = false;
+        for (usize i = 0; i < catalog.Count; ++i)
+        {
+            uint64 registryId = 0;
+            std::memcpy(&registryId, catalog.Adapters[i].Identity.Bytes.GetData(), sizeof(registryId));
+            hasSystemDevice = hasSystemDevice || registryId == systemDevice.registryID;
+            CHECK(catalog.Adapters[i].Identity.Api == rhi::Backend::Metal);
+            CHECK(catalog.Adapters[i].Name.IsEmpty() == false);
+        }
+        CHECK(hasSystemDevice);
+    }
+    usize selected = catalog.Count;
+    for (usize i = 0; i < catalog.Count && selected == catalog.Count; ++i)
+    {
+        selected = catalog.Adapters[i].HasBackendBaseline == true ? i : selected;
+    }
+    if (selected == catalog.Count)
+    {
+        SKIP("No Metal adapter meets the backend baseline");
+    }
+    const rhi::AdapterInfo& adapter = catalog.Adapters[selected];
+    rhi::DeviceDescription description;
+    description.Adapter = adapter.Identity;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    REQUIRE(rhi::CreateDevice({}, { .Width = 17, .Height = 9 }, description, device, surface) ==
+            rhi::DeviceStatus::Ready);
+    rhi::DeviceInfo info;
+    REQUIRE(rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.Adapter.Identity == adapter.Identity);
+    CHECK(info.Adapter.Name.GetView() == adapter.Name.GetView());
+    // Enabled limits come from the negotiated profile, never above the raw claim.
+    CHECK(info.Startup.Capabilities.MaxFrameDimension2D <= adapter.MaxTextureDimension2D);
+    // The catalog stays available, unchanged, while a session is live.
+    rhi::AdapterCatalog during;
+    REQUIRE(rhi::GetAdapterCatalog(during) == rhi::AdapterStatus::Ready);
+    CHECK(during.Count == catalog.Count);
+    CHECK(during.Adapters[selected].Identity == adapter.Identity);
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+
+    // An identity absent from the catalog publishes no device.
+    description.Adapter.Bytes.Fill(0xFF);
+    rhi::StartupInfo failure;
+    surface = {};
+    CHECK(rhi::CreateDevice({}, { .Width = 17, .Height = 9 }, description, device, surface, &failure) ==
+          rhi::DeviceStatus::Failed);
+    CHECK(failure.Error == rhi::StartupError::AdapterUnavailable);
+    CHECK(device == rhi::DeviceHandle{});
+    description.Adapter.Api = rhi::Backend::Vulkan;
+    CHECK(rhi::ValidateDeviceDescription(description) == rhi::DeviceStatus::InvalidDescription);
 }
