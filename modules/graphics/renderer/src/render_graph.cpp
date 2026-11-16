@@ -1302,6 +1302,8 @@ struct RenderGraph::State final
     StaticArray<RenderGraphCoverageRecord, MAX_COVERAGE> Coverage{};
     usize CoverageCount = 0;
     RenderGraphReport Report{};
+    /// Cause of the latest Update rejection; separate from Report, which preflight rejection preserves.
+    RenderGraphSceneRejection LastRejection = RenderGraphSceneRejection::None;
     bool IsReady = false;
     bool HasOpenFrame = false;
     bool HasExternalRecording = false;
@@ -3263,6 +3265,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         return Status::InvalidState;
     }
     State& state = *mState;
+    state.LastRejection = RenderGraphSceneRejection::None;
     if (state.HasExternalRecording == true)
     {
         return Status::InvalidState;
@@ -3295,12 +3298,14 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         }
         if (camera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
         {
+            state.LastRejection = RenderGraphSceneRejection::Atmosphere;
             return Status::Unsupported;
         }
         // The conventional rewrite below needs a finite far plane, and graph overlays bound a finite frustum.
         if ((camera.Depth == DepthConvention::ReverseZ && camera.InfiniteFar == true) ||
             (camera.Depth != DepthConvention::Conventional && camera.Depth != DepthConvention::ReverseZ))
         {
+            state.LastRejection = RenderGraphSceneRejection::CameraDepth;
             return Status::Unsupported;
         }
     }
@@ -3460,6 +3465,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     if (state.Report.Conflicting != 0 ||
         (state.Report.Unsupported != 0 && policy == RenderGraphCoveragePolicy::RejectIncomplete))
     {
+        state.LastRejection = RenderGraphSceneRejection::Coverage;
         return Status::Unsupported;
     }
     State::Scene* allocationOrNull = new (std::nothrow) State::Scene;
@@ -3530,6 +3536,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             // mask combination before publication instead of sealing cut-out holes.
             if (state.Passes[pass].Program == format::Technique::DepthOnly && hasMaskedMaterials == true)
             {
+                state.LastRejection = RenderGraphSceneRejection::MaskedDepthPrepass;
                 return Status::Unsupported;
             }
         }
@@ -3920,6 +3927,10 @@ BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const n
         return {};
     }
     return {mState->Coverage.GetData(), mState->CoverageCount};
+}
+RenderGraphSceneRejection RenderGraph::GetLastRejection() const noexcept
+{
+    return mState.Get() != nullptr ? mState->LastRejection : RenderGraphSceneRejection::None;
 }
 RenderGraphReport RenderGraph::GetReport() const noexcept
 {

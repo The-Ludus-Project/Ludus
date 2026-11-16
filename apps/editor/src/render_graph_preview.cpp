@@ -23,6 +23,7 @@
 #include <QFileInfo>
 #include <QLocale>
 #include <QSize>
+#include <QStringList>
 
 #include <new>
 
@@ -137,6 +138,73 @@ QString DescribeRenderGraphExtractionFailure(rhi::RasterStatus status,
                                      .arg(diagnostics.AvailableBytes);
     return QStringLiteral("The World extraction was rejected (%1).%2 The shown frame is kept.")
         .arg(DescribeRasterStatus(status), detail);
+}
+
+QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection rejection,
+                                          const renderer::RenderGraphReport& report)
+{
+    switch (rejection)
+    {
+        case renderer::RenderGraphSceneRejection::None:
+            return {};
+        case renderer::RenderGraphSceneRejection::Atmosphere:
+            return QStringLiteral("This World's Atmosphere entity needs a clustered deferred raster configuration, "
+                                  "and the selected graph configuration has none. Turn on Force raster in the "
+                                  "viewport toolbar to draw the sky with the graph's clustered deferred Raster "
+                                  "configuration, or disable the Atmosphere entity in the World to keep this "
+                                  "configuration.");
+        case renderer::RenderGraphSceneRejection::CameraDepth:
+            return QStringLiteral("The view camera has an infinite far plane or an unknown depth convention, which "
+                                  "render graphs cannot draw. Give the camera a finite far plane.");
+        case renderer::RenderGraphSceneRejection::Coverage: {
+            QStringList causes;
+            if (report.Conflicting != 0)
+            {
+                causes.append(QStringLiteral("%1 item views conflict: remove duplicate items or allow repeated "
+                                             "coverage on the passes that draw them")
+                                  .arg(report.Conflicting));
+            }
+            if (report.Unsupported != 0)
+            {
+                causes.append(QStringLiteral("%1 item views have no compatible pass: add a pass for their material "
+                                             "or exclude them")
+                                  .arg(report.Unsupported));
+            }
+            return causes.isEmpty() == true ? QStringLiteral("The graph configuration does not cover every World item.")
+                                            : QStringLiteral("The graph configuration does not cover this World: %1.")
+                                                  .arg(causes.join(QStringLiteral("; ")));
+        }
+        case renderer::RenderGraphSceneRejection::MaskedDepthPrepass:
+            return QStringLiteral("This World has alpha-masked materials, and the graph's opaque depth-only prepass "
+                                  "would seal their cut-out holes. Remove the depth-only prepass from the graph "
+                                  "configuration, or set those materials' Alpha to Opaque.");
+    }
+    return {};
+}
+
+QString DescribeRenderGraphActivationFailure(const renderer::RenderGraphActivationReport& report)
+{
+    if (report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
+    {
+        return QStringLiteral("Renderer activation requires an editor restart (%1) for generation %2; "
+                              "the last good scene is kept.")
+            .arg(DescribeRasterStatus(report.LastFailure))
+            .arg(report.CandidateGeneration);
+    }
+    if (report.Candidate != renderer::RenderGraphCandidateState::Failed)
+    {
+        return {};
+    }
+    const QString cause = DescribeRenderGraphSceneRejection(report.CandidateRejection, report.CandidateReport);
+    if (cause.isEmpty() == false)
+    {
+        return QStringLiteral("Renderer generation %1 cannot draw this World. %2 The last good scene is kept.")
+            .arg(report.CandidateGeneration)
+            .arg(cause);
+    }
+    return QStringLiteral("Renderer activation failed (%1) for generation %2; the last good scene is kept.")
+        .arg(DescribeRasterStatus(report.LastFailure))
+        .arg(report.CandidateGeneration);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — distinct scene/view/revision inputs.
@@ -1648,10 +1716,15 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             if (IsAccepted(updated) == false)
             {
                 const QString modelFailure = DescribeLightTransformerPreparationFailure(graphReport.Model);
-                if (updated == rhi::RasterStatus::Unsupported && state.Extraction.View.Atmosphere.IsEnabled == true)
+                // Update reports the active graph's result, or the candidate's while none is active.
+                const renderer::RenderGraph* drawingOrNull = state.Activation.GetActiveOrNull();
+                const QString rejection = DescribeRenderGraphSceneRejection(
+                    drawingOrNull != nullptr ? drawingOrNull->GetLastRejection()
+                                             : state.Activation.GetReport().CandidateRejection,
+                    graphReport);
+                if (rejection.isEmpty() == false)
                 {
-                    setStatus(QStringLiteral("Atmosphere needs a supported clustered deferred raster configuration. "
-                                             "Select the default Raster configuration. The shown frame is kept."));
+                    setStatus(rejection + QStringLiteral(" The shown frame is kept."));
                 }
                 else
                 {
@@ -2111,16 +2184,10 @@ usize RenderGraphPreview::GetSurfaceChartDrawCount() const noexcept
 
 QString RenderGraphPreview::GetDisplayStatus() const
 {
-    const renderer::RenderGraphActivationReport report = mState->Activation.GetReport();
-    if (report.Candidate == renderer::RenderGraphCandidateState::Failed ||
-        report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
+    const QString activationFailure = DescribeRenderGraphActivationFailure(mState->Activation.GetReport());
+    if (activationFailure.isEmpty() == false)
     {
-        const QString failure = report.Candidate == renderer::RenderGraphCandidateState::RestartRequired
-                                    ? QStringLiteral("Renderer activation requires an editor restart")
-                                    : QStringLiteral("Renderer activation failed");
-        return QStringLiteral("%1 (%2) for generation %3; the last good scene is kept.")
-            .arg(failure, DescribeRasterStatus(report.LastFailure))
-            .arg(report.CandidateGeneration);
+        return activationFailure;
     }
     if (mStatus.isEmpty() == false)
     {
@@ -2256,11 +2323,19 @@ QString RenderGraphPreview::GetStatus() const
                 parts.append(QStringLiteral("Candidate generation %1 is preparing; the shown frame is kept.")
                                  .arg(report.CandidateGeneration));
                 break;
-            case renderer::RenderGraphCandidateState::Failed:
-                parts.append(QStringLiteral("Candidate generation %1 failed (%2); the shown frame is kept.")
-                                 .arg(report.CandidateGeneration)
-                                 .arg(DescribeRasterStatus(report.LastFailure)));
+            case renderer::RenderGraphCandidateState::Failed: {
+                const QString cause =
+                    DescribeRenderGraphSceneRejection(report.CandidateRejection, report.CandidateReport);
+                parts.append(cause.isEmpty() == true
+                                 ? QStringLiteral("Candidate generation %1 failed (%2); the shown frame is kept.")
+                                       .arg(report.CandidateGeneration)
+                                       .arg(DescribeRasterStatus(report.LastFailure))
+                                 : QStringLiteral("Candidate generation %1 cannot draw this World. %2 The shown frame "
+                                                  "is kept.")
+                                       .arg(report.CandidateGeneration)
+                                       .arg(cause));
                 break;
+            }
             case renderer::RenderGraphCandidateState::RestartRequired:
                 parts.append(QStringLiteral("Candidate generation %1 needs a restart: its CPU interface differs from "
                                             "this editor's compiled interface. Nothing was staged.")

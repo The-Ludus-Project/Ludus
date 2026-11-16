@@ -2254,6 +2254,13 @@ with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
+Only clustered deferred raster configurations draw an Atmosphere. A
+ray-traced or forward configuration rejects a World that has one, and the
+viewport keeps its last good frame. Its status says that the Atmosphere entity
+needs a clustered deferred configuration. Turn on **Force raster** in the
+viewport toolbar to use the graph's Raster configuration, or disable the
+Atmosphere entity to keep the selected configuration.
+
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
 Way and Mercury, Venus, Mars, Jupiter, and Saturn. The Sun preset's UTC date,

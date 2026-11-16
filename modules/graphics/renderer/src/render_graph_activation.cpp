@@ -1693,6 +1693,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
     // A newer request supersedes any unactivated candidate, whatever its outcome.
     state.Candidate.Reset();
     state.Report.CandidateReport = {};
+    state.Report.CandidateRejection = RenderGraphSceneRejection::None;
     state.Report.CandidateGeneration = ++state.NextSerial;
     state.Report.CandidateRenderer =
         RequiresHardwareRayTracing(package->GetPlan()) == true
@@ -1904,6 +1905,7 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     if (candidateStatus != Status::NotReady)
     {
         state.Report.CandidateReport = candidateReport;
+        state.Report.CandidateRejection = candidate.Graph.GetLastRejection();
     }
     if (IsAccepted(candidateStatus) == true)
     {
