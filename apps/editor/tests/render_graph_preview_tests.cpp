@@ -36,6 +36,7 @@
 #include "internal/world_graph_view.h"
 #include "internal/world_workspace.h"
 #include "renderer_composite.h"
+#include "scene_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -103,6 +104,7 @@
 #include <QPushButton>
 #include <QQuickWindow>
 #include <QSaveFile>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardItemModel>
 #include <QStandardPaths>
@@ -2648,6 +2650,91 @@ TEST_CASE("An empty World shows the World preview's own view instead of the prev
     rhi::Shutdown();
 }
 
+TEST_CASE("Undoing deletion of the last imported entity restores its viewport frame",
+          "[editor][render-graph][world-graph][empty-world]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString projectPath = directory.filePath(QStringLiteral("project"));
+    const QString source = directory.filePath(QStringLiteral("source"));
+    const QString levelPath = QStringLiteral("room.lulevel");
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    const bool hasImportedLevel = tests::PrepareImportedLevel(projectPath, levelPath, source, error);
+    INFO(error.toStdString());
+    REQUIRE(hasImportedLevel == true);
+    const QDir project(QFileInfo(projectPath).canonicalFilePath());
+
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(project.filePath(levelPath)) == true);
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanSave() == true; }, TIMEOUT_MILLISECONDS) == true);
+
+    const RenderPreview& preview = world.GetRenderPreview();
+    REQUIRE(preview.Scene().Objects.size() == 1);
+    const QString objectId = preview.Scene().Objects.front().Id;
+    const uint64 deviceSerial = preview.GetDeviceSerial();
+    const RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(graphOrNull != nullptr);
+    const uint64 originalRevision = graphOrNull->GetPresentedRevision();
+    const uint64 originalGeneration = graphOrNull->GetPresentedGeneration();
+    const bool canPresent = PreviewViewport::CanPresent();
+    if (canPresent == true)
+    {
+        REQUIRE(originalRevision != 0);
+        REQUIRE(preview.HasDevice() == true);
+    }
+
+    QTreeWidget* entitiesOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->selectAll();
+    QAction* deleteOrNull = world.findChild<QAction*>(QStringLiteral("worldDelete"));
+    REQUIRE(deleteOrNull != nullptr);
+    REQUIRE(deleteOrNull->isEnabled() == true);
+    QTimer::singleShot(0, []() {
+        QMessageBox* confirmationOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(confirmationOrNull != nullptr);
+        confirmationOrNull->button(QMessageBox::Yes)->click();
+    });
+    deleteOrNull->trigger();
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanUndo() == true; }, TIMEOUT_MILLISECONDS) == true);
+    CHECK(entitiesOrNull->topLevelItemCount() == 0);
+    CHECK(preview.Scene().ShouldUseEmptyWorldView() == true);
+    if (canPresent == true)
+    {
+        CHECK(preview.IsBuiltInViewShown() == true);
+        CHECK(preview.HasDevice() == true);
+    }
+
+    world.Undo();
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanRedo() == true; }, TIMEOUT_MILLISECONDS) == true);
+    CHECK(entitiesOrNull->topLevelItemCount() == 1);
+    REQUIRE(preview.Scene().Objects.size() == 1);
+    CHECK(preview.Scene().Objects.front().Id == objectId);
+    CHECK(preview.GetDeviceSerial() == deviceSerial);
+    if (canPresent == true)
+    {
+        CHECK(preview.IsBuiltInViewShown() == false);
+        CHECK(graphOrNull->GetPresentedRevision() > originalRevision);
+        CHECK(graphOrNull->GetPresentedGeneration() == originalGeneration);
+        CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("A debug view the World preview cannot prepare returns to the graph's final output",
           "[editor][render-graph][world-graph][shading]")
 {
@@ -5166,6 +5253,19 @@ TEST_CASE("Graph display frames draw the selection outline on the GPU and move i
     QImage clean;
     readShown(clean);
     CHECK(countOutline(clean) == 0);
+    rhi::NativeDeviceLease nativeLease;
+    REQUIRE(rhi::AcquireNativeDevice(device.Device, nativeLease) == rhi::RasterStatus::Ready);
+    ViewportFrameRead cleanRead;
+    const QScopeGuard releaseNativeRead([&]() {
+        if (cleanRead.Token != 0)
+        {
+            display.DrainFrameRead(cleanRead);
+        }
+        static_cast<void>(rhi::ReleaseNativeDevice(nativeLease));
+    });
+    rhi::NativeDeviceInfo native;
+    REQUIRE(rhi::GetNativeDeviceInfo(nativeLease, native) == rhi::RasterStatus::Ready);
+    REQUIRE(display.TakeFrameRead(nativeLease, native.Identity, cleanRead) == rhi::RasterStatus::Ready);
     // The scene's triangle is the selection, drawn through the camera of the shown frame.
     const RenderScene& scene = viewport.Scene();
     REQUIRE(scene.Objects.size() == 1);
@@ -5200,6 +5300,9 @@ TEST_CASE("Graph display frames draw the selection outline on the GPU and move i
     const uint64 movedSerial = display.GetLatestSerial();
     display.ClearSelectionOutline();
     REQUIRE(TickUntil(preview, [&]() { return display.GetLatestSerial() > movedSerial; }) == true);
+    // Qt can still hold a read of the clean snapshot from before the outline was shown.
+    display.DrainFrameRead(cleanRead);
+    CHECK(cleanRead.Token == 0);
     QImage restored;
     readShown(restored);
     CHECK(restored == clean);

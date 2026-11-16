@@ -441,7 +441,7 @@ void GraphDisplayFrames::PublishCopy() noexcept
     {
         mLatest = mCompleted;
     }
-    mSlots[static_cast<usize>(mLatest)].Serial = ++mSerial;
+    ++mSerial;
     mCompleted = -1;
     mCompletedDisplay = -1;
 }
@@ -460,7 +460,7 @@ bool GraphDisplayFrames::HasPendingFrame() const noexcept
 }
 uint64 GraphDisplayFrames::GetLatestSerial() const noexcept
 {
-    return mLatest < 0 ? 0 : mSlots[static_cast<usize>(mLatest)].Serial;
+    return mLatest < 0 ? 0 : mSerial;
 }
 bool GraphDisplayFrames::TakeFrame(graphics::renderer::ViewportFrame&, graphics::renderer::ViewportImage&) noexcept
 {
@@ -485,7 +485,8 @@ rhi::RasterStatus GraphDisplayFrames::TakeFrameRead(rhi::NativeDeviceLease devic
         return acquired;
     }
     ++slot.Readers;
-    candidate.Token = slot.Serial;
+    slot.ReadProducerOrdinal = candidate.Image.ProducerOrdinal;
+    candidate.Token = mSerial;
     candidate.Slot = static_cast<uint32>(mLatest);
     outRead = candidate;
     return rhi::RasterStatus::Ready;
@@ -494,7 +495,8 @@ void GraphDisplayFrames::releaseRead(ViewportFrameRead& inoutRead) noexcept
 {
     LUDUS_REQUIRE(inoutRead.Slot < DISPLAY_SLOT_COUNT);
     DisplaySlot& slot = mSlots[inoutRead.Slot];
-    LUDUS_REQUIRE(slot.Serial == inoutRead.Token && slot.Readers > 0);
+    // The native lease has retired. Readers pin this slot across republication of its clean image.
+    LUDUS_REQUIRE(slot.Readers > 0 && slot.ReadProducerOrdinal == inoutRead.Image.ProducerOrdinal);
     --slot.Readers;
     inoutRead = {};
     Q_EMIT CapacityAvailable();
@@ -791,7 +793,7 @@ rhi::RasterStatus GraphDisplayFrames::PollSelectionOutline() noexcept
             return composed;
         }
         mLatest = mComposing;
-        mSlots[static_cast<usize>(mLatest)].Serial = ++mSerial;
+        ++mSerial;
         mComposedRevision = mComposingRevision;
         mComposing = -1;
         Q_EMIT FrameReady();
@@ -832,7 +834,7 @@ rhi::RasterStatus GraphDisplayFrames::PollSelectionOutline() noexcept
     if (mLatest != mClean)
     {
         mLatest = mClean;
-        mSlots[static_cast<usize>(mLatest)].Serial = ++mSerial;
+        ++mSerial;
         Q_EMIT FrameReady();
     }
     return rhi::RasterStatus::Ready;
