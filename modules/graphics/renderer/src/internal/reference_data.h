@@ -22,6 +22,7 @@
 #include "environment_data.h"
 #include "reference_light_sampling.h"
 #include "reference_medium.h"
+#include "reference_sky.h"
 
 namespace ludus::graphics::renderer::internal
 {
@@ -280,6 +281,7 @@ struct ReferenceJob final
     PanelLuminaire Luminaires[MAX_PANEL_LUMINAIRES];
     uint32 LuminaireCount = 0;
     EnvironmentData* EnvironmentOrNull = nullptr;
+    ReferenceSky Sky;
     /// Admitted copy of Description.MediumOrNull, which the job keeps null; empty for vacuum.
     ReferenceMediumData Medium;
     math::Matrix4 ClipToWorld;

@@ -650,14 +650,15 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             path.Depth == 0 || path.IsPreviousSpecular == true
                 ? 1
                 : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, lightPdf));
-        AddTransport(path,
-                     math::Hadamard(path.Throughput,
-                                    job.EnvironmentOrNull != nullptr
-                                        ? EvaluateEnvironment(*job.EnvironmentOrNull, ReferenceDirection(path.Ray))
-                                        : job.Description.Environment) *
-                         weight,
-                     path.Depth,
-                     true);
+        const math::Vector3 directionWorld = ReferenceDirection(path.Ray);
+        math::Vector3 radiance = job.EnvironmentOrNull != nullptr
+                                     ? EvaluateEnvironment(*job.EnvironmentOrNull, directionWorld)
+                                     : job.Description.Environment;
+        if (path.Depth == 0 && job.Sky.IsEnabled() == true)
+        {
+            radiance = radiance + EvaluateReferenceSky(job.Sky, directionWorld);
+        }
+        AddTransport(path, math::Hadamard(path.Throughput, radiance) * weight, path.Depth, true);
         return ValidContribution(path.Emission) && ValidContribution(path.Direct) && ValidContribution(path.Indirect)
                    ? rhi::RasterStatus::Ready
                    : FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRadiance);

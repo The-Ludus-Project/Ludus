@@ -2322,6 +2322,11 @@ with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
+RT1 reference captures from inside the atmosphere also show the Sun and Moon
+disks, stars, and planets behind World geometry in both the CPU oracle and GPU
+compute modes. Surface lighting continues to use the sky environment and
+linked lights.
+
 Only clustered deferred raster configurations draw an Atmosphere. A
 ray-traced or forward configuration still draws the rest of the World. Its
 background is the World environment, the linked Sun lights the scene as an

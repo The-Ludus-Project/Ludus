@@ -2161,11 +2161,25 @@ environment and directional-light estimators. Other lights are unchanged. A came
 below the ground or above the shell, or an Atmosphere that does not light the scene,
 leaves the capture's inputs unchanged.
 
-This is a distant-environment approximation of the raster's lighting. RT1 traces
-visibility for the sky and the Sun, where the raster's cosine and GGX sky
-quadrature is unshadowed. It omits aerial perspective along scene segments, the
-variation of altitude across the scene, the solar disk as an emitter and the
-night-sky boundary. Tests cover four agreements. The CPU sky matches the
+For observers inside the atmosphere shell, primary rays that miss geometry also
+evaluate the Sun and Moon disks, procedural stars and unresolved planet points.
+The CPU oracle and GPU compute use the same frozen directions, apparent radii,
+lunar phase and RGB transmittance. The transmittance is sampled at the observer's
+altitude in 256 directions from the geometric horizon to zenith (uniform in the
+square root of the normalized zenith cosine), then interpolated for each ray.
+The ground blocks the boundary below the horizon. Disks use the ray direction
+directly. Stars and planets use the angular width of a pixel at image center to
+filter unresolved sources. The Sun's limb profile preserves its normalized
+disk radiance, and a dark lunar disk still blocks sources behind it.
+
+RT1 traces visibility for sky and direct lighting, where the raster's cosine
+and GGX sky quadrature is unshadowed. The celestial boundary contributes only
+to primary misses and has no light-sampling PDF. The environment CDF continues
+to sample the scattered sky, and the linked directional lights still supply
+direct Sun and Moon lighting. This preserves one owner for each direct
+contribution. Aerial perspective along scene segments, observer altitude
+changes along paths, orbital views, the Milky Way band, and finite celestial
+emitters in reflected or refracted paths remain outside this approximation. Tests cover four agreements. The CPU sky matches the
 independent single-scattering quadrature within 8%. Its higher orders match the
 24-order solution within 20%. The zenith Sun matches analytic optical depth
 within 0.2%. The GPU sky pixels match the CPU tables within 8-bit quantization

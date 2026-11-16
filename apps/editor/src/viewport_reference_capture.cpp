@@ -349,17 +349,16 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
     mExtent = extent;
     mSurface = surface;
     // The raster lights surfaces with the Atmosphere's sky and attenuates its Sun; supply RT1 the same inputs.
-    const renderer::AtmosphereDescription atmosphere = scene.GetAtmosphereForView();
-    if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
+    mAtmosphere = scene.GetAtmosphereForView();
+    if (mAtmosphere.IsEnabled == true && mAtmosphere.ShouldLightScene == true)
     {
         const math::Vector3 eyeWorld = view.CameraPosition;
 #    if !defined(Q_OS_WASM)
-        mAtmosphereJob =
-            QtConcurrent::run([atmosphere, eyeWorld]() { return ResolveViewportAtmosphereSky(atmosphere, eyeWorld); });
+        mAtmosphereJob = QtConcurrent::run(
+            [atmosphere = mAtmosphere, eyeWorld]() { return ResolveViewportAtmosphereSky(atmosphere, eyeWorld); });
 #    else
-        mAtmosphereSky = ResolveViewportAtmosphereSky(atmosphere, eyeWorld);
+        mAtmosphereSky = ResolveViewportAtmosphereSky(mAtmosphere, eyeWorld);
 #    endif
-        mAtmosphereSunSourceId = atmosphere.SunSourceId;
         mIsAtmosphereResolving = true;
     }
     mPhase = ViewportReferencePhase::Preparing;
@@ -390,6 +389,7 @@ bool ViewportReferenceCapture::beginCapture() noexcept
     mLightCount = CollectReferenceLights(generation.Lighting.Lights, mLights);
     mDescription.Lights = mLightCount == 0 ? nullptr : mLights.GetData();
     mDescription.LightCount = mLightCount;
+    mDescription.AtmosphereBackgroundOrNull = mAtmosphere.IsEnabled == true ? &mAtmosphere : nullptr;
     if (mHasAtmosphereSky == true)
     {
         // As renderer_lit.slang does, the Atmosphere's sky replaces the imported environment and its Sun
@@ -397,7 +397,7 @@ bool ViewportReferenceCapture::beginCapture() noexcept
         for (usize i = 0; i < mLightCount; ++i)
         {
             renderer::DirectLight& light = mLights[i];
-            if (light.Kind == renderer::LightKind::Directional && light.SourceId == mAtmosphereSunSourceId)
+            if (light.Kind == renderer::LightKind::Directional && light.SourceId == mAtmosphere.SunSourceId)
             {
                 const math::Vector3 illuminance = mAtmosphereSky.SunIlluminance;
                 light.Intensity = math::Max(illuminance.X, math::Max(illuminance.Y, illuminance.Z));
@@ -508,7 +508,7 @@ void ViewportReferenceCapture::Release() noexcept
 #endif
     mAtmosphereEnvironment.Reset();
     mAtmosphereSky = ViewportAtmosphereSky{};
-    mAtmosphereSunSourceId = 0;
+    mAtmosphere = {};
     mIsAtmosphereResolving = false;
     mHasAtmosphereSky = false;
     mIsAtmosphereUploadStarted = false;

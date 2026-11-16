@@ -7,6 +7,7 @@
 
 #include "../shaders/renderer_atmosphere_layout.h"
 #include "internal/atmosphere_sky_tables.h"
+#include "internal/reference_sky.h"
 #include "internal/render_graph_atmosphere.h"
 
 // CPU evaluation of the raster's clear-sky tables for distant reference lighting. Thanks to
@@ -450,6 +451,18 @@ float64 AtmosphereSkyTables::GetHorizonCosine(float64 heightKilometres) noexcept
     return ComputeHorizonCosine(heightKilometres);
 }
 } // namespace internal
+
+float64 internal::GetReferenceSkyHorizon(float64 altitudeMetres) noexcept
+{
+    return ComputeHorizonCosine(altitudeMetres / METRES_PER_KILOMETRE);
+}
+
+math::Vector3 internal::EvaluateReferenceSkyTransmittance(float64 altitudeMetres, float64 zenithCosine) noexcept
+{
+    const float64 height = altitudeMetres / METRES_PER_KILOMETRE;
+    const math::Vector3d value = IntegrateTransmittance(height, zenithCosine, GetDistanceToTop(height, zenithCosine));
+    return {static_cast<float32>(value.X), static_cast<float32>(value.Y), static_cast<float32>(value.Z)};
+}
 
 AtmosphereEnvironmentStatus ResolveAtmosphereEnvironment(const AtmosphereDescription& atmosphere,
                                                          math::Vector3 eyeWorld,
