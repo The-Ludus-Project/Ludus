@@ -853,13 +853,15 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     const QStringList rootFields = hasUuidRecords == true ? QStringList{QStringLiteral("version"),
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("document"),
-                                                                        QStringLiteral("entities")}
+                                                                        QStringLiteral("entities"),
+                                                                        QString(WORLD_EARTH_OBSERVER)}
                                                           : QStringList{QStringLiteral("version"),
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("entities"),
                                                                         QStringLiteral("scene"),
                                                                         QStringLiteral("disabled_lights"),
-                                                                        QStringLiteral("shared_coatings")};
+                                                                        QStringLiteral("shared_coatings"),
+                                                                        QString(WORLD_EARTH_OBSERVER)};
     if (HasSchema() == false || (hasScopedIds == false && hasUuidRecords == false) ||
         Fields(candidate, rootFields) == false ||
         candidate.value(QStringLiteral("schema")) != Schema_.value(QStringLiteral("id")) ||
@@ -881,6 +883,14 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("World supports at most %1 entities and %2 KiB.")
                         .arg(MAX_ENTITIES)
                         .arg(MAX_BYTES / BYTES_PER_KIBIBYTE));
+    }
+    const QJsonValue earthObserver = candidate.value(WORLD_EARTH_OBSERVER);
+    if (earthObserver.isUndefined() == false &&
+        (mIsBuiltInSchema == false || IsWorldEarthObserverValid(earthObserver) == false))
+    {
+        return Fail(error,
+                    QStringLiteral("The World's Earth date, time and location must be numbers within the Earth "
+                                   "preset ranges. Set them on an Earth Sun or Earth Moon light."));
     }
     const QJsonValue sharedCoatings = candidate.value(QStringLiteral("shared_coatings"));
     if (sharedCoatings.isUndefined() == false)
@@ -1410,62 +1420,6 @@ bool WorldDocument::commit(const QJsonObject& candidate, QString& outError, cons
     Draft_ = candidate;
     return true;
 }
-namespace
-{
-QJsonObject GetWorldEntityLight(const QJsonObject& entity)
-{
-    return entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
-}
-
-void CopyEarthObserverToEntity(const QJsonObject& observer, QJsonObject& inoutEntity)
-{
-    QJsonObject components = inoutEntity.value(QStringLiteral("components")).toObject();
-    QJsonObject light = components.value(QStringLiteral("light")).toObject();
-    CopyWorldEarthObserver(observer, light);
-    components.insert(QStringLiteral("light"), light);
-    inoutEntity.insert(QStringLiteral("components"), components);
-}
-
-void SynchronizeWorldEarthObserver(const QJsonObject& previous, qsizetype editedIndex, QJsonArray& inoutEntities)
-{
-    QJsonObject edited = inoutEntities[editedIndex].toObject();
-    const QJsonObject light = GetWorldEntityLight(edited);
-    if (IsWorldEarthLight(light) == false)
-    {
-        return;
-    }
-    const QJsonObject previousLight = GetWorldEntityLight(previous);
-    if (AreWorldEarthObserversEqual(light, previousLight) == true)
-    {
-        if (IsWorldEarthLight(previousLight) == true)
-        {
-            return;
-        }
-        // A newly activated preset inherits the existing Earth observer unless the same edit specifies one.
-        for (qsizetype i = 0; i < inoutEntities.size(); ++i)
-        {
-            const QJsonObject other = GetWorldEntityLight(inoutEntities[i].toObject());
-            if (i != editedIndex && IsWorldEarthLight(other) == true)
-            {
-                CopyEarthObserverToEntity(other, edited);
-                inoutEntities[editedIndex] = edited;
-                return;
-            }
-        }
-        return;
-    }
-    for (qsizetype i = 0; i < inoutEntities.size(); ++i)
-    {
-        QJsonObject other = inoutEntities[i].toObject();
-        if (i != editedIndex && IsWorldEarthLight(GetWorldEntityLight(other)) == true)
-        {
-            CopyEarthObserverToEntity(light, other);
-            inoutEntities[i] = other;
-        }
-    }
-}
-} // namespace
-
 bool WorldDocument::replaceEntity(const QJsonObject& entity, QString& outError, const char* name)
 {
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();
@@ -1475,12 +1429,13 @@ bool WorldDocument::replaceEntity(const QJsonObject& entity, QString& outError, 
         if (GetEntityKey(previous) == GetEntityKey(entity))
         {
             entities[i] = entity;
-            if (HasBuiltInSchema() == true)
-            {
-                SynchronizeWorldEarthObserver(previous, i, entities);
-            }
             QJsonObject candidate = Draft_;
             candidate.insert(QStringLiteral("entities"), entities);
+            if (HasBuiltInSchema() == true)
+            {
+                // Every Earth light shares the World's one date, time and location.
+                LiftWorldEarthObserver(Draft_, i, candidate);
+            }
             return commit(candidate, outError, name);
         }
     }

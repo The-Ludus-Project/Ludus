@@ -2221,9 +2221,19 @@ rotation, including rotation supplied by a game. Choose **Earth Sun** or
 from **Date & Time (UTC)** and the observer's coordinates. Earth Moon also
 samples lunar phase using the Sun at that time. Open the calendar to pick a date or type into
 the date and time field. **Use Now** copies the current instant into the draft.
-The World stores fractional UTC days since January 1, 2000 at 12:00 UTC, so
-existing Earth Time values open at the same instant. The supported dates span
-approximately 1950–2050.
+The supported dates span approximately 1950–2050.
+
+A World has one Earth date, time and location. Every Earth Sun and Earth Moon
+light shows the same values, and the note above **Date & Time (UTC)** names the
+other lights that share them. Editing them on any Earth light changes them for
+all Earth lights and the Atmosphere night sky in one undoable change. The first
+Earth preset in a World starts at the current UTC time; later Earth lights
+start at the World's existing values. The World root stores them once as
+`earth_observer`, in fractional UTC days since January 1, 2000 at 12:00 UTC,
+so existing Earth Time values open at the same instant. In a World saved
+before `earth_observer` existed, each Earth light keeps its saved values until
+an Earth light is next edited; the values that light showed then become the
+World's.
 
 Use **Choose Earth Location…** to search for a city, landmark, or address.
 Clicking **Search** sends the query to Photon, which uses OpenStreetMap data.
@@ -2234,11 +2244,8 @@ a secure browser context and location access. Choose **Use Coordinates** to
 copy the selected result into the inspector, then **Apply Changes** to apply
 the draft. Saved Worlds store the coordinates. Manual entry works offline and
 when device location is unavailable. North latitude and east longitude are
-positive. Applying an Earth time or location edit updates all active Earth
-presets in one undoable change. A newly activated preset inherits the existing
-Earth observer unless the same edit supplies new observer values. Previously
-saved Earth lights can have different observers until the first time or location
-edit. The World frame is +X east, +Y up, and −Z north.
+positive. A **Custom Orbit** light keeps its own observer coordinates. The
+World frame is +X east, +Y up, and −Z north.
 
 Properties shows the calculated sea-level direct illuminance in lux, linear RGB
 colour and apparent diameter. The clear-sky model dims and warms direct light
@@ -2296,10 +2303,10 @@ Atmosphere entity to keep the selected configuration.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
-Way and Mercury, Venus, Mars, Jupiter, and Saturn. The Sun preset's UTC date,
-time, latitude and longitude place the planets and rotate the star field and
-Milky Way. The linked **Earth Moon** preset supplies those settings when the Sun has
-an authored transform or a custom orbit. Look along the ecliptic after
+Way and Mercury, Venus, Mars, Jupiter, and Saturn. The World's shared Earth
+date, time and location place the planets and rotate the star field and Milky
+Way, and the Atmosphere's Properties show them. They apply when the linked Sun
+or Moon uses an Earth preset. Look along the ecliptic after
 dark for planets above the horizon. Their apparent brightness and color
 vary, and they appear as points at ordinary viewport fields of view.
 
@@ -2311,7 +2318,9 @@ For an authored Moon, colour and intensity set the full-phase brightness, and
 the linked Sun direction determines which part of the disk is lit. Atmospheric
 extinction dims the celestial background toward the horizon. Turning the linked Moon
 off in the light controls hides the disk. The presets' angular sizes drive the
-sky disks. Direct lights use the renderer's existing directional shadow path.
+sky disks. **Sun Disk Radius** sets the disk for a linked Sun with an authored
+direction; its default matches the real Sun. Properties hide it while the
+linked Sun uses an Earth preset, which sets its own size. Direct lights use the renderer's existing directional shadow path.
 
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or

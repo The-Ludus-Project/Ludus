@@ -23,10 +23,10 @@
     },
     {
       "id": "solarRadius",
-      "label": "Solar angular radius",
+      "label": "Sun Disk Radius",
       "type": "number",
       "default": 0.26786,
-      "help": "Apparent angular radius for an authored Sun. The Earth Sun preset supplies its own radius.",
+      "help": "How large the Sun's disk looks in the sky, as an angle from its centre to its edge. The default matches the real Sun. Only a Sun with an authored direction uses it; the Earth Sun preset sets its own size, so this field is hidden then.",
       "unit": "°",
       "min": 0.01,
       "max": 10

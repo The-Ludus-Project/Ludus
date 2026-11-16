@@ -347,7 +347,24 @@ bool TryParseEarthCoordinate(const QLineEdit& field, foundation::float64& outCoo
     return true;
 }
 
-void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
+/// Explain that the Earth date, time and location belong to the World rather than to one light.
+/// @param otherEarthLights Names of the World's other Earth Sun and Earth Moon lights.
+QString MakeSharedEarthObserverText(const QStringList& otherEarthLights)
+{
+    if (otherEarthLights.isEmpty() == true)
+    {
+        return QStringLiteral("Every Earth Sun and Earth Moon light in this World shares this date, time and "
+                              "location, and the Atmosphere night sky uses them.");
+    }
+    return QStringLiteral("Shared with %1. Changing the date, time or location here changes them for every Earth "
+                          "light and the Atmosphere night sky in this World.")
+        .arg(otherEarthLights.join(QStringLiteral(", ")));
+}
+
+void ConfigureCelestialLightFields(QWidget& inoutGroup,
+                                   QFormLayout& inoutRows,
+                                   const QMap<QString, QWidget*>& fields,
+                                   const QStringList& otherEarthLights)
 {
     const QString component = QStringLiteral("light");
     QComboBox* kindOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("kind"))));
@@ -401,7 +418,15 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, 
     {
         return;
     }
-    timeOrNull->setToolTip(QStringLiteral("Applying Earth time and location updates all active Earth presets."));
+    timeOrNull->setToolTip(QStringLiteral("The World stores one Earth date, time and location for all Earth lights."));
+    QLabel* shared = new QLabel(MakeSharedEarthObserverText(otherEarthLights), &inoutGroup);
+    shared->setObjectName(QStringLiteral("worldEarthSharedObserver"));
+    shared->setWordWrap(true);
+    foundation::int32 timeRow = 0;
+    QFormLayout::ItemRole timeRole = QFormLayout::FieldRole;
+    inoutRows.getWidgetPosition(timeOrNull, &timeRow, &timeRole);
+    inoutRows.insertRow(timeRow, shared);
+    celestialRows.append({WorldCelestialFieldGroup::Earth, shared});
     QLabel* calculated = new QLabel(&inoutGroup);
     calculated->setObjectName(QStringLiteral("worldEarthComputedPhotometry"));
     calculated->setWordWrap(true);
@@ -497,6 +522,58 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, 
     QObject::connect(roleOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     updateRows();
+}
+/// Show which Earth date and place drive the Atmosphere's night sky, and hide the Sun disk size while the
+/// linked Sun's Earth preset supplies its own.
+void ConfigureAtmosphereFields(QWidget& inoutGroup,
+                               QFormLayout& inoutRows,
+                               const QMap<QString, QWidget*>& fields,
+                               const WorldDocument& world)
+{
+    const QString component = GetWorldAtmosphereComponentId();
+    QComboBox* sunOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("sun"))));
+    QComboBox* moonOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("moon"))));
+    QWidget* radiusOrNull = fields.value(FieldKey(component, QStringLiteral("solarRadius")));
+    if (sunOrNull == nullptr || moonOrNull == nullptr || radiusOrNull == nullptr)
+    {
+        return;
+    }
+    QLabel* sky = new QLabel(&inoutGroup);
+    sky->setObjectName(QStringLiteral("worldAtmosphereEarthObserver"));
+    sky->setWordWrap(true);
+    sky->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    inoutRows.addRow(sky);
+    const auto getLight = [&world](const QComboBox& selector) {
+        return world.Entity(selector.currentData().toString())
+            .value(QStringLiteral("components"))
+            .toObject()
+            .value(QStringLiteral("light"))
+            .toObject();
+    };
+    const auto update = [&inoutGroup, &inoutRows, &world, sunOrNull, moonOrNull, radiusOrNull, sky, getLight]() {
+        const QJsonObject sun = getLight(*sunOrNull);
+        const QJsonObject moon = getLight(*moonOrNull);
+        const bool isEarthSun = IsWorldEarthLight(sun);
+        inoutRows.setRowVisible(GetFormRowWidget(inoutRows, radiusOrNull),
+                                sunOrNull->currentData().toString().isEmpty() == false && isEarthSun == false);
+        const QJsonObject earth = isEarthSun == true ? sun : moon;
+        const bool hasEarth = isEarthSun == true || IsWorldEarthLight(moon) == true;
+        inoutRows.setRowVisible(sky, hasEarth);
+        if (hasEarth == true)
+        {
+            const QJsonObject observer = MakeWorldLightValues(earth, world.Draft());
+            sky->setText(
+                QStringLiteral("Night sky: %1 at %2°, %3°. Change the World's Earth date, time and "
+                               "location on any Earth Sun or Earth Moon light.")
+                    .arg(WorldEarthTimeField::FormatDaysSinceEpoch(observer.value(WORLD_CELESTIAL_TIME).toDouble()),
+                         FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble()),
+                         FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LONGITUDE).toDouble())));
+        }
+        inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+    };
+    QObject::connect(sunOrNull, &QComboBox::currentIndexChanged, sky, update);
+    QObject::connect(moonOrNull, &QComboBox::currentIndexChanged, sky, update);
+    update();
 }
 QString Display(const QJsonValue& value)
 {
@@ -3104,7 +3181,19 @@ void WorldWorkspace::RenderInspector()
         QWidget* group = &section->GetFields();
         auto* rows = new QFormLayout(group);
         ConfigureInspectorForm(*rows);
-        const auto values = attached.value(cid).toObject();
+        QJsonObject values = attached.value(cid).toObject();
+        if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
+        {
+            // The light shows the World's shared Earth date, time and location. The first Earth preset of a
+            // World starts at the current time rather than at the epoch.
+            const bool hasEarthObserver = GetWorldEarthObserver(Document_.Draft()).isEmpty() == false;
+            const bool isEarthLight = IsWorldEarthLight(values);
+            values = MakeWorldLightValues(values, Document_.Draft());
+            if (hasEarthObserver == false && isEarthLight == false)
+            {
+                values.insert(WORLD_CELESTIAL_TIME, WorldEarthTimeField::GetCurrentDaysSinceEpoch());
+            }
+        }
         // Three numbers that belong together (a transform's position, rotation or scale, or a colour's red,
         // green and blue) share one compact row; their fields keep the names and signals they always had.
         struct VectorGroup final
@@ -3489,7 +3578,24 @@ void WorldWorkspace::RenderInspector()
         addComponentActions(*section, component);
         if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
         {
-            ConfigureCelestialLightFields(*group, *rows, Fields_);
+            QStringList otherEarthLights;
+            for (const QJsonValue candidate : Document_.Draft().value(QStringLiteral("entities")).toArray())
+            {
+                const QJsonObject otherEntity = candidate.toObject();
+                if (Document_.GetEntityKey(otherEntity) != Selected_ &&
+                    IsWorldEarthLight(otherEntity.value(QStringLiteral("components"))
+                                          .toObject()
+                                          .value(QStringLiteral("light"))
+                                          .toObject()) == true)
+                {
+                    otherEarthLights.append(otherEntity.value(QStringLiteral("name")).toString());
+                }
+            }
+            ConfigureCelestialLightFields(*group, *rows, Fields_, otherEarthLights);
+        }
+        else if (Document_.HasBuiltInSchema() == true && cid == GetWorldAtmosphereComponentId())
+        {
+            ConfigureAtmosphereFields(*group, *rows, Fields_, Document_);
         }
         else
         {
@@ -4027,6 +4133,10 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
     for (auto c = components.begin(); c != components.end(); ++c)
     {
         auto values = c.value().toObject();
+        // A light's fields show the World's shared Earth observer; compare against those values.
+        const QJsonObject shownValues = Document_.HasBuiltInSchema() == true && c.key() == QStringLiteral("light")
+                                            ? MakeWorldLightValues(values, Document_.Draft())
+                                            : values;
         for (const auto definition : Document_.Component(c.key()).value(QStringLiteral("properties")).toArray())
         {
             const auto p = definition.toObject();
@@ -4038,7 +4148,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                 // A hidden driver's draft may be incomplete. Keep its last accepted settings.
                 continue;
             }
-            const QJsonValue authored = values.value(pid);
+            const QJsonValue authored = shownValues.value(pid);
             // A legacy probe volume's effective layout is counts, even though new volumes default to volume.
             const bool isLegacyProbeLayout = authored.isUndefined() == true && Document_.HasBuiltInSchema() == true &&
                                              c.key() == GetGiProbeVolumeComponentId() && pid == GetGiProbeLayoutKey();
@@ -4083,6 +4193,29 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             if (authored.isUndefined() == false || candidate != current)
             {
                 values.insert(pid, candidate);
+            }
+        }
+        if (Document_.HasBuiltInSchema() == true && c.key() == QStringLiteral("light") &&
+            IsWorldEarthLight(values) == false)
+        {
+            // Only an Earth light writes the shared observer; other lights keep their own stored values.
+            const QJsonObject stored = c.value().toObject();
+            for (const QLatin1StringView property :
+                 {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+            {
+                if (IsWorldCustomOrbitLight(values) == true && property != WORLD_CELESTIAL_TIME)
+                {
+                    continue;
+                }
+                const QJsonValue value = stored.value(property);
+                if (value.isUndefined() == true)
+                {
+                    values.remove(property);
+                }
+                else
+                {
+                    values.insert(property, value);
+                }
             }
         }
         c.value() = values;
@@ -4146,12 +4279,15 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
     if (outHasInheritedEarthObserverOrNull != nullptr)
     {
         const QJsonObject proposed = components.value(QStringLiteral("light")).toObject();
-        const QJsonObject accepted = inoutDocument.Entity(Selected_)
-                                         .value(QStringLiteral("components"))
-                                         .toObject()
-                                         .value(QStringLiteral("light"))
-                                         .toObject();
-        *outHasInheritedEarthObserverOrNull = AreWorldEarthObserversEqual(proposed, accepted) == false;
+        const QJsonObject accepted = MakeWorldLightValues(inoutDocument.Entity(Selected_)
+                                                              .value(QStringLiteral("components"))
+                                                              .toObject()
+                                                              .value(QStringLiteral("light"))
+                                                              .toObject(),
+                                                          inoutDocument.Draft());
+        // Only an Earth light shows the shared observer; refresh it when the World kept different values.
+        *outHasInheritedEarthObserverOrNull =
+            IsWorldEarthLight(proposed) == true && AreWorldEarthObserversEqual(proposed, accepted) == false;
     }
     return true;
 }
