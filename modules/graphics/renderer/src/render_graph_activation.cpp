@@ -154,6 +154,7 @@ struct RenderGraphPackage::State final
     Array<uint8> Bytes;
     format::Header Header{};
     StaticArray<uint32, format::MAX_RAY_PROGRAMS> CaptureWarmupSamples{};
+    Array<RenderGraphRecipeKey> RecipeKeys;
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Camera, format::MAX_CAMERAS> Cameras{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
@@ -220,7 +221,46 @@ struct RenderGraphPackage::State final
     void DeriveBindings() noexcept;
     [[nodiscard]] RenderGraphPackageStatus AppendSceneResourceBindings() noexcept;
     RenderGraphPackageStatus DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept;
+    RenderGraphPackageStatus DecodeRecipeKeys(ByteReader& inoutReader) noexcept;
 };
+RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecipeKeys(ByteReader& inoutReader) noexcept
+{
+    const uint32 count = inoutReader.ReadWord();
+    if (inoutReader.IsOk() == false || count > format::MAX_RECIPE_KEYS)
+    {
+        return RenderGraphPackageStatus::Malformed;
+    }
+    if (RecipeKeys.TryResize(count) == false)
+    {
+        return RenderGraphPackageStatus::OutOfMemory;
+    }
+    usize previousIndex = 0;
+    for (usize i = 0; i < count; ++i)
+    {
+        const uint32 technique = inoutReader.ReadWord();
+        const uint32 target = inoutReader.ReadWord();
+        const std::span<const uint8> digest = inoutReader.ReadIdentity();
+        if (inoutReader.IsOk() == false || technique > MAX_TECHNIQUE || target > MAX_TARGET)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        const usize index = technique * format::SHADER_TARGET_COUNT + target;
+        if (i != 0 && index <= previousIndex)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        previousIndex = index;
+        RenderGraphRecipeKey& recipe = RecipeKeys[i];
+        recipe.Technique = static_cast<format::Technique>(technique);
+        recipe.Target = static_cast<format::ShaderTarget>(target);
+        for (usize byte = 0; byte < format::IDENTITY_BYTES; ++byte)
+        {
+            recipe.Key[byte] = digest[byte];
+        }
+    }
+    return RenderGraphPackageStatus::Ready;
+}
+
 RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept
 {
     for (uint32 stage = 0; stage < stageCount; ++stage)
@@ -876,7 +916,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
+        (version != format::RECIPE_KEY_PACKAGE_VERSION && version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
          version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
          version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
@@ -1079,6 +1119,14 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
             return RenderGraphPackageStatus::Malformed;
         }
     }
+    if (version >= format::RECIPE_KEY_PACKAGE_VERSION)
+    {
+        status = candidate->DecodeRecipeKeys(reader);
+        if (status != RenderGraphPackageStatus::Ready)
+        {
+            return status;
+        }
+    }
     if (version >= format::NAMED_PACKAGE_VERSION)
     {
         for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
@@ -1227,6 +1275,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     }
     const State& state = *mState;
     result.CaptureWarmupSamples = state.CaptureWarmupSamples;
+    result.RecipeKeys = state.RecipeKeys;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
     result.HasLightTransformer = state.HasLightTransformer;
@@ -1883,7 +1932,14 @@ RenderGraph* RenderGraphActivation::GetActiveOrNull() noexcept
 }
 RenderGraphActivationReport RenderGraphActivation::GetReport() const noexcept
 {
-    return mState.Get() != nullptr ? mState->Report : RenderGraphActivationReport{};
+    if (mState.Get() == nullptr)
+    {
+        return {};
+    }
+    RenderGraphActivationReport report = mState->Report;
+    const Generation* candidateOrNull = mState->Candidate.Get();
+    report.IsCandidateSetupReady = candidateOrNull != nullptr && candidateOrNull->IsSetupReady == true;
+    return report;
 }
 RenderGraphPoolReport RenderGraphActivation::GetPoolReport() const noexcept
 {

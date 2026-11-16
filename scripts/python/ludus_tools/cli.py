@@ -537,6 +537,8 @@ def cmd_render_graph(args) -> int:
         else:
             options = dict(helper=args.helper, compiler=args.compiler, validator=args.validator,
                            spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
+            if getattr(args, 'trace_shader_stages', False):
+                options['trace_shader_stages'] = True
             if getattr(args, 'dxc_path', None):
                 options['dxc'] = args.dxc_path
             toolchain = None
@@ -688,6 +690,8 @@ def build_parser() -> argparse.ArgumentParser:
         build_graph.add_argument("--helper", required=action == "watch", help="installed SDK shader helper override")
         build_graph.add_argument("--compiler", required=action == "watch", help="pinned Slang executable override")
         if action == "build":
+            build_graph.add_argument("--trace-shader-stages", action="store_true",
+                                     help="include bounded shader stage timing in the command result")
             build_graph.add_argument("--project", help="resolve the SDK and shader tools selected by this project")
             build_graph.add_argument("--tooling-root", help="trusted checkout with prepared shader tools")
             build_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")

@@ -19,6 +19,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -32,6 +33,27 @@ namespace shaders = ludus::shaders;
 namespace format = ludus::content::render_graph_format;
 namespace threading = ludus::foundation::threading;
 namespace timing = ludus::foundation::time;
+namespace
+{
+void WriteRecipeMetrics(std::ostream& inoutMetrics, const renderer::RenderGraphPipelineRecipe& recipe)
+{
+    constexpr char HEX_DIGITS[] = "0123456789abcdef";
+    constexpr uint8 HEX_BITS = 4;
+    constexpr uint8 HEX_MASK = 0x0F;
+    inoutMetrics << "{\"key\":\"";
+    for (const uint8 byte : recipe.Recipe.Key)
+    {
+        inoutMetrics << HEX_DIGITS[byte >> HEX_BITS] << HEX_DIGITS[byte & HEX_MASK];
+    }
+    inoutMetrics << "\",\"target\":" << static_cast<uint32>(recipe.Recipe.Target)
+                 << ",\"native_pipelines\":" << recipe.NativePipelines
+                 << ",\"ready_pipelines\":" << recipe.ReadyPipelines << ",\"drawn_pipelines\":" << recipe.DrawnPipelines
+                 << ",\"queue_seconds_sum\":" << recipe.QueueSeconds
+                 << ",\"native_seconds_sum\":" << recipe.PrewarmSeconds
+                 << ",\"first_use_misses\":" << recipe.FirstUseMisses << "}";
+}
+} // namespace
+
 TEST_CASE("Native compiler publications reload a running renderer without losing its drawable generation",
           "[shader][reload][gpu][.native-reload]")
 {
@@ -70,6 +92,7 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
     using ReloadState = ludus::runtime::shader_development::ReloadState;
     constexpr usize MAX_ATTEMPTS = 5000;
     uint64 maximumServiceNanoseconds = 0;
+    uint64 stagedTicks = 0;
     const auto awaitDelivery = [&](ReloadState expected) {
         for (usize attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
         {
@@ -79,12 +102,17 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
             maximumServiceNanoseconds = elapsed > maximumServiceNanoseconds ? elapsed : maximumServiceNanoseconds;
             if (report.State == expected)
             {
+                if (expected == ReloadState::Staged)
+                {
+                    stagedTicks = start;
+                }
                 return;
             }
             threading::SleepFor(timing::Microseconds(100));
         }
         FAIL("Timed out waiting for runtime publication delivery");
     };
+    uint64 readyTicks = 0;
     const auto activate = [&](uint64 generation) {
         renderer::RenderGraphReport sceneReport;
         for (usize attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
@@ -92,6 +120,10 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
             static_cast<void>(activation.Poll());
             const renderer::RenderGraphActivationReport report = activation.GetReport();
             REQUIRE(report.Candidate != renderer::RenderGraphCandidateState::Failed);
+            if (readyTicks == 0 && (report.IsCandidateSetupReady == true || report.ActiveGeneration == generation))
+            {
+                readyTicks = time::NowTicks();
+            }
             if (report.Candidate == renderer::RenderGraphCandidateState::NeedsUpdate ||
                 (report.ActiveGeneration == generation &&
                  activation.GetActiveOrNull()->GetDrawableSceneRevision() == 0))
@@ -114,16 +146,34 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
         }
         FAIL("Timed out waiting for ready pipelines and scene activation");
     };
-    const auto render = [&]() {
+    const auto submit = [&]() {
         REQUIRE(activation.GetActiveOrNull() != nullptr);
         rhi::SubmissionToken completion;
         REQUIRE(activation.GetActiveOrNull()->Render(fixture.Surface, WIDTH, HEIGHT, completion) ==
                 rhi::RasterStatus::Ready);
-        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
     };
+    const auto readPixels = [&]() { REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true); };
+    const auto render = [&]() {
+        submit();
+        readPixels();
+    };
+    const auto getRecipe = [&]() {
+        REQUIRE(activation.GetActiveOrNull() != nullptr);
+        renderer::RenderGraphPipelineReport report;
+        REQUIRE(activation.GetActiveOrNull()->GetPipelineReport(report) == rhi::RasterStatus::Ready);
+        REQUIRE(report.RecipeCount == 1);
+        REQUIRE(report.Recipes[0].HasRecipeKey == true);
+        CHECK(report.Recipes[0].FirstUseMisses == 0);
+        CHECK(report.Recipes[0].ReadyPipelines == report.Recipes[0].NativePipelines);
+        return report.Recipes[0];
+    };
+    const uint64 startupTicks = time::NowTicks();
     awaitDelivery(ReloadState::Staged);
     activate(1);
+    const uint64 initialRequestToReadyNanoseconds = readyTicks - stagedTicks;
     render();
+    const uint64 initialFirstReadbackNanoseconds = time::NowTicks() - startupTicks;
+    const renderer::RenderGraphPipelineRecipe initialRecipe = getRecipe();
     const usize centerPixel = (usize{32} * WIDTH + 48) * 4;
     REQUIRE(fixture.Pixels[centerPixel] == 255);
     REQUIRE(fixture.Pixels[centerPixel + 1] == 0);
@@ -158,6 +208,8 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
             rhi::backend::SetNativePipelinePreparationPaused(false);
         }
     };
+    constexpr usize FRAME_SAMPLE_COUNT = 32;
+    StaticArray<uint64, FRAME_SAMPLE_COUNT> submissionNanoseconds{};
     {
         PreparationPause pause;
         const uint32 started = rhi::backend::GetNativePreparationStarted();
@@ -171,11 +223,15 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
             threading::SleepFor(timing::Milliseconds(1));
         }
         REQUIRE(rhi::backend::GetNativePreparationStarted() > started);
-        for (usize frame = 0; frame < 8; ++frame)
+        for (uint64& nanoseconds : submissionNanoseconds)
         {
-            CHECK(activation.Poll() == rhi::RasterStatus::Ready);
+            const uint64 beforeFrame = time::NowTicks();
+            const rhi::RasterStatus polled = activation.Poll();
+            submit();
+            nanoseconds = time::NowTicks() - beforeFrame;
+            CHECK(polled == rhi::RasterStatus::Ready);
             CHECK(activation.GetReport().ActiveGeneration == 1);
-            render();
+            readPixels();
             CHECK(std::memcmp(firstPixels.GetData(), fixture.Pixels.GetData(), PIXEL_BYTES) == 0);
         }
         // A newer candidate may detach this blocked pipeline immediately;
@@ -185,11 +241,18 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
         CHECK(activation.GetReport().CandidateGeneration == 3);
         CHECK(activation.GetReport().ActiveGeneration == 1);
     }
+    readyTicks = 0;
     activate(3);
     const uint64 replacementNanoseconds = time::NowTicks() - pipelineStart;
+    const uint64 replacementRequestToReadyNanoseconds = readyTicks - stagedTicks;
     render();
     REQUIRE(fixture.Pixels[centerPixel] == 0);
     REQUIRE(fixture.Pixels[centerPixel + 1] == 255);
+    const uint64 replacementFirstReadbackNanoseconds = time::NowTicks() - pipelineStart;
+    const renderer::RenderGraphPipelineRecipe replacementRecipe = getRecipe();
+    CHECK(std::memcmp(replacementRecipe.Recipe.Key.GetData(),
+                      initialRecipe.Recipe.Key.GetData(),
+                      format::IDENTITY_BYTES) != 0);
 #if defined(LUDUS_TEST_METAL)
     // Preserve the active green graph when the native compiler rejects an
     // otherwise structurally admitted runtime artifact after asynchronous enqueue.
@@ -232,8 +295,23 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
     if (metricsOrNull != nullptr)
     {
         std::ofstream metrics(metricsOrNull);
+        std::sort(submissionNanoseconds.begin(), submissionNanoseconds.end());
+        constexpr usize PERCENTILE = 95;
+        constexpr usize PERCENT = 100;
+        constexpr usize TAIL_INDEX = (FRAME_SAMPLE_COUNT * PERCENTILE + PERCENT - 1) / PERCENT - 1;
         metrics << "{\"replacement_read_and_pipeline_ns\":" << replacementNanoseconds
-                << ",\"maximum_delivery_service_ns\":" << maximumServiceNanoseconds << "}\n";
+                << ",\"replacement_request_to_ready_ns\":" << replacementRequestToReadyNanoseconds
+                << ",\"replacement_first_readback_ns\":" << replacementFirstReadbackNanoseconds
+                << ",\"startup_request_to_ready_ns\":" << initialRequestToReadyNanoseconds
+                << ",\"startup_first_readback_ns\":" << initialFirstReadbackNanoseconds
+                << ",\"pending_cpu_frame_samples\":" << FRAME_SAMPLE_COUNT
+                << ",\"pending_cpu_frame_p95_ns\":" << submissionNanoseconds[TAIL_INDEX]
+                << ",\"pending_cpu_frame_max_ns\":" << submissionNanoseconds[FRAME_SAMPLE_COUNT - 1]
+                << ",\"maximum_delivery_service_ns\":" << maximumServiceNanoseconds << ",\"startup_recipe\":";
+        WriteRecipeMetrics(metrics, initialRecipe);
+        metrics << ",\"replacement_recipe\":";
+        WriteRecipeMetrics(metrics, replacementRecipe);
+        metrics << "}\n";
     }
     activation.Reset();
 }

@@ -62,10 +62,10 @@ struct PackageWriter final
             Bytes.Add(static_cast<uint8>((value >> (8U * i)) & 0xFFU));
         }
     }
-    /// Empty structured storage records, then the version 25 scene resource word.
+    /// Empty storage, scene resources, warm-up counts and recipe table for the selected version.
     // The package version selects which words exist; the scene resource bits are that word's value.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-    void WriteSceneResources(uint32 version, uint32 sceneResources = 0, uint32 warmup = 0)
+    void WriteSceneResources(uint32 version, uint32 sceneResources = 0, uint32 warmup = 0, uint32 recipeCount = 0)
     // NOLINTEND(bugprone-easily-swappable-parameters)
     {
         if (version >= format::STORAGE_PACKAGE_VERSION)
@@ -82,6 +82,10 @@ struct PackageWriter final
             {
                 WriteWord(program == 0 ? warmup : 0);
             }
+        }
+        if (version >= format::RECIPE_KEY_PACKAGE_VERSION)
+        {
+            WriteWord(recipeCount);
         }
     }
     void WritePadded(std::string_view text)
@@ -114,6 +118,8 @@ struct PackageOptions final
     uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     uint32 AccumulationSamples = 0;
     uint32 CaptureWarmupSamples = 0;
+    uint32 RecipeCount = 0;
+    format::ShaderTarget RecipeTarget = format::ShaderTarget::Wgsl;
     uint32 SourceColor = format::ABSENT;
     float32 ToneMappingExposure = 0;
     uint32 DenoisingQuality = 0;
@@ -296,7 +302,13 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
-    writer.WriteSceneResources(options.Version, 0, options.CaptureWarmupSamples);
+    writer.WriteSceneResources(options.Version, 0, options.CaptureWarmupSamples, options.RecipeCount);
+    for (uint32 recipe = 0; recipe < options.RecipeCount; ++recipe)
+    {
+        writer.WriteWord(static_cast<uint32>(format::Technique::ColorAndDepth));
+        writer.WriteWord(static_cast<uint32>(options.RecipeTarget));
+        writer.WriteIdentity(0xCD);
+    }
     if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
@@ -585,6 +597,34 @@ TEST_CASE("RG3 malformed runtime packages reject without a partial generation", 
                              format::STAGE_FIELD_COUNT * sizeof(uint32) + 12 + 24;
     duplicate[firstStage + stageBytes] = 0;
     CHECK(DecodeBytes(duplicate) == renderer::RenderGraphPackageStatus::Malformed);
+}
+
+TEST_CASE("Runtime graph recipe keys are bounded, unique and owned by the decoded package",
+          "[renderer][render-graph][activation]")
+{
+    PackageOptions options;
+    options.RecipeCount = 1;
+    renderer::RenderGraphPackage package;
+    REQUIRE(package.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Ready);
+    const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+    REQUIRE(programs.RecipeKeys.GetSize() == 1);
+    CHECK(programs.RecipeKeys[0].Technique == format::Technique::ColorAndDepth);
+    CHECK(programs.RecipeKeys[0].Target == format::ShaderTarget::Wgsl);
+    for (const uint8 byte : programs.RecipeKeys[0].Key)
+    {
+        CHECK(byte == 0xCD);
+    }
+
+    renderer::RenderGraphPackage rejected;
+    options.RecipeCount = 2;
+    CHECK(rejected.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.RecipeCount = 1;
+    options.RecipeTarget = static_cast<format::ShaderTarget>(format::SHADER_TARGET_COUNT);
+    CHECK(rejected.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.RecipeCount = 0;
+    options.Version = format::FORWARD_SURFACE_CHART_PACKAGE_VERSION;
+    REQUIRE(rejected.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Ready);
+    CHECK(rejected.GetPrograms({}, {}).RecipeKeys.GetSize() == 0);
 }
 
 TEST_CASE("RG3 runtime packages decode SPIR-V words little-endian beside every text target",

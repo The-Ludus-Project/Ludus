@@ -60,21 +60,21 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
 #endif
     auto* layout = new QVBoxLayout(this);
     auto* actions = new QHBoxLayout;
-    New_ = new QPushButton(QStringLiteral("New 3D scene"), this);
-    Open_ = new QPushButton(QStringLiteral("Open 3D scene"), this);
-    Import_ = new QPushButton(QStringLiteral("Import reference scene"), this);
-    Save_ = new QPushButton(QStringLiteral("Save scene"), this);
-    Cancel_ = new QPushButton(QStringLiteral("Cancel import"), this);
-    for (auto* button : {New_, Open_, Import_, Save_, Cancel_})
+    mNewButton = new QPushButton(QStringLiteral("New 3D scene"), this);
+    mOpenButton = new QPushButton(QStringLiteral("Open 3D scene"), this);
+    mImportButton = new QPushButton(QStringLiteral("Import reference scene"), this);
+    mSaveButton = new QPushButton(QStringLiteral("Save scene"), this);
+    mCancelButton = new QPushButton(QStringLiteral("Cancel import"), this);
+    for (QPushButton* button : {mNewButton, mOpenButton, mImportButton, mSaveButton, mCancelButton})
     {
         actions->addWidget(button);
     }
     layout->addLayout(actions);
-    File_ = new QLabel(this);
-    Status_ = new QLabel(this);
-    Status_->setObjectName(QStringLiteral("levelStatus"));
-    Status_->setWordWrap(true);
-    layout->addWidget(File_);
+    mFile = new QLabel(this);
+    mStatus = new QLabel(this);
+    mStatus->setObjectName(QStringLiteral("levelStatus"));
+    mStatus->setWordWrap(true);
+    layout->addWidget(mFile);
     auto* body = new QHBoxLayout;
     Objects_ = new QListWidget(this);
     ConfigureItemSelection(*Objects_);
@@ -100,15 +100,15 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         inspector->addWidget(translation);
         connect(translation, &QDoubleSpinBox::editingFinished, this, &LevelWorkspace::Edit);
     }
-    Remove_ = new QPushButton(QStringLiteral("Remove object"), this);
-    inspector->addWidget(Remove_);
+    mRemoveButton = new QPushButton(QStringLiteral("Remove object"), this);
+    inspector->addWidget(mRemoveButton);
     layout->addLayout(inspector);
-    layout->addWidget(Status_);
-    Warnings_ = new QLabel(this);
-    Warnings_->setTextFormat(Qt::PlainText);
-    Warnings_->setWordWrap(true);
-    layout->addWidget(Warnings_);
-    connect(New_, &QPushButton::clicked, this, [this]() {
+    layout->addWidget(mStatus);
+    mWarnings = new QLabel(this);
+    mWarnings->setTextFormat(Qt::PlainText);
+    mWarnings->setWordWrap(true);
+    layout->addWidget(mWarnings);
+    connect(mNewButton, &QPushButton::clicked, this, [this]() {
         const auto path = QFileDialog::getSaveFileName(this,
                                                        QStringLiteral("New 3D scene"),
                                                        QDir(Root_).filePath(QStringLiteral("scenes/main.lulevel")),
@@ -118,7 +118,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
             (void)Create(path);
         }
     });
-    connect(Open_, &QPushButton::clicked, this, [this]() {
+    connect(mOpenButton, &QPushButton::clicked, this, [this]() {
         const auto path = QFileDialog::getOpenFileName(this,
                                                        QStringLiteral("Open 3D scene"),
                                                        Root_,
@@ -128,7 +128,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
             (void)Open(path);
         }
     });
-    connect(Import_, &QPushButton::clicked, this, [this]() {
+    connect(mImportButton, &QPushButton::clicked, this, [this]() {
         const QString file =
             QFileDialog::getOpenFileName(this,
                                          QStringLiteral("Import scene"),
@@ -161,11 +161,11 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         connect(confirm, &QMessageBox::accepted, this, [this, source]() { (void)ImportPreviewed(source); });
         confirm->open();
     });
-    connect(Save_, &QPushButton::clicked, this, [this]() { (void)Save(); });
-    connect(Cancel_, &QPushButton::clicked, this, &LevelWorkspace::Cancel);
+    connect(mSaveButton, &QPushButton::clicked, this, [this]() { (void)Save(); });
+    connect(mCancelButton, &QPushButton::clicked, this, &LevelWorkspace::Cancel);
     connect(Objects_, &QListWidget::currentRowChanged, this, &LevelWorkspace::Inspect);
     connect(Name_, &QLineEdit::editingFinished, this, &LevelWorkspace::Edit);
-    connect(Remove_, &QPushButton::clicked, this, [this]() {
+    connect(mRemoveButton, &QPushButton::clicked, this, [this]() {
         const auto index = Objects_->currentRow();
         if (Busy_ || index < 0)
         {
@@ -177,7 +177,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         {
             if (object.toObject().value(QStringLiteral("parent")).toString() == id)
             {
-                Status_->setText(QStringLiteral("Remove child objects before removing their parent."));
+                mStatus->setText(QStringLiteral("Remove child objects before removing their parent."));
                 return;
             }
         }
@@ -192,7 +192,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         // must preserve the scene operation's diagnostic.
         if (Busy_ == false && Preview_.Status().isEmpty() == false)
         {
-            Status_->setText(Preview_.Status());
+            mStatus->setText(Preview_.Status());
         }
     });
     connect(&Preview_, &RenderPreview::Failed, this, [this](const QString& error) {
@@ -262,7 +262,7 @@ void LevelWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     StopPreview();
     (void)Preview_.SetScene({});
     Viewport_->ClearFrame(QStringLiteral("Import a reference scene to render it here."));
-    Warnings_->clear();
+    mWarnings->clear();
     Scene_ = {};
     Candidate_ = {};
     PreviousScene_ = {};
@@ -272,7 +272,7 @@ void LevelWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     Path_.clear();
     Disk_.clear();
     Dirty_ = false;
-    Status_->setText(
+    mStatus->setText(
         QStringLiteral("New/open a 3D scene, then import a reference scene. Assets are stored in this project."));
     Render();
 }
@@ -304,13 +304,13 @@ bool LevelWorkspace::Create(const QString& path)
     }
     if (Relative(path, relative) == false || QFileInfo::exists(path))
     {
-        Status_->setText(QStringLiteral("Choose a new .lulevel path inside this project, or open the existing scene."));
+        mStatus->setText(QStringLiteral("Choose a new .lulevel path inside this project, or open the existing scene."));
         return false;
     }
     QString levelId;
     if (TryGenerateUuidText(mEntropy, levelId) == false)
     {
-        Status_->setText(DescribeEntropyUnavailable());
+        mStatus->setText(DescribeEntropyUnavailable());
         return false;
     }
     if (ConfirmDiscard() == false)
@@ -320,7 +320,7 @@ bool LevelWorkspace::Create(const QString& path)
     StopPreview();
     (void)Preview_.SetScene({});
     Viewport_->ClearFrame(QStringLiteral("Import a reference scene to render it here."));
-    Warnings_->clear();
+    mWarnings->clear();
     Level_ = QJsonObject{{QStringLiteral("version"), 1},
                          {QStringLiteral("id"), levelId},
                          {QStringLiteral("name"), QFileInfo(path).completeBaseName()},
@@ -384,11 +384,11 @@ bool LevelWorkspace::PreviewImport(const QString& source)
     ImportPreview_ = {};
     if (Run({Operation_, {}, Source_, QJsonValue(QJsonValue::Null)}) == false)
     {
-        Status_->setText(QStringLiteral("Could not start the import preview; current scene retained."));
+        mStatus->setText(QStringLiteral("Could not start the import preview; current scene retained."));
         return false;
     }
     Busy_ = true;
-    Status_->setText(QStringLiteral("Planning the import (dry run)… Previous viewport remains available."));
+    mStatus->setText(QStringLiteral("Planning the import (dry run)… Previous viewport remains available."));
     Render();
     return true;
 }
@@ -408,7 +408,7 @@ void LevelWorkspace::ShowSceneFailure(const QString& error)
 }
 QString LevelWorkspace::StatusText() const
 {
-    return Status_->text();
+    return mStatus->text();
 }
 bool LevelWorkspace::VerifyAssets(const QJsonObject& level)
 {
@@ -501,11 +501,11 @@ bool LevelWorkspace::Start(const QString& operation, const QString& path, const 
     const QJsonValue expected = Disk_.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(Disk_);
     if (Run({operation, path, source, expected}) == false)
     {
-        Status_->setText(QStringLiteral("Could not start the scene operation; current scene retained."));
+        mStatus->setText(QStringLiteral("Could not start the scene operation; current scene retained."));
         return false;
     }
     Busy_ = true;
-    Status_->setText(QStringLiteral("Validating scene assets… Previous viewport remains available."));
+    mStatus->setText(QStringLiteral("Validating scene assets… Previous viewport remains available."));
     Render();
     return true;
 }
@@ -638,7 +638,7 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
                     [self, text]() {
                         if (self->Busy_ == true && self->Cancelling_ == false)
                         {
-                            self->Status_->setText(text);
+                            self->mStatus->setText(text);
                         }
                     },
                     Qt::QueuedConnection);
@@ -730,11 +730,11 @@ void LevelWorkspace::Completed()
         if (isAccepted == true)
         {
             ImportPreview_ = result;
-            Status_->setText(QStringLiteral("Import preview ready; nothing was written."));
+            mStatus->setText(QStringLiteral("Import preview ready; nothing was written."));
         }
         else
         {
-            Status_->setText(Cancelling_ == true                  ? QStringLiteral("Import preview cancelled.")
+            mStatus->setText(Cancelling_ == true                  ? QStringLiteral("Import preview cancelled.")
                              : OperationError_.isEmpty() == false ? OperationError_
                                                                   : QStringLiteral("Import preview failed."));
         }
@@ -909,7 +909,7 @@ void LevelWorkspace::CommitImport()
         Rollback(QStringLiteral("Could not publish the prepared catalog."));
         return;
     }
-    Status_->setText(QStringLiteral("Committing prepared scene assets…"));
+    mStatus->setText(QStringLiteral("Committing prepared scene assets…"));
 }
 void LevelWorkspace::CommitCandidate()
 {
@@ -925,7 +925,7 @@ void LevelWorkspace::CommitCandidate()
     {
         Viewport_->ClearFrame(QStringLiteral("No visible scene instances."));
     }
-    Warnings_->setText(PendingWarnings_);
+    mWarnings->setText(PendingWarnings_);
     if (Operation_ == QStringLiteral("save") || Operation_ == QStringLiteral("open"))
     {
         Disk_ = CandidateDisk_;
@@ -937,7 +937,7 @@ void LevelWorkspace::CommitCandidate()
     Dirty_ = WorldOwned_ == false && Operation_ != QStringLiteral("save") && Operation_ != QStringLiteral("open");
     Busy_ = false;
     PreviousScene_ = {};
-    Status_->setText(Operation_ == QStringLiteral("save")
+    mStatus->setText(Operation_ == QStringLiteral("save")
                          ? QStringLiteral("Scene saved with verified project-owned assets.")
                          : QStringLiteral("Scene ready."));
     if (hasNewStartView == true)
@@ -974,7 +974,7 @@ void LevelWorkspace::Rollback(QString error) // NOLINT(performance-unnecessary-v
     }
     PreviousScene_ = {};
     Busy_ = false;
-    Status_->setText(error + QStringLiteral(" Previous scene and level retained."));
+    mStatus->setText(error + QStringLiteral(" Previous scene and level retained."));
     Render();
     Q_EMIT OperationFinished(false);
     ApplyPendingProject();
@@ -990,7 +990,7 @@ void LevelWorkspace::Publish()
     if (Success_ == false || Cancelling_)
     {
         Busy_ = false;
-        Status_->setText(Error_);
+        mStatus->setText(Error_);
         const bool verification = VerificationOnly_;
         VerificationOnly_ = false;
         Render();
@@ -1010,7 +1010,7 @@ void LevelWorkspace::Publish()
     {
         VerificationOnly_ = false;
         Busy_ = false;
-        Status_->setText(QStringLiteral("World scene assets verified."));
+        mStatus->setText(QStringLiteral("World scene assets verified."));
         Render();
         Q_EMIT AssetsVerified(true);
         ApplyPendingProject();
@@ -1081,7 +1081,7 @@ void LevelWorkspace::Publish()
         Rollback(Preview_.Status());
         return;
     }
-    Status_->setText(
+    mStatus->setText(
         QStringLiteral("Preparing candidate viewport; the current level stays active until its first rendered frame."));
 #else
     if (Operation_ == QStringLiteral("import"))
@@ -1094,7 +1094,7 @@ void LevelWorkspace::Publish()
     }
     Viewport_->ClearFrame(QStringLiteral("Scene ready. This Editor build has no native rendered viewport "
                                          "(configure with LUDUS_EDITOR_RENDER_PREVIEW)."));
-    Status_->setText(QStringLiteral("Scene ready. This Editor build has no native rendered viewport."));
+    mStatus->setText(QStringLiteral("Scene ready. This Editor build has no native rendered viewport."));
 #endif
 }
 void LevelWorkspace::ApplyPendingProject()
@@ -1118,13 +1118,13 @@ void LevelWorkspace::Cancel()
         return;
     }
     CancelRequested_.store(true);
-    Status_->setText(QStringLiteral("Cancelling; waiting for the owned operation to drain…"));
+    mStatus->setText(QStringLiteral("Cancelling; waiting for the owned operation to drain…"));
 }
 bool LevelWorkspace::ConfirmDiscard()
 {
     if (Busy_)
     {
-        Status_->setText(
+        mStatus->setText(
             QStringLiteral("Finish or cancel the current scene operation before closing/changing projects."));
         return false;
     }
@@ -1160,13 +1160,13 @@ void LevelWorkspace::Render()
     {
         Objects_->setCurrentRow(selected);
     }
-    File_->setText(Path_.isEmpty() ? QStringLiteral("No 3D scene open")
+    mFile->setText(Path_.isEmpty() ? QStringLiteral("No 3D scene open")
                                    : Path_ + (Dirty_ ? QStringLiteral(" *") : QString()));
-    New_->setEnabled(Busy_ == false && Root_.isEmpty() == false);
-    Open_->setEnabled(Busy_ == false && Root_.isEmpty() == false);
-    Import_->setEnabled(Busy_ == false && Level_.isEmpty() == false);
-    Save_->setEnabled(CanSave());
-    Cancel_->setEnabled(Busy_ && Operation_ != QStringLiteral("save") && PublishingCatalog_ == false);
+    mNewButton->setEnabled(Busy_ == false && Root_.isEmpty() == false);
+    mOpenButton->setEnabled(Busy_ == false && Root_.isEmpty() == false);
+    mImportButton->setEnabled(Busy_ == false && Level_.isEmpty() == false);
+    mSaveButton->setEnabled(CanSave());
+    mCancelButton->setEnabled(Busy_ && Operation_ != QStringLiteral("save") && PublishingCatalog_ == false);
     Objects_->setEnabled(Busy_ == false);
     Rendering_ = false;
     Inspect();
@@ -1183,7 +1183,7 @@ void LevelWorkspace::Inspect()
     const auto objects = Level_.value(QStringLiteral("objects")).toArray();
     const bool isAvailable = Busy_ == false && index >= 0 && index < objects.size();
     Name_->setEnabled(isAvailable);
-    Remove_->setEnabled(isAvailable);
+    mRemoveButton->setEnabled(isAvailable);
     const QJsonObject object = isAvailable ? objects[index].toObject() : QJsonObject{};
     Name_->setText(object.value(QStringLiteral("name")).toString());
     const auto transform = object.value(QStringLiteral("transform")).toArray();
@@ -1245,7 +1245,7 @@ PlacementPublication LevelWorkspace::PublishPlacement(const QJsonObject& level, 
         ++mPlacementGeneration;
         mPresentedLevel = mValidatedLevel;
         mPlacementValidation = PlacementValidation::Ready;
-        Status_->setText(QStringLiteral("Scene ready."));
+        mStatus->setText(QStringLiteral("Scene ready."));
         return PlacementPublication::Published;
     }
     RenderScene placed;
@@ -1264,7 +1264,7 @@ PlacementPublication LevelWorkspace::PublishPlacement(const QJsonObject& level, 
     mPresentedLevel = level;
     mPlacementWorld = world;
     mPlacementValidation = PlacementValidation::Pending;
-    Status_->setText(QStringLiteral("Objects placed. Validating scene assets in the background…"));
+    mStatus->setText(QStringLiteral("Objects placed. Validating scene assets in the background…"));
     startPlacementValidation();
     return PlacementPublication::Published;
 }
@@ -1298,7 +1298,7 @@ PlacementPublication LevelWorkspace::PublishLightSwitches(const QJsonObject& lev
     mPresentedWorld = unplacedWorld;
     mValidatedScene = mPresentedScene;
     mValidatedWorld = mPresentedWorld;
-    Status_->setText(QStringLiteral("Light switches applied."));
+    mStatus->setText(QStringLiteral("Light switches applied."));
     return PlacementPublication::Published;
 }
 bool LevelWorkspace::PublishProbeVolume(const QJsonObject& level, const WorldDocument& world)
@@ -1414,12 +1414,12 @@ void LevelWorkspace::finishPlacementValidation()
         if (isAccepted == true)
         {
             Level_ = Candidate_;
-            Warnings_->setText(PendingWarnings_);
+            mWarnings->setText(PendingWarnings_);
             mPresentedLevel = Level_;
             mValidatedScene = mPresentedScene;
             mValidatedLevel = mPresentedLevel;
             mValidatedWorld = mPresentedWorld;
-            Status_->setText(QStringLiteral("Scene ready."));
+            mStatus->setText(QStringLiteral("Scene ready."));
             result = PlacementValidationResult::Accepted;
         }
         else
@@ -1440,7 +1440,7 @@ void LevelWorkspace::finishPlacementValidation()
                 mPresentedLevel = {};
                 mPresentedWorld = {};
             }
-            Status_->setText(Error_ + QStringLiteral(" Previous scene retained."));
+            mStatus->setText(Error_ + QStringLiteral(" Previous scene retained."));
             result = PlacementValidationResult::Rejected;
         }
         ++mPlacementGeneration;
