@@ -42,10 +42,14 @@ enum class RenderGraphPreviewWork : foundation::uint8
 [[nodiscard]] QString
 DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
                                      const graphics::renderer::SceneShaderDiagnostics& diagnostics);
-/// Name the World input a graph rejected and the repair, for example the Atmosphere entity that needs a clustered
-/// deferred configuration. Coverage counts come from report. Empty for RenderGraphSceneRejection::None.
+/// Name the World input a graph rejected and the repair, for example a camera with an infinite far plane. Coverage
+/// counts come from report. Empty for RenderGraphSceneRejection::None.
 [[nodiscard]] QString DescribeRenderGraphSceneRejection(graphics::renderer::RenderGraphSceneRejection rejection,
                                                         const graphics::renderer::RenderGraphReport& report);
+/// Warning for a graph that draws the World without its Atmosphere (RenderGraphReport::IsAtmosphereOmitted): what is
+/// not rendered, why, and the repairs. Never blocks drawing.
+/// @param configuration Display name of the drawing graph configuration; empty omits the name.
+[[nodiscard]] QString DescribeOmittedAtmosphere(const QString& configuration);
 /// Viewport status for a failed or restart-requiring candidate, naming its cause and repair when the renderer
 /// attributed one; empty while the candidate is neither Failed nor RestartRequired.
 [[nodiscard]] QString
@@ -362,6 +366,9 @@ public:
     [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
     /// Draws of the active graph sampling the baked probe volume; zero without a deferred Baked Lighting pass.
     [[nodiscard]] foundation::usize GetProbeReceiverDrawCount() const noexcept;
+    /// Whether the active graph draws the latest World extraction without its Atmosphere because it has no clustered
+    /// deferred programs; false without an active graph. See DescribeOmittedAtmosphere.
+    [[nodiscard]] bool IsAtmosphereOmitted() const noexcept;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
     {

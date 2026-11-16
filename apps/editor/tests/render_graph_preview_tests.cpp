@@ -1277,6 +1277,21 @@ TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[edito
               .contains(QStringLiteral("memory budget")) == false);
 }
 
+TEST_CASE("a graph that omits the Atmosphere names what is not rendered and the repairs",
+          "[editor][render-graph][preview]")
+{
+    const QString named = DescribeOmittedAtmosphere(QStringLiteral("main"));
+    CHECK(named.startsWith(QStringLiteral("Atmosphere not rendered. Graph configuration “main”")) == true);
+    CHECK(named.contains(QStringLiteral("clustered deferred")) == true);
+    CHECK(named.contains(QStringLiteral("World environment")) == true);
+    CHECK(named.contains(QStringLiteral("Force raster")) == true);
+    CHECK(named.contains(QStringLiteral("disable the Atmosphere entity")) == true);
+    // It is advice about a drawn frame, not a rejection.
+    CHECK(named.contains(QStringLiteral("cannot draw")) == false);
+    CHECK(DescribeOmittedAtmosphere({}).startsWith(
+              QStringLiteral("Atmosphere not rendered. The selected graph configuration")) == true);
+}
+
 TEST_CASE("a failed candidate names the World input it cannot draw and the repair", "[editor][render-graph][preview]")
 {
     renderer::RenderGraphActivationReport report;
@@ -1287,23 +1302,19 @@ TEST_CASE("a failed candidate names the World input it cannot draw and the repai
     // Without an attributed cause the status keeps the raw outcome.
     CHECK(DescribeRenderGraphActivationFailure(report) ==
           QStringLiteral("Renderer activation failed (Unsupported) for generation 3; the last good scene is kept."));
-    report.CandidateRejection = renderer::RenderGraphSceneRejection::Atmosphere;
-    const QString atmosphere = DescribeRenderGraphActivationFailure(report);
-    CHECK(atmosphere.startsWith(QStringLiteral("Renderer generation 3 cannot draw this World.")) == true);
-    CHECK(atmosphere.contains(QStringLiteral("Atmosphere entity")) == true);
-    CHECK(atmosphere.contains(QStringLiteral("Force raster")) == true);
-    CHECK(atmosphere.endsWith(QStringLiteral("The last good scene is kept.")) == true);
+    report.CandidateRejection = renderer::RenderGraphSceneRejection::CameraDepth;
+    const QString depth = DescribeRenderGraphActivationFailure(report);
+    CHECK(depth.startsWith(QStringLiteral("Renderer generation 3 cannot draw this World.")) == true);
+    CHECK(depth.contains(QStringLiteral("finite far plane")) == true);
+    CHECK(depth.endsWith(QStringLiteral("The last good scene is kept.")) == true);
     report.CandidateRejection = renderer::RenderGraphSceneRejection::Coverage;
     report.CandidateReport.Conflicting = 2;
     report.CandidateReport.Unsupported = 5;
     const QString coverage = DescribeRenderGraphActivationFailure(report);
     CHECK(coverage.contains(QStringLiteral("2 item views conflict")) == true);
     CHECK(coverage.contains(QStringLiteral("5 item views have no compatible pass")) == true);
-    for (const renderer::RenderGraphSceneRejection rejection :
-         {renderer::RenderGraphSceneRejection::CameraDepth, renderer::RenderGraphSceneRejection::MaskedDepthPrepass})
-    {
-        CHECK(DescribeRenderGraphSceneRejection(rejection, {}).isEmpty() == false);
-    }
+    CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::MaskedDepthPrepass, {}).isEmpty() ==
+          false);
     CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::None, {}).isEmpty() == true);
     report.Candidate = renderer::RenderGraphCandidateState::RestartRequired;
     CHECK(DescribeRenderGraphActivationFailure(report).startsWith(

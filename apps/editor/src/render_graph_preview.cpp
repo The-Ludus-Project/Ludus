@@ -148,12 +148,6 @@ QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection re
     {
         case renderer::RenderGraphSceneRejection::None:
             return {};
-        case renderer::RenderGraphSceneRejection::Atmosphere:
-            return QStringLiteral("This World's Atmosphere entity needs a clustered deferred raster configuration, "
-                                  "and the selected graph configuration has none. Turn on Force raster in the "
-                                  "viewport toolbar to draw the sky with the engine's default raster graph, or "
-                                  "disable the Atmosphere entity in the World to keep this "
-                                  "configuration.");
         case renderer::RenderGraphSceneRejection::CameraDepth:
             return QStringLiteral("The view camera has an infinite far plane or an unknown depth convention, which "
                                   "render graphs cannot draw. Give the camera a finite far plane.");
@@ -181,6 +175,19 @@ QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection re
                                   "configuration, or set those materials' Alpha to Opaque.");
     }
     return {};
+}
+
+QString DescribeOmittedAtmosphere(const QString& configuration)
+{
+    const QString graph = configuration.isEmpty() == true
+                              ? QStringLiteral("The selected graph configuration")
+                              : QStringLiteral("Graph configuration “%1”").arg(configuration);
+    return QStringLiteral("Atmosphere not rendered. %1 has no clustered deferred raster pass, so it draws the World "
+                          "without the sky, haze and night sky: the background is the World environment and the "
+                          "Atmosphere's Sun is not dimmed by the air. Turn on Force raster in the viewport toolbar to "
+                          "see the sky with the engine's default raster graph, or disable the Atmosphere entity in "
+                          "the World.")
+        .arg(graph);
 }
 
 QString DescribeRenderGraphActivationFailure(const renderer::RenderGraphActivationReport& report)
@@ -898,7 +905,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     const bool hasDistinctFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
     // Force raster draws the engine's default raster graph whatever the requested graph contains: a graph can
     // trace rays in authored compute pipelines without a RayTracing pass, and an authored raster graph may lack
-    // what the World needs (Atmosphere requires the default clustered deferred programs).
+    // what the World needs (only the default clustered deferred programs draw an Atmosphere).
     // A ray graph named as its own fallback still reads it, so the raytracing pass is rejected below.
     bool shouldUseFallback =
         state.ShouldForceRaster == true && (hasDistinctFallback == true || hasRayTracingPass == true);
@@ -1688,8 +1695,8 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         state.Candidate = {};
         EndViewportTrace(state.CandidateActivationTrace, "activated");
         // The activation records only revisions the drawing generation accepted, so a generation replacing one
-        // that rejected the retained extraction (Force raster over a graph without the Atmosphere's clustered
-        // deferred programs) activates without it. Offer the extraction again rather than wait for a World edit.
+        // that rejected the retained extraction (Force raster over a graph that rejects the World's alpha-masked
+        // materials) activates without it. Offer the extraction again rather than wait for a World edit.
         if (IsAccepted(state.ExtractionUpdateStatus) == false)
         {
             state.UpdatedRevision = 0;
@@ -1750,7 +1757,8 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             const float64 maximumAltitude =
                 renderer::GetAtmosphereMaximumViewAltitude(atmosphere, state.Extraction.View.OrthographicCamera);
             float64 altitude = 0;
-            if (atmosphere.IsEnabled == true &&
+            // A graph that omits the Atmosphere draws no sky, so its altitude range does not apply.
+            if (atmosphere.IsEnabled == true && graphReport.IsAtmosphereOmitted == false &&
                 renderer::TryGetAtmosphereAltitude(atmosphere, state.Extraction.View.CameraPosition, altitude) ==
                     true &&
                 (altitude < 0 || altitude > maximumAltitude))
@@ -1812,7 +1820,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                  rejection.isEmpty() == false)
         {
             // The replacement rejected the World the drawing generation accepts, as when Force raster is turned off
-            // over a graph without clustered deferred programs.
+            // over a graph whose depth-only prepass would seal alpha-masked materials.
             setStatus(rejection + QStringLiteral(" The shown frame is kept."));
         }
     }
@@ -2255,6 +2263,12 @@ usize RenderGraphPreview::GetProbeReceiverDrawCount() const noexcept
 {
     const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
     return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.ProbeReceiverDraws : 0;
+}
+
+bool RenderGraphPreview::IsAtmosphereOmitted() const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    return activeOrNull != nullptr && activeOrNull->GetReport().IsAtmosphereOmitted == true;
 }
 
 QString RenderGraphPreview::GetDisplayStatus() const

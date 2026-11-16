@@ -2323,10 +2323,11 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // Cheap per-tick identity: the draft revision covers the root's default configuration and every placement source.
-    const QByteArray identity = scene.Identity + '\n' + mDocument.GetPackageRoot().toUtf8() + '\n' +
-                                mDocument.GetRootGraph().toUtf8() + '\n' + mConfiguration->currentText().toUtf8() +
-                                '\n' + QByteArray::number(mDocument.GetRevision()) + '\n' +
-                                (mIsDefaultPreview == true ? '1' : '0');
+    const QByteArray identity =
+        scene.Identity + '\n' + mDocument.GetPackageRoot().toUtf8() + '\n' + mDocument.GetRootGraph().toUtf8() + '\n' +
+        mConfiguration->currentText().toUtf8() + '\n' + QByteArray::number(mDocument.GetRevision()) + '\n' +
+        (mIsDefaultPreview == true ? '1' : '0') +
+        (mPreviewOrNull != nullptr && mPreviewOrNull->IsAtmosphereOmitted() == true ? '1' : '0');
     if (identity == mRenderWarningIdentity)
     {
         return;
@@ -2358,9 +2359,15 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
     {
         warning = mWorldLighting.Warning;
     }
-    if (warning != mRenderWarning)
+    // The drawing graph reports the omission once it accepts the extraction, which the identity above follows.
+    const QString omittedFeatureWarning =
+        mPreviewOrNull != nullptr && mPreviewOrNull->IsAtmosphereOmitted() == true
+            ? DescribeOmittedAtmosphere(mIsDefaultPreview == true ? QString{} : configuration)
+            : QString{};
+    if (warning != mRenderWarning || omittedFeatureWarning != mOmittedFeatureWarning)
     {
         mRenderWarning = warning;
+        mOmittedFeatureWarning = omittedFeatureWarning;
         Q_EMIT RenderProblemChanged();
     }
 #else

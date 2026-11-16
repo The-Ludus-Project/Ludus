@@ -2295,11 +2295,14 @@ authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
 Only clustered deferred raster configurations draw an Atmosphere. A
-ray-traced or forward configuration rejects a World that has one, and the
-viewport keeps its last good frame. Its status says that the Atmosphere entity
-needs a clustered deferred configuration. Turn on **Force raster** in the
-viewport toolbar to draw the engine's default raster graph, or disable the
-Atmosphere entity to keep the selected configuration.
+ray-traced or forward configuration still draws the rest of the World. Its
+background is the World environment, the linked Sun lights the scene as an
+ordinary directional light that the air does not dim, and there is no haze or
+night sky. The viewport and the Error List show an **Atmosphere not rendered**
+warning (code `RenderGraphFeatureNotRendered`) that names the configuration.
+Turn on **Force raster** in the viewport toolbar to see the sky with the
+engine's default raster graph, or disable the Atmosphere entity to clear the
+warning.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky

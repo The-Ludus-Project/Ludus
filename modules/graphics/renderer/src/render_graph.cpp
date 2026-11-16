@@ -3332,11 +3332,6 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         {
             return Status::InvalidDescription;
         }
-        if (camera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
-        {
-            state.LastRejection = RenderGraphSceneRejection::Atmosphere;
-            return Status::Unsupported;
-        }
         // The conventional rewrite below needs a finite far plane, and graph overlays bound a finite frustum.
         if ((camera.Depth == DepthConvention::ReverseZ && camera.InfiniteFar == true) ||
             (camera.Depth != DepthConvention::Conventional && camera.Depth != DepthConvention::ReverseZ))
@@ -3348,10 +3343,18 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     // Admit each camera in the convention every pass of this graph can draw and rebuild positions from. The
     // conventional rewrite is exact for a finite projection: reverse-Z depth z/w becomes (w - z)/w.
     const bool canUseReverseDepth = state.CanUseReverseDepth();
+    bool isAtmosphereOmitted = false;
     for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
     {
         ViewDescription& admittedCamera = state.AdmittedCameras[cameraIndex];
         admittedCamera = cameras[cameraIndex];
+        // An Atmosphere is an optional World feature: only the clustered deferred programs compose it. Other graphs
+        // draw the World without it (ordinary background, unattenuated directional lights) and report the omission.
+        if (admittedCamera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
+        {
+            admittedCamera.Atmosphere = {};
+            isAtmosphereOmitted = true;
+        }
         if (admittedCamera.Depth == DepthConvention::ReverseZ && canUseReverseDepth == false)
         {
             for (math::Vector4& column : admittedCamera.WorldToClip.Columns)
@@ -3386,6 +3389,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 state.Report.SceneRevision = sceneRevision;
                 state.Report.IsAccepted = true;
                 state.Report.IsReady = false;
+                state.Report.IsAtmosphereOmitted = isAtmosphereOmitted;
             }
             outReport = state.Report;
             return prepared;
@@ -3417,6 +3421,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     state.CoverageCount = 0;
     state.Report = {};
     state.Report.SceneRevision = sceneRevision;
+    state.Report.IsAtmosphereOmitted = isAtmosphereOmitted;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
         for (usize role = 0; role < ROLE_COUNT; ++role)
