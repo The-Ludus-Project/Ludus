@@ -13,7 +13,7 @@ namespace format = content::render_graph_format;
 namespace
 {
 constexpr usize FORWARD_BINDING_COUNT = 10;
-constexpr usize FORWARD_MEMBER_COUNT = 16;
+constexpr usize FORWARD_MEMBER_COUNT = 17;
 constexpr usize OUTPUT_BINDING_COUNT = 3;
 constexpr usize CLUSTERED_BINDING_COUNT = FORWARD_BINDING_COUNT + 1;
 constexpr usize CLUSTERED_MEMBER_COUNT = FORWARD_MEMBER_COUNT + CLUSTERED_GRID_ROWS;
@@ -83,6 +83,10 @@ constexpr StaticArray<rhi::RasterUniformMember, FORWARD_MEMBER_COUNT> FORWARD_ME
      {0,
       "HairHighlights",
       FORWARD_SURFACE_OFFSET + (3 + LUDUS_ENVIRONMENT_SH_COEFFICIENTS) * FLOAT4_BYTES,
+      rhi::RasterUniformShape::Float4},
+     {0,
+      "SkinScattering",
+      FORWARD_SURFACE_OFFSET + (4 + LUDUS_ENVIRONMENT_SH_COEFFICIENTS) * FLOAT4_BYTES,
       rhi::RasterUniformShape::Float4}},
 };
 constexpr StaticArray<rhi::RasterBinding, CLUSTERED_BINDING_COUNT> CLUSTERED_BINDINGS = []() noexcept {

@@ -14,6 +14,10 @@ namespace ludus::graphics::renderer
 #endif
 /// RGBA16F G-buffer attachments: world normal/roughness, base color/metallic and emission/coverage.
 static const LightingLayoutValue DEFERRED_TARGET_COUNT = 3;
+/// Skin profiles a renderer holds at once: the distinct scattering distances of its live skin materials
+/// (content::scene_format::MaterialModel::Skin). A skin pixel's G-buffer metallic channel holds -(one-based profile
+/// slot), since skin is a dielectric, and the diffusion passes read the slot's distance from a per-view table.
+static const LightingLayoutValue DEFERRED_MAX_SKIN_PROFILES = 64;
 /// Rows of the inverse world-to-clip transform in the per-view uniform block.
 static const LightingLayoutValue DEFERRED_VIEW_ROWS = 4;
 /// Inverse transform, packed eye, target dimensions, view options and lighting view, in Float4 words.

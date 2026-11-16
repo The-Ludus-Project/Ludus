@@ -3914,6 +3914,19 @@ RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
             report.DeferredAllocations += DEFERRED_TARGET_COUNT;
             report.DeferredAttachmentBytes += sceneOrNull->DeferredAttachmentBytes;
         }
+        if (sceneOrNull == nullptr)
+        {
+            continue;
+        }
+        for (const core::UniquePtr<internal::RenderGraphDeferredTargets>& targets : sceneOrNull->DeferredTargets)
+        {
+            const uint64 skinBytes = targets.Get() != nullptr ? targets->GetSkinAttachmentBytes() : 0;
+            if (skinBytes != 0)
+            {
+                report.DeferredSkinAllocations += internal::DEFERRED_SKIN_TARGET_COUNT;
+                report.DeferredSkinAttachmentBytes += skinBytes;
+            }
+        }
     }
     return report;
 }

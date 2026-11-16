@@ -138,8 +138,13 @@ void EvaluateVisibleAtmosphereEnvironment(in float3 normalWorld,
         EvaluateAtmosphereSpecular(normalWorld, viewDirectionWorld, roughness, f0, cosineView) * specularVisibility;
 }
 
-float3 ComposeAtmosphereSegment(in float3 surfaceRadiance, in float3 positionWorld)
+// The view segment from the camera to positionWorld: its transmittance and the radiance it scatters toward the camera.
+// A surface's radiance L reaches the camera as L * outTransmittance + outInscattered; outside the shell the segment
+// is empty (transmittance one, nothing scattered).
+void IntegrateAtmosphereViewSegment(in float3 positionWorld, out float3 outTransmittance, out float3 outInscattered)
 {
+    outTransmittance = float3(1);
+    outInscattered = float3(0);
     const uint AERIAL_STEPS = 16;
     float3 originWorld = deferredView.AtmosphereCameraWorld.xyz;
     float3 offsetWorld = positionWorld - originWorld;
@@ -154,7 +159,7 @@ float3 ComposeAtmosphereSegment(in float3 surfaceRadiance, in float3 positionWor
     AtmosphereLocalFrame frame = GetAtmosphereLocalFrame(originWorld);
     if (distanceMetres <= 0 || frame.Height < 0 || frame.Height > SHELL_HEIGHT)
     {
-        return surfaceRadiance;
+        return;
     }
     float zenithCosine = clamp(dot(rayWorld, frame.UpWorld), -1, 1);
     float3 sunWorld = deferredView.AtmosphereSunWorld.xyz;
@@ -173,5 +178,13 @@ float3 ComposeAtmosphereSegment(in float3 surfaceRadiance, in float3 positionWor
                                                     distance,
                                                     AERIAL_STEPS,
                                                     true);
-    return surfaceRadiance * segment.Transmittance + deferredView.AtmosphereIlluminance.rgb * segment.Radiance;
+    outTransmittance = segment.Transmittance;
+    outInscattered = deferredView.AtmosphereIlluminance.rgb * segment.Radiance;
+}
+float3 ComposeAtmosphereSegment(in float3 surfaceRadiance, in float3 positionWorld)
+{
+    float3 transmittance;
+    float3 inscattered;
+    IntegrateAtmosphereViewSegment(positionWorld, transmittance, inscattered);
+    return surfaceRadiance * transmittance + inscattered;
 }
