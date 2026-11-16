@@ -448,14 +448,13 @@ QMessageBox* SuggestRasterFallback(QWidget& inoutParent, RenderPreview& inoutSou
     suggestion->setAttribute(Qt::WA_DeleteOnClose);
     suggestion->setIcon(QMessageBox::Question);
     suggestion->setWindowTitle(QStringLiteral("Slow viewport"));
-    suggestion->setText(
-        QStringLiteral("The project's raytracing render graph took %1 s per frame over the last %2 frames.")
-            .arg(QString::number(frameMilliseconds / MILLISECONDS_PER_SECOND, 'f', 1))
-            .arg(ViewportSlowFrameMonitor::SLOW_FRAME_STREAK));
+    suggestion->setText(QStringLiteral("The project's render graph took %1 s per frame over the last %2 frames.")
+                            .arg(QString::number(frameMilliseconds / MILLISECONDS_PER_SECOND, 'f', 1))
+                            .arg(ViewportSlowFrameMonitor::SLOW_FRAME_STREAK));
     suggestion->setInformativeText(
         QStringLiteral("Switch this viewport to the engine's default raster renderer? This turns on Force raster in "
-                       "the viewport toolbar; turn it off there to return to raytracing. The render graph and the "
-                       "World are not changed."));
+                       "the viewport toolbar; turn it off there to return to the project's render graph. The render "
+                       "graph and the World are not changed."));
     QPushButton* switchToRaster = suggestion->addButton(QStringLiteral("Switch to raster"), QMessageBox::AcceptRole);
     switchToRaster->setObjectName(QStringLiteral("viewportSlowFrameSwitch"));
     QPushButton* keep = suggestion->addButton(QStringLiteral("Keep current renderer"), QMessageBox::RejectRole);
@@ -2025,8 +2024,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QAction* forceRaster = new QAction(QStringLiteral("Force raster"), this);
     forceRaster->setCheckable(true);
     forceRaster->setChecked(preview->ShouldForceRaster());
-    forceRaster->setToolTip(QStringLiteral("Use raster even when hardware raytracing is available. "
-                                           "Unchecked selects automatically from the current GPU and API."));
+    forceRaster->setToolTip(QStringLiteral("Draw the engine's default raster render graph instead of the selected "
+                                           "one. Unchecked draws the selected render graph, using raster only when "
+                                           "this GPU and API lack the raytracing it needs."));
     QToolButton& forceRasterButton =
         InsertCommand(*controls, nullptr, *forceRaster, QStringLiteral("viewportForceRaster"));
     forceRasterButton.setProperty("visualRole", QStringLiteral("toggle"));

@@ -150,8 +150,8 @@ QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection re
         case renderer::RenderGraphSceneRejection::Atmosphere:
             return QStringLiteral("This World's Atmosphere entity needs a clustered deferred raster configuration, "
                                   "and the selected graph configuration has none. Turn on Force raster in the "
-                                  "viewport toolbar to draw the sky with the graph's clustered deferred Raster "
-                                  "configuration, or disable the Atmosphere entity in the World to keep this "
+                                  "viewport toolbar to draw the sky with the engine's default raster graph, or "
+                                  "disable the Atmosphere entity in the World to keep this "
                                   "configuration.");
         case renderer::RenderGraphSceneRejection::CameraDepth:
             return QStringLiteral("The view camera has an infinite far plane or an unknown depth convention, which "
@@ -503,7 +503,8 @@ struct RenderGraphPreview::State final
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
-        /// A ray renderer draws this generation and an authored raster fallback could replace it (Force raster).
+        /// The requested graph draws this generation and the engine default raster graph could replace it (Force
+        /// raster).
         bool CanUseRasterFallback = false;
         /// Runtime package and generation identity, for ray path capture of this generation.
         QString PackagePath;
@@ -871,19 +872,31 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     }
     QString selectedPath = runtimePackagePath;
     QString rendererStatus = QStringLiteral("Raster renderer.");
-    bool canUseRasterFallback = false;
-    if (renderer::UsesRayTracing(package->GetPlan()) == true)
+    const bool hasRayTracingPass = renderer::UsesRayTracing(package->GetPlan());
+    const bool hasDistinctFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
+    // Force raster draws the engine's default raster graph whatever the requested graph contains: a graph can
+    // trace rays in authored compute pipelines without a RayTracing pass, and an authored raster graph may lack
+    // what the World needs (Atmosphere requires the default clustered deferred programs).
+    // A ray graph named as its own fallback still reads it, so the raytracing pass is rejected below.
+    bool shouldUseFallback =
+        state.ShouldForceRaster == true && (hasDistinctFallback == true || hasRayTracingPass == true);
+    if (state.ShouldForceRaster == true && hasRayTracingPass == true && rasterFallbackPath.isEmpty() == true)
+    {
+        setStatus(QStringLiteral("Force raster needs the engine's default raster package, which this editor build "
+                                 "does not have. Turn Force raster off to draw the selected render graph."));
+        return RenderGraphPreviewLoad::Unsupported;
+    }
+    QString rayRendererStatus;
+    if (hasRayTracingPass == true && state.ShouldForceRaster == false)
     {
         const bool hasNativeRayQueries = renderer::RequiresHardwareRayTracing(package->GetPlan());
         renderer::RenderGraphRenderer selected = hasNativeRayQueries == true
                                                      ? renderer::RenderGraphRenderer::HardwareRayTracing
                                                      : renderer::RenderGraphRenderer::ComputeRayTracing;
-        const renderer::RenderGraphPreference preference = state.ShouldForceRaster == true
-                                                               ? renderer::RenderGraphPreference::ForceRaster
-                                                               : renderer::RenderGraphPreference::Automatic;
         if (state.IsAttached == true && hasNativeRayQueries == true)
         {
-            const rhi::RasterStatus status = renderer::SelectRenderGraphRenderer(state.Device, preference, selected);
+            const rhi::RasterStatus status =
+                renderer::SelectRenderGraphRenderer(state.Device, renderer::RenderGraphPreference::Automatic, selected);
             if (status != rhi::RasterStatus::Ready)
             {
                 setStatus(QStringLiteral("Renderer selection failed (%1); the shown frame is kept.")
@@ -891,36 +904,53 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
                 return RenderGraphPreviewLoad::Failed;
             }
         }
-        if (state.ShouldForceRaster == true || selected == renderer::RenderGraphRenderer::Raster)
+        if (selected == renderer::RenderGraphRenderer::Raster)
         {
             if (rasterFallbackPath.isEmpty() == true)
             {
                 setStatus(QStringLiteral("A raster runtime package is required for this renderer selection."));
                 return RenderGraphPreviewLoad::Unsupported;
             }
-            loaded = readPackage(rasterFallbackPath);
-            if (loaded != RenderGraphPreviewLoad::Staged)
-            {
-                return loaded;
-            }
-            if (renderer::UsesRayTracing(package->GetPlan()) == true)
-            {
-                setStatus(QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
-                return RenderGraphPreviewLoad::Unsupported;
-            }
-            selectedPath = rasterFallbackPath;
-            rendererStatus = state.ShouldForceRaster == true
-                                 ? QStringLiteral("Raster renderer (Force raster).")
-                                 : QStringLiteral("Raster renderer (hardware raytracing unavailable on this GPU/API).");
+            shouldUseFallback = true;
         }
         else
         {
-            rendererStatus = hasNativeRayQueries == true
-                                 ? QStringLiteral("Compute raytracing renderer (native hardware BVH queries).")
-                                 : QStringLiteral("Compute raytracing renderer (shader traversal).");
-            canUseRasterFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
+            rayRendererStatus = hasNativeRayQueries == true
+                                    ? QStringLiteral("Compute raytracing renderer (native hardware BVH queries).")
+                                    : QStringLiteral("Compute raytracing renderer (shader traversal).");
         }
     }
+    if (shouldUseFallback == true)
+    {
+        loaded = readPackage(rasterFallbackPath);
+        if (loaded != RenderGraphPreviewLoad::Staged)
+        {
+            return loaded;
+        }
+        if (renderer::UsesRayTracing(package->GetPlan()) == true)
+        {
+            setStatus(QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
+            return RenderGraphPreviewLoad::Unsupported;
+        }
+        selectedPath = rasterFallbackPath;
+    }
+    if (state.ShouldForceRaster == true)
+    {
+        rendererStatus = selectedPath == rasterFallbackPath
+                             ? QStringLiteral("Raster renderer (Force raster: engine default raster graph).")
+                             : QStringLiteral("Raster renderer. Force raster has no engine default raster package in "
+                                              "this editor build, so the selected render graph is drawn.");
+    }
+    else if (shouldUseFallback == true)
+    {
+        rendererStatus = QStringLiteral("Raster renderer (hardware raytracing unavailable on this GPU/API).");
+    }
+    else if (rayRendererStatus.isEmpty() == false)
+    {
+        rendererStatus = rayRendererStatus;
+    }
+    // Force raster could replace any requested graph other than the engine default itself.
+    const bool canUseRasterFallback = shouldUseFallback == false && hasDistinctFallback == true;
     // Denoising only filters the image. Without the optional denoiser, preview the graph as if its
     // Denoise nodes were disabled rather than show nothing; staging would otherwise reject it.
     if (renderer::RequiresDenoising(package->GetPlan()) == true && renderer::IsDenoisingAvailable() == false)
@@ -1635,6 +1665,13 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         state.Active = state.Candidate;
         state.Candidate = {};
         EndViewportTrace(state.CandidateActivationTrace, "activated");
+        // The activation records only revisions the drawing generation accepted, so a generation replacing one
+        // that rejected the retained extraction (Force raster over a graph without the Atmosphere's clustered
+        // deferred programs) activates without it. Offer the extraction again rather than wait for a World edit.
+        if (IsAccepted(state.ExtractionUpdateStatus) == false)
+        {
+            state.UpdatedRevision = 0;
+        }
         if (state.IsFrozen == true)
         {
             markRayPathStale(QStringLiteral("The graph was rebuilt after this capture; capture again to trace the "
@@ -1745,6 +1782,14 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         if (modelFailure.isEmpty() == false)
         {
             setStatus(modelFailure + QStringLiteral(" The shown frame is kept; repair the inputs and preview again."));
+        }
+        else if (const QString rejection =
+                     DescribeRenderGraphSceneRejection(modelReport.CandidateRejection, modelReport.CandidateReport);
+                 rejection.isEmpty() == false)
+        {
+            // The replacement rejected the World the drawing generation accepts, as when Force raster is turned off
+            // over a graph without clustered deferred programs.
+            setStatus(rejection + QStringLiteral(" The shown frame is kept."));
         }
     }
     renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();

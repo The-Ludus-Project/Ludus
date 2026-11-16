@@ -2298,7 +2298,7 @@ Only clustered deferred raster configurations draw an Atmosphere. A
 ray-traced or forward configuration rejects a World that has one, and the
 viewport keeps its last good frame. Its status says that the Atmosphere entity
 needs a clustered deferred configuration. Turn on **Force raster** in the
-viewport toolbar to use the graph's Raster configuration, or disable the
+viewport toolbar to draw the engine's default raster graph, or disable the
 Atmosphere entity to keep the selected configuration.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
@@ -2931,7 +2931,7 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 16-bit output. Only a ray-traced output with an **Accumulate** can be captured:
 - a raster output stores display colour, not linear radiance;
 - a ray output without an Accumulate shows individual samples;
-- **Force raster** draws the raster fallback.
+- **Force raster** draws the engine's default raster graph.
 
 The window explains which applies before you capture. Under **Graph** it says
 why the selected output cannot be captured, and **Capture viewport** stays
