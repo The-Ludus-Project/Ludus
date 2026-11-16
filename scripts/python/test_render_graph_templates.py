@@ -2055,6 +2055,28 @@ class RasterTemplateTests(unittest.TestCase):
                              [(0.0, 'Reinhard'), (1.0, 'PbrNeutral')])
 
 
+    def test_default_color_passes_connect_baked_lighting_and_disconnect_to_realtime(self):
+        from ludus_tools import render_graph_forward as forward
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Raster', output='offscreen',
+                                       renderer_static=True, profiles=('wgsl',))
+            for configuration in ('Default', 'ZPrepass'):
+                plan = graph.compile_graph(root, configuration=configuration)
+                modes = {(item['configuration'], item.get('baked_lighting', False))
+                         for item in plan['passes'] if item['kind'] == 'Raster'}
+                expected = {('ColorAndDepth', True)} | ({('DepthOnly', False)} if configuration == 'ZPrepass' else set())
+                self.assertEqual(modes, expected)
+            # Only the deferred probe G-buffer consumes the bake in this profile; the forward chart stage is skipped.
+            self.assertIn('DeferredProbeGBuffer', forward.BAKED_LIGHTING_GROUPS)
+            self.assertIn(('DeferredProbeGBuffer', 'fragment'), forward.ROLE_KEYS)
+            document = json.loads(root.read_text())
+            for configuration in document['configurations']:
+                configuration['edges'] = [edge for edge in configuration['edges']
+                                          if edge['from'] != 'scene.bakedLighting']
+            root.write_bytes(graph.canonical_asset(document))
+            realtime = graph.compile_graph(root)
+            self.assertFalse(any(item.get('baked_lighting', False) for item in realtime['passes']))
+
     def test_relocated_sdk_copies_the_default_without_a_source_checkout(self):
         from ludus_tools import render_graph_templates
         source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/default'

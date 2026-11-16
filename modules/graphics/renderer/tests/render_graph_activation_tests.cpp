@@ -1915,22 +1915,31 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
                                   uint32 omittedRole,
                                   format::ShaderTarget target = format::ShaderTarget::Wgsl,
                                   format::StageRole blockRole = format::StageRole::DeferredLightingFragment,
-                                  bool shouldWriteOpaqueGBuffer = true) {
+                                  bool shouldWriteOpaqueGBuffer = true,
+                                  bool shouldWriteProbeGBuffer = false) {
         // NOLINTEND(bugprone-easily-swappable-parameters)
         // Packages before the opaque G-buffer version are cooked without its role.
         const bool hasOpaqueGBuffer =
             shouldWriteOpaqueGBuffer == true && version >= format::OPAQUE_GBUFFER_PACKAGE_VERSION;
         const uint32 omittedCount = (omittedRole == format::ABSENT ? 0 : 1) + (hasOpaqueGBuffer == true ? 0 : 1);
+        const uint32 probeCount = shouldWriteProbeGBuffer == true ? 1 : 0;
         PackageWriter writer;
         PackageOptions options;
         options.Version = version;
-        WritePlan(writer, options, static_cast<uint32>(SUPPORT_COUNT + 2 - omittedCount));
+        WritePlan(writer, options, static_cast<uint32>(SUPPORT_COUNT + 2 + probeCount - omittedCount));
         WriteStage(writer, format::StageRole::ColorVertex, target, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::ColorFragment, target, FRAGMENT_TEXT, "FragmentMain");
-        for (const format::StageRole role : roles)
+        StaticArray<format::StageRole, SUPPORT_COUNT + 1> writtenRoles{};
+        for (usize index = 0; index < SUPPORT_COUNT; ++index)
+        {
+            writtenRoles[index] = roles[index];
+        }
+        writtenRoles[SUPPORT_COUNT] = format::StageRole::DeferredProbeGBufferFragment;
+        for (const format::StageRole role : writtenRoles)
         {
             if (static_cast<uint32>(role) == omittedRole ||
-                (role == format::StageRole::DeferredOpaqueGBufferFragment && hasOpaqueGBuffer == false))
+                (role == format::StageRole::DeferredOpaqueGBufferFragment && hasOpaqueGBuffer == false) ||
+                (role == format::StageRole::DeferredProbeGBufferFragment && shouldWriteProbeGBuffer == false))
             {
                 continue;
             }
@@ -2052,6 +2061,38 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         REQUIRE(package.Get() != nullptr);
         // Earlier role layouts retain their eight-slot uniform-name bounds.
         CHECK(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
+    }
+    {
+        // A deferred pass with Baked Lighting connected carries the probe G-buffer; others leave it empty.
+        const Array<uint8> realtime = makeDeferred(format::PACKAGE_VERSION, format::ABSENT);
+        const Array<uint8> baked = makeDeferred(format::PACKAGE_VERSION,
+                                                format::ABSENT,
+                                                format::ShaderTarget::Wgsl,
+                                                format::StageRole::DeferredLightingFragment,
+                                                true,
+                                                true);
+        renderer::RenderGraphPackage* realtimeOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> realtimePackage{realtimeOrNull};
+        REQUIRE(realtimePackage.Get() != nullptr);
+        REQUIRE(realtimePackage->Decode({realtime.GetData(), realtime.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        CHECK(realtimePackage->GetPrograms({}, {}).DeferredProbeGBufferFragment.Artifact.Wgsl.empty() == true);
+        renderer::RenderGraphPackage* bakedOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{bakedOrNull};
+        REQUIRE(package.Get() != nullptr);
+        REQUIRE(package->Decode({baked.GetData(), baked.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
+        CHECK(programs.DeferredProbeGBufferFragment.Artifact.Wgsl.empty() == false);
+        CHECK(programs.DeferredProbeGBufferFragment.Bindings.GetSize() == 11);
+        // Packages before format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION cannot name the probe role.
+        Array<uint8> early = baked;
+        constexpr usize VERSION_BYTE = sizeof(uint32);
+        early[VERSION_BYTE] = static_cast<uint8>(format::RECIPE_KEY_PACKAGE_VERSION);
+        renderer::RenderGraphPackage* earlyOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> earlyPackage{earlyOrNull};
+        REQUIRE(earlyPackage.Get() != nullptr);
+        CHECK(earlyPackage->Decode({early.GetData(), early.GetSize()}) ==
+              renderer::RenderGraphPackageStatus::UnsupportedVersion);
     }
     for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role <= format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE; ++role)
     {

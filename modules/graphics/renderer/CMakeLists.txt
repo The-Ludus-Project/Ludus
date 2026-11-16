@@ -572,6 +572,25 @@ function(ludus_add_default_render_graph_fixtures target)
     # A cooked clustered-forward control shares the exact default material and geometry callbacks.
     set(clustered_forward_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/clustered_forward")
     ludus_stage_linear_default_render_graph("${clustered_forward_staged}")
+    # The clustered-forward profile has no baked-lighting consumer, so the control leaves Baked Lighting
+    # unconnected in every configuration and its optional subgraph input renders in realtime.
+    file(READ "${clustered_forward_staged}/main.lurender.json" clustered_forward_graph)
+    string(JSON clustered_forward_configurations LENGTH "${clustered_forward_graph}" configurations)
+    math(EXPR clustered_forward_last "${clustered_forward_configurations} - 1")
+    foreach(configuration RANGE ${clustered_forward_last})
+        string(JSON clustered_forward_edges LENGTH "${clustered_forward_graph}" configurations ${configuration} edges)
+        math(EXPR clustered_forward_edge "${clustered_forward_edges} - 1")
+        while(clustered_forward_edge GREATER_EQUAL 0)
+            string(JSON clustered_forward_from GET "${clustered_forward_graph}"
+                configurations ${configuration} edges ${clustered_forward_edge} from)
+            if(clustered_forward_from STREQUAL "scene.bakedLighting")
+                string(JSON clustered_forward_graph REMOVE "${clustered_forward_graph}"
+                    configurations ${configuration} edges ${clustered_forward_edge})
+            endif()
+            math(EXPR clustered_forward_edge "${clustered_forward_edge} - 1")
+        endwhile()
+    endforeach()
+    file(WRITE "${clustered_forward_staged}/main.lurender.json" "${clustered_forward_graph}\n")
     file(READ "${default_render_graph}/main.lushader.json" clustered_forward_manifest)
     string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" techniques 0 scene_interface profile "\"ClusteredForward\"")
     string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" programs 1 function "\"ForwardMain\"")

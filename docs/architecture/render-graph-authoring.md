@@ -1813,3 +1813,13 @@ and GGX/environment lighting remain shared shader functions, with material and
 lighting callbacks separated by three RGBA16F targets. The logical output keeps
 its RGBA8/private-depth contract. See the [default deferred workflow](../development/render-graph-authoring.md#default-clustered-deferred-lighting)
 for layout, capabilities, optional prepass, precision and memory limits.
+
+A deferred pass with a connected `SceneBakedLighting` input adds the optional
+`DeferredProbeGBufferFragment` role in package version 36. It must be present for every
+deferred target or none. The renderer prewarms a second material program that differs
+from the ordinary one only in this G-buffer fragment. Scene preparation pins the probe
+atlas through the same resource cache and assigns that program to receiver draws. The
+fragment adds the probe diffuse term to the emission target, so the resolve ABI and its
+sixteen bindings are unchanged. The chart and probe programs belong to different
+profiles, so one technique row still enumerates at most two material programs. See
+[Baked probe GI for receivers](../development/render-graph-authoring.md#deferred-baked-probe-gi).

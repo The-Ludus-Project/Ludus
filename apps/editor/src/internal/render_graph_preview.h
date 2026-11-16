@@ -66,6 +66,8 @@ struct RenderGraphExtraction final
     QVector<foundation::uint32> MaterialOverrides;
     QSharedPointer<const WorldSurfaceBake> SurfaceBake;
     QVector<graphics::renderer::SceneSurfaceChart> SurfaceCharts;
+    /// Placed GI Probe Receivers that sample SurfaceBake's probe atlas; empty without a ready atlas.
+    QVector<foundation::uint64> ProbeReceiverIds;
     graphics::renderer::SceneShaderInputs ShaderInputs;
     graphics::renderer::ViewDescription View{};
     /// Nonzero caller revision; a changed revision makes the preview prepare again.
@@ -358,6 +360,8 @@ public:
     /// text (the active graph keeps drawing while its first frame is presented or a replacement prepares).
     [[nodiscard]] QString GetDisplayStatus() const;
     [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
+    /// Draws of the active graph sampling the baked probe volume; zero without a deferred Baked Lighting pass.
+    [[nodiscard]] foundation::usize GetProbeReceiverDrawCount() const noexcept;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
     {

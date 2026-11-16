@@ -1,3 +1,4 @@
+#include "editor_default_graph.h"
 #include "internal/level.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_gpu_generation.h"
@@ -5,6 +6,7 @@
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/readback.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_object_interaction.h"
@@ -1078,6 +1080,12 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
     REQUIRE(extraction.SurfaceCharts.size() == litRoom.Objects.size());
     CHECK(extraction.SurfaceCharts.first().SourceId == extraction.Items.first().SourceId);
     CHECK(extraction.SurfaceCharts.last().SourceId == 0);
+    // The receiver has no chart; deferred Baked Lighting passes sample the saved probe atlas for it instead.
+    CHECK(extraction.ProbeReceiverIds == QVector<uint64>{extraction.Items.last().SourceId});
+    CHECK(extraction.ShaderInputs.ProbeVolume.Atlas.Width == saved->ProbeAtlas.Width);
+    CHECK(extraction.ShaderInputs.ProbeVolume.Atlas.Height == saved->ProbeAtlas.Height);
+    CHECK(extraction.ShaderInputs.ProbeVolume.IrradianceScale == saved->ProbeAtlas.IrradianceScale);
+    CHECK(extraction.ShaderInputs.ProbeVolume.Grid.Spacing == litRoom.ProbeGrid.Spacing);
     reopened.Poll(litRoom);
     CHECK(reopened.GetReady() == saved);
     // Keep the receiver and geometry in place; move only the volume away from them.
@@ -1992,6 +2000,94 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
     const QString withoutProbes = measureGpu();
     WARN("GPU with probe lookups " << withProbes.toStdString() << "; outside the volume " << withoutProbes.toStdString()
                                    << "; atlas " << atlasBytes << " bytes");
+    preview.Stop();
+}
+
+TEST_CASE("Force raster's default graph adds GI Probe Receivers' baked bounce like the native Lit viewport",
+          "[.render-native][lighting][probe-gi]")
+{
+    namespace default_graph = ludus::render_graph_packages::editor_default_graph;
+    const QString runtime = GetDefaultRenderGraphRuntime();
+    REQUIRE(runtime.isEmpty() == false);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(640, 480);
+    viewport.show();
+    bool hasStarted = false;
+    // The doorway admits bounce from both rooms; the closed wall keeps the dark half dark.
+    for (const ProbeDivider divider : {ProbeDivider::AxisWall, ProbeDivider::Doorway})
+    {
+        QVector<math::Vector3> receiversWorld;
+        for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
+        {
+            receiversWorld.append(
+                {.05F + PROBE_PATH_STEP_METRES * static_cast<float32>(i), PROBE_CELL_CENTRE_Y_METRES, 0});
+        }
+        const RenderScene scene = MakeProbeQualificationScene(divider,
+                                                              receiversWorld,
+                                                              QByteArrayLiteral("gi-probe-graph/") +
+                                                                  QByteArray::number(static_cast<uint32>(divider)));
+        REQUIRE(preview.SetScene(scene) == true);
+        if (hasStarted == false)
+        {
+            preview.SetShading(PreviewShading::Lit);
+            REQUIRE(preview.Start() == true);
+            hasStarted = true;
+        }
+        const bool hasBaked = WaitForProbeBake(preview, scene);
+        INFO(preview.Status().toStdString());
+        REQUIRE(hasBaked == true);
+        rr::ViewDescription litView;
+        const QImage lit = ReadProbeFrame(preview, litView);
+
+        RenderGraphPreview graph(
+            {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+            ludus::shaders::renderer_composite::Vertex(),
+            ludus::shaders::renderer_composite::Fragment());
+        REQUIRE(graph.Attach(preview.GetDevice(), preview.GetSurface()) == true);
+        graph.SetReferenceSize(lit.size());
+        rr::ViewDescription graphView;
+        QString error;
+        REQUIRE(preview.DescribeConventionalView(static_cast<uint32>(lit.width()),
+                                                 static_cast<uint32>(lit.height()),
+                                                 graphView,
+                                                 error) == true);
+        RenderGraphExtraction extraction;
+        REQUIRE(MakeRenderGraphExtraction(preview.Scene(), graphView, 1, extraction, error, preview.GetSurfaceBake()) ==
+                true);
+        REQUIRE(extraction.ProbeReceiverIds.size() == receiversWorld.size());
+        graph.SetExtraction(extraction);
+        REQUIRE(graph.Load(runtime) == RenderGraphPreviewLoad::Staged);
+        constexpr int32 GRAPH_DEADLINE_MILLISECONDS = 30000;
+        constexpr int32 POLL_MILLISECONDS = 2;
+        QElapsedTimer timer;
+        timer.start();
+        while (graph.GetPresentedGeneration() == 0 && timer.elapsed() < GRAPH_DEADLINE_MILLISECONDS)
+        {
+            graph.Tick();
+            QApplication::processEvents();
+            QTest::qWait(POLL_MILLISECONDS);
+        }
+        INFO(graph.GetDisplayStatus().toStdString());
+        REQUIRE(graph.GetPresentedGeneration() != 0);
+        CHECK(graph.GetProbeReceiverDrawCount() == static_cast<usize>(receiversWorld.size()));
+        const QImage raster = graph.GetImage();
+        REQUIRE(raster.size() == lit.size());
+        rr::ViewDescription presented;
+        REQUIRE(graph.TryGetPresentedView(presented) == true);
+        for (const math::Vector3& receiverWorld : receiversWorld)
+        {
+            const float32 native = MeasureProbeReceiver(lit, litView, receiverWorld, scene.Definition->Eye).Irradiance;
+            const float32 forced =
+                MeasureProbeReceiver(raster, presented, receiverWorld, scene.Definition->Eye).Irradiance;
+            CAPTURE(static_cast<uint32>(divider), receiverWorld.X, native, forced);
+            // Both paths evaluate the same atlas lookup and diffuse term; only display quantization differs.
+            constexpr float32 ABSOLUTE_TOLERANCE = .02F;
+            constexpr float32 RELATIVE_TOLERANCE = .03F;
+            CHECK(math::Abs(forced - native) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native);
+        }
+        graph.Detach();
+    }
     preview.Stop();
 }
 
