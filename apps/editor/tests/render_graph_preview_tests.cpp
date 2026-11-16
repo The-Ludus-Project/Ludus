@@ -13,6 +13,7 @@
 #include "internal/graph_display_frames.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
+#include "internal/material_inspection.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
@@ -35,6 +36,7 @@
 #include "internal/viewport_trace.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
+#include "internal/world_lights_panel.h"
 #include "internal/world_workspace.h"
 #include "renderer_composite.h"
 #include "scene_fixture.h"
@@ -2435,6 +2437,136 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     {
         REQUIRE(world.grab().save(capture) == true);
     }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("The World viewport draws the skin bust through light edits, orbit and resize",
+          "[editor][render-graph][world-graph][skin]")
+{
+    // The engine's lit character bust imported into a new World and made skin through the inspector, drawn by the
+    // project's default render graph (clustered deferred, which spreads skin's diffuse light). Each interactive edit
+    // presents a new frame of the current World.
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QDir root(QFileInfo(project.path()).canonicalFilePath());
+    const QDir bust(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("tests/scenes/characters/infinite-head")));
+    const QDir copy(root.filePath(QStringLiteral("infinite-head")));
+    REQUIRE(QDir().mkpath(copy.path()) == true);
+    for (const QString& file : bust.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(bust.filePath(file), copy.filePath(file)) == true);
+    }
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(root.path(), 1);
+    world.SetProject(root.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Create(root.filePath(QStringLiteral("bust.world.json"))) == true);
+    REQUIRE(world.ImportScene(copy.filePath(QStringLiteral("infinite-head-lit.gltf"))) == true);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    // Importing can replace the World's preview, so read it afresh.
+    const auto source = [&world]() -> RenderPreview& { return world.GetRenderPreview(); };
+    REQUIRE(waitFor([&]() { return world.CanSave() == true; }) == true);
+    // Importing pauses the preview; it resumes on the validated World.
+    world.ResumePreview();
+    REQUIRE(waitFor([&]() { return source().Scene().Objects.isEmpty() == false; }) == true);
+    QString head;
+    for (const PreviewObject& object : source().Scene().Objects)
+    {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(source().Scene(), object.Id);
+        if (materialOrNull != nullptr && materialOrNull->Name.View() == "Skin")
+        {
+            head = object.Id;
+        }
+    }
+    REQUIRE(head.isEmpty() == false);
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    RenderGraphPreview* previewOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(previewOrNull != nullptr);
+    // Wait for a frame after `revision` that differs from `previous`.
+    const auto waitForNewFrame = [&](uint64 revision, const QImage& previous) {
+        return waitFor([&]() {
+            return previewOrNull->GetPresentedRevision() > revision && graphView->GetImage().isNull() == false &&
+                   graphView->GetImage() != previous;
+        });
+    };
+    REQUIRE(source().FrameEntity(head) == true);
+    REQUIRE(waitFor([&]() {
+                return graphView->GetImage().isNull() == false && source().IsBuiltInViewShown() == false;
+            }) == true);
+    REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
+    const QImage metallicRoughness = graphView->GetImage();
+    uint64 revision = previewOrNull->GetPresentedRevision();
+
+    // Make Skin replaces the metallic-roughness frame with one whose diffuse light spreads.
+    REQUIRE(world.SelectEntity(head) == true);
+    QPushButton* assignOrNull = world.findChild<QPushButton*>(QStringLiteral("worldAssignSkin"));
+    REQUIRE(assignOrNull != nullptr);
+    assignOrNull->click();
+    REQUIRE(waitFor([&]() {
+                const ludus::resources::SceneMaterial* materialOrNull =
+                    GetSceneObjectMaterialOrNull(source().Scene(), head);
+                return materialOrNull != nullptr &&
+                       materialOrNull->Scattering.Model == ludus::content::scene_format::MaterialModel::Skin;
+            }) == true);
+    REQUIRE(waitForNewFrame(revision, metallicRoughness) == true);
+    REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
+    INFO(workspace.GetRenderProblem().toStdString());
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    QImage skin = graphView->GetImage();
+    CHECK(skin != metallicRoughness);
+    revision = previewOrNull->GetPresentedRevision();
+
+    // A lighting edit: switching the imported key light off presents a new frame.
+    WorldLightsPanel* lightsOrNull = world.findChild<WorldLightsPanel*>();
+    REQUIRE(lightsOrNull != nullptr);
+    REQUIRE(lightsOrNull->GetRows().size() == 2);
+    QTreeWidget* lightTreeOrNull = lightsOrNull->findChild<QTreeWidget*>(QStringLiteral("worldLights"));
+    REQUIRE(lightTreeOrNull != nullptr);
+    QTreeWidgetItem* keyOrNull = lightTreeOrNull->topLevelItem(0);
+    REQUIRE(keyOrNull != nullptr);
+    keyOrNull->setCheckState(0, Qt::Unchecked);
+    REQUIRE(waitForNewFrame(revision, skin) == true);
+    skin = graphView->GetImage();
+    revision = previewOrNull->GetPresentedRevision();
+
+    // Orbit and resize present the skin World from the new camera and at the new extent.
+    source().Orbit(20, 0);
+    REQUIRE(waitForNewFrame(revision, skin) == true);
+    skin = graphView->GetImage();
+    revision = previewOrNull->GetPresentedRevision();
+    const QSize extent = skin.size();
+    world.resize(1200, 820);
+    REQUIRE(waitFor([&]() {
+                return previewOrNull->GetPresentedRevision() > revision && graphView->GetImage().size() != extent;
+            }) == true);
+    INFO(workspace.GetRenderProblem().toStdString());
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();

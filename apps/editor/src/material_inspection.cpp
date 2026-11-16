@@ -291,6 +291,30 @@ QJsonObject SkinDistanceField::MakeNumberProperty() const
              static_cast<foundation::float64>(format::MAX_SKIN_SCATTERING_DISTANCE) * MILLIMETRES_PER_METRE}};
 }
 
+QJsonObject SkinSurfaceField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromUtf8(Label)},
+            {QStringLiteral("min"), IsRoughness() == true ? format::MIN_AUTHORED_ROUGHNESS : 0.0},
+            {QStringLiteral("max"), 1}};
+}
+
+foundation::float64 GetShortestFloat32Decimal(float32 value)
+{
+    // Nine significant digits round-trip every float32.
+    constexpr foundation::int32 FLOAT32_ROUND_TRIP_DIGITS = 9;
+    for (foundation::int32 digits = 1; digits < FLOAT32_ROUND_TRIP_DIGITS; ++digits)
+    {
+        const foundation::float64 candidate =
+            QString::number(static_cast<foundation::float64>(value), 'g', digits).toDouble();
+        if (static_cast<float32>(candidate) == value)
+        {
+            return candidate;
+        }
+    }
+    return static_cast<foundation::float64>(value);
+}
+
 QJsonObject MakeDefaultSkin(const resources::SceneMaterial* materialOrNull)
 {
     // Human skin's normalized-diffusion distance in metres (see the declaration for its derivation).
@@ -369,7 +393,10 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                                                   : material.Texture == format::NO_TEXTURE
                                                       ? foundation::math::Vector3{}
                                                       : foundation::math::Vector3{1, 1, 1};
+    // A skin slot edits its base colour and roughness beside its scattering distance.
+    const bool isSkin = material.Scattering.Model == format::MaterialModel::Skin;
     rows.append(MakeColourRow(QStringLiteral("Reflectance"), reflectance, QStringLiteral("Reflectance, linear RGB")));
+    rows.last().IsSkinParameter = isSkin;
     rows.append(
         MakeTextureRow(QStringLiteral("Base colour"), QStringLiteral("Base colour map"), definition, material.Texture));
     if (material.Texture != format::NO_TEXTURE)
@@ -388,6 +415,7 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         roughness.Detail = isProgram == true ? QStringLiteral("Roughness, an input of the closure program")
                                              : QStringLiteral("Perceptual roughness, 0.045 to 1");
         rows.append(metallic);
+        roughness.IsSkinParameter = isSkin;
         rows.append(roughness);
     }
     const format::MaterialScattering& scattering = material.Scattering;

@@ -688,6 +688,26 @@ TEST_CASE("Level skin slots cook into LUSCN v14 without metallic and reject unus
     // Only the first slot became skin: its material record is split from the slots that inherit it.
     CHECK(skinRecords == 1);
 
+    // An authored base colour and roughness replace the inherited ones; textures stay.
+    const std::string surface = R"("skin":{"scattering_distance":[0.004,0.0015,0.0007],"base_color":[0.6,0.4,0.3],)"
+                                R"("roughness":0.55})";
+    decode(withFirstObject(surface), scene);
+    skinRecords = 0;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        if (material.Scattering.Model != format::MaterialModel::Skin)
+        {
+            continue;
+        }
+        ++skinRecords;
+        CHECK(material.HasSourceMaterial == true);
+        CHECK(material.Reflectance == ludus::foundation::math::Vector3{0.6F, 0.4F, 0.3F});
+        CHECK(material.Roughness == 0.55F);
+        CHECK(material.Scattering.K[0] == 0.004F);
+        CHECK(material.Metallic == 0);
+    }
+    CHECK(skinRecords == 1);
+
     // Every slot made skin, the golden area lights and the brass conductor included: the skin records drop the
     // conductor's metallic, which the decoder would reject, and the area lights keep emitting.
     std::string everySlot = original;
@@ -723,6 +743,15 @@ TEST_CASE("Level skin slots cook into LUSCN v14 without metallic and reject unus
     {
         CHECK_FALSE(ValidateLevel(ToSpan(withFirstObject(invalid)), error));
         CHECK(std::string_view(error.Message.View()).find("[0, 0.1] metres") != std::string_view::npos);
+    }
+    for (const std::string_view invalid : {R"("skin":{"scattering_distance":[0.001,0,0],"base_color":[1.5,0,0]})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"base_color":[0.5,0.5]})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"roughness":0.01})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"roughness":1.5})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"metallic":0})"})
+    {
+        CHECK_FALSE(ValidateLevel(ToSpan(withFirstObject(invalid)), error));
+        CHECK(std::string_view(error.Message.View()).find("roughness in [0.045, 1]") != std::string_view::npos);
     }
 }
 

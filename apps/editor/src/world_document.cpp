@@ -481,16 +481,24 @@ QJsonObject Defaults(const QJsonObject& component)
     return hasCutoff == false || Value(MakeHairCardCutoffProperty(), hair.value(cutoffKey), outError) == true;
 }
 
-/// Validate a slot's "skin" object: exactly a scattering distance of three numbers in
-/// [0, MAX_SKIN_SCATTERING_DISTANCE] metres.
+/// Validate a slot's "skin" object: a scattering distance of three numbers in [0, MAX_SKIN_SCATTERING_DISTANCE]
+/// metres, and optionally a base colour of three numbers in [0, 1] and a roughness in [MIN_AUTHORED_ROUGHNESS, 1].
 [[nodiscard]] bool ValidateSkin(const QJsonValue& value, QString& outError)
 {
     const QJsonObject skin = value.toObject();
     const QJsonValue distance = skin.value(QString::fromLatin1(SKIN_DISTANCE_KEY));
-    if (value.isObject() == false || skin.size() != 1 || distance.isArray() == false ||
-        distance.toArray().size() != static_cast<qsizetype>(content::scene_format::MATERIAL_RGB_CHANNELS))
+    const QString baseColorKey = QString::fromLatin1(SKIN_BASE_COLOR_KEY);
+    const QString roughnessKey = QString::fromLatin1(SKIN_ROUGHNESS_KEY);
+    const bool hasBaseColor = skin.contains(baseColorKey);
+    const bool hasRoughness = skin.contains(roughnessKey);
+    const qsizetype members = 1 + (hasBaseColor == true ? 1 : 0) + (hasRoughness == true ? 1 : 0);
+    const qsizetype channelCount = static_cast<qsizetype>(content::scene_format::MATERIAL_RGB_CHANNELS);
+    if (value.isObject() == false || skin.size() != members || distance.isArray() == false ||
+        distance.toArray().size() != channelCount)
     {
-        return Fail(outError, QStringLiteral("A skin slot needs a red, green and blue scattering distance."));
+        return Fail(outError,
+                    QStringLiteral("A skin slot needs a red, green and blue scattering distance, and may hold only a "
+                                   "base colour and a roughness besides."));
     }
     const QJsonArray channels = distance.toArray();
     for (const SkinDistanceField& field : SKIN_DISTANCE_FIELDS)
@@ -506,6 +514,31 @@ QJsonObject Defaults(const QJsonObject& component)
                                  QString::number(static_cast<foundation::float64>(
                                                      content::scene_format::MAX_SKIN_SCATTERING_DISTANCE) *
                                                  MILLIMETRES_PER_METRE)));
+        }
+    }
+    const QJsonArray baseColor = skin.value(baseColorKey).toArray();
+    if (hasBaseColor == true && baseColor.size() != channelCount)
+    {
+        return Fail(outError, QStringLiteral("A skin slot's base colour needs a red, green and blue value."));
+    }
+    for (const SkinSurfaceField& field : SKIN_SURFACE_FIELDS)
+    {
+        const bool isPresent = field.IsRoughness() == true ? hasRoughness : hasBaseColor;
+        if (isPresent == false)
+        {
+            continue;
+        }
+        const QJsonValue number = field.IsRoughness() == true ? skin.value(roughnessKey)
+                                                              : baseColor.at(static_cast<qsizetype>(field.Channel));
+        const QJsonObject property = field.MakeNumberProperty();
+        const foundation::float64 minimum = property.value(QStringLiteral("min")).toDouble();
+        const foundation::float64 maximum = property.value(QStringLiteral("max")).toDouble();
+        const foundation::float64 parsed = number.toDouble(-1);
+        if (number.isDouble() == false || (parsed >= minimum) == false || parsed > maximum)
+        {
+            return Fail(outError,
+                        QStringLiteral("%1: enter a finite value from %2 to %3.")
+                            .arg(QString::fromUtf8(field.Label), QString::number(minimum), QString::number(maximum)));
         }
     }
     return true;
