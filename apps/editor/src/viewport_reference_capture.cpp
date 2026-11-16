@@ -19,6 +19,7 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 
 #include <ludus/runtime/resources/scene.h>
 
@@ -69,6 +70,12 @@ constexpr uint32 ATMOSPHERE_FILTER_SAMPLES = 16;
 /// CPU preparation budget of the Atmosphere sky, matching the viewport's imported environments.
 constexpr usize ATMOSPHERE_CPU_BYTE_BUDGET = usize{256} * 1024 * 1024;
 #endif
+
+/// Whether curve is a ToneCurve enumerator a display transform can apply.
+bool IsToneCurve(renderer::ToneCurve curve) noexcept
+{
+    return curve == renderer::ToneCurve::Reinhard || curve == renderer::ToneCurve::PbrNeutral;
+}
 
 bool IsAreaProxy(renderer::LightKind kind) noexcept
 {
@@ -233,16 +240,48 @@ usize CollectReferenceLights(const renderer::LightSelection& selection, Referenc
     return count;
 }
 
-math::Vector3 EncodeReferenceDisplayColor(math::Vector3 radiance) noexcept
+math::Vector3 EncodeReferenceDisplayColor(math::Vector3 radiance, const ViewportDisplayTransform& display) noexcept
 {
-    // Matches renderer_output.slang at exposure one: the viewport's tone curve, saturate, then sRGB.
-    const auto sanitize = [](float32 value) { return math::IsFinite(value) == true ? math::Max(value, 0.0F) : 0.0F; };
-    const math::Vector3 display =
-        renderer::ApplyToneCurve(VIEWPORT_TONE_CURVE,
-                                 {sanitize(radiance.X), sanitize(radiance.Y), sanitize(radiance.Z)});
-    return {math::EncodeSrgb(math::Clamp(display.X, 0.0F, 1.0F)),
-            math::EncodeSrgb(math::Clamp(display.Y, 0.0F, 1.0F)),
-            math::EncodeSrgb(math::Clamp(display.Z, 0.0F, 1.0F))};
+    // Matches renderer_output.slang and the clustered deferred ToneMap: exposure, the tone curve, saturate, sRGB.
+    const float32 exposure = display.Exposure;
+    if (math::IsFinite(exposure) == false || exposure <= 0)
+    {
+        return {};
+    }
+    const auto sanitize = [exposure](float32 value) {
+        return math::IsFinite(value) == true ? math::Max(value * exposure, 0.0F) : 0.0F;
+    };
+    const math::Vector3 mapped =
+        renderer::ApplyToneCurve(display.Curve, {sanitize(radiance.X), sanitize(radiance.Y), sanitize(radiance.Z)});
+    return {math::EncodeSrgb(math::Clamp(mapped.X, 0.0F, 1.0F)),
+            math::EncodeSrgb(math::Clamp(mapped.Y, 0.0F, 1.0F)),
+            math::EncodeSrgb(math::Clamp(mapped.Z, 0.0F, 1.0F))};
+}
+
+ViewportDisplayTransform ComputeReferenceDisplayTransform(const renderer::ViewDescription& view,
+                                                          float32 graphToneMappingExposure,
+                                                          renderer::ToneCurve graphCurve) noexcept
+{
+    // Mirrors RenderGraphDeferredPass::Initialize; an output without a ToneMap keeps the viewport's own transform.
+    if (math::IsFinite(graphToneMappingExposure) == false || graphToneMappingExposure <= 0 ||
+        IsToneCurve(graphCurve) == false)
+    {
+        return {};
+    }
+    const float32 base = view.Exposure == renderer::ExposureMode::Physical
+                             ? renderer::ComputeExposureMultiplier(view.ExposureValue100)
+                             : graphToneMappingExposure;
+    if (base <= 0 || math::IsFinite(view.RasterExposureStops) == false ||
+        math::Abs(view.RasterExposureStops) > renderer::ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS)
+    {
+        return {};
+    }
+    const float32 exposure = base * static_cast<float32>(math::Pow(2, static_cast<float64>(view.RasterExposureStops)));
+    if (math::IsFinite(exposure) == false || exposure <= 0)
+    {
+        return {};
+    }
+    return { .Exposure = exposure, .Curve = graphCurve };
 }
 
 float32 EncodeReferenceDisplayValue(float32 greyRadiance) noexcept
@@ -297,7 +336,8 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
     if (extent.width() <= 0 || extent.height() <= 0 || settings.LongSide < MINIMUM_REFERENCE_LONG_SIDE ||
         settings.LongSide > MAXIMUM_REFERENCE_LONG_SIDE || settings.Samples == 0 ||
         settings.Samples > MAXIMUM_REFERENCE_SAMPLES || settings.MaxDepth == 0 ||
-        settings.MaxDepth > MAXIMUM_REFERENCE_DEPTH)
+        settings.MaxDepth > MAXIMUM_REFERENCE_DEPTH || math::IsFinite(settings.Display.Exposure) == false ||
+        settings.Display.Exposure <= 0 || IsToneCurve(settings.Display.Curve) == false)
     {
         outError = QStringLiteral("Reference capture settings are outside their admitted ranges.");
         return false;
@@ -346,6 +386,7 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
         return false;
     }
     mDescription = description;
+    mDisplay = settings.Display;
     mExtent = extent;
     mSurface = surface;
     // The raster lights surfaces with the Atmosphere's sky and attenuates its Sun; supply RT1 the same inputs.
@@ -633,7 +674,7 @@ bool ViewportReferenceCapture::CopyDisplayImage(QImage& outImage, QString& outEr
         for (uint32 x = 0; x < mDescription.Width; ++x)
         {
             const renderer::ReferencePixel& pixel = pixels[static_cast<usize>(y) * mDescription.Width + x];
-            const math::Vector3 display = EncodeReferenceDisplayColor(pixel.Radiance);
+            const math::Vector3 display = EncodeReferenceDisplayColor(pixel.Radiance, mDisplay);
             row[x] = qRgb(static_cast<uint8>(display.X * DISPLAY_CHANNEL_MAXIMUM + .5F),
                           static_cast<uint8>(display.Y * DISPLAY_CHANNEL_MAXIMUM + .5F),
                           static_cast<uint8>(display.Z * DISPLAY_CHANNEL_MAXIMUM + .5F));

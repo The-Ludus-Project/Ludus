@@ -89,6 +89,10 @@ struct ViewportReferenceSettings final
     /// graph's camera rays do. The image then estimates centre rays rather than pixel footprints, so edges alias
     /// as the graph's do and a comparison measures shading alone. Recorded in the LUHDR01 flags.
     bool ShouldCenterRays = false;
+    /// Display transform of CopyDisplayImage and Save's PNG, so the reference looks like the viewport output it is
+    /// compared with; ComputeReferenceDisplayTransform finds it. The linear means and the LUHDR01 file never use
+    /// it. A non-finite or nonpositive exposure, or an unknown curve, rejects Start.
+    ViewportDisplayTransform Display{};
 };
 
 /// Progress of one ViewportReferenceCapture.
@@ -110,10 +114,25 @@ enum class ViewportReferencePhase : foundation::uint8
 /// Returns an empty size when drawable or longSide is not positive.
 [[nodiscard]] QSize ComputeReferenceExtent(const QSize& drawable, foundation::uint32 longSide) noexcept;
 
-/// Encode one scene-linear colour the way the raster viewport displays it: exposure one, the
-/// viewport's tone curve, then sRGB. Returns display values in [0, 1]; non-finite or negative
-/// radiance encodes as zero.
-[[nodiscard]] foundation::math::Vector3 EncodeReferenceDisplayColor(foundation::math::Vector3 radiance) noexcept;
+/// Encode one scene-linear colour the way a viewport output displays it: times the transform's exposure, its
+/// tone curve, saturate, then sRGB. The default transform is the raster viewport's own. Returns display values in
+/// [0, 1]; non-finite or negative radiance encodes as zero, and so does every colour for a non-finite or
+/// nonpositive exposure.
+[[nodiscard]] foundation::math::Vector3
+EncodeReferenceDisplayColor(foundation::math::Vector3 radiance, const ViewportDisplayTransform& display = {}) noexcept;
+/// The display transform a clustered deferred ToneMap applies to view, as RenderGraph does. Its exposure is the
+/// pass's authored multiplier, or ComputeExposureMultiplier(view.ExposureValue100) for ExposureMode::Physical,
+/// times 2^view.RasterExposureStops; its curve is the pass's. A reference encoded with it looks like that output.
+/// @param graphToneMappingExposure The authored ToneMap multiplier of the pass drawing the viewport output
+///        (RenderGraphPreview::GetRasterToneMappingExposure). Zero, or any nonpositive or non-finite value, means
+///        no ToneMap draws it, so the view's exposure fields do not apply: the result is the default transform.
+/// @param graphCurve The curve of that ToneMap.
+/// @return The default transform for an output without a ToneMap, and for view exposure fields RenderGraph
+///         rejects; otherwise a finite positive exposure and graphCurve.
+[[nodiscard]] ViewportDisplayTransform
+ComputeReferenceDisplayTransform(const graphics::renderer::ViewDescription& view,
+                                 foundation::float32 graphToneMappingExposure,
+                                 graphics::renderer::ToneCurve graphCurve) noexcept;
 /// One channel of EncodeReferenceDisplayColor for a grey radiance, where all three channels are equal.
 [[nodiscard]] foundation::float32 EncodeReferenceDisplayValue(foundation::float32 greyRadiance) noexcept;
 /// EncodeReferenceDisplayValue rounded to eight bits.
@@ -206,9 +225,14 @@ public:
     {
         return mDescription.CenterRays;
     }
+    /// ViewportReferenceSettings::Display of the last successfully started capture; the default before any.
+    [[nodiscard]] LUDUS_INLINE const ViewportDisplayTransform& GetDisplayTransform() const noexcept
+    {
+        return mDisplay;
+    }
     /// Copy progress and profile evidence; false before tracing has begun.
     [[nodiscard]] bool GetInfo(graphics::renderer::ReferenceCaptureInfo& outInfo) const noexcept;
-    /// Copy the current means and display-encode them as EncodeReferenceDisplayChannel does.
+    /// Copy the current means and display-encode them with EncodeReferenceDisplayColor and GetDisplayTransform.
     /// Pixels without committed samples are black. False before tracing has begun.
     [[nodiscard]] bool CopyDisplayImage(QImage& outImage, QString& outError) const;
     /// Copy the current raw linear means and committed counts, top-left row order.
@@ -246,6 +270,7 @@ private:
     bool mHasAtmosphereSky = false;
     bool mIsAtmosphereUploadStarted = false;
     foundation::usize mLightCount = 0;
+    ViewportDisplayTransform mDisplay{};
     QSize mExtent;
     QString mError;
     ViewportReferencePhase mPhase = ViewportReferencePhase::Idle;

@@ -58,13 +58,15 @@ namespace
 {
 /// Compare reference means with another image of the same extent. readColor(x, y, outColor) supplies the other
 /// image's stored colour: display values in [0, 1] for ReferenceComparisonSpace::Display, linear radiance for
-/// Linear. It returns false for a pixel that has no value to compare.
+/// Linear. It returns false for a pixel that has no value to compare. Linear values are display-encoded with
+/// display, as the viewport output they stand for is.
 template <typename ReadReference, typename ReadColor>
 bool CompareWithReference(const ReadReference& readReference,
                           const renderer::ReferenceCaptureInfo& information,
                           bool hasReferenceFailed,
                           ReferenceComparisonSpace space,
                           bool isReferenceDisplayEncoded,
+                          const ViewportDisplayTransform& display,
                           const ReadColor& readColor,
                           ReferenceComparison& outComparison,
                           QImage& outDifference,
@@ -108,9 +110,10 @@ bool CompareWithReference(const ReadReference& readReference,
             RgbValue referenceValue{};
             RgbValue rasterDisplay{};
             RgbValue referenceDisplay{};
-            const math::Vector3 referenceEncoded =
-                isReferenceDisplayEncoded == true ? pixel.Radiance : EncodeReferenceDisplayColor(pixel.Radiance);
-            const math::Vector3 rasterEncoded = EncodeReferenceDisplayColor(storedColor);
+            const math::Vector3 referenceEncoded = isReferenceDisplayEncoded == true
+                                                       ? pixel.Radiance
+                                                       : EncodeReferenceDisplayColor(pixel.Radiance, display);
+            const math::Vector3 rasterEncoded = EncodeReferenceDisplayColor(storedColor, display);
             for (usize channel = 0; channel < RGB_CHANNELS; ++channel)
             {
                 const float32 stored = channel == 0 ? storedColor.X : channel == 1 ? storedColor.Y : storedColor.Z;
@@ -191,6 +194,7 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
                                 const renderer::ReferenceCaptureInfo& information,
                                 bool hasReferenceFailed,
                                 const InspectedTexture& raster,
+                                const ViewportDisplayTransform& display,
                                 ReferenceComparison& outComparison,
                                 QImage& outDifference,
                                 QString& outError)
@@ -231,6 +235,7 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
                                 raster.Encoding == TexelEncoding::Rgba16Float ? ReferenceComparisonSpace::Linear
                                                                               : ReferenceComparisonSpace::Display,
                                 false,
+                                display,
                                 readTexel,
                                 outComparison,
                                 outDifference,
@@ -243,6 +248,7 @@ bool CompareGraphCaptureWithReference(BorrowedView<const renderer::ReferencePixe
                                       BorrowedView<const renderer::RenderGraphCapturePixel> capture,
                                       uint32 captureWidth,
                                       uint32 captureHeight,
+                                      const ViewportDisplayTransform& display,
                                       ReferenceComparison& outComparison,
                                       QImage& outDifference,
                                       QString& outError)
@@ -274,6 +280,7 @@ bool CompareGraphCaptureWithReference(BorrowedView<const renderer::ReferencePixe
                                 hasReferenceFailed,
                                 ReferenceComparisonSpace::Linear,
                                 false,
+                                display,
                                 readMean,
                                 outComparison,
                                 outDifference,
@@ -320,6 +327,7 @@ bool CompareDisplayImages(const QImage& reference,
                                 false,
                                 ReferenceComparisonSpace::Display,
                                 true,
+                                ViewportDisplayTransform{},
                                 readCandidate,
                                 outComparison,
                                 outDifference,
@@ -388,8 +396,8 @@ QString DescribeReferenceComparison(const ReferenceComparison& comparison)
     {
         text += QStringLiteral("Partial diagnostic metrics only. ");
     }
-    text += QStringLiteral("Raster vs reference (%1 space, %2 pixels, ≥%3 samples each): "
-                           "MAE %4, RMSE %5, max %6. Raster is %7 on average by %8 luminance. "
+    text += QStringLiteral("Render graph vs reference (%1 space, %2 pixels, ≥%3 samples each): "
+                           "MAE %4, RMSE %5, max %6. The render graph is %7 on average by %8 luminance. "
                            "%9% of pixels differ visibly.")
                 .arg(GetSpaceName(comparison.Space))
                 .arg(comparison.ComparedPixels)
