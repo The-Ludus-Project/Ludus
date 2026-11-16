@@ -182,6 +182,13 @@ public:
     /// Whether the active final output is drawn by a raster colour pass whose clustered deferred resolve honours
     /// ViewDescription::LightingView. Clustered forward graphs ignore lighting views.
     [[nodiscard]] bool CanShowLightingViews() const noexcept;
+    /// Set the World viewport's session-local camera spotlight preference, initially off.
+    void SetWorkLightEnabled(bool isEnabled);
+    [[nodiscard]] bool IsWorkLightEnabled() const noexcept;
+    /// Whether the built-in raster graph is drawing its final output and can accept camera updates.
+    [[nodiscard]] bool CanShowWorkLight() const noexcept;
+    /// Whether to request the spotlight when submitting the live viewport camera.
+    [[nodiscard]] bool ShouldShowWorkLight() const noexcept;
     /// Analytic lights of the retained World extraction, in extraction order; empty before one is set.
     [[nodiscard]] QVector<graphics::renderer::DirectLight> GetExtractionLights() const;
     /// True while a completed graph attachment is being copied for display.

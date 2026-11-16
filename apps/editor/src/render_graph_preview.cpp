@@ -15,6 +15,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_target_reader.h"
 
@@ -530,6 +531,7 @@ struct RenderGraphPreview::State final
         uint32 Cameras = 0;
         bool HasRasterExposure = false;
         bool HasLightingViews = false;
+        bool HasWorkLight = false;
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
@@ -560,6 +562,7 @@ struct RenderGraphPreview::State final
     RenderTargetReader Reader;
     GraphDisplayFrames Display;
     bool ShouldPresentDirectly = false;
+    bool IsWorkLightEnabled = false;
     bool IsCopyingDisplay = false;
     bool HasGpuFrame = false;
     bool HasPendingPreparation = false;
@@ -1033,6 +1036,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     {
         target.CaptureProblems[resource] = renderer::FindRenderGraphCaptureProblem(plan, resource);
     }
+    target.HasWorkLight = target.HasLightingViews == true && selectedPath == GetDefaultRenderGraphRuntime();
     target.Cameras = static_cast<uint32>(plan.Description.CameraCount);
     for (uint32 pass = 0; pass < plan.Passes.GetSize() && target.RayPassCount < target.RayPasses.GetSize(); ++pass)
     {
@@ -1201,6 +1205,27 @@ bool RenderGraphPreview::CanAdjustRasterExposure() const noexcept
 bool RenderGraphPreview::CanShowLightingViews() const noexcept
 {
     return mState->Active.HasLightingViews == true && mState->IsFrozen == false;
+}
+void RenderGraphPreview::SetWorkLightEnabled(bool isEnabled)
+{
+    if (mState->IsWorkLightEnabled != isEnabled)
+    {
+        mState->IsWorkLightEnabled = isEnabled;
+        Q_EMIT Changed();
+    }
+}
+bool RenderGraphPreview::IsWorkLightEnabled() const noexcept
+{
+    return mState->IsWorkLightEnabled;
+}
+bool RenderGraphPreview::CanShowWorkLight() const noexcept
+{
+    const State& state = *mState;
+    return state.Active.HasWorkLight == true && state.OutputName.isEmpty() == true && state.IsFrozen == false;
+}
+bool RenderGraphPreview::ShouldShowWorkLight() const noexcept
+{
+    return mState->IsWorkLightEnabled == true && CanShowWorkLight() == true;
 }
 QVector<renderer::DirectLight> RenderGraphPreview::GetExtractionLights() const
 {

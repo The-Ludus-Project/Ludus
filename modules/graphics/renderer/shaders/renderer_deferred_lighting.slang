@@ -12,7 +12,7 @@ struct DeferredViewParameters
     // X: direct-reference flag. Y: clear depth. Z: graph ToneMap exposure; zero writes clamped linear colour.
     // W: its ToneCurve code (tone_mapping.hpp).
     float4 Options;
-    // X: DeferredLightingView code (deferred_layout.h). Y: one-based packed index of the light it isolates, or zero.
+    // X: DeferredLightingView code. Y: one-based isolated light index or zero. Z: work light enabled.
     float4 LightingView;
 #ifdef LUDUS_ATMOSPHERE_SURFACE
     float4 AtmosphereRadialUpWorld; // xyz: unit radial up, w: altitude in kilometres.
@@ -43,6 +43,48 @@ static const float3 LIGHTING_VIEW_UNCOVERED_COLOUR = float3(1, 0, 1);
 static const float3 LIGHTING_VIEW_UNMAPPED_COLOUR = float3(0, 1, 1);
 // Least brightness of a lit pixel in the dominant-light view.
 static const float LIGHTING_VIEW_DOMINANT_MINIMUM_BRIGHTNESS = 0.35;
+static const float WORK_LIGHT_INNER_COSINE = 0.95;
+static const float WORK_LIGHT_OUTER_COSINE = 0.75;
+static const float WORK_LIGHT_INTENSITY_CANDELA = 16;
+static const float WORK_LIGHT_RANGE_METRES = 12;
+float4 TransformClipToWorld(in float4 positionHomogeneousClip)
+{
+    return float4(dot(deferredView.ClipToWorldRows[0], positionHomogeneousClip),
+                  dot(deferredView.ClipToWorldRows[1], positionHomogeneousClip),
+                  dot(deferredView.ClipToWorldRows[2], positionHomogeneousClip),
+                  dot(deferredView.ClipToWorldRows[3], positionHomogeneousClip));
+}
+float3 EvaluateWorkLight(in SurfaceSample surface, float3 positionWorld, bool isOrthographic)
+{
+    // Perspective uses the far centre to recover the axis with a long baseline. In orthographic
+    // views EyeWorld already holds the opposite axis, and the near centre is the spotlight origin.
+    float centerDepth = isOrthographic == true ? 1 - deferredView.Options.y : deferredView.Options.y;
+    float4 centerHomogeneousWorld = TransformClipToWorld(float4(0, 0, centerDepth, 1));
+    float3 lightPositionWorld = deferredView.EyeWorld.xyz;
+    float3 lightForwardWorld = -deferredView.EyeWorld.xyz;
+    if (isOrthographic == true)
+        lightPositionWorld = centerHomogeneousWorld.xyz / centerHomogeneousWorld.w;
+    else
+        lightForwardWorld = NormalizeOrZero(centerHomogeneousWorld.xyz - lightPositionWorld * centerHomogeneousWorld.w);
+    float3 toLightWorld = lightPositionWorld - positionWorld;
+    float3 lightDirectionWorld = NormalizeOrZero(toLightWorld);
+    float cone = ComputeSpotConeAttenuation(dot(-lightDirectionWorld, lightForwardWorld),
+                                            WORK_LIGHT_INNER_COSINE,
+                                            WORK_LIGHT_OUTER_COSINE);
+    // Clamp the inverse-square gain to its one-metre value so close surfaces remain readable.
+    float distanceSquaredMetres = dot(toLightWorld, toLightWorld);
+    float attenuation = min(ComputePunctualAttenuation(distanceSquaredMetres, WORK_LIGHT_RANGE_METRES), 1);
+    if (cone * attenuation == 0)
+        return float3(0);
+    return EvaluateBrdf(surface.BaseColor.rgb,
+                        surface.NormalWorld,
+                        surface.ViewDirectionWorld,
+                        lightDirectionWorld,
+                        surface.Metallic,
+                        surface.Roughness,
+                        false) *
+           (WORK_LIGHT_INTENSITY_CANDELA * cone * attenuation);
+}
 float3 MapLightingRadiance(in float3 radiance)
 {
     // An authored ToneMap after this pass is fused here, before the RGBA8 target quantizes the radiance.
@@ -145,10 +187,7 @@ DeferredRadiance ResolveDeferredRadiance(in DeferredVarying value, bool shouldSe
     float depth = geometryDepthTexture.Load(int3(positionPixel, 0));
     float2 positionClip = value.PositionClip.xy / deferredView.TargetSizePixel.xy * float2(2, -2) + float2(-1, 1);
     float4 positionHomogeneousClip = float4(positionClip, depth, 1);
-    float4 positionHomogeneousWorld = float4(dot(deferredView.ClipToWorldRows[0], positionHomogeneousClip),
-                                             dot(deferredView.ClipToWorldRows[1], positionHomogeneousClip),
-                                             dot(deferredView.ClipToWorldRows[2], positionHomogeneousClip),
-                                             dot(deferredView.ClipToWorldRows[3], positionHomogeneousClip));
+    float4 positionHomogeneousWorld = TransformClipToWorld(positionHomogeneousClip);
     Varying input = (Varying)0;
     input.PositionClip = value.PositionClip;
     input.PositionWorld = positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
@@ -172,9 +211,9 @@ DeferredRadiance ResolveDeferredRadiance(in DeferredVarying value, bool shouldSe
     SurfaceSample surface;
     surface.BaseColor = float4(baseMetallic.rgb, 1);
     surface.NormalWorld = NormalizeOrZero(normalRoughness.xyz);
-    surface.ViewDirectionWorld = (GetEyeFlags(input) & 2) != 0
-                                     ? NormalizeOrZero(input.EyeWorld.xyz)
-                                     : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
+    bool isOrthographic = (GetEyeFlags(input) & 2) != 0;
+    surface.ViewDirectionWorld = isOrthographic == true ? NormalizeOrZero(input.EyeWorld.xyz)
+                                                        : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
     // A skin pixel's metallic channel holds -(its profile slot); skin itself is a dielectric.
     bool isSkin = baseMetallic.w < 0;
     surface.Metallic = max(baseMetallic.w, 0);
@@ -199,6 +238,8 @@ DeferredRadiance ResolveDeferredRadiance(in DeferredVarying value, bool shouldSe
                                                      shouldSeparate,
                                                      areaDiffuse);
     radiance += areaLights;
+    if (deferredView.LightingView.z > 0)
+        radiance += EvaluateWorkLight(surface, input.PositionWorld, isOrthographic);
     output.Diffuse = terms.Diffuse + areaDiffuse;
 #ifdef LUDUS_ATMOSPHERE_SURFACE
     if (shouldSeparate == true)

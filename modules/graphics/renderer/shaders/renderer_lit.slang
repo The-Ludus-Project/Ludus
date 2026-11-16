@@ -1006,6 +1006,19 @@ float ComputeLightingLuminance(in float3 radiance)
 {
     return dot(radiance, float3(0.2126, 0.7152, 0.0722));
 }
+float ComputePunctualAttenuation(float distanceSquaredMetres, float rangeMetres)
+{
+    static const float MINIMUM_DISTANCE_SQUARED_METRES = 1e-4;
+    float ratio = distanceSquaredMetres / (rangeMetres * rangeMetres);
+    float edge = max(1 - ratio * ratio, 0);
+    return edge * edge / max(distanceSquaredMetres, MINIMUM_DISTANCE_SQUARED_METRES);
+}
+float ComputeSpotConeAttenuation(float directionCosine, float innerCosine, float outerCosine)
+{
+    static const float MINIMUM_SPOT_COSINE_DELTA = 1e-6;
+    float cone = saturate((directionCosine - outerCosine) / max(innerCosine - outerCosine, MINIMUM_SPOT_COSINE_DELTA));
+    return cone * cone;
+}
 // Shade the surface and report its lighting terms. With shouldSeparateDiffuse the diffuse terms go to outTerms.Diffuse
 // instead of the returned radiance; otherwise the radiance keeps the summation order of the combined path.
 float4 ShadeMaterialTerms(in SurfaceSample surface,
@@ -1183,17 +1196,14 @@ float4 ShadeMaterialTerms(in SurfaceSample surface,
         float attenuation = 1;
         if (color.w != 0)
         {
-            float3 delta = position.xyz - input.PositionWorld;
-            float distance2 = dot(delta, delta);
-            lightDirectionWorld = NormalizeOrZero(delta);
-            float ratio = distance2 / (position.w * position.w);
-            float edge = max(1 - ratio * ratio, 0);
-            attenuation = edge * edge / max(distance2, 1e-4);
+            float3 deltaWorld = position.xyz - input.PositionWorld;
+            float distanceSquaredMetres = dot(deltaWorld, deltaWorld);
+            lightDirectionWorld = NormalizeOrZero(deltaWorld);
+            attenuation = ComputePunctualAttenuation(distanceSquaredMetres, position.w);
             if (color.w == 2)
             {
-                float cone = saturate((dot(-lightDirectionWorld, direction.xyz) - direction.w) /
-                                      max(extra.x - direction.w, 1e-6));
-                attenuation *= cone * cone;
+                attenuation *=
+                    ComputeSpotConeAttenuation(dot(-lightDirectionWorld, direction.xyz), extra.x, direction.w);
             }
             if (color.w == 3 || color.w == 4)
             {

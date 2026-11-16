@@ -3719,8 +3719,9 @@ from emissive triangles, merged into convex polygons where coplanar, using polyg
 for the records a conservative world-space culling grid lists at each pixel. Other
 raster profiles retain their existing emission behavior. Emissive indirect transport
 is still a separate lighting capability; see the [default raster contract](../development/render-graph-authoring.md#default-clustered-deferred-lighting).
-No editor lights or fake environment are added to hide that limitation. Choose
-optional GPU path tracing explicitly when emissive/indirect transport is wanted;
+The World viewport can explicitly request a camera **Work Light** for editing. It is evaluated during final raster
+resolve and uses the same camera update path as exposure. It remains outside the extracted light list, light budgets,
+shadows, bakes and diagnostics. Choose optional GPU path tracing explicitly when emissive/indirect transport is wanted;
 do not make it the prerequisite for ordinary scene navigation.
 
 Native acceptance changes a snapshot's material color and its camera while
