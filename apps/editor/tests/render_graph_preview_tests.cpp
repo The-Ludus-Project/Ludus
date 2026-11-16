@@ -4251,8 +4251,7 @@ TEST_CASE("Viewport Work Light follows the live camera without entering the scen
     workspace.SetPreviewSource(&source);
     workspace.EnableWorldRendering();
     workspace.SetProject(project.path(), 1);
-    RenderScene scene = MakeScene({.25F, .5F, .75F, 1});
-    scene.Lit = true;
+    const RenderScene scene = MakeCookedScene();
     REQUIRE(source.SetScene(scene) == true);
     REQUIRE(source.Start() == true);
     RenderGraphPreview* graph = workspace.GetPreviewOrNull();
