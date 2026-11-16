@@ -4232,6 +4232,90 @@ TEST_CASE("Viewport exposure adjusts the live frame without editing the graph",
     rhi::Shutdown();
 }
 
+TEST_CASE("Viewport Work Light follows the live camera without entering the scene or capture view",
+          "[editor][render-graph][world-graph][work-light]")
+{
+    {
+        const DeviceFixture probe;
+        if (probe.IsAvailable == false)
+        {
+            SKIP("No GPU adapter on this host");
+        }
+    }
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source, static_cast<QWidget*>(nullptr), false);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    RenderScene scene = MakeScene({.25F, .5F, .75F, 1});
+    scene.Lit = true;
+    REQUIRE(source.SetScene(scene) == true);
+    REQUIRE(source.Start() == true);
+    RenderGraphPreview* graph = workspace.GetPreviewOrNull();
+    REQUIRE(graph != nullptr);
+    const auto waitForRevision = [&](uint64 previous) {
+        for (usize attempt = 0; attempt < ATTEMPTS; ++attempt)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+            if (graph->GetPresentedRevision() > previous)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    REQUIRE(waitForRevision(0) == true);
+    const QImage dark = graph->GetImage();
+    REQUIRE(dark.isNull() == false);
+    QToolButton* workLightButton = viewport.findChild<QToolButton*>(QStringLiteral("viewportWorkLight"));
+    REQUIRE(workLightButton != nullptr);
+    REQUIRE(workLightButton->isEnabled() == true);
+    CHECK(workLightButton->isChecked() == false);
+    const uint64 generation = graph->GetPresentedGeneration();
+    const uint64 darkRevision = graph->GetPresentedRevision();
+    const QJsonObject navigation = source.Navigation();
+    workLightButton->click();
+    REQUIRE(waitForRevision(darkRevision) == true);
+    CHECK(workLightButton->isChecked() == true);
+    CHECK(graph->GetImage() != dark);
+    CHECK(graph->GetExtractionLights().isEmpty() == true);
+    CHECK(source.Scene().AuthoredLights.Count == 0);
+    CHECK(source.Scene().Identity == scene.Identity);
+    CHECK(source.Navigation() == navigation);
+    CHECK(workspace.IsDirty() == false);
+
+    const QSize extent = graph->GetImage().size();
+    renderer::ViewDescription captureView;
+    QString error;
+    REQUIRE(source.DescribeConventionalView(static_cast<uint32>(extent.width()),
+                                            static_cast<uint32>(extent.height()),
+                                            captureView,
+                                            error) == true);
+    CHECK(captureView.ShouldShowWorkLight == false);
+
+    // Moving the camera beyond the light's range leaves the test triangle dark even with Work Light on.
+    const uint64 litRevision = graph->GetPresentedRevision();
+    constexpr float32 DISTANCE_BEYOND_WORK_LIGHT_METRES = 24;
+    source.SetFocusDistance(DISTANCE_BEYOND_WORK_LIGHT_METRES);
+    REQUIRE(waitForRevision(litRevision) == true);
+    const QImage distant = graph->GetImage();
+    const uint64 distantRevision = graph->GetPresentedRevision();
+    workLightButton->click();
+    REQUIRE(waitForRevision(distantRevision) == true);
+    CHECK(workLightButton->isChecked() == false);
+    CHECK(graph->GetImage() == distant);
+    CHECK(graph->GetPresentedGeneration() == generation);
+
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("World graph frames wait for import publication without erasing the last view",
           "[editor][render-graph][world-graph]")
 {

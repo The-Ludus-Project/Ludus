@@ -5668,8 +5668,9 @@ void RendererWorkspace::ServicePreview()
     const QSharedPointer<const WorldSurfaceBake> surfaceBake = mPreviewSourceOrNull != nullptr
                                                                    ? mPreviewSourceOrNull->GetSurfaceBake()
                                                                    : QSharedPointer<const WorldSurfaceBake>{};
-    mArePreviewInputsDirty =
-        mArePreviewInputsDirty == true || target != mPreviewTargetSize || surfaceBake != mPreviewSurfaceBake;
+    const bool shouldShowWorkLight = preview.ShouldShowWorkLight();
+    mArePreviewInputsDirty = mArePreviewInputsDirty == true || target != mPreviewTargetSize ||
+                             surfaceBake != mPreviewSurfaceBake || shouldShowWorkLight != mShouldShowPreviewWorkLight;
     mPreviewTargetSize = target;
     if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false &&
         mArePreviewInputsDirty == true)
@@ -5705,12 +5706,14 @@ void RendererWorkspace::ServicePreview()
                 setProblem(mExtractionProblem, error);
             }
             view.RasterExposureStops = mPreviewSourceOrNull->GetRasterExposureStops();
+            view.ShouldShowWorkLight = shouldShowWorkLight;
             view.LightingView = mPreviewSourceOrNull->GetLightingView();
             view.LightingViewSourceId = mPreviewSourceOrNull->GetLightingViewSourceId();
             if (hasView == true &&
                 (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
                  AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
                  view.RasterExposureStops != mPreviewExposureStops || view.LightingView != mPreviewLightingView ||
+                 view.ShouldShowWorkLight != mShouldShowPreviewWorkLight ||
                  view.LightingViewSourceId != mPreviewLightingViewSourceId))
             {
                 LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
@@ -5743,6 +5746,7 @@ void RendererWorkspace::ServicePreview()
                     mPreviewSurfaceBake = surfaceBake;
                     mPreviewWorldToClip = view.WorldToClip;
                     mPreviewExposureStops = view.RasterExposureStops;
+                    mShouldShowPreviewWorkLight = view.ShouldShowWorkLight;
                     mPreviewLightingView = view.LightingView;
                     mPreviewLightingViewSourceId = view.LightingViewSourceId;
                 }

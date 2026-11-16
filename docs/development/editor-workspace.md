@@ -829,11 +829,17 @@ preview; its input and presentation limits are documented with that workflow.
 
 The viewport toolbar reads left to right in priority order: the configuration
 and output choice, size and view, then editing (object tool, **Edit Terrain…**,
-**Frame all**), display diagnostics (**Exposure**, **Force raster**, **Stats**,
+**Frame all**), display controls (**Exposure**, **Work Light**, **Force raster**, **Stats**,
 **Reference…**) and finally navigation help. The configuration menu appears only
 when the graph defines more than one configuration. When the viewport is too
 narrow, commands from the right end move into the **»** overflow menu whole,
 rather than being squeezed until their text is cut off.
+
+Turn on **Work Light** to illuminate nearby surfaces while navigating or editing in a dark area. Its soft spotlight
+follows the editor camera and starts off each editor session. It is available on **Final output** with the default
+raster graph. Use **Force raster** to switch to that graph if a project graph is active. The spotlight has a 12 m range
+and casts no shadows. The toggle lives in the viewport session, so it never edits the World or changes lighting
+diagnostics, Play mode or reference renders.
 
 ### Apertures
 

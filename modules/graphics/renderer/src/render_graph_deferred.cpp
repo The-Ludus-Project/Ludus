@@ -36,7 +36,8 @@ struct ViewParameters final
     math::Vector4 EyeWorld;
     math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
     math::Vector4 Options;
-    math::Vector4 LightingView{}; // X: DeferredLightingView code. Y: one-based light index it isolates, or zero.
+    // X: DeferredLightingView code. Y: one-based isolated light index or zero. Z: work light enabled.
+    math::Vector4 LightingView{};
     math::Vector4 AtmosphereRadialUpWorld{};
     math::Vector4 AtmosphereSunWorld{};
     math::Vector4 AtmosphereIlluminance{};
@@ -462,9 +463,11 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         mExposure,
         static_cast<float32>(mToneCurve),
     };
+    const bool shouldShowWorkLight = camera.ShouldShowWorkLight == true && camera.Reference == false &&
+                                     camera.LightingView == DeferredLightingView::Final;
     parameters.LightingView = {static_cast<float32>(camera.LightingView),
                                static_cast<float32>(lights.LightingViewLightIndex),
-                               0,
+                               shouldShowWorkLight == true ? 1.0F : 0.0F,
                                0};
     if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
     {

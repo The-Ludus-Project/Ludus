@@ -728,6 +728,7 @@ private:
     RenderGraphSource mPreviewSourceVersion = RenderGraphSource::Draft;
     foundation::math::Matrix4 mPreviewWorldToClip = foundation::math::Matrix4::Identity();
     foundation::float32 mPreviewExposureStops = 0;
+    bool mShouldShowPreviewWorkLight = false;
     graphics::renderer::DeferredLightingView mPreviewLightingView = graphics::renderer::DeferredLightingView::Final;
     foundation::uint64 mPreviewLightingViewSourceId = 0;
 };
