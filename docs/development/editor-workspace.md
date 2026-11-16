@@ -2058,6 +2058,38 @@ The raster viewport shades the strand highlight; ray previews and reference
 captures use the card's metallic/roughness surface lobes. See
 [raster hair cards](../architecture/renderer-systems.md#raster-hair-cards).
 
+### Make a slot skin
+
+Import a character mesh at real scale, for example the engine's
+[character bust](../architecture/scene-source-format.md#character-bust)
+(`tests/scenes/characters/infinite-head/infinite-head.gltf`). Select its slot and
+choose **Make Skin** in the **Material** group. The slot keeps its base colour,
+roughness, emission and textures, and the default render graph's viewport spreads
+its diffuse light under the surface. Skin is a dielectric, so the slot shows no
+metallic; the imported material keeps it for **Use Inherited Material**. If the slot has its own coating instance, a confirmation
+names it and **Replace Coating** removes it in the same edit. Cancel is the
+default. A hair-card or project BRDF slot first returns to its inherited material.
+
+Edit the skin fields and choose **Apply Changes**:
+
+- **Scattering red (mm)**, **Scattering green (mm)** and **Scattering blue (mm)**:
+  how far each colour spreads under the surface, in [0, 100] mm. **Make Skin**
+  starts from human skin's diffuse mean free path, (3.67, 1.37, 0.68) mm; a
+  material that is already skin keeps its own distances. Zero shades the slot like
+  its metallic-roughness surface.
+
+A value outside its range is rejected beside the skin fields, with the field's
+name and accepted range. The field keeps your text so you can correct it, and the
+viewport keeps the last applied skin. The message clears after a valid **Apply
+Changes**. **Use Inherited Material** restores the imported material. The
+assignment, each edit and the restore are undoable, and **Save World** keeps them
+across reopening and reimport. Slots with equal distances share one cooked
+material.
+
+The clustered deferred viewport shades the spread; other raster profiles, ray
+previews and reference captures use the skin's metallic/roughness surface. See
+[raster skin diffusion](../architecture/renderer-systems.md#raster-skin-diffusion).
+
 ### Inspect a closure program
 
 Import a Ludus scene source whose material is a
