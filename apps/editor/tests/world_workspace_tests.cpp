@@ -5533,6 +5533,68 @@ TEST_CASE("World document validates skin slots and writes them to the level", "[
     CHECK(isWritten == true);
 }
 
+TEST_CASE("Engine bust World for the skin benchmark", "[.skin-bust-world]")
+{
+    // Write a project under LUDUS_SKIN_BUST_PROJECTS for the raster benchmark
+    // (docs/development/benchmark-scenes.md, "Measure raster skin on the character bust"): the lit Infinite head
+    // imported into an empty World, with its slot made skin through the inspector. The benchmark's skin control
+    // draws the same World as metallic-roughness.
+    namespace format = ludus::content::scene_format;
+    const QString destination = qEnvironmentVariable("LUDUS_SKIN_BUST_PROJECTS");
+    if (destination.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_SKIN_BUST_PROJECTS to a directory that receives the skin bust project.");
+    }
+    REQUIRE(QDir().mkpath(destination) == true);
+    const QDir bust(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("tests/scenes/characters/infinite-head")));
+    QTemporaryDir directory(QDir(destination).filePath(QStringLiteral("skin-bust-XXXXXX")));
+    directory.setAutoRemove(false);
+    const QString path = Fixture(directory);
+    // Only the bust: the starter World's cube would enclose it.
+    QJsonObject world = QJsonDocument::fromJson(Read(path)).object();
+    world.insert(QStringLiteral("entities"), QJsonArray());
+    Write(path, QJsonDocument(world).toJson());
+    const QDir copy(directory.filePath(QStringLiteral("infinite-head")));
+    REQUIRE(QDir().mkpath(copy.path()) == true);
+    for (const QString& file : bust.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(bust.filePath(file), copy.filePath(file)) == true);
+    }
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.ImportScene(copy.filePath(QStringLiteral("infinite-head-lit.gltf"))) == true);
+    WaitForValidatedScene(workspace);
+    QString head;
+    for (const PreviewObject& object : GetLevel(workspace).PreviewScene().Objects)
+    {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(workspace).PreviewScene(), object.Id);
+        if (materialOrNull != nullptr && materialOrNull->Name.View() == "Skin")
+        {
+            head = object.Id;
+        }
+    }
+    REQUIRE(head.isEmpty() == false);
+    CHECK(GetLevel(workspace).PreviewScene().Definition->Lights.GetSize() == 2);
+    REQUIRE(workspace.SelectEntity(head) == true);
+    QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin"));
+    REQUIRE(assignOrNull != nullptr);
+    assignOrNull->click();
+    WaitForValidatedScene(workspace);
+    const ludus::resources::SceneMaterial* materialOrNull =
+        GetSceneObjectMaterialOrNull(GetLevel(workspace).PreviewScene(), head);
+    REQUIRE(materialOrNull != nullptr);
+    CHECK(materialOrNull->Scattering.Model == format::MaterialModel::Skin);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    workspace.StopPreview();
+    // The benchmark reads Worlds under assets/, so it names this one ../authoring/starter.world.json.
+    WARN(QStringLiteral("skin bust project: %1").arg(directory.path()).toStdString());
+}
+
 TEST_CASE("World makes the engine's bust skin and keeps its edits across save, reopen and reimport",
           "[editor][world][skin]")
 {
@@ -5590,25 +5652,25 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     };
     CHECK(getMaterial(workspace).Scattering.Model == format::MaterialModel::MetallicRoughness);
 
-    // Make Skin starts from human skin's diffuse mean free path, in metres.
+    // Make Skin starts from human skin's normalized-diffusion distance, in metres.
     REQUIRE(workspace.SelectEntity(head) == true);
     QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin"));
     REQUIRE(assignOrNull != nullptr);
     REQUIRE(assignOrNull->isEnabled() == true);
     assignOrNull->click();
     WaitForValidatedScene(workspace);
-    checkSkin(workspace, 0.00367F, 0.00137F, 0.00068F);
+    checkSkin(workspace, 0.0015F, 0.00094F, 0.00057F);
     CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin")) == nullptr);
     // A skin slot is not offered as a hair card.
     CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard")) == nullptr);
 
     // The fields edit millimetres; an unchanged field keeps its stored metres.
     const QString redField = QStringLiteral("scene/skin/scattering_red_mm");
-    CHECK(Field(workspace, redField)->text() == QStringLiteral("3.67"));
+    CHECK(Field(workspace, redField)->text() == QStringLiteral("1.5"));
     Type(Field(workspace, redField), QStringLiteral("8"));
     REQUIRE(workspace.Apply() == true);
     WaitForValidatedScene(workspace);
-    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+    checkSkin(workspace, 0.008F, 0.00094F, 0.00057F);
 
     // An out-of-range distance is rejected beside the field, and the viewport keeps the last applied skin.
     Type(Field(workspace, redField), QStringLiteral("200"));
@@ -5619,23 +5681,23 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     CHECK(errorOrNull->text().contains(QStringLiteral("Scattering red (mm)")) == true);
     CHECK(errorOrNull->text().contains(QStringLiteral("0 to 100")) == true);
     WaitForValidatedScene(workspace);
-    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+    checkSkin(workspace, 0.008F, 0.00094F, 0.00057F);
     Type(Field(workspace, redField), QStringLiteral("5"));
     REQUIRE(workspace.Apply() == true);
     CHECK(errorOrNull->isHidden() == true);
     CHECK(errorOrNull->text().isEmpty() == true);
     WaitForValidatedScene(workspace);
-    checkSkin(workspace, 0.005F, 0.00137F, 0.00068F);
+    checkSkin(workspace, 0.005F, 0.00094F, 0.00057F);
 
     // Undo and redo the distance edit.
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
     WaitForValidatedScene(workspace);
-    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+    checkSkin(workspace, 0.008F, 0.00094F, 0.00057F);
     REQUIRE(workspace.CanRedo() == true);
     workspace.Redo();
     WaitForValidatedScene(workspace);
-    checkSkin(workspace, 0.005F, 0.00137F, 0.00068F);
+    checkSkin(workspace, 0.005F, 0.00094F, 0.00057F);
     REQUIRE(workspace.Save() == true);
     WaitForValidatedScene(workspace);
     workspace.StopPreview();
@@ -5650,10 +5712,10 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     reopened.SetProject(directory.path(), 2);
     REQUIRE(reopened.Open(path) == true);
     WaitForValidatedScene(reopened);
-    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    checkSkin(reopened, 0.005F, 0.00094F, 0.00057F);
     REQUIRE(reopened.ImportScene(source) == true);
     WaitForValidatedScene(reopened);
-    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    checkSkin(reopened, 0.005F, 0.00094F, 0.00057F);
     REQUIRE(reopened.SelectEntity(head) == true);
     CHECK(Field(reopened, redField)->text() == QStringLiteral("5"));
 
@@ -5665,7 +5727,7 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     CHECK(getMaterial(reopened).Scattering.Model == format::MaterialModel::MetallicRoughness);
     reopened.Undo();
     WaitForValidatedScene(reopened);
-    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    checkSkin(reopened, 0.005F, 0.00094F, 0.00057F);
     reopened.StopPreview();
 }
 

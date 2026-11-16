@@ -98,7 +98,9 @@ Attribution 3.0 terms, the source commit and the changes made for Ludus, and
 so skin scattering distances keep their real millimetre scale. It has one
 material slot, `Skin`, which imports as metallic-roughness; the scan has no
 eyes, teeth or hair. `ludus_scene_import_tests` checks its slot, maps, licence
-and scale.
+and scale. `infinite-head-lit.gltf` is the same bust standing on the ground with
+a warm key and a cool fill directional light, for the
+[skin measurements](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust).
 
 ### Keeping the files and the GPU fixtures in step
 

@@ -2068,7 +2068,9 @@ Edit the skin fields and choose **Apply Changes**:
 
 - **Scattering red (mm)**, **Scattering green (mm)** and **Scattering blue (mm)**:
   how far each colour spreads under the surface, in [0, 100] mm. **Make Skin**
-  starts from human skin's diffuse mean free path, (3.67, 1.37, 0.68) mm; a
+  starts from human skin's scattering distance, (1.50, 0.94, 0.57) mm, derived from
+  measured skin coefficients
+  ([derivation](../architecture/renderer-systems.md#raster-skin-diffusion)); a
   material that is already skin keeps its own distances. Zero shades the slot like
   its metallic-roughness surface.
 

@@ -124,6 +124,18 @@ struct DeferredLightingOutput
 // With shouldSeparateSkin and the final view, a skin pixel's diffuse radiance, after the atmosphere's transmittance,
 // goes to Diffuse for the diffusion passes, and Radiance stays linear without it, as it does for every other pixel.
 // Uncovered pixels are discarded.
+// Pre- and post-scatter texturing for skin, after Eugene d'Eon and David Luebke, "Advanced Techniques for Realistic
+// Real-Time Skin Rendering", GPU Gems 3, chapter 14, section 14.5.2, "Combining Pre-Scatter and Post-Scatter
+// Texturing": the diffusion spreads the diffuse light divided by the square root of the albedo, and the composite
+// multiplies by the square root of the centre's albedo, so half the albedo's detail stays sharp. Thanks to the
+// authors. A channel with zero albedo carries no diffuse light to spread.
+float3 RemoveSkinPreScatterAlbedo(float3 diffuse, float3 baseColor)
+{
+    float3 root = sqrt(max(baseColor, float3(0)));
+    return float3(root.r > 0 ? diffuse.r / root.r : 0,
+                  root.g > 0 ? diffuse.g / root.g : 0,
+                  root.b > 0 ? diffuse.b / root.b : 0);
+}
 struct DeferredRadiance
 {
     float3 Radiance;
@@ -216,6 +228,7 @@ DeferredRadiance ResolveDeferredRadiance(in DeferredVarying value, bool shouldSe
         radiance = ComposeAtmosphereSegment(radiance, input.PositionWorld);
     }
 #endif
+    output.Diffuse = RemoveSkinPreScatterAlbedo(output.Diffuse, baseMetallic.rgb);
     // The skin resolve keeps every pixel linear for the composite's ToneMap.
     output.Radiance = shouldSeparateSkin == true && isFinalView == true
                           ? radiance

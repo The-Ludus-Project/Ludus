@@ -14,7 +14,9 @@
 // and the slot's scattering distance comes from the view's profile table (DEFERRED_MAX_SKIN_PROFILES).
 // A tap counts only on skin and on the centre's surface (LUDUS_SKIN_SURFACE_SLOPE_LIMIT),
 // and the weights of the taps that count are renormalized, so silhouettes and other materials neither bleed in nor
-// darken the edge. The kernel tables and their CPU mirror are in src/internal/skin_diffusion.h.
+// darken the edge. The spread light is pre-scatter textured by the square root of the albedo and multiplied by the
+// centre's square root afterwards (RemoveSkinPreScatterAlbedo in renderer_deferred_lighting.slang). The kernel tables
+// and their CPU mirror are in src/internal/skin_diffusion.h.
 
 struct SkinViewParameters
 {
@@ -219,7 +221,9 @@ struct SkinCompositeOutput
     float3 radiance = resolved.rgb;
     if (IsSkinPixel(positionPixel) == true)
     {
-        radiance += SpreadSkinDiffuse(positionPixel, float2(0, 1));
+        // Post-scatter texturing: the spread light is diffuse / sqrt(albedo) (RemoveSkinPreScatterAlbedo).
+        float3 baseColor = skinBaseTexture.Load(int3(positionPixel, 0)).rgb;
+        radiance += SpreadSkinDiffuse(positionPixel, float2(0, 1)) * sqrt(max(baseColor, float3(0)));
     }
     SkinCompositeOutput output;
     output.Color = float4(radiance, 1);

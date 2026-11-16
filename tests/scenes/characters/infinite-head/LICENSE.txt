@@ -31,6 +31,9 @@ Changes made for Ludus:
   mesh's accessors, references the colour map and the tangent-space normal map,
   names the one material slot "Skin", drops the exported camera and lamp nodes,
   and scales the mesh by 0.02 so that it is about 17 cm wide in metres.
+- infinite-head-lit.gltf is infinite-head.gltf over the same buffer and maps,
+  with the head raised to stand on the ground plane and a warm key and a cool
+  fill directional light (KHR_lights_punctual) for the skin benchmark.
 - Map-COL.jpg and Infinite-Level_02_Tangent_SmoothUV.jpg are unchanged.
 
 Thank you to Lee Perry-Smith and Infinite-Realities for making the scan
