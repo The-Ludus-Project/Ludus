@@ -12,6 +12,7 @@
 #include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
@@ -551,6 +552,10 @@ struct RenderGraphPreview::State final
         uint32 Height = 0;
         uint32 Cameras = 0;
         bool HasRasterExposure = false;
+        /// Authored ToneMap multiplier of the pass drawing Resource when HasRasterExposure; zero otherwise.
+        float32 RasterToneMappingExposure = 0;
+        /// Curve of that ToneMap.
+        renderer::ToneCurve RasterToneCurve = renderer::ToneCurve::Reinhard;
         bool HasLightingViews = false;
         bool HasWorkLight = false;
         /// Every texture of the generation, for the texture viewer.
@@ -1049,6 +1054,10 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             plan.Resources[pass.Color].Backing == plan.Resources[target.Resource].Backing)
         {
             target.HasRasterExposure = pass.Program == format::Technique::ColorAndDepth && pass.ToneMappingExposure > 0;
+            target.RasterToneMappingExposure = target.HasRasterExposure == true ? pass.ToneMappingExposure : 0;
+            target.RasterToneCurve = pass.ToneMappingCurve == format::DisplayCurve::PbrNeutral
+                                         ? renderer::ToneCurve::PbrNeutral
+                                         : renderer::ToneCurve::Reinhard;
             target.HasLightingViews = pass.Program == format::Technique::ColorAndDepth;
             break;
         }
@@ -1222,6 +1231,14 @@ const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 bool RenderGraphPreview::CanAdjustRasterExposure() const noexcept
 {
     return mState->Active.HasRasterExposure == true && mState->IsFrozen == false;
+}
+float32 RenderGraphPreview::GetRasterToneMappingExposure() const noexcept
+{
+    return mState->Active.RasterToneMappingExposure;
+}
+renderer::ToneCurve RenderGraphPreview::GetRasterToneCurve() const noexcept
+{
+    return mState->Active.RasterToneCurve;
 }
 bool RenderGraphPreview::CanShowLightingViews() const noexcept
 {

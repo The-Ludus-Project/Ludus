@@ -518,6 +518,7 @@ void GraphComparisonRun::finishCandidate(const QString& state, const QString& me
                                                     mReferenceInfo,
                                                     hasReferenceFailed,
                                                     mRaster.GetTexture(),
+                                                    ViewportDisplayTransform{},
                                                     comparison,
                                                     difference,
                                                     error);
@@ -530,6 +531,7 @@ void GraphComparisonRun::finishCandidate(const QString& state, const QString& me
                                                           mGraph.GetPixels(),
                                                           graph.Width,
                                                           graph.Height,
+                                                          ViewportDisplayTransform{},
                                                           comparison,
                                                           difference,
                                                           error);

@@ -2929,7 +2929,14 @@ writes the linear `LUHDR01` capture and, beside it, a PNG with the same base nam
 A capture saved before it finishes is marked partial and keeps exact per-pixel
 sample counts. Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
-The PNG uses the viewport's display transform: exposure one, Khronos PBR Neutral, then sRGB.
+The PNG and the window show the reference the way the viewport displays its
+output when the capture starts. When a ToneMap draws that output, they use its
+curve and the viewport's **Exposure** choice: **Automatic**, **Physical camera**
+or graph exposure, plus the compensation in stops (see
+[render-graph authoring](render-graph-authoring.md)). Otherwise they use exposure
+one and Khronos PBR Neutral. sRGB follows in both cases. The status line names the
+exposure, and the comparison JSON records it as `displayExposure` and
+`displayCurve`. The linear `LUHDR01` file is never scaled.
 
 Right-click any image in the window for **Copy image** or **Save image as…**.
 Both use the displayed image at full capture resolution, not the scaled preview,
@@ -3087,9 +3094,13 @@ uses. It is not the built-in Lit renderer. The editor's default graph draws
 flat colours, so compare a project graph to measure lighting. The browser editor
 has no project graph viewport and offers only the reference.
 
-The window shows the **Reference**, **Raster** and **Difference** images, and a
-summary that updates as samples accumulate. The difference image is red where
-the raster is brighter than the reference and blue where it is darker. It is
+The window shows the **Reference**, **Render graph** and **Difference** images,
+and a summary that updates as samples accumulate. **Render graph** is the
+viewport's graph output at the reference camera, whichever graph that is: a
+converged capture of an accumulating graph, or one frame of a raster graph. The
+summary says which. The render graph side uses the viewport's exposure, but not
+the World grid, which the reference never draws. The difference image is red where
+the render graph is brighter than the reference and blue where it is darker. It is
 black where they agree, saturates at 0.25 display units, and is grey where no
 reference sample exists yet. The statistics cover pixels with at least one
 reference sample. The summary labels an unfinished capture **INCOMPLETE** and a
@@ -3103,14 +3114,14 @@ unsampled pixels do not enter the statistics.
 
 | Statistic | Meaning |
 | --- | --- |
-| MAE, RMSE, max | Mean absolute, root mean squared and largest channel error, raster minus reference |
-| Luminance bias | Mean signed Rec. 709 luminance error; negative means the raster is darker, for example where it omits indirect light |
+| MAE, RMSE, max | Mean absolute, root mean squared and largest channel error, render graph minus reference |
+| Luminance bias | Mean signed Rec. 709 luminance error; negative means the render graph is darker, for example where it omits indirect light |
 | Visibly different | Pixels whose largest display-space channel error exceeds 0.05 (about 13 of 255 levels) |
 | PSNR | Display space only, for a peak of one; capped at 100 dB for identical images |
 | relMSE | Linear space only: squared error over squared reference plus 0.01, per channel |
 
 The space follows the graph's output format. An `RGBA8Unorm` output is the
-displayed image. Its values are compared with the reference after the viewport
+displayed image. Its values are compared with the reference after the same
 display transform, so a graph that skips tone mapping shows that difference. An
 `RGBA16F` output is scene-linear radiance and is compared with the raw reference
 means. To compare radiometrically, select an HDR target as the viewport output.

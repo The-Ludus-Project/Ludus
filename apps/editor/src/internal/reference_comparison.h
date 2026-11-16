@@ -8,6 +8,7 @@
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
 
 #include "internal/texture_inspection.h"
+#include "internal/viewport_tone_curve.h"
 
 #include <QImage>
 #include <QJsonObject>
@@ -28,10 +29,10 @@ inline constexpr foundation::float64 REFERENCE_MAXIMUM_PSNR = 100;
 /// Space in which raster and reference values are compared, chosen by the raster output encoding.
 enum class ReferenceComparisonSpace : foundation::uint8
 {
-    /// RGBA8 raster output is the displayed image; the reference passes through the viewport's
-    /// display transform (exposure one, the viewport's tone curve, sRGB) before comparison. Values in [0, 1].
+    /// RGBA8 graph output is the displayed image; the reference passes through the viewport's
+    /// output's display transform (exposure, tone curve, sRGB) before comparison. Values in [0, 1].
     Display,
-    /// RGBA16F raster output is scene-linear radiance, compared with the raw reference means.
+    /// RGBA16F graph output is scene-linear radiance, compared with the raw reference means.
     Linear,
 };
 
@@ -78,6 +79,8 @@ struct ReferenceComparison final
 /// @param information Capture dimensions and requested sample count, matching reference.
 /// @param hasReferenceFailed Whether capture ended with an error, including backend failures.
 /// @param raster Read-back raster output; RGBA8 compares in display space, RGBA16F in linear space.
+/// @param display Display transform of the raster output (ComputeReferenceDisplayTransform). The reference, and a
+/// linear raster for the visible-difference test and the difference image, are display-encoded with it.
 /// @param outDifference Receives a signed display-luminance difference image: red where the raster
 /// is brighter, blue where it is darker, black where they agree and grey where no reference sample
 /// exists, saturating at REFERENCE_DIFFERENCE_FULL_SCALE.
@@ -88,6 +91,7 @@ CompareRasterWithReference(foundation::BorrowedView<const graphics::renderer::Re
                            const graphics::renderer::ReferenceCaptureInfo& information,
                            bool hasReferenceFailed,
                            const InspectedTexture& raster,
+                           const ViewportDisplayTransform& display,
                            ReferenceComparison& outComparison,
                            QImage& outDifference,
                            QString& outError);
@@ -97,6 +101,8 @@ CompareRasterWithReference(foundation::BorrowedView<const graphics::renderer::Re
 /// @param capture Width * Height top-left pixels from RenderGraphCapture, borrowed for the call.
 /// @param captureWidth Capture width in pixels; must equal the reference's.
 /// @param captureHeight Capture height in pixels; must equal the reference's.
+/// @param display Display transform for the visible-difference test and difference image, as for
+/// CompareRasterWithReference. The linear statistics do not use it.
 /// @return False with outError (outputs unchanged) for mismatched extents or no pixel compared.
 [[nodiscard]] bool
 CompareGraphCaptureWithReference(foundation::BorrowedView<const graphics::renderer::ReferencePixel> reference,
@@ -105,6 +111,7 @@ CompareGraphCaptureWithReference(foundation::BorrowedView<const graphics::render
                                  foundation::BorrowedView<const graphics::renderer::RenderGraphCapturePixel> capture,
                                  foundation::uint32 captureWidth,
                                  foundation::uint32 captureHeight,
+                                 const ViewportDisplayTransform& display,
                                  ReferenceComparison& outComparison,
                                  QImage& outDifference,
                                  QString& outError);

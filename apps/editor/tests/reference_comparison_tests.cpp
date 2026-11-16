@@ -107,6 +107,7 @@ bool Compare(const QVector<renderer::ReferencePixel>& reference,
                                       information,
                                       false,
                                       raster,
+                                      ViewportDisplayTransform{},
                                       outComparison,
                                       outDifference,
                                       outError);
@@ -161,6 +162,38 @@ TEST_CASE("Display comparison of the reference's own display encoding has only r
     CHECK(difference.size() == QSize(IMAGE_WIDTH, IMAGE_HEIGHT));
     // Half an eight-bit level, scaled to the difference image's full-scale range, rounds to two.
     CHECK(qRed(difference.pixel(0, 0)) + qBlue(difference.pixel(0, 0)) <= DIFFERENCE_ROUNDING_LEVELS);
+}
+
+TEST_CASE("Display comparison exposes the reference with the viewport output's transform",
+          "[editor][reference-comparison][exposure]")
+{
+    // Physical daylight radiance that a physical camera exposes to a grey of 0.3.
+    constexpr float32 DAYLIGHT_RADIANCE = 3000;
+    constexpr float32 EXPOSED_GREY = 0.3F;
+    const ViewportDisplayTransform display{ .Exposure = EXPOSED_GREY / DAYLIGHT_RADIANCE };
+    const QVector<renderer::ReferencePixel> reference = MakeReference(DAYLIGHT_RADIANCE);
+    renderer::ReferenceCaptureInfo information;
+    information.Width = IMAGE_WIDTH;
+    information.Height = IMAGE_HEIGHT;
+    information.TargetSamples = TEST_SAMPLES;
+    const InspectedTexture raster = MakeRgba8(EncodeReferenceDisplayChannel(EXPOSED_GREY));
+    ReferenceComparison comparison;
+    QImage difference;
+    QString error;
+    REQUIRE(CompareRasterWithReference({reference.constData(), static_cast<usize>(reference.size())},
+                                       information,
+                                       false,
+                                       raster,
+                                       display,
+                                       comparison,
+                                       difference,
+                                       error) == true);
+    CHECK(comparison.MaximumAbsoluteError <= EIGHT_BIT_ROUNDING);
+    CHECK(comparison.VisiblyDifferentFraction == 0);
+    // At exposure one the same reference saturates, and the correctly exposed output reads as far darker.
+    REQUIRE(Compare(reference, raster, comparison, difference, error) == true);
+    CHECK(comparison.MeanSignedLuminanceError < 0);
+    CHECK(comparison.VisiblyDifferentFraction == 1);
 }
 
 TEST_CASE("A darker raster reports negative luminance bias and a blue difference", "[editor][reference-comparison]")
@@ -257,6 +290,7 @@ TEST_CASE("A graph capture compares its linear means with the reference and skip
                                              {capture.constData(), static_cast<usize>(capture.size())},
                                              IMAGE_WIDTH,
                                              IMAGE_HEIGHT,
+                                             ViewportDisplayTransform{},
                                              comparison,
                                              difference,
                                              error) == true);
@@ -274,6 +308,7 @@ TEST_CASE("A graph capture compares its linear means with the reference and skip
                                            {capture.constData(), static_cast<usize>(capture.size())},
                                            IMAGE_WIDTH + 1,
                                            IMAGE_HEIGHT,
+                                           ViewportDisplayTransform{},
                                            comparison,
                                            difference,
                                            error) == false);
@@ -372,6 +407,7 @@ TEST_CASE("The viewport's forward-lit graph is captured and compared with a refe
                                        information,
                                        false,
                                        raster.GetTexture(),
+                                       ViewportDisplayTransform{},
                                        comparison,
                                        difference,
                                        error) == true);
@@ -421,6 +457,7 @@ TEST_CASE("Comparison labels full-coverage under-sampling and failures as partia
                                        information,
                                        false,
                                        MakeRgba16Float(HALF_ONE),
+                                       ViewportDisplayTransform{},
                                        comparison,
                                        difference,
                                        error) == true);
@@ -433,6 +470,7 @@ TEST_CASE("Comparison labels full-coverage under-sampling and failures as partia
                                        information,
                                        true,
                                        MakeRgba16Float(HALF_ONE),
+                                       ViewportDisplayTransform{},
                                        comparison,
                                        difference,
                                        error) == true);
@@ -444,6 +482,7 @@ TEST_CASE("Comparison labels full-coverage under-sampling and failures as partia
                                        information,
                                        false,
                                        MakeRgba16Float(HALF_ONE),
+                                       ViewportDisplayTransform{},
                                        comparison,
                                        difference,
                                        error) == true);

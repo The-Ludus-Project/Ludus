@@ -7,6 +7,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 #include <ludus/graphics/renderer/world_feature.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
@@ -183,6 +184,12 @@ public:
     /// Whether the active final output directly resolves an enabled clustered deferred ToneMap
     /// and the graph camera can accept a view update.
     [[nodiscard]] bool CanAdjustRasterExposure() const noexcept;
+    /// The authored ToneMap multiplier of the clustered deferred pass that draws the active output, before
+    /// ViewDescription exposure; zero when no enabled clustered deferred ToneMap draws it, including before a
+    /// generation is active. Pass it to ComputeReferenceDisplayExposure. GUI thread only.
+    [[nodiscard]] foundation::float32 GetRasterToneMappingExposure() const noexcept;
+    /// The curve of that ToneMap; Reinhard when GetRasterToneMappingExposure is zero. GUI thread only.
+    [[nodiscard]] graphics::renderer::ToneCurve GetRasterToneCurve() const noexcept;
     /// Whether the active final output is drawn by a raster colour pass whose clustered deferred resolve honours
     /// ViewDescription::LightingView. Clustered forward graphs ignore lighting views.
     [[nodiscard]] bool CanShowLightingViews() const noexcept;
