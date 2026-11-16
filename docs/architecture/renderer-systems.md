@@ -2134,6 +2134,13 @@ the graph package interface intact. Transparent surfaces and other renderer
 profiles remain outside this integration. If the
 camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
 
+An Atmosphere is an optional World feature. `RenderGraph::Update` admits a
+camera with an enabled Atmosphere in a graph without the clustered deferred
+programs. It clears that camera's Atmosphere, draws the World with its ordinary
+background and unattenuated directional lights, and sets
+`RenderGraphReport::IsAtmosphereOmitted`. The editor reports the omission as a
+warning, not a rejection.
+
 ### Reference capture of an Atmosphere
 
 RT1 receives the same distant lighting as the opaque raster resolve. When an

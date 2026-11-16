@@ -892,31 +892,51 @@ TEST_CASE("Rejected extractions name their scene-level cause for the drawing gra
     REQUIRE(fixture.Activation.Stage(MakePackage(second)) == rhi::RasterStatus::Pending);
     ActivationFixture::CompletePending(rhi::RasterStatus::Ready);
     REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
-    // Neither fixture generation composes an atmosphere: only clustered deferred graphs do.
-    fixture.Cameras[0].Atmosphere.IsEnabled = true;
     renderer::RenderGraphReport report;
-    CHECK(fixture.Update(report, 2) == rhi::RasterStatus::Unsupported);
-    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::Atmosphere);
-    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::Atmosphere);
-    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
-    fixture.Cameras[0].Atmosphere.IsEnabled = false;
     fixture.Cameras[0].Depth = renderer::DepthConvention::ReverseZ;
     fixture.Cameras[0].InfiniteFar = true;
     CHECK(fixture.Update(report, 3) == rhi::RasterStatus::Unsupported);
     CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::CameraDepth);
     CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::CameraDepth);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
     // An accepted extraction clears the cause, and a newly staged candidate starts without one.
     fixture.Cameras[0].Depth = renderer::DepthConvention::Conventional;
     fixture.Cameras[0].InfiniteFar = false;
     REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
     CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
     CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
-    fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    fixture.Cameras[0].InfiniteFar = true;
+    fixture.Cameras[0].Depth = renderer::DepthConvention::ReverseZ;
     CHECK(fixture.Update(report, 5) == rhi::RasterStatus::Unsupported);
     PackageOptions third;
     third.Generation = 3;
     REQUIRE(fixture.Activation.Stage(MakePackage(third)) == rhi::RasterStatus::Ready);
     CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
+}
+
+TEST_CASE("A graph without clustered deferred programs draws a World with an Atmosphere and reports the omission",
+          "[render-graph][activation]")
+{
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report, 2) == rhi::RasterStatus::Ready);
+    CHECK(report.IsAtmosphereOmitted == false);
+    // The fixture graph has no clustered deferred programs, so it cannot compose an Atmosphere. It draws the rest of
+    // the World rather than rejecting the extraction.
+    fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    REQUIRE(fixture.Update(report, 3) == rhi::RasterStatus::Ready);
+    CHECK(report.IsAccepted == true);
+    CHECK(report.IsAtmosphereOmitted == true);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    CHECK(activeOrNull->GetReport().IsAtmosphereOmitted == true);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    // Turning the Atmosphere off clears the report on the next accepted extraction.
+    fixture.Cameras[0].Atmosphere.IsEnabled = false;
+    REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    CHECK(report.IsAtmosphereOmitted == false);
 }
 
 TEST_CASE("RG3 a newer candidate supersedes an unactivated one", "[render-graph][activation]")

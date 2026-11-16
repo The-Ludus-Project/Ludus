@@ -380,13 +380,19 @@ void WorldGraphView::refreshStatus()
         }
         text += mDebugViewProblem;
     }
-    if (mWorkspace.GetRenderProblem().isEmpty() == true && mWorkspace.GetRenderWarning().isEmpty() == false)
+    if (mWorkspace.GetRenderProblem().isEmpty() == true)
     {
-        if (text.isEmpty() == false)
+        for (const QString& warning : {mWorkspace.GetRenderWarning(), mWorkspace.GetOmittedFeatureWarning()})
         {
-            text += QLatin1Char('\n');
+            if (warning.isEmpty() == false)
+            {
+                if (text.isEmpty() == false)
+                {
+                    text += QLatin1Char('\n');
+                }
+                text += warning;
+            }
         }
-        text += mWorkspace.GetRenderWarning();
     }
     if (mHasProblemChip == false && mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
     {
