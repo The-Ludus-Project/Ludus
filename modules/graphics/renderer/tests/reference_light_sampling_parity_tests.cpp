@@ -366,8 +366,15 @@ TEST_CASE("GPU-compute resampled light pieces match the CPU oracle's",
         if (isHit == true && plane.Words[0] == 1)
         {
             CHECK(IsNear(plane.GetFloat(1), distanceWorld, GEOMETRY_TOLERANCE));
-            CHECK(math::Abs(plane.GetFloat(2) - barycentric.X) <= GEOMETRY_TOLERANCE);
-            CHECK(math::Abs(plane.GetFloat(3) - barycentric.Y) <= GEOMETRY_TOLERANCE);
+            // The hit points agree relative to their distance, as the distance does. A thin triangle's barycentric
+            // split is ill-conditioned while its hit point is not: invocation 1331's split differed by 9.2e-4 on an
+            // Apple M5 and 1.2e-3 on the GitHub macOS runner, with the hit points 3e-5 of the distance apart.
+            const math::Vector3 edge1World = vertices[1] - vertices[0];
+            const math::Vector3 edge2World = vertices[2] - vertices[0];
+            const math::Vector3 hitDifferenceWorld =
+                edge1World * (plane.GetFloat(2) - barycentric.X) + edge2World * (plane.GetFloat(3) - barycentric.Y);
+            CAPTURE(plane.GetFloat(2), plane.GetFloat(3), barycentric.X, barycentric.Y);
+            CHECK(math::Length(hitDifferenceWorld) <= GEOMETRY_TOLERANCE * distanceWorld);
         }
     }
     CHECK(zeroTotalCount > INVOCATION_COUNT / 4);

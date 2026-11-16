@@ -913,6 +913,15 @@ def require_paths_within_windows_limit(where, paths, limit=WINDOWS_MAX_PATH):
             f'{longest}. Build into a shorter directory or shorten the graph target and NAME.')
 
 
+def stage_directory_name(index, target):
+    """Name one stage's work directory from its build-order job index and target.
+
+    The name is unique within one build's temporary stage and independent of the
+    program ID's length, so long authored IDs never lengthen staged include paths.
+    """
+    return f'{index}-{target}'
+
+
 def compile_program(program, schemas, closure, snapshot, work, helper, tools, target, cancel, worker_socket=None, worker_identity=None):
     """Compile only captured sources; reject any untracked compiler dependency."""
     source = work / 'source'
@@ -1022,8 +1031,10 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
             # Native Metal ray pipelines always use their own compiler process.
             with worker if worker and not program.get('native_ray_pipeline') else nullcontext():
                 checkpoint(stopped)
-                # Short stage names keep deep Windows build trees under the path limit.
-                work = stage / (program['id'] + '-' + target)
+                # The job index, not the program ID, names the stage: authored IDs such as
+                # DeferredSurfaceChartGBufferFragment otherwise push deep Windows build trees
+                # past the path limit. Diagnostics name the program, never this directory.
+                work = stage / stage_directory_name(index, target)
                 work.mkdir()
                 should_trace = stage_timings is not None and index < len(stage_timings)
                 helper_started = trace_ticks() if should_trace else 0
