@@ -122,6 +122,47 @@ inline const foundation::StaticArray<SkinDistanceField, content::scene_format::M
         {"scattering_blue_mm", "Scattering blue (mm)", 2},
     }};
 
+/// Key of a World skin slot's optional linear RGB base colour in its "skin" object, in [0, 1] as in the scene source
+/// format. It replaces the inherited material's reflectance, which scales the base colour map.
+inline constexpr const char* SKIN_BASE_COLOR_KEY = "base_color";
+/// Key of a World skin slot's optional perceptual roughness in its "skin" object, in
+/// [content::scene_format::MIN_AUTHORED_ROUGHNESS, 1].
+inline constexpr const char* SKIN_ROUGHNESS_KEY = "roughness";
+/// SkinSurfaceField::Channel of the roughness field; the base colour fields use their colour channel.
+inline constexpr foundation::usize SKIN_ROUGHNESS_CHANNEL = content::scene_format::MATERIAL_RGB_CHANNELS;
+/// Base colour channels and the roughness.
+inline constexpr foundation::usize SKIN_SURFACE_FIELD_COUNT = content::scene_format::MATERIAL_RGB_CHANNELS + 1;
+
+/// One surface value of a World skin slot, edited beside its scattering distance: a base colour channel or the
+/// roughness. A slot without the key inherits the value from its imported material.
+struct SkinSurfaceField final
+{
+    const char* Key;           ///< Field key below "scene/skin/".
+    const char* Label;         ///< Short inspector label.
+    foundation::usize Channel; ///< Base colour channel, or SKIN_ROUGHNESS_CHANNEL.
+
+    /// Report whether this field edits the roughness rather than a base colour channel.
+    [[nodiscard]] bool IsRoughness() const noexcept
+    {
+        return Channel == SKIN_ROUGHNESS_CHANNEL;
+    }
+    /// Number property bounded as the scene format admits the value: [0, 1] for a base colour channel and
+    /// [MIN_AUTHORED_ROUGHNESS, 1] for the roughness.
+    [[nodiscard]] QJsonObject MakeNumberProperty() const;
+};
+
+/// The base colour red, green and blue fields and the roughness field of a World skin slot, in that order.
+inline const foundation::StaticArray<SkinSurfaceField, SKIN_SURFACE_FIELD_COUNT> SKIN_SURFACE_FIELDS{{
+    {"base_color_red", "Base colour red", 0},
+    {"base_color_green", "Base colour green", 1},
+    {"base_color_blue", "Base colour blue", 2},
+    {"roughness", "Roughness", SKIN_ROUGHNESS_CHANNEL},
+}};
+
+/// The shortest decimal that reads back as `value` in float32, so a cooked value shows as it was authored ("0.6",
+/// not "0.600000024").
+[[nodiscard]] foundation::float64 GetShortestFloat32Decimal(foundation::float32 value);
+
 /// A "skin" slot object. A material that is already skin keeps its scattering distance; any other starts from human
 /// skin's normalized-diffusion distance d, (1.50, 0.94, 0.57) mm. It comes from the measured skin1 coefficients of
 /// Henrik Wann Jensen, Stephen R. Marschner, Marc Levoy and Pat Hanrahan, "A Practical Model for Subsurface Light

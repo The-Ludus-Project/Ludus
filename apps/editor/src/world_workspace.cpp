@@ -2469,12 +2469,13 @@ void WorldWorkspace::addSkinControls(QFormLayout& inoutRows,
         inoutRows.addRow(assign);
         return;
     }
-    const QJsonArray distance =
-        placement.value(QStringLiteral("skin")).toObject().value(QString::fromLatin1(SKIN_DISTANCE_KEY)).toArray();
+    const QJsonObject skin = placement.value(QStringLiteral("skin")).toObject();
+    const QJsonArray distance = skin.value(QString::fromLatin1(SKIN_DISTANCE_KEY)).toArray();
     QLabel* help = new QLabel(QStringLiteral("This slot is skin. Light spreads under its surface over each colour's "
                                              "scattering distance, so model the object at real scale; human skin "
-                                             "spreads red furthest, a few millimetres. The default render graph "
-                                             "shows the spread. Apply Changes updates the viewport."),
+                                             "spreads red furthest, a few millimetres. The base colour scales the "
+                                             "base colour map. The default render graph shows the spread. Apply "
+                                             "Changes updates the viewport."),
                               group);
     help->setWordWrap(true);
     inoutRows.addRow(help);
@@ -2482,6 +2483,37 @@ void WorldWorkspace::addSkinControls(QFormLayout& inoutRows,
     {
         QLineEdit* input = new QLineEdit(group);
         SetCoatingInput(*input, distance.at(static_cast<qsizetype>(field.Channel)).toDouble() * MILLIMETRES_PER_METRE);
+        const QString fieldKey = QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key);
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, QString::fromUtf8(field.Label), *input);
+    }
+    // The base colour and roughness show the slot's own values, or the inherited material's until edited.
+    const QJsonArray baseColor = skin.value(QString::fromLatin1(SKIN_BASE_COLOR_KEY)).toArray();
+    const QJsonValue roughness = skin.value(QString::fromLatin1(SKIN_ROUGHNESS_KEY));
+    for (const SkinSurfaceField& field : SKIN_SURFACE_FIELDS)
+    {
+        QJsonValue value =
+            field.IsRoughness() == true ? roughness : baseColor.at(static_cast<qsizetype>(field.Channel));
+        if (value.isDouble() == true)
+        {
+            value = GetShortestFloat32Decimal(static_cast<foundation::float32>(value.toDouble()));
+        }
+        else if (materialOrNull != nullptr)
+        {
+            const foundation::math::Vector3& reflectance = materialOrNull->Reflectance;
+            const foundation::StaticArray<foundation::float32, content::scene_format::MATERIAL_RGB_CHANNELS> inherited{
+                {reflectance.X, reflectance.Y, reflectance.Z}};
+            value = GetShortestFloat32Decimal(field.IsRoughness() == true ? materialOrNull->Roughness
+                                                                          : inherited[field.Channel]);
+        }
+        if (value.isDouble() == false)
+        {
+            continue;
+        }
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input, value);
         const QString fieldKey = QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key);
         input->setObjectName(QStringLiteral("worldField:") + fieldKey);
         Fields_.insert(fieldKey, input);
@@ -2588,6 +2620,47 @@ bool WorldWorkspace::readSkinFields(QJsonObject& inoutScene, QString& outError, 
     if (hasChanged == true)
     {
         skin.insert(QString::fromLatin1(SKIN_DISTANCE_KEY), distance);
+    }
+    // A changed base colour channel writes all three; an untouched base colour or roughness stays inherited.
+    QJsonArray baseColor;
+    bool hasBaseColorChanged = false;
+    for (const SkinSurfaceField& field : SKIN_SURFACE_FIELDS)
+    {
+        QLineEdit* fieldOrNull =
+            qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key)));
+        if (fieldOrNull == nullptr)
+        {
+            continue;
+        }
+        QJsonValue number;
+        bool hasFieldChanged = false;
+        if (ReadMaterialNumberInput(field.MakeNumberProperty(), *fieldOrNull, number, hasFieldChanged, outError) ==
+            false)
+        {
+            outInvalidOrNull = fieldOrNull;
+            return false;
+        }
+        // The cook stores float32; the World keeps the shortest decimal that reads back as it ("0.7").
+        number = GetShortestFloat32Decimal(static_cast<foundation::float32>(number.toDouble()));
+        if (field.IsRoughness() == false)
+        {
+            baseColor.append(number);
+            hasBaseColorChanged = hasBaseColorChanged == true || hasFieldChanged == true;
+        }
+        else if (hasFieldChanged == true)
+        {
+            skin.insert(QString::fromLatin1(SKIN_ROUGHNESS_KEY), number);
+            hasChanged = true;
+        }
+    }
+    if (hasBaseColorChanged == true &&
+        baseColor.size() == static_cast<qsizetype>(content::scene_format::MATERIAL_RGB_CHANNELS))
+    {
+        skin.insert(QString::fromLatin1(SKIN_BASE_COLOR_KEY), baseColor);
+        hasChanged = true;
+    }
+    if (hasChanged == true)
+    {
         inoutScene.insert(QStringLiteral("skin"), skin);
     }
     return true;

@@ -5651,6 +5651,13 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
         CHECK(material.SurfaceTexture != format::NO_TEXTURE);
     };
     CHECK(getMaterial(workspace).Scattering.Model == format::MaterialModel::MetallicRoughness);
+    using ludus::foundation::math::Vector3;
+    const Vector3 inheritedReflectance = getMaterial(workspace).Reflectance;
+    const float32 inheritedRoughness = getMaterial(workspace).Roughness;
+    const auto checkSurface = [&](const WorldWorkspace& view, const Vector3& reflectance, float32 roughness) {
+        CHECK(getMaterial(view).Reflectance == reflectance);
+        CHECK(getMaterial(view).Roughness == roughness);
+    };
 
     // Make Skin starts from human skin's normalized-diffusion distance, in metres.
     REQUIRE(workspace.SelectEntity(head) == true);
@@ -5660,6 +5667,8 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     assignOrNull->click();
     WaitForValidatedScene(workspace);
     checkSkin(workspace, 0.0015F, 0.00094F, 0.00057F);
+    // The base colour and roughness stay the inherited material's.
+    checkSurface(workspace, inheritedReflectance, inheritedRoughness);
     CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin")) == nullptr);
     // A skin slot is not offered as a hair card.
     CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard")) == nullptr);
@@ -5698,6 +5707,43 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     workspace.Redo();
     WaitForValidatedScene(workspace);
     checkSkin(workspace, 0.005F, 0.00094F, 0.00057F);
+
+    // The base colour and roughness fields start from the inherited material, shown as authored.
+    REQUIRE(workspace.SelectEntity(head) == true);
+    const QString baseRedField = QStringLiteral("scene/skin/base_color_red");
+    const QString roughnessField = QStringLiteral("scene/skin/roughness");
+    constexpr ludus::foundation::int32 FLOAT32_ROUND_TRIP_DIGITS = 9;
+    CHECK(Field(workspace, roughnessField)->text() ==
+          QString::number(GetShortestFloat32Decimal(inheritedRoughness), 'g', FLOAT32_ROUND_TRIP_DIGITS));
+    Type(Field(workspace, baseRedField), QStringLiteral("0.7"));
+    Type(Field(workspace, roughnessField), QStringLiteral("0.55"));
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    const Vector3 editedReflectance{0.7F, inheritedReflectance.Y, inheritedReflectance.Z};
+    checkSurface(workspace, editedReflectance, 0.55F);
+    checkSkin(workspace, 0.005F, 0.00094F, 0.00057F);
+
+    // An out-of-range roughness is rejected beside the skin fields; the last applied surface stays.
+    Type(Field(workspace, roughnessField), QStringLiteral("0.01"));
+    CHECK(workspace.Apply() == false);
+    QLabel* surfaceErrorOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldSkinError"));
+    REQUIRE(surfaceErrorOrNull != nullptr);
+    CHECK(surfaceErrorOrNull->isHidden() == false);
+    CHECK(surfaceErrorOrNull->text().contains(QStringLiteral("Roughness")) == true);
+    CHECK(surfaceErrorOrNull->text().contains(QStringLiteral("0.045 to 1")) == true);
+    WaitForValidatedScene(workspace);
+    checkSurface(workspace, editedReflectance, 0.55F);
+    Type(Field(workspace, roughnessField), QStringLiteral("0.6"));
+    REQUIRE(workspace.Apply() == true);
+    CHECK(surfaceErrorOrNull->isHidden() == true);
+    WaitForValidatedScene(workspace);
+    checkSurface(workspace, editedReflectance, 0.6F);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkSurface(workspace, editedReflectance, 0.55F);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkSurface(workspace, editedReflectance, 0.6F);
     REQUIRE(workspace.Save() == true);
     WaitForValidatedScene(workspace);
     workspace.StopPreview();
@@ -5713,11 +5759,15 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     REQUIRE(reopened.Open(path) == true);
     WaitForValidatedScene(reopened);
     checkSkin(reopened, 0.005F, 0.00094F, 0.00057F);
+    checkSurface(reopened, editedReflectance, 0.6F);
     REQUIRE(reopened.ImportScene(source) == true);
     WaitForValidatedScene(reopened);
     checkSkin(reopened, 0.005F, 0.00094F, 0.00057F);
+    checkSurface(reopened, editedReflectance, 0.6F);
     REQUIRE(reopened.SelectEntity(head) == true);
     CHECK(Field(reopened, redField)->text() == QStringLiteral("5"));
+    CHECK(Field(reopened, baseRedField)->text() == QStringLiteral("0.7"));
+    CHECK(Field(reopened, roughnessField)->text() == QStringLiteral("0.6"));
 
     // Use Inherited Material restores the imported material in one undoable edit.
     QPushButton* restoreOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreSkin"));
@@ -5725,9 +5775,11 @@ TEST_CASE("World makes the engine's bust skin and keeps its edits across save, r
     restoreOrNull->click();
     WaitForValidatedScene(reopened);
     CHECK(getMaterial(reopened).Scattering.Model == format::MaterialModel::MetallicRoughness);
+    checkSurface(reopened, inheritedReflectance, inheritedRoughness);
     reopened.Undo();
     WaitForValidatedScene(reopened);
     checkSkin(reopened, 0.005F, 0.00094F, 0.00057F);
+    checkSurface(reopened, editedReflectance, 0.6F);
     reopened.StopPreview();
 }
 

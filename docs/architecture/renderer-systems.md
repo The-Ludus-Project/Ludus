@@ -1776,7 +1776,8 @@ without eyes or hair, so bleed tests add their own eye and hair geometry.
   Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14,
   and the clustered deferred profile spreads its diffuse lighting
   ([raster skin diffusion](#raster-skin-diffusion)), and World slots become skin
-  in the editor. On the bust, skin adds about 1.7 ms of GPU time per
+  in the editor, with editable base colour, roughness and scattering distances.
+  On the bust, skin adds about 1.7 ms of GPU time per
   1600×1080 frame on an Apple M5 over the matched PBR control, and 36 bytes per
   pixel of targets ([measurements and comparison](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust)).
   [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
@@ -1957,7 +1958,8 @@ and compare each with the same scene at zero distance. They check that light
 crosses an albedo edge with red reaching furthest, that flat lighting is
 conserved, that spreading stops at a non-skin material and at a depth edge, that
 each material spreads by its own profile, that the skin targets appear only with
-skin, and that emissive skin draws while metallic skin is rejected.
+skin, that emissive skin draws while metallic skin is rejected, and that the
+sharp specular edge between glossy and rough black skin is unchanged.
 
 Other paths make declared approximations:
 
@@ -1969,8 +1971,11 @@ Other paths make declared approximations:
 
 The material layout gains `SkinScattering` after the hair-card words, so
 render-graph packages cooked before it are rejected until recooked, as for hair
-cards. World slots become skin in the editor, which edits the scattering distance with
-the World history. See
+cards. World slots become skin in the editor, which edits the base colour,
+roughness and scattering distance with the World history. The editor's `[skin]`
+viewport case draws the bust in the World viewport through the default graph
+and checks that **Make Skin**, switching a light off, an orbit and a resize
+each present a new frame. See
 [make a slot skin](../development/editor-workspace.md#make-a-slot-skin).
 The [bust measurements](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust)
 compare skin with ordinary PBR in one process and record the GPU time and the

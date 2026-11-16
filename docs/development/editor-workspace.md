@@ -2079,13 +2079,20 @@ Edit the skin fields and choose **Apply Changes**:
   ([derivation](../architecture/renderer-systems.md#raster-skin-diffusion)); a
   material that is already skin keeps its own distances. Zero shades the slot like
   its metallic-roughness surface.
+- **Base colour red**, **Base colour green** and **Base colour blue**: the linear
+  base colour in [0, 1], which scales the base colour map.
+- **Roughness**: the specular roughness, in [0.045, 1].
+
+The base colour and roughness fields start from the imported material's values.
+The slot inherits them until you change one; editing a base colour channel stores
+all three.
 
 A value outside its range is rejected beside the skin fields, with the field's
 name and accepted range. The field keeps your text so you can correct it, and the
 viewport keeps the last applied skin. The message clears after a valid **Apply
 Changes**. **Use Inherited Material** restores the imported material. The
 assignment, each edit and the restore are undoable, and **Save World** keeps them
-across reopening and reimport. Slots with equal distances share one cooked
+across reopening and reimport. Slots with equal skin values share one cooked
 material.
 
 The clustered deferred viewport shades the spread; other raster profiles, ray

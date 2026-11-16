@@ -845,25 +845,66 @@ constexpr std::string_view HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
     return true;
 }
 
-/// A World slot's skin override: its linear RGB scattering distance in metres. An unassigned override leaves the
-/// slot's resolved material unchanged.
+/// A World slot's skin override: its linear RGB scattering distance in metres, and an optional base colour and
+/// roughness that replace the inherited material's. An unassigned override leaves the slot's resolved material
+/// unchanged.
 struct SkinOverride final
 {
     bool IsAssigned = false;
     foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS> Distance{};
+    bool HasBaseColor = false;
+    foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS> BaseColor{};
+    bool HasRoughness = false;
+    float32 Roughness = 0;
 
     [[nodiscard]] bool operator==(const SkinOverride& other) const noexcept
     {
-        return IsAssigned == other.IsAssigned && Distance[0] == other.Distance[0] && Distance[1] == other.Distance[1] &&
-               Distance[2] == other.Distance[2];
+        for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+        {
+            if (Distance[channel] != other.Distance[channel] || BaseColor[channel] != other.BaseColor[channel])
+            {
+                return false;
+            }
+        }
+        return IsAssigned == other.IsAssigned && HasBaseColor == other.HasBaseColor &&
+               HasRoughness == other.HasRoughness && Roughness == other.Roughness;
     }
 };
-/// Member of a level object's "skin" object; the name matches the scene source format's.
+/// Members of a level object's "skin" object; the names match the scene source format's.
 constexpr std::string_view SKIN_DISTANCE_KEY = "scattering_distance";
+constexpr std::string_view SKIN_BASE_COLOR_KEY = "base_color";
+constexpr std::string_view SKIN_ROUGHNESS_KEY = "roughness";
 
-/// Read a level object's "skin" member: exactly a scattering distance of three numbers in
-/// [0, MAX_SKIN_SCATTERING_DISTANCE] metres. A missing member leaves the slot unassigned. Invalid members return false
-/// and preserve outSkin.
+/// Read three authored numbers in [minimum, maximum] from an array member. Invalid members return false and preserve
+/// outValues.
+[[nodiscard]] bool ReadSkinChannels(const JsonTree& tree,
+                                    JsonIndex node,
+                                    float64 minimum,
+                                    float64 maximum,
+                                    foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS>& outValues) noexcept
+{
+    if (tree.GetKind(node) != JsonKind::Array || tree.GetCount(node) != format::MATERIAL_RGB_CHANNELS)
+    {
+        return false;
+    }
+    foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS> values{};
+    for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+    {
+        PythonNumber number;
+        if (IsAuthoredNumber(tree, tree.GetItem(node, channel), number) == false || number.ToFloat() < minimum ||
+            number.ToFloat() > maximum)
+        {
+            return false;
+        }
+        values[channel] = static_cast<float32>(number.ToFloat());
+    }
+    outValues = values;
+    return true;
+}
+
+/// Read a level object's "skin" member: a scattering distance of three numbers in [0, MAX_SKIN_SCATTERING_DISTANCE]
+/// metres, and optionally a linear RGB base colour in [0, 1] and a roughness in [MIN_AUTHORED_ROUGHNESS, 1]. A
+/// missing member leaves the slot unassigned. Invalid members return false and preserve outSkin.
 [[nodiscard]] bool ReadSkinOverride(const JsonTree& tree, JsonIndex node, SkinOverride& outSkin) noexcept
 {
     if (node == NO_JSON_NODE)
@@ -871,23 +912,42 @@ constexpr std::string_view SKIN_DISTANCE_KEY = "scattering_distance";
         outSkin = {};
         return true;
     }
-    const JsonIndex distance = tree.GetMember(node, SKIN_DISTANCE_KEY);
-    if (tree.GetKind(node) != JsonKind::Object || tree.GetCount(node) != 1 || distance == NO_JSON_NODE ||
-        tree.GetKind(distance) != JsonKind::Array || tree.GetCount(distance) != format::MATERIAL_RGB_CHANNELS)
+    const JsonIndex baseColor = tree.GetMember(node, SKIN_BASE_COLOR_KEY);
+    const JsonIndex roughness = tree.GetMember(node, SKIN_ROUGHNESS_KEY);
+    const usize memberCount =
+        1 + (baseColor == NO_JSON_NODE ? usize{0} : usize{1}) + (roughness == NO_JSON_NODE ? usize{0} : usize{1});
+    if (tree.GetKind(node) != JsonKind::Object || tree.GetCount(node) != memberCount)
     {
         return false;
     }
     SkinOverride skin;
     skin.IsAssigned = true;
-    for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+    if (ReadSkinChannels(tree,
+                         tree.GetMember(node, SKIN_DISTANCE_KEY),
+                         0,
+                         static_cast<float64>(format::MAX_SKIN_SCATTERING_DISTANCE),
+                         skin.Distance) == false)
     {
-        PythonNumber number;
-        if (IsAuthoredNumber(tree, tree.GetItem(distance, channel), number) == false || number.ToFloat() < 0 ||
-            number.ToFloat() > static_cast<float64>(format::MAX_SKIN_SCATTERING_DISTANCE))
+        return false;
+    }
+    if (baseColor != NO_JSON_NODE)
+    {
+        if (ReadSkinChannels(tree, baseColor, 0, 1, skin.BaseColor) == false)
         {
             return false;
         }
-        skin.Distance[channel] = static_cast<float32>(number.ToFloat());
+        skin.HasBaseColor = true;
+    }
+    if (roughness != NO_JSON_NODE)
+    {
+        PythonNumber number;
+        if (IsAuthoredNumber(tree, roughness, number) == false || number.ToFloat() < format::MIN_AUTHORED_ROUGHNESS ||
+            number.ToFloat() > 1)
+        {
+            return false;
+        }
+        skin.HasRoughness = true;
+        skin.Roughness = static_cast<float32>(number.ToFloat());
     }
     outSkin = skin;
     return true;
@@ -1061,7 +1121,8 @@ constexpr std::string_view SKIN_DISTANCE_KEY = "scattering_distance";
         SkinOverride skin;
         if (ReadSkinOverride(tree, skinNode, skin) == false)
         {
-            return inoutFailure.FailInvalid("Invalid skin. Set each scattering distance in [0, 0.1] metres.");
+            return inoutFailure.FailInvalid("Invalid skin. Set each scattering distance in [0, 0.1] metres, any base "
+                                            "colour channel in [0, 1] and any roughness in [0.045, 1].");
         }
         if (skinNode != NO_JSON_NODE &&
             (coating != NO_JSON_NODE || binding != NO_JSON_NODE || hairCard != NO_JSON_NODE))
@@ -3120,8 +3181,8 @@ struct MaterialVariant final
             SkinOverride skin;
             if (ReadSkinOverride(tree, tree.GetMember(object, "skin"), skin) == false)
             {
-                return inoutFailure.FailInvalid("Invalid skin. Reset its scattering distance or use the inherited "
-                                                "material.");
+                return inoutFailure.FailInvalid("Invalid skin. Reset its scattering distance, base colour and "
+                                                "roughness, or use the inherited material.");
             }
             // A hair card or skin replaces the slot's reflection model, so an inherited coating no longer applies.
             const JsonIndex local = tree.GetMember(object, "coating");
@@ -3509,6 +3570,15 @@ struct MaterialVariant final
             source.Scattering = {};
             source.Scattering.Model = format::MaterialModel::Skin;
             source.Scattering.K = {{skin.Distance[0], skin.Distance[1], skin.Distance[2]}};
+            // An authored base colour scales the base colour map like the source material's reflectance.
+            if (skin.HasBaseColor == true)
+            {
+                source.Reflectance = {skin.BaseColor[0], skin.BaseColor[1], skin.BaseColor[2]};
+            }
+            if (skin.HasRoughness == true)
+            {
+                roughness = static_cast<float64>(skin.Roughness);
+            }
         }
         const bool isDielectricOverride = hair.IsAssigned == true || skin.IsAssigned == true;
         const bool isRepeat = tree.IsString(tree.GetMember(description.Root, "address"), "repeat");
