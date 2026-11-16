@@ -2400,6 +2400,11 @@ call it. Turn on **Force raster** in the viewport toolbar to see the full
 Atmosphere with the engine's default raster graph, or disable the Atmosphere
 entity to clear the warning.
 
+RT1 reference captures from inside the atmosphere also show the Sun and Moon
+disks, stars, and planets behind World geometry in both the CPU oracle and GPU
+compute modes. Surface lighting continues to use the sky environment and
+linked lights.
+
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
 Way and Mercury, Venus, Mars, Jupiter, and Saturn. The World's shared Earth

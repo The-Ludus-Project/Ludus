@@ -150,8 +150,9 @@ ResolveViewportAtmosphereSky(const graphics::renderer::AtmosphereDescription& at
 /// supplies the scene's analytic lights and environment; emissive surfaces are sampled as RT1
 /// emitters, never through the raster viewport's area-light proxies. When the World's
 /// Atmosphere lights the raster scene at the camera, its sky replaces the imported environment
-/// and the linked Sun carries the atmosphere's transmittance, as in the raster viewport (see
-/// graphics::renderer::ResolveAtmosphereEnvironment). Owner thread only, between frames; the
+/// and the linked Sun carries the atmosphere's transmittance (see
+/// graphics::renderer::ResolveAtmosphereEnvironment). Primary misses also show the frozen
+/// celestial boundary inside the shell. Owner thread only, between frames; the
 /// borrowed device must outlive the capture or Release must run first.
 class ViewportReferenceCapture final
 {
@@ -239,8 +240,8 @@ private:
     /// Resolved Atmosphere sky; its pixels are released once uploaded.
     ViewportAtmosphereSky mAtmosphereSky;
     graphics::renderer::EnvironmentMap mAtmosphereEnvironment;
-    /// Stable source identity of the Atmosphere's Sun, whose illuminance becomes mAtmosphereSky.SunIlluminance.
-    foundation::uint64 mAtmosphereSunSourceId = 0;
+    /// Frozen sky and linked Sun identity for this capture.
+    graphics::renderer::AtmosphereDescription mAtmosphere;
     bool mIsAtmosphereResolving = false;
     bool mHasAtmosphereSky = false;
     bool mIsAtmosphereUploadStarted = false;

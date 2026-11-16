@@ -61,6 +61,7 @@ if(LUDUS_SLANG_COMPILER)
         LUDUS_RENDERER_SKIN_SHADERS=1)
 endif()
 target_sources(ludus_graphics_renderer PRIVATE src/wave_tracing.cpp src/wave_scene_queries.cpp src/wave_connection.cpp)
+target_sources(ludus_graphics_renderer PRIVATE src/reference_sky.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/pbrt/LICENSE.txt" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME pbrt-LICENSE)
 include(EngineDenoiserOptions)
@@ -133,6 +134,8 @@ install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/
 install(FILES shaders/wave_scene_layout.h shaders/wave_scene_queries.slang shaders/wave_connection_layout.h
     shaders/wave_connection.slang shaders/wave_reference_scene.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_shadow_depth.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES shaders/renderer_celestial_constants.h shaders/renderer_reference_sky_layout.h
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the

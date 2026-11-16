@@ -14,6 +14,7 @@
 
 namespace ludus::graphics::renderer
 {
+struct AtmosphereDescription;
 /// Caller-owned random address for layered material estimates; no mutable/global RNG.
 /// Scope identifies the receiver/path, Event its sample, and Dimension the material
 /// event (0..255, typically the scene bounce). Each event reserves 256 local dimensions
@@ -318,6 +319,12 @@ struct ReferenceCaptureDescription final
     /// application selects one of the two supported traversals explicitly. Invalid boundaries and
     /// coefficients report InvalidDescription.
     const ReferenceMediumDescription* MediumOrNull = nullptr;
+    /// Optional World atmosphere for camera rays that miss geometry. Begin/Update resolve and copy
+    /// its celestial boundary at CameraPosition when the observer is inside the atmosphere shell.
+    /// Solar and lunar disks, stars and planets contribute scene-linear background radiance after
+    /// extinction and ground occlusion. Environment and Lights still supply surface lighting.
+    /// Null or disabled leaves the ordinary background. Invalid active fields reject the capture.
+    const AtmosphereDescription* AtmosphereBackgroundOrNull = nullptr;
 };
 /// Renderer-scoped progressive job identity; copies borrow, Release cancels future
 /// work and detaches accepted query uses through their native completion.
