@@ -231,7 +231,65 @@ output preservation, cancellation, late completions, fallback generations,
 cross-owner misuse, loss and non-wrapping owner exhaustion. R1/R2 add typed
 slot/generation resources, retained command batches and deferred retirement;
 R3 adds ordered graph compilation. [Profile negotiation](#profile-format-and-limit-negotiation)
-adds enabled limit/format admission; independent devices/surfaces remain [architecture extensions](../architecture/rhi-gdi.md#remaining-work-and-decision-gates).
+adds enabled limit/format admission; [adapter selection](#adapter-catalog-and-selection-r14a)
+picks the native adapter; multiple surfaces and devices remain [architecture extensions](../architecture/rhi-gdi.md#remaining-work-and-decision-gates).
+
+### Adapter catalog and selection (R14a)
+
+Include `ludus/graphics/rhi/adapter.h` to list a native build's adapters
+without starting a device. `GetAdapterCatalog` reports, in API order, each
+adapter's stable identity, name, kind, PCI vendor/device IDs, reported memory,
+raw 2D texture edge and whether it meets the backend baseline (Vulkan 1.1 with a
+graphics queue, Metal Mac2/Apple4, Direct3D 12 feature level 11.0). It works
+before, during and after a session and never changes it. The catalog holds
+`MAX_CATALOG_ADAPTERS` entries; `ReportedCount` greater than `Count` means it
+was truncated. Browser builds return `Unsupported`, because WebGPU exposes only
+the one adapter the browser grants.
+
+```cpp
+namespace rhi = ludus::graphics::rhi;
+rhi::AdapterCatalog catalog;
+if (rhi::GetAdapterCatalog(catalog) == rhi::AdapterStatus::Ready)
+{
+    for (ludus::foundation::usize i = 0; i < catalog.Count; ++i)
+    {
+        // Offer catalog.Adapters[i].Name; keep Identity in the user's settings.
+    }
+}
+rhi::DeviceDescription request;
+request.Adapter = chosen.Identity; // All-zero bytes keep the automatic choice.
+rhi::StartupInfo failure;
+const auto started = rhi::CreateDevice(app, window, request, device, surface, &failure);
+// Failed with failure.Error == AdapterUnavailable: the adapter is gone or below
+// the baseline. Offer the catalog again, or clear request.Adapter for Auto.
+```
+
+The identity is a Vulkan device UUID, a Direct3D 12 LUID or a Metal registry ID.
+A Vulkan UUID and Metal registry ID survive restarts while the driver and
+hardware stay the same; a Direct3D 12 LUID changes after a reboot. An identity
+from another backend returns `InvalidDescription`, and an explicit identity on a
+browser build returns `Unsupported`. Creation looks the identity up in the
+catalog before any backend work. An absent or below-baseline adapter returns
+`Failed` with `StartupError::AdapterUnavailable`, leaves the outputs null and
+opens no session. After Ready, the session is checked against the request; an
+imported native device on another adapter is torn down with the same error.
+Required workloads still apply on the chosen adapter. Explicit selection never
+falls back to another adapter.
+
+`DeviceInfo::Adapter` reports the catalog entry of the session's adapter while
+Ready, including an automatic choice; browser sessions leave it zero. These are
+raw adapter claims. Admission, limits and formats come only from
+`DeviceInfo::Profile`, so a larger raw texture edge never raises an enabled
+limit. A hosted Direct3D 12 or Vulkan game started on an explicit adapter other
+than the hosting editor's keeps it; the editor then refuses its images as an
+adapter mismatch.
+
+The reference-backend lifecycle suite covers truncation, output preservation,
+UTF-8 name shortening, foreign/browser/absent/below-baseline rejection without
+backend work, raw-versus-enabled reporting and post-Ready mismatch teardown. The
+macOS Metal suite lists the system devices, starts on a catalog entry and
+rejects an unknown identity. Vulkan and Direct3D 12 use the same contract;
+their first hardware runs are the Linux batch and Windows Direct3D 12 lanes.
 
 ### Profile, format and limit negotiation
 

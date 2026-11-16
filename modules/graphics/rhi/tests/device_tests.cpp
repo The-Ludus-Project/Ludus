@@ -1,8 +1,12 @@
+#include "internal/adapter.h"
 #include "internal/device.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
 
 #include <ludus/graphics/rhi/device.h>
+
+#include <initializer_list>
+#include <string>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -17,6 +21,13 @@ extern ResourceStatus NextResource;
 extern foundation::uint32 LastResource;
 extern foundation::uint32 Draws;
 extern bool LoseDuringCreation;
+extern foundation::uint32 ShutdownCount;
+extern AdapterStatus CatalogStatus;
+extern AdapterCatalog Catalog;
+extern bool HasSelectedAdapter;
+extern AdapterInfo SelectedAdapter;
+extern AdapterIdentity StartedAdapter;
+extern bool ShouldCompleteDuringStart;
 } // namespace ludus::graphics::rhi::backend
 using namespace ludus::graphics::rhi;
 namespace
@@ -30,6 +41,12 @@ void Reset() noexcept
     backend::SelectionSupported = true;
     backend::NextResource = ResourceStatus::Ready;
     backend::LoseDuringCreation = false;
+    backend::CatalogStatus = AdapterStatus::Unsupported;
+    backend::Catalog = {};
+    backend::HasSelectedAdapter = false;
+    backend::SelectedAdapter = {};
+    backend::StartedAdapter = {};
+    backend::ShouldCompleteDuringStart = false;
 }
 void Ready() noexcept
 {
@@ -356,5 +373,194 @@ TEST_CASE("Resources from a destroyed RHI session are rejected by the next sessi
     REQUIRE(Destroy(device, uniform) == ResourceStatus::Ready);
     REQUIRE(Destroy(device, vertex) == ResourceStatus::Ready);
     REQUIRE(Destroy(device, fragment) == ResourceStatus::Ready);
+    REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+}
+
+namespace
+{
+constexpr ludus::foundation::uint8 FIRST_ADAPTER_BYTE = 0x11;
+constexpr ludus::foundation::uint8 SECOND_ADAPTER_BYTE = 0x22;
+constexpr ludus::foundation::uint8 ABSENT_ADAPTER_BYTE = 0x33;
+constexpr ludus::foundation::uint32 RAW_TEXTURE_DIMENSION = 32768;
+
+AdapterIdentity MakeAdapter(Backend api, ludus::foundation::uint8 firstByte) noexcept
+{
+    AdapterIdentity identity{ .Api = api };
+    identity.Bytes[0] = firstByte;
+    return identity;
+}
+// Restores the shared fake backend even when a REQUIRE ends a case early.
+struct AdapterFixture final
+{
+    AdapterFixture() noexcept
+    {
+        Reset();
+    }
+    ~AdapterFixture() noexcept
+    {
+        Reset();
+    }
+    AdapterFixture(const AdapterFixture&) = delete;
+    AdapterFixture& operator=(const AdapterFixture&) = delete;
+};
+// Two Metal adapters: the first meets the backend baseline, the second does not.
+void PublishCatalog() noexcept
+{
+    backend::ActiveKind = Backend::Metal;
+    backend::CatalogStatus = AdapterStatus::Ready;
+    backend::Catalog = { .Api = Backend::Metal };
+    AdapterInfo* first = internal::ReserveCatalogEntryOrNull(backend::Catalog);
+    AdapterInfo* second = internal::ReserveCatalogEntryOrNull(backend::Catalog);
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    first->Identity = MakeAdapter(Backend::Metal, FIRST_ADAPTER_BYTE);
+    internal::AssignAdapterName("First GPU", first->Name);
+    first->Kind = AdapterKind::Discrete;
+    first->MaxTextureDimension2D = RAW_TEXTURE_DIMENSION;
+    first->HasBackendBaseline = true;
+    second->Identity = MakeAdapter(Backend::Metal, SECOND_ADAPTER_BYTE);
+    second->Kind = AdapterKind::Integrated;
+}
+} // namespace
+
+TEST_CASE("R14a adapter catalogs are bounded and preserve outputs on failure", "[rhi][device][adapter]")
+{
+    const AdapterFixture fixture;
+    AdapterCatalog catalog;
+    catalog.Count = 1;
+    CHECK(GetAdapterCatalog(catalog) == AdapterStatus::Unsupported);
+    CHECK(catalog.Count == 1);
+    backend::CatalogStatus = AdapterStatus::Failed;
+    CHECK(GetAdapterCatalog(catalog) == AdapterStatus::Failed);
+    CHECK(catalog.Count == 1);
+
+    PublishCatalog();
+    REQUIRE(GetAdapterCatalog(catalog) == AdapterStatus::Ready);
+    CHECK(catalog.Api == Backend::Metal);
+    CHECK(catalog.Count == 2);
+    CHECK(catalog.ReportedCount == 2);
+    CHECK(catalog.Adapters[0].Name.GetView() == "First GPU");
+    CHECK(catalog.Adapters[1].HasBackendBaseline == false);
+
+    AdapterCatalog full{ .Api = Backend::Vulkan };
+    for (ludus::foundation::usize i = 0; i < MAX_CATALOG_ADAPTERS; ++i)
+    {
+        AdapterInfo* entry = internal::ReserveCatalogEntryOrNull(full);
+        REQUIRE(entry != nullptr);
+        CHECK(entry->Identity.Api == Backend::Vulkan);
+    }
+    CHECK(internal::ReserveCatalogEntryOrNull(full) == nullptr);
+    CHECK(full.Count == MAX_CATALOG_ADAPTERS);
+    CHECK(full.ReportedCount == MAX_CATALOG_ADAPTERS + 1);
+}
+
+TEST_CASE("R14a adapter names are shortened at a UTF-8 code point boundary", "[rhi][device][adapter]")
+{
+    // 254 ASCII bytes, then a two-byte scalar straddling the 255-byte capacity.
+    std::string reported(MAX_ADAPTER_NAME_BYTES - 1, 'a');
+    reported += "\xC3\xA9"
+                "b";
+    AdapterName name;
+    internal::AssignAdapterName(reported, name);
+    CHECK(name.GetSize() == MAX_ADAPTER_NAME_BYTES - 1);
+    internal::AssignAdapterName("GPU \xC3\xA9", name);
+    CHECK(name.GetView() == "GPU \xC3\xA9");
+}
+
+TEST_CASE("R14a explicit adapters are admitted only from the native catalog", "[rhi][device][adapter]")
+{
+    const AdapterFixture fixture;
+    DeviceDescription description;
+    description.Adapter = MakeAdapter(Backend::WebGPU, FIRST_ADAPTER_BYTE);
+    // Browser builds publish no catalog, so an explicit identity is unsupported there.
+    CHECK(ValidateDeviceDescription(description) == DeviceStatus::Unsupported);
+
+    PublishCatalog();
+    description.Adapter = MakeAdapter(Backend::Vulkan, FIRST_ADAPTER_BYTE);
+    CHECK(ValidateDeviceDescription(description) == DeviceStatus::InvalidDescription);
+    description.Adapter = MakeAdapter(Backend::Metal, FIRST_ADAPTER_BYTE);
+    CHECK(ValidateDeviceDescription(description) == DeviceStatus::Ready);
+
+    const ludus::foundation::uint32 shutdowns = backend::ShutdownCount;
+    for (const ludus::foundation::uint8 rejected : {ABSENT_ADAPTER_BYTE, SECOND_ADAPTER_BYTE})
+    {
+        backend::PendingToken = 0;
+        description.Adapter = MakeAdapter(Backend::Metal, rejected);
+        DeviceHandle device;
+        SurfaceHandle surface;
+        StartupInfo failure;
+        CHECK(CreateDevice({}, {}, description, device, surface, &failure) == DeviceStatus::Failed);
+        CHECK(failure.Error == StartupError::AdapterUnavailable);
+        CHECK(failure.State == StartupState::Failed);
+        CHECK(failure.SelectedBackend == Backend::Metal);
+        CHECK(device == DeviceHandle{});
+        // The backend was never asked to start and no session was opened.
+        CHECK(backend::PendingToken == 0);
+        CHECK(backend::ShutdownCount == shutdowns);
+        CHECK(internal::GetRequestedAdapterOrNull() == nullptr);
+    }
+    backend::CatalogStatus = AdapterStatus::Failed;
+    description.Adapter = MakeAdapter(Backend::Metal, FIRST_ADAPTER_BYTE);
+    DeviceHandle device;
+    SurfaceHandle surface;
+    CHECK(CreateDevice({}, {}, description, device, surface) == DeviceStatus::Failed);
+    CHECK(device == DeviceHandle{});
+}
+
+TEST_CASE("R14a selected adapters are reported apart from the enabled profile", "[rhi][device][adapter]")
+{
+    const AdapterFixture fixture;
+    PublishCatalog();
+    backend::ShouldCompleteDuringStart = true;
+    backend::HasSelectedAdapter = true;
+    backend::SelectedAdapter = backend::Catalog.Adapters[0];
+    DeviceDescription description;
+    description.Adapter = backend::Catalog.Adapters[0].Identity;
+    DeviceHandle device;
+    SurfaceHandle surface;
+    REQUIRE(CreateDevice({}, {}, description, device, surface) == DeviceStatus::Ready);
+    CHECK(backend::StartedAdapter == description.Adapter);
+    DeviceInfo info;
+    REQUIRE(GetDeviceInfo(device, info) == DeviceStatus::Ready);
+    CHECK(info.Description.Adapter == description.Adapter);
+    CHECK(info.Adapter.Identity == description.Adapter);
+    CHECK(info.Adapter.Name.GetView() == "First GPU");
+    // A raw adapter claim never raises the enabled limits.
+    CHECK(info.Adapter.MaxTextureDimension2D == RAW_TEXTURE_DIMENSION);
+    CHECK(info.Startup.Capabilities.MaxFrameDimension2D < RAW_TEXTURE_DIMENSION);
+    REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+    CHECK(internal::GetRequestedAdapterOrNull() == nullptr);
+
+    // An automatic request keeps the backend's own choice and still reports it.
+    surface = {};
+    REQUIRE(CreateDevice({}, {}, {}, device, surface) == DeviceStatus::Ready);
+    CHECK(backend::StartedAdapter.IsAutomatic());
+    REQUIRE(GetDeviceInfo(device, info) == DeviceStatus::Ready);
+    CHECK(info.Adapter.Identity == backend::SelectedAdapter.Identity);
+    REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+}
+
+TEST_CASE("R14a a session on another adapter than requested is torn down", "[rhi][device][adapter]")
+{
+    const AdapterFixture fixture;
+    PublishCatalog();
+    backend::ShouldCompleteDuringStart = true;
+    // An imported native device, or a backend that ignored the request, reports another adapter.
+    backend::HasSelectedAdapter = true;
+    backend::SelectedAdapter.Identity = MakeAdapter(Backend::Metal, SECOND_ADAPTER_BYTE);
+    DeviceDescription description;
+    description.Adapter = MakeAdapter(Backend::Metal, FIRST_ADAPTER_BYTE);
+    DeviceHandle device;
+    SurfaceHandle surface;
+    StartupInfo failure;
+    const ludus::foundation::uint32 shutdowns = backend::ShutdownCount;
+    CHECK(CreateDevice({}, {}, description, device, surface, &failure) == DeviceStatus::Failed);
+    CHECK(failure.Error == StartupError::AdapterUnavailable);
+    CHECK(device == DeviceHandle{});
+    CHECK(backend::ShutdownCount > shutdowns);
+    CHECK(GetStartup().State == StartupState::Idle);
+    // The failed attempt leaves no session behind, so the next one may start.
+    backend::SelectedAdapter.Identity = description.Adapter;
+    REQUIRE(CreateDevice({}, {}, description, device, surface) == DeviceStatus::Ready);
     REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
 }
