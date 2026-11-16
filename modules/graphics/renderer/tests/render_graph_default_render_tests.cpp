@@ -1210,30 +1210,43 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(fixture.Pixels[center] == litRed);
         CHECK(fixture.Pixels[center + 1] == litGreen);
     }
-    SECTION("directional visibility stays separate from other lights")
+    SECTION("every directional light up to the capacity keeps its own map")
     {
         const bool hasMeshLight = GENERATE(false, true);
         if (hasMeshLight == false)
         {
             materials[1].Emission = {};
         }
-        StaticArray<renderer::DirectLight, 2> lights;
-        // The later source has the same incoming direction. It remains visible even where the selected Sun is blocked.
-        lights[0].SourceId = 2;
-        lights[0].Kind = renderer::LightKind::Directional;
-        lights[0].Color = {0, 1, 0};
-        lights[0].Intensity = 0.25F;
-        lights[0].Direction = {-1, 0, -1};
-        lights[1] = lights[0];
-        lights[1].SourceId = 1;
-        lights[1].Color = {0, 0, 1};
-        lights[1].Intensity = 2;
+        // An Atmosphere's Sun and Moon, plus a third directional light past the two-map capacity. They share one
+        // incoming direction. The dim Moon has the lowest source ID: when only that light received a map, the Sun
+        // lit the receiver straight through every caster.
+        constexpr usize SUN = 0;
+        constexpr usize MOON = 1;
+        constexpr usize EXTRA = 2;
+        constexpr usize DIRECTIONAL_COUNT = 3;
+        StaticArray<renderer::DirectLight, DIRECTIONAL_COUNT> lights;
+        lights[SUN].SourceId = 9;
+        lights[SUN].Kind = renderer::LightKind::Directional;
+        lights[SUN].Color = {0, 0, 1};
+        lights[SUN].Intensity = 2;
+        lights[SUN].Direction = {-1, 0, -1};
+        lights[MOON] = lights[SUN];
+        lights[MOON].SourceId = 1;
+        lights[MOON].Color = {0, 1, 0};
+        lights[MOON].Intensity = 0.25F;
+        lights[EXTRA] = lights[SUN];
+        lights[EXTRA].SourceId = 5;
+        lights[EXTRA].Color = {1, 0, 0};
+        lights[EXTRA].Intensity = 0.2F;
         inputs.Lights = {lights.GetData(), lights.GetSize()};
 
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         const uint8 litBlue = fixture.Pixels[center + 2];
         REQUIRE(litBlue > 32);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[SUN].SourceId);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 2);
+        CHECK(fixture.Graph.GetReport().Resources.UnshadowedDirectionalLights == 1);
 
         // Join the wall and receiver as one draw, like a terrain ridge casting onto its own heightfield.
         Array<math::Vector3> combinedPositions;
@@ -1254,37 +1267,45 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
                               combinedIndices.GetSize()};
         meshes[0].Geometry.Normals = combinedNormals.GetData();
 
+        // The wall blocks the Sun and the Moon. Only the light past the capacity still reaches the receiver.
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center + 2] <= 1);
-        const uint8 remainingGreen = fixture.Pixels[center + 1];
-        CHECK(remainingGreen > 4);
-        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[1].SourceId);
-        CHECK(fixture.Pixels[center] <= 1);
+        CHECK(fixture.Pixels[center + 1] <= 1);
+        const uint8 unshadowedRed = fixture.Pixels[center];
+        CHECK(unshadowedRed > 4);
         const StaticArray<uint8, PIXEL_BYTES> shadowed = fixture.Pixels;
         render();
         CHECK(fixture.Pixels == shadowed);
 
-        lights[1].Direction = {};
+        lights[SUN].Direction = {};
         CHECK(update(SCENE_COUNT - 1) == rhi::RasterStatus::InvalidDescription);
         render();
         CHECK(fixture.Pixels == shadowed);
 
-        lights[1].Direction = {-1, 0, -1};
-        lights[1].ShouldCastRasterShadows = false;
+        // Excluding the Sun frees its map for the remaining light, and the Sun lights the receiver unshadowed.
+        lights[SUN].Direction = {-1, 0, -1};
+        lights[SUN].ShouldCastRasterShadows = false;
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
-        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[MOON].SourceId);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 2);
+        CHECK(fixture.Graph.GetReport().Resources.UnshadowedDirectionalLights == 0);
         CHECK(fixture.Pixels[center + 2] == litBlue);
         CHECK(fixture.Pixels[center + 1] <= 1);
+        CHECK(fixture.Pixels[center] <= 1);
 
-        lights[0].ShouldCastRasterShadows = false;
+        for (renderer::DirectLight& light : lights)
+        {
+            light.ShouldCastRasterShadows = false;
+        }
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center + 2] == litBlue);
-        CHECK(fixture.Pixels[center + 1] == remainingGreen);
-        CHECK(fixture.Pixels[center] <= 1);
+        CHECK(fixture.Pixels[center + 1] > 4);
+        CHECK(fixture.Pixels[center] == unshadowedRed);
         CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == 0);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 0);
     }
     SECTION("grazing directional light illuminates its own receiver uniformly")
     {
@@ -1300,6 +1321,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         lights[1] = lights[0];
         lights[1].SourceId = 2;
         lights[1].Color = {0, 1, 0};
+        lights[1].ShouldCastRasterShadows = false;
         inputs.Lights = {lights.GetData(), lights.GetSize()};
 
         REQUIRE(update(1) == rhi::RasterStatus::Ready);

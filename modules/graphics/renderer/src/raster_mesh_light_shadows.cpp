@@ -411,13 +411,31 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
     return Status::Ready;
 }
 
+rhi::RasterRectangle GetDirectionalShadowInterior(uint32 index) noexcept
+{
+    constexpr uint32 CELLS_PER_SIDE = DIRECTIONAL_SHADOW_TEXELS / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;
+    constexpr uint32 GUTTER_TEXELS = 1;
+    const uint32 cursor = index * CELLS_PER_SIDE * CELLS_PER_SIDE;
+    return {GetMortonAxis(cursor, 0) * MIN_MESH_LIGHT_SHADOW_FACE_TEXELS + GUTTER_TEXELS,
+            GetMortonAxis(cursor, 1) * MIN_MESH_LIGHT_SHADOW_FACE_TEXELS + GUTTER_TEXELS,
+            DIRECTIONAL_SHADOW_TEXELS - 2 * GUTTER_TEXELS,
+            DIRECTIONAL_SHADOW_TEXELS - 2 * GUTTER_TEXELS};
+}
+uint32 GetDirectionalShadowAtlasTexels(uint32 directionalCount) noexcept
+{
+    // Z-order fills a square of twice the side, four slots, after one slot; MAX_DIRECTIONAL_SHADOW_REGIONS fits it.
+    constexpr uint32 SLOTS_IN_DOUBLED_SQUARE = 4;
+    static_assert(MAX_DIRECTIONAL_SHADOW_REGIONS <= SLOTS_IN_DOUBLED_SQUARE);
+    return directionalCount <= 1 ? DIRECTIONAL_SHADOW_TEXELS : 2 * DIRECTIONAL_SHADOW_TEXELS;
+}
 bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCasters,
                                         uint32 atlasTexels,
-                                        bool hasDirectionalShadow) noexcept
+                                        uint32 directionalCount) noexcept
 {
     const uint32 atlasCells = atlasTexels / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;
     if (atlasTexels % MIN_MESH_LIGHT_SHADOW_FACE_TEXELS != 0 || atlasCells == 0 ||
-        (atlasCells & (atlasCells - 1)) != 0 || atlasCells > (1U << MORTON_AXIS_BITS))
+        (atlasCells & (atlasCells - 1)) != 0 || atlasCells > (1U << MORTON_AXIS_BITS) ||
+        directionalCount > MAX_DIRECTIONAL_SHADOW_REGIONS)
     {
         return false;
     }
@@ -447,10 +465,9 @@ bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCaste
     constexpr uint32 DIRECTIONAL_CELL_COUNT = DIRECTIONAL_CELLS_PER_SIDE * DIRECTIONAL_CELLS_PER_SIDE;
     static_assert(MAX_MESH_LIGHT_SHADOW_FACE_TEXELS <= DIRECTIONAL_SHADOW_TEXELS);
     static_assert((DIRECTIONAL_CELLS_PER_SIDE & (DIRECTIONAL_CELLS_PER_SIDE - 1)) == 0);
-    const uint32 reservedCells = hasDirectionalShadow == true ? DIRECTIONAL_CELL_COUNT : 0;
+    const uint32 reservedCells = directionalCount * DIRECTIONAL_CELL_COUNT;
     const uint64 atlasArea = uint64{atlasTexels} * atlasTexels;
-    const uint64 reservedArea =
-        hasDirectionalShadow == true ? uint64{DIRECTIONAL_SHADOW_TEXELS} * DIRECTIONAL_SHADOW_TEXELS : 0;
+    const uint64 reservedArea = uint64{directionalCount} * DIRECTIONAL_SHADOW_TEXELS * DIRECTIONAL_SHADOW_TEXELS;
     while (true)
     {
         uint64 area = reservedArea;

@@ -513,8 +513,16 @@ struct RenderGraphSceneResourceReport final
     foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
     foundation::uint32 DroppedLights =
         0; ///< Latest forward material's dropped light count; clustered shading retains all admitted lights.
-    /// Source ID assigned the latest prepared deferred scene's directional shadow map, or zero if none.
+    /// Source ID of the brightest directional light given a shadow map in the latest prepared deferred scene, or zero
+    /// if none. Ties go to the lower source ID.
     foundation::uint64 DirectionalShadowLightSourceId = 0;
+    /// Directional lights given a shadow map in the latest prepared deferred scene, brightest first, at most two:
+    /// enough for an Atmosphere's Sun and Moon.
+    foundation::uint32 DirectionalShadowLights = 0;
+    /// Eligible directional lights (raster shadows requested, positive intensity, nonblack color) of the latest
+    /// prepared deferred scene left without a map because two brighter ones hold them. They illuminate unshadowed;
+    /// clear their raster shadow request to make that explicit.
+    foundation::uint32 UnshadowedDirectionalLights = 0;
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final

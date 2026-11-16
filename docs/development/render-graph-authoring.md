@@ -6270,15 +6270,19 @@ checker against a uniform texture of its mean on the GPU.
 
 ### Directional shadows
 
-The default shadows the directional light with the lowest source identity among
-lights that request raster shadows and have positive intensity and a nonblack
-color. In the built-in World inspector, clear **Light → Raster Shadows** to
-exclude a light while keeping its illumination. SDK callers set
-`DirectLight::ShouldCastRasterShadows`. The resource report's
-`DirectionalShadowLightSourceId` identifies the light assigned a map and is zero
-when no light qualifies. The renderer fits one
-1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
-with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
+The default gives a shadow map to each of up to two directional lights that
+request raster shadows and have positive intensity and a nonblack color,
+brightest first, with ties going to the lower source identity. Two maps cover an
+Atmosphere's Sun and Moon, so neither lights the scene through walls and roofs
+while the other is above the horizon. Further eligible directional lights
+illuminate without analytic shadows. In the built-in World inspector, clear
+**Light → Raster Shadows** to exclude a light while keeping its illumination.
+SDK callers set `DirectLight::ShouldCastRasterShadows`. In the resource report,
+`DirectionalShadowLights` counts the lights given a map,
+`DirectionalShadowLightSourceId` identifies the brightest of them (zero when no
+light qualifies), and `UnshadowedDirectionalLights` counts eligible lights past
+the two maps. The renderer fits a 1022 × 1022 orthographic projection per light
+to the scene's caster and receiver bounds, with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
 of the four depth comparisons uses the sampled caster's depth and slope to
 evaluate its plane at the receiver's location, with a receiver bias of 0.001 in
 normalized light depth. The resolve blends the four visibility results by
@@ -6297,16 +6301,19 @@ instead of showing dithered false shadows that change with the camera pose.
 The material pass clips shading normals to the camera-facing hemisphere on
 geometrically front-facing surfaces. This keeps smooth terrain ridges lit
 where an interpolated normal turns past the camera.
-The resolve applies visibility to the selected light's direct diffuse and specular
-contribution. Point and spot lights and additional directional lights are
-evaluated without analytic shadows in this profile.
+The resolve applies each map's visibility to its light's direct diffuse and
+specular contribution. Point and spot lights and directional lights past the two
+maps are evaluated without analytic shadows in this profile. The forward
+clustered profile shades with the same comparison, without the reconstruction
+allowance because it interpolates exact receiver positions.
 
-The atlas is prepared with the scene. The renderer draws the directional map
-before the first lighting resolve that has enough draw budget. Until then the
+The atlas is prepared with the scene. The renderer draws the directional maps
+before the first lighting resolve that has enough draw budget. Until then each
 light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
 prepare a replacement, and failed preparation retains the previous drawable
-generation. The directional slot shares the mesh-light atlas when the scene
-has both kinds of casters. The whole-scene fit keeps the shadow stable as the
+generation. The directional slots share the mesh-light atlas when the scene
+has both kinds of casters; each one takes a quarter of the 2048 × 2048 atlas, so
+a second directional map halves the space left for mesh-light cube faces. The whole-scene fit keeps the shadow stable as the
 camera moves. In large scenes, each texel covers more ground, so nearby edges
 can appear coarse. Recook existing clustered deferred shader packages to use
 the corrected directional shadow comparison.

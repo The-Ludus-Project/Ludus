@@ -2169,9 +2169,9 @@ Apply the edit and save the World to keep the setting. The checkbox is on by
 default, including for older Worlds.
 
 The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
-one map to the eligible directional light with the lowest source ID. In that
-graph, point and spot lights illuminate without shadow maps. The native Lit
-preview also supports shadow maps for point and spot lights. Reference path
+maps to the two brightest eligible directional lights, such as an Atmosphere's
+Sun and Moon. In that graph, point and spot lights illuminate without shadow
+maps. The native Lit preview also supports shadow maps for point and spot lights. Reference path
 tracing and baked lighting compute visibility from scene geometry independently
 of this setting.
 
