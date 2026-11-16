@@ -52,6 +52,9 @@ constexpr usize BOX_CORNER_COUNT = 8;
 constexpr usize BOX_INDEX_COUNT = 36;
 constexpr usize FLAT_INPUT_COUNT = 6;
 constexpr usize MAX_RETAINED_SCENES = 3;
+/// Material programs a forward-profile color context prewarms at most: the ordinary program plus the deferred
+/// profile's surface-chart and probe programs (the forward-lit profile has only a chart program).
+constexpr usize FORWARD_MATERIAL_PROGRAM_COUNT = 3;
 /// Frozen ray compute ABI, visibility textures, structured storage and the diagnostic capture slot.
 constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 +
                                                LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
@@ -974,6 +977,8 @@ struct RenderGraph::State final
     StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
     internal::ForwardSceneResources ForwardResources;
     MaterialProgram ForwardProgram{};
+    /// Program drawing static surfaces with a ready chart: the forward chart fragment, or in the deferred profile the
+    /// chart G-buffer fragment.
     MaterialProgram ForwardSurfaceChartProgram{};
     /// Deferred program drawing GI Probe Receivers through the probe G-buffer fragment.
     MaterialProgram ForwardProbeProgram{};
@@ -2394,8 +2399,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             return Status::InvalidDescription;
         }
     }
-    // The probe G-buffer fragment is optional and accompanies only the deferred profile.
-    if (HasShaderArtifact(programs.DeferredProbeGBufferFragment) == true && programs.HasClusteredDeferred == false)
+    // The probe and surface-chart G-buffer fragments are optional and accompany only the deferred profile.
+    if ((HasShaderArtifact(programs.DeferredProbeGBufferFragment) == true ||
+         HasShaderArtifact(programs.DeferredSurfaceChartGBufferFragment) == true) &&
+        programs.HasClusteredDeferred == false)
     {
         return Status::InvalidDescription;
     }
@@ -2794,6 +2801,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         if (candidate->HasForwardProfile() == true)
         {
             limits.Materials = static_cast<uint32>(format::MAX_ITEMS * MAX_RETAINED_SCENES);
+            // The ordinary, surface-chart and probe material programs prewarm together in the deferred profile.
+            limits.MaterialPrograms = static_cast<uint32>(FORWARD_MATERIAL_PROGRAM_COUNT);
         }
         limits.UniformSets = static_cast<uint32>(format::MAX_UNIFORM_SETS * MAX_RETAINED_SCENES);
         status = candidate->Contexts[i].Initialize(device,
@@ -3157,14 +3166,26 @@ Status RenderGraph::Poll() noexcept
         {
             return status;
         }
-        if (HasShaderArtifact(state.Programs.ForwardSurfaceChartFragment) == true)
+        const bool hasDeferredSurfaceCharts = HasShaderArtifact(state.Programs.DeferredSurfaceChartGBufferFragment);
+        if (HasShaderArtifact(state.Programs.ForwardSurfaceChartFragment) == true || hasDeferredSurfaceCharts == true)
         {
             if (state.HasForwardSurfaceChartProgram == false)
             {
-                status = context.prewarmProgram(state.Programs.ForwardVertex,
-                                                state.Programs.ForwardSurfaceChartFragment,
-                                                &state.Programs.ForwardShadow,
-                                                state.ForwardSurfaceChartProgram);
+                // A deferred chart program differs from the ordinary one only in its G-buffer fragment, which also
+                // draws opaque charted surfaces so the realtime opaque G-buffer never reads a chart.
+                status = hasDeferredSurfaceCharts == true
+                             ? context.prewarmProgram(
+                                   state.Programs.ForwardVertex,
+                                   state.Programs.ForwardFragment,
+                                   &state.Programs.ForwardShadow,
+                                   state.ForwardSurfaceChartProgram,
+                                   state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
+                                   &state.Programs.DeferredSurfaceChartGBufferFragment,
+                                   nullptr)
+                             : context.prewarmProgram(state.Programs.ForwardVertex,
+                                                      state.Programs.ForwardSurfaceChartFragment,
+                                                      &state.Programs.ForwardShadow,
+                                                      state.ForwardSurfaceChartProgram);
                 if (IsAccepted(status) == false)
                 {
                     return status;
@@ -3894,10 +3915,12 @@ RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
 }
 namespace
 {
-/// Pipelines one technique row can enumerate: the context's stage variants plus two material programs.
-constexpr usize RECIPE_PIPELINE_CAPACITY = 48;
 /// Handles enumerated per Renderer call; covers its stage variants or one material program.
 constexpr usize RENDERER_PIPELINE_CAPACITY = 16;
+/// Renderer calls one technique row makes: the context's stage variants plus each material program.
+constexpr usize RECIPE_RENDERER_CALLS = 1 + FORWARD_MATERIAL_PROGRAM_COUNT;
+/// Pipelines one technique row can enumerate.
+constexpr usize RECIPE_PIPELINE_CAPACITY = RENDERER_PIPELINE_CAPACITY * RECIPE_RENDERER_CALLS;
 } // namespace
 Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) const noexcept
 {
@@ -3926,7 +3949,7 @@ Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) cons
             const Renderer& context = state.Contexts[i];
             count += context.getProgramPipelines(state.ForwardProgram,
                                                  {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
-            // Chart and probe programs belong to different profiles, so at most one of them exists.
+            // The forward profile has at most a chart program; the deferred profile may have chart and probe programs.
             count += context.getProgramPipelines(state.ForwardSurfaceChartProgram,
                                                  {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
             count += context.getProgramPipelines(state.ForwardProbeProgram,

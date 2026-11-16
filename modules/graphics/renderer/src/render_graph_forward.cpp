@@ -200,6 +200,7 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
         case format::StageRole::DeferredGBufferFragment:
         case format::StageRole::DeferredOpaqueGBufferFragment:
         case format::StageRole::DeferredProbeGBufferFragment:
+        case format::StageRole::DeferredSurfaceChartGBufferFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
             inoutDescription.Bindings = {CLUSTERED_BINDINGS.GetData(), CLUSTERED_BINDINGS.GetSize()};
             inoutDescription.UniformMembers = {CLUSTERED_MEMBERS.GetData(), CLUSTERED_MEMBERS.GetSize()};

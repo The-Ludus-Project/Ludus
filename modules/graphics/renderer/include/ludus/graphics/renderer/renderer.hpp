@@ -871,6 +871,9 @@ private:
                                                      const char* name,
                                                      rhi::GraphVersion previous,
                                                      rhi::GraphVersion& outWritten) noexcept;
+    /// Resolve bindings of one opaque packet's material in a Ready view. Every lit material of a prepared scene
+    /// carries the same lights, shadows and clusters, so any one serves the deferred resolve; a surface-chart material
+    /// is preferred because only its light words mark the baked lights whose diffuse charted pixels omit.
     [[nodiscard]] rhi::RasterStatus getDeferredMaterial(PreparedView handle,
                                                         internal::DeferredMaterialBindings& outBindings) noexcept;
     /// Between frames, build a prepared scene's mesh-light shadow face packets from snapshot, culling its opaque and

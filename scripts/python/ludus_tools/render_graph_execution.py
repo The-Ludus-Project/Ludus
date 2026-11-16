@@ -335,7 +335,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 33: per-callback capture warm-up counts follow the scene resource word.
 # Version 34 adds the optional forward surface-chart fragment and a chart-free realtime fragment.
 # Version 36 adds the optional deferred probe G-buffer fragment for passes with Baked Lighting connected.
-PACKAGE_VERSION = 36
+# Version 37 adds the optional deferred surface-chart G-buffer fragment for the same passes.
+PACKAGE_VERSION = 37
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -368,6 +369,8 @@ def role(program, stage):
     if program == 'DeferredProbeGBuffer':
         # Follows ForwardSurfaceChart and the ForwardRealtime fragment.
         return role('ForwardSurfaceChart', 'fragment') + 2
+    if program == 'DeferredSurfaceChartGBuffer':
+        return role('DeferredProbeGBuffer', 'fragment') + 1
     if program.startswith('Deferred'):
         return FORWARD_DEPTH_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage)) - forward.ROLE_KEYS.index(('DeferredGBuffer', 'fragment'))
     if (program, stage) in forward.ROLE_KEYS:
