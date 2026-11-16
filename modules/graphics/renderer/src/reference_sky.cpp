@@ -209,16 +209,16 @@ constexpr uint32 TRANSMITTANCE_LAST = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES 
     const float32 ratio = chord / radius;
     const float32 muSquared =
         math::Clamp(1 - ratio * ratio * (1 - halfChord * halfChord) / (1 - halfRadius * halfRadius), 0.0F, 1.0F);
-    constexpr math::Vector3 exponent{0.5F * LUDUS_CELESTIAL_SOLAR_LIMB_RED,
-                                     0.5F * LUDUS_CELESTIAL_SOLAR_LIMB_GREEN,
-                                     0.5F * LUDUS_CELESTIAL_SOLAR_LIMB_BLUE};
+    constexpr math::Vector3 HALF_LIMB_EXPONENT{0.5F * LUDUS_CELESTIAL_SOLAR_LIMB_RED,
+                                               0.5F * LUDUS_CELESTIAL_SOLAR_LIMB_GREEN,
+                                               0.5F * LUDUS_CELESTIAL_SOLAR_LIMB_BLUE};
     const float64 wideMuSquared = static_cast<float64>(muSquared);
-    return {radiance.X * (1 + exponent.X) *
-                static_cast<float32>(math::Pow(wideMuSquared, static_cast<float64>(exponent.X))),
-            radiance.Y * (1 + exponent.Y) *
-                static_cast<float32>(math::Pow(wideMuSquared, static_cast<float64>(exponent.Y))),
-            radiance.Z * (1 + exponent.Z) *
-                static_cast<float32>(math::Pow(wideMuSquared, static_cast<float64>(exponent.Z)))};
+    return {radiance.X * (1 + HALF_LIMB_EXPONENT.X) *
+                static_cast<float32>(math::Pow(wideMuSquared, static_cast<float64>(HALF_LIMB_EXPONENT.X))),
+            radiance.Y * (1 + HALF_LIMB_EXPONENT.Y) *
+                static_cast<float32>(math::Pow(wideMuSquared, static_cast<float64>(HALF_LIMB_EXPONENT.Y))),
+            radiance.Z * (1 + HALF_LIMB_EXPONENT.Z) *
+                static_cast<float32>(math::Pow(wideMuSquared, static_cast<float64>(HALF_LIMB_EXPONENT.Z)))};
 }
 
 [[nodiscard]] math::Vector3
