@@ -26,6 +26,7 @@ namespace
 using namespace ludus::scene_import_tests;
 using namespace ludus::content::scene_cook;
 using ludus::foundation::core::float32;
+using ludus::foundation::core::float64;
 using ludus::foundation::core::uint32;
 using ludus::foundation::core::usize;
 namespace codes = ludus::content::scene_cook::importers::codes;
@@ -686,4 +687,36 @@ TEST_CASE("The engine's character bust imports with its maps, licence and metre 
     REQUIRE(hasPosition == true);
     CHECK(maximumX - minimumX > MIN_WIDTH_WORLD);
     CHECK(maximumX - minimumX < MAX_WIDTH_WORLD);
+
+    // glTF texture coordinates put v = 0 at the top of the image, and the colour map
+    // has the crown at the top and the shoulders at the bottom. Height must therefore
+    // fall as v grows; the scan's original bottom-up UVs gave the opposite sign and
+    // drew the lips below the chin.
+    constexpr float64 MAX_HEIGHT_TO_V_CORRELATION = -0.5;
+    REQUIRE(decoded.Meshes.GetSize() == 1);
+    const ludus::resources::SceneMesh& head = decoded.Meshes[0];
+    REQUIRE(head.Texcoords.GetSize() == head.Positions.GetSize());
+    REQUIRE(head.Positions.GetSize() > 0);
+    const float64 count = static_cast<float64>(head.Positions.GetSize());
+    float64 meanHeight = 0;
+    float64 meanV = 0;
+    for (usize i = 0; i < head.Positions.GetSize(); ++i)
+    {
+        meanHeight += static_cast<float64>(head.Positions[i].Y) / count;
+        meanV += static_cast<float64>(head.Texcoords[i].Y) / count;
+    }
+    float64 covariance = 0;
+    float64 heightVariance = 0;
+    float64 vVariance = 0;
+    for (usize i = 0; i < head.Positions.GetSize(); ++i)
+    {
+        const float64 height = static_cast<float64>(head.Positions[i].Y) - meanHeight;
+        const float64 v = static_cast<float64>(head.Texcoords[i].Y) - meanV;
+        covariance += height * v;
+        heightVariance += height * height;
+        vVariance += v * v;
+    }
+    REQUIRE(heightVariance > 0);
+    REQUIRE(vVariance > 0);
+    CHECK(covariance / math::Sqrt(heightVariance * vVariance) < MAX_HEIGHT_TO_V_CORRELATION);
 }

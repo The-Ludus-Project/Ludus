@@ -24,7 +24,9 @@ SHA-256 of the source files used:
 
 Changes made for Ludus:
 
-- infinite-head.bin is the binary chunk of LeePerrySmith.glb, unchanged.
+- infinite-head.bin is the binary chunk of LeePerrySmith.glb with each
+  TEXCOORD_0 v replaced by 1 - v. The scan's UVs put v = 0 at the bottom of
+  the image, as three.js samples them; glTF puts v = 0 at the top.
 - infinite-head.gltf is a new glTF 2.0 document over that buffer. It keeps the
   mesh's accessors, references the colour map and the tangent-space normal map,
   names the one material slot "Skin", drops the exported camera and lamp nodes,
