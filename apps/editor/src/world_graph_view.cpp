@@ -349,11 +349,12 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
                     ? QStringLiteral("Exposure needs Final output from a clustered deferred raster "
                                      "graph with ToneMap enabled and a World with geometry or atmosphere.")
                 : isPhysical == true ? QStringLiteral("Exposed at EV100 %1, adjusted in stops.")
-                                           .arg(resolved.ExposureValue100, 0, 'f', 1)
+                                           .arg(static_cast<foundation::float64>(resolved.ExposureValue100), 0, 'f', 1)
                                      : QStringLiteral("Graph exposure, adjusted in stops."));
             // Automatic shows what it metered, so switching to Physical camera keeps the picture.
             automatic->setText(mode == ViewportExposureMode::Automatic && isPhysical == true
-                                   ? QStringLiteral("Automatic (EV100 %1)").arg(resolved.ExposureValue100, 0, 'f', 1)
+                                   ? QStringLiteral("Automatic (EV100 %1)")
+                                         .arg(static_cast<foundation::float64>(resolved.ExposureValue100), 0, 'f', 1)
                                : mode == ViewportExposureMode::Automatic
                                    ? QStringLiteral("Automatic (no Atmosphere: graph exposure)")
                                    : QStringLiteral("Automatic"));
