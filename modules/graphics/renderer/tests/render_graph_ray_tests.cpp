@@ -875,6 +875,8 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
     constexpr usize WORD_BYTES = sizeof(uint32);
     const auto readWord = [&bytes](usize offset) {
+        REQUIRE(offset <= bytes.GetSize());
+        REQUIRE(bytes.GetSize() - offset >= WORD_BYTES);
         uint32 value = 0;
         REQUIRE(TryReadLittleEndian({bytes.GetData() + offset, WORD_BYTES}, value) == true);
         return value;
@@ -889,6 +891,7 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     constexpr usize STAGE_COUNT_OFFSET = 9 * WORD_BYTES;
     const uint32 resourceCount = readWord(RESOURCE_COUNT_OFFSET);
     const uint32 cameraCount = readWord(CAMERA_COUNT_OFFSET);
+    REQUIRE(readWord(PASS_COUNT_OFFSET) == 1);
     // Version 21 inserts workgroup words into each ray compute stage and version 20 admits a
     // native ray-stage record. Stages follow every fixed-width record; strip them first.
     const uint32 stageCount = readWord(STAGE_COUNT_OFFSET);
@@ -931,6 +934,25 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         }
     }
     REQUIRE(TryWriteLittleEndian(legacyStageCount, {bytes.GetData() + STAGE_COUNT_OFFSET, WORD_BYTES}) == true);
+    // This fixture has no storage records. Keep the count for the version 8 decode.
+    REQUIRE(readWord(stage) == 0);
+    const usize sceneResourceOffset = stage + WORD_BYTES;
+    const usize warmupOffset = sceneResourceOffset + WORD_BYTES;
+    for (usize program = 0; program < format::MAX_RAY_PROGRAMS; ++program)
+    {
+        REQUIRE(readWord(warmupOffset + program * WORD_BYTES) == 0);
+    }
+    // Each recipe key holds a technique word, a shader target word and a digest.
+    constexpr usize RECIPE_KEY_RECORD_BYTES = 2 * WORD_BYTES + format::IDENTITY_BYTES;
+    const usize recipeCountOffset = warmupOffset + format::MAX_RAY_PROGRAMS * WORD_BYTES;
+    const uint32 recipeCount = readWord(recipeCountOffset);
+    REQUIRE(recipeCount <= format::MAX_RECIPE_KEYS);
+    const usize passNameOffset = recipeCountOffset + WORD_BYTES + recipeCount * RECIPE_KEY_RECORD_BYTES;
+    const uint32 nameBytes = readWord(passNameOffset);
+    REQUIRE(nameBytes == package.GetPlan().PassNames[0].GetSize());
+    const usize nameRecordBytes = WORD_BYTES + padWord(nameBytes);
+    REQUIRE(passNameOffset + nameRecordBytes == bytes.GetSize());
+    bytes.RemoveRange(sceneResourceOffset, passNameOffset);
     // Versions 6 through 8 lack the three per-pass words added in version 9.
     constexpr usize LEGACY_PASS_FIELDS = 10;
     const usize extension = format::HEADER_BYTES + resourceCount * format::RESOURCE_RECORD_BYTES +
@@ -942,25 +964,11 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         const usize word = format::HEADER_BYTES + i * format::RESOURCE_RECORD_BYTES - sizeof(uint32);
         bytes.RemoveRange(word, word + sizeof(uint32));
     }
-    // Version 25 appends the scene resource word between the storage records and the pass names.
-    const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
-    const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
-    // Version 33 inserts a warm-up count per ray program after the scene resource word.
-    // This fixture has no warm-up work, so dropping that table preserves its legacy behavior.
-    const usize warmupBytes = format::MAX_RAY_PROGRAMS * WORD_BYTES;
-    const usize warmupOffset = bytes.GetSize() - paddedNameBytes - WORD_BYTES - warmupBytes;
-    for (usize program = 0; program < format::MAX_RAY_PROGRAMS; ++program)
-    {
-        REQUIRE(readWord(warmupOffset + program * WORD_BYTES) == 0);
-    }
-    bytes.RemoveRange(warmupOffset, warmupOffset + warmupBytes);
-    const usize sceneResourceOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
-    bytes.RemoveRange(sceneResourceOffset, sceneResourceOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::STORAGE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
             true);
     renderer::RenderGraphPackage storageGeneration;
     REQUIRE(storageGeneration.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
-    const usize storageCountOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
+    const usize storageCountOffset = bytes.GetSize() - nameRecordBytes - WORD_BYTES;
     bytes.RemoveRange(storageCountOffset, storageCountOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::NATIVE_RAY_PACKAGE_VERSION,
                                  {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) == true);
