@@ -1607,6 +1607,47 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == 0);
         CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 0);
     }
+    SECTION("a close directional caster shadows a small scene")
+    {
+        // The orthographic camera sees the larger triangle at the nearer conventional depth. The directional
+        // light sees the smaller triangle first. A metre of padding made the normalized comparison bias
+        // exceed their separation, even though the caster covers the center of the receiver.
+        constexpr float32 RECEIVER_SCALE = 0.16F;
+        constexpr float32 CASTER_SCALE = 0.25F;
+        constexpr float32 CASTER_HEIGHT_METRES = 0.0004F;
+        StaticArray<math::Vector3, VERTEX_COUNT> receiverPositions;
+        StaticArray<math::Vector3, VERTEX_COUNT> casterPositions;
+        for (usize vertex = 0; vertex < VERTEX_COUNT; ++vertex)
+        {
+            const math::Vector3 position = fixture.Positions[vertex];
+            receiverPositions[vertex] = {position.X * RECEIVER_SCALE, position.Y * RECEIVER_SCALE, position.Z};
+            casterPositions[vertex] = {receiverPositions[vertex].X * CASTER_SCALE,
+                                       receiverPositions[vertex].Y * CASTER_SCALE,
+                                       position.Z + CASTER_HEIGHT_METRES};
+        }
+        meshes[0].Geometry.Positions = receiverPositions.GetData();
+        meshes[1].Geometry = meshes[0].Geometry;
+        meshes[1].Geometry.Positions = casterPositions.GetData();
+        meshes[1].MaterialBindings = {&receiverMaterial, 1};
+        items[1].MeshToWorld = items[0].MeshToWorld;
+        fixture.Cameras[0].WorldToClip.Columns[0].X = 1 / RECEIVER_SCALE;
+        fixture.Cameras[0].WorldToClip.Columns[1].Y = 1 / RECEIVER_SCALE;
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::ShadowCoverage;
+        renderer::DirectLight light;
+        light.SourceId = 1;
+        light.Kind = renderer::LightKind::Directional;
+        light.Direction = {0, 0, -1};
+        light.Color = {1, 1, 1};
+        light.Intensity = 1;
+        inputs.Lights = {&light, 1};
+        fixture.Cameras[0].LightingViewSourceId = light.SourceId;
+
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 1);
+        CHECK(static_cast<uint32>(fixture.Pixels[center]) <= 1);
+        CHECK(static_cast<uint32>(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2 + HEIGHT / 8)]) >= 254);
+    }
     SECTION("grazing directional light illuminates its own receiver uniformly")
     {
         materials[1].Emission = {};

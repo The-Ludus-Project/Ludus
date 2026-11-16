@@ -6461,7 +6461,8 @@ SDK callers set `DirectLight::ShouldCastRasterShadows`. In the resource report,
 `DirectionalShadowLightSourceId` identifies the brightest of them (zero when no
 light qualifies), and `UnshadowedDirectionalLights` counts eligible lights past
 the two maps. The renderer fits a 1022 × 1022 orthographic projection per light
-to the scene's caster and receiver bounds, with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
+to the scene's caster and receiver bounds, with a one-texel atlas gutter. It snaps the projection to the texel grid and
+widens collapsed axes in light space so that a small scene keeps most of the map for its geometry. Each
 of the four depth comparisons uses the sampled caster's depth and slope to
 evaluate its plane at the receiver's location, with a receiver bias of 0.001 in
 normalized light depth. The resolve blends the four visibility results by

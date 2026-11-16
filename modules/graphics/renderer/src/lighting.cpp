@@ -77,8 +77,8 @@ constexpr float32 MIN_ROUGHNESS = 0.045F;
 /// Accepted directional shadow map resolution, in texels per side.
 constexpr uint32 MIN_SHADOW_RESOLUTION = 4;
 constexpr uint32 MAX_SHADOW_RESOLUTION = 2048;
-/// Smallest light-space width or height a shadow projection may cover.
-constexpr float32 MIN_SHADOW_PROJECTION_EXTENT = 1e-5F;
+/// Minimum light-space span in metres to keep a collapsed shadow projection invertible.
+constexpr float32 MIN_SHADOW_PROJECTION_EXTENT_METRES = 1e-5F;
 bool Bounded(math::Vector3 value, float32 minimum, float32 maximum) noexcept
 {
     return math::IsFinite(value) == true && value.X >= minimum && value.X <= maximum && value.Y >= minimum &&
@@ -721,32 +721,37 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
                    math::Max(maximum.Y, projected.Y),
                    math::Max(maximum.Z, projected.Z)};
     }
-    auto width = maximum.X - minimum.X, height = maximum.Y - minimum.Y;
-    if (math::IsFinite(width) == false || math::IsFinite(height) == false || width <= MIN_SHADOW_PROJECTION_EXTENT ||
-        height <= MIN_SHADOW_PROJECTION_EXTENT)
+    const float32 width = maximum.X - minimum.X;
+    const float32 height = maximum.Y - minimum.Y;
+    if (math::IsFinite(width) == false || math::IsFinite(height) == false)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
-    const auto step = math::Max(width, height) / static_cast<float32>(resolution - 2);
+    const float32 span = math::Max(math::Max(width, height), MIN_SHADOW_PROJECTION_EXTENT_METRES);
+    const float32 step = span / static_cast<float32>(resolution - 2);
     const auto cx =
         static_cast<float32>(math::Floor(static_cast<float64>((minimum.X + maximum.X) * 0.5F / step) + 0.5)) * step;
     const auto cy =
         static_cast<float32>(math::Floor(static_cast<float64>((minimum.Y + maximum.Y) * 0.5F / step) + 0.5)) * step;
-    width += 2 * step;
-    height += 2 * step;
+    // Widen a collapsed axis only in light space. A metre-scale margin on the world bounds would
+    // consume the map's resolution and enlarge its world-space depth bias for small objects.
+    const float32 paddedWidth = math::Max(width, step) + 2 * step;
+    const float32 paddedHeight = math::Max(height, step) + 2 * step;
     const auto near = minimum.Z - step, depth = maximum.Z - minimum.Z + 2 * step;
     if (math::IsFinite(near) == false || math::IsFinite(depth) == false || depth <= 0)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
     math::Matrix4 matrix{};
-    for (usize column = 0; column < 3; ++column)
+    constexpr usize TRANSLATION_COLUMN = 3;
+    for (usize column = 0; column < TRANSLATION_COLUMN; ++column)
     {
-        const float32 x[]{right.X, right.Y, right.Z}, y[]{vertical.X, vertical.Y, vertical.Z},
-            z[]{direction.X, direction.Y, direction.Z};
-        matrix.Columns[column] = {2 * x[column] / width, 2 * y[column] / height, z[column] / depth, 0};
+        const float32 x[]{right.X, right.Y, right.Z};
+        const float32 y[]{vertical.X, vertical.Y, vertical.Z};
+        const float32 z[]{direction.X, direction.Y, direction.Z};
+        matrix.Columns[column] = {2 * x[column] / paddedWidth, 2 * y[column] / paddedHeight, z[column] / depth, 0};
     }
-    matrix.Columns[3] = {-2 * cx / width, -2 * cy / height, -near / depth, 1};
+    matrix.Columns[TRANSLATION_COLUMN] = {-2 * cx / paddedWidth, -2 * cy / paddedHeight, -near / depth, 1};
     if (math::IsFinite(matrix) == false)
     {
         return rhi::RasterStatus::InvalidDescription;

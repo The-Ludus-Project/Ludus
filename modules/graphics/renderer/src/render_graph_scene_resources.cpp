@@ -42,8 +42,8 @@ constexpr usize DRAW_TEXTURE_COUNT = MATERIAL_TEXTURE_COUNT + 1;
 constexpr usize CACHE_TEXTURE_COUNT = format::MAX_ITEMS * DRAW_TEXTURE_COUNT * RETAINED_GENERATION_COUNT;
 constexpr usize CHANNEL_COUNT = 4;
 constexpr usize TRIANGLE_CORNER_COUNT = 3;
-/// Padding keeps degenerate scene bounds projectable even with the light parallel to the plane.
-constexpr math::Vector3 DIRECTIONAL_SHADOW_PADDING_METERS{0.5F, 0.5F, 0.5F};
+/// World-space margin for the sky visibility maps.
+constexpr math::Vector3 SKY_VISIBILITY_BOUNDS_PADDING_METRES{0.5F, 0.5F, 0.5F};
 
 bool IsDirectionalShadowCandidate(const DirectLight& light) noexcept
 {
@@ -112,8 +112,7 @@ Status BuildDirectionalShadowRegions(BorrowedView<const DirectLight> lights,
             ShadowRegion& region = regions[index];
             region.Light = *selected[index];
             region.Interior = GetDirectionalShadowInterior(index);
-            const Status status = BuildDirectionalShadowMatrix({boundsWorld.Min - DIRECTIONAL_SHADOW_PADDING_METERS,
-                                                                boundsWorld.Max + DIRECTIONAL_SHADOW_PADDING_METERS},
+            const Status status = BuildDirectionalShadowMatrix(boundsWorld,
                                                                region.Light.Direction,
                                                                region.Interior.Width,
                                                                region.WorldToClip);
@@ -145,11 +144,11 @@ Status BuildSkyVisibilityRegions(const math::Aabb3& boundsWorld, DeferredShadowA
         ShadowRegion& region = regions[direction];
         region.Interior =
             GetSkyVisibilityInterior(GetDirectionalShadowInterior(inoutAtlas.DirectionalCount), direction);
-        const Status status = BuildDirectionalShadowMatrix(
-            {boundsWorld.Min - DIRECTIONAL_SHADOW_PADDING_METERS, boundsWorld.Max + DIRECTIONAL_SHADOW_PADDING_METERS},
-            -GetSkyVisibilityDirection(direction),
-            region.Interior.Width,
-            region.WorldToClip);
+        const Status status = BuildDirectionalShadowMatrix({boundsWorld.Min - SKY_VISIBILITY_BOUNDS_PADDING_METRES,
+                                                            boundsWorld.Max + SKY_VISIBILITY_BOUNDS_PADDING_METRES},
+                                                           -GetSkyVisibilityDirection(direction),
+                                                           region.Interior.Width,
+                                                           region.WorldToClip);
         if (status != Status::Ready)
         {
             return status;
