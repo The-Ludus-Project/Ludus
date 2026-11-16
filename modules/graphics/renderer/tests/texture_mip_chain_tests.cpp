@@ -103,7 +103,7 @@ TEST_CASE("sRGB checker levels average in linear light while data averages its c
     }
 }
 
-TEST_CASE("odd extents clamp the second parent texel and invalid chains preserve output", "[texture-mips]")
+TEST_CASE("odd extents include every parent texel and invalid chains preserve output", "[texture-mips]")
 {
     constexpr usize WIDTH = 3;
     constexpr usize HEIGHT = 1;
@@ -126,8 +126,7 @@ TEST_CASE("odd extents clamp the second parent texel and invalid chains preserve
     renderer::Rgba8MipChain chain;
     REQUIRE(renderer::BuildRgba8MipChain(source, 2, chain) == rhi::RasterStatus::Ready);
     REQUIRE(chain.LevelCount == 2);
-    // The one-texel level averages texels 0 and 1 of the only row, twice each: (0 + 100) / 2.
-    CHECK(chain.Bytes[WIDTH * CHANNEL_COUNT] == 50);
+    CHECK(chain.Bytes[WIDTH * CHANNEL_COUNT] == 100);
 
     renderer::Rgba8MipChain untouched;
     CHECK(renderer::BuildRgba8MipChain(source, 3, untouched) == rhi::RasterStatus::InvalidDescription);
@@ -139,4 +138,51 @@ TEST_CASE("odd extents clamp the second parent texel and invalid chains preserve
     CHECK(renderer::BuildRgba8MipChain(source, 1, untouched) == rhi::RasterStatus::InvalidDescription);
     CHECK(untouched.LevelCount == 0);
     CHECK(untouched.Bytes.GetSize() == 0);
+}
+
+TEST_CASE("odd texture edges and shared texels contribute by area", "[texture-mips]")
+{
+    constexpr usize WIDTH = 5;
+    constexpr usize HEIGHT = 3;
+    constexpr usize ROW_BYTES = WIDTH * CHANNEL_COUNT;
+    constexpr usize MIP_OFFSET = ROW_BYTES * HEIGHT;
+    constexpr usize SECOND_TEXEL = MIP_OFFSET + CHANNEL_COUNT;
+    constexpr float32 CORNER_WEIGHT = 2.0F / 15.0F;
+    constexpr float32 CENTER_COLUMN_WEIGHT = 1.0F / 5.0F;
+    StaticArray<uint8, MIP_OFFSET> pixels{};
+    for (usize row = 0; row < HEIGHT; ++row)
+    {
+        pixels[row * ROW_BYTES + (WIDTH / 2) * CHANNEL_COUNT + 1] = CODE_MAXIMUM;
+    }
+    constexpr usize CORNER_OFFSET = MIP_OFFSET - CHANNEL_COUNT;
+    pixels[CORNER_OFFSET] = CODE_MAXIMUM;
+    pixels[CORNER_OFFSET + 3] = CODE_MAXIMUM;
+
+    rhi::TextureCpuContent source;
+    source.Bytes = pixels.GetData();
+    source.Size = pixels.GetSize();
+    source.RowPitch = ROW_BYTES;
+    source.Width = WIDTH;
+    source.Height = HEIGHT;
+    source.Format = rhi::RasterFormat::Rgba8Unorm;
+    uint8 expectedCorner = 34;
+    uint8 expectedCenterColumn = 51;
+    SECTION("sRGB RGB with linear alpha")
+    {
+        source.Format = rhi::RasterFormat::Rgba8Srgb;
+        expectedCorner = EncodeSrgbCode(CORNER_WEIGHT);
+        expectedCenterColumn = EncodeSrgbCode(CENTER_COLUMN_WEIGHT);
+    }
+    SECTION("linear data") {}
+
+    renderer::Rgba8MipChain chain;
+    REQUIRE(renderer::BuildRgba8MipChain(source, 2, chain) == rhi::RasterStatus::Ready);
+    REQUIRE(chain.Mips[1].Offset == MIP_OFFSET);
+    REQUIRE(chain.Mips[1].RowPitch == 2 * CHANNEL_COUNT);
+    CHECK(chain.Bytes[MIP_OFFSET] == 0);
+    CHECK(chain.Bytes[MIP_OFFSET + 1] == expectedCenterColumn);
+    CHECK(chain.Bytes[MIP_OFFSET + 3] == 0);
+    CHECK(chain.Bytes[SECOND_TEXEL] == expectedCorner);
+    CHECK(chain.Bytes[SECOND_TEXEL + 1] == expectedCenterColumn);
+    CHECK(chain.Bytes[SECOND_TEXEL + 3] == 34);
 }

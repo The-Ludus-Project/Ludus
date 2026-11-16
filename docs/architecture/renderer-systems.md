@@ -4403,6 +4403,14 @@ use the capture's fixed `TextureMip`; that initialized mip must exist and have
 retained CPU content in **both** input textures. CPU retention supplies immutable
 setup bytes, not a GPU transport/readback fallback. Mip filtering is the declared
 filtered-channel model, without footprint-aware ray filtering or specular AA.
+
+The World raster upload builds successive floor-halved levels from the retained
+material image. Each level uses equal-area box footprints that cover the entire
+parent level, so an odd final row or column contributes with its fractional
+overlap. The discussion of texture minification in [Mehdi NS's texture filtering
+notes](https://mehdins.wordpress.com/2017/08/29/notes-on-anti-aliasing-texture-filtering-part-3/)
+prompted the review of this path against the offline texture cooker.
+
 Creation retains an exact texture view and rejects sRGB/data-format mismatch,
 attachments, unavailable resources and incompatible shader programs explicitly.
 Null preserves constant parameters and the mesh normal. Failed creation preserves
