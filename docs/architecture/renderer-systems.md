@@ -1958,7 +1958,8 @@ and compare each with the same scene at zero distance. They check that light
 crosses an albedo edge with red reaching furthest, that flat lighting is
 conserved, that spreading stops at a non-skin material and at a depth edge, that
 each material spreads by its own profile, that the skin targets appear only with
-skin, and that emissive skin draws while metallic skin is rejected.
+skin, that emissive skin draws while metallic skin is rejected, and that the
+sharp specular edge between glossy and rough black skin is unchanged.
 
 Other paths make declared approximations:
 

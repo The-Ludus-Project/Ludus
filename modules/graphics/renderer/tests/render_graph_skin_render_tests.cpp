@@ -65,7 +65,10 @@ enum class LeftQuad : uint8
     DarkMetallic,    ///< A dark non-skin dielectric beside the skin: a material (profile) edge.
     DistantDarkSkin, ///< Dark skin 0.3 m behind the white skin: a depth edge.
     ShortDarkSkin,   ///< Dark skin a tenth as far-scattering as the white skin: its own skin profile.
+    GlossyBlackSkin, ///< Glossy black skin beside rough black skin: only specular light, with a sharp edge.
 };
+// Roughness of the glossy black skin; the other quads are fully rough.
+constexpr float32 GLOSSY_ROUGHNESS = .3F;
 // Scale of the short-scattering dark skin's distance relative to the white skin's.
 constexpr float32 SHORT_DISTANCE_SCALE = .1F;
 
@@ -133,6 +136,12 @@ SkinScene RenderSkinScene(LeftQuad left, float32 distanceScale, bool shouldCheck
             {distance.X * SHORT_DISTANCE_SCALE, distance.Y * SHORT_DISTANCE_SCALE, distance.Z * SHORT_DISTANCE_SCALE}};
     }
     materials[1].BaseColor = {WHITE, WHITE, WHITE};
+    if (left == LeftQuad::GlossyBlackSkin)
+    {
+        materials[0].BaseColor = {};
+        materials[0].Roughness = GLOSSY_ROUGHNESS;
+        materials[1].BaseColor = {};
+    }
     StaticArray<renderer::RenderGraphItem, QUAD_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
     StaticArray<uint32, QUAD_COUNT> overrides{{0, 1}};
     for (usize quad = 0; quad < QUAD_COUNT; ++quad)
@@ -275,4 +284,21 @@ TEST_CASE("Deferred skin spreads each material by its own scattering distance",
     CHECK(ownBleed < sharedBleed / 2);
     RequireFlat(own, shared, RIGHT_EDGE_COLUMN);
     RequireFlat(own, control, LEFT_INTERIOR_COLUMN);
+}
+
+TEST_CASE("Deferred skin keeps specular detail sharp", "[render-graph][clustered-deferred][skin][gpu]")
+{
+    // Both quads are black skin, the left glossy and the right rough, so all their light is specular. The diffusion
+    // spreads diffuse light only: the highlight's edge stays where it is, and each side keeps its own value.
+    const SkinScene skin = RenderSkinScene(LeftQuad::GlossyBlackSkin, 1);
+    const SkinScene control = RenderSkinScene(LeftQuad::GlossyBlackSkin, 0);
+    constexpr float32 MIN_SPECULAR_EDGE_CODES = 20;
+    CHECK(GetChannel(control.Pixels, LEFT_EDGE_COLUMN, RED) - GetChannel(control.Pixels, RIGHT_EDGE_COLUMN, RED) >
+          MIN_SPECULAR_EDGE_CODES);
+    RequireFlat(skin, control, LEFT_EDGE_COLUMN);
+    RequireFlat(skin, control, RIGHT_EDGE_COLUMN);
+    RequireFlat(skin, control, LEFT_INTERIOR_COLUMN);
+    RequireFlat(skin, control, RIGHT_INTERIOR_COLUMN);
+    // The diffusion ran for this view.
+    CHECK(skin.Allocation.DeferredSkinAllocations == 3);
 }
