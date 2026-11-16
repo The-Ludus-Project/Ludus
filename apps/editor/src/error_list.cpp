@@ -4,6 +4,7 @@
 #include "internal/path_text.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/graphics/renderer/world_feature.hpp>
 
 #include <QAbstractItemView>
 #include <QHBoxLayout>
@@ -209,7 +210,7 @@ QList<ErrorListEntry> MakeRenderGraphFeatureWarningEntries(const QString& warnin
     QList<ErrorListEntry> entries = MakeRenderPreviewWarningEntries(warning, file);
     for (ErrorListEntry& entry : entries)
     {
-        entry.Code = QStringLiteral("RenderGraphFeatureNotRendered");
+        entry.Code = QString::fromLatin1(graphics::renderer::WORLD_FEATURE_WARNING_CODE);
     }
     return entries;
 }

@@ -332,7 +332,8 @@ struct ViewDescription final
     ludus::foundation::uint64 LightingViewSourceId = 0;
     /// Optional Earth clear-sky background for the clustered deferred graph.
     /// Out-of-shell cameras use the graph clear. Invalid inputs reject a new candidate. A render graph without the
-    /// clustered deferred programs draws the view without it and reports RenderGraphReport::IsAtmosphereOmitted.
+    /// clustered deferred programs draws what its ray kernels call World-feature functions for
+    /// (GetWorldFeatureSupport) and reports the rest in RenderGraphReport::UnrenderedWorldFeatures.
     AtmosphereDescription Atmosphere{};
     /// Add a short-range, shadowless camera spotlight to the clustered deferred graph's final colour.
     /// Points along the centre ray. Starts at the eye in perspective and the centre of the near plane in

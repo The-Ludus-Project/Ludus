@@ -668,6 +668,24 @@ usize MakeGpuComputeBindings(
             case LUDUS_GRAPH_LTC_TABLE_BINDING:
                 binding = {slot, state.LtcTable, 0, sizeof(internal::LTC_TABLE)};
                 break;
+            case LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING:
+                // A kernel reads this table only when its scene carries it (RenderGraph::Update supplies one).
+                if (job.WorldTables.AerialPerspectiveBytes == 0)
+                {
+                    return 0;
+                }
+                binding = {slot,
+                           job.Data,
+                           job.WorldTables.AerialPerspectiveOffset,
+                           job.WorldTables.AerialPerspectiveBytes};
+                break;
+            case LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING:
+                if (job.WorldTables.AtmosphereSkyBytes == 0)
+                {
+                    return 0;
+                }
+                binding = {slot, job.Data, job.WorldTables.AtmosphereSkyOffset, job.WorldTables.AtmosphereSkyBytes};
+                break;
             case LUDUS_GRAPH_FAILURE_BINDING:
                 binding = {slot, failures, 0, LUDUS_GRAPH_FAILURE_BYTES};
                 break;
@@ -1083,59 +1101,46 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return status;
     }
-    // A graph ray kernel declares its failure summary last, after every other slot.
+    // A graph ray kernel closes its bindings with renderer-owned slots in slot order: the ray path capture buffer of a
+    // diagnostic capture-variant kernel, the aerial perspective table, the LTC table, the failure summary and the
+    // Atmosphere sky. Each is optional; peel them from the back and validate each as the renderer binds it.
+    std::span<const rhi::RasterBinding> kernelBindings = {compute.Bindings.GetDataOrNull(), compute.Bindings.GetSize()};
+    bool isTrailingValid = true;
+    const auto peel = [&kernelBindings, &isTrailingValid](uint32 slot,
+                                                          rhi::RasterBindingKind kind,
+                                                          usize size) -> const rhi::RasterBinding* {
+        if (kernelBindings.empty() == true || kernelBindings.back().Binding != slot)
+        {
+            return nullptr;
+        }
+        const rhi::RasterBinding* bindingOrNull = &kernelBindings.back();
+        isTrailingValid = isTrailingValid == true && bindingOrNull->Kind == kind &&
+                          bindingOrNull->Visibility == rhi::RasterVisibility::Compute &&
+                          bindingOrNull->MinSize == size && bindingOrNull->HasDynamicOffset == false &&
+                          bindingOrNull->Count == 1 && bindingOrNull->IsRuntimeSized == false &&
+                          bindingOrNull->HasPartialBinding == false &&
+                          bindingOrNull->Indexing == rhi::RasterBindingIndexing::Constant;
+        kernelBindings = kernelBindings.first(kernelBindings.size() - 1);
+        return bindingOrNull;
+    };
+    const rhi::RasterBinding* skyBindingOrNull =
+        peel(LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING, rhi::RasterBindingKind::StorageRead, LUDUS_GPU_PREVIEW_VECTOR_BYTES);
     const rhi::RasterBinding* failureBindingOrNull =
-        compute.Bindings.IsEmpty() == false &&
-                compute.Bindings[compute.Bindings.GetSize() - 1].Binding == LUDUS_GRAPH_FAILURE_BINDING
-            ? &compute.Bindings[compute.Bindings.GetSize() - 1]
-            : nullptr;
-    if (failureBindingOrNull != nullptr &&
-        (failureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
-         failureBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
-         failureBindingOrNull->MinSize != sizeof(uint32) || failureBindingOrNull->HasDynamicOffset == true ||
-         failureBindingOrNull->Count != 1 || failureBindingOrNull->IsRuntimeSized == true ||
-         failureBindingOrNull->HasPartialBinding == true ||
-         failureBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
-    {
-        return Status::InvalidDescription;
-    }
-    const std::span<const rhi::RasterBinding> summaryBindings = {
-        compute.Bindings.GetDataOrNull(),
-        compute.Bindings.GetSize() - (failureBindingOrNull != nullptr ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0)};
-    // A kernel reading the renderer's LTC table declares it next, after every remaining slot.
+        peel(LUDUS_GRAPH_FAILURE_BINDING, rhi::RasterBindingKind::StorageReadWrite, sizeof(uint32));
     const rhi::RasterBinding* ltcTableBindingOrNull =
-        summaryBindings.empty() == false && summaryBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING
-            ? &summaryBindings.back()
-            : nullptr;
-    if (ltcTableBindingOrNull != nullptr &&
-        (ltcTableBindingOrNull->Kind != rhi::RasterBindingKind::StorageRead ||
-         ltcTableBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
-         ltcTableBindingOrNull->MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES ||
-         ltcTableBindingOrNull->HasDynamicOffset == true || ltcTableBindingOrNull->Count != 1 ||
-         ltcTableBindingOrNull->IsRuntimeSized == true || ltcTableBindingOrNull->HasPartialBinding == true ||
-         ltcTableBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
+        peel(LUDUS_GRAPH_LTC_TABLE_BINDING, rhi::RasterBindingKind::StorageRead, LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    const rhi::RasterBinding* aerialBindingOrNull = peel(LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                                                         rhi::RasterBindingKind::StorageRead,
+                                                         LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    const rhi::RasterBinding* captureBindingOrNull = peel(LUDUS_RAY_PATH_CAPTURE_BINDING,
+                                                          rhi::RasterBindingKind::StorageReadWrite,
+                                                          LUDUS_RAY_PATH_CAPTURE_WORD_BYTES);
+    // A World-feature table is read only through the graph scene that supplies it.
+    if (isTrailingValid == false ||
+        ((skyBindingOrNull != nullptr || aerialBindingOrNull != nullptr) && failureBindingOrNull == nullptr))
     {
         return Status::InvalidDescription;
     }
-    const std::span<const rhi::RasterBinding> leadingBindings = summaryBindings.first(
-        summaryBindings.size() - (ltcTableBindingOrNull != nullptr ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0));
-    // A diagnostic capture-variant kernel declares its capture buffer after every frozen ABI slot.
-    const rhi::RasterBinding* captureBindingOrNull =
-        leadingBindings.empty() == false && leadingBindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING
-            ? &leadingBindings.back()
-            : nullptr;
-    if (captureBindingOrNull != nullptr &&
-        (captureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
-         captureBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
-         captureBindingOrNull->MinSize != LUDUS_RAY_PATH_CAPTURE_WORD_BYTES ||
-         captureBindingOrNull->HasDynamicOffset == true || captureBindingOrNull->Count != 1 ||
-         captureBindingOrNull->IsRuntimeSized == true || captureBindingOrNull->HasPartialBinding == true ||
-         captureBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
-    {
-        return Status::InvalidDescription;
-    }
-    const std::span<const rhi::RasterBinding> kernelBindings =
-        leadingBindings.first(leadingBindings.size() - (captureBindingOrNull != nullptr ? 1 : 0));
     bool hasNativeRayQueries = false;
     for (const rhi::RasterBinding& binding : kernelBindings)
     {
@@ -1734,10 +1739,12 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     uint32 sceneData = 0;
     uint64 fingerprintLow = 0;
     uint64 fingerprintHigh = 0;
+    internal::GpuPreviewWorldTables worldTables;
     if (shouldReusePackedScene == true)
     {
         const internal::GpuPreviewSceneRecord& record = state.Scenes[sharedScene];
         uniform = record.PackedUniform;
+        worldTables = record.WorldTables;
         dataBytes = record.DataBytes;
         texelBytes = record.TexelBytes;
         sceneData = record.SceneData;
@@ -1757,6 +1764,37 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         if (status != Status::Ready)
         {
             return status;
+        }
+        // World-feature tables follow the scene words at an aligned offset, so each binds as its own range.
+        struct WorldTableRange final
+        {
+            const Array<math::Vector4>* Table;
+            usize* OutOffset;
+            usize* OutBytes;
+        };
+        const StaticArray<WorldTableRange, 2> ranges{{
+            {&scene->AerialPerspectiveTable, &worldTables.AerialPerspectiveOffset, &worldTables.AerialPerspectiveBytes},
+            {&scene->AtmosphereSkyTable, &worldTables.AtmosphereSkyOffset, &worldTables.AtmosphereSkyBytes},
+        }};
+        for (const WorldTableRange& range : ranges)
+        {
+            const Array<math::Vector4>& table = *range.Table;
+            if (table.IsEmpty() == true)
+            {
+                continue;
+            }
+            constexpr usize ALIGNMENT_WORDS = LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES / sizeof(math::Vector4);
+            const usize offsetWords = (data.GetSize() + ALIGNMENT_WORDS - 1) / ALIGNMENT_WORDS * ALIGNMENT_WORDS;
+            if (data.TryResize(offsetWords + table.GetSize()) == false)
+            {
+                return Status::OutOfMemory;
+            }
+            for (usize i = 0; i < table.GetSize(); ++i)
+            {
+                data[offsetWords + i] = table[i];
+            }
+            *range.OutOffset = offsetWords * sizeof(math::Vector4);
+            *range.OutBytes = table.GetSize() * sizeof(math::Vector4);
         }
         dataBytes = data.GetSize() * sizeof(math::Vector4);
         texelBytes = texels.GetSize() * sizeof(math::Vector4);
@@ -1849,6 +1887,15 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                            largestStorageBuffer,
                                            computeCaps.MaxStorageRange);
     }
+    // World-feature tables bind at LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES offsets into the scene buffer.
+    if (computeCaps.StorageOffsetAlignment != 0 &&
+        ((worldTables.AerialPerspectiveBytes != 0 &&
+          worldTables.AerialPerspectiveOffset % computeCaps.StorageOffsetAlignment != 0) ||
+         (worldTables.AtmosphereSkyBytes != 0 &&
+          worldTables.AtmosphereSkyOffset % computeCaps.StorageOffsetAlignment != 0)))
+    {
+        return Status::Unsupported;
+    }
     if ((description.Width - 1) / state.WorkgroupWidth + 1 > computeCaps.MaxDispatch[0] ||
         (description.Height - 1) / state.WorkgroupHeight + 1 > computeCaps.MaxDispatch[1] ||
         description.Width > formatCaps.MaxAttachmentDimension2D ||
@@ -1900,8 +1947,10 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         record.Capture = description;
         record.PackedUniform = uniform;
         record.SceneCpuBytes = sceneCpuBytes;
+        record.WorldTables = worldTables;
         job.Scene = sceneSlot;
     }
+    job.WorldTables = worldTables;
     job.Width = description.Width;
     job.Height = description.Height;
     job.Info.TargetSamples = description.TargetSamples;

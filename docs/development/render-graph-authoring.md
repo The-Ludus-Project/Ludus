@@ -4631,7 +4631,8 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SampleIncidentLight(scene, selected, receiver, shapeSample) | Explicit-coordinate compatibility overload returning a LightSample with the uniform source PMF. |
 | EvaluateLightPdfSolidAngle / EvaluateEnvironmentPdfSolidAngle | Compatibility helpers returning joint solid-angle densities under uniform source selection. |
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
-| EvaluateEnvironment | Environment emission along a world direction |
+| EvaluateEnvironment | Background radiance along a world direction: the Atmosphere's sky when the World has one that lights the scene, otherwise the World environment. See [World features](#world-features) |
+| ApplyAerialPerspective | Haze between a ray origin and a visible surface point: the surface radiance attenuated by the air plus the sky light it scatters. See [World features](#world-features) |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
@@ -5217,6 +5218,98 @@ encoding require an explicit [ToneMap node](#tone-map-ray-output-explicitly). Wi
 the RGBA8 output clamps linear RGB to [0, 1]. Holding the camera still does not implicitly average
 these colors. ReSTIR reservoir reuse remains an independent, shader-authored
 operation that can also reduce noise.
+
+### World features
+
+A World can contain optional features, such as an **Atmosphere**, that a render
+graph may or may not draw. Each feature maps to one engine-owned scene function.
+When a ray kernel calls the function, the graph draws the feature. You do not
+declare support in the manifest. The builder records it from the functions the
+compiled kernel calls.
+
+| Feature | Scene function | Where to call it | Without it | Ray approximation |
+| --- | --- | --- | --- | --- |
+| Atmosphere sky | `EvaluateEnvironment(scene, directionWorld)` | Return it where a ray leaves the scene: in the miss callback, or where ray generation finds no surface. EvaluateLightAlongRay, SampleLight and FollowSpecularChain call it for you. | The background is the World environment, and the Atmosphere's Sun is not dimmed by the air. | A distant sky resolved at the camera's altitude when the scene is prepared, without the night sky, replaces the World environment; the linked Sun keeps the illuminance that reaches the camera. |
+| Aerial perspective | `ApplyAerialPerspective(scene, originWorld, hitWorld, radiance)` | Call it on the radiance a camera ray brings back from a surface, in the closest-hit callback or in ray generation after shading, with the ray origin and the hit position. | Distant surfaces are neither hazed nor dimmed by the air. | Every segment uses the haze seen from the camera's altitude, read from a table resolved when the scene is prepared, up to 32 km. |
+
+`graphics::renderer::DescribeWorldFeature` owns this text, and the editor shows
+the same table. A renderer test compares this page with it, so edit both
+together.
+
+Each graph has one support level per feature:
+
+| Support | Meaning |
+| --- | --- |
+| Supported | The graph has the clustered deferred programs, which compose the whole Atmosphere, as the engine's default raster graph does. |
+| Approximated | A ray kernel calls the feature's scene function. The function evaluates the ray approximation in the table above. |
+| Not rendered | The graph draws the World without the feature. |
+
+Most templates already draw the Atmosphere sky without changes. Their miss
+callbacks return `EvaluateEnvironment`, and `SampleLight` samples the same sky
+as the environment light. When the World's Atmosphere lights the scene, the sky
+replaces the World environment, and the linked Sun carries the transmitted
+illuminance. This matches the raster graph and the
+[RT1 reference capture](../architecture/renderer-systems.md#clear-sky-atmosphere-design).
+No template applies aerial perspective yet. To add haze, apply it to the
+radiance of the camera ray's first surface:
+
+```slang
+float3 ShadeCameraHit(SceneContext scene, inout RayQueryContext queries, Ray ray, SurfaceHit hit)
+{
+    float3 radiance = ShadeSurface(scene, queries, hit); // your shading
+    return ApplyAerialPerspective(scene, ray.OriginWorld, hit.PositionWorld, radiance);
+}
+```
+
+Apply haze only once per camera path, between the camera and the first surface
+it sees. Its table holds the haze seen from the camera's altitude, so later
+segments of a path would add the camera's haze again.
+
+#### How support is detected
+
+A renderer-owned read-only table backs each function: the Atmosphere sky at
+slot 15 and the aerial perspective table at slot 11. Slang drops a table from a
+kernel's reflection when no code path reads it. The builder sets the version 38
+scene resource bits `SCENE_RESOURCE_ATMOSPHERE_SKY` and
+`SCENE_RESOURCE_AERIAL_PERSPECTIVE` from the reflected slots. The renderer then
+binds only the tables a kernel reads, as it does for the
+[LTC table](ltc-table.md). Every target of the kernel must agree. `RenderGraphPrograms::HasAtmosphereSky`,
+`HasAerialPerspective` and `GetWorldFeatureSupport` expose the result to hosts.
+
+Native ray stages (hardware ray pipelines) reserve slot 11 for their function
+table, so they bind neither table. In those stages the functions keep their
+plain behaviour: `EvaluateEnvironment` returns the World environment and
+`ApplyAerialPerspective` returns its radiance unchanged. Such a graph reports
+both features as Not rendered. Older packages carry no bits, so their features
+are Not rendered until you rebuild them.
+
+The renderer resolves both tables on the CPU, with the same Earth clear-sky
+model as the raster tables. Resolution runs each time the ray scene is prepared:
+when the World, its lights or its Atmosphere change. Camera motion alone keeps
+the tables. A camera below the ground or outside the atmosphere shell keeps the
+World environment and the undimmed Sun, as the raster does. An Atmosphere with
+invalid fields rejects the extraction, again as the raster does. The tables
+follow the camera of the graph's first ray pass.
+
+#### Find what a graph does not render
+
+When the World uses a feature that the drawing graph does not render, the World
+viewport and the Error List show a **World features not rendered** warning with
+code `RenderGraphFeatureNotRendered`. It names each missing feature, what you
+see instead and the function to call. The graph still draws the rest of the
+World. Activate the warning row to open **Render Preview** at its **World
+features** table. The table lists every feature with the drawing graph's
+support, the scene function and where to call it. Hover over a support cell to
+see what the graph shows instead, or the limits of its approximation. Other
+repairs are to turn on **Force raster** in the viewport toolbar, or to disable
+the Atmosphere entity.
+
+These render graph templates are not reference path tracers. The RT1 reference
+capture consumes the same CPU sky in its CPU oracle and its GPU compute path
+(see [the clear-sky design](../architecture/renderer-systems.md#clear-sky-atmosphere-design)).
+A graph classed as a reference path tracer must add each feature to its CPU
+oracle and its GPU kernel together, with parity evidence, under the
+[CPU and GPU reference rule](../architecture/renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
 
 ### Explain failed pixels
 

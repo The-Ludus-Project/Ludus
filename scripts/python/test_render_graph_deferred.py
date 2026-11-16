@@ -61,7 +61,8 @@ class DeferredTests(unittest.TestCase):
                          execution.program_member('DeferredSurfaceChartGBuffer', 'fragment'))
         self.assertIn('DeferredSurfaceChartGBuffer', forward.BAKED_LIGHTING_GROUPS)
         self.assertIn('DeferredSurfaceChartGBuffer', forward.GBUFFER_GROUPS)
-        self.assertEqual(37, execution.PACKAGE_VERSION)
+        # The role first appears in version 37; later generations keep it.
+        self.assertGreaterEqual(execution.PACKAGE_VERSION, 37)
 
     def test_connected_baked_lighting_wraps_the_material_in_the_chart_g_buffer(self):
         with tempfile.TemporaryDirectory() as temporary:

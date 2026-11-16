@@ -336,7 +336,9 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 34 adds the optional forward surface-chart fragment and a chart-free realtime fragment.
 # Version 36 adds the optional deferred probe G-buffer fragment for passes with Baked Lighting connected.
 # Version 37 adds the optional deferred surface-chart G-buffer fragment for the same passes.
-PACKAGE_VERSION = 37
+# Version 38 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
+# aerial perspective table.
+PACKAGE_VERSION = 38
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -344,6 +346,10 @@ SCENE_RESOURCE_LTC_TABLE = 1
 # Scene resource bit: the linked ray kernels count latched pixels by failure reason (LUDUS_GRAPH_FAILURE_BINDING).
 SCENE_RESOURCE_FAILURE_SUMMARY = 2
 SCENE_RESOURCE_LIGHT_TRANSFORMER = 4
+# Version 38 World-feature bits: reflection kept the Atmosphere sky (EvaluateEnvironment) or the aerial perspective
+# table (ApplyAerialPerspective) of the linked ray kernel. docs/development/render-graph-authoring.md#world-features.
+SCENE_RESOURCE_ATMOSPHERE_SKY = 8
+SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -606,6 +612,15 @@ def _runtime_contents(path, configuration):
                     for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(ltc_profiles) <= 1, 'ShaderInterface', 'ltc_table',
                   'targets of the linked ray kernel disagree whether they read the LTC table')
+    # A World feature is drawn exactly when the compiled kernel calls its scene function, which keeps the table's slot.
+    world_feature_profiles = {}
+    for feature, slot in (('atmosphere_sky', ray.ATMOSPHERE_SKY_SLOT), ('aerial_perspective', ray.AERIAL_PERSPECTIVE_SLOT)):
+        world_feature_profiles[feature] = {
+            any(entry['binding'] == slot for entry in item['descriptor']['interface']['entries'])
+            for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
+        build.require(len(world_feature_profiles[feature]) <= 1, 'ShaderInterface', feature,
+                      'targets of the linked ray kernel disagree whether they read the ' + feature.replace('_', ' ') +
+                      ' table')
     failure_profiles = {any(entry['binding'] == ray.FAILURE_SLOT for entry in item['descriptor']['interface']['entries'])
                         for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(failure_profiles) <= 1, 'ShaderInterface', 'failure_summary',
@@ -616,7 +631,7 @@ def _runtime_contents(path, configuration):
                   ray_passes[0]['Traversal'] == 'ComputeBvh' and ray_passes[0]['Buffer0'] != ABSENT),
                   'Capability', 'light_transformer', 'use one ComputeBvh scene compute pass wired to an embedding Buffer')
     recipe_keys = _routed_recipe_keys(package, configuration, selected_techniques, ray_recipes, roles)
-    return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'atmosphere_sky': world_feature_profiles['atmosphere_sky'] == {True}, 'aerial_perspective': world_feature_profiles['aerial_perspective'] == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -822,6 +837,10 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasRayPathCapture = true;')
     if contents.get('ltc_table', False):
         lines.append('    result.HasLtcTable = true;')
+    if contents.get('atmosphere_sky', False):
+        lines.append('    result.HasAtmosphereSky = true;')
+    if contents.get('aerial_perspective', False):
+        lines.append('    result.HasAerialPerspective = true;')
     # Generated headers always link the current ray kernel, which dispatches the uniform's tile region.
     if any(operation['kind'] == 'RayTracing' for operation in contents['plan']['passes']):
         lines.append('    result.HasRayTiles = true;')
@@ -965,7 +984,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(buffer['Slot'], buffer['Stride'], buffer['Count'], buffer['IsReadOnly'])
     data += u32((SCENE_RESOURCE_LTC_TABLE if contents.get('ltc_table', False) else 0) |
                 (SCENE_RESOURCE_FAILURE_SUMMARY if contents.get('failure_summary', False) else 0) |
-                (SCENE_RESOURCE_LIGHT_TRANSFORMER if contents.get('light_transformer', False) else 0))
+                (SCENE_RESOURCE_LIGHT_TRANSFORMER if contents.get('light_transformer', False) else 0) |
+                (SCENE_RESOURCE_ATMOSPHERE_SKY if contents.get('atmosphere_sky', False) else 0) |
+                (SCENE_RESOURCE_AERIAL_PERSPECTIVE if contents.get('aerial_perspective', False) else 0))
     data += u32(*contents.get('capture_warmup_samples', [0] * ray.MAX_RAY_PROGRAMS))
     keys = sorted(contents.get('recipe_keys', []),
                   key=lambda row: (PROGRAM_CODES[row['program']], TARGET_CODES[row['profile']]))

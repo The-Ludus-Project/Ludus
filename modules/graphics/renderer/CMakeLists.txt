@@ -50,7 +50,7 @@ target_compile_options(ludus_renderer_probe_volume PRIVATE $<$<CXX_COMPILER_ID:C
 ludus_apply_project_defaults(ludus_renderer_probe_volume)
 
 add_library(ludus_graphics_renderer STATIC src/light_transformer_graph.cpp src/light_transformer_encoded_queries.cpp src/light_transformer_encoder.cpp src/light_transformer_topology.cpp src/light_transformer.cpp src/point_neighbors.cpp src/surface_points.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/raster_mesh_light_shadows.cpp src/render_graph_scene_resources.cpp src/texture_mip_chain.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/selection_outline.cpp src/lighting.cpp src/hair_card.cpp src/skin_diffusion.cpp src/static_lighting.cpp "$<TARGET_OBJECTS:ludus_renderer_probe_volume>" src/environment.cpp src/atmosphere_environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/reference_dielectric.cpp src/reference_medium.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" src/ggx_albedo_table.cpp "${ludus_ggx_albedo_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp)
-target_sources(ludus_graphics_renderer PRIVATE src/render_graph_atmosphere.cpp)
+target_sources(ludus_graphics_renderer PRIVATE src/render_graph_atmosphere.cpp src/render_graph_world_features.cpp src/world_feature.cpp)
 # Minimal SDK builds can omit offline shader tools and reject explicit atmosphere requests.
 if(LUDUS_SLANG_COMPILER)
     ludus_compile_renderer_shaders(TARGET ludus_graphics_renderer SHADERS
@@ -93,6 +93,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/render_graph.hpp
     include/ludus/graphics/renderer/render_graph_activation.hpp
     include/ludus/graphics/renderer/render_graph_capture.hpp
+    include/ludus/graphics/renderer/world_feature.hpp
     include/ludus/graphics/renderer/renderer.hpp
     include/ludus/graphics/renderer/atmosphere.hpp
     include/ludus/graphics/renderer/world_grid.hpp
@@ -217,8 +218,12 @@ if(LUDUS_BUILD_TESTS)
         tests/wave_tracing_tests.cpp
         tests/wave_scene_queries_tests.cpp
         tests/atmosphere_environment_tests.cpp
+        tests/world_feature_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>"
     )
+    # world_feature_tests.cpp checks the authoring guide's World features table against DescribeWorldFeature.
+    target_compile_definitions(ludus_renderer_tests PRIVATE
+        LUDUS_RENDER_GRAPH_AUTHORING_GUIDE="${PROJECT_SOURCE_DIR}/docs/development/render-graph-authoring.md")
     target_include_directories(ludus_renderer_tests PRIVATE ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::GraphicsRenderer ludus_rhi_reference_backend
         Ludus::FoundationStrings Ludus::FoundationContainers Ludus::FoundationThreadingProfiling
