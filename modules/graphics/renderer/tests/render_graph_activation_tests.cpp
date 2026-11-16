@@ -1817,11 +1817,10 @@ TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use
 namespace
 {
 /// One WGSL ray generation: the given compute role and the ray image pair, then the scene resource word.
-Array<uint8>
-MakeRayPackageBytes(format::StageRole compute, uint32 sceneResources, uint32 version = format::PACKAGE_VERSION)
+/// base supplies the version and any other plan option; the ray program and accumulation are fixed.
+Array<uint8> MakeRayPackageBytes(format::StageRole compute, uint32 sceneResources, const PackageOptions& base = {})
 {
-    PackageOptions options;
-    options.Version = version;
+    PackageOptions options = base;
     options.Program = format::Technique::RayTracing;
     options.AccumulationSamples = 2;
     PackageWriter writer;
@@ -1973,14 +1972,14 @@ TEST_CASE("RG3 version 37 packages append the World-feature tables in slot order
         CHECK(programs.RayCompute.Bindings[count - 1].MinSize == LUDUS_GPU_PREVIEW_VECTOR_BYTES);
     }
     // Earlier generations never carry the World-feature bits.
+    PackageOptions earlier;
+    earlier.Version = format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION;
     CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute,
                                           format::SCENE_RESOURCE_ATMOSPHERE_SKY,
-                                          format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION)) ==
-          renderer::RenderGraphPackageStatus::Malformed);
+                                          earlier)) == renderer::RenderGraphPackageStatus::Malformed);
     CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute,
                                           format::SCENE_RESOURCE_AERIAL_PERSPECTIVE,
-                                          format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION)) ==
-          renderer::RenderGraphPackageStatus::Malformed);
+                                          earlier)) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
 TEST_CASE("deferred runtime roles are complete per target and require the mesh-light binding version",
