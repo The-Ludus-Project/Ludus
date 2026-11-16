@@ -4509,7 +4509,8 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
           "[editor][render-graph][selection]")
 {
     // A project graph without a RayTracing pass (an authored raster graph, or one tracing rays in compute
-    // pipelines) used to ignore Force raster. With an Atmosphere it then rejected every World revision.
+    // pipelines) used to ignore Force raster. A graph without the clustered deferred programs draws a World with an
+    // Atmosphere without its sky; Force raster draws the sky with the engine default graph.
     DeviceFixture device;
     if (device.IsAvailable == false)
     {
@@ -4527,34 +4528,41 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
     const QString raster = GetDefaultRenderGraphRuntime();
     REQUIRE(raster.isEmpty() == false);
     REQUIRE(preview.Load(forward, raster) == RenderGraphPreviewLoad::Staged);
-    // The forward graph has no clustered deferred programs, so it cannot draw the Atmosphere.
-    REQUIRE(TickUntil(preview, [&]() { return preview.WasExtractionRejected(1) == true; }) == true);
-    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere entity needs")) == true);
+    // The forward graph has no clustered deferred programs, so it draws the World and omits the Atmosphere.
+    const bool hasForwardFrame = TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasForwardFrame == true);
+    CHECK(preview.WasExtractionRejected(1) == false);
+    CHECK(preview.IsAtmosphereOmitted() == true);
     CHECK(preview.GetActivePackagePath() == forward);
     CHECK(preview.CanSwitchToRasterFallback() == true);
 
+    const uint64 forwardGeneration = preview.GetPresentedGeneration();
     preview.SetForceRaster(true);
-    // The default graph draws the revision the forward graph rejected, without waiting for a World edit.
-    const bool hasForcedFrame = TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; });
+    // The default graph replaces the forward graph and draws the same revision with the Atmosphere.
+    const bool hasForcedFrame =
+        TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > forwardGeneration; });
     INFO(preview.GetStatus().toStdString());
     REQUIRE(hasForcedFrame == true);
+    CHECK(preview.GetPresentedRevision() == 1);
     CHECK(preview.GetActivePackagePath() == raster);
     CHECK(preview.GetRequestedPackagePath() == forward);
     CHECK(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    CHECK(preview.IsAtmosphereOmitted() == false);
     CHECK(preview.GetStatus().contains(QStringLiteral("Force raster")) == true);
     CHECK(preview.CanSwitchToRasterFallback() == false);
 
-    // Turning it off selects the requested graph again. It still cannot accept the Atmosphere, so the default
-    // graph keeps drawing and the status names the repair.
-    const QImage forced = preview.GetImage();
+    // Turning it off selects the requested graph again, which draws the World without the Atmosphere.
+    const uint64 forcedGeneration = preview.GetPresentedGeneration();
     preview.SetForceRaster(false);
-    REQUIRE(TickUntil(preview, [&]() {
-                return preview.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed;
-            }) == true);
+    const bool hasRequestedFrame =
+        TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > forcedGeneration; });
     INFO(preview.GetStatus().toStdString());
-    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere entity needs")) == true);
-    CHECK(preview.GetActivePackagePath() == raster);
-    CHECK(preview.GetImage().cacheKey() == forced.cacheKey());
+    REQUIRE(hasRequestedFrame == true);
+    CHECK(preview.GetPresentedRevision() == 1);
+    CHECK(preview.GetActivePackagePath() == forward);
+    CHECK(preview.IsAtmosphereOmitted() == true);
+    CHECK(preview.CanSwitchToRasterFallback() == true);
     preview.Detach();
 }
 TEST_CASE("Force raster switches the live hardware renderer and restores automatic selection",
