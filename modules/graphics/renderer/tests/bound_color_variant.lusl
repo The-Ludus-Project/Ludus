@@ -1,0 +1,14 @@
+// Thanks to Donaldson, Evrard, Lascu and Thomson, "Automated Testing of Graphics Shader Compilers"
+// (OOPSLA 2017, Sections 1.1 and 3, https://doi.org/10.1145/3133917) for the same-backend comparison
+// of equivalent shaders. This hand-authored variant keeps the original floating-point operations.
+#include "graph_schemas.luslh"
+
+float32x4 ComputeMaterialColor(in float32x3 tint, in float32 gain)
+{
+    return float32x4(tint * gain, 1.0);
+}
+
+float32x4 PSMain(in RasterVarying value)
+{
+    return ComputeMaterialColor(gain = material.Gain, tint = material.Tint);
+}

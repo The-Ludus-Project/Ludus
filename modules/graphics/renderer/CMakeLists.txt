@@ -504,9 +504,16 @@ endif()
 function(ludus_add_render_graph_pixel_fixtures target)
     # bound: per-draw uniform values; bound_lusl: the same graph with LUSL callbacks;
     # masked_color/masked_depth: authored masked coverage parity.
-    foreach(kind surface offscreen depth bound bound_lusl masked_color masked_depth independent)
+    foreach(kind surface offscreen depth bound bound_lusl bound_lusl_variant masked_color masked_depth independent)
         set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${kind}")
-        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}" "${staged}")
+        if(kind STREQUAL "bound_lusl_variant")
+            ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/bound_lusl"
+                "${staged}" color.lusl)
+            configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tests/bound_color_variant.lusl"
+                "${staged}/main_shaders/color.lusl" COPYONLY)
+        else()
+            ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}" "${staged}")
+        endif()
         if(kind STREQUAL "masked_color" OR kind STREQUAL "masked_depth")
             configure_file("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/masked_coverage.slang"
                 "${staged}/main_shaders/coverage.slang" COPYONLY)
