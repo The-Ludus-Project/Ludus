@@ -193,6 +193,28 @@ class AssetTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("LUDUS_TEST_GUI") == "1", "requires a desktop display")
 class ThemeWindowTests(unittest.TestCase):
+    def test_completed_status_disk_is_inset_from_canvas_edges(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        root = init_theme.create_root(tk)
+        try:
+            theme = init_theme.Theme(root, ttk)
+            for scale in (1.0, 2.0):
+                with self.subTest(scale=scale), patch.object(theme, "scale", scale):
+                    icon = theme.status_icon(tk, root)
+                    icon.show(init_progress.DONE)
+                    disk, mark = icon.canvas.find_all()
+                    left, top, right, bottom = icon.canvas.coords(disk)
+                    self.assertEqual(left, top)
+                    self.assertEqual(right, bottom)
+                    self.assertGreaterEqual(left, 1)
+                    self.assertEqual(icon.size - right, left)
+                    self.assertEqual(icon.canvas.itemcget(disk, "outline"), "")
+                    self.assertEqual(icon.canvas.type(mark), "line")
+        finally:
+            root.destroy()
+
     def test_both_appearances_style_icons_and_draw_every_state(self):
         import tkinter as tk
         from tkinter import ttk
