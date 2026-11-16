@@ -374,6 +374,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
                 reader.Read(material.Scattering.CoatingEta) == false ||
                 reader.Read(material.Scattering.CoatingThickness) == false ||
                 format::IsStoredMaterialScatteringValid(material.Scattering) == false ||
+                (material.Scattering.Model == format::MaterialModel::HairCard && material.Metallic != 0) ||
                 (material.Scattering.Model == format::MaterialModel::Program &&
                  ReadMaterialProgram(reader, material.Program) == false))
             {

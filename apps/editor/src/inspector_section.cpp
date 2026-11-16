@@ -8,6 +8,7 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QEvent>
+#include <QFontMetricsF>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QMenu>
@@ -20,6 +21,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace ludus::editor
 {
@@ -72,9 +74,11 @@ QSize InspectorLabel::sizeHint() const
         return QLabel::sizeHint();
     }
     // The whole text on one line, measured afresh: QLabel's own hint keeps the widest fixed width it was ever given.
+    // The fractional advance is rounded up, so a label given exactly this width (above its field) never elides
+    // because of rounding ("Mod…" for Model).
     const QMargins margins = contentsMargins();
-    return QSize(fontMetrics().horizontalAdvance(text()) + 2 * margin() + std::max(indent(), 0) + margins.left() +
-                     margins.right(),
+    const int32 textWidth = static_cast<int32>(std::ceil(QFontMetricsF(font()).horizontalAdvance(text())));
+    return QSize(textWidth + 2 * margin() + std::max(indent(), 0) + margins.left() + margins.right(),
                  QLabel::sizeHint().height());
 }
 

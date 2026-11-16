@@ -116,6 +116,16 @@ RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::
         legacy.Scattering.Eta = {
             {format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA}};
     }
+    if (thirdModel == format::MaterialModel::HairCard)
+    {
+        format::HairCardParameters hair;
+        hair.StrandDirectionDegrees = 90;
+        hair.PrimaryShiftDegrees = -8;
+        hair.SecondaryShiftDegrees = 12;
+        hair.PrimaryWeight = .25F;
+        hair.SecondaryWeight = .5F;
+        legacy.Scattering = format::MakeHairCardScattering(hair);
+    }
 
     RenderScene scene;
     scene.Definition = definition;
@@ -138,11 +148,11 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(CONDUCTOR_ID), rows) == true);
     CHECK(FindValue(rows, QStringLiteral("Name")) == QStringLiteral("brushed_copper"));
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Conductor"));
-    CHECK(FindValue(rows, QStringLiteral("Reflectance (linear RGB)")) == QStringLiteral("0.5, 0.25, 1"));
-    CHECK(FindValue(rows, QStringLiteral("Base colour map")) == QStringLiteral("Texture 0 · 2 × 1 · sRGB"));
+    CHECK(FindValue(rows, QStringLiteral("Reflectance")) == QStringLiteral("0.5, 0.25, 1"));
+    CHECK(FindValue(rows, QStringLiteral("Base colour")) == QStringLiteral("2 × 1 · sRGB"));
     CHECK(FindValue(rows, QStringLiteral("Addressing")) == QStringLiteral("Repeat"));
     CHECK(FindValue(rows, QStringLiteral("Metallic")) == QStringLiteral("1"));
-    CHECK(FindValue(rows, QStringLiteral("Roughness (perceptual)")) == QStringLiteral("0.3"));
+    CHECK(FindValue(rows, QStringLiteral("Roughness")) == QStringLiteral("0.3"));
     CHECK(FindValue(rows, QStringLiteral("IOR η (RGB)")) == QStringLiteral("0.2, 0.9, 1.1"));
     CHECK(FindValue(rows, QStringLiteral("Extinction k (RGB)")) == QStringLiteral("3.9, 2.4, 2.2"));
     CHECK(FindValue(rows, QStringLiteral("GGX α (U, V)")) == QStringLiteral("0.09, 0.09"));
@@ -150,7 +160,7 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     CHECK(FindValue(rows, QStringLiteral("Surface map")) == QStringLiteral("None"));
     CHECK(FindValue(rows, QStringLiteral("Normal scale")).isNull() == true);
     CHECK(FindValue(rows, QStringLiteral("Alpha")) == QStringLiteral("Opaque"));
-    CHECK(FindValue(rows, QStringLiteral("Emission (linear RGB)")) == QStringLiteral("0, 0, 0"));
+    CHECK(FindValue(rows, QStringLiteral("Emission")) == QStringLiteral("0, 0, 0"));
     CHECK(FindValue(rows, QStringLiteral("Emitting sides")).isNull() == true);
 
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(COATED_ID), rows) == true);
@@ -158,16 +168,16 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     CHECK(FindValue(rows, QStringLiteral("Name")) == QStringLiteral("Material 2"));
     CHECK(FindValue(rows, QStringLiteral("Name")) == GetFallbackMaterialName(2));
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Coated diffuse"));
-    CHECK(FindValue(rows, QStringLiteral("Base colour map")) == QStringLiteral("None"));
+    CHECK(FindValue(rows, QStringLiteral("Base colour")) == QStringLiteral("None"));
     CHECK(FindValue(rows, QStringLiteral("Addressing")).isNull() == true);
     CHECK(FindValue(rows, QStringLiteral("IOR η (RGB)")).isNull() == true);
     CHECK(FindValue(rows, QStringLiteral("Coating IOR")) == QStringLiteral("1.5"));
     CHECK(FindValue(rows, QStringLiteral("Coating thickness")) == QStringLiteral("0.01"));
     CHECK(FindValue(rows, QStringLiteral("Coating GGX α (U, V)")) == QStringLiteral("0.001, 0.001"));
-    CHECK(FindValue(rows, QStringLiteral("Surface map")) == QStringLiteral("Texture 1 · 4 × 4 · linear"));
+    CHECK(FindValue(rows, QStringLiteral("Surface map")) == QStringLiteral("4 × 4 · linear"));
     CHECK(FindValue(rows, QStringLiteral("Normal scale")) == QStringLiteral("2"));
     CHECK(FindValue(rows, QStringLiteral("Alpha")) == QStringLiteral("Masked below 0.5"));
-    CHECK(FindValue(rows, QStringLiteral("Emission (linear RGB)")) == QStringLiteral("10, 20, 0"));
+    CHECK(FindValue(rows, QStringLiteral("Emission")) == QStringLiteral("10, 20, 0"));
     CHECK(FindValue(rows, QStringLiteral("Emitting sides")) == QStringLiteral("Front"));
     CHECK(FindValue(rows, QStringLiteral("Emission power (lm)")) == QStringLiteral("800"));
     CHECK(FindValue(rows, QStringLiteral("Emission map")) == QStringLiteral("None"));
@@ -175,7 +185,7 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     // A legacy material without source parameters renders black when it has no texture.
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(LEGACY_ID), rows) == true);
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Metallic-roughness"));
-    CHECK(FindValue(rows, QStringLiteral("Reflectance (linear RGB)")) == QStringLiteral("0, 0, 0"));
+    CHECK(FindValue(rows, QStringLiteral("Reflectance")) == QStringLiteral("0, 0, 0"));
 }
 
 TEST_CASE("Material inspection offers swatches and thumbnails beside the numbers", "[editor][world][material]")
@@ -183,13 +193,13 @@ TEST_CASE("Material inspection offers swatches and thumbnails beside the numbers
     const RenderScene scene = MakeScene();
     QVector<MaterialPropertyRow> rows;
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(CONDUCTOR_ID), rows) == true);
-    const MaterialPropertyRow* reflectanceOrNull = FindRowOrNull(rows, QStringLiteral("Reflectance (linear RGB)"));
+    const MaterialPropertyRow* reflectanceOrNull = FindRowOrNull(rows, QStringLiteral("Reflectance"));
     REQUIRE(reflectanceOrNull != nullptr);
     CHECK(reflectanceOrNull->Swatch.isValid() == true);
     // 0.5 linear is about 188 as displayed, so the swatch is not the raw number scaled to 255.
     CHECK(reflectanceOrNull->Swatch.red() > 180);
     CHECK(reflectanceOrNull->Swatch.red() < 195);
-    const MaterialPropertyRow* baseOrNull = FindRowOrNull(rows, QStringLiteral("Base colour map"));
+    const MaterialPropertyRow* baseOrNull = FindRowOrNull(rows, QStringLiteral("Base colour"));
     REQUIRE(baseOrNull != nullptr);
     CHECK(baseOrNull->Thumbnail.isNull() == false);
     CHECK(baseOrNull->Thumbnail.width() <= MATERIAL_THUMBNAIL_EXTENT);
@@ -198,11 +208,11 @@ TEST_CASE("Material inspection offers swatches and thumbnails beside the numbers
     REQUIRE(surfaceOrNull != nullptr);
     CHECK(surfaceOrNull->Thumbnail.isNull() == true);
     // A material that emits nothing shows no emission swatch; an emitter does.
-    const MaterialPropertyRow* dormantOrNull = FindRowOrNull(rows, QStringLiteral("Emission (linear RGB)"));
+    const MaterialPropertyRow* dormantOrNull = FindRowOrNull(rows, QStringLiteral("Emission"));
     REQUIRE(dormantOrNull != nullptr);
     CHECK(dormantOrNull->Swatch.isValid() == false);
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(COATED_ID), rows) == true);
-    const MaterialPropertyRow* emitterOrNull = FindRowOrNull(rows, QStringLiteral("Emission (linear RGB)"));
+    const MaterialPropertyRow* emitterOrNull = FindRowOrNull(rows, QStringLiteral("Emission"));
     REQUIRE(emitterOrNull != nullptr);
     CHECK(emitterOrNull->Swatch.isValid() == true);
 }
@@ -220,6 +230,17 @@ TEST_CASE("Material inspection names dielectrics and their index", "[editor][wor
             true);
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Thin dielectric"));
     CHECK(FindValue(rows, QStringLiteral("IOR η")) == QStringLiteral("1.5"));
+}
+
+TEST_CASE("Material inspection lists a hair card's strand controls", "[editor][world][material][hair-card]")
+{
+    QVector<MaterialPropertyRow> rows;
+    REQUIRE(DescribeSceneObjectMaterial(MakeScene(format::MaterialModel::HairCard), QString(LEGACY_ID), rows) == true);
+    CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Hair card"));
+    CHECK(FindValue(rows, QStringLiteral("Strand direction (°)")) == QStringLiteral("90"));
+    CHECK(FindValue(rows, QStringLiteral("Shifts (°)")) == QStringLiteral("-8 / 12"));
+    CHECK(FindValue(rows, QStringLiteral("Highlights")) == QStringLiteral("0.25 / 0.5"));
+    CHECK(FindValue(rows, QStringLiteral("IOR η")).isNull() == true);
 }
 
 TEST_CASE("Material inspection preserves output without a cooked definition or object", "[editor][world][material]")

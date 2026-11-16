@@ -62,10 +62,10 @@ struct PackageWriter final
             Bytes.Add(static_cast<uint8>((value >> (8U * i)) & 0xFFU));
         }
     }
-    /// Empty structured storage records, then the version 25 scene resource word.
+    /// Empty storage, scene resources, warm-up counts and recipe table for the selected version.
     // The package version selects which words exist; the scene resource bits are that word's value.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-    void WriteSceneResources(uint32 version, uint32 sceneResources = 0, uint32 warmup = 0)
+    void WriteSceneResources(uint32 version, uint32 sceneResources = 0, uint32 warmup = 0, uint32 recipeCount = 0)
     // NOLINTEND(bugprone-easily-swappable-parameters)
     {
         if (version >= format::STORAGE_PACKAGE_VERSION)
@@ -82,6 +82,10 @@ struct PackageWriter final
             {
                 WriteWord(program == 0 ? warmup : 0);
             }
+        }
+        if (version >= format::RECIPE_KEY_PACKAGE_VERSION)
+        {
+            WriteWord(recipeCount);
         }
     }
     void WritePadded(std::string_view text)
@@ -114,6 +118,8 @@ struct PackageOptions final
     uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     uint32 AccumulationSamples = 0;
     uint32 CaptureWarmupSamples = 0;
+    uint32 RecipeCount = 0;
+    format::ShaderTarget RecipeTarget = format::ShaderTarget::Wgsl;
     uint32 SourceColor = format::ABSENT;
     float32 ToneMappingExposure = 0;
     uint32 DenoisingQuality = 0;
@@ -296,7 +302,13 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
-    writer.WriteSceneResources(options.Version, 0, options.CaptureWarmupSamples);
+    writer.WriteSceneResources(options.Version, 0, options.CaptureWarmupSamples, options.RecipeCount);
+    for (uint32 recipe = 0; recipe < options.RecipeCount; ++recipe)
+    {
+        writer.WriteWord(static_cast<uint32>(format::Technique::ColorAndDepth));
+        writer.WriteWord(static_cast<uint32>(options.RecipeTarget));
+        writer.WriteIdentity(0xCD);
+    }
     if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
@@ -587,6 +599,34 @@ TEST_CASE("RG3 malformed runtime packages reject without a partial generation", 
     CHECK(DecodeBytes(duplicate) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
+TEST_CASE("Runtime graph recipe keys are bounded, unique and owned by the decoded package",
+          "[renderer][render-graph][activation]")
+{
+    PackageOptions options;
+    options.RecipeCount = 1;
+    renderer::RenderGraphPackage package;
+    REQUIRE(package.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Ready);
+    const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+    REQUIRE(programs.RecipeKeys.GetSize() == 1);
+    CHECK(programs.RecipeKeys[0].Technique == format::Technique::ColorAndDepth);
+    CHECK(programs.RecipeKeys[0].Target == format::ShaderTarget::Wgsl);
+    for (const uint8 byte : programs.RecipeKeys[0].Key)
+    {
+        CHECK(byte == 0xCD);
+    }
+
+    renderer::RenderGraphPackage rejected;
+    options.RecipeCount = 2;
+    CHECK(rejected.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.RecipeCount = 1;
+    options.RecipeTarget = static_cast<format::ShaderTarget>(format::SHADER_TARGET_COUNT);
+    CHECK(rejected.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.RecipeCount = 0;
+    options.Version = format::FORWARD_SURFACE_CHART_PACKAGE_VERSION;
+    REQUIRE(rejected.Decode(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Ready);
+    CHECK(rejected.GetPrograms({}, {}).RecipeKeys.GetSize() == 0);
+}
+
 TEST_CASE("RG3 runtime packages decode SPIR-V words little-endian beside every text target",
           "[render-graph][activation]")
 {
@@ -836,6 +876,47 @@ TEST_CASE("RG3 activation waits for confirmed submission and retires the old gen
     rhi::reference::Completed = rhi::reference::Submitted;
     fixture.Render();
     CHECK(rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Texture)] > textureDestroys);
+}
+
+TEST_CASE("Rejected extractions name their scene-level cause for the drawing graph and the candidate",
+          "[render-graph][activation]")
+{
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    PackageOptions second;
+    second.Generation = 2;
+    REQUIRE(fixture.Activation.Stage(MakePackage(second)) == rhi::RasterStatus::Pending);
+    ActivationFixture::CompletePending(rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    // Neither fixture generation composes an atmosphere: only clustered deferred graphs do.
+    fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    renderer::RenderGraphReport report;
+    CHECK(fixture.Update(report, 2) == rhi::RasterStatus::Unsupported);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::Atmosphere);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::Atmosphere);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    fixture.Cameras[0].Atmosphere.IsEnabled = false;
+    fixture.Cameras[0].Depth = renderer::DepthConvention::ReverseZ;
+    fixture.Cameras[0].InfiniteFar = true;
+    CHECK(fixture.Update(report, 3) == rhi::RasterStatus::Unsupported);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::CameraDepth);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::CameraDepth);
+    // An accepted extraction clears the cause, and a newly staged candidate starts without one.
+    fixture.Cameras[0].Depth = renderer::DepthConvention::Conventional;
+    fixture.Cameras[0].InfiniteFar = false;
+    REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
+    fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    CHECK(fixture.Update(report, 5) == rhi::RasterStatus::Unsupported);
+    PackageOptions third;
+    third.Generation = 3;
+    REQUIRE(fixture.Activation.Stage(MakePackage(third)) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
 }
 
 TEST_CASE("RG3 a newer candidate supersedes an unactivated one", "[render-graph][activation]")

@@ -1,10 +1,12 @@
 // Default-graph pixel suite: clustered deferred against forward shading, the forward-lit graph,
 // bilinear and spatial upscaling (MetalFX where available) and deferred mesh area lights.
 
+#include "../src/internal/atmosphere_sky_tables.h"
 #include "../src/internal/camera_inverse.h"
 #include "../src/internal/raster_mesh_lights.h"
 #include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
+#include "earth_sky_quadrature.hpp"
 #include "render_graph_gpu_fixture.h"
 #include "renderer_composite.h"
 #include "rg2_forward_lit.h"
@@ -1208,30 +1210,43 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(fixture.Pixels[center] == litRed);
         CHECK(fixture.Pixels[center + 1] == litGreen);
     }
-    SECTION("directional visibility stays separate from other lights")
+    SECTION("every directional light up to the capacity keeps its own map")
     {
         const bool hasMeshLight = GENERATE(false, true);
         if (hasMeshLight == false)
         {
             materials[1].Emission = {};
         }
-        StaticArray<renderer::DirectLight, 2> lights;
-        // The later source has the same incoming direction. It remains visible even where the selected Sun is blocked.
-        lights[0].SourceId = 2;
-        lights[0].Kind = renderer::LightKind::Directional;
-        lights[0].Color = {0, 1, 0};
-        lights[0].Intensity = 0.25F;
-        lights[0].Direction = {-1, 0, -1};
-        lights[1] = lights[0];
-        lights[1].SourceId = 1;
-        lights[1].Color = {0, 0, 1};
-        lights[1].Intensity = 2;
+        // An Atmosphere's Sun and Moon, plus a third directional light past the two-map capacity. They share one
+        // incoming direction. The dim Moon has the lowest source ID: when only that light received a map, the Sun
+        // lit the receiver straight through every caster.
+        constexpr usize SUN = 0;
+        constexpr usize MOON = 1;
+        constexpr usize EXTRA = 2;
+        constexpr usize DIRECTIONAL_COUNT = 3;
+        StaticArray<renderer::DirectLight, DIRECTIONAL_COUNT> lights;
+        lights[SUN].SourceId = 9;
+        lights[SUN].Kind = renderer::LightKind::Directional;
+        lights[SUN].Color = {0, 0, 1};
+        lights[SUN].Intensity = 2;
+        lights[SUN].Direction = {-1, 0, -1};
+        lights[MOON] = lights[SUN];
+        lights[MOON].SourceId = 1;
+        lights[MOON].Color = {0, 1, 0};
+        lights[MOON].Intensity = 0.25F;
+        lights[EXTRA] = lights[SUN];
+        lights[EXTRA].SourceId = 5;
+        lights[EXTRA].Color = {1, 0, 0};
+        lights[EXTRA].Intensity = 0.2F;
         inputs.Lights = {lights.GetData(), lights.GetSize()};
 
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         const uint8 litBlue = fixture.Pixels[center + 2];
         REQUIRE(litBlue > 32);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[SUN].SourceId);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 2);
+        CHECK(fixture.Graph.GetReport().Resources.UnshadowedDirectionalLights == 1);
 
         // Join the wall and receiver as one draw, like a terrain ridge casting onto its own heightfield.
         Array<math::Vector3> combinedPositions;
@@ -1252,37 +1267,45 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
                               combinedIndices.GetSize()};
         meshes[0].Geometry.Normals = combinedNormals.GetData();
 
+        // The wall blocks the Sun and the Moon. Only the light past the capacity still reaches the receiver.
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center + 2] <= 1);
-        const uint8 remainingGreen = fixture.Pixels[center + 1];
-        CHECK(remainingGreen > 4);
-        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[1].SourceId);
-        CHECK(fixture.Pixels[center] <= 1);
+        CHECK(fixture.Pixels[center + 1] <= 1);
+        const uint8 unshadowedRed = fixture.Pixels[center];
+        CHECK(unshadowedRed > 4);
         const StaticArray<uint8, PIXEL_BYTES> shadowed = fixture.Pixels;
         render();
         CHECK(fixture.Pixels == shadowed);
 
-        lights[1].Direction = {};
+        lights[SUN].Direction = {};
         CHECK(update(SCENE_COUNT - 1) == rhi::RasterStatus::InvalidDescription);
         render();
         CHECK(fixture.Pixels == shadowed);
 
-        lights[1].Direction = {-1, 0, -1};
-        lights[1].ShouldCastRasterShadows = false;
+        // Excluding the Sun frees its map for the remaining light, and the Sun lights the receiver unshadowed.
+        lights[SUN].Direction = {-1, 0, -1};
+        lights[SUN].ShouldCastRasterShadows = false;
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
-        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[MOON].SourceId);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 2);
+        CHECK(fixture.Graph.GetReport().Resources.UnshadowedDirectionalLights == 0);
         CHECK(fixture.Pixels[center + 2] == litBlue);
         CHECK(fixture.Pixels[center + 1] <= 1);
+        CHECK(fixture.Pixels[center] <= 1);
 
-        lights[0].ShouldCastRasterShadows = false;
+        for (renderer::DirectLight& light : lights)
+        {
+            light.ShouldCastRasterShadows = false;
+        }
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center + 2] == litBlue);
-        CHECK(fixture.Pixels[center + 1] == remainingGreen);
-        CHECK(fixture.Pixels[center] <= 1);
+        CHECK(fixture.Pixels[center + 1] > 4);
+        CHECK(fixture.Pixels[center] == unshadowedRed);
         CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == 0);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 0);
     }
     SECTION("grazing directional light illuminates its own receiver uniformly")
     {
@@ -1298,6 +1321,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         lights[1] = lights[0];
         lights[1].SourceId = 2;
         lights[1].Color = {0, 1, 0};
+        lights[1].ShouldCastRasterShadows = false;
         inputs.Lights = {lights.GetData(), lights.GetSize()};
 
         REQUIRE(update(1) == rhi::RasterStatus::Ready);
@@ -2059,149 +2083,6 @@ TEST_CASE("default deferred samples minified material textures at their mean", "
 
 namespace
 {
-// Independent binary64 midpoint quadrature of the declared single-scattering
-// integral. It uses planet-centred intersections and integrates each optical
-// depth directly, without the production shader's texture parameterization.
-float64 ComputeEarthExtinction(float64 altitude, usize channel)
-{
-    constexpr usize CHANNEL_COUNT = 3;
-    constexpr StaticArray<float64, CHANNEL_COUNT> molecular{{0.005802, 0.013558, 0.033100}};
-    constexpr StaticArray<float64, CHANNEL_COUNT> ozone{{0.000650, 0.001881, 0.000085}};
-    return molecular[channel] * std::exp(-altitude / 8.0) + 0.004440 * std::exp(-altitude / 1.2) +
-           ozone[channel] * math::Max(0.0, 1 - math::Abs(altitude - 25.0) / 15.0);
-}
-
-struct EarthSkyIntegral
-{
-    float64 Radiance = 0;
-    float64 ReturnFraction = 0;
-};
-
-EarthSkyIntegral IntegrateEarthSky(float64 altitude,
-                                   math::Vector3d directionWorld,
-                                   math::Vector3d sunWorld,
-                                   usize channel,
-                                   usize viewSteps = 768,
-                                   usize solarSteps = 384)
-{
-    constexpr float64 GROUND = 6360;
-    constexpr float64 TOP = 6460;
-    constexpr usize CHANNEL_COUNT = 3;
-    constexpr StaticArray<float64, CHANNEL_COUNT> molecular{{0.005802, 0.013558, 0.033100}};
-    const math::Vector3d observerWorld{0, GROUND + altitude, 0};
-    const float64 projected = math::Dot(observerWorld, directionWorld);
-    const float64 projectedSquared = projected * projected;
-    const float64 groundDiscriminant = projectedSquared + GROUND * GROUND - math::Dot(observerWorld, observerWorld);
-    const float64 distance =
-        projected < 0 && groundDiscriminant >= 0
-            ? -projected - std::sqrt(groundDiscriminant)
-            : -projected + std::sqrt(projectedSquared + TOP * TOP - math::Dot(observerWorld, observerWorld));
-    const float64 cosine = math::Dot(directionWorld, sunWorld);
-    const float64 moleculePhase = 3 * (1 + cosine * cosine) / (16 * math::kPi);
-    constexpr float64 ASYMMETRY = 0.8;
-    const float64 aerosolPhase = 3 * (1 - ASYMMETRY * ASYMMETRY) * (1 + cosine * cosine) /
-                                 (8 * math::kPi * (2 + ASYMMETRY * ASYMMETRY) *
-                                  std::pow(1 + ASYMMETRY * ASYMMETRY - 2 * ASYMMETRY * cosine, 1.5));
-    const float64 step = distance / static_cast<float64>(viewSteps);
-    float64 opticalDepth = 0;
-    EarthSkyIntegral result;
-    for (usize sample = 0; sample < viewSteps; ++sample)
-    {
-        const math::Vector3d pointWorld =
-            observerWorld + directionWorld * ((static_cast<float64>(sample) + 0.5) * step);
-        const float64 height = math::Length(pointWorld) - GROUND;
-        const float64 extinction = ComputeEarthExtinction(height, channel) * step;
-        const float64 weight = std::exp(-opticalDepth - 0.5 * extinction) * step;
-        const float64 rayleigh = molecular[channel] * std::exp(-height / 8);
-        const float64 aerosol = 0.003996 * std::exp(-height / 1.2);
-        result.ReturnFraction += weight * (rayleigh + aerosol);
-        const float64 solarProjection = math::Dot(pointWorld, sunWorld);
-        const float64 squaredRadius = math::Dot(pointWorld, pointWorld);
-        const float64 solarDiscriminant = solarProjection * solarProjection + GROUND * GROUND - squaredRadius;
-        if (solarProjection >= 0 || solarDiscriminant < 0)
-        {
-            const float64 solarDistance =
-                -solarProjection + std::sqrt(solarProjection * solarProjection + TOP * TOP - squaredRadius);
-            const float64 solarStep = solarDistance / static_cast<float64>(solarSteps);
-            float64 solarOpticalDepth = 0;
-            for (usize solarSample = 0; solarSample < solarSteps; ++solarSample)
-            {
-                const math::Vector3d solarPointWorld =
-                    pointWorld + sunWorld * ((static_cast<float64>(solarSample) + 0.5) * solarStep);
-                solarOpticalDepth +=
-                    ComputeEarthExtinction(math::Length(solarPointWorld) - GROUND, channel) * solarStep;
-            }
-            result.Radiance +=
-                weight * std::exp(-solarOpticalDepth) * (rayleigh * moleculePhase + aerosol * aerosolPhase);
-        }
-        opticalDepth += extinction;
-    }
-    return result;
-}
-
-// Independent higher-order solution for the local isotropic approximation at
-// ground level with a horizontal view and overhead Sun. Sum 24 explicit
-// orders, integrating optical depths directly and using a denser sphere rule.
-float64 IntegrateEarthBlueHigherOrders()
-{
-    constexpr usize BLUE_CHANNEL = 2;
-    constexpr float64 GROUND = 6360;
-    constexpr float64 TOP = 6460;
-    constexpr float64 BLUE_MOLECULAR_SCATTERING = 0.033100;
-    constexpr usize VIEW_STEPS = 96;
-    constexpr usize ZENITH_SAMPLES = 8;
-    constexpr usize AZIMUTH_SAMPLES = 12;
-    constexpr usize MULTIPLE_RAY_STEPS = 48;
-    constexpr usize MULTIPLE_SOLAR_STEPS = 64;
-    constexpr usize SCATTERING_ORDERS = 24;
-    constexpr float64 SAMPLE_COUNT = ZENITH_SAMPLES * AZIMUTH_SAMPLES;
-    const float64 distance = std::sqrt(TOP * TOP - GROUND * GROUND);
-    float64 opticalDepth = 0;
-    float64 radiance = 0;
-    float64 previous = 0;
-    for (usize sample = 1; sample <= VIEW_STEPS; ++sample)
-    {
-        const float64 fraction = static_cast<float64>(sample) / VIEW_STEPS;
-        const float64 next = distance * fraction * fraction;
-        const float64 midpoint = (next + previous) * 0.5;
-        const float64 height = std::sqrt(GROUND * GROUND + midpoint * midpoint) - GROUND;
-        const math::Vector3d sunWorld = {0, GROUND / (GROUND + height), -midpoint / (GROUND + height)};
-        EarthSkyIntegral mean;
-        for (usize row = 0; row < ZENITH_SAMPLES; ++row)
-        {
-            const float64 cosine = 2 * (static_cast<float64>(row) + 0.5) / ZENITH_SAMPLES - 1;
-            const float64 sine = std::sqrt(1 - cosine * cosine);
-            for (usize column = 0; column < AZIMUTH_SAMPLES; ++column)
-            {
-                const float64 azimuth = (static_cast<float64>(column) + 0.5) * 2 * math::kPi / AZIMUTH_SAMPLES;
-                const math::Vector3d directionWorld = {sine * std::sin(azimuth), cosine, sine * std::cos(azimuth)};
-                const EarthSkyIntegral ray = IntegrateEarthSky(height,
-                                                               directionWorld,
-                                                               sunWorld,
-                                                               BLUE_CHANNEL,
-                                                               MULTIPLE_RAY_STEPS,
-                                                               MULTIPLE_SOLAR_STEPS);
-                mean.Radiance += ray.Radiance / SAMPLE_COUNT;
-                mean.ReturnFraction += ray.ReturnFraction / SAMPLE_COUNT;
-            }
-        }
-        float64 order = mean.Radiance;
-        float64 source = 0;
-        for (usize i = 0; i < SCATTERING_ORDERS; ++i)
-        {
-            source += order;
-            order *= mean.ReturnFraction;
-        }
-        const float64 step = next - previous;
-        const float64 extinction = ComputeEarthExtinction(height, BLUE_CHANNEL) * step;
-        const float64 scattering =
-            BLUE_MOLECULAR_SCATTERING * std::exp(-height / 8) + 0.003996 * std::exp(-height / 1.2);
-        radiance += std::exp(-opticalDepth - 0.5 * extinction) * scattering * step * source;
-        opticalDepth += extinction;
-        previous = next;
-    }
-    return radiance;
-}
 rhi::RasterStatus PollAtmosphereGraph(GraphGpuFixture& inoutFixture, rhi::RasterStatus status)
 {
     timing::Deadline deadline;
@@ -2304,6 +2185,10 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
     camera.Atmosphere.DirectionToSunWorld = {std::sqrt(1 - solarElevation * solarElevation), solarElevation, 0};
     REQUIRE(update() == rhi::RasterStatus::Ready);
     ReadAtmosphereFrame(fixture);
+    // The RT1 reference evaluates the same tables on the CPU (ResolveAtmosphereEnvironment).
+    const float64 heightKilometres = static_cast<float64>(altitude / 1000);
+    renderer::internal::AtmosphereSkyTables cpuTables;
+    REQUIRE(cpuTables.TryBuild(heightKilometres, static_cast<float64>(solarElevation), false) == true);
     for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
     {
         const math::Vector3d sunWorld{static_cast<float64>(camera.Atmosphere.DirectionToSunWorld.X),
@@ -2317,6 +2202,11 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
         // RGBA8 fixture disables ToneMap, so only 8-bit quantization and LUT
         // interpolation separate this comparison from scene-linear transport.
         CHECK(math::Abs(actual - expected) <= 1.5 / 255 + 0.08 * expected);
+        const math::Vector3d cpuRadiance = cpuTables.SampleSky({0, 0, -1}, {0, 1, 0}, sunWorld);
+        const float64 cpu = static_cast<float64>(SKY_ILLUMINANCE) *
+                            (channel == 0 ? cpuRadiance.X : (channel == 1 ? cpuRadiance.Y : cpuRadiance.Z));
+        // Only 8-bit quantization and the GPU tables' half-precision texels separate the two.
+        CHECK(math::Abs(actual - cpu) <= 1.5 / 255 + 0.02 * cpu);
         CHECK(fixture.Pixels[covered + channel] == original[covered + channel]);
     }
     if (altitude == 0 && solarElevation == 1)
@@ -2374,6 +2264,17 @@ TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque 
             (static_cast<float64>(fixture.Pixels[sky + BLUE_CHANNEL]) - singleScatteringBlue) / 255;
         CHECK(observedBlue > 0);
         CHECK(math::Abs(observedBlue - higherOrderBlue) <= 2.0 / 255 + 0.20 * higherOrderBlue);
+        // The reference's multiple-scattered sky matches the raster's.
+        renderer::internal::AtmosphereSkyTables cpuMultiple;
+        REQUIRE(cpuMultiple.TryBuild(0, 1, true) == true);
+        const math::Vector3d cpuSky = cpuMultiple.SampleSky({0, 0, -1}, {0, 1, 0}, {0, 1, 0});
+        const StaticArray<float64, CHANNEL_COUNT> cpuChannels{{cpuSky.X, cpuSky.Y, cpuSky.Z}};
+        for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+        {
+            const float64 expectedSky = static_cast<float64>(SKY_ILLUMINANCE) * cpuChannels[channel];
+            CHECK(math::Abs(static_cast<float64>(fixture.Pixels[sky + channel]) / 255 - expectedSky) <=
+                  1.5 / 255 + 0.02 * expectedSky);
+        }
 
         camera.Atmosphere.SolarIlluminance = {};
         constexpr float32 CAMERA_HEIGHT_METRES = 2;

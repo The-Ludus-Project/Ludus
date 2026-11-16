@@ -1423,10 +1423,11 @@ QString ReferenceCaptureWindow::GetStatusText() const
     graphics::renderer::ReferenceCaptureInfo info;
     if (mCapture.GetInfo(info) == true)
     {
-        progress = QStringLiteral(" · %1/%2 samples per pixel · %3 analytic lights · %4 s")
+        progress = QStringLiteral(" · %1/%2 samples per pixel · %3 analytic lights%4 · %5 s")
                        .arg(info.MinimumSamples)
                        .arg(info.TargetSamples)
                        .arg(mCapture.GetLightCount())
+                       .arg(mCapture.HasAtmosphereSky() == true ? QStringLiteral(" · Atmosphere sky") : QString{})
                        .arg(static_cast<float64>(mCaptureTimer.elapsed()) / MILLISECONDS_PER_SECOND, 0, 'f', 1);
     }
     return QStringLiteral("%1\n%2%3").arg(mMessage, phase, progress);

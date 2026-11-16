@@ -25,7 +25,7 @@ public:
     [[nodiscard]] rhi::RasterBindingResource GetMeshLights() const noexcept;
     [[nodiscard]] foundation::uint32 GetMeshLightCount() const noexcept;
     /// One-based index in the deferred resolve's packed light array, sorted by source ID across all light kinds.
-    /// Returns zero if no directional light matches the requested source.
+    /// Returns zero if no directional light with positive intensity and a nonblack color matches the requested source.
     [[nodiscard]] foundation::uint32 FindDirectionalLightIndex(foundation::uint64 sourceId) const noexcept;
     /// First word of the emitter culling grid inside GetMeshLights' buffer, or zero when every record is evaluated.
     [[nodiscard]] foundation::uint32 GetMeshLightGridWord() const noexcept;

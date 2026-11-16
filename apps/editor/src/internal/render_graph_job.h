@@ -4,6 +4,7 @@
 
 #include "internal/controller.h"
 #include "internal/render_graph_source.h"
+#include "internal/viewport_trace.h"
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -34,6 +35,7 @@ struct RenderGraphJobRequest final
     /// Immutable stdin bytes, bounded by the producing operation's wire policy.
     /// Empty closes stdin too. The job never interprets or logs this payload.
     QByteArray StandardInput;
+    GraphEditTrace EditTrace{};
 };
 
 /// Copied CLI result. Payload holds the versioned success object; failures keep the
@@ -93,5 +95,8 @@ private:
     RenderGraphJobRequest mRequest;
     QByteArray mOutput;
     bool mIsCancelled = false;
+    foundation::uint64 mProcessRequestedTicks = 0;
+    ViewportTraceToken mProcessStartTrace;
+    ViewportTraceToken mProcessTrace;
 };
 } // namespace ludus::editor

@@ -1,4 +1,5 @@
 #include "internal/document_well.h"
+#include "internal/tab_modified.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -150,7 +151,8 @@ void DocumentWell::AddDocument(QWidget* document, const QString& title, Document
 {
     LUDUS_REQUIRE(document != nullptr && document->objectName().isEmpty() == false);
     LUDUS_REQUIRE(findEntryOrNull(document) == nullptr);
-    mEntries.append({ .Document = document, .Title = title, .IsAvailable = true, .CloseMode = closeMode });
+    mEntries.append(
+        { .Document = document, .Title = title, .IsAvailable = true, .CloseMode = closeMode, .IsModified = false });
     document->setParent(mParking);
     document->hide();
 }
@@ -226,9 +228,25 @@ void DocumentWell::insertInto(QTabWidget* group, QWidget* document, foundation::
 {
     const Entry* entryOrNull = findEntryOrNull(document);
     LUDUS_REQUIRE(entryOrNull != nullptr);
-    const foundation::int32 tab = group->insertTab(index, document, entryOrNull->Title);
-    group->setTabToolTip(tab, entryOrNull->Title);
+    group->insertTab(index, document, entryOrNull->Title);
+    renderTab(*entryOrNull);
     forgetClosedDocument(document);
+}
+
+void DocumentWell::renderTab(const Entry& entry)
+{
+    QTabWidget* groupOrNull = groupOfOrNull(entry.Document);
+    if (groupOrNull == nullptr)
+    {
+        return;
+    }
+    const foundation::int32 tab = groupOrNull->indexOf(entry.Document);
+    groupOrNull->setTabText(tab, entry.Title);
+    // The dot is drawn, so the tooltip carries the unsaved state for a pointer and for assistive technology.
+    groupOrNull->setTabToolTip(tab,
+                               entry.IsModified == true ? QStringLiteral("%1 (unsaved changes)").arg(entry.Title)
+                                                        : entry.Title);
+    SetTabModified(*groupOrNull->tabBar(), tab, entry.IsModified);
 }
 
 void DocumentWell::detach(QWidget* document)
@@ -443,13 +461,24 @@ void DocumentWell::SetDocumentTitle(QWidget* document, const QString& title)
         return;
     }
     entryOrNull->Title = title;
-    QTabWidget* groupOrNull = groupOfOrNull(document);
-    if (groupOrNull != nullptr)
+    renderTab(*entryOrNull);
+}
+
+void DocumentWell::SetDocumentModified(QWidget* document, bool isModified)
+{
+    Entry* entryOrNull = findEntryOrNull(document);
+    if (entryOrNull == nullptr || entryOrNull->IsModified == isModified)
     {
-        const foundation::int32 tab = groupOrNull->indexOf(document);
-        groupOrNull->setTabText(tab, title);
-        groupOrNull->setTabToolTip(tab, title);
+        return;
     }
+    entryOrNull->IsModified = isModified;
+    renderTab(*entryOrNull);
+}
+
+bool DocumentWell::IsDocumentModified(const QWidget* document) const
+{
+    const Entry* entryOrNull = findEntryOrNull(document);
+    return entryOrNull != nullptr && entryOrNull->IsModified == true;
 }
 
 QString DocumentWell::GetDocumentTitle(const QWidget* document) const

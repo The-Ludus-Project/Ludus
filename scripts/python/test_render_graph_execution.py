@@ -92,6 +92,8 @@ class ExecutionTests(unittest.TestCase):
 
         self.assertEqual(['DepthOnly', 'ColorAndDepth'], [p['Program'] for p in reordered_runtime['passes']])
         self.assertEqual(baseline_runtime['interface_identity'], reordered_runtime['interface_identity'])
+        self.assertTrue(baseline_runtime['recipe_keys'])
+        self.assertEqual(baseline_runtime['recipe_keys'], reordered_runtime['recipe_keys'])
         self.assertNotEqual(execution.encode_runtime_package(baseline_runtime),
                             execution.encode_runtime_package(reordered_runtime))
         self.assertEqual([p['key'] for p in baseline['programs']], [p['key'] for p in reordered['programs']])

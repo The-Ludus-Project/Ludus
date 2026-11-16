@@ -185,8 +185,8 @@ struct RenderGraphPrograms final
     bool HasLightTransformer =
         false; ///< Requires a trained model description; prepares a view-independent GPU encoder.
     /// Recipe keys of the routed techniques, at most one per technique and target; copied during Initialize.
-    /// Generated package headers fill it; runtime generations and hand-built programs leave it empty, and
-    /// RenderGraph::GetPipelineReport then reports those techniques without a key.
+    /// Generated headers and runtime generations may supply these keys. Techniques without a supplied key
+    /// still appear in RenderGraph::GetPipelineReport with HasRecipeKey false.
     // Keep partial aggregate callers warning-clean when this optional field is omitted.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const RenderGraphRecipeKey> RecipeKeys{};
@@ -458,6 +458,16 @@ struct RenderGraphCoverageRecord final
     RenderGraphReason Reason = RenderGraphReason::None; ///< Preserved mismatch explanation.
     bool HasDiagnosticRoute = false; ///< A color marker/proxy may render; never establishes depth correctness.
 };
+/// Scene-level cause of the latest Update rejection, so callers can name the input and the repair.
+/// Only causes this graph can attribute are reported; other Unsupported results report None.
+enum class RenderGraphSceneRejection : foundation::uint8
+{
+    None,               ///< The latest Update was not rejected for a scene-level cause.
+    Atmosphere,         ///< A camera enables an atmosphere; only clustered deferred graphs compose one.
+    CameraDepth,        ///< A camera has an infinite far plane or an unknown depth convention.
+    Coverage,           ///< Conflicting coverage, or incomplete coverage under RejectIncomplete.
+    MaskedDepthPrepass, ///< Alpha-masked materials would be sealed by the opaque depth-only prepass.
+};
 /// Editor and shipping admission are explicit policies.
 enum class RenderGraphCoveragePolicy : foundation::uint8
 {
@@ -503,8 +513,16 @@ struct RenderGraphSceneResourceReport final
     foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
     foundation::uint32 DroppedLights =
         0; ///< Latest forward material's dropped light count; clustered shading retains all admitted lights.
-    /// Source ID assigned the latest prepared deferred scene's directional shadow map, or zero if none.
+    /// Source ID of the brightest directional light given a shadow map in the latest prepared deferred scene, or zero
+    /// if none. Ties go to the lower source ID.
     foundation::uint64 DirectionalShadowLightSourceId = 0;
+    /// Directional lights given a shadow map in the latest prepared deferred scene, brightest first, at most two:
+    /// enough for an Atmosphere's Sun and Moon.
+    foundation::uint32 DirectionalShadowLights = 0;
+    /// Eligible directional lights (raster shadows requested, positive intensity, nonblack color) of the latest
+    /// prepared deferred scene left without a map because two brighter ones hold them. They illuminate unshadowed;
+    /// clear their raster shadow request to make that explicit.
+    foundation::uint32 UnshadowedDirectionalLights = 0;
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final
@@ -819,6 +837,9 @@ public:
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCoverageRecord> GetCoverage() const noexcept;
     /// Copy the latest candidate report, independent of the drawable extraction.
     [[nodiscard]] RenderGraphReport GetReport() const noexcept;
+    /// Cause of the latest Update's Unsupported result; None after any other result, before the
+    /// first Update and after Reset. Diagnostic only: it never changes the drawable or pending scene.
+    [[nodiscard]] RenderGraphSceneRejection GetLastRejection() const noexcept;
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
     /// True when the last ray writer of any color target outputs individual samples or has an

@@ -42,6 +42,14 @@ enum class RenderGraphPreviewWork : foundation::uint8
 [[nodiscard]] QString
 DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
                                      const graphics::renderer::SceneShaderDiagnostics& diagnostics);
+/// Name the World input a graph rejected and the repair, for example the Atmosphere entity that needs a clustered
+/// deferred configuration. Coverage counts come from report. Empty for RenderGraphSceneRejection::None.
+[[nodiscard]] QString DescribeRenderGraphSceneRejection(graphics::renderer::RenderGraphSceneRejection rejection,
+                                                        const graphics::renderer::RenderGraphReport& report);
+/// Viewport status for a failed or restart-requiring candidate, naming its cause and repair when the renderer
+/// attributed one; empty while the candidate is neither Failed nor RestartRequired.
+[[nodiscard]] QString
+DescribeRenderGraphActivationFailure(const graphics::renderer::RenderGraphActivationReport& report);
 /// One World extraction converted to RenderGraph records. Mesh geometry borrows Scene's
 /// storage (its PreviewMesh arrays or its shared cooked Definition), which this value keeps
 /// alive by implicit sharing and reference counting until it is replaced.
@@ -90,10 +98,11 @@ struct RenderGraphPreviewSource final
 {
     QByteArray InputIdentity;
     QString Configuration;
-    QByteArray Generation;                 ///< Hex build-generation identity, as reported by the cooker.
-    QByteArray RuntimeIdentity{};          ///< Hex SHA-256 of the cooked runtime bytes, binding the configuration too.
-    QString ModelDirectory{};              ///< Source package root for optional external trained-model assets.
-    QString RootFile{};                    ///< Package-relative root graph that was cooked.
+    QByteArray Generation;        ///< Hex build-generation identity, as reported by the cooker.
+    QByteArray RuntimeIdentity{}; ///< Hex SHA-256 of the cooked runtime bytes, binding the configuration too.
+    QString ModelDirectory{};     ///< Source package root for optional external trained-model assets.
+    QString RootFile{};           ///< Package-relative root graph that was cooked.
+    GraphEditTrace EditTrace{};
     foundation::uint64 SourceRevision = 0; ///< Document revision captured by the build; 0 when unverified.
 };
 

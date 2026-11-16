@@ -521,8 +521,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
 - **Documents** occupy the centre. Opening a project opens its **World**, with
   **Project Settings** as a background tab. Open other documents from **Project
   Explorer**, **Project → Project Settings** or the document list at the bottom of
-  the **Window** menu. A tab shows the document's file and a `*` while it has
-  unsaved changes. Closing a tab (**Window → Close Document**, Ctrl+W) hides
+  the **Window** menu. A tab shows the document's file; while it has unsaved
+  changes a dot stands where its close cross would be (the cross returns when
+  the pointer reaches it), its tooltip says so, and the **Window** menu entry
+  ends in `*`. The close cross shows on the open tab and the tab under the
+  pointer only. Closing a tab (**Window → Close Document**, Ctrl+W) hides
   that view only; its draft stays open and quitting still asks about unsaved work.
 - **Tab groups.** **Window → New Vertical Tab Group** puts the active document
   beside the others (for example a render graph next to the World);
@@ -699,8 +702,11 @@ create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Dir
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
-colour, intensity, range and spot angles, then **Apply Changes**. Save the World
-to retain the objects; duplication and deletion use the regular entity commands.
+colour, intensity, range and spot angles, then **Apply Changes**. Every entity's
+Transform, like a scene instance's, shows Position, Rotation and Scale as one
+X Y Z row each with four significant digits, such as 1.878; the field's tooltip
+gives the stored value, and **Apply Changes** keeps it unless you edit that field.
+Save the World to retain the objects; duplication and deletion use the regular entity commands.
 Lights start two metres above and in front of the origin, aimed down 45 degrees.
 **Sun** is a directional light of 10 lux, placed and aimed as described in
 [Lighting a World that renders black](#lighting-a-world-that-renders-black).
@@ -1013,6 +1019,39 @@ reports no data instead of producing a misleading successful capture.
 See the [GPU timing contract](../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
 and [graphics-debugging plan](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
 for pass timing, clock calibration and later process targets.
+
+### Trace a shader edit to its first paint
+
+Start a CPU or Both recording, change a graph shader, and build a preview. For
+Live Preview, save the shader to start the build. In Perfetto, find **Graph edit
+to first Qt paint** and follow its `candidateId` through the replacement tracks.
+The terminal slice for a painted candidate also carries the rendered
+`graphGeneration`, `viewportId`, `deviceSession` and `frameId`. A stale build or
+superseded candidate has its own outcome. Paints of the retained graph keep
+their own frame and generation identities.
+
+**Await shader build lane** measures dispatch to the build executor and, when
+used, admission to the shader worker's advertised lanes. **Compile and validate
+shader stage** covers the stage helper, which includes invoking the compiler or
+exchanging with the native worker, dependency checks and reflection validation.
+Internal worker queue and compiler boundaries are unavailable separately. The
+trace records up to 64 cache-miss stages from a successful build. A cache hit
+adds no stage compile slice. Failed builds or incompatible process clocks can
+leave only the observed tool process interval.
+
+**Prepare graph pipelines (observed)** runs from staging the decoded candidate
+until the editor observes setup readiness. **Await graph activation** covers
+the remaining admission and publication wait. Frame and paint tracks then
+record output production and delivery to Qt. These are CPU monotonic wall-clock
+intervals and may include time between callbacks. Use the device pipeline
+report for native creation and queue time by [recipe](render-graph-authoring.md#device-pipeline-preparation).
+
+On macOS, the editor's `[shader-edit-trace]` test exercises a warm reload and
+two overlapping replacements with native pipeline work paused. Set
+`LUDUS_EDITOR_SHADER_EDIT_TRACE_OUTPUT` to a new file under `out/` to save its
+Qt wall-clock trace. The fixture starts from a cooked generation, so its
+tool-process intervals are absent. The regular CPU or Both recording captures
+the build stages when editing sources in the editor.
 
 ## Closing and shortcuts
 
@@ -1988,8 +2027,8 @@ example, use `tests/scenes/materials/closure-program-block.luscene.json`. Select
 the program's object. The **Material** group shows **Closure program** as its
 model, then one row per lobe with its operation and parameters, the size of
 the weight and roughness program, and the capabilities that pass requirements
-test. **Metallic (program input)** and **Roughness (program input)** are the
-values the program reads. The raster viewport draws them as a
+test. **Metallic** and **Roughness** are the values the program reads; their
+tooltips say so. The raster viewport draws them as a
 metallic-roughness approximation. The reference paths, Wave Tracing and
 Metropolis evaluate the program itself.
 
@@ -2130,9 +2169,9 @@ Apply the edit and save the World to keep the setting. The checkbox is on by
 default, including for older Worlds.
 
 The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
-one map to the eligible directional light with the lowest source ID. In that
-graph, point and spot lights illuminate without shadow maps. The native Lit
-preview also supports shadow maps for point and spot lights. Reference path
+maps to the two brightest eligible directional lights, such as an Atmosphere's
+Sun and Moon. In that graph, point and spot lights illuminate without shadow
+maps. The native Lit preview also supports shadow maps for point and spot lights. Reference path
 tracing and baked lighting compute visibility from scene geometry independently
 of this setting.
 
@@ -2214,6 +2253,13 @@ World geometry. It attenuates the linked Sun at opaque surfaces, lights them
 with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
+
+Only clustered deferred raster configurations draw an Atmosphere. A
+ray-traced or forward configuration rejects a World that has one, and the
+viewport keeps its last good frame. Its status says that the Atmosphere entity
+needs a clustered deferred configuration. Turn on **Force raster** in the
+viewport toolbar to draw the engine's default raster graph, or disable the
+Atmosphere entity to keep the selected configuration.
 
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
@@ -2329,14 +2375,23 @@ Outside the volume, or where no nearby probe has recorded visibility, receivers 
 realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. Save again after the bake is ready to retain the
 atlas alongside the charts. If an older cache contains only charts, the native
-editor prepares the missing atlas in the background. The prototype uses coarse
-directional visibility. Move a GI Probe Receiver along both sides of a wall
-and through any doorway while checking the Lit viewport. If bounce crosses a
+editor prepares the missing atlas in the background. A cache saved with the
+earlier 4 × 4 visibility faces is also rebaked in the background; save again
+to keep the new atlas.
+
+Probe visibility is directional and coarse. Keep the volume's probe planes
+more than 1.6 % of the spacing from floors, ceilings and walls: a probe that
+touches geometry is ignored, and a receiver whose eight neighbours are all
+ignored gets no baked bounce. Receivers within about 5 % of the spacing of a
+wall can still pick up bounce from the far side, and so can receivers just
+past an opening. Move a GI Probe Receiver along both sides of a wall
+and through any doorway while checking the Lit viewport. Each move rebakes,
+which takes about half a second for a small volume. If bounce crosses a
 closed wall or disappears in the opening, adjust the volume's position or
 spacing, let it rebake, and repeat the same movement. Use the result that
 preserves bounce through the opening while keeping the closed wall dark where
 the neighbouring room is the only source of bounced light.
-[Probe visibility limits and test cases](../architecture/renderer-systems.md#probe-visibility-near-walls-and-openings)
+[Probe visibility limits and measurements](../architecture/renderer-systems.md#native-lit-probe-visibility-qualification)
 
 ### Switching lights
 
@@ -2749,6 +2804,17 @@ therefore appear here, where a raster profile approximates or omits them; see
 [comparison](#compare-with-the-viewports-render-graph). Zero-area triangles are left out of the reference
 geometry. They have no area to hit or emit from.
 
+When the World has an [Atmosphere](../architecture/renderer-systems.md#reference-capture-of-an-atmosphere)
+that lights the viewport, the capture uses its sky as the environment in place of
+the scene's own, as the raster does. Its linked Sun arrives dimmed and reddened
+by the air between the Sun and the camera. The progress line then names
+**Atmosphere sky**. The sky is evaluated once at the camera's altitude, so a low
+Sun that the buildings block leaves an interior lit by skylight and
+inter-reflection alone, much darker than a raster profile that does not shadow
+its sky lighting. Night-sky stars, the Moon's disk and aerial perspective over
+scene distances are left out. Move the Sun with its celestial time or rotation
+for a brighter scene.
+
 | Traversal | Use |
 | --- | --- |
 | CPU oracle | Default when GPU compute is unavailable. Traces a CPU BVH on every platform and admits masked materials. |
@@ -2823,7 +2889,7 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 16-bit output. Only a ray-traced output with an **Accumulate** can be captured:
 - a raster output stores display colour, not linear radiance;
 - a ray output without an Accumulate shows individual samples;
-- **Force raster** draws the raster fallback.
+- **Force raster** draws the engine's default raster graph.
 
 The window explains which applies before you capture. Under **Graph** it says
 why the selected output cannot be captured, and **Capture viewport** stays

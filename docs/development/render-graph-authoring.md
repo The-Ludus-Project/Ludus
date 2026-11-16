@@ -6276,15 +6276,19 @@ checker against a uniform texture of its mean on the GPU.
 
 ### Directional shadows
 
-The default shadows the directional light with the lowest source identity among
-lights that request raster shadows and have positive intensity and a nonblack
-color. In the built-in World inspector, clear **Light → Raster Shadows** to
-exclude a light while keeping its illumination. SDK callers set
-`DirectLight::ShouldCastRasterShadows`. The resource report's
-`DirectionalShadowLightSourceId` identifies the light assigned a map and is zero
-when no light qualifies. The renderer fits one
-1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
-with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
+The default gives a shadow map to each of up to two directional lights that
+request raster shadows and have positive intensity and a nonblack color,
+brightest first, with ties going to the lower source identity. Two maps cover an
+Atmosphere's Sun and Moon, so neither lights the scene through walls and roofs
+while the other is above the horizon. Further eligible directional lights
+illuminate without analytic shadows. In the built-in World inspector, clear
+**Light → Raster Shadows** to exclude a light while keeping its illumination.
+SDK callers set `DirectLight::ShouldCastRasterShadows`. In the resource report,
+`DirectionalShadowLights` counts the lights given a map,
+`DirectionalShadowLightSourceId` identifies the brightest of them (zero when no
+light qualifies), and `UnshadowedDirectionalLights` counts eligible lights past
+the two maps. The renderer fits a 1022 × 1022 orthographic projection per light
+to the scene's caster and receiver bounds, with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
 of the four depth comparisons uses the sampled caster's depth and slope to
 evaluate its plane at the receiver's location, with a receiver bias of 0.001 in
 normalized light depth. The resolve blends the four visibility results by
@@ -6303,16 +6307,19 @@ instead of showing dithered false shadows that change with the camera pose.
 The material pass clips shading normals to the camera-facing hemisphere on
 geometrically front-facing surfaces. This keeps smooth terrain ridges lit
 where an interpolated normal turns past the camera.
-The resolve applies visibility to the selected light's direct diffuse and specular
-contribution. Point and spot lights and additional directional lights are
-evaluated without analytic shadows in this profile.
+The resolve applies each map's visibility to its light's direct diffuse and
+specular contribution. Point and spot lights and directional lights past the two
+maps are evaluated without analytic shadows in this profile. The forward
+clustered profile shades with the same comparison, without the reconstruction
+allowance because it interpolates exact receiver positions.
 
-The atlas is prepared with the scene. The renderer draws the directional map
-before the first lighting resolve that has enough draw budget. Until then the
+The atlas is prepared with the scene. The renderer draws the directional maps
+before the first lighting resolve that has enough draw budget. Until then each
 light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
 prepare a replacement, and failed preparation retains the previous drawable
-generation. The directional slot shares the mesh-light atlas when the scene
-has both kinds of casters. The whole-scene fit keeps the shadow stable as the
+generation. The directional slots share the mesh-light atlas when the scene
+has both kinds of casters; each one takes a quarter of the 2048 × 2048 atlas, so
+a second directional map halves the space left for mesh-light cube faces. The whole-scene fit keeps the shadow stable as the
 camera moves. In large scenes, each texel covers more ground, so nearby edges
 can appear coarse. Recook existing clustered deferred shader packages to use
 the corrected directional shadow comparison.
@@ -6965,8 +6972,9 @@ plus the device totals from `rhi::GetPipelinePreparationReport`
 (`ludus/graphics/rhi/pipeline_preparation.h`). A generated package header
 carries `RECIPE_KEYS`, the bytes of `inventory.recipes[].key` for each routed
 technique and target. The row for the device's target therefore uses the same
-key as `build-report.json`. Runtime generations (`.lurgrt`) and hand-built
-`RenderGraphPrograms` carry no keys. Their rows have `HasRecipeKey == false`.
+key as `build-report.json`. Version 35 runtime generations (`.lurgrt`) carry the same keys for the routed
+techniques and targets. Older generations, hand-built programs, and techniques
+with ambiguous keys report `HasRecipeKey == false`.
 
 | Field | Contents |
 | --- | --- |
@@ -7015,8 +7023,55 @@ technique and the WGSL keys in the build inventory cost the Metal device
 nothing. Of the six native pipelines prepared for the routed recipe, one is
 drawn by a single-pass offscreen graph. The surface, reverse-depth and overlay
 variants are prepared but unused here. Vulkan and WebGPU records come from CI.
-The cold native consumer journeys and the correlation of a shader edit with its
-first presented frame remain open in
+The native shader-worker reload fixture exports the recipe digest and preparation
+counts for initial and replacement generations. Its owner-thread sample covers
+polling and render submission while the driver's replacement work is paused.
+First readback is measured separately. The queue and native time fields sum
+individual pipelines and can overlap. The installed SDK runtime fixture checks
+that the same recipe reported by its compiled header is ready before drawing
+either activated generation. Use the [Qt edit trace](editor-workspace.md#trace-a-shader-edit-to-its-first-paint)
+to correlate a native editor replacement with the first updated image.
+
+#### Native renderer reload measurement
+
+The shader-worker reload fixture used one 96×64 raster graph on Apple M5 and
+the Metal implementation shipped with macOS 26.6 (25G72). Slang 2026.1.2 built
+Metal and WGSL. Filling an empty cooked-artifact cache took 5.97 s with six
+stage misses. Rebuilding the same graph took 1.41 s with six hits and produced
+the same runtime SHA-256 (`351174d7…`). Changing the fragment color from red to
+green kept the CPU interface identity (`7c90fffb…`) and compiled two stages.
+The active Metal recipe changed from `4e5993a5…` to `2fc3249f…`.
+
+The renderer ran twice in fresh processes with the same cooked files. Driver
+caches were left under OS control and host load was high. These are two observed
+runs with unknown driver cache state.
+
+| Metal renderer measurement | First process | Fresh process repeat |
+| --- | ---: | ---: |
+| Startup, staging request to observed readiness | 2478 ms | 63.1 ms |
+| Startup, first service to verified readback | 2514 ms | 84.6 ms |
+| Startup recipe, summed native creation | 27.6 ms | 26.5 ms |
+| Replacement, latest staging request to observed readiness | 924 ms | 19.8 ms |
+| Replacement recipe, summed native creation | 71.3 ms | 10.7 ms |
+| Owner-thread poll and submission while replacement held, p95 / maximum, 32 frames | 3.46 / 14.6 ms | 1.47 / 5.65 ms |
+
+Each recipe prepared six pipelines, drew one, and reported zero first-use
+misses and zero recipe queue seconds. During the injected hold, all sampled
+frames matched the original red frame. The superseding generation produced
+green. Failed native compilation and a mismatched CPU interface preserved
+green. The CPU submission samples exclude readback and do not measure GPU work.
+The first-process startup wait exceeds the time attributed to recipe creation.
+These results leave the rest of setup and owner-thread scheduling unallocated,
+so they do not establish grounds for a hybrid pipeline.
+
+On the same Metal device, the independent installed-SDK fixture rendered
+opaque and masked graphs through both compiled headers and cooked runtime
+generations. It checked the recipe key and readiness before each dependent
+draw and compared every exported pixel across both paths.
+
+Cold startup and transitions in an independently packaged Release app, hosted
+Editor Play with identical input, and the admitted browser viewport still
+require qualification. Track the remaining measurements in
 [#1253](https://github.com/The-Ludus-Project/Ludus/issues/1253).
 
 ### Acceptance evidence

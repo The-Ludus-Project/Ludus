@@ -31,6 +31,7 @@
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_graph_capture.h"
 #include "internal/viewport_raster_capture.h"
+#include "internal/viewport_trace.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
 #include "internal/world_workspace.h"
@@ -46,6 +47,7 @@
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/profiling/profiling_config.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -59,6 +61,10 @@
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/platform/entropy.h>
 #include <ludus/runtime/resources/scene.h>
+
+#if defined(Q_OS_MACOS)
+#    include "internal/readback.h"
+#endif
 
 #include <cstddef>
 #include <cstring>
@@ -962,6 +968,116 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
 }
 
+#if defined(Q_OS_MACOS) && LUDUS_PROFILING_ENABLED
+TEST_CASE("Qt paints only the surviving candidate after delayed native pipeline preparation",
+          "[editor][render-graph][shader-edit-trace]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphPreview& preview = *workspace.GetPreviewOrNull();
+    WorldGraphView world(workspace, nullptr);
+    world.resize(320, 240);
+    world.show();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    const QString runtimePath = GetDefaultRenderGraphRuntime();
+    REQUIRE(preview.Load(runtimePath) == RenderGraphPreviewLoad::Staged);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    const bool hasInitialImage = TickUntilDisplay(preview, [&]() { return world.GetImage().isNull() == false; });
+    INFO(preview.GetDisplayStatus().toStdString());
+    REQUIRE(hasInitialImage == true);
+    QFile runtime(runtimePath);
+    REQUIRE(runtime.open(QIODevice::ReadOnly) == true);
+    const QByteArray bytes = runtime.readAll();
+    QFile names(GetTargetNamesPath(runtimePath));
+    REQUIRE(names.open(QIODevice::ReadOnly) == true);
+    RenderGraphPreviewSource source;
+    source.Generation =
+        QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1();
+    source.RuntimeIdentity = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
+
+    struct CaptureCleanup final
+    {
+        ~CaptureCleanup()
+        {
+            static_cast<void>(StopViewportTrace());
+        }
+    };
+    struct PreparationPause final
+    {
+        PreparationPause()
+        {
+            rhi::backend::SetNativePipelinePreparationPaused(true);
+        }
+        ~PreparationPause()
+        {
+            rhi::backend::SetNativePipelinePreparationPaused(false);
+        }
+    };
+    const CaptureCleanup cleanup;
+    REQUIRE(StartViewportTrace() == true);
+    source.EditTrace = BeginGraphEditTrace();
+    const GraphEditTrace warm = source.EditTrace;
+    REQUIRE(preview.Load(runtimePath, {}, source) == RenderGraphPreviewLoad::Staged);
+    const uint64 warmGeneration = preview.GetReport().CandidateGeneration;
+    REQUIRE(TickUntilDisplay(preview, [&]() { return preview.GetPresentedGeneration() == warmGeneration; }) == true);
+    CHECK(world.grab().isNull() == false);
+    const QImage original = world.GetImage();
+
+    source.EditTrace = BeginGraphEditTrace();
+    const GraphEditTrace first = source.EditTrace;
+    uint64 replacement = 0;
+    {
+        const PreparationPause pause;
+        const uint32 alreadyStarted = rhi::backend::GetNativePreparationStarted();
+        REQUIRE(preview.Load(runtimePath, {}, source) == RenderGraphPreviewLoad::Staged);
+        REQUIRE(TickUntilDisplay(preview, [&]() {
+                    return rhi::backend::GetNativePreparationStarted() != alreadyStarted;
+                }) == true);
+        source.EditTrace = BeginGraphEditTrace();
+        REQUIRE(preview.Load(runtimePath, {}, source) == RenderGraphPreviewLoad::Staged);
+        replacement = preview.GetReport().CandidateGeneration;
+        CHECK(preview.GetPresentedGeneration() == warmGeneration);
+        CHECK(world.GetImage() == original);
+    }
+    REQUIRE(TickUntilDisplay(preview, [&]() { return preview.GetPresentedGeneration() == replacement; }) == true);
+    // QWidget::render drives its real paint handler, including when running without an exposed window.
+    CHECK(world.grab().isNull() == false);
+    CHECK(QTest::qWaitFor([&]() { return world.GetPresentedFrames() > 1; }) == true);
+    const ViewportTraceSnapshot snapshot = StopViewportTrace();
+    CHECK(snapshot.DroppedSpans == 0);
+    const ViewportTraceSpan& warmPaint = snapshot.Spans[warm.Lifetime.Index];
+    CHECK(QString::fromUtf8(warmPaint.Outcome) == QStringLiteral("first matching image painted"));
+    CHECK(warmPaint.Identity.GraphGeneration == warmGeneration);
+    const ViewportTraceSpan& superseded = snapshot.Spans[first.Lifetime.Index];
+    CHECK(QString::fromUtf8(superseded.Outcome) == QStringLiteral("superseded before activation"));
+    const ViewportTraceSpan& painted = snapshot.Spans[source.EditTrace.Lifetime.Index];
+    CHECK(QString::fromUtf8(painted.Outcome) == QStringLiteral("first matching image painted"));
+    CHECK(painted.Identity.GraphGeneration == replacement);
+    // This fixture attaches a headless RHI device directly. The live RenderPreview
+    // supplies frame IDs, so correlate the QPaintEvent by viewport and graph generation here.
+    CHECK(painted.Identity.ViewportId != 0);
+    const QString tracePath = qEnvironmentVariable("LUDUS_EDITOR_SHADER_EDIT_TRACE_OUTPUT");
+    if (tracePath.isEmpty() == false)
+    {
+        QJsonObject trace;
+        AppendViewportTrace(trace, snapshot);
+        const QByteArray json = QJsonDocument(trace).toJson();
+        QFile output(tracePath);
+        REQUIRE(output.open(QIODevice::WriteOnly | QIODevice::NewOnly) == true);
+        REQUIRE(output.write(json) == json.size());
+    }
+    preview.Detach();
+}
+#endif
+
 #if defined(Q_OS_MACOS)
 TEST_CASE("asynchronous activation failure reaches the shell Error List and recovers independently of compilation",
           "[editor][render-graph][preview][diagnostics]")
@@ -1159,6 +1275,39 @@ TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[edito
     }
     CHECK(DescribeRenderGraphExtractionFailure(rhi::RasterStatus::InvalidDescription, {})
               .contains(QStringLiteral("memory budget")) == false);
+}
+
+TEST_CASE("a failed candidate names the World input it cannot draw and the repair", "[editor][render-graph][preview]")
+{
+    renderer::RenderGraphActivationReport report;
+    CHECK(DescribeRenderGraphActivationFailure(report).isEmpty() == true);
+    report.Candidate = renderer::RenderGraphCandidateState::Failed;
+    report.CandidateGeneration = 3;
+    report.LastFailure = rhi::RasterStatus::Unsupported;
+    // Without an attributed cause the status keeps the raw outcome.
+    CHECK(DescribeRenderGraphActivationFailure(report) ==
+          QStringLiteral("Renderer activation failed (Unsupported) for generation 3; the last good scene is kept."));
+    report.CandidateRejection = renderer::RenderGraphSceneRejection::Atmosphere;
+    const QString atmosphere = DescribeRenderGraphActivationFailure(report);
+    CHECK(atmosphere.startsWith(QStringLiteral("Renderer generation 3 cannot draw this World.")) == true);
+    CHECK(atmosphere.contains(QStringLiteral("Atmosphere entity")) == true);
+    CHECK(atmosphere.contains(QStringLiteral("Force raster")) == true);
+    CHECK(atmosphere.endsWith(QStringLiteral("The last good scene is kept.")) == true);
+    report.CandidateRejection = renderer::RenderGraphSceneRejection::Coverage;
+    report.CandidateReport.Conflicting = 2;
+    report.CandidateReport.Unsupported = 5;
+    const QString coverage = DescribeRenderGraphActivationFailure(report);
+    CHECK(coverage.contains(QStringLiteral("2 item views conflict")) == true);
+    CHECK(coverage.contains(QStringLiteral("5 item views have no compatible pass")) == true);
+    for (const renderer::RenderGraphSceneRejection rejection :
+         {renderer::RenderGraphSceneRejection::CameraDepth, renderer::RenderGraphSceneRejection::MaskedDepthPrepass})
+    {
+        CHECK(DescribeRenderGraphSceneRejection(rejection, {}).isEmpty() == false);
+    }
+    CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::None, {}).isEmpty() == true);
+    report.Candidate = renderer::RenderGraphCandidateState::RestartRequired;
+    CHECK(DescribeRenderGraphActivationFailure(report).startsWith(
+              QStringLiteral("Renderer activation requires an editor restart (Unsupported) for generation 3")) == true);
 }
 
 TEST_CASE("RG3b Renderer workspace previews only explicitly requested generations", "[editor][render-graph][preview]")
@@ -2810,7 +2959,8 @@ TEST_CASE("Raster comparison reports a terminal failure for an infinite-far view
     INFO(capture.GetError().toStdString());
     CHECK(phase == ViewportRasterPhase::Failed);
     CHECK(capture.GetError().contains(QStringLiteral("failed to prepare for capture")) == true);
-    CHECK(capture.GetError().contains(QStringLiteral("The World extraction was rejected (Unsupported)")) == true);
+    CHECK(capture.GetError().contains(QStringLiteral("infinite far plane")) == true);
+    CHECK(capture.GetError().contains(QStringLiteral("Give the camera a finite far plane.")) == true);
 }
 
 TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",
@@ -4147,7 +4297,7 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
     REQUIRE(preview.Load(forward, raster) == RenderGraphPreviewLoad::Staged);
     // The forward graph has no clustered deferred programs, so it cannot draw the Atmosphere.
     REQUIRE(TickUntil(preview, [&]() { return preview.WasExtractionRejected(1) == true; }) == true);
-    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere needs")) == true);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere entity needs")) == true);
     CHECK(preview.GetActivePackagePath() == forward);
     CHECK(preview.CanSwitchToRasterFallback() == true);
 
@@ -4170,7 +4320,7 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
                 return preview.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed;
             }) == true);
     INFO(preview.GetStatus().toStdString());
-    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere needs")) == true);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Atmosphere entity needs")) == true);
     CHECK(preview.GetActivePackagePath() == raster);
     CHECK(preview.GetImage().cacheKey() == forced.cacheKey());
     preview.Detach();
