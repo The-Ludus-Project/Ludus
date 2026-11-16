@@ -278,10 +278,21 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             else
             {
                 // RGBA16F attributes and depth reconstruction may move a final linear RGBA8 channel by two codes.
+                // In the point-light cases the second quad sits behind the first, which blocks part of its sky:
+                // only the deferred resolve applies sky visibility, so there it may only be darker.
                 for (usize channel = 0; channel < PIXEL_BYTES; ++channel)
                 {
-                    CHECK(math::Abs(static_cast<float32>(clustered[channel]) -
-                                    static_cast<float32>(forwardPixels[lightingCase][channel])) <= 2);
+                    INFO("profile " << profile << " lighting case " << lightingCase << " byte " << channel);
+                    const float32 difference = static_cast<float32>(clustered[channel]) -
+                                               static_cast<float32>(forwardPixels[lightingCase][channel]);
+                    if (areDirectional == true)
+                    {
+                        CHECK(math::Abs(difference) <= 2);
+                    }
+                    else
+                    {
+                        CHECK(difference <= 2);
+                    }
                 }
                 const renderer::RenderGraphAllocationReport allocation = fixture.Graph.GetAllocationReport();
                 CHECK(allocation.DeferredAllocations == 3);
@@ -2010,6 +2021,221 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         REQUIRE(update(1) == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center] > 32);
+    }
+}
+
+TEST_CASE("default deferred sky visibility keeps environment light out of covered receivers",
+          "[sky-visibility][lighting-views][gpu]")
+{
+    constexpr usize POLL_ATTEMPTS = 10000;
+    constexpr usize QUAD_VERTEX_COUNT = 4;
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    constexpr usize SCENE_COUNT = 2;
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const auto poll = [&](rhi::RasterStatus status) {
+        for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            threading::SleepFor(timing::Milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    rhi::TextureHandle outputTexture;
+    rhi::TextureAspect outputAspect;
+    REQUIRE(fixture.Graph.GetExportAllocation(0, outputTexture, outputAspect) == rhi::RasterStatus::Ready);
+    renderer::Renderer compositor;
+    REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                       shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::Presentation presentation;
+    REQUIRE(compositor.PreparePresentation(outputTexture, mapping, presentation) == rhi::RasterStatus::Ready);
+    const auto render = [&]() {
+        REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+        REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus status = fixture.Graph.ConfirmSubmission(completion);
+        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
+    };
+    // A wall facing the orthographic camera (+Z) under the +Y sky, and a horizontal roof at y = 0.1 jutting out
+    // towards the camera over its lower half. The camera sees the roof edge-on. The sky above the roof reaches the
+    // upper wall in full; under the roof the wall sees only the low sky past the roof's far edge.
+    constexpr float32 ROOF_HEIGHT_METERS = .1F;
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> wallPositions{
+        {{-1, -1, .5F}, {1, -1, .5F}, {1, 1, .5F}, {-1, 1, .5F}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> wallNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> roofPositions{{{-1, ROOF_HEIGHT_METERS, .5F},
+                                                                       {1, ROOF_HEIGHT_METERS, .5F},
+                                                                       {1, ROOF_HEIGHT_METERS, 1.5F},
+                                                                       {-1, ROOF_HEIGHT_METERS, 1.5F}}};
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> roofNormals{{{0, -1, 0}, {0, -1, 0}, {0, -1, 0}, {0, -1, 0}}};
+    const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+    StaticArray<renderer::RenderGraphMesh, SCENE_COUNT> meshes{{fixture.Meshes[0], fixture.Meshes[0]}};
+    meshes[0].Geometry = {wallPositions.GetData(), wallPositions.GetSize(), quadIndices.GetData(), QUAD_INDEX_COUNT};
+    meshes[0].Geometry.Normals = wallNormals.GetData();
+    meshes[1].Geometry = {roofPositions.GetData(), roofPositions.GetSize(), quadIndices.GetData(), QUAD_INDEX_COUNT};
+    meshes[1].Geometry.Normals = roofNormals.GetData();
+    const uint32 material = 0;
+    meshes[0].MaterialBindings = {&material, 1};
+    meshes[1].MaterialBindings = {&material, 1};
+    StaticArray<renderer::RenderGraphItem, SCENE_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
+    items[1].SourceId = 2;
+    items[1].MeshIndex = 1;
+    StaticArray<renderer::SceneShaderMaterial, 1> materials{};
+    materials[0].BaseColor = {1, 1, 1};
+    materials[0].Roughness = 1;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    inputs.Environment = {.6F, .6F, .6F};
+    fixture.Cameras[0].OrthographicCamera = true;
+    uint64 revision = 0;
+    const auto update = [&](usize itemCount) {
+        renderer::RenderGraphReport report;
+        ++revision;
+        return poll(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                         {items.GetData(), itemCount},
+                                         {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                         revision,
+                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                         report,
+                                         &inputs,
+                                         revision));
+    };
+    // The identity camera maps world x and y in [-1, 1] across the target, y up.
+    const auto getRowPixel = [](float32 worldY) {
+        return GetPixel(WIDTH / 2, static_cast<uint32>((1 - worldY) * 0.5F * static_cast<float32>(HEIGHT)));
+    };
+    constexpr float32 ABOVE_ROOF_METERS = .5F;
+    constexpr float32 UNDER_ROOF_METERS = 0;
+    const usize above = getRowPixel(ABOVE_ROOF_METERS);
+    const usize under = getRowPixel(UNDER_ROOF_METERS);
+
+    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+    render();
+    CHECK(fixture.Graph.GetReport().Resources.SkyVisibilityMaps == renderer::SKY_VISIBILITY_DIRECTION_COUNT);
+    const uint8 openAbove = fixture.Pixels[above];
+    const uint8 openUnder = fixture.Pixels[under];
+    REQUIRE(openAbove > 32);
+    // Nothing occludes the bare wall's sky, so every row receives the same environment light.
+    CHECK(math::Abs(static_cast<float32>(openUnder) - static_cast<float32>(openAbove)) <= 1);
+
+    REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
+    render();
+    CHECK(math::Abs(static_cast<float32>(fixture.Pixels[above]) - static_cast<float32>(openAbove)) <= 1);
+    // The roof hides the upper sky the wall faces; before sky visibility the deferred resolve lit it in full.
+    const uint8 coveredUnder = fixture.Pixels[under];
+    CHECK(static_cast<float32>(coveredUnder) < static_cast<float32>(openUnder) * 0.75F);
+    CHECK(coveredUnder > 0);
+
+    SECTION("the sky visibility view shows the covered fraction")
+    {
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::SkyVisibility;
+        REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[above] >= 254);
+        CHECK(fixture.Pixels[under] < 192);
+        CHECK(fixture.Pixels[under] == fixture.Pixels[under + 1]);
+        CHECK(fixture.Pixels[under] == fixture.Pixels[under + 2]);
+    }
+    SECTION("term views isolate the environment from emission and lights")
+    {
+        materials[0].Emission = {0, .5F, 0};
+        StaticArray<renderer::DirectLight, 2> lights;
+        lights[0].SourceId = 7;
+        lights[0].Kind = renderer::LightKind::Directional;
+        lights[0].Color = {0, 0, 1};
+        lights[0].Intensity = 2;
+        lights[0].Direction = {0, 0, -1};
+        lights[1] = lights[0];
+        lights[1].SourceId = 9;
+        lights[1].Color = {1, 0, 0};
+        lights[1].ShouldCastRasterShadows = false;
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::SkyDiffuse;
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        // The grey environment alone, without the green emission or either light: its diffuse and specular views add
+        // up to the environment-only image.
+        const uint8 skyDiffuse = fixture.Pixels[above];
+        CHECK(fixture.Pixels[above] == fixture.Pixels[above + 2]);
+        CHECK(fixture.Pixels[above + 1] == fixture.Pixels[above + 2]);
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::SkySpecular;
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[above] > 0);
+        CHECK(math::Abs(static_cast<float32>(skyDiffuse) + static_cast<float32>(fixture.Pixels[above]) -
+                        static_cast<float32>(openAbove)) <= 2);
+
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::Light;
+        fixture.Cameras[0].LightingViewSourceId = lights[0].SourceId;
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[above] <= 1);
+        CHECK(fixture.Pixels[above + 1] <= 1);
+        const uint8 isolatedBlue = fixture.Pixels[above + 2];
+        CHECK(isolatedBlue > 32);
+
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::DirectLights;
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[above] > 32);
+        CHECK(fixture.Pixels[above + 1] <= 1);
+        CHECK(fixture.Pixels[above + 2] == isolatedBlue);
+
+        // The mapped light covers the wall and nothing occludes it; the light without a map reads cyan.
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::ShadowCoverage;
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[above] >= 254);
+        CHECK(fixture.Pixels[above + 1] >= 254);
+        CHECK(fixture.Pixels[above + 2] >= 254);
+        fixture.Cameras[0].LightingViewSourceId = lights[1].SourceId;
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[above] <= 1);
+        CHECK(fixture.Pixels[above + 1] >= 254);
+        CHECK(fixture.Pixels[above + 2] >= 254);
+
+        // A bright red light dominates: the saturated pixel takes the hue of its category, the second light in
+        // source ID order.
+        constexpr float32 DOMINANT_INTENSITY = 40;
+        lights[1].Intensity = DOMINANT_INTENSITY;
+        fixture.Cameras[0].LightingView = renderer::DeferredLightingView::DominantLight;
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        const math::Vector3 hue =
+            renderer::GetDeferredLightingViewHue(renderer::DEFERRED_LIGHTING_VIEW_FIRST_LIGHT_CATEGORY + 1);
+        constexpr float32 CODES_PER_UNIT = 255;
+        constexpr float32 HUE_TOLERANCE_CODES = 2;
+        CHECK(math::Abs(static_cast<float32>(fixture.Pixels[above]) - hue.X * CODES_PER_UNIT) <= HUE_TOLERANCE_CODES);
+        CHECK(math::Abs(static_cast<float32>(fixture.Pixels[above + 1]) - hue.Y * CODES_PER_UNIT) <=
+              HUE_TOLERANCE_CODES);
+        CHECK(math::Abs(static_cast<float32>(fixture.Pixels[above + 2]) - hue.Z * CODES_PER_UNIT) <=
+              HUE_TOLERANCE_CODES);
+
+        // A lighting view outside the enumeration rejects the update and keeps the last image.
+        const StaticArray<uint8, PIXEL_BYTES> shown = fixture.Pixels;
+        constexpr uint8 INVALID_VIEW = 200;
+        fixture.Cameras[0].LightingView = static_cast<renderer::DeferredLightingView>(INVALID_VIEW);
+        CHECK(update(1) == rhi::RasterStatus::InvalidDescription);
+        render();
+        CHECK(fixture.Pixels == shown);
     }
 }
 

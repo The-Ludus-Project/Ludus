@@ -54,6 +54,9 @@ float3 SampleAtmosphereEnvironment(in float3 directionWorld)
                                                                         deferredView.AtmosphereRadialUpWorld.w);
 }
 
+// Quadrature samples of the environment integrals, successive azimuths a golden angle apart.
+static const uint ATMOSPHERE_ENVIRONMENT_SAMPLES = 12;
+static const float ATMOSPHERE_ENVIRONMENT_GOLDEN_ANGLE = 2.39996323;
 float3 OrientAtmosphereSample(in float3 axisWorld, float cosine, float azimuth)
 {
     const float BASIS_THRESHOLD = 0.99;
@@ -64,30 +67,22 @@ float3 OrientAtmosphereSample(in float3 axisWorld, float cosine, float azimuth)
     return cosine * axisWorld + sine * (cos(azimuth) * tangentWorld + sin(azimuth) * bitangentWorld);
 }
 
-void EvaluateAtmosphereEnvironment(in float3 normalWorld,
-                                   in float3 viewDirectionWorld,
-                                   float roughness,
-                                   in float3 f0,
-                                   float cosineView,
-                                   out float3 outIrradiance,
-                                   out float3 outSpecular)
+// Split-sum GGX environment specular: half vectors sampled about the reflection axis, normalized by projected weight.
+float3 EvaluateAtmosphereSpecular(in float3 normalWorld,
+                                  in float3 viewDirectionWorld,
+                                  float roughness,
+                                  in float3 f0,
+                                  float cosineView)
 {
-    // Cosine quadrature for diffuse. The split-sum GGX filter samples half
-    // vectors about the reflection axis and normalizes by projected weight.
-    const uint ENVIRONMENT_SAMPLES = 12;
-    const float GOLDEN_ANGLE = 2.39996323;
     float3 reflectionWorld = reflect(-viewDirectionWorld, normalWorld);
-    float3 irradiance = 0;
     float3 radiance = 0;
     float weightSum = 0;
     float alpha = roughness * roughness;
     float alphaSquared = alpha * alpha;
-    for (uint sampleIndex = 0; sampleIndex < ENVIRONMENT_SAMPLES; ++sampleIndex)
+    for (uint sampleIndex = 0; sampleIndex < ATMOSPHERE_ENVIRONMENT_SAMPLES; ++sampleIndex)
     {
-        float quantile = (float(sampleIndex) + 0.5) / ENVIRONMENT_SAMPLES;
-        float azimuth = float(sampleIndex) * GOLDEN_ANGLE;
-        float3 incidentWorld = OrientAtmosphereSample(normalWorld, sqrt(1 - quantile), azimuth);
-        irradiance += SampleAtmosphereEnvironment(incidentWorld);
+        float quantile = (float(sampleIndex) + 0.5) / ATMOSPHERE_ENVIRONMENT_SAMPLES;
+        float azimuth = float(sampleIndex) * ATMOSPHERE_ENVIRONMENT_GOLDEN_ANGLE;
         float halfCosine = sqrt((1 - quantile) / (1 + (alphaSquared - 1) * quantile));
         float3 halfWorld = OrientAtmosphereSample(reflectionWorld, halfCosine, azimuth);
         float3 specularWorld = reflect(-reflectionWorld, halfWorld);
@@ -96,8 +91,51 @@ void EvaluateAtmosphereEnvironment(in float3 normalWorld,
         weightSum += weight;
     }
     float2 dfg = EvaluateEnvironmentDfg(roughness, cosineView);
-    outIrradiance = irradiance * (PI / ENVIRONMENT_SAMPLES);
-    outSpecular = radiance * (f0 * dfg.x + dfg.y) / max(weightSum, DIRECTION_EPSILON);
+    return radiance * (f0 * dfg.x + dfg.y) / max(weightSum, DIRECTION_EPSILON);
+}
+
+void EvaluateAtmosphereEnvironment(in float3 normalWorld,
+                                   in float3 viewDirectionWorld,
+                                   float roughness,
+                                   in float3 f0,
+                                   float cosineView,
+                                   out float3 outIrradiance,
+                                   out float3 outSpecular)
+{
+    // Cosine quadrature for diffuse, used when the scene has no sky visibility maps.
+    float3 irradiance = 0;
+    for (uint sampleIndex = 0; sampleIndex < ATMOSPHERE_ENVIRONMENT_SAMPLES; ++sampleIndex)
+    {
+        float quantile = (float(sampleIndex) + 0.5) / ATMOSPHERE_ENVIRONMENT_SAMPLES;
+        float azimuth = float(sampleIndex) * ATMOSPHERE_ENVIRONMENT_GOLDEN_ANGLE;
+        irradiance += SampleAtmosphereEnvironment(OrientAtmosphereSample(normalWorld, sqrt(1 - quantile), azimuth));
+    }
+    outIrradiance = irradiance * (PI / ATMOSPHERE_ENVIRONMENT_SAMPLES);
+    outSpecular = EvaluateAtmosphereSpecular(normalWorld, viewDirectionWorld, roughness, f0, cosineView);
+}
+
+// Sky irradiance where the sky visibility maps say the receiver sees the sky. Each fixed direction carries an equal
+// solid angle, so the sum over them integrates the upper hemisphere with continuous cosine weights: unlike the
+// quadrature about the normal above, no sample jumps across the horizon as normals vary, which drew stepped bands
+// and lines on curved and normal-mapped surfaces. Below the horizon the sky table's ground half is integrated as one
+// radiance over the projected solid angle, scaled by how open the receiver is. visibleRadiance and ground come from
+// the sky visibility pass (renderer_lit.slang, EvaluateSkyVisibility).
+void EvaluateVisibleAtmosphereEnvironment(in float3 normalWorld,
+                                          in float3 viewDirectionWorld,
+                                          float roughness,
+                                          in float3 f0,
+                                          float cosineView,
+                                          in float3 visibleRadiance,
+                                          float ground,
+                                          float specularVisibility,
+                                          out float3 outIrradiance,
+                                          out float3 outSpecular)
+{
+    float3 upWorld = deferredView.AtmosphereRadialUpWorld.xyz;
+    outIrradiance = visibleRadiance + SampleAtmosphereEnvironment(-upWorld) *
+                                          (ground * PI * saturate(0.5 - 0.5 * dot(normalWorld, upWorld)));
+    outSpecular =
+        EvaluateAtmosphereSpecular(normalWorld, viewDirectionWorld, roughness, f0, cosineView) * specularVisibility;
 }
 
 float3 ComposeAtmosphereSegment(in float3 surfaceRadiance, in float3 positionWorld)

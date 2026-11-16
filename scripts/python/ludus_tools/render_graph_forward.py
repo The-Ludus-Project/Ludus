@@ -211,8 +211,8 @@ def check_interface(program, result, build):
                           'Layout', program['id'], 'deferred material layout differs from the owned ABI')
         if group == 'DeferredLighting' and stage == 'fragment':
             view = next((entry for entry in entries if entry['binding'] == 15), {})
-            layout = {'size': 112, 'offsets': {'ClipToWorldRows': 0, 'EyeWorld': 64, 'TargetSizePixel': 80, 'Options': 96},
-                      'shapes': {'ClipToWorldRows': 'Float4Array', 'EyeWorld': 'Float4', 'TargetSizePixel': 'Float4', 'Options': 'Float4'}}
+            layout = {'size': 128, 'offsets': {'ClipToWorldRows': 0, 'EyeWorld': 64, 'TargetSizePixel': 80, 'Options': 96, 'LightingView': 112},
+                      'shapes': {'ClipToWorldRows': 'Float4Array', 'EyeWorld': 'Float4', 'TargetSizePixel': 'Float4', 'Options': 'Float4', 'LightingView': 'Float4'}}
             build.require(all(view.get(field) == value for field, value in layout.items()),
                           'Layout', program['id'], 'deferred view layout differs from the owned ABI')
         return []

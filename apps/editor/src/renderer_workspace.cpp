@@ -5642,6 +5642,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         };
         connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::RasterExposureChanged, this, refreshView);
+        connect(mPreviewSourceOrNull, &RenderPreview::LightingViewChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
             mArePreviewInputsDirty = true;
             refreshDeviceProfile();
@@ -5810,9 +5811,13 @@ void RendererWorkspace::ServicePreview()
                 setProblem(mExtractionProblem, error);
             }
             view.RasterExposureStops = mPreviewSourceOrNull->GetRasterExposureStops();
-            if (hasView == true && (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
-                                    AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
-                                    view.RasterExposureStops != mPreviewExposureStops))
+            view.LightingView = mPreviewSourceOrNull->GetLightingView();
+            view.LightingViewSourceId = mPreviewSourceOrNull->GetLightingViewSourceId();
+            if (hasView == true &&
+                (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
+                 AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
+                 view.RasterExposureStops != mPreviewExposureStops || view.LightingView != mPreviewLightingView ||
+                 view.LightingViewSourceId != mPreviewLightingViewSourceId))
             {
                 LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
                 bool hasUpdatedInputs = false;
@@ -5844,6 +5849,8 @@ void RendererWorkspace::ServicePreview()
                     mPreviewSurfaceBake = surfaceBake;
                     mPreviewWorldToClip = view.WorldToClip;
                     mPreviewExposureStops = view.RasterExposureStops;
+                    mPreviewLightingView = view.LightingView;
+                    mPreviewLightingViewSourceId = view.LightingViewSourceId;
                 }
             }
         }

@@ -85,6 +85,14 @@ private:
     bool mHasBindings = false;
     rhi::RasterStatus mStatus = rhi::RasterStatus::NotReady;
 };
+/// One-based indices into the resolve's packed light array, zero for none.
+struct DeferredResolveLights final
+{
+    /// The directional light an Atmosphere lights as its Sun.
+    foundation::uint32 AtmosphereSunIndex = 0;
+    /// The light ViewDescription::LightingView isolates.
+    foundation::uint32 LightingViewLightIndex = 0;
+};
 /// Per-view camera uniform and common light bindings; owns no mutable scene data. The operation's
 /// ToneMap exposure and curve, when nonzero, are applied by the lighting resolve before RGBA8 output.
 class RenderGraphDeferredPass final
@@ -104,7 +112,7 @@ public:
                                                bool hasShadowAtlas,
                                                rhi::TextureViewHandle shadowAtlas,
                                                const content::render_graph_format::Pass& operation,
-                                               foundation::uint32 atmosphereSunIndex) noexcept;
+                                               const DeferredResolveLights& lights) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus
     Draw(Renderer& inoutRenderer, PreparedView view, const rhi::RasterPassDescription& description) noexcept;

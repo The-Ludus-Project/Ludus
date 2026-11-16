@@ -69,7 +69,7 @@ Status BuildDirectionalShadowRegions(BorrowedView<const DirectLight> lights,
                                      DeferredShadowAtlas& outAtlas,
                                      uint32& outUnshadowed) noexcept
 {
-    StaticArray<ShadowRegion, MAX_DIRECTIONAL_SHADOW_REGIONS> regions{};
+    StaticArray<ShadowRegion, MAX_LEADING_SHADOW_REGIONS> regions{};
     uint32 count = 0;
     uint32 unshadowed = 0;
     if (math::IsEmpty(boundsWorld) == false)
@@ -125,7 +125,41 @@ Status BuildDirectionalShadowRegions(BorrowedView<const DirectLight> lights,
     }
     outAtlas.Directional = regions;
     outAtlas.DirectionalCount = count;
+    outAtlas.SkyCount = 0;
     outUnshadowed = unshadowed;
+    return Status::Ready;
+}
+/// Fit one orthographic map per SKY_VISIBILITY_DIRECTION_COUNT direction to the scene bounds, in the reserved square
+/// after the directional maps, so the resolve can tell which sky directions a receiver sees past the scene.
+/// @return Ready with SkyCount set; failure preserves inoutAtlas.
+Status BuildSkyVisibilityRegions(const math::Aabb3& boundsWorld, DeferredShadowAtlas& inoutAtlas) noexcept
+{
+    if (math::IsEmpty(boundsWorld) == true)
+    {
+        inoutAtlas.SkyCount = 0;
+        return Status::Ready;
+    }
+    StaticArray<ShadowRegion, SKY_VISIBILITY_DIRECTION_COUNT> regions{};
+    for (uint32 direction = 0; direction < SKY_VISIBILITY_DIRECTION_COUNT; ++direction)
+    {
+        ShadowRegion& region = regions[direction];
+        region.Interior =
+            GetSkyVisibilityInterior(GetDirectionalShadowInterior(inoutAtlas.DirectionalCount), direction);
+        const Status status = BuildDirectionalShadowMatrix(
+            {boundsWorld.Min - DIRECTIONAL_SHADOW_PADDING_METERS, boundsWorld.Max + DIRECTIONAL_SHADOW_PADDING_METERS},
+            -GetSkyVisibilityDirection(direction),
+            region.Interior.Width,
+            region.WorldToClip);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
+    for (uint32 direction = 0; direction < SKY_VISIBILITY_DIRECTION_COUNT; ++direction)
+    {
+        inoutAtlas.Directional[inoutAtlas.DirectionalCount + direction] = regions[direction];
+    }
+    inoutAtlas.SkyCount = SKY_VISIBILITY_DIRECTION_COUNT;
     return Status::Ready;
 }
 enum MeshKeyPart : uint8
@@ -690,6 +724,22 @@ uint32 ForwardSceneGeneration::FindDirectionalLightIndex(uint64 sourceId) const 
     }
     return 0;
 }
+uint32 ForwardSceneGeneration::FindLightIndex(uint64 sourceId) const noexcept
+{
+    if (sourceId == 0 || mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    const State& state = *mState;
+    for (usize index = 0; index < state.Lights.GetSize(); ++index)
+    {
+        if (state.Lights[index].SourceId == sourceId)
+        {
+            return static_cast<uint32>(index + 1);
+        }
+    }
+    return 0;
+}
 uint32 ForwardSceneGeneration::GetMeshLightGridWord() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightGridWord;
@@ -823,6 +873,7 @@ Status ForwardSceneGeneration::Poll() noexcept
                                                                       selection,
                                                                       state.Shadows.Directional.GetData(),
                                                                       state.Shadows.DirectionalCount,
+                                                                      state.Shadows.SkyCount,
                                                                       state.Shadows.ExtentTexels);
         if (IsAccepted(status) == false)
         {
@@ -1230,7 +1281,13 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             {
                 return directional;
             }
-            const uint32 directionalCount = candidate.Shadows.DirectionalCount;
+            const Status sky = BuildSkyVisibilityRegions(candidate.BoundsWorld, candidate.Shadows);
+            if (sky != Status::Ready)
+            {
+                return sky;
+            }
+            const uint32 reservedSquares =
+                candidate.Shadows.DirectionalCount + (candidate.Shadows.SkyCount != 0 ? 1U : 0U);
             // Casters come first: they tag each record, and the grid lists each caster's records together.
             if (candidate.MeshLightCount != 0)
             {
@@ -1261,7 +1318,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             {
                 if (AllocateRasterMeshLightShadowFaces(candidate.MeshLightShadowCasters,
                                                        MESH_LIGHT_SHADOW_ATLAS_TEXELS,
-                                                       directionalCount) == false)
+                                                       reservedSquares) == false)
                 {
                     return Status::OutOfMemory;
                 }
@@ -1278,12 +1335,12 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 candidate.MeshLightWords[candidate.MeshLightGridWord + MESH_LIGHT_GRID_CULL_WORD].Y =
                     static_cast<float32>(tableWord);
             }
-            if (directionalCount != 0 || candidate.MeshLightShadowCasters.IsEmpty() == false)
+            if (reservedSquares != 0 || candidate.MeshLightShadowCasters.IsEmpty() == false)
             {
-                // One packed-depth colour attachment and its private depth. Pure directional scenes need only
-                // their squares.
+                // One packed-depth colour attachment and its private depth. Scenes without mesh-light casters need
+                // only their reserved squares.
                 const uint32 atlasTexels = candidate.MeshLightShadowCasters.IsEmpty() == true
-                                               ? GetDirectionalShadowAtlasTexels(directionalCount)
+                                               ? GetReservedShadowAtlasTexels(reservedSquares)
                                                : MESH_LIGHT_SHADOW_ATLAS_TEXELS;
                 candidate.Shadows.ExtentTexels = atlasTexels;
                 const Status atlas = rhi::CreateTexture(owner.Device,
@@ -1318,6 +1375,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             candidate.Shadows.DirectionalCount == 0 ? 0 : candidate.Shadows.Directional[0].Light.SourceId;
         owner.Report.DirectionalShadowLights = candidate.Shadows.DirectionalCount;
         owner.Report.UnshadowedDirectionalLights = candidate.UnshadowedDirectionalLights;
+        owner.Report.SkyVisibilityMaps = candidate.Shadows.SkyCount;
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

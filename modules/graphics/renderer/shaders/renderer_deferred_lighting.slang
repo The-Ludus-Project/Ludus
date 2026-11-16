@@ -12,6 +12,8 @@ struct DeferredViewParameters
     // X: direct-reference flag. Y: clear depth. Z: graph ToneMap exposure; zero writes clamped linear colour.
     // W: its ToneCurve code (tone_mapping.hpp).
     float4 Options;
+    // X: DeferredLightingView code (deferred_layout.h). Y: one-based packed index of the light it isolates, or zero.
+    float4 LightingView;
 #ifdef LUDUS_ATMOSPHERE_SURFACE
     float4 AtmosphereRadialUpWorld; // xyz: unit radial up, w: altitude in kilometres.
     float4 AtmosphereSunWorld;      // xyz: toward the Sun, w: one-based light index.
@@ -35,6 +37,83 @@ ConstantBuffer<DeferredViewParameters> deferredView LUDUS_SHADER_UNIFORM_REGISTE
 // Relative uncertainty of a float32 depth after rasterization, storage and the reconstruction arithmetic:
 // four units in the last place (2^-22).
 static const float DEFERRED_DEPTH_RELATIVE_UNCERTAINTY = 2.384185791015625e-07;
+
+// Display colour of a lighting view that is not radiance.
+static const float3 LIGHTING_VIEW_UNCOVERED_COLOUR = float3(1, 0, 1);
+static const float3 LIGHTING_VIEW_UNMAPPED_COLOUR = float3(0, 1, 1);
+// Least brightness of a lit pixel in the dominant-light view.
+static const float LIGHTING_VIEW_DOMINANT_MINIMUM_BRIGHTNESS = 0.35;
+float3 MapLightingRadiance(in float3 radiance)
+{
+    // An authored ToneMap after this pass is fused here, before the RGBA8 target quantizes the radiance.
+    if (deferredView.Options.z > 0)
+        return MapSceneToDisplay(radiance, deferredView.Options.z, uint(deferredView.Options.w + 0.5));
+    return radiance;
+}
+// The shader's copy of GetDeferredLightingViewHue: a fully saturated HSV hue per contributor category.
+float3 GetLightingViewHue(int category)
+{
+    float hue = frac(LUDUS_DEFERRED_LIGHTING_VIEW_HUE_OFFSET + float(category) * LUDUS_DEFERRED_LIGHTING_VIEW_HUE_STEP);
+    return saturate(abs(frac(hue + float3(1, 2.0 / 3.0, 1.0 / 3.0)) * 6 - 3) - 1);
+}
+float3 SelectLightingView(int lightingView,
+                          int isolatedLight,
+                          in float3 finalRadiance,
+                          in LightingTerms terms,
+                          in float3 areaLights,
+                          Varying input)
+{
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_DIRECT_LIGHTS))
+        return MapLightingRadiance(terms.Direct);
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_LIGHT))
+        return MapLightingRadiance(terms.Isolated);
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_SKY_DIFFUSE))
+        return MapLightingRadiance(terms.SkyDiffuse);
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_SKY_SPECULAR))
+        return MapLightingRadiance(terms.SkySpecular);
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_AREA_LIGHTS))
+        return MapLightingRadiance(areaLights);
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_AERIAL_PERSPECTIVE))
+    {
+#ifdef LUDUS_ATMOSPHERE_SURFACE
+        return MapLightingRadiance(ComposeAtmosphereSegment(float3(0), input.PositionWorld));
+#else
+        return float3(0);
+#endif
+    }
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_SHADOW_COVERAGE))
+    {
+        if (isolatedLight < 0)
+            return LIGHTING_VIEW_UNMAPPED_COLOUR;
+        int coverage;
+        float visible = ComputeShadowCoverage(isolatedLight, input, coverage);
+        if (coverage == SHADOW_COVERAGE_NONE)
+            return LIGHTING_VIEW_UNMAPPED_COLOUR;
+        if (coverage == SHADOW_COVERAGE_OUTSIDE)
+            return LIGHTING_VIEW_UNCOVERED_COLOUR;
+        return float3(visible);
+    }
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_SKY_VISIBILITY))
+        return terms.SkyVisibility < 0 ? LIGHTING_VIEW_UNCOVERED_COLOUR : float3(terms.SkyVisibility);
+    if (lightingView == int(DEFERRED_LIGHTING_VIEW_DOMINANT_LIGHT))
+    {
+        int category = int(DEFERRED_LIGHTING_VIEW_SKY_CATEGORY);
+        float largest = ComputeLightingLuminance(terms.SkyDiffuse + terms.SkySpecular);
+        if (ComputeLightingLuminance(areaLights) > largest)
+        {
+            category = int(DEFERRED_LIGHTING_VIEW_AREA_CATEGORY);
+            largest = ComputeLightingLuminance(areaLights);
+        }
+        if (terms.DominantLight >= 0 && terms.DominantLuminance > largest)
+            category = int(DEFERRED_LIGHTING_VIEW_FIRST_LIGHT_CATEGORY) + terms.DominantLight;
+        if (largest <= 0 && (terms.DominantLight < 0 || terms.DominantLuminance <= 0))
+            return float3(0);
+        // Dim pixels keep a readable hue: the brightness of the final colour spans the upper part of the range.
+        float brightness = saturate(ComputeLightingLuminance(MapLightingRadiance(finalRadiance)));
+        return GetLightingViewHue(category) * lerp(LIGHTING_VIEW_DOMINANT_MINIMUM_BRIGHTNESS, 1, brightness);
+    }
+    return MapLightingRadiance(finalRadiance);
+}
 
 struct DeferredLightingOutput
 {
@@ -92,21 +171,21 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     // The G-buffer keeps no strand: a hair card resolves with its facing normal and the ordinary lobes.
     surface.StrandWorld = float3(0);
     input.NormalWorld = surface.NormalWorld;
-    output.Color = ShadeMaterial(surface, input);
-    output.Color.rgb += EvaluateRasterMeshLights(surface,
+    int lightingView = int(deferredView.LightingView.x + 0.5);
+    int isolatedLight = int(deferredView.LightingView.y + 0.5) - 1;
+    LightingTerms terms;
+    output.Color = ShadeMaterialTerms(surface, input, isolatedLight, terms);
+    float3 areaLights = EvaluateRasterMeshLights(surface,
                                                  input.PositionWorld,
                                                  input.PositionUncertaintyWorld,
                                                  uint(deferredView.TargetSizePixel.z),
                                                  uint(deferredView.TargetSizePixel.w));
+    output.Color.rgb += areaLights;
 #ifdef LUDUS_ATMOSPHERE_SURFACE
-    output.Color.rgb = ComposeAtmosphereSegment(output.Color.rgb, input.PositionWorld);
+    float3 surfaceRadiance = output.Color.rgb;
+    output.Color.rgb = ComposeAtmosphereSegment(surfaceRadiance, input.PositionWorld);
 #endif
-    // An authored ToneMap after this pass is fused here, before the RGBA8 target quantizes the radiance.
-    if (deferredView.Options.z > 0)
-    {
-        output.Color.rgb =
-            MapSceneToDisplay(output.Color.rgb, deferredView.Options.z, uint(deferredView.Options.w + 0.5));
-    }
+    output.Color.rgb = SelectLightingView(lightingView, isolatedLight, output.Color.rgb, terms, areaLights, input);
     output.Depth = depth;
     return output;
 }

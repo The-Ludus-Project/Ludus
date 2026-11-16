@@ -183,6 +183,11 @@ public:
     /// Whether the active final output directly resolves an enabled clustered deferred ToneMap
     /// and the graph camera can accept a view update.
     [[nodiscard]] bool CanAdjustRasterExposure() const noexcept;
+    /// Whether the active final output is drawn by a raster colour pass whose clustered deferred resolve honours
+    /// ViewDescription::LightingView. Clustered forward graphs ignore lighting views.
+    [[nodiscard]] bool CanShowLightingViews() const noexcept;
+    /// Analytic lights of the retained World extraction, in extraction order; empty before one is set.
+    [[nodiscard]] QVector<graphics::renderer::DirectLight> GetExtractionLights() const;
     /// True while a completed graph attachment is being copied for display.
     [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
