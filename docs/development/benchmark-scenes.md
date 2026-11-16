@@ -180,6 +180,77 @@ image mismatches between controls. A future visibility resolve still needs its
 own derivative, coverage and raw linear output checks.
 [Qualification issue #1409](https://github.com/The-Ludus-Project/Ludus/issues/1409).
 
+## Measure raster skin on the character bust
+
+Measure the [raster skin diffusion](../architecture/renderer-systems.md#raster-skin-diffusion)
+against ordinary PBR on the engine's
+[character bust](../architecture/scene-source-format.md#character-bust). The
+benchmark compares the skin World with a matched control in the same process,
+on the same device and camera. The control is the same World with every skin
+material reset to its metallic/roughness surface. Measured blocks alternate
+between the control and the World as authored, so clock changes affect both
+variants alike. GPU frame durations differ by up to a factor of two between
+processes on Apple GPUs, so do not compare two separate runs.
+
+Build `ludus_editor_tests` with render preview. The first command writes a
+project whose World holds `infinite-head-lit.gltf`, with its slot made skin
+through **Make Skin**. It prints the project path.
+
+```bash
+build=out/build/macos-clang-debug
+export QT_QPA_PLATFORM=offscreen
+mkdir -p out/skin-bust
+LUDUS_SKIN_BUST_PROJECTS="$PWD/out/skin-bust" \
+    "$build/apps/editor/ludus_editor_tests" '[.skin-bust-world]'
+cat > out/skin-bust/navigation.json <<'JSON'
+{"x": 0, "y": 0.09, "z": 0, "radius": 0.1, "yaw": 25, "pitch": 8, "zoom": 2.6}
+JSON
+LUDUS_RASTER_BENCHMARK_PROJECT="$(ls -d out/skin-bust/skin-bust-*)" \
+LUDUS_RASTER_BENCHMARK_WORLD=../authoring/starter.world.json \
+LUDUS_RASTER_BENCHMARK_NAVIGATION=out/skin-bust/navigation.json \
+LUDUS_RASTER_BENCHMARK_SKIN_CONTROL=1 \
+LUDUS_RASTER_BENCHMARK_OUTPUT=out/skin-bust/skin.json \
+LUDUS_RASTER_BENCHMARK_IMAGE=out/skin-bust/skin.png \
+    "$build/apps/editor/ludus_editor_tests" '[.raster-mesh-light-benchmark]'
+```
+
+`LUDUS_RASTER_BENCHMARK_SKIN_CONTROL` adds a `skin_control` object to the JSON.
+It holds the number of skin materials and eight blocks of 20 GPU frame
+durations for each variant, `control_gpu_frame_ms` and `authored_gpu_frame_ms`.
+Each block follows three warm-up frames. The image's control frame is written
+beside it as `skin-control.png`. `deferred_skin_allocations` and
+`deferred_skin_attachment_bytes` report the diffusion targets.
+
+Results on an Apple M5 (macOS, Metal, `macos-clang-debug` host build), at
+1600×1080, from two processes over commit `4b764a89a` with this change.
+The default distance is (1.50, 0.94, 0.57) mm:
+
+| Run | PBR control median | Skin median | Difference | Ratio | Per-block differences |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 3.49 ms | 5.20 ms | +1.71 ms | 1.49 | 1.11–3.42 ms, median 1.64 ms |
+| 2 | 3.41 ms | 5.10 ms | +1.69 ms | 1.50 | 1.12–2.17 ms, median 1.59 ms |
+
+The skin targets are three allocations, 62,208,000 bytes (36 bytes per pixel).
+That is as much again as the clustered deferred G-buffer, 62,208,000 bytes. The
+control allocates none. The two diffusion passes run over the whole target; a
+pixel that is not skin returns after one load. A smaller bust on screen
+therefore saves less than its pixel share.
+
+The timings are whole-frame GPU durations. Metal reports one envelope per
+command encoder, labelled by its outermost scope (`Main/raster/draw`), so the
+`Deferred/Lighting`, `Deferred/SkinBlur` and `Deferred/SkinComposite` scopes
+have no separate timings there. A backend with per-pass timestamps is needed to
+split the difference between the three passes.
+
+![The bust's face lit by a warm key light, ordinary PBR on the left and skin on the right: skin softens the normal-map shading and the hard shadow edge across the cheek, keeps the lips and brows sharp, and carries red light into the shadow under the chin](images/skin-bust-pbr-vs-skin.png)
+
+The crop above shows the control on the left and skin on the right, as tone
+mapped by the World's graph. Skin spreads the diffuse lighting of the
+normal map's pores and the hard shadow edge across the cheek, as measured skin
+does. Pre- and post-scatter texturing keeps the base colour's lips, brows and
+stubble sharp. Red, which scatters furthest, reaches into the shadow under the
+chin. Specular highlights are unchanged.
+
 ## SMS Figure 17 rough reflector
 
 `tools/sms-benchmark` reproduces Figure 17 of Tizian Zeltner, Iliyan Georgiev and

@@ -1776,7 +1776,9 @@ without eyes or hair, so bleed tests add their own eye and hair geometry.
   Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14,
   and the clustered deferred profile spreads its diffuse lighting
   ([raster skin diffusion](#raster-skin-diffusion)), and World slots become skin
-  in the editor. The bust measurements remain.
+  in the editor. On the bust, skin adds about 1.7 ms of GPU time per
+  1600×1080 frame on an Apple M5 over the matched PBR control, and 36 bytes per
+  pixel of targets ([measurements and comparison](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust)).
   [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
   [Real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)
 - **Reference skin.** Use the normalized diffusion profile in Per H.
@@ -1905,8 +1907,16 @@ kernel: the 1D marginal of a radially symmetric profile, applied as one
 horizontal and one vertical convolution of the diffuse layer only. The profile
 is Brent Burley's normalized diffusion as given by Per H. Christensen,
 *An Approximate Reflectance Profile for Efficient Subsurface Scattering*
-(SIGGRAPH 2015 Talks, section 2): `R(r) = (e^(−r/ℓ) + e^(−r/(3ℓ)))/(8πℓr)`,
-with each channel's scattering distance as `ℓ`. Thanks to the authors.
+(SIGGRAPH 2015 Talks, section 2): `R(r) = (e^(−r/d) + e^(−r/(3d)))/(8πdr)`,
+with each channel's scattering distance as `d`. Thanks to the authors. The
+distance is the profile's own `d`, not a diffuse mean free path: for a medium
+with mean free path `ℓ = 1/σt′` and albedo `A = σs′/σt′`, `d = ℓ/s` with
+Christensen's equation 2, `s = 1.85 − A + 7(0.8 − A)³`. The editor's
+**Make Skin** default, (1.50, 0.94, 0.57) mm, is this distance for the skin1
+coefficients of Henrik Wann Jensen, Stephen R. Marschner, Marc Levoy and Pat
+Hanrahan, *A Practical Model for Subsurface Light Transport* (SIGGRAPH 2001,
+table 2). Their diffuse mean free path for the same skin, (3.67, 1.37, 0.68) mm,
+is about twice as wide.
 Following section 6 of the paper, the seven taps are shared by the three
 channels and placed by the dominant channel. Its 1D kernel is cut into a centre
 bin and three pairs of side bins of equal energy, truncated at 99 percent, with
@@ -1923,8 +1933,13 @@ another depth neither bleed in nor darken the edge. Departures from the paper:
 - The filtering axes are not rotated per pixel (the paper's jittering), so
   small bright features can show the separable kernel's cross.
 - The footprint is screen-aligned rather than on the surface's tangent plane.
-- The filtered diffuse radiance already carries the base colour, so texture
-  detail spreads with the light.
+- The spread light is pre- and post-scatter textured, following Eugene d'Eon
+  and David Luebke, *Advanced Techniques for Realistic Real-Time Skin
+  Rendering* (GPU Gems 3, chapter 14, section 14.5.2): the resolve divides the
+  diffuse light by the square root of the albedo, and the composite multiplies
+  the spread light by the square root of the centre's albedo. Half of the base
+  colour's detail stays sharp. The paper spreads irradiance in texture space; a
+  channel of zero albedo receives no spread light here.
 - There is no transmission through thin features.
 - Emission and the baked probe and chart irradiance that the G-buffer stores with
   it are not spread; only live sky, analytic-light and mesh-light diffuse is.
@@ -1957,9 +1972,10 @@ render-graph packages cooked before it are rejected until recooked, as for hair
 cards. World slots become skin in the editor, which edits the scattering distance with
 the World history. See
 [make a slot skin](../development/editor-workspace.md#make-a-slot-skin).
-Still open in [#1372](https://github.com/The-Ludus-Project/Ludus/issues/1372):
-the bust's GPU time and transient-memory measurements, and the comparison with
-ordinary PBR.
+The [bust measurements](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust)
+compare skin with ordinary PBR in one process and record the GPU time and the
+skin targets' memory. Metal reports one timing per command encoder, so the
+three passes' shares of the difference are not measured separately there.
 
 Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
 An artist must be able to import the bust, assign and edit hair and skin

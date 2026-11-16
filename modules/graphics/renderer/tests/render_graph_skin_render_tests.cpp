@@ -49,6 +49,9 @@ constexpr float32 RED_DISTANCE = .06F;
 constexpr float32 GREEN_DISTANCE = .03F;
 constexpr float32 BLUE_DISTANCE = .015F;
 constexpr float32 WHITE = .8F;
+// The left quad's albedo. Post-scatter texturing multiplies the spread light by the square root of the receiving
+// pixel's albedo, so light crossing the edge needs a nonzero albedo to show.
+constexpr float32 DARK = .1F;
 constexpr float32 LIGHT_INTENSITY = 2;
 constexpr usize RED = 0;
 constexpr usize BLUE = 2;
@@ -58,12 +61,12 @@ constexpr float32 FLAT_TOLERANCE_CODES = 2;
 
 enum class LeftQuad : uint8
 {
-    BlackSkin,        ///< Skin of zero albedo beside the white skin: an albedo edge on one surface.
-    BlackMetallic,    ///< A non-skin dielectric beside the skin: a material (profile) edge.
-    DistantBlackSkin, ///< Black skin 0.3 m behind the white skin: a depth edge.
-    ShortBlackSkin,   ///< Black skin a tenth as far-scattering as the white skin: its own skin profile.
+    DarkSkin,        ///< Dark skin beside the white skin: an albedo edge on one surface.
+    DarkMetallic,    ///< A dark non-skin dielectric beside the skin: a material (profile) edge.
+    DistantDarkSkin, ///< Dark skin 0.3 m behind the white skin: a depth edge.
+    ShortDarkSkin,   ///< Dark skin a tenth as far-scattering as the white skin: its own skin profile.
 };
-// Scale of the short-scattering black skin's distance relative to the white skin's.
+// Scale of the short-scattering dark skin's distance relative to the white skin's.
 constexpr float32 SHORT_DISTANCE_SCALE = .1F;
 
 struct SkinScene final
@@ -119,12 +122,12 @@ SkinScene RenderSkinScene(LeftQuad left, float32 distanceScale, bool shouldCheck
         material.Scattering.Model = scene_format::MaterialModel::Skin;
         material.Scattering.K = {{distance.X, distance.Y, distance.Z}};
     }
-    materials[0].BaseColor = {0, 0, 0};
-    if (left == LeftQuad::BlackMetallic)
+    materials[0].BaseColor = {DARK, DARK, DARK};
+    if (left == LeftQuad::DarkMetallic)
     {
         materials[0].Scattering = {};
     }
-    if (left == LeftQuad::ShortBlackSkin)
+    if (left == LeftQuad::ShortDarkSkin)
     {
         materials[0].Scattering.K = {
             {distance.X * SHORT_DISTANCE_SCALE, distance.Y * SHORT_DISTANCE_SCALE, distance.Z * SHORT_DISTANCE_SCALE}};
@@ -138,7 +141,7 @@ SkinScene RenderSkinScene(LeftQuad left, float32 distanceScale, bool shouldCheck
         items[quad].Material.Color = {1, 1, 1, 1};
         items[quad].MaterialOverrides = {&overrides[quad], 1};
     }
-    items[0].MeshToWorld.Translation = {-QUAD_HALF_WIDTH, 0, left == LeftQuad::DistantBlackSkin ? .3F : 0};
+    items[0].MeshToWorld.Translation = {-QUAD_HALF_WIDTH, 0, left == LeftQuad::DistantDarkSkin ? .3F : 0};
     items[1].MeshToWorld.Translation = {QUAD_HALF_WIDTH, 0, 0};
     renderer::DirectLight light;
     light.SourceId = 1;
@@ -218,17 +221,18 @@ void RequireFlat(const SkinScene& skin, const SkinScene& control, usize column)
 TEST_CASE("Deferred skin spreads diffuse light across an albedo edge and conserves flat lighting",
           "[render-graph][clustered-deferred][skin][gpu]")
 {
-    const SkinScene skin = RenderSkinScene(LeftQuad::BlackSkin, 1, true);
-    const SkinScene control = RenderSkinScene(LeftQuad::BlackSkin, 0);
+    const SkinScene skin = RenderSkinScene(LeftQuad::DarkSkin, 1, true);
+    const SkinScene control = RenderSkinScene(LeftQuad::DarkSkin, 0);
     // Far from the edge every tap sees the same lighting, so the renormalized kernel returns it unchanged.
     RequireFlat(skin, control, LEFT_INTERIOR_COLUMN);
     RequireFlat(skin, control, RIGHT_INTERIOR_COLUMN);
-    // Light from the white side reaches the black side's first column, red furthest, and leaves the white side's.
+    // Light from the white side reaches the dark side's first column, red furthest, and leaves the white side's. The
+    // spread light carries the square root of each side's albedo, and the receiving column multiplies by its own.
     const float32 redBleed =
         GetChannel(skin.Pixels, LEFT_EDGE_COLUMN, RED) - GetChannel(control.Pixels, LEFT_EDGE_COLUMN, RED);
     const float32 blueBleed =
         GetChannel(skin.Pixels, LEFT_EDGE_COLUMN, BLUE) - GetChannel(control.Pixels, LEFT_EDGE_COLUMN, BLUE);
-    constexpr float32 MIN_RED_BLEED_CODES = 20;
+    constexpr float32 MIN_RED_BLEED_CODES = 6;
     CHECK(redBleed > MIN_RED_BLEED_CODES);
     CHECK(redBleed > blueBleed);
     CHECK(GetChannel(skin.Pixels, RIGHT_EDGE_COLUMN, RED) <
@@ -244,9 +248,9 @@ TEST_CASE("Deferred skin spreads diffuse light across an albedo edge and conserv
 TEST_CASE("Deferred skin diffusion stops at other materials and at depth discontinuities",
           "[render-graph][clustered-deferred][skin][gpu]")
 {
-    for (const LeftQuad left : {LeftQuad::BlackMetallic, LeftQuad::DistantBlackSkin})
+    for (const LeftQuad left : {LeftQuad::DarkMetallic, LeftQuad::DistantDarkSkin})
     {
-        // The black quad's taps never reach the white skin and the white skin's never reach the black quad, so both
+        // The dark quad's taps never reach the white skin and the white skin's never reach the dark quad, so both
         // edge columns keep their unspread values: nothing bleeds in and the skin edge does not darken.
         const SkinScene skin = RenderSkinScene(left, 1);
         const SkinScene control = RenderSkinScene(left, 0);
@@ -259,11 +263,11 @@ TEST_CASE("Deferred skin diffusion stops at other materials and at depth discont
 TEST_CASE("Deferred skin spreads each material by its own scattering distance",
           "[render-graph][clustered-deferred][skin][gpu]")
 {
-    // The black skin takes its own profile, a tenth of the white skin's distance, so far less light crosses into it
+    // The dark skin takes its own profile, a tenth of the white skin's distance, so far less light crosses into it
     // than when both share the white skin's profile; the white side spreads by its own profile either way.
-    const SkinScene shared = RenderSkinScene(LeftQuad::BlackSkin, 1);
-    const SkinScene own = RenderSkinScene(LeftQuad::ShortBlackSkin, 1);
-    const SkinScene control = RenderSkinScene(LeftQuad::BlackSkin, 0);
+    const SkinScene shared = RenderSkinScene(LeftQuad::DarkSkin, 1);
+    const SkinScene own = RenderSkinScene(LeftQuad::ShortDarkSkin, 1);
+    const SkinScene control = RenderSkinScene(LeftQuad::DarkSkin, 0);
     const float32 sharedBleed =
         GetChannel(shared.Pixels, LEFT_EDGE_COLUMN, RED) - GetChannel(control.Pixels, LEFT_EDGE_COLUMN, RED);
     const float32 ownBleed =
