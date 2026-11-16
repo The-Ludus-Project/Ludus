@@ -375,10 +375,33 @@ WorldGraphControls WorldGraphView::TakeControls(QWidget* parent, RenderPreview& 
     connect(&inoutSource, &RenderPreview::RasterExposureChanged, exposureAction, refreshExposure);
     connect(mTargets, &QComboBox::currentIndexChanged, exposureAction, refreshExposure);
     refreshExposure();
+
+    QAction* workLightAction = new QAction(QStringLiteral("Work Light"), parent);
+    workLightAction->setObjectName(QStringLiteral("viewportWorkLightAction"));
+    workLightAction->setCheckable(true);
+    const auto refreshWorkLight = [this, workLightAction, &inoutSource]() {
+        const bool canUseWorkLight = mTargets->currentIndex() == 0 && mPreview.CanShowWorkLight() == true &&
+                                     inoutSource.Scene().Objects.isEmpty() == false;
+        workLightAction->setChecked(mPreview.IsWorkLightEnabled());
+        workLightAction->setEnabled(canUseWorkLight);
+        workLightAction->setToolTip(
+            canUseWorkLight == true
+                ? QStringLiteral("Light nearby surfaces with a spotlight that follows the editor camera.")
+                : QStringLiteral("Work Light needs geometry and the default raster graph’s Final output. "
+                                 "Select Final output and use Force raster if another graph is active."));
+    };
+    connect(workLightAction, &QAction::triggered, &mPreview, &RenderGraphPreview::SetWorkLightEnabled);
+    connect(&mPreview, &RenderGraphPreview::Changed, workLightAction, refreshWorkLight);
+    connect(&mPreview, &RenderGraphPreview::TargetsChanged, workLightAction, refreshWorkLight);
+    connect(&mPreview, &RenderGraphPreview::RayPathCaptureChanged, workLightAction, refreshWorkLight);
+    connect(&inoutSource, &RenderPreview::Changed, workLightAction, refreshWorkLight);
+    connect(mTargets, &QComboBox::currentIndexChanged, workLightAction, refreshWorkLight);
+    refreshWorkLight();
+
     mSourceOrNull = &inoutSource;
     connect(&inoutSource, &RenderPreview::Changed, this, [this]() { refreshLightingTargets(); });
     refreshTargets();
-    return { .OutputOrNull = controls, .ExposureOrNull = exposureAction };
+    return { .OutputOrNull = controls, .ExposureOrNull = exposureAction, .WorkLightOrNull = workLightAction };
 }
 void WorldGraphView::SetCanPresent(bool canPresent)
 {

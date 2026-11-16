@@ -138,6 +138,12 @@ TEST_CASE("Viewport toolbar keeps every label whole and apart at every width", "
     {
         SKIP("This build has no native project graph preview");
     }
+    QAction* exposure = viewport.findChild<QAction*>(QStringLiteral("viewportExposureAction"));
+    QAction* workLight = viewport.findChild<QAction*>(QStringLiteral("viewportWorkLightAction"));
+    REQUIRE(exposure != nullptr);
+    REQUIRE(workLight != nullptr);
+    CHECK(toolbar->actions().indexOf(workLight) == toolbar->actions().indexOf(exposure) + 1);
+    CHECK(workLight->isChecked() == false);
     const QString screenshotDirectory = qEnvironmentVariable("LUDUS_VIEWPORT_TOOLBAR_SCREENSHOT_DIRECTORY");
     for (const int32 width : WIDTHS)
     {
@@ -192,6 +198,7 @@ TEST_CASE("Viewport toolbar keeps every label whole and apart at every width", "
             }
             CHECK(overflowTexts.contains(QStringLiteral("Navigation help")) == true);
             CHECK(overflowTexts.contains(QStringLiteral("Exposure")) == true);
+            CHECK(overflowTexts.contains(QStringLiteral("Work Light")) == true);
         }
         // The choice of what the viewport shows stays on the row longest.
         CHECK(IsOnRow(*toolbar, "worldGraphTargets") == true);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/gameplay/world/celestial_transform.hpp>
 
@@ -24,14 +25,27 @@ inline constexpr QLatin1StringView WORLD_CELESTIAL_EARTH_MOON{"Earth Moon"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_TIME{"celestialTime"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_LATITUDE{"celestialLatitude"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_LONGITUDE{"celestialLongitude"};
+/// IANA time zone whose clock shows the Earth date and time, such as "Asia/Seoul". The stored time stays UTC;
+/// an omitted value means UTC.
+inline constexpr QLatin1StringView WORLD_CELESTIAL_TIME_ZONE{"celestialTimeZone"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_STATIC_SUN{"Static Sun"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_DYNAMIC{"Dynamic Celestial"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_AUTHORED{"Transform"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_ORBIT{"Custom Orbit"};
 /// World root member holding the one Earth date, time and observer location that every Earth Sun and
-/// Earth Moon light of the World shares. Its members use the light property keys WORLD_CELESTIAL_TIME,
-/// WORLD_CELESTIAL_LATITUDE and WORLD_CELESTIAL_LONGITUDE; an omitted member means zero.
+/// Earth Moon light of the World shares. Its members use the light property keys of
+/// WORLD_EARTH_OBSERVER_PROPERTIES; an omitted number means zero and an omitted time zone means UTC.
 inline constexpr QLatin1StringView WORLD_EARTH_OBSERVER{"earth_observer"};
+/// Number of WORLD_EARTH_OBSERVER_PROPERTIES.
+inline constexpr foundation::usize WORLD_EARTH_OBSERVER_PROPERTY_COUNT = 4;
+/// The light properties that every Earth light of a World shares through WORLD_EARTH_OBSERVER.
+inline constexpr foundation::StaticArray<QLatin1StringView, WORLD_EARTH_OBSERVER_PROPERTY_COUNT>
+    WORLD_EARTH_OBSERVER_PROPERTIES{{
+        WORLD_CELESTIAL_TIME,
+        WORLD_CELESTIAL_LATITUDE,
+        WORLD_CELESTIAL_LONGITUDE,
+        WORLD_CELESTIAL_TIME_ZONE,
+    }};
 
 enum class WorldCelestialFieldGroup : foundation::uint8
 {
@@ -51,7 +65,8 @@ enum class WorldCelestialFieldGroup : foundation::uint8
 [[nodiscard]] bool IsWorldCelestialProperty(QStringView property);
 /// True for a directional light using either Earth preset.
 [[nodiscard]] bool IsWorldEarthLight(const QJsonObject& light);
-/// Compare the effective time and position, treating omitted coordinates and time as zero.
+/// Compare the effective time, position and time zone, treating omitted numbers as zero and an omitted time
+/// zone as UTC.
 [[nodiscard]] bool AreWorldEarthObserversEqual(const QJsonObject& first, const QJsonObject& second);
 /// Copy the shared Earth observer values into a light, preserving absent defaults.
 void CopyWorldEarthObserver(const QJsonObject& source, QJsonObject& inoutLight);
@@ -75,8 +90,8 @@ void CopyWorldEarthObserver(const QJsonObject& source, QJsonObject& inoutLight);
 /// @param editedIndex Index in `entities` of the edited entity.
 /// @param inoutWorld The World after the edit.
 void LiftWorldEarthObserver(const QJsonObject& previousWorld, qsizetype editedIndex, QJsonObject& inoutWorld);
-/// True when a root WORLD_EARTH_OBSERVER value has only the three observer members, each a number within
-/// the Earth date and coordinate ranges.
+/// True when a root WORLD_EARTH_OBSERVER value has only WORLD_EARTH_OBSERVER_PROPERTIES members: numbers
+/// within the Earth date and coordinate ranges and a well-formed time zone identifier.
 [[nodiscard]] bool IsWorldEarthObserverValid(const QJsonValue& value);
 /// Sample the selected Earth preset. An inactive or invalid preset preserves outLighting.
 [[nodiscard]] bool TrySampleWorldEarthLight(const QJsonObject& light,

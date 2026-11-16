@@ -41,6 +41,9 @@ struct Parameters
     float4 HairStrand;
     // X, Y: primary and base-colour-tinted secondary highlight weights.
     float4 HairHighlights;
+    // XYZ: a skin material's linear RGB scattering distance in metres. W: its one-based skin profile slot
+    // (DEFERRED_MAX_SKIN_PROFILES), or zero for every other material.
+    float4 SkinScattering;
 #endif
 };
 LUDUS_SHADER_BINDING(0) ConstantBuffer<Parameters> material : register(b0);
@@ -233,6 +236,36 @@ float3 EvaluateBrdf(float3 baseColor,
     float3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);
     return nl * (distribution * visibility * fresnel +
                  baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse ? 0 : 1) / PI);
+}
+// EvaluateBrdf's two lobes apart: returns the specular lobe and writes the diffuse one, for a skin resolve that
+// spreads only diffuse lighting (renderer_deferred_lighting.slang).
+float3 EvaluateBrdfLobes(float3 baseColor,
+                         float3 normalWorld,
+                         float3 viewDirectionWorld,
+                         float3 lightDirectionWorld,
+                         float metallic,
+                         float roughness,
+                         bool isBakedDiffuse,
+                         out float3 outDiffuse)
+{
+    outDiffuse = float3(0);
+    float nv = max(dot(normalWorld, viewDirectionWorld), 0);
+    float nl = max(dot(normalWorld, lightDirectionWorld), 0);
+    float3 halfSumWorld = viewDirectionWorld + lightDirectionWorld;
+    if (nv <= 0 || nl <= 0 || dot(halfSumWorld, halfSumWorld) < 1e-12)
+        return float3(0);
+    float3 halfDirectionWorld = NormalizeOrZero(halfSumWorld);
+    float nh = saturate(dot(normalWorld, halfDirectionWorld));
+    float lh = saturate(dot(lightDirectionWorld, halfDirectionWorld));
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float d = (1 - nh * nh) + nh * nh * a2;
+    float distribution = a2 / (PI * d * d);
+    float visibility = 0.5 / max(nl * sqrt(nv * nv * (1 - a2) + a2) + nv * sqrt(nl * nl * (1 - a2) + a2), 1e-6);
+    float3 f0 = lerp(float3(0.04), baseColor, metallic);
+    float3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);
+    outDiffuse = nl * baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse ? 0 : 1) / PI;
+    return nl * distribution * visibility * fresnel;
 }
 #ifdef LUDUS_AUTHORED_INPUTS
 // Raster hair cards (content::scene_format::MaterialModel::HairCard). hair_card.cpp mirrors every operation for
@@ -457,8 +490,8 @@ static const float SKY_VISIBILITY_NORMAL_OFFSET_TEXELS = 1.5;
 static const float SKY_SPECULAR_LOBE_EXPONENT_MAXIMUM = 8;
 // Guards the reciprocal map scale and lobe width against degenerate inputs.
 static const float SKY_VISIBILITY_SCALE_EPSILON = 1e-6;
-// Smallest summed lobe weight for a reflection vector above the horizon; below it the ground visibility applies.
-static const float SKY_SPECULAR_WEIGHT_EPSILON = 1e-4;
+// Rec. 709 luminance of linear RGB, which weights the reflection lobe's sky directions by brightness.
+static const float3 SKY_LUMINANCE_WEIGHTS = float3(0.2126, 0.7152, 0.0722);
 // First sky visibility region, or -1 when the scene has no sky visibility maps.
 int GetSkyVisibilityFirstRegion()
 {
@@ -737,6 +770,8 @@ struct SurfaceSample
     float Alpha;
     // Unit hair-card strand direction; zero for every other material.
     float3 StrandWorld = float3(0);
+    // One-based skin profile slot of a skin material with a scattering distance; zero for every other material.
+    float SkinProfile = 0;
 };
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 SurfaceSample SampleMaterial(in Varying input)
@@ -860,6 +895,7 @@ SurfaceSample SampleMaterial(in Varying input)
     output.Alpha = material.Options.z == 2 ? baseColor.a : 1;
 #    ifdef LUDUS_AUTHORED_INPUTS
     output.StrandWorld = strandWorld;
+    output.SkinProfile = material.SkinScattering.w;
 #    endif
     return output;
 }
@@ -927,18 +963,25 @@ SkyVisibility EvaluateSkyVisibility(in float3 normalWorld, in float3 reflectionW
         float visible = SampleSkyVisibilityRegion(region, positionWorld);
         visibleCosine += visible * cosine;
         totalCosine += cosine;
+#    ifdef LUDUS_ATMOSPHERE_SURFACE
+        float3 skyRadiance = SampleAtmosphereEnvironment(skyWorld);
+        sky.Radiance += skyRadiance * (visible * cosine);
+        // Weight the reflection lobe by the sky's own brightness, so a blocked bright direction removes its share:
+        // under an arcade the glowing sunset horizon is hidden while the dim sky overhead is open, and an
+        // unweighted lobe let the reflected horizon through.
+        float lobeRadiance = lobe * dot(skyRadiance, SKY_LUMINANCE_WEIGHTS);
+        visibleLobe += visible * lobeRadiance;
+        totalLobe += lobeRadiance;
+#    else
         visibleLobe += visible * lobe;
         totalLobe += lobe;
-#    ifdef LUDUS_ATMOSPHERE_SURFACE
-        if (visible > 0 && cosine > 0)
-            sky.Radiance += SampleAtmosphereEnvironment(skyWorld) * (visible * cosine);
 #    endif
     }
     // The cosine-weighted visibility of the sky directions in front of the surface also scales the light it receives
     // from below the horizon, which no map measures. A surface facing straight down sees no sky direction and none.
     sky.Ground = totalCosine > 0 ? visibleCosine / totalCosine : 0;
     sky.Irradiance = sky.Ground;
-    sky.Specular = totalLobe > SKY_SPECULAR_WEIGHT_EPSILON ? visibleLobe / totalLobe : sky.Ground;
+    sky.Specular = totalLobe > 0 ? visibleLobe / totalLobe : sky.Ground;
     return sky;
 }
 #endif
@@ -955,13 +998,36 @@ struct LightingTerms
     float DominantLuminance;
     // Cosine-weighted sky visibility about the normal, or -1 without sky visibility maps.
     float SkyVisibility;
+    // With shouldSeparateDiffuse: the sky and analytic-light diffuse radiance left out of the result, for a skin
+    // resolve that spreads it. Zero otherwise.
+    float3 Diffuse;
 };
 float ComputeLightingLuminance(in float3 radiance)
 {
     return dot(radiance, float3(0.2126, 0.7152, 0.0722));
 }
-float4 ShadeMaterialTerms(in SurfaceSample surface, in Varying input, int isolatedLight, out LightingTerms outTerms)
+float ComputePunctualAttenuation(float distanceSquaredMetres, float rangeMetres)
 {
+    static const float MINIMUM_DISTANCE_SQUARED_METRES = 1e-4;
+    float ratio = distanceSquaredMetres / (rangeMetres * rangeMetres);
+    float edge = max(1 - ratio * ratio, 0);
+    return edge * edge / max(distanceSquaredMetres, MINIMUM_DISTANCE_SQUARED_METRES);
+}
+float ComputeSpotConeAttenuation(float directionCosine, float innerCosine, float outerCosine)
+{
+    static const float MINIMUM_SPOT_COSINE_DELTA = 1e-6;
+    float cone = saturate((directionCosine - outerCosine) / max(innerCosine - outerCosine, MINIMUM_SPOT_COSINE_DELTA));
+    return cone * cone;
+}
+// Shade the surface and report its lighting terms. With shouldSeparateDiffuse the diffuse terms go to outTerms.Diffuse
+// instead of the returned radiance; otherwise the radiance keeps the summation order of the combined path.
+float4 ShadeMaterialTerms(in SurfaceSample surface,
+                          in Varying input,
+                          int isolatedLight,
+                          bool shouldSeparateDiffuse,
+                          out LightingTerms outTerms)
+{
+    outTerms.Diffuse = 0;
     outTerms.SkyDiffuse = 0;
     outTerms.SkySpecular = 0;
     outTerms.Direct = 0;
@@ -1056,7 +1122,15 @@ float4 ShadeMaterialTerms(in SurfaceSample surface, in Varying input, int isolat
     {
         outTerms.SkyDiffuse = irradiance * baseColor.rgb * (1 - metallic) * (1 - f) / PI;
         outTerms.SkySpecular = specularEnvironment;
-        result += outTerms.SkyDiffuse + outTerms.SkySpecular;
+        if (shouldSeparateDiffuse == true)
+        {
+            outTerms.Diffuse += outTerms.SkyDiffuse;
+            result += outTerms.SkySpecular;
+        }
+        else
+        {
+            result += outTerms.SkyDiffuse + outTerms.SkySpecular;
+        }
     }
 #ifdef LUDUS_DEFERRED_MESH_LIGHTS
     if (sky.IsAvailable == true)
@@ -1122,17 +1196,14 @@ float4 ShadeMaterialTerms(in SurfaceSample surface, in Varying input, int isolat
         float attenuation = 1;
         if (color.w != 0)
         {
-            float3 delta = position.xyz - input.PositionWorld;
-            float distance2 = dot(delta, delta);
-            lightDirectionWorld = NormalizeOrZero(delta);
-            float ratio = distance2 / (position.w * position.w);
-            float edge = max(1 - ratio * ratio, 0);
-            attenuation = edge * edge / max(distance2, 1e-4);
+            float3 deltaWorld = position.xyz - input.PositionWorld;
+            float distanceSquaredMetres = dot(deltaWorld, deltaWorld);
+            lightDirectionWorld = NormalizeOrZero(deltaWorld);
+            attenuation = ComputePunctualAttenuation(distanceSquaredMetres, position.w);
             if (color.w == 2)
             {
-                float cone = saturate((dot(-lightDirectionWorld, direction.xyz) - direction.w) /
-                                      max(extra.x - direction.w, 1e-6));
-                attenuation *= cone * cone;
+                attenuation *=
+                    ComputeSpotConeAttenuation(dot(-lightDirectionWorld, direction.xyz), extra.x, direction.w);
             }
             if (color.w == 3 || color.w == 4)
             {
@@ -1155,31 +1226,49 @@ float4 ShadeMaterialTerms(in SurfaceSample surface, in Varying input, int isolat
 #else
     const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
 #endif
+        float3 diffuseReflectance = float3(0);
+        float3 reflectance;
+        if (shouldSeparateDiffuse == true)
+        {
+            reflectance = EvaluateBrdfLobes(baseColor.rgb,
+                                            normalWorld,
+                                            viewDirectionWorld,
+                                            lightDirectionWorld,
+                                            metallic,
+                                            roughness,
+                                            shouldReplaceDiffuse,
+                                            diffuseReflectance);
+        }
+        else
+        {
 #ifdef LUDUS_AUTHORED_INPUTS
-        float3 reflectance = IsHairCard() == true ? EvaluateHairCard(baseColor.rgb,
-                                                                     roughness,
-                                                                     normalWorld,
-                                                                     surface.StrandWorld,
-                                                                     viewDirectionWorld,
-                                                                     lightDirectionWorld,
-                                                                     shouldReplaceDiffuse)
-                                                  : EvaluateBrdf(baseColor.rgb,
-                                                                 normalWorld,
-                                                                 viewDirectionWorld,
-                                                                 lightDirectionWorld,
-                                                                 metallic,
-                                                                 roughness,
-                                                                 shouldReplaceDiffuse);
+            reflectance = IsHairCard() == true ? EvaluateHairCard(baseColor.rgb,
+                                                                  roughness,
+                                                                  normalWorld,
+                                                                  surface.StrandWorld,
+                                                                  viewDirectionWorld,
+                                                                  lightDirectionWorld,
+                                                                  shouldReplaceDiffuse)
+                                               : EvaluateBrdf(baseColor.rgb,
+                                                              normalWorld,
+                                                              viewDirectionWorld,
+                                                              lightDirectionWorld,
+                                                              metallic,
+                                                              roughness,
+                                                              shouldReplaceDiffuse);
 #else
-        float3 reflectance = EvaluateBrdf(baseColor.rgb,
-                                          normalWorld,
-                                          viewDirectionWorld,
-                                          lightDirectionWorld,
-                                          metallic,
-                                          roughness,
-                                          shouldReplaceDiffuse);
+            reflectance = EvaluateBrdf(baseColor.rgb,
+                                       normalWorld,
+                                       viewDirectionWorld,
+                                       lightDirectionWorld,
+                                       metallic,
+                                       roughness,
+                                       shouldReplaceDiffuse);
 #endif
-        float3 contribution = reflectance * lightColor * attenuation * ComputeShadowVisibility(i, input);
+        }
+        float shadowVisibility = ComputeShadowVisibility(i, input);
+        float3 contribution = reflectance * lightColor * attenuation * shadowVisibility;
+        outTerms.Diffuse += diffuseReflectance * lightColor * attenuation * shadowVisibility;
         result += contribution;
         outTerms.Direct += contribution;
         if (i == isolatedLight)
@@ -1202,12 +1291,13 @@ float4 ShadeMaterialTerms(in SurfaceSample surface, in Varying input, int isolat
                       1);
 #endif
     float alpha = surface.Alpha;
+    outTerms.Diffuse = min(max(outTerms.Diffuse, float3(0)), float3(65504)) * alpha;
     return float4(min(max(result, float3(0)), float3(65504)) * alpha, alpha);
 }
 float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 {
     LightingTerms terms;
-    return ShadeMaterialTerms(surface, input, -1, terms);
+    return ShadeMaterialTerms(surface, input, -1, false, terms);
 }
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 [shader("fragment")] float4 FragmentMain(Varying input) : SV_Target

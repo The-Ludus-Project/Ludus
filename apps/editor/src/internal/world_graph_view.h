@@ -33,6 +33,8 @@ struct WorldGraphControls
     QWidget* OutputOrNull = nullptr;
     /// Exposure adjustment; it joins the display group and overflows before the output choice.
     QAction* ExposureOrNull = nullptr;
+    /// Camera spotlight for the final raster output, beside Exposure.
+    QAction* WorkLightOrNull = nullptr;
 };
 /// Interactive World output of the project's active graph. Owns only display/target selection;
 /// RendererWorkspace owns builds and RenderGraphPreview owns GPU production and readback.

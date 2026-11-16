@@ -140,6 +140,14 @@ LTC_TABLE_STRIDE = 16
 # Per-job failure summary (LUDUS_GRAPH_FAILURE_BINDING); one uint count per LUDUS_SCENE_FAILURE_* reason.
 FAILURE_SLOT = 14
 FAILURE_STRIDE = 4
+# World-feature tables (renderer_gpu_preview_layout.h; docs/development/render-graph-authoring.md#world-features).
+# Scene compute kernels bind each float4 table only when they call its scene function, so reflection keeping a slot
+# records the graph's support. Native ray stages reserve slot 11 for their function table and define neither slot.
+AERIAL_PERSPECTIVE_SLOT = 11
+ATMOSPHERE_SKY_SLOT = 15
+WORLD_TABLE_STRIDE = 16
+WORLD_FEATURE_DEFINES = ('#define LUDUS_AERIAL_PERSPECTIVE_BINDING LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING\n'
+                         '#define LUDUS_ATMOSPHERE_SKY_BINDING LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING\n')
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
 DEFAULT_PAYLOAD = '_ludus_ray/scene_payload.slang'
@@ -472,6 +480,8 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     build.require(workgroup in SUPPORTED_WORKGROUP_SIZES, 'Capability', 'ray workgroups', 'unsupported ray workgroup')
     wrapper = wrapper.replace('[numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)]',
                               '[numthreads(' + ', '.join(str(value) for value in workgroup) + ')]')
+    if technique.get('scene_interface') is not None and not native_ray_pipeline:
+        wrapper = WORLD_FEATURE_DEFINES + wrapper
     if not native_ray_queries:
         wrapper = '#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1\n' + wrapper
     if ray_path_capture:
@@ -559,11 +569,16 @@ def check_interface(program, result, build):
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []) +
                       ([(RAY_PATH_CAPTURE_SLOT, 'StorageReadWrite', RAY_PATH_CAPTURE_STRIDE)] if program.get('ray_path_capture', False) else []) +
+                      # World-feature tables appear exactly when a callback calls their scene function.
+                      ([(AERIAL_PERSPECTIVE_SLOT, 'StorageRead', WORLD_TABLE_STRIDE)] if not program.get('native_ray_pipeline') and
+                       any(entry['binding'] == AERIAL_PERSPECTIVE_SLOT for entry in entries) else []) +
                       # Reflection drops the table when no callback reads it; the renderer then binds nothing.
                       ([(LTC_TABLE_SLOT, 'StorageRead', LTC_TABLE_STRIDE)] if program.get('ltc_table', False) and
                        any(entry['binding'] == LTC_TABLE_SLOT for entry in entries) else []) +
                       # Every graph ray kernel counts its latched pixels by failure reason.
-                      [(FAILURE_SLOT, 'StorageReadWrite', FAILURE_STRIDE)],
+                      [(FAILURE_SLOT, 'StorageReadWrite', FAILURE_STRIDE)] +
+                      ([(ATMOSPHERE_SKY_SLOT, 'StorageRead', WORLD_TABLE_STRIDE)] if not program.get('native_ray_pipeline') and
+                       any(entry['binding'] == ATMOSPHERE_SKY_SLOT for entry in entries) else []),
                       'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]

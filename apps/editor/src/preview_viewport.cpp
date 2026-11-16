@@ -2359,6 +2359,12 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
                                                 QStringLiteral("viewportExposure"));
     exposureButton.setPopupMode(QToolButton::InstantPopup);
     exposureButton.setAccessibleName(QStringLiteral("Exposure compensation"));
+    QToolButton& workLightButton = InsertCommand(*mState->ControlsOrNull,
+                                                 mState->DisplayGroupActionOrNull,
+                                                 *graphControls.WorkLightOrNull,
+                                                 QStringLiteral("viewportWorkLight"));
+    workLightButton.setProperty("visualRole", QStringLiteral("toggle"));
+    workLightButton.setAccessibleName(QStringLiteral("Work Light"));
     // Tab follows the toolbar left to right: the graph controls take their places in it, though they
     // are created after the rest.
     QWidget* previousInTabOrder = this;
@@ -2371,6 +2377,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         }
     }
     QWidget::setTabOrder(mState->ControlsOrNull->widgetForAction(mState->FrameAllActionOrNull), &exposureButton);
+    QWidget::setTabOrder(&exposureButton, &workLightButton);
     SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);
     SetControlVisible(*mState->ControlsOrNull, findChild<QToolButton*>(QStringLiteral("viewportLiveShaders")), false);
     QAction* statistics = findChild<QAction*>(QStringLiteral("viewportStatisticsAction"));

@@ -28,13 +28,6 @@
     },
     {
       "kind": "variant",
-      "sources": [
-        "modules/graphics/renderer/tests/*_oracle.cpp"
-      ],
-      "reason": "Renderer oracles are compiled with each test executable's floating-point flags."
-    },
-    {
-      "kind": "variant",
       "sources": ["modules/platform/src/window_headless.cpp"],
       "reason": "ludus_platform_headless_tests compiles the headless window backend independently of the platform library's selected backend."
     },

@@ -3,6 +3,7 @@
 #include "../shaders/renderer_atmosphere_layout.h"
 #include "internal/camera_inverse.h"
 #include "internal/ltc_table_data.h"
+#include "internal/skin_diffusion.h"
 
 #include <ludus/content/render_graph_format/plan.h>
 
@@ -12,6 +13,13 @@
 #include <ludus/graphics/renderer/tone_mapping.hpp>
 
 #include <cstddef>
+
+#if defined(LUDUS_RENDERER_SKIN_SHADERS)
+#    include "renderer_atmosphere_skin_deferred.h"
+#    include "renderer_skin_blur.h"
+#    include "renderer_skin_composite.h"
+#    include "renderer_skin_deferred.h"
+#endif
 
 namespace ludus::graphics::renderer::internal
 {
@@ -26,6 +34,9 @@ constexpr usize QUAD_VERTEX_BYTES = QUAD_VERTEX_COUNT * sizeof(math::Vector4);
 constexpr usize QUAD_INDEX_BYTES = QUAD_INDEX_COUNT * sizeof(uint32);
 constexpr usize VIEW_BYTES = static_cast<usize>(DEFERRED_VIEW_WORDS) * sizeof(math::Vector4);
 constexpr usize ALPHA_CHANNEL = 3;
+/// The skin resolve writes the radiance without skin diffuse and the skin diffuse.
+constexpr usize SKIN_LIGHTING_TARGET_COUNT = 2;
+constexpr usize SKIN_STAGE_COUNT = 4;
 /// Column of a homogeneous transform that holds its translation.
 constexpr usize TRANSLATION_COLUMN = 3;
 constexpr float32 ORTHOGRAPHIC_EYE_FLAGS =
@@ -36,7 +47,8 @@ struct ViewParameters final
     math::Vector4 EyeWorld;
     math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
     math::Vector4 Options;
-    math::Vector4 LightingView{}; // X: DeferredLightingView code. Y: one-based light index it isolates, or zero.
+    // X: DeferredLightingView code. Y: one-based isolated light index or zero. Z: work light enabled.
+    math::Vector4 LightingView{};
     math::Vector4 AtmosphereRadialUpWorld{};
     math::Vector4 AtmosphereSunWorld{};
     math::Vector4 AtmosphereIlluminance{};
@@ -122,10 +134,37 @@ bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
 }
+/// Bytes per pixel of one RGBA16F attachment and its private float32 depth, as the graph's DeferredAttachmentBytes.
+constexpr uint64 ATTACHMENT_BYTES_PER_PIXEL = 4 * sizeof(uint16) + sizeof(float32);
+/// Pick, in a shader's reflected binding order, the resources it declares from a table indexed by slot.
+Status SelectBindings(BorrowedView<const rhi::RasterBinding> declared,
+                      BorrowedView<const rhi::RasterBindingResource> bySlot,
+                      StaticArray<rhi::RasterBindingResource, DEFERRED_BINDING_COUNT>& outSelected,
+                      usize& outCount) noexcept
+{
+    outCount = 0;
+    for (const rhi::RasterBinding& binding : declared)
+    {
+        if (outCount == outSelected.GetSize() || binding.Binding >= bySlot.GetSize())
+        {
+            return Status::InvalidDescription;
+        }
+        outSelected[outCount++] = bySlot[binding.Binding];
+    }
+    return Status::Ready;
+}
 } // namespace
 
 RenderGraphDeferredProgram::~RenderGraphDeferredProgram() noexcept
 {
+    for (SkinStageResources& stage : mSkinStages)
+    {
+        static_cast<void>(rhi::Destroy(mDevice, stage.Pipeline));
+        static_cast<void>(rhi::Destroy(mDevice, stage.Layout));
+        static_cast<void>(rhi::Destroy(mDevice, stage.Shader));
+    }
+    static_cast<void>(rhi::Destroy(mDevice, mSkinVertex));
+    static_cast<void>(rhi::Destroy(mDevice, mSkinKernel));
     static_cast<void>(rhi::Destroy(mDevice, mPipeline));
     static_cast<void>(rhi::Destroy(mDevice, mDepthPipeline));
     static_cast<void>(rhi::Destroy(mDevice, mLayout));
@@ -151,14 +190,22 @@ Status RenderGraphDeferredProgram::Initialize(rhi::DeviceHandle device,
     constexpr uint64 LIGHTING_SCOPE = GEOMETRY_SCOPE + 1;
     constexpr uint64 DEPTH_SCOPE = LIGHTING_SCOPE + 1;
     constexpr uint64 OVERLAY_SCOPE = DEPTH_SCOPE + 1;
+    constexpr uint64 SKIN_BLUR_SCOPE = OVERLAY_SCOPE + 1;
+    constexpr uint64 SKIN_COMPOSITE_SCOPE = SKIN_BLUR_SCOPE + 1;
     constexpr char GEOMETRY_NAME[] = "Deferred/Material";
     constexpr char LIGHTING_NAME[] = "Deferred/Lighting";
     constexpr char DEPTH_NAME[] = "Deferred/PrepassDepth";
     constexpr char OVERLAY_NAME[] = "Deferred/Overlays";
+    constexpr char SKIN_BLUR_NAME[] = "Deferred/SkinBlur";
+    constexpr char SKIN_COMPOSITE_NAME[] = "Deferred/SkinComposite";
     if (rhi::MakeGpuScope(GEOMETRY_SCOPE, {GEOMETRY_NAME, sizeof(GEOMETRY_NAME) - 1}, mGeometryScope) == false ||
         rhi::MakeGpuScope(LIGHTING_SCOPE, {LIGHTING_NAME, sizeof(LIGHTING_NAME) - 1}, mLightingScope) == false ||
         rhi::MakeGpuScope(DEPTH_SCOPE, {DEPTH_NAME, sizeof(DEPTH_NAME) - 1}, mDepthScope) == false ||
-        rhi::MakeGpuScope(OVERLAY_SCOPE, {OVERLAY_NAME, sizeof(OVERLAY_NAME) - 1}, mOverlayScope) == false)
+        rhi::MakeGpuScope(OVERLAY_SCOPE, {OVERLAY_NAME, sizeof(OVERLAY_NAME) - 1}, mOverlayScope) == false ||
+        rhi::MakeGpuScope(SKIN_BLUR_SCOPE, {SKIN_BLUR_NAME, sizeof(SKIN_BLUR_NAME) - 1}, mSkinBlurScope) == false ||
+        rhi::MakeGpuScope(SKIN_COMPOSITE_SCOPE,
+                          {SKIN_COMPOSITE_NAME, sizeof(SKIN_COMPOSITE_NAME) - 1},
+                          mSkinCompositeScope) == false)
     {
         return Status::InvalidDescription;
     }
@@ -261,6 +308,117 @@ Status RenderGraphDeferredProgram::Poll() noexcept
     const Status status = rhi::GetStatus(mDevice, mPipeline);
     return mStatus = status == Status::Ready ? rhi::GetStatus(mDevice, mDepthPipeline) : status;
 }
+Status RenderGraphDeferredProgram::PrepareSkin() noexcept
+{
+    if (mIsInitialized == false || mStatus != Status::Ready)
+    {
+        return Status::InvalidState;
+    }
+    static_assert(SKIN_STAGE_COUNT == static_cast<usize>(SkinStage::Count));
+    if (mHasSkinResources == false)
+    {
+        mHasSkinResources = true;
+#if defined(LUDUS_RENDERER_SKIN_SHADERS)
+        const StaticArray<rhi::RasterShaderDescription, SKIN_STAGE_COUNT> descriptions{
+            {shaders::renderer_skin_deferred::Fragment(),
+             shaders::renderer_atmosphere_skin_deferred::Fragment(),
+             shaders::renderer_skin_blur::Fragment(),
+             shaders::renderer_skin_composite::Fragment()}};
+        Status status = rhi::CreateRasterShader(mDevice, shaders::renderer_skin_blur::Vertex(), mSkinVertex);
+        for (usize index = 0; index < SKIN_STAGE_COUNT && IsAccepted(status) == true; ++index)
+        {
+            SkinStageResources& stage = mSkinStages[index];
+            stage.Bindings = descriptions[index].Bindings;
+            status = rhi::CreateRasterShader(mDevice, descriptions[index], stage.Shader);
+            if (IsAccepted(status) == true)
+            {
+                status = rhi::CreateBindingLayout(mDevice, descriptions[index].Bindings, stage.Layout);
+            }
+        }
+        if (IsAccepted(status) == true)
+        {
+            const SkinDiffusionKernel kernel = MakeSkinDiffusionKernel();
+            status = rhi::CreateBuffer(mDevice,
+                                       {rhi::BufferRole::Uniform, sizeof(kernel.Words)},
+                                       {reinterpret_cast<const uint8*>(kernel.Words.GetData()), sizeof(kernel.Words)},
+                                       mSkinKernel);
+        }
+        mSkinStatus = status;
+#else
+        // Builds without offline shader tools have no built-in skin shaders.
+        mSkinStatus = Status::Unsupported;
+#endif
+    }
+    if (IsAccepted(mSkinStatus) == false)
+    {
+        return mSkinStatus;
+    }
+    Status ready = rhi::GetStatus(mDevice, mSkinVertex);
+    ready = ready == Status::Ready ? rhi::GetStatus(mDevice, mSkinKernel) : ready;
+    for (const SkinStageResources& stage : mSkinStages)
+    {
+        ready = ready == Status::Ready ? rhi::GetStatus(mDevice, stage.Shader) : ready;
+        ready = ready == Status::Ready ? rhi::GetStatus(mDevice, stage.Layout) : ready;
+    }
+    if (ready != Status::Ready)
+    {
+        return mSkinStatus = ready;
+    }
+    if (mHasSkinPipelines == false)
+    {
+        const StaticArray<rhi::RasterVertexStream, QUAD_STREAM_COUNT> streams{{{sizeof(math::Vector4), false}}};
+        const StaticArray<rhi::RasterVertexAttribute, QUAD_STREAM_COUNT> attributes{
+            {{0, 0, 0, rhi::RasterVertexFormat::Float4}}};
+        static constexpr StaticArray<rhi::RasterFormat, SKIN_LIGHTING_TARGET_COUNT> LIGHTING_FORMATS{
+            {rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float}};
+        Status status = Status::Ready;
+        for (usize index = 0; index < SKIN_STAGE_COUNT && IsAccepted(status) == true; ++index)
+        {
+            SkinStageResources& stage = mSkinStages[index];
+            rhi::RasterPipelineDescription description{mSkinVertex,
+                                                       stage.Shader,
+                                                       stage.Layout,
+                                                       {streams.GetData(), streams.GetSize()},
+                                                       {attributes.GetData(), attributes.GetSize()}};
+            const SkinStage kind = static_cast<SkinStage>(index);
+            description.Target =
+                kind == SkinStage::Composite ? rhi::RasterTarget::Rgba8Unorm : rhi::RasterTarget::Rgba16Float;
+            // The resolve and the blur draw into explicit attachment views, which need explicit formats; the
+            // composite draws into the graph output like the ordinary resolve.
+            if (kind == SkinStage::Lighting || kind == SkinStage::AtmosphereLighting)
+            {
+                description.ColorFormats = {LIGHTING_FORMATS.GetData(), LIGHTING_FORMATS.GetSize()};
+            }
+            else if (kind == SkinStage::Blur)
+            {
+                description.ColorFormats = {LIGHTING_FORMATS.GetData(), 1};
+            }
+            // The composite copies covered G-buffer depth into the graph output, as the ordinary resolve does.
+            description.Depth = kind == SkinStage::Composite;
+            description.DepthCompare = rhi::RasterDepthCompare::Always;
+            status = rhi::CreateRasterPipeline(mDevice, description, stage.Pipeline);
+        }
+        if (IsAccepted(status) == false)
+        {
+            return mSkinStatus = status;
+        }
+        mHasSkinPipelines = true;
+    }
+    for (const SkinStageResources& stage : mSkinStages)
+    {
+        const Status pipeline = rhi::GetStatus(mDevice, stage.Pipeline);
+        if (pipeline != Status::Ready)
+        {
+            return mSkinStatus = pipeline;
+        }
+    }
+    return mSkinStatus = Status::Ready;
+}
+const RenderGraphDeferredProgram::SkinStageResources&
+RenderGraphDeferredProgram::getSkinStage(SkinStage stage) const noexcept
+{
+    return mSkinStages[static_cast<usize>(stage)];
+}
 Status RenderGraphDeferredProgram::draw(rhi::RasterPipelineHandle pipeline, rhi::BindingSetHandle bindings) noexcept
 {
     const StaticArray<rhi::RasterVertexSlice, QUAD_STREAM_COUNT> vertices{{{mVertices, 0, QUAD_VERTEX_BYTES}}};
@@ -285,6 +443,12 @@ RenderGraphDeferredTargets::~RenderGraphDeferredTargets() noexcept
     static_cast<void>(rhi::Destroy(device, mDepthBindings));
     static_cast<void>(rhi::Destroy(device, mDepth));
     static_cast<void>(rhi::Destroy(device, mOutputDepth));
+    for (usize index = 0; index < SKIN_TARGET_COUNT; ++index)
+    {
+        static_cast<void>(rhi::Destroy(device, mSkinSampled[index]));
+        static_cast<void>(rhi::Destroy(device, mSkinAttachments[index]));
+        static_cast<void>(rhi::Destroy(device, mSkinTextures[index]));
+    }
     for (usize index = 0; index < DEFERRED_TARGET_COUNT; ++index)
     {
         static_cast<void>(rhi::Destroy(device, mSampled[index]));
@@ -387,13 +551,82 @@ Status RenderGraphDeferredTargets::Poll() noexcept
     return mStatus = rhi::GetStatus(device, mDepthBindings);
 }
 
+Status RenderGraphDeferredTargets::PrepareSkin() noexcept
+{
+    if (mProgramOrNull == nullptr || mStatus != Status::Ready)
+    {
+        return Status::InvalidState;
+    }
+    const rhi::DeviceHandle device = mProgramOrNull->mDevice;
+    if (mHasSkinTextures == false)
+    {
+        mHasSkinTextures = true;
+        const rhi::TextureDescription description{mWidth, mHeight, rhi::RasterFormat::Rgba16Float, true};
+        Status status = Status::Ready;
+        for (usize index = 0; index < SKIN_TARGET_COUNT && IsAccepted(status) == true; ++index)
+        {
+            status = rhi::CreateTexture(device, description, {}, mSkinTextures[index]);
+        }
+        mSkinStatus = status;
+    }
+    if (IsAccepted(mSkinStatus) == false)
+    {
+        return mSkinStatus;
+    }
+    for (const rhi::TextureHandle texture : mSkinTextures)
+    {
+        const Status status = rhi::GetStatus(device, texture);
+        if (status != Status::Ready)
+        {
+            return mSkinStatus = status;
+        }
+    }
+    if (mHasSkinViews == false)
+    {
+        Status status = Status::Ready;
+        for (usize index = 0; index < SKIN_TARGET_COUNT && IsAccepted(status) == true; ++index)
+        {
+            status = rhi::CreateTextureView(device, mSkinTextures[index], mSkinSampled[index]);
+            if (IsAccepted(status) == true)
+            {
+                rhi::TextureViewDescription attachment;
+                attachment.Attachment = true;
+                status = rhi::CreateTextureView(device, mSkinTextures[index], attachment, mSkinAttachments[index]);
+            }
+        }
+        if (IsAccepted(status) == false)
+        {
+            return mSkinStatus = status;
+        }
+        mHasSkinViews = true;
+    }
+    for (usize index = 0; index < SKIN_TARGET_COUNT; ++index)
+    {
+        const Status sampled = rhi::GetStatus(device, mSkinSampled[index]);
+        const Status attachment = rhi::GetStatus(device, mSkinAttachments[index]);
+        if (sampled != Status::Ready || attachment != Status::Ready)
+        {
+            return mSkinStatus = sampled != Status::Ready ? sampled : attachment;
+        }
+    }
+    return mSkinStatus = Status::Ready;
+}
+uint64 RenderGraphDeferredTargets::GetSkinAttachmentBytes() const noexcept
+{
+    return mHasSkinTextures == true ? uint64{mWidth} * mHeight * SKIN_TARGET_COUNT * ATTACHMENT_BYTES_PER_PIXEL : 0;
+}
+
 RenderGraphDeferredPass::~RenderGraphDeferredPass() noexcept
 {
     if (mTargetsOrNull != nullptr)
     {
         const rhi::DeviceHandle device = mTargetsOrNull->mProgramOrNull->mDevice;
         static_cast<void>(rhi::Destroy(device, mBindings));
+        static_cast<void>(rhi::Destroy(device, mSkinLightingBindings));
+        static_cast<void>(rhi::Destroy(device, mSkinBlurBindings));
+        static_cast<void>(rhi::Destroy(device, mSkinCompositeBindings));
         static_cast<void>(rhi::Destroy(device, mParameters));
+        static_cast<void>(rhi::Destroy(device, mSkinProfiles));
     }
 }
 Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTargets,
@@ -465,9 +698,11 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         mExposure,
         static_cast<float32>(mToneCurve),
     };
+    const bool shouldShowWorkLight = camera.ShouldShowWorkLight == true && camera.Reference == false &&
+                                     camera.LightingView == DeferredLightingView::Final;
     parameters.LightingView = {static_cast<float32>(camera.LightingView),
                                static_cast<float32>(lights.LightingViewLightIndex),
-                               0,
+                               shouldShowWorkLight == true ? 1.0F : 0.0F,
                                0};
     if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
     {
@@ -501,6 +736,16 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                {rhi::BufferRole::Uniform, sizeof(parameters)},
                                {reinterpret_cast<const uint8*>(&parameters), sizeof(parameters)},
                                mParameters);
+    // Lighting views draw single terms through the ordinary resolve, so only the final colour spreads skin.
+    mShouldSpreadSkin = mMaterial.HasSkin == true && camera.LightingView == DeferredLightingView::Final;
+    if (IsAccepted(status) == true && mShouldSpreadSkin == true)
+    {
+        const StaticArray<math::Vector4, DEFERRED_MAX_SKIN_PROFILES>& profiles = mMaterial.SkinProfiles;
+        status = rhi::CreateBuffer(inoutTargets.mProgramOrNull->mDevice,
+                                   {rhi::BufferRole::Uniform, sizeof(profiles)},
+                                   {reinterpret_cast<const uint8*>(profiles.GetData()), sizeof(profiles)},
+                                   mSkinProfiles);
+    }
     mStatus = status;
     return IsAccepted(status) == true ? Poll() : status;
 }
@@ -564,6 +809,7 @@ Status RenderGraphDeferredPass::Poll() noexcept
         };
         AtmosphereLightingResources atmosphereResources;
         rhi::BindingLayoutHandle layout = program.mLayout;
+        mIsAtmosphereLit = false;
         mLightingPipeline = program.mPipeline;
         usize bindingCount = bindings.GetSize();
         if (mAtmosphere.TryGetLightingResources(atmosphereResources) == true)
@@ -579,6 +825,7 @@ Status RenderGraphDeferredPass::Poll() noexcept
                 .Texture = atmosphereResources.Transmittance,
             };
             bindings[DEFERRED_VIEW_BINDING].Size = sizeof(ViewParameters);
+            mIsAtmosphereLit = true;
             StaticArray<rhi::RasterBindingResource, DEFERRED_BINDING_COUNT> selected{};
             bindingCount = 0;
             for (const rhi::RasterBinding& binding : atmosphereResources.Bindings)
@@ -589,9 +836,14 @@ Status RenderGraphDeferredPass::Poll() noexcept
                 }
                 selected[bindingCount++] = bindings[binding.Binding];
             }
+            mResolveResources = bindings;
             bindings = selected;
             layout = atmosphereResources.Layout;
             mLightingPipeline = atmosphereResources.Pipeline;
+        }
+        if (mIsAtmosphereLit == false)
+        {
+            mResolveResources = bindings;
         }
         const Status status =
             rhi::CreateBindingSet(program.mDevice, layout, {bindings.GetData(), bindingCount}, mBindings);
@@ -601,7 +853,203 @@ Status RenderGraphDeferredPass::Poll() noexcept
         }
         mHasBindings = true;
     }
-    return mStatus = rhi::GetStatus(program.mDevice, mBindings);
+    const Status bindings = rhi::GetStatus(program.mDevice, mBindings);
+    if (bindings != Status::Ready || mShouldSpreadSkin == false)
+    {
+        return mStatus = bindings;
+    }
+    return mStatus = pollSkin();
+}
+Status RenderGraphDeferredPass::pollSkin() noexcept
+{
+    using Stage = RenderGraphDeferredProgram::SkinStage;
+    RenderGraphDeferredProgram& program = *mTargetsOrNull->mProgramOrNull;
+    RenderGraphDeferredTargets& targets = *mTargetsOrNull;
+    const Status prepared = program.PrepareSkin();
+    if (prepared == Status::Unsupported)
+    {
+        // Builds without the built-in shaders shade skin as its metallic/roughness surface.
+        mHasSkin = false;
+        return Status::Ready;
+    }
+    if (prepared != Status::Ready)
+    {
+        return prepared;
+    }
+    const Status allocated = targets.PrepareSkin();
+    if (allocated != Status::Ready)
+    {
+        return allocated;
+    }
+    const Status profiles = rhi::GetStatus(program.mDevice, mSkinProfiles);
+    if (profiles != Status::Ready)
+    {
+        return profiles;
+    }
+    if (mHasSkinBindings == false)
+    {
+        const RenderGraphDeferredProgram::SkinStageResources& lighting =
+            program.getSkinStage(mIsAtmosphereLit == true ? Stage::AtmosphereLighting : Stage::Lighting);
+        StaticArray<rhi::RasterBindingResource, DEFERRED_BINDING_COUNT> selected{};
+        usize count = 0;
+        Status status = SelectBindings(lighting.Bindings,
+                                       {mResolveResources.GetData(), mResolveResources.GetSize()},
+                                       selected,
+                                       count);
+        if (status == Status::Ready)
+        {
+            status = rhi::CreateBindingSet(program.mDevice,
+                                           lighting.Layout,
+                                           {selected.GetData(), count},
+                                           mSkinLightingBindings);
+        }
+        mSkinLightingPipeline = lighting.Pipeline;
+        constexpr usize RADIANCE = static_cast<usize>(RenderGraphDeferredTargets::SkinTarget::Radiance);
+        constexpr usize DIFFUSE = static_cast<usize>(RenderGraphDeferredTargets::SkinTarget::Diffuse);
+        constexpr usize BLURRED = static_cast<usize>(RenderGraphDeferredTargets::SkinTarget::Blurred);
+        // G-buffer targets follow their resolve slots from DEFERRED_NORMAL_BINDING.
+        constexpr usize NORMAL_TARGET = 0;
+        constexpr usize BASE_TARGET = DEFERRED_BASE_BINDING - DEFERRED_NORMAL_BINDING;
+        StaticArray<rhi::RasterBindingResource, LUDUS_SKIN_BINDING_COUNT> diffusion{};
+        diffusion[LUDUS_SKIN_SOURCE_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_SOURCE_BINDING,
+            .Texture = targets.mSkinSampled[DIFFUSE],
+        };
+        diffusion[LUDUS_SKIN_RADIANCE_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_RADIANCE_BINDING,
+            .Texture = targets.mSkinSampled[RADIANCE],
+        };
+        diffusion[LUDUS_SKIN_NORMAL_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_NORMAL_BINDING,
+            .Texture = targets.mSampled[NORMAL_TARGET],
+        };
+        diffusion[LUDUS_SKIN_BASE_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_BASE_BINDING,
+            .Texture = targets.mSampled[BASE_TARGET],
+        };
+        diffusion[LUDUS_SKIN_PROFILE_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_PROFILE_BINDING,
+            .Buffer = mSkinProfiles,
+            .Size = sizeof(DeferredMaterialBindings::SkinProfiles),
+        };
+        diffusion[LUDUS_SKIN_DEPTH_BINDING] = { .Binding = LUDUS_SKIN_DEPTH_BINDING, .Texture = targets.mDepth };
+        diffusion[LUDUS_SKIN_VIEW_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_VIEW_BINDING,
+            .Buffer = mParameters,
+            .Size = VIEW_BYTES,
+        };
+        diffusion[LUDUS_SKIN_KERNEL_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_KERNEL_BINDING,
+            .Buffer = program.mSkinKernel,
+            .Size = sizeof(SkinDiffusionKernel::Words),
+        };
+        const RenderGraphDeferredProgram::SkinStageResources& blur = program.getSkinStage(Stage::Blur);
+        if (status == Status::Ready)
+        {
+            status = SelectBindings(blur.Bindings, {diffusion.GetData(), diffusion.GetSize()}, selected, count);
+        }
+        if (status == Status::Ready)
+        {
+            status =
+                rhi::CreateBindingSet(program.mDevice, blur.Layout, {selected.GetData(), count}, mSkinBlurBindings);
+        }
+        // The composite spreads the horizontal blur vertically.
+        diffusion[LUDUS_SKIN_SOURCE_BINDING].Texture = targets.mSkinSampled[BLURRED];
+        const RenderGraphDeferredProgram::SkinStageResources& composite = program.getSkinStage(Stage::Composite);
+        if (IsAccepted(status) == true)
+        {
+            status = SelectBindings(composite.Bindings, {diffusion.GetData(), diffusion.GetSize()}, selected, count);
+        }
+        if (status == Status::Ready)
+        {
+            status = rhi::CreateBindingSet(program.mDevice,
+                                           composite.Layout,
+                                           {selected.GetData(), count},
+                                           mSkinCompositeBindings);
+        }
+        if (IsAccepted(status) == false)
+        {
+            return status;
+        }
+        mHasSkinBindings = true;
+    }
+    const StaticArray<rhi::BindingSetHandle, SKIN_STAGE_COUNT - 1> bindingSets{
+        {mSkinLightingBindings, mSkinBlurBindings, mSkinCompositeBindings}};
+    for (const rhi::BindingSetHandle bindings : bindingSets)
+    {
+        const Status status = rhi::GetStatus(program.mDevice, bindings);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
+    mHasSkin = true;
+    return Status::Ready;
+}
+Status RenderGraphDeferredPass::drawSkin(const rhi::RasterPassDescription& lighting) noexcept
+{
+    using Stage = RenderGraphDeferredProgram::SkinStage;
+    RenderGraphDeferredTargets& targets = *mTargetsOrNull;
+    RenderGraphDeferredProgram& program = *targets.mProgramOrNull;
+    constexpr usize RADIANCE = static_cast<usize>(RenderGraphDeferredTargets::SkinTarget::Radiance);
+    constexpr usize DIFFUSE = static_cast<usize>(RenderGraphDeferredTargets::SkinTarget::Diffuse);
+    constexpr usize BLURRED = static_cast<usize>(RenderGraphDeferredTargets::SkinTarget::Blurred);
+    Status status = Status::Ready;
+    {
+        const rhi::GpuScope scope(program.mDevice, program.mLightingScope);
+        StaticArray<rhi::RasterColorAttachment, SKIN_LIGHTING_TARGET_COUNT> colors{};
+        colors[0].View = targets.mSkinAttachments[RADIANCE];
+        colors[1].View = targets.mSkinAttachments[DIFFUSE];
+        for (rhi::RasterColorAttachment& color : colors)
+        {
+            color.Clear[ALPHA_CHANNEL] = 0;
+        }
+        rhi::RasterPassDescription resolve;
+        resolve.Colors = colors.GetData();
+        resolve.ColorCount = colors.GetSize();
+        status = rhi::BeginRasterPass(program.mDevice, resolve);
+        if (status == Status::Ready)
+        {
+            status = program.draw(mSkinLightingPipeline, mSkinLightingBindings);
+        }
+    }
+    if (status == Status::Ready)
+    {
+        const rhi::GpuScope scope(program.mDevice, program.mSkinBlurScope);
+        rhi::RasterColorAttachment color;
+        color.View = targets.mSkinAttachments[BLURRED];
+        color.Clear[ALPHA_CHANNEL] = 0;
+        rhi::RasterPassDescription blur;
+        blur.Colors = &color;
+        blur.ColorCount = 1;
+        status = rhi::BeginRasterPass(program.mDevice, blur);
+        if (status == Status::Ready)
+        {
+            status = program.draw(program.getSkinStage(Stage::Blur).Pipeline, mSkinBlurBindings);
+        }
+    }
+    if (status == Status::Ready)
+    {
+        const rhi::GpuScope scope(program.mDevice, program.mSkinCompositeScope);
+        const rhi::RasterVertexSlice fullscreenVertices{program.mVertices, 0, QUAD_VERTEX_BYTES};
+        status = rhi::BeginRasterPass(program.mDevice, lighting);
+        if (status == Status::Ready)
+        {
+            status = mAtmosphere.RecordSky(fullscreenVertices, program.mIndices);
+        }
+        if (status == Status::Ready)
+        {
+            status = program.draw(program.getSkinStage(Stage::Composite).Pipeline, mSkinCompositeBindings);
+        }
+    }
+    return status;
 }
 Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
                                      PreparedView view,
@@ -655,6 +1103,11 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
     }
     rhi::RasterPassDescription lighting = description;
     lighting.ClearDepth = mClearDepth;
+    if (status == Status::Ready && mHasSkin == true)
+    {
+        status = drawSkin(lighting);
+    }
+    else
     {
         const rhi::GpuScope scope(program.mDevice, program.mLightingScope);
         if (status == Status::Ready)

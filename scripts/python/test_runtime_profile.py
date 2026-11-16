@@ -87,9 +87,9 @@ def rhi_parser(**table_overrides):
     return {"kind": "tagged-rows", "tables": [table], "observe": ["R7ADAPTER", "R7PROFILE", "R5BACKEND"]}
 
 
-def trace_document(tick_microseconds=1.0):
+def trace_document(tick_microseconds=1.0, frame_count=3):
     events = []
-    for frame in range(3):
+    for frame in range(frame_count):
         start = frame * 10.0
         events += [
             {"pid": 1, "tid": 0, "ts": start, "ph": "B", "name": "Tick"},
@@ -442,6 +442,24 @@ class Parsers(unittest.TestCase):
         self.assertEqual(metrics["frames/interval_median_ns"], 10000.0)
         complete = runtime_profile.parse_perfetto_scopes([{"pid": 1, "tid": 0, "ts": 0, "ph": "X", "dur": 2, "name": "Job"}])
         self.assertEqual(complete["scope=Job/median_ns"], 2000.0)
+        self.assertEqual(complete["scope=Job/max_ns"], 2000.0)
+
+    def test_perfetto_maxima_expose_a_spike_hidden_by_p95(self):
+        document = trace_document(frame_count=22)
+        baseline = runtime_profile.parse_perfetto_scopes(document)
+        scope_end, frame_mark = document["traceEvents"][-2:]
+        scope_end["ts"] += 40
+        frame_mark["ts"] += 40
+        metrics = runtime_profile.parse_perfetto_scopes(document)
+        self.assertEqual(metrics["scope=Tick/p95_ns"], baseline["scope=Tick/p95_ns"])
+        self.assertEqual(metrics["frames/interval_p95_ns"], baseline["frames/interval_p95_ns"])
+        self.assertEqual(metrics["scope=Tick/max_ns"], 44000.0)
+        self.assertEqual(metrics["frames/interval_max_ns"], 50000.0)
+
+    def test_perfetto_requires_two_markers_for_an_interval(self):
+        metrics = runtime_profile.parse_perfetto_scopes(trace_document(frame_count=1))
+        self.assertEqual(metrics["frames/count"], 1.0)
+        self.assertNotIn("frames/interval_max_ns", metrics)
 
     def test_perfetto_rejects_misnested_or_empty_traces(self):
         document = trace_document()
@@ -513,11 +531,19 @@ class Execution(unittest.TestCase):
     def test_trace_scenarios_pass_an_output_path_and_keep_one_trace(self):
         scenario = self.scenario(trace=True, parser={"kind": "perfetto-scopes"}, arguments=["--headless"])
         runner = FakeRunner([""], trace=trace_document())
-        result = runtime_profile.run_scenario(scenario, self.build, self.output, runner=runner)
+        runtime_profile.run_scenarios(
+            ROOT, "test-profile", self.build, self.output, [(scenario, None)], set(), compiler="clang",
+            runner=runner, system_gpus=list)
+        result = json.loads((self.output / "report.json").read_text())["scenarios"][0]
         self.assertEqual(result["status"], "passed", result.get("reason"))
         self.assertEqual(runner.commands[0][1:3], ["--headless", "--trace-output"])
         self.assertEqual(result["trace"], "traces/sample.json")
         self.assertTrue((self.output / "traces/sample.json").is_file())
+        self.assertEqual(result["metrics"]["frames/interval_max_ns"]["median"], 10000.0)
+        self.assertEqual(result["metrics"]["scope=Tick/max_ns"]["median"], 4000.0)
+        summary = (self.output / "summary.md").read_text()
+        self.assertIn("`frames/interval_max_ns` | 10 µs", summary)
+        self.assertIn("`scope=Tick/max_ns` | 4 µs", summary)
 
     def test_failures_are_reported_not_raised(self):
         cases = {

@@ -1,5 +1,7 @@
 #include "internal/world_celestial_light.h"
 
+#include "internal/world_earth_time_zone.h"
+
 #include <ludus/foundation/base/types.h>
 #include <ludus/gameplay/world/celestial_transform.hpp>
 
@@ -125,6 +127,15 @@ QJsonArray MakeWorldCelestialProperties()
             .Minimum = -MAX_EARTH_CELESTIAL_DAYS,
             .Maximum = MAX_EARTH_CELESTIAL_DAYS,
         }),
+        QJsonObject{
+            {QStringLiteral("id"), WORLD_CELESTIAL_TIME_ZONE},
+            {QStringLiteral("label"), QStringLiteral("Time Zone")},
+            {QStringLiteral("type"), QStringLiteral("string")},
+            {QStringLiteral("default"), WORLD_EARTH_UTC_TIME_ZONE},
+            {QStringLiteral("help"),
+             QStringLiteral("Clock that shows the Earth date and time. Choosing a different zone keeps the clock "
+                            "reading, so noon stays noon. The World stores the instant in UTC.")},
+            {QStringLiteral("unit"), QString()}},
         MakeCelestialNumberProperty(
         {
             .Id = WORLD_CELESTIAL_LATITUDE,
@@ -226,7 +237,8 @@ WorldCelestialFieldGroup GetWorldCelestialFieldGroup(QStringView property)
     {
         return WorldCelestialFieldGroup::Observer;
     }
-    if (property == WORLD_CELESTIAL_TIME || property == WORLD_CELESTIAL_MANUAL_PHOTOMETRY)
+    if (property == WORLD_CELESTIAL_TIME || property == WORLD_CELESTIAL_TIME_ZONE ||
+        property == WORLD_CELESTIAL_MANUAL_PHOTOMETRY)
     {
         return WorldCelestialFieldGroup::Earth;
     }
@@ -253,12 +265,14 @@ bool IsWorldEarthLight(const QJsonObject& light)
 
 bool AreWorldEarthObserversEqual(const QJsonObject& first, const QJsonObject& second)
 {
-    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
     {
+        const QJsonValue omitted =
+            property == WORLD_CELESTIAL_TIME_ZONE ? QJsonValue(WORLD_EARTH_UTC_TIME_ZONE) : QJsonValue(0);
         const QJsonValue firstValue = first.value(property);
         const QJsonValue secondValue = second.value(property);
-        if ((firstValue.isUndefined() == true ? QJsonValue(0) : firstValue) !=
-            (secondValue.isUndefined() == true ? QJsonValue(0) : secondValue))
+        if ((firstValue.isUndefined() == true ? omitted : firstValue) !=
+            (secondValue.isUndefined() == true ? omitted : secondValue))
         {
             return false;
         }
@@ -268,7 +282,7 @@ bool AreWorldEarthObserversEqual(const QJsonObject& first, const QJsonObject& se
 
 void CopyWorldEarthObserver(const QJsonObject& source, QJsonObject& inoutLight)
 {
-    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
     {
         const QJsonValue value = source.value(property);
         if (value.isUndefined() == true)
@@ -293,7 +307,7 @@ void RemoveWorldEarthObserver(QJsonObject& inoutEntity)
 {
     QJsonObject components = inoutEntity.value(QStringLiteral("components")).toObject();
     QJsonObject light = components.value(QStringLiteral("light")).toObject();
-    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
     {
         light.remove(property);
     }
@@ -377,7 +391,7 @@ void LiftWorldEarthObserver(const QJsonObject& previousWorld, qsizetype editedIn
             ? QJsonObject{}
             : GetWorldEarthObserver(previousWorld);
     const QJsonObject shown = MakeWorldLightValues(previousLight, previousWorld);
-    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
     {
         const QJsonValue proposed = light.value(property);
         if (proposed.isUndefined() == false &&
@@ -408,11 +422,20 @@ bool IsWorldEarthObserverValid(const QJsonValue& value)
     }
     const QJsonObject observer = value.toObject();
     qsizetype known = 0;
-    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
     {
         const QJsonValue member = observer.value(property);
         if (member.isUndefined() == true)
         {
+            continue;
+        }
+        ++known;
+        if (property == WORLD_CELESTIAL_TIME_ZONE)
+        {
+            if (member.isString() == false || IsEarthTimeZoneIdValid(member.toString()) == false)
+            {
+                return false;
+            }
             continue;
         }
         const float64 limit = property == WORLD_CELESTIAL_TIME       ? MAX_EARTH_CELESTIAL_DAYS
@@ -423,7 +446,6 @@ bool IsWorldEarthObserverValid(const QJsonValue& value)
         {
             return false;
         }
-        ++known;
     }
     return known == observer.size();
 }

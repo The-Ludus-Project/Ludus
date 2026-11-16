@@ -916,28 +916,39 @@ TEST_CASE("Rejected extractions name their scene-level cause for the drawing gra
 }
 
 TEST_CASE("A graph without clustered deferred programs draws a World with an Atmosphere and reports the omission",
-          "[render-graph][activation]")
+          "[render-graph][activation][world-features]")
 {
     ActivationFixture fixture;
     fixture.ActivateFirst();
     renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
     REQUIRE(activeOrNull != nullptr);
+    // The fixture's raster graph has neither clustered deferred programs nor a ray kernel calling a feature function.
+    CHECK(activeOrNull->GetWorldFeatureSupport(renderer::WorldFeature::AtmosphereSky) ==
+          renderer::WorldFeatureSupport::NotRendered);
+    CHECK(activeOrNull->GetWorldFeatureSupport(renderer::WorldFeature::AerialPerspective) ==
+          renderer::WorldFeatureSupport::NotRendered);
     renderer::RenderGraphReport report;
     REQUIRE(fixture.Update(report, 2) == rhi::RasterStatus::Ready);
-    CHECK(report.IsAtmosphereOmitted == false);
-    // The fixture graph has no clustered deferred programs, so it cannot compose an Atmosphere. It draws the rest of
-    // the World rather than rejecting the extraction.
+    CHECK(report.UnrenderedWorldFeatures == 0);
+    // It draws the rest of the World rather than rejecting the extraction, and names both missing features.
     fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    fixture.Cameras[0].Atmosphere.ShouldLightScene = true;
     REQUIRE(fixture.Update(report, 3) == rhi::RasterStatus::Ready);
+    const renderer::WorldFeatureMask both = renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky) |
+                                            renderer::GetWorldFeatureBit(renderer::WorldFeature::AerialPerspective);
     CHECK(report.IsAccepted == true);
-    CHECK(report.IsAtmosphereOmitted == true);
+    CHECK(report.UnrenderedWorldFeatures == both);
     CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
-    CHECK(activeOrNull->GetReport().IsAtmosphereOmitted == true);
+    CHECK(activeOrNull->GetReport().UnrenderedWorldFeatures == both);
     CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    // An Atmosphere that does not light the scene draws no haze, so only its sky is missing.
+    fixture.Cameras[0].Atmosphere.ShouldLightScene = false;
+    REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
     // Turning the Atmosphere off clears the report on the next accepted extraction.
     fixture.Cameras[0].Atmosphere.IsEnabled = false;
-    REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
-    CHECK(report.IsAtmosphereOmitted == false);
+    REQUIRE(fixture.Update(report, 5) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == 0);
 }
 
 TEST_CASE("RG3 a newer candidate supersedes an unactivated one", "[render-graph][activation]")
@@ -1807,9 +1818,10 @@ TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use
 namespace
 {
 /// One WGSL ray generation: the given compute role and the ray image pair, then the scene resource word.
-Array<uint8> MakeRayPackageBytes(format::StageRole compute, uint32 sceneResources)
+/// base supplies the version and any other plan option; the ray program and accumulation are fixed.
+Array<uint8> MakeRayPackageBytes(format::StageRole compute, uint32 sceneResources, const PackageOptions& base = {})
 {
-    PackageOptions options;
+    PackageOptions options = base;
     options.Program = format::Technique::RayTracing;
     options.AccumulationSamples = 2;
     PackageWriter writer;
@@ -1912,6 +1924,63 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
     raster.WriteWord(static_cast<uint32>(options.PassName.size()));
     raster.WritePadded(options.PassName);
     CHECK(DecodeBytes(raster.Bytes) == renderer::RenderGraphPackageStatus::Malformed);
+}
+
+TEST_CASE("RG3 version 38 packages append the World-feature tables in slot order",
+          "[render-graph][activation][world-features]")
+{
+    constexpr uint32 ALL_TABLES = format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY |
+                                  format::SCENE_RESOURCE_ATMOSPHERE_SKY | format::SCENE_RESOURCE_AERIAL_PERSPECTIVE;
+    for (const format::StageRole compute :
+         {format::StageRole::SceneRayCompute, format::StageRole::PersistentRayCompute})
+    {
+        renderer::RenderGraphPackage plain;
+        const Array<uint8> plainBytes = MakeRayPackageBytes(compute, format::SCENE_RESOURCE_FAILURE_SUMMARY);
+        REQUIRE(plain.Decode({plainBytes.GetData(), plainBytes.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms ordinary = plain.GetPrograms({}, {});
+        CHECK(ordinary.HasAtmosphereSky == false);
+        CHECK(ordinary.HasAerialPerspective == false);
+        CHECK(renderer::GetWorldFeatureSupport(ordinary, renderer::WorldFeature::AtmosphereSky) ==
+              renderer::WorldFeatureSupport::NotRendered);
+
+        renderer::RenderGraphPackage featured;
+        const Array<uint8> featuredBytes = MakeRayPackageBytes(compute, ALL_TABLES);
+        REQUIRE(featured.Decode({featuredBytes.GetData(), featuredBytes.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = featured.GetPrograms({}, {});
+        CHECK(programs.HasAtmosphereSky == true);
+        CHECK(programs.HasAerialPerspective == true);
+        CHECK(renderer::GetWorldFeatureSupport(programs, renderer::WorldFeature::AtmosphereSky) ==
+              renderer::WorldFeatureSupport::Approximated);
+        CHECK(renderer::GetWorldFeatureSupport(programs, renderer::WorldFeature::AerialPerspective) ==
+              renderer::WorldFeatureSupport::Approximated);
+        // The renderer-owned slots close the frozen ABI in slot order, as reflection orders them in a header.
+        const usize count = programs.RayCompute.Bindings.GetSize();
+        constexpr usize RENDERER_SLOTS = 4;
+        REQUIRE(count == ordinary.RayCompute.Bindings.GetSize() - LUDUS_GRAPH_FAILURE_BINDING_COUNT + RENDERER_SLOTS);
+        const StaticArray<uint32, RENDERER_SLOTS> expected{{LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                                                            LUDUS_GRAPH_LTC_TABLE_BINDING,
+                                                            LUDUS_GRAPH_FAILURE_BINDING,
+                                                            LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING}};
+        for (usize i = 0; i < RENDERER_SLOTS; ++i)
+        {
+            const rhi::RasterBinding& binding = programs.RayCompute.Bindings[count - RENDERER_SLOTS + i];
+            CHECK(binding.Binding == expected[i]);
+            CHECK(binding.Visibility == rhi::RasterVisibility::Compute);
+        }
+        CHECK(programs.RayCompute.Bindings[count - 1].Kind == rhi::RasterBindingKind::StorageRead);
+        CHECK(programs.RayCompute.Bindings[count - 1].MinSize == LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    }
+    // Earlier generations never carry the World-feature bits.
+    PackageOptions earlier;
+    earlier.Version = format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION;
+    CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute,
+                                          format::SCENE_RESOURCE_ATMOSPHERE_SKY,
+                                          earlier)) == renderer::RenderGraphPackageStatus::Malformed);
+    CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute,
+                                          format::SCENE_RESOURCE_AERIAL_PERSPECTIVE,
+                                          earlier)) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
 TEST_CASE("deferred runtime roles are complete per target and require the mesh-light binding version",

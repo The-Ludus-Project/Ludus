@@ -400,6 +400,10 @@ function(ludus_editor_add_builtin_world target)
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/plane.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/sphere.mesh.json")
+    # Public-domain tzdb zone.tab: the time zone of a chosen Earth location (world_earth_time_zone.cpp).
+    qt_add_resources(${target} ludus_earth_time_zones
+        PREFIX "/time-zones" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/time_zones"
+        FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/time_zones/zone.tab")
 endfunction()
 
 # The default graph's authored sources, read-only inside the editor (also in builds
@@ -844,6 +848,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_celestial_light.h src/world_celestial_light.cpp
     src/internal/world_earth_location.h src/world_earth_location.cpp
     src/internal/world_earth_time_field.h src/world_earth_time_field.cpp
+    src/internal/world_earth_time_zone.h src/world_earth_time_zone.cpp
     src/world_document.cpp
     src/world_probe_volume.cpp
     src/world_terrain.cpp

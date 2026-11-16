@@ -12,6 +12,7 @@
 #include "internal/render_graph_ray_path.h"
 #include "internal/render_graph_scene_resources.h"
 #include "internal/render_graph_upscale.h"
+#include "internal/render_graph_world_features.h"
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -55,9 +56,11 @@ constexpr usize MAX_RETAINED_SCENES = 3;
 /// Material programs a forward-profile color context prewarms at most: the ordinary program plus the deferred
 /// profile's surface-chart and probe programs (the forward-lit profile has only a chart program).
 constexpr usize FORWARD_MATERIAL_PROGRAM_COUNT = 3;
-/// Frozen ray compute ABI, visibility textures, structured storage and the diagnostic capture slot.
+/// Frozen ray compute ABI, visibility textures, structured storage, the diagnostic capture slot and the
+/// renderer-owned tables.
 constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 +
-                                               LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
+                                               LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT +
+                                               LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
 constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
@@ -986,6 +989,8 @@ struct RenderGraph::State final
     bool HasDeferredProgram = false;
     /// Update's cameras in the depth convention this graph draws; see RenderGraph::CanUseReverseDepth.
     StaticArray<ViewDescription, format::MAX_CAMERAS> AdmittedCameras{};
+    /// Sky, haze and substituted scene inputs of the latest ray scene preparation; reused across updates.
+    internal::RenderGraphWorldTables WorldTables;
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardSurfaceChartProgram = false;
@@ -1073,6 +1078,8 @@ struct RenderGraph::State final
         uint64 ContentRevision = 0;
         uint64 DeferredAttachmentBytes = 0;
         RenderGraphSceneRevisions Revisions{};
+        /// Atmosphere of the ray camera the World-feature tables were resolved from (internal::AreRayAtmospheresEqual).
+        AtmosphereDescription RayAtmosphere{};
         RenderGraphCoveragePolicy CoveragePolicy = RenderGraphCoveragePolicy::RejectIncomplete;
         /// Samples whose every band was submitted; one per frame when untiled.
         uint32 SubmittedRaySamples = 0;
@@ -2609,25 +2616,48 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
-    // A graph ray kernel's failure summary is its last binding; the LTC table, when the programs declare it,
-    // precedes it.
-    const std::span<const rhi::RasterBinding> allRayBindings = {programs.RayCompute.Bindings.GetDataOrNull(),
-                                                                programs.RayCompute.Bindings.GetSize()};
-    const bool hasFailureBinding =
-        allRayBindings.empty() == false && allRayBindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING;
-    if (hasFailureBinding == true && (allRayBindings.back().Kind != rhi::RasterBindingKind::StorageReadWrite ||
-                                      allRayBindings.back().MinSize != sizeof(uint32)))
+    // A graph ray kernel's renderer-owned bindings close its binding list in slot order: the aerial perspective table,
+    // the LTC table, the failure summary, then the Atmosphere sky. Each table appears exactly when the programs
+    // declare it, so peel them from the back.
+    std::span<const rhi::RasterBinding> rayBindings = {programs.RayCompute.Bindings.GetDataOrNull(),
+                                                       programs.RayCompute.Bindings.GetSize()};
+    const auto peelBinding = [&rayBindings](uint32 slot, rhi::RasterBindingKind kind, usize size, bool& outHasBinding) {
+        outHasBinding = rayBindings.empty() == false && rayBindings.back().Binding == slot;
+        if (outHasBinding == false)
+        {
+            return true;
+        }
+        const bool isValid = rayBindings.back().Kind == kind && rayBindings.back().MinSize == size;
+        rayBindings = rayBindings.first(rayBindings.size() - 1);
+        return isValid;
+    };
+    bool hasSkyBinding = false;
+    bool hasFailureBinding = false;
+    bool hasLtcBinding = false;
+    bool hasAerialBinding = false;
+    if (peelBinding(LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING,
+                    rhi::RasterBindingKind::StorageRead,
+                    LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                    hasSkyBinding) == false ||
+        peelBinding(LUDUS_GRAPH_FAILURE_BINDING,
+                    rhi::RasterBindingKind::StorageReadWrite,
+                    sizeof(uint32),
+                    hasFailureBinding) == false ||
+        peelBinding(LUDUS_GRAPH_LTC_TABLE_BINDING,
+                    rhi::RasterBindingKind::StorageRead,
+                    LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                    hasLtcBinding) == false ||
+        peelBinding(LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                    rhi::RasterBindingKind::StorageRead,
+                    LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                    hasAerialBinding) == false)
     {
         return Status::InvalidDescription;
     }
-    const std::span<const rhi::RasterBinding> rayBindings = allRayBindings.first(
-        allRayBindings.size() - (hasFailureBinding == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0));
-    const bool hasLtcBinding =
-        rayBindings.empty() == false && rayBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING;
-    if (hasLtcBinding != programs.HasLtcTable ||
-        (hasLtcBinding == true &&
-         (programs.HasSceneShaderInterface == false || rayBindings.back().Kind != rhi::RasterBindingKind::StorageRead ||
-          rayBindings.back().MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES)))
+    if (hasLtcBinding != programs.HasLtcTable || hasSkyBinding != programs.HasAtmosphereSky ||
+        hasAerialBinding != programs.HasAerialPerspective ||
+        ((hasLtcBinding == true || hasSkyBinding == true || hasAerialBinding == true) &&
+         programs.HasSceneShaderInterface == false))
     {
         return Status::InvalidDescription;
     }
@@ -2707,11 +2737,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (programs.HasRayPathCapture == true)
     {
         // Runtime-package stage metadata never names the diagnostic slot; generated headers reflect it.
-        // The capture slot precedes the trailing LTC table and failure summary bindings, keeping slot order.
+        // The capture slot precedes the trailing renderer-owned bindings peeled above, keeping slot order.
         const std::span<const rhi::RasterBinding> bindings = {programs.RayCompute.Bindings.GetDataOrNull(),
                                                               programs.RayCompute.Bindings.GetSize()};
-        const usize kernelCount = bindings.size() - (hasLtcBinding == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) -
-                                  (hasFailureBinding == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0);
+        const usize kernelCount = rayBindings.size();
         const bool hasCaptureBinding =
             kernelCount != 0 && bindings[kernelCount - 1].Binding == LUDUS_RAY_PATH_CAPTURE_BINDING;
         const usize count = bindings.size() + (hasCaptureBinding == true ? 0 : 1);
@@ -3370,17 +3399,47 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     // Admit each camera in the convention every pass of this graph can draw and rebuild positions from. The
     // conventional rewrite is exact for a finite projection: reverse-Z depth z/w becomes (w - z)/w.
     const bool canUseReverseDepth = state.CanUseReverseDepth();
-    bool isAtmosphereOmitted = false;
+    // An Atmosphere is an optional World feature. Only the clustered deferred programs compose it in raster passes; a
+    // ray kernel draws it through the World-feature tables when it calls their scene functions. Every other graph
+    // draws the World without it and reports what is missing (render_graph_world_features.cpp).
+    WorldFeatureMask unrenderedWorldFeatures = 0;
+    const bool hasWorldTables = state.Programs.HasAtmosphereSky == true || state.Programs.HasAerialPerspective == true;
+    // The ray scene is shared by every ray pass, so its tables follow the first ray pass's camera.
+    usize rayCameraIndex = 0;
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        if (state.Passes[pass].Program == format::Technique::RayTracing &&
+            state.Passes[pass].Camera < cameras.GetSize())
+        {
+            rayCameraIndex = state.Passes[pass].Camera;
+            break;
+        }
+    }
+    const AtmosphereDescription rayAtmosphere =
+        cameras.IsEmpty() == false ? cameras[rayCameraIndex].Atmosphere : AtmosphereDescription{};
+    const math::Vector3 rayEyeWorld =
+        cameras.IsEmpty() == false ? cameras[rayCameraIndex].CameraPosition : math::Vector3{};
     for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
     {
         ViewDescription& admittedCamera = state.AdmittedCameras[cameraIndex];
         admittedCamera = cameras[cameraIndex];
-        // An Atmosphere is an optional World feature: only the clustered deferred programs compose it. Other graphs
-        // draw the World without it (ordinary background, unattenuated directional lights) and report the omission.
-        if (admittedCamera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
+        if (admittedCamera.Atmosphere.IsEnabled == true)
+        {
+            if (renderer::GetWorldFeatureSupport(state.Programs, WorldFeature::AtmosphereSky) ==
+                WorldFeatureSupport::NotRendered)
+            {
+                unrenderedWorldFeatures |= GetWorldFeatureBit(WorldFeature::AtmosphereSky);
+            }
+            if (admittedCamera.Atmosphere.ShouldLightScene == true &&
+                renderer::GetWorldFeatureSupport(state.Programs, WorldFeature::AerialPerspective) ==
+                    WorldFeatureSupport::NotRendered)
+            {
+                unrenderedWorldFeatures |= GetWorldFeatureBit(WorldFeature::AerialPerspective);
+            }
+        }
+        if (state.Programs.HasClusteredDeferred == false)
         {
             admittedCamera.Atmosphere = {};
-            isAtmosphereOmitted = true;
         }
         if (admittedCamera.Depth == DepthConvention::ReverseZ && canUseReverseDepth == false)
         {
@@ -3398,10 +3457,12 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         return Status::InvalidDescription;
     }
+    // A changed Atmosphere changes the ray scene's sky, Sun and haze, so the scene is prepared again.
     const bool canReuse =
         state.Current.Get() != nullptr && state.Current->CoveragePolicy == policy &&
         (hasRevisions == true ? state.Current->Revisions == revisions
-                              : contentRevision != 0 && state.Current->ContentRevision == contentRevision);
+                              : contentRevision != 0 && state.Current->ContentRevision == contentRevision) &&
+        (hasWorldTables == false || internal::AreRayAtmospheresEqual(state.Current->RayAtmosphere, rayAtmosphere));
     if (canReuse == true && state.Resizing.Get() == nullptr && state.Pending.Get() == nullptr)
     {
         if (state.PendingCamera.Get() != nullptr)
@@ -3416,7 +3477,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 state.Report.SceneRevision = sceneRevision;
                 state.Report.IsAccepted = true;
                 state.Report.IsReady = false;
-                state.Report.IsAtmosphereOmitted = isAtmosphereOmitted;
+                state.Report.UnrenderedWorldFeatures = unrenderedWorldFeatures;
             }
             outReport = state.Report;
             return prepared;
@@ -3448,7 +3509,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     state.CoverageCount = 0;
     state.Report = {};
     state.Report.SceneRevision = sceneRevision;
-    state.Report.IsAtmosphereOmitted = isAtmosphereOmitted;
+    state.Report.UnrenderedWorldFeatures = unrenderedWorldFeatures;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
         for (usize role = 0; role < ROLE_COUNT; ++role)
@@ -3547,6 +3608,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     candidate->Revision = sceneRevision;
     candidate->ContentRevision = contentRevision;
     candidate->Revisions = revisions;
+    candidate->RayAtmosphere = rayAtmosphere;
     candidate->CoveragePolicy = policy;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
@@ -3788,6 +3850,22 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                                          policy == RenderGraphCoveragePolicy::DiagnosticColor,
                                          &state.Report.SceneDiagnostics,
                                          sceneRevision};
+    if (hasWorldTables == true)
+    {
+        const Status resolved = state.WorldTables.Resolve(rayAtmosphere,
+                                                          rayEyeWorld,
+                                                          state.Programs.HasAtmosphereSky,
+                                                          state.Programs.HasAerialPerspective,
+                                                          rayScene.Inputs);
+        if (resolved != Status::Ready)
+        {
+            outReport = state.Report;
+            return resolved;
+        }
+        rayScene.Inputs = state.WorldTables.GetInputs();
+        rayScene.AtmosphereSkyTable = state.WorldTables.GetSkyTable();
+        rayScene.AerialPerspectiveTable = state.WorldTables.GetAerialPerspectiveTable();
+    }
     if (state.Model.Get() != nullptr)
     {
         for (usize pass = 0; pass < state.Header.PassCount; ++pass)
@@ -3916,6 +3994,19 @@ RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
             report.DeferredAllocations += DEFERRED_TARGET_COUNT;
             report.DeferredAttachmentBytes += sceneOrNull->DeferredAttachmentBytes;
         }
+        if (sceneOrNull == nullptr)
+        {
+            continue;
+        }
+        for (const core::UniquePtr<internal::RenderGraphDeferredTargets>& targets : sceneOrNull->DeferredTargets)
+        {
+            const uint64 skinBytes = targets.Get() != nullptr ? targets->GetSkinAttachmentBytes() : 0;
+            if (skinBytes != 0)
+            {
+                report.DeferredSkinAllocations += internal::DEFERRED_SKIN_TARGET_COUNT;
+                report.DeferredSkinAttachmentBytes += skinBytes;
+            }
+        }
     }
     return report;
 }
@@ -4004,6 +4095,12 @@ BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const n
 RenderGraphSceneRejection RenderGraph::GetLastRejection() const noexcept
 {
     return mState.Get() != nullptr ? mState->LastRejection : RenderGraphSceneRejection::None;
+}
+WorldFeatureSupport RenderGraph::GetWorldFeatureSupport(WorldFeature feature) const noexcept
+{
+    return mState.Get() != nullptr && mState->IsReady == true
+               ? renderer::GetWorldFeatureSupport(mState->Programs, feature)
+               : WorldFeatureSupport::NotRendered;
 }
 RenderGraphReport RenderGraph::GetReport() const noexcept
 {

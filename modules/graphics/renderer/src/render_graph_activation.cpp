@@ -197,8 +197,13 @@ struct RenderGraphPackage::State final
     bool HasOpaqueGBuffer = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
-    /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot last.
+    /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot after the LTC
+    /// table.
     bool HasFailureSummary = false;
+    /// Version 37 World-feature bits: the linked kernel reads the Atmosphere sky table (its last slot) or the aerial
+    /// perspective table (before the LTC table). AppendSceneResourceBindings adds them in slot order.
+    bool HasAtmosphereSky = false;
+    bool HasAerialPerspective = false;
     /// Version 28 and later ray kernels dispatch the uniform's tile region.
     bool HasRayTiles = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
@@ -207,9 +212,9 @@ struct RenderGraphPackage::State final
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
     /// Stage binding requirements derived from the uniform records, one table per role.
-    static constexpr usize STAGE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS +
-                                                    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-                                                    LUDUS_GRAPH_FAILURE_BINDING_COUNT;
+    static constexpr usize STAGE_BINDING_CAPACITY =
+        LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
+        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
@@ -716,9 +721,9 @@ void RenderGraphPackage::State::DeriveBindings() noexcept
 }
 RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings() noexcept
 {
-    // The generated header's reflected compute bindings end with the LTC table slot and then the failure summary;
-    // a package carries the frozen ABI, so the decoder appends the slots its scene resource word names to each
-    // compute role it carries, in slot order.
+    // The generated header's reflected compute bindings end with the aerial perspective table, the LTC table, the
+    // failure summary and the Atmosphere sky; a package carries the frozen ABI, so the decoder appends the slots its
+    // scene resource word names to each compute role it carries, in slot order.
     bool hasVisibilityBuffer = false;
     for (usize i = 0; i < Header.PassCount; ++i)
     {
@@ -762,12 +767,23 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                 Bindings[role][BindingCounts[role]++] = binding;
             }
         }
+        // Native ray stages bind neither World-feature table: their kernels never define the slots.
+        const bool hasAerialPerspective = HasAerialPerspective == true && isNativeStages == false;
+        const bool hasAtmosphereSky = HasAtmosphereSky == true && isNativeStages == false;
         const usize appended =
             (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
-            (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0);
+            (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0) +
+            (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0);
         if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        if (hasAerialPerspective == true)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                                                     rhi::RasterBindingKind::StorageRead,
+                                                     rhi::RasterVisibility::Compute,
+                                                     LUDUS_GPU_PREVIEW_VECTOR_BYTES};
         }
         if (HasLtcTable == true && isNativeStages == false)
         {
@@ -782,6 +798,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                                                      rhi::RasterBindingKind::StorageReadWrite,
                                                      rhi::RasterVisibility::Compute,
                                                      sizeof(uint32)};
+        }
+        if (hasAtmosphereSky == true)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING,
+                                                     rhi::RasterBindingKind::StorageRead,
+                                                     rhi::RasterVisibility::Compute,
+                                                     LUDUS_GPU_PREVIEW_VECTOR_BYTES};
         }
     }
     return hasComputeRole == true ? RenderGraphPackageStatus::Ready : RenderGraphPackageStatus::Malformed;
@@ -951,7 +974,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
+        (version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+         version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
          version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
@@ -1138,12 +1162,16 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         if (reader.IsOk() == false ||
             (sceneResources &
              ~(format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY |
-               (version >= format::LIGHT_TRANSFORMER_PACKAGE_VERSION ? format::SCENE_RESOURCE_LIGHT_TRANSFORMER
-                                                                     : 0))) != 0)
+               (version >= format::LIGHT_TRANSFORMER_PACKAGE_VERSION ? format::SCENE_RESOURCE_LIGHT_TRANSFORMER : 0) |
+               (version >= format::WORLD_FEATURE_PACKAGE_VERSION
+                    ? format::SCENE_RESOURCE_ATMOSPHERE_SKY | format::SCENE_RESOURCE_AERIAL_PERSPECTIVE
+                    : 0))) != 0)
         {
             return RenderGraphPackageStatus::Malformed;
         }
         candidate->HasLightTransformer = (sceneResources & format::SCENE_RESOURCE_LIGHT_TRANSFORMER) != 0;
+        candidate->HasAtmosphereSky = (sceneResources & format::SCENE_RESOURCE_ATMOSPHERE_SKY) != 0;
+        candidate->HasAerialPerspective = (sceneResources & format::SCENE_RESOURCE_AERIAL_PERSPECTIVE) != 0;
         candidate->HasLtcTable = (sceneResources & format::SCENE_RESOURCE_LTC_TABLE) != 0;
         candidate->HasFailureSummary = (sceneResources & format::SCENE_RESOURCE_FAILURE_SUMMARY) != 0;
     }
@@ -1242,7 +1270,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         }
     }
     candidate->DeriveBindings();
-    if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true)
+    if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true || candidate->HasAtmosphereSky == true ||
+        candidate->HasAerialPerspective == true)
     {
         status = candidate->AppendSceneResourceBindings();
         if (status != RenderGraphPackageStatus::Ready)
@@ -1317,6 +1346,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     result.RecipeKeys = state.RecipeKeys;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
+    result.HasAtmosphereSky = state.HasAtmosphereSky;
+    result.HasAerialPerspective = state.HasAerialPerspective;
     result.HasLightTransformer = state.HasLightTransformer;
     result.HasRayTiles = state.HasRayTiles;
     for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])

@@ -1,6 +1,8 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/atmosphere.hpp>
@@ -185,6 +187,80 @@ SampleRegion(const Table& table, float64 u, float64 v, uint32 width, uint32 heig
     return SampleRegion(table, sunCosine * 0.5 + 0.5, altitude / SHELL_HEIGHT, MULTIPLE_SIZE, MULTIPLE_SIZE, 0);
 }
 
+/// Phase functions of one scattering cosine, as IntegrateAtmosphere evaluates them.
+struct ScatteringPhase final
+{
+    float64 Rayleigh = 0;
+    float64 Aerosol = 0;
+};
+
+[[nodiscard]] ScatteringPhase ComputePhase(float64 scatteringCosine) noexcept
+{
+    constexpr float64 PHASE_NUMERATOR = 3;
+    constexpr float64 RAYLEIGH_DENOMINATOR = 16;
+    constexpr float64 AEROSOL_DENOMINATOR = 8;
+    constexpr float64 ASYMMETRY = LUDUS_ATMOSPHERE_AEROSOL_ASYMMETRY;
+    const float64 cosineSquared = scatteringCosine * scatteringCosine;
+    const float64 asymmetrySquared = ASYMMETRY * ASYMMETRY;
+    const float64 aerosolBase = 1 + asymmetrySquared - 2 * ASYMMETRY * scatteringCosine;
+    return {PHASE_NUMERATOR * (1 + cosineSquared) / (RAYLEIGH_DENOMINATOR * math::kPi),
+            PHASE_NUMERATOR * (1 - asymmetrySquared) * (1 + cosineSquared) /
+                (AEROSOL_DENOMINATOR * math::kPi * (2 + asymmetrySquared) * aerosolBase * math::Sqrt(aerosolBase))};
+}
+
+/// One quadrature step of IntegrateAtmosphere over [previous, next] kilometres along the view ray, added to
+/// inoutSegment. multipleOrNull null omits the multiple-scattering source.
+void AccumulateAtmosphereStep(const Table& transmittance,
+                              const Table* multipleOrNull,
+                              float64 height,
+                              float64 zenithCosine,
+                              float64 solarZenithCosine,
+                              float64 scatteringCosine,
+                              ScatteringPhase phase,
+                              float64 previous,
+                              float64 next,
+                              Segment& inoutSegment) noexcept
+{
+    constexpr float64 AEROSOL_SCATTERING = LUDUS_ATMOSPHERE_AEROSOL_SCATTERING;
+    constexpr float64 LINEAR_THRESHOLD = LUDUS_ATMOSPHERE_OPTICAL_DEPTH_LINEAR_THRESHOLD;
+    const float64 radius = GROUND_RADIUS + height;
+    const float64 midpoint = (previous + next) * 0.5;
+    const float64 altitude = ComputeAltitude(height, zenithCosine, midpoint);
+    const float64 sampleSolarCosine =
+        math::Clamp((radius * solarZenithCosine + midpoint * scatteringCosine) / (GROUND_RADIUS + altitude), -1.0, 1.0);
+    const math::Vector3d density = ComputeDensity(altitude);
+    const float64 stepLength = next - previous;
+    const math::Vector3d opticalDepth = ComputeExtinction(density) * stepLength;
+    const math::Vector3d stepTransmittance = Exponentiate(-opticalDepth);
+    const auto integrate = [](float64 depth, float64 transmitted) noexcept {
+        return depth < LINEAR_THRESHOLD ? 1 - depth * 0.5 : (1 - transmitted) / math::Max(depth, LINEAR_THRESHOLD);
+    };
+    const math::Vector3d integrated{integrate(opticalDepth.X, stepTransmittance.X),
+                                    integrate(opticalDepth.Y, stepTransmittance.Y),
+                                    integrate(opticalDepth.Z, stepTransmittance.Z)};
+    const math::Vector3d rayleigh = RAYLEIGH_SCATTERING * density.X;
+    const math::Vector3d aerosol = math::Vector3d{1, 1, 1} * (density.Y * AEROSOL_SCATTERING);
+    const math::Vector3d weightedStep = math::Hadamard(inoutSegment.Transmittance, integrated) * stepLength;
+    if (sampleSolarCosine >= ComputeHorizonCosine(altitude))
+    {
+        inoutSegment.Radiance =
+            inoutSegment.Radiance +
+            math::Hadamard(
+                math::Hadamard(weightedStep, SampleTransmittance(transmittance, altitude, sampleSolarCosine)),
+                rayleigh * phase.Rayleigh + aerosol * phase.Aerosol);
+    }
+    if (multipleOrNull != nullptr)
+    {
+        inoutSegment.Radiance =
+            inoutSegment.Radiance +
+            math::Hadamard(math::Hadamard(weightedStep, SampleMultiple(*multipleOrNull, altitude, sampleSolarCosine)),
+                           rayleigh + aerosol);
+    }
+    inoutSegment.ScatteringFraction =
+        inoutSegment.ScatteringFraction + math::Hadamard(weightedStep, rayleigh + aerosol);
+    inoutSegment.Transmittance = math::Hadamard(inoutSegment.Transmittance, stepTransmittance);
+}
+
 /// Mirrors IntegrateAtmosphere. multipleOrNull null omits the multiple-scattering source.
 [[nodiscard]] Segment IntegrateAtmosphere(const Table& transmittance,
                                           const Table* multipleOrNull,
@@ -195,62 +271,22 @@ SampleRegion(const Table& table, float64 u, float64 v, uint32 width, uint32 heig
                                           float64 distance,
                                           uint32 stepCount) noexcept
 {
-    constexpr float64 PHASE_NUMERATOR = 3;
-    constexpr float64 RAYLEIGH_DENOMINATOR = 16;
-    constexpr float64 AEROSOL_DENOMINATOR = 8;
-    constexpr float64 ASYMMETRY = LUDUS_ATMOSPHERE_AEROSOL_ASYMMETRY;
-    constexpr float64 AEROSOL_SCATTERING = LUDUS_ATMOSPHERE_AEROSOL_SCATTERING;
-    constexpr float64 LINEAR_THRESHOLD = LUDUS_ATMOSPHERE_OPTICAL_DEPTH_LINEAR_THRESHOLD;
-    const float64 cosineSquared = scatteringCosine * scatteringCosine;
-    const float64 rayleighPhase = PHASE_NUMERATOR * (1 + cosineSquared) / (RAYLEIGH_DENOMINATOR * math::kPi);
-    const float64 asymmetrySquared = ASYMMETRY * ASYMMETRY;
-    const float64 aerosolBase = 1 + asymmetrySquared - 2 * ASYMMETRY * scatteringCosine;
-    const float64 aerosolPhase =
-        PHASE_NUMERATOR * (1 - asymmetrySquared) * (1 + cosineSquared) /
-        (AEROSOL_DENOMINATOR * math::kPi * (2 + asymmetrySquared) * aerosolBase * math::Sqrt(aerosolBase));
-    const float64 radius = GROUND_RADIUS + height;
+    const ScatteringPhase phase = ComputePhase(scatteringCosine);
     Segment segment;
     float64 previous = 0;
     for (uint32 step = 1; step <= stepCount; ++step)
     {
         const float64 next = distance * ComputeStepBoundary(static_cast<float64>(step) / stepCount);
-        const float64 midpoint = (previous + next) * 0.5;
-        const float64 altitude = ComputeAltitude(height, zenithCosine, midpoint);
-        const float64 sampleSolarCosine =
-            math::Clamp((radius * solarZenithCosine + midpoint * scatteringCosine) / (GROUND_RADIUS + altitude),
-                        -1.0,
-                        1.0);
-        const math::Vector3d density = ComputeDensity(altitude);
-        const float64 stepLength = next - previous;
-        const math::Vector3d opticalDepth = ComputeExtinction(density) * stepLength;
-        const math::Vector3d stepTransmittance = Exponentiate(-opticalDepth);
-        const auto integrate = [](float64 depth, float64 transmitted) noexcept {
-            return depth < LINEAR_THRESHOLD ? 1 - depth * 0.5 : (1 - transmitted) / math::Max(depth, LINEAR_THRESHOLD);
-        };
-        const math::Vector3d integrated{integrate(opticalDepth.X, stepTransmittance.X),
-                                        integrate(opticalDepth.Y, stepTransmittance.Y),
-                                        integrate(opticalDepth.Z, stepTransmittance.Z)};
-        const math::Vector3d rayleigh = RAYLEIGH_SCATTERING * density.X;
-        const math::Vector3d aerosol = math::Vector3d{1, 1, 1} * (density.Y * AEROSOL_SCATTERING);
-        const math::Vector3d weightedStep = math::Hadamard(segment.Transmittance, integrated) * stepLength;
-        if (sampleSolarCosine >= ComputeHorizonCosine(altitude))
-        {
-            segment.Radiance =
-                segment.Radiance +
-                math::Hadamard(
-                    math::Hadamard(weightedStep, SampleTransmittance(transmittance, altitude, sampleSolarCosine)),
-                    rayleigh * rayleighPhase + aerosol * aerosolPhase);
-        }
-        if (multipleOrNull != nullptr)
-        {
-            segment.Radiance =
-                segment.Radiance +
-                math::Hadamard(
-                    math::Hadamard(weightedStep, SampleMultiple(*multipleOrNull, altitude, sampleSolarCosine)),
-                    rayleigh + aerosol);
-        }
-        segment.ScatteringFraction = segment.ScatteringFraction + math::Hadamard(weightedStep, rayleigh + aerosol);
-        segment.Transmittance = math::Hadamard(segment.Transmittance, stepTransmittance);
+        AccumulateAtmosphereStep(transmittance,
+                                 multipleOrNull,
+                                 height,
+                                 zenithCosine,
+                                 solarZenithCosine,
+                                 scatteringCosine,
+                                 phase,
+                                 previous,
+                                 next,
+                                 segment);
         previous = next;
     }
     return segment;
@@ -449,7 +485,87 @@ float64 AtmosphereSkyTables::GetHorizonCosine(float64 heightKilometres) noexcept
 {
     return ComputeHorizonCosine(heightKilometres);
 }
+
+void AtmosphereSkyTables::IntegrateView(float64 zenithCosine,
+                                        float64 solarZenithCosine,
+                                        float64 scatteringCosine,
+                                        BorrowedView<const float64> distancesKilometres,
+                                        BorrowedView<AtmosphereViewSample> outSamples) const noexcept
+{
+    /// Uniform quadrature steps between consecutive distances; the table's quadratic slices already concentrate
+    /// them near the observer, where nearby surfaces need the most precision.
+    constexpr uint32 STEPS_PER_DISTANCE = 4;
+    const ScatteringPhase phase = ComputePhase(scatteringCosine);
+    Segment segment;
+    float64 previous = 0;
+    for (usize i = 0; i < distancesKilometres.GetSize(); ++i)
+    {
+        const float64 start = previous;
+        const float64 end = distancesKilometres[i];
+        for (uint32 step = 1; step <= STEPS_PER_DISTANCE && end > start; ++step)
+        {
+            const float64 next = start + (end - start) * static_cast<float64>(step) / STEPS_PER_DISTANCE;
+            AccumulateAtmosphereStep(mTransmittance,
+                                     &mMultiple,
+                                     mHeightKilometres,
+                                     zenithCosine,
+                                     solarZenithCosine,
+                                     scatteringCosine,
+                                     phase,
+                                     previous,
+                                     next,
+                                     segment);
+            previous = next;
+        }
+        outSamples[i] = {segment.Radiance, segment.Transmittance};
+    }
+}
 } // namespace internal
+
+namespace
+{
+/// Observer frame shared by the distant sky and the aerial perspective table.
+struct AtmosphereObserver final
+{
+    float64 HeightKilometres = 0;
+    math::Vector3 UpWorld{};
+    math::Vector3 SunWorld{};
+    float64 SolarZenithCosine = 0;
+};
+
+/// Validate the fields every CPU atmosphere resolve reads and place the observer. Ready leaves outObserver written.
+[[nodiscard]] AtmosphereEnvironmentStatus ResolveObserver(const AtmosphereDescription& atmosphere,
+                                                          math::Vector3 eyeWorld,
+                                                          AtmosphereObserver& outObserver) noexcept
+{
+    if (atmosphere.IsEnabled == false || atmosphere.ShouldLightScene == false)
+    {
+        return AtmosphereEnvironmentStatus::NotLit;
+    }
+    float64 altitudeMetres = 0;
+    math::Vector3 upWorld;
+    math::Vector3 sunWorld;
+    const math::Vector3 illuminance = atmosphere.SolarIlluminance;
+    const float32 radius = atmosphere.SolarAngularRadiusRadians;
+    if (internal::TryGetAtmosphereObserver(atmosphere, eyeWorld, altitudeMetres, upWorld) == false ||
+        math::TryNormalize(atmosphere.DirectionToSunWorld, sunWorld) != math::MathStatus::Success ||
+        math::IsFinite(illuminance) == false || illuminance.X < 0 || illuminance.Y < 0 || illuminance.Z < 0 ||
+        math::IsFinite(radius) == false || radius <= 0 || radius >= math::kHalfPiF)
+    {
+        return AtmosphereEnvironmentStatus::InvalidDescription;
+    }
+    if (altitudeMetres < 0 || altitudeMetres > GetAtmosphereTopAltitude())
+    {
+        return AtmosphereEnvironmentStatus::NotLit;
+    }
+    // The render graph rounds the observer frame to float32 uniforms; use the same values.
+    outObserver.HeightKilometres = static_cast<float64>(static_cast<float32>(altitudeMetres / METRES_PER_KILOMETRE));
+    outObserver.UpWorld = upWorld;
+    outObserver.SunWorld = sunWorld;
+    outObserver.SolarZenithCosine = static_cast<float64>(math::Clamp(math::Dot(upWorld, sunWorld), -1.0F, 1.0F));
+    return AtmosphereEnvironmentStatus::Ready;
+}
+} // namespace
 
 AtmosphereEnvironmentStatus ResolveAtmosphereEnvironment(const AtmosphereDescription& atmosphere,
                                                          math::Vector3 eyeWorld,
@@ -462,30 +578,23 @@ AtmosphereEnvironmentStatus ResolveAtmosphereEnvironment(const AtmosphereDescrip
     {
         return AtmosphereEnvironmentStatus::NotLit;
     }
-    float64 altitudeMetres = 0;
-    math::Vector3 upWorld;
-    math::Vector3 sunWorld;
-    const math::Vector3 illuminance = atmosphere.SolarIlluminance;
-    const float32 radius = atmosphere.SolarAngularRadiusRadians;
     if (width == 0 || height == 0 || width > MAX_ATMOSPHERE_ENVIRONMENT_SIDE ||
         height > MAX_ATMOSPHERE_ENVIRONMENT_SIDE || outPixels.IsValid() == false ||
-        outPixels.GetSize() != static_cast<usize>(width) * height ||
-        internal::TryGetAtmosphereObserver(atmosphere, eyeWorld, altitudeMetres, upWorld) == false ||
-        math::TryNormalize(atmosphere.DirectionToSunWorld, sunWorld) != math::MathStatus::Success ||
-        math::IsFinite(illuminance) == false || illuminance.X < 0 || illuminance.Y < 0 || illuminance.Z < 0 ||
-        math::IsFinite(radius) == false || radius <= 0 || radius >= math::kHalfPiF)
+        outPixels.GetSize() != static_cast<usize>(width) * height)
     {
         return AtmosphereEnvironmentStatus::InvalidDescription;
     }
-    if (altitudeMetres < 0 || altitudeMetres > GetAtmosphereTopAltitude())
+    AtmosphereObserver observer;
+    const AtmosphereEnvironmentStatus placed = ResolveObserver(atmosphere, eyeWorld, observer);
+    if (placed != AtmosphereEnvironmentStatus::Ready)
     {
-        return AtmosphereEnvironmentStatus::NotLit;
+        return placed;
     }
-    // The render graph rounds the observer frame to float32 uniforms; use the same values.
-    const float64 heightKilometres = static_cast<float64>(static_cast<float32>(altitudeMetres / METRES_PER_KILOMETRE));
-    const math::Vector3d wideUpWorld = Widen(upWorld);
-    const math::Vector3d wideSunWorld = Widen(sunWorld);
-    const float64 solarZenithCosine = static_cast<float64>(math::Clamp(math::Dot(upWorld, sunWorld), -1.0F, 1.0F));
+    const math::Vector3 illuminance = atmosphere.SolarIlluminance;
+    const float64 heightKilometres = observer.HeightKilometres;
+    const math::Vector3d wideUpWorld = Widen(observer.UpWorld);
+    const math::Vector3d wideSunWorld = Widen(observer.SunWorld);
+    const float64 solarZenithCosine = observer.SolarZenithCosine;
     internal::AtmosphereSkyTables tables;
     if (tables.TryBuild(heightKilometres, solarZenithCosine, true) == false)
     {
@@ -605,4 +714,83 @@ AtmosphereEnvironmentStatus MeterAtmosphereIlluminance(const AtmosphereDescripti
     outIlluminanceLux = math::Dot(total, LUMINANCE_WEIGHTS);
     return AtmosphereEnvironmentStatus::Ready;
 }
+namespace internal
+{
+AtmosphereEnvironmentStatus ResolveAtmosphereAerialPerspective(const AtmosphereDescription& atmosphere,
+                                                               math::Vector3 eyeWorld,
+                                                               BorrowedView<math::Vector4> outTable) noexcept
+{
+    constexpr uint32 AZIMUTH_COUNT = LUDUS_AERIAL_PERSPECTIVE_AZIMUTH_COUNT;
+    constexpr uint32 ZENITH_COUNT = LUDUS_AERIAL_PERSPECTIVE_ZENITH_COUNT;
+    constexpr uint32 SLICE_COUNT = LUDUS_AERIAL_PERSPECTIVE_SLICE_COUNT;
+    constexpr float64 MAX_KILOMETRES = LUDUS_AERIAL_PERSPECTIVE_MAX_METRES / METRES_PER_KILOMETRE;
+    if (atmosphere.IsEnabled == false || atmosphere.ShouldLightScene == false)
+    {
+        return AtmosphereEnvironmentStatus::NotLit;
+    }
+    if (outTable.IsValid() == false || outTable.GetSize() != AERIAL_PERSPECTIVE_TABLE_WORDS)
+    {
+        return AtmosphereEnvironmentStatus::InvalidDescription;
+    }
+    AtmosphereObserver observer;
+    const AtmosphereEnvironmentStatus placed = ResolveObserver(atmosphere, eyeWorld, observer);
+    if (placed != AtmosphereEnvironmentStatus::Ready)
+    {
+        return placed;
+    }
+    AtmosphereSkyTables tables;
+    if (tables.TryBuild(observer.HeightKilometres, observer.SolarZenithCosine, true) == false)
+    {
+        return AtmosphereEnvironmentStatus::OutOfMemory;
+    }
+    StaticArray<float64, SLICE_COUNT> distances{};
+    for (uint32 slice = 0; slice < SLICE_COUNT; ++slice)
+    {
+        const float64 fraction = static_cast<float64>(slice) / (SLICE_COUNT - 1);
+        distances[slice] = MAX_KILOMETRES * fraction * fraction;
+    }
+    StaticArray<AtmosphereViewSample, SLICE_COUNT> samples{};
+    const math::Vector3d solar = Widen(atmosphere.SolarIlluminance);
+    const float64 solarSine = math::Sqrt(Saturate(1 - observer.SolarZenithCosine * observer.SolarZenithCosine));
+    outTable[0] = {1, 0, 0, 0};
+    outTable[1] = {observer.UpWorld.X, observer.UpWorld.Y, observer.UpWorld.Z, 0};
+    outTable[2] = {observer.SunWorld.X, observer.SunWorld.Y, observer.SunWorld.Z, 0};
+    for (uint32 row = 0; row < ZENITH_COUNT; ++row)
+    {
+        // Rows sample the zenith angle uniformly from straight up to straight down, as ApplyAerialPerspective looks
+        // them up.
+        const float64 zenithAngle = math::kPi * static_cast<float64>(row) / (ZENITH_COUNT - 1);
+        const float64 zenithCosine = math::Cos(zenithAngle);
+        const float64 zenithSine = math::Sin(zenithAngle);
+        for (uint32 column = 0; column < AZIMUTH_COUNT; ++column)
+        {
+            const float64 azimuth = math::kPi * static_cast<float64>(column) / (AZIMUTH_COUNT - 1);
+            const float64 scatteringCosine =
+                math::Clamp(zenithCosine * observer.SolarZenithCosine + zenithSine * solarSine * math::Cos(azimuth),
+                            -1.0,
+                            1.0);
+            tables.IntegrateView(zenithCosine,
+                                 observer.SolarZenithCosine,
+                                 scatteringCosine,
+                                 {distances.GetData(), distances.GetSize()},
+                                 {samples.GetData(), samples.GetSize()});
+            for (uint32 slice = 0; slice < SLICE_COUNT; ++slice)
+            {
+                const usize entry = (static_cast<usize>(slice) * ZENITH_COUNT + row) * AZIMUTH_COUNT + column;
+                const usize word = LUDUS_AERIAL_PERSPECTIVE_HEADER_WORDS + entry * LUDUS_AERIAL_PERSPECTIVE_ENTRY_WORDS;
+                const math::Vector3d scattered = math::Hadamard(samples[slice].Radiance, solar);
+                outTable[word] = {static_cast<float32>(scattered.X),
+                                  static_cast<float32>(scattered.Y),
+                                  static_cast<float32>(scattered.Z),
+                                  0};
+                outTable[word + 1] = {static_cast<float32>(samples[slice].Transmittance.X),
+                                      static_cast<float32>(samples[slice].Transmittance.Y),
+                                      static_cast<float32>(samples[slice].Transmittance.Z),
+                                      0};
+            }
+        }
+    }
+    return AtmosphereEnvironmentStatus::Ready;
+}
+} // namespace internal
 } // namespace ludus::graphics::renderer

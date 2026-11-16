@@ -24,6 +24,7 @@
 #include "internal/world_document.h"
 #include "internal/world_earth_location.h"
 #include "internal/world_earth_time_field.h"
+#include "internal/world_earth_time_zone.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
@@ -81,6 +82,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimeZone>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -3583,13 +3585,19 @@ TEST_CASE("Older Worlds keep per-light Earth observers until an Earth light edit
     CHECK(reopened.Validate(invalid, error) == false);
     invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME, 3}, {WORLD_CELESTIAL_LONGITUDE, -80}});
     CHECK(reopened.Validate(invalid, error) == true);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME_ZONE, QStringLiteral("Asia/Seoul")}});
+    CHECK(reopened.Validate(invalid, error) == true);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME_ZONE, 9}});
+    CHECK(reopened.Validate(invalid, error) == false);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME_ZONE, QStringLiteral("../zoneinfo")}});
+    CHECK(reopened.Validate(invalid, error) == false);
 }
 
 TEST_CASE("Earth preview time preserves the saved offset and copies the UTC clock", "[editor][world][celestial]")
 {
     QWidget parent;
     constexpr ludus::foundation::float64 LEGACY_DAYS = -0.5000000001;
-    WorldEarthTimeField time(LEGACY_DAYS, parent);
+    WorldEarthTimeField time(LEGACY_DAYS, QString(WORLD_EARTH_UTC_TIME_ZONE), parent);
     QDateTimeEdit* dateTimeOrNull = time.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
     QPushButton* nowOrNull = time.findChild<QPushButton*>(QStringLiteral("worldEarthUseNow"));
     REQUIRE(dateTimeOrNull != nullptr);
@@ -3608,11 +3616,76 @@ TEST_CASE("Earth preview time preserves the saved offset and copies the UTC cloc
     CHECK(dateTimeOrNull->dateTime() <= after);
 }
 
+TEST_CASE("Earth locations resolve their tzdb time zone offline", "[editor][world][celestial]")
+{
+    REQUIRE(GetEarthTimeZoneIds().contains(QStringLiteral("Asia/Seoul")) == true);
+    REQUIRE(GetEarthTimeZoneIds().contains(QStringLiteral("America/Toronto")) == true);
+    // A country's zones win over a closer zone across the border; without a country the nearest zone wins.
+    CHECK(FindEarthTimeZone(43.46527, -80.52229, u"CA") == QStringLiteral("America/Toronto"));
+    CHECK(FindEarthTimeZone(37.5665, 126.978, u"kr") == QStringLiteral("Asia/Seoul"));
+    CHECK(FindEarthTimeZone(37.5665, 126.978, {}) == QStringLiteral("Asia/Seoul"));
+    CHECK(FindEarthTimeZone(42.3149, -83.0364, u"CA") == QStringLiteral("America/Toronto"));
+    CHECK(FindEarthTimeZone(42.3149, -83.0364, {}) == QStringLiteral("America/Detroit"));
+    CHECK(FindEarthTimeZone(-33.8688, 151.2093, u"ZZ") == QStringLiteral("Australia/Sydney"));
+
+    CHECK(IsEarthTimeZoneIdValid(u"UTC") == true);
+    CHECK(IsEarthTimeZoneIdValid(u"America/Argentina/Buenos_Aires") == true);
+    CHECK(IsEarthTimeZoneIdValid(u"Etc/GMT-14") == true);
+    CHECK(IsEarthTimeZoneIdValid(u"") == false);
+    CHECK(IsEarthTimeZoneIdValid(u"Asia//Seoul") == false);
+    CHECK(IsEarthTimeZoneIdValid(u"../Seoul") == false);
+    CHECK(IsEarthTimeZoneIdValid(u"Asia/Seoul ") == false);
+}
+
+TEST_CASE("Earth preview time shows a time zone's clock and keeps the reading across zones",
+          "[editor][world][celestial]")
+{
+    if (QTimeZone(QByteArrayLiteral("Asia/Seoul")).isValid() == false ||
+        QTimeZone(QByteArrayLiteral("America/Toronto")).isValid() == false)
+    {
+        SKIP("This Qt build has no IANA time zone data.");
+    }
+    QWidget parent;
+    // 2000-01-01 12:00 UTC is 21:00 in Seoul (UTC+9).
+    WorldEarthTimeField time(0, QStringLiteral("Asia/Seoul"), parent);
+    QDateTimeEdit* dateTimeOrNull = time.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    QLabel* captionOrNull = time.findChild<QLabel*>(QStringLiteral("worldEarthDateTimeCaption"));
+    REQUIRE(dateTimeOrNull != nullptr);
+    REQUIRE(captionOrNull != nullptr);
+    CHECK(dateTimeOrNull->dateTime().toString(Qt::ISODate) == QStringLiteral("2000-01-01T21:00:00Z"));
+    CHECK(captionOrNull->text() == QStringLiteral("Date && Time (Asia/Seoul, UTC+09:00)"));
+    CHECK(time.GetDaysSinceEpoch() == 0);
+
+    // Toronto (UTC-5 in January) keeps 21:00 on its own clock: 2000-01-02 02:00 UTC, 14 hours later.
+    QSignalSpy edited(&time, &WorldEarthTimeField::Edited);
+    time.SetTimeZoneKeepingClock(QStringLiteral("America/Toronto"));
+    CHECK(edited.count() == 1);
+    CHECK(dateTimeOrNull->dateTime().toString(Qt::ISODate) == QStringLiteral("2000-01-01T21:00:00Z"));
+    CHECK(captionOrNull->text() == QStringLiteral("Date && Time (America/Toronto, UTC-05:00)"));
+    constexpr ludus::foundation::float64 HOURS_PER_DAY = 24;
+    constexpr ludus::foundation::float64 TORONTO_SHIFT_HOURS = 14;
+    CHECK(time.GetDaysSinceEpoch() == TORONTO_SHIFT_HOURS / HOURS_PER_DAY);
+
+    // Editing the clock in the zone stores the matching UTC instant.
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-01T07:00:00Z"), Qt::ISODate));
+    CHECK(time.GetDaysSinceEpoch() == 0);
+    time.SetTimeZoneKeepingClock(QStringLiteral("America/Toronto"));
+    CHECK(edited.count() == 2);
+
+    // A zone this Qt build cannot resolve shows UTC and says so.
+    WorldEarthTimeField unknown(0, QStringLiteral("Mars/Olympus_Mons"), parent);
+    QLabel* unknownCaptionOrNull = unknown.findChild<QLabel*>(QStringLiteral("worldEarthDateTimeCaption"));
+    REQUIRE(unknownCaptionOrNull != nullptr);
+    CHECK(unknownCaptionOrNull->text().contains(QStringLiteral("Mars/Olympus_Mons time zone data is unavailable")) ==
+          true);
+    CHECK(unknown.GetDaysSinceEpoch() == 0);
+}
+
 TEST_CASE("Earth place results decode longitude first and skip invalid points", "[editor][world][celestial]")
 {
     const QByteArray response = QByteArrayLiteral(R"({"features": [
         {"geometry":{"type":"Point","coordinates":[-79.38,43.65]},
-         "properties":{"name":"Toronto","city":"Toronto","state":"Ontario","country":"Canada"}},
+         "properties":{"name":"Toronto","city":"Toronto","state":"Ontario","country":"Canada","countrycode":"CA"}},
         {"geometry":{"type":"Point","coordinates":[3,91]},"properties":{"name":"Invalid latitude"}},
         {"geometry":{"type":"Point","coordinates":["1",2]},"properties":{"name":"Invalid number"}}
     ]})");
@@ -3622,6 +3695,7 @@ TEST_CASE("Earth place results decode longitude first and skip invalid points", 
     CHECK(places.first().Label == QStringLiteral("Toronto, Ontario, Canada"));
     CHECK(places.first().LatitudeDegrees == 43.65);
     CHECK(places.first().LongitudeDegrees == -79.38);
+    CHECK(places.first().CountryCode == QStringLiteral("CA"));
     CHECK(TryReadEarthPlaces(QByteArrayLiteral("{}"), places) == false);
     CHECK(places.size() == 1);
 }
@@ -3679,14 +3753,33 @@ TEST_CASE("Earth location selection fills one World draft and cancel preserves i
     REQUIRE(acceptedOrNull != nullptr);
     QPushButton* chooseOrNull = acceptedOrNull->findChild<QPushButton*>(QStringLiteral("worldEarthUseCoordinates"));
     REQUIRE(chooseOrNull != nullptr);
+    QComboBox* timeZoneOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialTimeZone"));
+    QDateTimeEdit* dateTimeOrNull = workspace.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    REQUIRE(timeZoneOrNull != nullptr);
+    REQUIRE(dateTimeOrNull != nullptr);
+    CHECK(timeZoneOrNull->currentData().toString() == QStringLiteral("UTC"));
+    const QDateTime clock = dateTimeOrNull->dateTime();
     chooseOrNull->click();
     CHECK(latitudeOrNull->text() == QStringLiteral("43.5"));
     CHECK(longitudeOrNull->text() == QStringLiteral("-79.5"));
+    CHECK(timeZoneOrNull->currentData().toString() == QStringLiteral("America/Toronto"));
     CHECK(workspace.Document().Draft() == original);
     REQUIRE(workspace.Apply() == true);
     const QJsonObject observer = workspace.Document().Draft().value(WORLD_EARTH_OBSERVER).toObject();
     CHECK(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble() == 43.5);
     CHECK(observer.value(WORLD_CELESTIAL_LONGITUDE).toDouble() == -79.5);
+    CHECK(observer.value(WORLD_CELESTIAL_TIME_ZONE).toString() == QStringLiteral("America/Toronto"));
+    const QTimeZone toronto(QByteArrayLiteral("America/Toronto"));
+    if (toronto.isValid() == true)
+    {
+        // The UTC clock reading the light showed becomes the same reading on Toronto's clock.
+        constexpr ludus::foundation::float64 MILLISECONDS_PER_DAY = 86'400'000;
+        const QDateTime epoch = QDateTime::fromString(QStringLiteral("2000-01-01T12:00:00Z"), Qt::ISODate);
+        const QDateTime instant =
+            epoch.addMSecs(qRound64(observer.value(WORLD_CELESTIAL_TIME).toDouble() * MILLISECONDS_PER_DAY));
+        const QDateTime local = instant.toTimeZone(toronto);
+        CHECK(QDateTime(local.date(), local.time(), QTimeZone::utc()) == clock);
+    }
     workspace.StopPreview();
 }
 
@@ -5377,6 +5470,202 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
     reopened.Undo();
     WaitForValidatedScene(reopened);
     checkHairCard(reopened, 45, 0.5F);
+    reopened.StopPreview();
+}
+
+TEST_CASE("World document validates skin slots and writes them to the level", "[editor][world][skin]")
+{
+    QTemporaryDir directory;
+    static_cast<void>(Fixture(directory));
+    const QString external = directory.filePath(QStringLiteral("external"));
+    QString error;
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external) == true);
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       error) == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(directory.filePath(QStringLiteral("scenes/room.lulevel")))).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString id =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    const QJsonObject entity = document.Entity(id);
+    const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    const QString name = entity.value(QStringLiteral("name")).toString();
+    const QJsonObject placement = entity.value(QStringLiteral("scene")).toObject();
+    const auto edit = [&](const QJsonObject& skin, QString& outError, const QJsonObject* hairOrNull = nullptr) {
+        QJsonObject scene = placement;
+        scene.insert(QStringLiteral("skin"), skin);
+        if (hairOrNull != nullptr)
+        {
+            scene.insert(QStringLiteral("hair_card"), *hairOrNull);
+        }
+        return document.Edit(id, components, name, outError, &scene, "Edit Skin");
+    };
+    const auto makeSkin = [](const QJsonArray& distance) {
+        return QJsonObject{{QString::fromLatin1(SKIN_DISTANCE_KEY), distance}};
+    };
+    CHECK(edit(makeSkin({0.2, 0, 0}), error) == false);
+    CHECK(error.contains(QStringLiteral("Scattering red (mm)")) == true);
+    CHECK(error.contains(QStringLiteral("0 to 100")) == true);
+    CHECK(edit(makeSkin({0, 0, -0.001}), error) == false);
+    CHECK(error.contains(QStringLiteral("Scattering blue (mm)")) == true);
+    CHECK(edit(makeSkin({0.001, 0.001}), error) == false);
+    CHECK(error.contains(QStringLiteral("red, green and blue scattering distance")) == true);
+    const QJsonObject hair = MakeDefaultHairCard();
+    CHECK(edit(MakeDefaultSkin(nullptr), error, &hair) == false);
+    CHECK(error.contains(QStringLiteral("cannot also hold")) == true);
+    CHECK(document.ScenePlacement(document.Entity(id)).contains(QStringLiteral("skin")) == false);
+
+    const QJsonObject skin = makeSkin({0.004, 0.0015, 0.0007});
+    REQUIRE(edit(skin, error) == true);
+    bool isWritten = false;
+    for (const QJsonValue value : document.SceneLevel().value(QStringLiteral("objects")).toArray())
+    {
+        const QJsonObject object = value.toObject();
+        if (object.value(QStringLiteral("id")).toString() == id)
+        {
+            CHECK(object.value(QStringLiteral("skin")).toObject() == skin);
+            isWritten = true;
+        }
+    }
+    CHECK(isWritten == true);
+}
+
+TEST_CASE("World makes the engine's bust skin and keeps its edits across save, reopen and reimport",
+          "[editor][world][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    using ludus::foundation::float32;
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    static_cast<void>(OpenPlacementWorld(directory, workspace));
+    WaitForValidatedScene(workspace);
+    const QString path = workspace.Path();
+    // The engine's Infinite head scan: one "Skin" slot that imports as metallic-roughness.
+    const QDir bust(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("tests/scenes/characters/infinite-head")));
+    const QDir copy(directory.filePath(QStringLiteral("infinite-head")));
+    REQUIRE(QDir().mkpath(copy.path()) == true);
+    for (const QString& file : bust.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(bust.filePath(file), copy.filePath(file)) == true);
+    }
+    const QString source = copy.filePath(QStringLiteral("infinite-head.gltf"));
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    QString head;
+    for (const PreviewObject& object : GetLevel(workspace).PreviewScene().Objects)
+    {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(workspace).PreviewScene(), object.Id);
+        REQUIRE(materialOrNull != nullptr);
+        if (materialOrNull->Name.View() == "Skin")
+        {
+            head = object.Id;
+        }
+    }
+    REQUIRE(head.isEmpty() == false);
+    const auto getMaterial = [&head](const WorldWorkspace& view) -> const ludus::resources::SceneMaterial& {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(view).PreviewScene(), head);
+        REQUIRE(materialOrNull != nullptr);
+        return *materialOrNull;
+    };
+    const auto checkSkin = [&](const WorldWorkspace& view, float32 red, float32 green, float32 blue) {
+        const ludus::resources::SceneMaterial& material = getMaterial(view);
+        REQUIRE(material.Scattering.Model == format::MaterialModel::Skin);
+        CHECK(material.Metallic == 0);
+        CHECK(material.Scattering.K[0] == red);
+        CHECK(material.Scattering.K[1] == green);
+        CHECK(material.Scattering.K[2] == blue);
+        // The scan's colour and normal maps are kept.
+        CHECK(material.Texture != format::NO_TEXTURE);
+        CHECK(material.SurfaceTexture != format::NO_TEXTURE);
+    };
+    CHECK(getMaterial(workspace).Scattering.Model == format::MaterialModel::MetallicRoughness);
+
+    // Make Skin starts from human skin's diffuse mean free path, in metres.
+    REQUIRE(workspace.SelectEntity(head) == true);
+    QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin"));
+    REQUIRE(assignOrNull != nullptr);
+    REQUIRE(assignOrNull->isEnabled() == true);
+    assignOrNull->click();
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.00367F, 0.00137F, 0.00068F);
+    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignSkin")) == nullptr);
+    // A skin slot is not offered as a hair card.
+    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard")) == nullptr);
+
+    // The fields edit millimetres; an unchanged field keeps its stored metres.
+    const QString redField = QStringLiteral("scene/skin/scattering_red_mm");
+    CHECK(Field(workspace, redField)->text() == QStringLiteral("3.67"));
+    Type(Field(workspace, redField), QStringLiteral("8"));
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+
+    // An out-of-range distance is rejected beside the field, and the viewport keeps the last applied skin.
+    Type(Field(workspace, redField), QStringLiteral("200"));
+    CHECK(workspace.Apply() == false);
+    QLabel* errorOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldSkinError"));
+    REQUIRE(errorOrNull != nullptr);
+    CHECK(errorOrNull->isHidden() == false);
+    CHECK(errorOrNull->text().contains(QStringLiteral("Scattering red (mm)")) == true);
+    CHECK(errorOrNull->text().contains(QStringLiteral("0 to 100")) == true);
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+    Type(Field(workspace, redField), QStringLiteral("5"));
+    REQUIRE(workspace.Apply() == true);
+    CHECK(errorOrNull->isHidden() == true);
+    CHECK(errorOrNull->text().isEmpty() == true);
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.005F, 0.00137F, 0.00068F);
+
+    // Undo and redo the distance edit.
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.008F, 0.00137F, 0.00068F);
+    REQUIRE(workspace.CanRedo() == true);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkSkin(workspace, 0.005F, 0.00137F, 0.00068F);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    workspace.StopPreview();
+    workspace.hide();
+
+    // Save, reopen and reimport keep the slot's skin and its edits.
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    REQUIRE(reopened.ImportScene(source) == true);
+    WaitForValidatedScene(reopened);
+    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
+    REQUIRE(reopened.SelectEntity(head) == true);
+    CHECK(Field(reopened, redField)->text() == QStringLiteral("5"));
+
+    // Use Inherited Material restores the imported material in one undoable edit.
+    QPushButton* restoreOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreSkin"));
+    REQUIRE(restoreOrNull != nullptr);
+    restoreOrNull->click();
+    WaitForValidatedScene(reopened);
+    CHECK(getMaterial(reopened).Scattering.Model == format::MaterialModel::MetallicRoughness);
+    reopened.Undo();
+    WaitForValidatedScene(reopened);
+    checkSkin(reopened, 0.005F, 0.00137F, 0.00068F);
     reopened.StopPreview();
 }
 
