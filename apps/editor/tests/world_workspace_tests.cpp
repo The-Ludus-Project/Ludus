@@ -24,6 +24,7 @@
 #include "internal/world_document.h"
 #include "internal/world_earth_location.h"
 #include "internal/world_earth_time_field.h"
+#include "internal/world_earth_time_zone.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
@@ -81,6 +82,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimeZone>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -3583,13 +3585,19 @@ TEST_CASE("Older Worlds keep per-light Earth observers until an Earth light edit
     CHECK(reopened.Validate(invalid, error) == false);
     invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME, 3}, {WORLD_CELESTIAL_LONGITUDE, -80}});
     CHECK(reopened.Validate(invalid, error) == true);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME_ZONE, QStringLiteral("Asia/Seoul")}});
+    CHECK(reopened.Validate(invalid, error) == true);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME_ZONE, 9}});
+    CHECK(reopened.Validate(invalid, error) == false);
+    invalid.insert(WORLD_EARTH_OBSERVER, QJsonObject{{WORLD_CELESTIAL_TIME_ZONE, QStringLiteral("../zoneinfo")}});
+    CHECK(reopened.Validate(invalid, error) == false);
 }
 
 TEST_CASE("Earth preview time preserves the saved offset and copies the UTC clock", "[editor][world][celestial]")
 {
     QWidget parent;
     constexpr ludus::foundation::float64 LEGACY_DAYS = -0.5000000001;
-    WorldEarthTimeField time(LEGACY_DAYS, parent);
+    WorldEarthTimeField time(LEGACY_DAYS, QString(WORLD_EARTH_UTC_TIME_ZONE), parent);
     QDateTimeEdit* dateTimeOrNull = time.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
     QPushButton* nowOrNull = time.findChild<QPushButton*>(QStringLiteral("worldEarthUseNow"));
     REQUIRE(dateTimeOrNull != nullptr);
@@ -3608,11 +3616,76 @@ TEST_CASE("Earth preview time preserves the saved offset and copies the UTC cloc
     CHECK(dateTimeOrNull->dateTime() <= after);
 }
 
+TEST_CASE("Earth locations resolve their tzdb time zone offline", "[editor][world][celestial]")
+{
+    REQUIRE(GetEarthTimeZoneIds().contains(QStringLiteral("Asia/Seoul")) == true);
+    REQUIRE(GetEarthTimeZoneIds().contains(QStringLiteral("America/Toronto")) == true);
+    // A country's zones win over a closer zone across the border; without a country the nearest zone wins.
+    CHECK(FindEarthTimeZone(43.46527, -80.52229, u"CA") == QStringLiteral("America/Toronto"));
+    CHECK(FindEarthTimeZone(37.5665, 126.978, u"kr") == QStringLiteral("Asia/Seoul"));
+    CHECK(FindEarthTimeZone(37.5665, 126.978, {}) == QStringLiteral("Asia/Seoul"));
+    CHECK(FindEarthTimeZone(42.3149, -83.0364, u"CA") == QStringLiteral("America/Toronto"));
+    CHECK(FindEarthTimeZone(42.3149, -83.0364, {}) == QStringLiteral("America/Detroit"));
+    CHECK(FindEarthTimeZone(-33.8688, 151.2093, u"ZZ") == QStringLiteral("Australia/Sydney"));
+
+    CHECK(IsEarthTimeZoneIdValid(u"UTC") == true);
+    CHECK(IsEarthTimeZoneIdValid(u"America/Argentina/Buenos_Aires") == true);
+    CHECK(IsEarthTimeZoneIdValid(u"Etc/GMT-14") == true);
+    CHECK(IsEarthTimeZoneIdValid(u"") == false);
+    CHECK(IsEarthTimeZoneIdValid(u"Asia//Seoul") == false);
+    CHECK(IsEarthTimeZoneIdValid(u"../Seoul") == false);
+    CHECK(IsEarthTimeZoneIdValid(u"Asia/Seoul ") == false);
+}
+
+TEST_CASE("Earth preview time shows a time zone's clock and keeps the reading across zones",
+          "[editor][world][celestial]")
+{
+    if (QTimeZone(QByteArrayLiteral("Asia/Seoul")).isValid() == false ||
+        QTimeZone(QByteArrayLiteral("America/Toronto")).isValid() == false)
+    {
+        SKIP("This Qt build has no IANA time zone data.");
+    }
+    QWidget parent;
+    // 2000-01-01 12:00 UTC is 21:00 in Seoul (UTC+9).
+    WorldEarthTimeField time(0, QStringLiteral("Asia/Seoul"), parent);
+    QDateTimeEdit* dateTimeOrNull = time.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    QLabel* captionOrNull = time.findChild<QLabel*>(QStringLiteral("worldEarthDateTimeCaption"));
+    REQUIRE(dateTimeOrNull != nullptr);
+    REQUIRE(captionOrNull != nullptr);
+    CHECK(dateTimeOrNull->dateTime().toString(Qt::ISODate) == QStringLiteral("2000-01-01T21:00:00Z"));
+    CHECK(captionOrNull->text() == QStringLiteral("Date && Time (Asia/Seoul, UTC+09:00)"));
+    CHECK(time.GetDaysSinceEpoch() == 0);
+
+    // Toronto (UTC-5 in January) keeps 21:00 on its own clock: 2000-01-02 02:00 UTC, 14 hours later.
+    QSignalSpy edited(&time, &WorldEarthTimeField::Edited);
+    time.SetTimeZoneKeepingClock(QStringLiteral("America/Toronto"));
+    CHECK(edited.count() == 1);
+    CHECK(dateTimeOrNull->dateTime().toString(Qt::ISODate) == QStringLiteral("2000-01-01T21:00:00Z"));
+    CHECK(captionOrNull->text() == QStringLiteral("Date && Time (America/Toronto, UTC-05:00)"));
+    constexpr ludus::foundation::float64 HOURS_PER_DAY = 24;
+    constexpr ludus::foundation::float64 TORONTO_SHIFT_HOURS = 14;
+    CHECK(time.GetDaysSinceEpoch() == TORONTO_SHIFT_HOURS / HOURS_PER_DAY);
+
+    // Editing the clock in the zone stores the matching UTC instant.
+    dateTimeOrNull->setDateTime(QDateTime::fromString(QStringLiteral("2000-01-01T07:00:00Z"), Qt::ISODate));
+    CHECK(time.GetDaysSinceEpoch() == 0);
+    time.SetTimeZoneKeepingClock(QStringLiteral("America/Toronto"));
+    CHECK(edited.count() == 2);
+
+    // A zone this Qt build cannot resolve shows UTC and says so.
+    WorldEarthTimeField unknown(0, QStringLiteral("Mars/Olympus_Mons"), parent);
+    QLabel* unknownCaptionOrNull = unknown.findChild<QLabel*>(QStringLiteral("worldEarthDateTimeCaption"));
+    REQUIRE(unknownCaptionOrNull != nullptr);
+    CHECK(unknownCaptionOrNull->text().contains(QStringLiteral("Mars/Olympus_Mons time zone data is unavailable")) ==
+          true);
+    CHECK(unknown.GetDaysSinceEpoch() == 0);
+}
+
 TEST_CASE("Earth place results decode longitude first and skip invalid points", "[editor][world][celestial]")
 {
     const QByteArray response = QByteArrayLiteral(R"({"features": [
         {"geometry":{"type":"Point","coordinates":[-79.38,43.65]},
-         "properties":{"name":"Toronto","city":"Toronto","state":"Ontario","country":"Canada"}},
+         "properties":{"name":"Toronto","city":"Toronto","state":"Ontario","country":"Canada","countrycode":"CA"}},
         {"geometry":{"type":"Point","coordinates":[3,91]},"properties":{"name":"Invalid latitude"}},
         {"geometry":{"type":"Point","coordinates":["1",2]},"properties":{"name":"Invalid number"}}
     ]})");
@@ -3622,6 +3695,7 @@ TEST_CASE("Earth place results decode longitude first and skip invalid points", 
     CHECK(places.first().Label == QStringLiteral("Toronto, Ontario, Canada"));
     CHECK(places.first().LatitudeDegrees == 43.65);
     CHECK(places.first().LongitudeDegrees == -79.38);
+    CHECK(places.first().CountryCode == QStringLiteral("CA"));
     CHECK(TryReadEarthPlaces(QByteArrayLiteral("{}"), places) == false);
     CHECK(places.size() == 1);
 }
@@ -3679,14 +3753,33 @@ TEST_CASE("Earth location selection fills one World draft and cancel preserves i
     REQUIRE(acceptedOrNull != nullptr);
     QPushButton* chooseOrNull = acceptedOrNull->findChild<QPushButton*>(QStringLiteral("worldEarthUseCoordinates"));
     REQUIRE(chooseOrNull != nullptr);
+    QComboBox* timeZoneOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialTimeZone"));
+    QDateTimeEdit* dateTimeOrNull = workspace.findChild<QDateTimeEdit*>(QStringLiteral("worldEarthDateTime"));
+    REQUIRE(timeZoneOrNull != nullptr);
+    REQUIRE(dateTimeOrNull != nullptr);
+    CHECK(timeZoneOrNull->currentData().toString() == QStringLiteral("UTC"));
+    const QDateTime clock = dateTimeOrNull->dateTime();
     chooseOrNull->click();
     CHECK(latitudeOrNull->text() == QStringLiteral("43.5"));
     CHECK(longitudeOrNull->text() == QStringLiteral("-79.5"));
+    CHECK(timeZoneOrNull->currentData().toString() == QStringLiteral("America/Toronto"));
     CHECK(workspace.Document().Draft() == original);
     REQUIRE(workspace.Apply() == true);
     const QJsonObject observer = workspace.Document().Draft().value(WORLD_EARTH_OBSERVER).toObject();
     CHECK(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble() == 43.5);
     CHECK(observer.value(WORLD_CELESTIAL_LONGITUDE).toDouble() == -79.5);
+    CHECK(observer.value(WORLD_CELESTIAL_TIME_ZONE).toString() == QStringLiteral("America/Toronto"));
+    const QTimeZone toronto(QByteArrayLiteral("America/Toronto"));
+    if (toronto.isValid() == true)
+    {
+        // The UTC clock reading the light showed becomes the same reading on Toronto's clock.
+        constexpr ludus::foundation::float64 MILLISECONDS_PER_DAY = 86'400'000;
+        const QDateTime epoch = QDateTime::fromString(QStringLiteral("2000-01-01T12:00:00Z"), Qt::ISODate);
+        const QDateTime instant =
+            epoch.addMSecs(qRound64(observer.value(WORLD_CELESTIAL_TIME).toDouble() * MILLISECONDS_PER_DAY));
+        const QDateTime local = instant.toTimeZone(toronto);
+        CHECK(QDateTime(local.date(), local.time(), QTimeZone::utc()) == clock);
+    }
     workspace.StopPreview();
 }
 
