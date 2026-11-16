@@ -640,8 +640,7 @@ TEST_CASE("Level hair-card slots cook into LUSCN v13 and reject unusable overrid
     CHECK(std::string_view(error.Message.View()).find("strand direction in [-180, 180]") != std::string_view::npos);
 }
 
-TEST_CASE("Level skin slots cook into LUSCN v14 without metallic or emission and reject unusable overrides",
-          "[scene_assets][skin]")
+TEST_CASE("Level skin slots cook into LUSCN v14 without metallic and reject unusable overrides", "[scene_assets][skin]")
 {
     namespace format = ludus::content::scene_format;
     namespace resources = ludus::resources;
@@ -689,8 +688,8 @@ TEST_CASE("Level skin slots cook into LUSCN v14 without metallic or emission and
     // Only the first slot became skin: its material record is split from the slots that inherit it.
     CHECK(skinRecords == 1);
 
-    // Every slot made skin, the golden area lights and the brass conductor included: the decoder admits the bundle
-    // only because the skin records store no metallic and no emission, and no slot emits any more.
+    // Every slot made skin, the golden area lights and the brass conductor included: the skin records drop the
+    // conductor's metallic, which the decoder would reject, and the area lights keep emitting.
     std::string everySlot = original;
     for (usize at = everySlot.find(transform); at != std::string::npos;
          at = everySlot.find(transform, at + skin.size() + 1 + transform.size()))
@@ -698,14 +697,14 @@ TEST_CASE("Level skin slots cook into LUSCN v14 without metallic or emission and
         everySlot.insert(at, skin + ",");
     }
     decode(everySlot, scene);
+    usize emitters = 0;
     for (const resources::SceneMaterial& material : scene.Materials)
     {
         CHECK(material.Scattering.Model == format::MaterialModel::Skin);
         CHECK(material.Metallic == 0);
-        CHECK(material.Emission == ludus::foundation::math::Vector3{});
-        CHECK(material.HasEmissionPower == false);
-        CHECK(material.EmissionTexture == format::NO_TEXTURE);
+        emitters += material.Emission != ludus::foundation::math::Vector3{} ? 1 : 0;
     }
+    CHECK(emitters > 0);
 
     // A skin slot holds exactly a scattering distance within [0, 0.1] m, and no other reflection override.
     AssetError error;

@@ -3504,9 +3504,8 @@ struct MaterialVariant final
         const SkinOverride& skin = variant.Skin;
         if (skin.IsAssigned == true)
         {
-            // Skin reflects as a dielectric and does not emit (IsEmissionAllowed); its base colour, roughness and
-            // textures are kept. The inherited material's metallic and emission stay authored there for Use Inherited
-            // Material to restore.
+            // Skin reflects as a dielectric; its base colour, roughness, emission and textures are kept. The
+            // inherited material's metallic stays authored there for Use Inherited Material to restore.
             source.Scattering = {};
             source.Scattering.Model = format::MaterialModel::Skin;
             source.Scattering.K = {{skin.Distance[0], skin.Distance[1], skin.Distance[2]}};
@@ -3518,16 +3517,14 @@ struct MaterialVariant final
         writer.AppendFloat32(
             isDielectricOverride == true ? 0.0 : GetNumberMember(tree, description.Root, "metallic").ToFloat());
         writer.AppendFloat32(roughness);
-        const JsonIndex emission =
-            skin.IsAssigned == true ? NO_JSON_NODE : tree.GetMember(description.Root, "emission");
+        const JsonIndex emission = tree.GetMember(description.Root, "emission");
         for (usize channel = 0; channel < 3; ++channel)
         {
-            writer.AppendFloat32(emission == NO_JSON_NODE ? 0.0 : GetNumberItem(tree, emission, channel).ToFloat());
+            writer.AppendFloat32(GetNumberItem(tree, emission, channel).ToFloat());
         }
         if (isVersion3 == true)
         {
-            const bool hasLighting =
-                skin.IsAssigned == false && tree.GetMember(description.Root, "emission_flags") != NO_JSON_NODE;
+            const bool hasLighting = tree.GetMember(description.Root, "emission_flags") != NO_JSON_NODE;
             uint64 sourceId = 0;
             uint32 flags = format::EMISSION_TWO_SIDED;
             float64 power = 0;
@@ -3541,7 +3538,7 @@ struct MaterialVariant final
                 }
             }
             bool isEmissive = sourceId != 0;
-            for (usize channel = 0; channel < RGB_COMPONENTS && emission != NO_JSON_NODE; ++channel)
+            for (usize channel = 0; channel < RGB_COMPONENTS; ++channel)
             {
                 isEmissive = isEmissive == true || GetNumberItem(tree, emission, channel).ToFloat() > 0;
             }
@@ -3579,7 +3576,7 @@ struct MaterialVariant final
                 };
                 const bool hasScale = tree.GetMember(description.Root, "normal_scale") != NO_JSON_NODE;
                 writer.AppendUint32(findMap("surface_texture"));
-                writer.AppendUint32(skin.IsAssigned == true ? format::NO_TEXTURE : findMap("emission_texture"));
+                writer.AppendUint32(findMap("emission_texture"));
                 writer.AppendFloat32(
                     hasScale == true ? GetNumberMember(tree, description.Root, "normal_scale").ToFloat() : 0.0);
             }

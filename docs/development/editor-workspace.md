@@ -2058,10 +2058,9 @@ Import a character mesh at real scale, for example the engine's
 [character bust](../architecture/scene-source-format.md#character-bust)
 (`tests/scenes/characters/infinite-head/infinite-head.gltf`). Select its slot and
 choose **Make Skin** in the **Material** group. The slot keeps its base colour,
-roughness and textures, and the default render graph's viewport spreads its
-diffuse light under the surface. Skin is a dielectric that does not glow, so the
-slot shows no metallic or emission; the imported material keeps both for **Use
-Inherited Material**. If the slot has its own coating instance, a confirmation
+roughness, emission and textures, and the default render graph's viewport spreads
+its diffuse light under the surface. Skin is a dielectric, so the slot shows no
+metallic; the imported material keeps it for **Use Inherited Material**. If the slot has its own coating instance, a confirmation
 names it and **Replace Coating** removes it in the same edit. Cancel is the
 default. A hair-card or project BRDF slot first returns to its inherited material.
 

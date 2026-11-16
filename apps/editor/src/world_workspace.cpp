@@ -2451,8 +2451,8 @@ void WorldWorkspace::addSkinControls(QFormLayout& inoutRows,
         assign->setObjectName(QStringLiteral("worldAssignSkin"));
         assign->setToolTip(
             QStringLiteral("Shade this slot as skin, whose diffuse light spreads under the surface over a per-channel "
-                           "scattering distance. Its base colour, roughness and textures are kept; skin is not "
-                           "metallic and does not emit."));
+                           "scattering distance. Its base colour, roughness, emission and textures are kept; "
+                           "skin is not metallic."));
         connect(assign, &QPushButton::clicked, this, [this]() { assignSkin(true); });
         inoutRows.addRow(assign);
         return;
