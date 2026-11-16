@@ -165,6 +165,12 @@ struct RenderGraphPrograms final
     /// Present with HasClusteredDeferred in packages from format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION that connect
     /// Baked Lighting; empty otherwise, which draws every receiver with realtime lighting.
     rhi::RasterShaderDescription DeferredProbeGBufferFragment{};
+    /// Optional G-buffer fragment for static surfaces with a ready chart in a deferred pass with a connected Baked
+    /// Lighting input. It applies alpha-masked coverage, adds the chart's baked diffuse to the emission target and
+    /// marks the pixel so the resolve omits the baked lights' live diffuse while keeping their specular. Present with
+    /// HasClusteredDeferred in packages from format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION that connect
+    /// Baked Lighting; empty otherwise, which draws every static surface with realtime lighting.
+    rhi::RasterShaderDescription DeferredSurfaceChartGBufferFragment{};
     /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
     rhi::RasterShaderDescription DeferredLightingVertex{};
     /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.
@@ -527,7 +533,8 @@ struct RenderGraphSceneRevisions final
 /// Camera-only updates preserve resource acquisition counters. Reuse compares complete copied content.
 struct RenderGraphSceneResourceReport final
 {
-    /// Draw items using the specialized surface-chart shader in the currently drawable scene.
+    /// Draw items using a specialized surface-chart shader (the forward chart fragment or the deferred chart G-buffer)
+    /// in the currently drawable scene.
     foundation::usize SurfaceChartDraws = 0;
     /// Draw items sampling the baked probe volume through the deferred probe G-buffer in the currently drawable scene.
     foundation::usize ProbeReceiverDraws = 0;

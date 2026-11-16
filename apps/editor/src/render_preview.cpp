@@ -1,10 +1,12 @@
 #include "internal/render_preview.h"
+
 #include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene_limits.h"
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_tone_curve.h"
+#include "internal/viewport_walk_collision.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "renderer_overlay.h"
 #endif
@@ -1512,8 +1514,8 @@ bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn
         outError = QStringLiteral("Set a valid Transform on the First Person Player and try again.");
         return false;
     }
-    using StartStatus = ViewportWalkCollision::StartStatus;
-    switch (mFirstPersonCollision.Start(Scene_, spawn.Pose.Position))
+    using StartStatus = first_person::WalkingController::StartStatus;
+    switch (StartWorldWalk(Scene_, spawn.Pose.Position, mFirstPersonCollision))
     {
         case StartStatus::NoGeometry:
             outError = QStringLiteral("Add Static Collider to a visible terrain or mesh floor before exploring.");

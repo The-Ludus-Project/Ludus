@@ -2066,9 +2066,11 @@ class RasterTemplateTests(unittest.TestCase):
                          for item in plan['passes'] if item['kind'] == 'Raster'}
                 expected = {('ColorAndDepth', True)} | ({('DepthOnly', False)} if configuration == 'ZPrepass' else set())
                 self.assertEqual(modes, expected)
-            # Only the deferred probe G-buffer consumes the bake in this profile; the forward chart stage is skipped.
-            self.assertIn('DeferredProbeGBuffer', forward.BAKED_LIGHTING_GROUPS)
-            self.assertIn(('DeferredProbeGBuffer', 'fragment'), forward.ROLE_KEYS)
+            # The deferred probe and surface-chart G-buffers consume the bake in this profile; the forward chart
+            # stage is skipped.
+            for group in ('DeferredProbeGBuffer', 'DeferredSurfaceChartGBuffer'):
+                self.assertIn(group, forward.BAKED_LIGHTING_GROUPS)
+                self.assertIn((group, 'fragment'), forward.ROLE_KEYS)
             document = json.loads(root.read_text())
             for configuration in document['configurations']:
                 configuration['edges'] = [edge for edge in configuration['edges']

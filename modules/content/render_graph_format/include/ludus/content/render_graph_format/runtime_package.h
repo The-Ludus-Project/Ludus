@@ -68,7 +68,7 @@
 /// carries a Technique, ShaderTarget (both uint32), and an IDENTITY_BYTES digest.
 /// Records are strictly ascending by (Technique, ShaderTarget). Earlier versions
 /// supply no recipe keys. Keys identify build inventory entries for diagnostics.
-/// Version 37 admits the World-feature scene resource bits SCENE_RESOURCE_ATMOSPHERE_SKY and
+/// Version 38 admits the World-feature scene resource bits SCENE_RESOURCE_ATMOSPHERE_SKY and
 /// SCENE_RESOURCE_AERIAL_PERSPECTIVE without changing any record width.
 namespace ludus::content::render_graph_format
 {
@@ -136,8 +136,12 @@ inline constexpr foundation::uint32 RECIPE_KEY_PACKAGE_VERSION = 35;
 /// First generation carrying the optional deferred probe G-buffer fragment, which a clustered deferred pass with a
 /// connected Baked Lighting input draws for GI Probe Receivers. Earlier packages render every draw in realtime.
 inline constexpr foundation::uint32 DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION = 36;
+/// First generation carrying the optional deferred surface-chart G-buffer fragment, which a clustered deferred pass
+/// with a connected Baked Lighting input draws for static surfaces with a ready chart. Earlier packages render those
+/// surfaces in realtime.
+inline constexpr foundation::uint32 DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION = 37;
 /// First generation admitting the World-feature scene resource bits; record widths are unchanged.
-inline constexpr foundation::uint32 WORLD_FEATURE_PACKAGE_VERSION = 37;
+inline constexpr foundation::uint32 WORLD_FEATURE_PACKAGE_VERSION = 38;
 /// Scene resource bit: the linked scene ray kernel calls EvaluateEnvironment and reads the renderer's Atmosphere sky
 /// table at LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING, its last binding after the failure summary
 /// (docs/development/render-graph-authoring.md, "World features").
@@ -227,8 +231,12 @@ inline constexpr foundation::usize FORWARD_REALTIME_STAGE_ROLE = FORWARD_SURFACE
 /// Deferred G-buffer fragment that adds the baked probe volume's diffuse bounce to the emission target. Present for
 /// every deferred target, or for none, when a deferred pass connects Baked Lighting.
 inline constexpr foundation::usize DEFERRED_PROBE_GBUFFER_STAGE_ROLE = FORWARD_REALTIME_STAGE_ROLE + 1;
+/// Deferred G-buffer fragment that adds a static surface's baked chart diffuse to the emission target and marks the
+/// pixel so the resolve omits the baked lights' live diffuse. Present for every deferred target, or for none, when a
+/// deferred pass connects Baked Lighting.
+inline constexpr foundation::usize DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE = DEFERRED_PROBE_GBUFFER_STAGE_ROLE + 1;
 /// Total number of admitted shader roles.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = DEFERRED_PROBE_GBUFFER_STAGE_ROLE + 1;
+inline constexpr foundation::usize STAGE_ROLE_COUNT = DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE + 1;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
@@ -312,6 +320,8 @@ enum class StageRole : foundation::uint32
     ForwardRealtimeFragment = FORWARD_REALTIME_STAGE_ROLE,
     /// G-buffer fragment for draws that sample the baked probe volume; other draws keep DeferredGBufferFragment.
     DeferredProbeGBufferFragment = DEFERRED_PROBE_GBUFFER_STAGE_ROLE,
+    /// G-buffer fragment for draws with a ready surface chart; other draws keep DeferredGBufferFragment.
+    DeferredSurfaceChartGBufferFragment = DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE,
     NativeRayStages = NATIVE_RAY_STAGE_ROLE, ///< Linked native ray stages sharing the persistent scene ABI.
 };
 /// Float vertex input width of one stage input record.

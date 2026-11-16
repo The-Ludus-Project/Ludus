@@ -1,10 +1,14 @@
 """Deferred callback selection and stable cooked-role ABI regressions."""
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import test_render_graph_build as fixtures
+import test_render_graph_ray as ray_tests
 from ludus_tools import render_graph as graph
+from ludus_tools import render_graph_build as build
 from ludus_tools import render_graph_execution as execution
 from ludus_tools import render_graph_forward as forward
 
@@ -48,6 +52,43 @@ class DeferredTests(unittest.TestCase):
         self.assertEqual('DeferredLightingFragment', execution.program_member('DeferredLighting', 'fragment'))
         self.assertEqual('DeferredOpaqueGBufferFragment', execution.program_member('DeferredOpaqueGBuffer', 'fragment'))
 
+    def test_baked_lighting_appends_the_chart_g_buffer_role_after_the_probe_role(self):
+        # Version 37 appends the chart G-buffer after version 36's probe G-buffer without renumbering either.
+        probe = execution.role('DeferredProbeGBuffer', 'fragment')
+        self.assertEqual(execution.role('ForwardSurfaceChart', 'fragment') + 2, probe)
+        self.assertEqual(probe + 1, execution.role('DeferredSurfaceChartGBuffer', 'fragment'))
+        self.assertEqual('DeferredSurfaceChartGBufferFragment',
+                         execution.program_member('DeferredSurfaceChartGBuffer', 'fragment'))
+        self.assertIn('DeferredSurfaceChartGBuffer', forward.BAKED_LIGHTING_GROUPS)
+        self.assertIn('DeferredSurfaceChartGBuffer', forward.GBUFFER_GROUPS)
+        self.assertEqual(37, execution.PACKAGE_VERSION)
+
+    def test_connected_baked_lighting_wraps_the_material_in_the_chart_g_buffer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = graph.new_workspace(root / 'sources', output='offscreen', profiles=('metal',),
+                                         renderer_static=True)
+            helper = ray_tests.stage_helper(root / 'helpers')
+            expanded = {}
+            original = forward.expand
+
+            def record(programs, techniques, snapshot, helper, build_module, has_surface_charts=False):
+                expanded['charts'] = has_surface_charts
+                expanded['result'] = original(programs, techniques, snapshot, helper, build_module, has_surface_charts)
+                return expanded['result']
+
+            with patch.object(forward, 'expand', side_effect=record):
+                build.prepare_sources(source.with_suffix('').with_suffix('.lushader.json'), helper)
+            # The Raster starter connects Baked Lighting, so both baked G-buffer wrappers are generated; the
+            # forward chart fragment is not, because the deferred G-buffer consumes the chart.
+            self.assertTrue(expanded['charts'])
+            result = expanded['result']
+            self.assertNotIn('ForwardSurfaceChartFragment', result)
+            chart = result['DeferredSurfaceChartGBufferFragment']
+            self.assertEqual('DeferredSurfaceChartGBuffer', chart['forward_group'])
+            self.assertTrue(chart['forward_wrapper'].startswith('#define LUDUS_GRAPH_SURFACE_CHART 1\n'))
+            self.assertIn('PackDeferredSurfaceChartMaterial(MaterialMain(value), value)', chart['forward_wrapper'])
+            self.assertIn('PackDeferredProbeMaterial(', result['DeferredProbeGBufferFragment']['forward_wrapper'])
 
 if __name__ == '__main__':
     unittest.main()

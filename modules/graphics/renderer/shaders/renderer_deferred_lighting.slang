@@ -75,6 +75,8 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     input.PositionUncertaintyWorld = positionPerDepthWorld * (depth * DEFERRED_DEPTH_RELATIVE_UNCERTAINTY);
     input.EyeWorld = deferredView.EyeWorld;
     input.IsDirectReference = deferredView.Options.x;
+    // A charted pixel's emission holds the baked lights' diffuse, so ShadeMaterial omits their live diffuse there.
+    input.IsBakeValid = emissionCoverage.w == float(DEFERRED_SURFACE_CHART_COVERED) ? 1 : 0;
     float4 normalRoughness = normalRoughnessTexture.Load(int3(positionPixel, 0));
     float4 baseMetallic = baseMetallicTexture.Load(int3(positionPixel, 0));
     SurfaceSample surface;

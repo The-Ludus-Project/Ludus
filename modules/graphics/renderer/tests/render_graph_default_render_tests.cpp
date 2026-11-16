@@ -671,6 +671,166 @@ TEST_CASE("default clustered deferred adds the baked probe volume to GI Probe Re
     CHECK(fixture.Graph.GetReport().Resources.ProbeReceiverDraws == 0);
 }
 
+TEST_CASE("default clustered deferred draws baked surface charts and omits the baked lights' live diffuse once",
+          "[render-graph][clustered-deferred][surface-chart][gpu]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(programs.HasClusteredDeferred == true);
+    // The engine default connects Baked Lighting, so its package carries the chart G-buffer beside the probe one.
+    const auto hasArtifact = [](const rhi::ShaderDescription& artifact) {
+        return artifact.Msl.empty() == false || artifact.Spirv.IsEmpty() == false || artifact.Wgsl.empty() == false ||
+               artifact.Dxil.IsEmpty() == false;
+    };
+    REQUIRE(hasArtifact(programs.DeferredSurfaceChartGBufferFragment.Artifact) == true);
+    // The forward chart fragment belongs to the forward-lit profile only.
+    CHECK(hasArtifact(programs.ForwardSurfaceChartFragment.Artifact) == false);
+    constexpr usize POLL_ATTEMPTS = 10000;
+    const auto poll = [&](rhi::RasterStatus status) {
+        for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            threading::SleepFor(timing::Milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    fixture.Cameras[0].CameraPosition = {0, 0, 2};
+    // The charted draw covers the centre; an uncharted copy beside it sees the same light in realtime. The copy is
+    // drawn first, so the resolve must still find the chart material's baked-light flags.
+    constexpr usize ITEM_COUNT = 2;
+    constexpr float32 REALTIME_OFFSET_X = .6F;
+    StaticArray<renderer::RenderGraphItem, ITEM_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
+    items[0].SourceId = fixture.Items[0].SourceId + 1;
+    items[0].MeshToWorld.Translation.X = REALTIME_OFFSET_X;
+    items[1].SourceId = fixture.Items[0].SourceId;
+    for (renderer::RenderGraphItem& item : items)
+    {
+        item.Material.Color = {1, 1, 1, 1};
+    }
+    constexpr float32 ROUGHNESS = .5F;
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {1, 1, 1};
+    material.Roughness = ROUGHNESS;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    // A blue directional light along the view axis: at the centre its half vector is the normal.
+    renderer::DirectLight light;
+    light.SourceId = 1;
+    light.Color = {0, 0, 1};
+    light.Direction = {0, 0, -1};
+    light.Intensity = 1;
+    inputs.Lights = {&light, 1};
+
+    namespace scene_format = ludus::content::scene_format;
+    scene_format::BakeChartLayout layout;
+    REQUIRE(scene_format::TryMakeBakeChartLayout(1, layout) == true);
+    constexpr usize CHART_BYTES =
+        scene_format::BAKE_CHART_TILE_PIXELS * scene_format::BAKE_CHART_TILE_PIXELS * scene_format::TEXEL_BYTES;
+    StaticArray<uint8, CHART_BYTES> chartPixels{};
+    for (usize offset = 0; offset < chartPixels.GetSize(); offset += scene_format::TEXEL_BYTES)
+    {
+        chartPixels[offset] = 255;
+    }
+    // Red chart irradiance, distinct from the light's colour, so the two terms read in separate channels.
+    constexpr float32 CHART_IRRADIANCE = 3;
+    StaticArray<renderer::SceneSurfaceChart, ITEM_COUNT> charts{};
+    charts[1].SourceId = items[1].SourceId;
+    charts[1].MeshToWorld = items[1].MeshToWorld;
+    charts[1].Scale = {CHART_IRRADIANCE, 0, 0};
+    charts[1].Irradiance = {chartPixels.GetData(),
+                            chartPixels.GetSize(),
+                            layout.Width * scene_format::TEXEL_BYTES,
+                            layout.Width,
+                            layout.Height,
+                            rhi::RasterFormat::Rgba8Unorm};
+    inputs.SurfaceCharts = {charts.GetData(), charts.GetSize()};
+    inputs.BakedLightIds = {&light.SourceId, 1};
+    renderer::RenderGraphReport report;
+    const auto update = [&](uint64 revision) {
+        return poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                         {items.GetData(), items.GetSize()},
+                                         {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                         revision,
+                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                         report,
+                                         &inputs,
+                                         revision));
+    };
+    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.SurfaceChartDraws == 1);
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect;
+    REQUIRE(fixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+    renderer::Renderer compositor;
+    REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                       shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::Presentation presentation;
+    REQUIRE(compositor.PreparePresentation(texture, mapping, presentation) == rhi::RasterStatus::Ready);
+    const auto render = [&]() {
+        REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+        REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
+        REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
+    };
+    render();
+    // The staged default writes clamped linear RGBA8. At normal incidence with a white dielectric, ShadeMaterial's
+    // diffuse weight is (1 - F0) / pi and the GGX lobe at its peak is F0 / (4 pi alpha^2), alpha = roughness^2.
+    constexpr float32 DIELECTRIC_F0 = .04F;
+    constexpr float32 CODE_SCALE = 255;
+    const float32 diffuseCodes = CODE_SCALE * (1 - DIELECTRIC_F0) / math::kPiF;
+    const float32 alphaSquared = ROUGHNESS * ROUGHNESS * ROUGHNESS * ROUGHNESS;
+    const float32 specularCodes = CODE_SCALE * DIELECTRIC_F0 / (4 * math::kPiF * alphaSquared);
+    // Half-float G-buffer storage and the RGBA8 target may move a channel by a few codes.
+    constexpr float32 CODE_TOLERANCE = 3;
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CAPTURE(fixture.Pixels[center], fixture.Pixels[center + 2], diffuseCodes, specularCodes);
+    // The chart supplies the diffuse once; the baked light keeps only its live specular there.
+    CHECK(math::Abs(static_cast<float32>(fixture.Pixels[center]) - CHART_IRRADIANCE * diffuseCodes) <= CODE_TOLERANCE);
+    CHECK(math::Abs(static_cast<float32>(fixture.Pixels[center + 2]) - specularCodes) <= CODE_TOLERANCE);
+    // The uncharted draw shades the same light's live diffuse and has no chart term.
+    constexpr uint32 REALTIME_PIXEL_X = static_cast<uint32>(WIDTH * (1 + REALTIME_OFFSET_X) / 2);
+    const usize realtime = GetPixel(REALTIME_PIXEL_X, HEIGHT / 2);
+    CAPTURE(fixture.Pixels[realtime], fixture.Pixels[realtime + 2]);
+    CHECK(fixture.Pixels[realtime] < CODE_TOLERANCE);
+    CHECK(static_cast<float32>(fixture.Pixels[realtime + 2]) > diffuseCodes / 2);
+
+    // A mismatched placement returns the draw to the realtime G-buffer: no chart term and the live diffuse back.
+    charts[1].MeshToWorld.Translation.Y += 1;
+    REQUIRE(update(2) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.SurfaceChartDraws == 0);
+    render();
+    CHECK(fixture.Pixels[center] < CODE_TOLERANCE);
+    CHECK(math::Abs(static_cast<float32>(fixture.Pixels[center + 2]) - (diffuseCodes + specularCodes)) <=
+          CODE_TOLERANCE);
+
+    // A chart table that does not match the draw list is rejected and keeps the last drawable scene.
+    charts[1].MeshToWorld = items[1].MeshToWorld;
+    inputs.SurfaceCharts = {charts.GetData(), 1};
+    CHECK(update(3) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+}
+
 TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges", "[render-graph][gpu][bilinear]")
 {
     GraphGpuFixture fixture;

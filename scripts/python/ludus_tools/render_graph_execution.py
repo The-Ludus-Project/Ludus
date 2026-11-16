@@ -335,9 +335,10 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 33: per-callback capture warm-up counts follow the scene resource word.
 # Version 34 adds the optional forward surface-chart fragment and a chart-free realtime fragment.
 # Version 36 adds the optional deferred probe G-buffer fragment for passes with Baked Lighting connected.
-# Version 37 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
+# Version 37 adds the optional deferred surface-chart G-buffer fragment for the same passes.
+# Version 38 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
 # aerial perspective table.
-PACKAGE_VERSION = 37
+PACKAGE_VERSION = 38
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -345,7 +346,7 @@ SCENE_RESOURCE_LTC_TABLE = 1
 # Scene resource bit: the linked ray kernels count latched pixels by failure reason (LUDUS_GRAPH_FAILURE_BINDING).
 SCENE_RESOURCE_FAILURE_SUMMARY = 2
 SCENE_RESOURCE_LIGHT_TRANSFORMER = 4
-# Version 37 World-feature bits: reflection kept the Atmosphere sky (EvaluateEnvironment) or the aerial perspective
+# Version 38 World-feature bits: reflection kept the Atmosphere sky (EvaluateEnvironment) or the aerial perspective
 # table (ApplyAerialPerspective) of the linked ray kernel. docs/development/render-graph-authoring.md#world-features.
 SCENE_RESOURCE_ATMOSPHERE_SKY = 8
 SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16
@@ -374,6 +375,8 @@ def role(program, stage):
     if program == 'DeferredProbeGBuffer':
         # Follows ForwardSurfaceChart and the ForwardRealtime fragment.
         return role('ForwardSurfaceChart', 'fragment') + 2
+    if program == 'DeferredSurfaceChartGBuffer':
+        return role('DeferredProbeGBuffer', 'fragment') + 1
     if program.startswith('Deferred'):
         return FORWARD_DEPTH_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage)) - forward.ROLE_KEYS.index(('DeferredGBuffer', 'fragment'))
     if (program, stage) in forward.ROLE_KEYS:

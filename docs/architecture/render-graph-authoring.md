@@ -1820,6 +1820,14 @@ deferred target or none. The renderer prewarms a second material program that di
 from the ordinary one only in this G-buffer fragment. Scene preparation pins the probe
 atlas through the same resource cache and assigns that program to receiver draws. The
 fragment adds the probe diffuse term to the emission target, so the resolve ABI and its
-sixteen bindings are unchanged. The chart and probe programs belong to different
-profiles, so one technique row still enumerates at most two material programs. See
-[Baked probe GI for receivers](../development/render-graph-authoring.md#deferred-baked-probe-gi).
+sixteen bindings are unchanged. Package version 37 adds the optional
+`DeferredSurfaceChartGBufferFragment` role under the same all-or-none rule. A third
+material program differs from the ordinary one only in this G-buffer fragment, and
+scene preparation assigns it to draws with a matching surface chart. The fragment adds
+the chart diffuse term to the emission target and writes emission alpha 2. The resolve
+reads that value as the existing `IsBakeValid` input, so it omits the baked lights'
+diffuse there exactly once without another binding. The resolve takes its light words
+from a chart material, because only those mark the baked lights. A forward-profile
+color context therefore prewarms at most three material programs, and one technique
+row enumerates up to four renderer pipeline sets. See
+[Baked lighting: probe GI and surface charts](../development/render-graph-authoring.md#deferred-baked-probe-gi).

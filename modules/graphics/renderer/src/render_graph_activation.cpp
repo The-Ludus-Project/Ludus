@@ -183,6 +183,7 @@ struct RenderGraphPackage::State final
     bool HasForwardStages = false;
     bool CanHaveForwardSurfaceCharts = false;
     bool CanHaveDeferredProbeGBuffer = false;
+    bool CanHaveDeferredSurfaceChartGBuffer = false;
     bool CanHaveClusteredForward = false;
     bool CanHaveClusteredDeferred = false;
     bool HasExplicitAccumulation = false;
@@ -308,6 +309,11 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
+        const bool isDeferredSurfaceChart = role == format::DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE;
+        if (isDeferredSurfaceChart == true && CanHaveDeferredSurfaceChartGBuffer == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
         if (isDeferredRole == true && CanHaveClusteredDeferred == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -324,7 +330,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         const bool isForwardRole = (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
                                    isClusteredFragment == true || isForwardDepth == true || isDeferredRole == true ||
-                                   isSpecializedForward == true || isDeferredProbe == true;
+                                   isSpecializedForward == true || isDeferredProbe == true ||
+                                   isDeferredSurfaceChart == true;
         if (isForwardRole == true && HasForwardStages == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -550,10 +557,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         hasDeferred = hasDeferred == true || Stages[format::DEFERRED_STAGE_ROLE_FIRST][target].IsPresent == true;
     }
     bool hasDeferredProbe = false;
+    bool hasDeferredSurfaceChart = false;
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
         hasDeferredProbe =
             hasDeferredProbe == true || Stages[format::DEFERRED_PROBE_GBUFFER_STAGE_ROLE][target].IsPresent == true;
+        hasDeferredSurfaceChart = hasDeferredSurfaceChart == true ||
+                                  Stages[format::DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE][target].IsPresent == true;
     }
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
@@ -561,6 +571,12 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         // The probe G-buffer accompanies every deferred target of a package that connects Baked Lighting.
         if (Stages[format::DEFERRED_PROBE_GBUFFER_STAGE_ROLE][target].IsPresent !=
             (hasDeferredProbe == true && Stages[format::DEFERRED_STAGE_ROLE_FIRST][target].IsPresent == true))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        // So does the surface-chart G-buffer.
+        if (Stages[format::DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE][target].IsPresent !=
+            (hasDeferredSurfaceChart == true && Stages[format::DEFERRED_STAGE_ROLE_FIRST][target].IsPresent == true))
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -959,6 +975,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
         (version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+         version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
          version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
@@ -991,6 +1008,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
     candidate->CanHaveForwardSurfaceCharts = version >= format::FORWARD_SURFACE_CHART_PACKAGE_VERSION;
     candidate->CanHaveDeferredProbeGBuffer = version >= format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION;
+    candidate->CanHaveDeferredSurfaceChartGBuffer = version >= format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION;
     // Earlier clustered deferred resolves read emitter records without the bounding-sphere header word.
     candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
     candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
@@ -1373,7 +1391,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                          &result.DeferredOpaqueGBufferFragment,
                          &result.ForwardSurfaceChartFragment,
                          &result.ForwardFragment,
-                         &result.DeferredProbeGBufferFragment}};
+                         &result.DeferredProbeGBufferFragment,
+                         &result.DeferredSurfaceChartGBufferFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =

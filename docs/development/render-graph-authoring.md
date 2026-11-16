@@ -5269,7 +5269,7 @@ segments of a path would add the camera's haze again.
 
 A renderer-owned read-only table backs each function: the Atmosphere sky at
 slot 15 and the aerial perspective table at slot 11. Slang drops a table from a
-kernel's reflection when no code path reads it. The builder sets the version 37
+kernel's reflection when no code path reads it. The builder sets the version 38
 scene resource bits `SCENE_RESOURCE_ATMOSPHERE_SKY` and
 `SCENE_RESOURCE_AERIAL_PERSPECTIVE` from the reflected slots. The renderer then
 binds only the tables a kernel reads, as it does for the
@@ -6315,13 +6315,13 @@ depth and sixteen binding slots. Unsupported devices fail explicitly. The initia
 profile admits one clear/store opaque color node and its optional immediately
 preceding prepass with the same camera/depth.
 The profile retains the graph adapter's conventional-depth requirement. Transparent
-deferred materials, MSAA, baked surface charts, GPU cluster assignment, image
+deferred materials, MSAA, GPU cluster assignment, image
 upscale integration and arbitrary MRT graph authoring remain outside this initial
 offline profile.
 
 <a id="deferred-baked-probe-gi"></a>
 
-### Baked probe GI for receivers
+### Baked lighting: probe GI and surface charts
 
 The engine default and the **Raster** starter connect **Baked Lighting** from
 **Scene** to the color subgraph in both configurations. This is the graph that
@@ -6338,14 +6338,33 @@ Other draws keep the realtime G-buffer fragments, so a missing, stale or
 mismatched bake leaves every draw in realtime. The preview status reports
 "Probe GI in use on N receiver draws."
 
-Disconnect the wire and rebuild to draw receivers in realtime. Packages built
-before version 36 decode unchanged and render in realtime. The SDK accepts the
-same inputs through `SceneShaderInputs::ProbeVolume` and `ProbeReceiverIds`.
-A receiver list with an atlas that does not match its grid rejects the
-candidate and keeps the last drawable scene. Static surfaces' baked charts are
-not yet read by this profile. The receiver probe fragment applies the
-alpha-masked coverage test for opaque receivers too, so receivers do not get
-the opaque G-buffer's hidden-surface removal on Apple GPUs.
+The same wire also brings in the World's ready
+[always-on surface charts](editor-workspace.md#baking-always-on-lights) for
+static surfaces. Package version 37 adds a fourth G-buffer fragment,
+`DeferredSurfaceChartGBufferFragment`, compiled with `LUDUS_GRAPH_SURFACE_CHART`.
+Scene preparation checks each placement against its chart, as the Forward lit
+template does, and draws matching surfaces through it. The fragment samples the
+chart's incoming diffuse irradiance, stores its diffuse term in the emission
+target and writes emission alpha 2 (`DEFERRED_SURFACE_CHART_COVERED`) in place
+of the ordinary coverage of 1. At those pixels the resolve omits the live
+diffuse of the baked always-on lights, which the chart already holds, and keeps
+their live specular. Other lights, mesh emitters and the environment stay live.
+These are the forward chart fragment's terms, so Force raster shows a bake as
+the native Lit viewport does. The flag rides in the existing coverage channel,
+so the resolve still uses its sixteen bindings. The resolve reads its light list
+from a chart material, because only chart materials mark which lights are baked.
+A draw without a matching chart keeps the realtime G-buffer and full live
+lighting. The preview status reports "Surface charts in use on N draws."
+
+Disconnect the wire and rebuild to draw every surface in realtime. Packages
+built before version 36 decode unchanged and render in realtime. Version 36
+packages draw probe receivers but not charts. The SDK accepts the same inputs
+through `SceneShaderInputs::ProbeVolume`, `ProbeReceiverIds`, `SurfaceCharts`
+and `BakedLightIds`. A receiver list with an atlas that does not match its grid,
+or a chart table that does not match the draw list, rejects the candidate and
+keeps the last drawable scene. The probe and chart fragments apply the
+alpha-masked coverage test for opaque draws too, so those draws do not get the
+opaque G-buffer's hidden-surface removal on Apple GPUs.
 
 The package compiles the G-buffer stage twice from the same `MaterialMain`. The
 `DeferredGBufferFragment` applies an alpha-masked material's cutoff with a `discard`;
@@ -10169,8 +10188,9 @@ profile does not accept the connection.
 
 The SDK accepts the same typed chart inputs through `SceneShaderInputs`.
 Callers supply charts matching the submitted scene revision and item order.
-The editor owns its on-disk chart format. This integration covers surface
-charts in Forward lit.
+The editor owns its on-disk chart format. The engine's default deferred graph
+reads the same charts through its own G-buffer fragment
+([Baked lighting: probe GI and surface charts](#deferred-baked-probe-gi)).
 
 Direct lighting uses L4's declared selection: validate at most 128 unique sources,
 then retain the eight smallest source identities. `GetReport().Resources.DroppedLights`

@@ -19,18 +19,20 @@ SUPPORT = {
     'DeferredOpaqueGBuffer': ('renderer_deferred_material', ('fragment',)),
     # Package version 36: the G-buffer fragment for GI Probe Receivers of a pass with Baked Lighting connected.
     'DeferredProbeGBuffer': ('renderer_deferred_material', ('fragment',)),
+    # Package version 37: the G-buffer fragment for static surfaces with a ready chart in the same passes.
+    'DeferredSurfaceChartGBuffer': ('renderer_deferred_material', ('fragment',)),
 }
-# The G-buffer groups wrap the authored material; the opaque one compiles it with LUDUS_OPAQUE_COVERAGE and the
-# probe one adds the baked probe volume's diffuse bounce.
-GBUFFER_GROUPS = ('DeferredGBuffer', 'DeferredOpaqueGBuffer', 'DeferredProbeGBuffer')
+# The G-buffer groups wrap the authored material; the opaque one compiles it with LUDUS_OPAQUE_COVERAGE, the probe
+# one adds the baked probe volume's diffuse bounce and the chart one adds the surface chart's baked diffuse.
+GBUFFER_GROUPS = ('DeferredGBuffer', 'DeferredOpaqueGBuffer', 'DeferredProbeGBuffer', 'DeferredSurfaceChartGBuffer')
 # Groups emitted only for passes with a connected SceneBakedLighting input.
-BAKED_LIGHTING_GROUPS = ('ForwardSurfaceChart', 'DeferredProbeGBuffer')
+BAKED_LIGHTING_GROUPS = ('ForwardSurfaceChart', 'DeferredProbeGBuffer', 'DeferredSurfaceChartGBuffer')
 ROLE_KEYS = [('ForwardLit', 'vertex'), ('ForwardLit', 'fragment'), ('ForwardShadow', 'fragment'),
              ('ForwardOutput', 'vertex'), ('ForwardOutput', 'fragment'), ('ForwardFlatShadow', 'fragment'),
              ('ForwardDepth', 'fragment'), ('DeferredGBuffer', 'fragment'), ('DeferredLighting', 'vertex'),
              ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'), ('DeferredOpaqueGBuffer', 'fragment'), ('ForwardSurfaceChart', 'fragment'),
-             ('DeferredProbeGBuffer', 'fragment')]
-MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment', 'ForwardSurfaceChartFragment', 'DeferredProbeGBufferFragment']
+             ('DeferredProbeGBuffer', 'fragment'), ('DeferredSurfaceChartGBuffer', 'fragment')]
+MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment', 'ForwardSurfaceChartFragment', 'DeferredProbeGBufferFragment', 'DeferredSurfaceChartGBufferFragment']
 INPUTS = [{'location': i, 'format': 'Float3' if i in (0, 7) else 'Float2' if i in (6, 13, 15) else 'Float4'} for i in range(16)]
 
 
@@ -118,7 +120,7 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
     for group, (recipe_name, stages) in SUPPORT.items():
         if group in BAKED_LIGHTING_GROUPS and not has_surface_charts:
             continue
-        # Clustered profiles read charts in a later stage; only the deferred probe G-buffer consumes the bake.
+        # Clustered profiles consume the bake through the deferred G-buffer groups, not the forward chart fragment.
         if group == 'ForwardSurfaceChart' and is_clustered_profile:
             continue
         if group.startswith('Deferred') and not is_deferred_profile:
@@ -136,7 +138,7 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
                               'The renderer reserves this support program ID. Rename the authored program and update its assignments.')
             original = programs.get(technique['fragment'] if group in (*GBUFFER_GROUPS, 'ForwardSurfaceChart') else identity)
             source = '#define LUDUS_OPAQUE_COVERAGE 1\n' if group == 'DeferredOpaqueGBuffer' else ''
-            if group == 'ForwardSurfaceChart':
+            if group in ('ForwardSurfaceChart', 'DeferredSurfaceChartGBuffer'):
                 source = '#define LUDUS_GRAPH_SURFACE_CHART 1\n'
             elif group == 'DeferredProbeGBuffer':
                 source = '#define LUDUS_GRAPH_PROBE_GI 1\n'
@@ -153,6 +155,8 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
                 expression = 'ShadeMaterial(' + expression + ', value)'
             elif group == 'DeferredProbeGBuffer':
                 expression = 'PackDeferredProbeMaterial(' + expression + ', value)'
+            elif group == 'DeferredSurfaceChartGBuffer':
+                expression = 'PackDeferredSurfaceChartMaterial(' + expression + ', value)'
             elif group in GBUFFER_GROUPS:
                 expression = 'PackDeferredMaterial(' + expression + ')'
             semantic = ' : SV_Target0' if stage == 'fragment' and output == 'float4' else ''
