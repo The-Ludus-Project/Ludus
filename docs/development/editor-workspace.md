@@ -2208,6 +2208,34 @@ maps. The native Lit preview also supports shadow maps for point and spot lights
 tracing and baked lighting compute visibility from scene geometry independently
 of this setting.
 
+### Inspect lighting terms
+
+To find where light at a pixel comes from, choose a **Lighting:** entry in the World
+viewport's output menu, below the debug views. The default Raster graph then draws
+one term of its lighting with the final output's camera, shadows and exposure:
+
+- **Light: *name*** shows one light alone, and **Lighting: Direct lights** every
+  Sun, Moon, point and spot light together. Light that appears where its source
+  cannot reach, such as Sun inside a roofed corridor, is a leak in that light.
+- **Shadow coverage: *name*** shows that light's shadow map at each surface: white
+  lit, black shadowed. Magenta marks surfaces outside every map of the light, which
+  it lights unshadowed; cyan means the light has no map (its **Raster Shadows** is
+  off or two brighter lights hold the maps).
+- **Lighting: Sky diffuse** and **Sky specular** show environment and Atmosphere sky
+  light, and **Lighting: Sky visibility** how much of the sky each surface sees
+  past the World's geometry. Sky light enters interiors only through openings
+  ([Sky visibility](render-graph-authoring.md#sky-visibility)).
+- **Lighting: Area lights** shows emissive meshes, and **Lighting: Aerial
+  perspective** the light an Atmosphere scatters toward the camera.
+- **Lighting: Dominant light** colours each pixel by its largest contributor. The
+  legend above the status line names the colours: the sky, the area lights, and each
+  light.
+
+Lights are named as in the World's **Lights** list; an imported light shows its kind
+and source identity. The choice belongs to the viewport session and is not saved.
+Choose **Final output** to return. Graphs that do not resolve through the clustered
+deferred pass do not offer these entries.
+
 ### Celestial directional lights
 
 Select a directional light and set **Light → Celestial Role** in **Properties**.

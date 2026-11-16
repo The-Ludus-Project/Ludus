@@ -6,6 +6,7 @@
 // without a GPU adapter skip; this is not native Qt presentation evidence.
 #include "editor_default_graph.h"
 #include "editor_renderer_static.h"
+#include "internal/builtin_world.h"
 #include "internal/controller.h"
 #include "internal/error_list.h"
 #include "internal/graph_comparison_run.h"
@@ -2568,6 +2569,124 @@ TEST_CASE("Graph output menu offers built-in debug views drawn by the World prev
     targets->setCurrentIndex(1);
     CHECK(preview.GetShading() == original);
     CHECK(preview.IsBuiltInViewShown() == false);
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Graph output menu offers the deferred resolve's lighting views", "[editor][render-graph][world-graph]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    // A default World with a cube and one named point light.
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString cube;
+    QString lamp;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), cube, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), lamp, error) == true);
+    const QJsonObject lampEntity = document.Entity(lamp);
+    REQUIRE(document.Edit(lamp,
+                          lampEntity.value(QStringLiteral("components")).toObject(),
+                          QStringLiteral("Desk lamp"),
+                          error) == true);
+    const QString path =
+        QFileInfo(WriteBytes(project, QStringLiteral("lamp.world.json"), document.Encode())).canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    // The engine default graph resolves through the clustered deferred pass, so its lighting views follow the
+    // built-in debug views, each explained.
+    const QStringList terms{QStringLiteral("Direct lights"),
+                            QStringLiteral("Sky diffuse"),
+                            QStringLiteral("Sky specular"),
+                            QStringLiteral("Area lights"),
+                            QStringLiteral("Aerial perspective"),
+                            QStringLiteral("Dominant light"),
+                            QStringLiteral("Sky visibility")};
+    for (const QString& term : terms)
+    {
+        const int32 index = targets->findText(QStringLiteral("Lighting: %1").arg(term));
+        INFO(term.toStdString());
+        REQUIRE(index >= 0);
+        CHECK(targets->itemData(index, Qt::ToolTipRole).toString().isEmpty() == false);
+    }
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::Final);
+
+    // Choosing a lighting view keeps the graph drawing and hands the view to the graph camera.
+    const uint64 presented = graphView->GetPresentedFrames();
+    targets->setCurrentIndex(targets->findText(QStringLiteral("Lighting: Sky visibility")));
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::SkyVisibility);
+    CHECK(preview.GetLightingViewSourceId() == 0);
+    PreviewShading chosen = PreviewShading::Solid;
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    CHECK(graphView->isHidden() == false);
+    REQUIRE(waitFor([&]() { return graphView->GetPresentedFrames() > presented; }) == true);
+
+    // The dominant-light view names its colours: the sky, the area lights and every analytic light.
+    targets->setCurrentIndex(targets->findText(QStringLiteral("Lighting: Dominant light")));
+    QLabel* legend = graphView->findChild<QLabel*>(QStringLiteral("worldGraphLightingLegend"));
+    REQUIRE(legend != nullptr);
+    CHECK(legend->isHidden() == false);
+    CHECK(legend->text().contains(QStringLiteral("Sky")) == true);
+    CHECK(legend->text().contains(QStringLiteral("Area lights")) == true);
+
+    CHECK(legend->text().contains(QStringLiteral("Desk lamp")) == true);
+
+    // The light has its own contribution and shadow coverage entries, named as in the World's Lights list.
+    const int32 lampLight = targets->findText(QStringLiteral("Light: Desk lamp"));
+    REQUIRE(lampLight >= 0);
+    targets->setCurrentIndex(lampLight);
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::Light);
+    CHECK(preview.GetLightingViewSourceId() == ComputeEntitySourceId(lamp));
+    const int32 lampCoverage = targets->findText(QStringLiteral("Shadow coverage: Desk lamp"));
+    REQUIRE(lampCoverage >= 0);
+    targets->setCurrentIndex(lampCoverage);
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::ShadowCoverage);
+    CHECK(preview.GetLightingViewSourceId() == ComputeEntitySourceId(lamp));
+    CHECK(legend->isHidden() == true);
+
+    // The final output returns the graph camera to ordinary shading.
+    targets->setCurrentIndex(0);
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::Final);
+    CHECK(preview.GetLightingViewSourceId() == 0);
+    CHECK(legend->isHidden() == true);
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();

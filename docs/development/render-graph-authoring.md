@@ -5900,8 +5900,8 @@ viewport session as you navigate. It updates the lighting resolve before the
 tone curve and 8-bit output, without a graph rebuild or a saved World or graph
 edit.
 
-Exposure is available for **Final output** when a clustered deferred raster pass
-with an enabled ToneMap directly writes the export. For other graphs or targets,
+Exposure is available for **Final output** and the **Lighting** views when a clustered
+deferred raster pass with an enabled ToneMap directly writes the export. For other graphs or targets,
 return to a supported final output to use the control. Reference captures run
 with the graph's authored exposure.
 
@@ -5919,6 +5919,13 @@ selector returns to **Final output** and the status line says why; the graph's d
 image are kept, so the viewport never goes blank. The views and their colours are described under
 [the built-in viewport profile](editor-workspace.md#earlier-built-in-viewport-profile) in the editor
 workspace guide.
+
+When a raster colour pass writes the final output, the selector then offers the clustered
+deferred resolve's [lighting views](#lighting-views): **Lighting: Direct lights**, **Sky diffuse**,
+**Sky specular**, **Area lights**, **Aerial perspective**, **Dominant light** and **Sky
+visibility**, then **Light:** and **Shadow coverage:** for each analytic light, named as in the
+World. Unlike the debug views, the graph draws these itself, with the same camera, shadows and
+exposure as its final output. Clustered forward graphs show their final output for them.
 
 A World without objects, such as one just made with **New World**, gives the graph nothing to
 extract. The viewport then presents the built-in renderer's frames of that empty World (the
@@ -6018,9 +6025,13 @@ the editor extracts each object's tint (times its colour texture) as display-onl
 emission over a black base colour. That emission contributes no mesh area lighting.
 They require static triangles with normals and opaque or alpha-masked materials.
 Blended materials and invalid inputs reject preparation and retain the last drawable generation.
-The default shadows one authored directional light with a cached orthographic map.
+The default shadows up to two directional lights with cached orthographic maps
+([Directional shadows](#directional-shadows)), and environment and Atmosphere sky light
+reach a surface only through the directions in which it sees past the scene
+([Sky visibility](#sky-visibility)).
 Emissive meshes also provide direct area lighting, shadowed by cached cube shadow maps
 ([Mesh-light shadows](#mesh-light-shadows)). No proxy lights, ray tracing or indirect illumination are added.
+[Lighting views](#lighting-views) draw one term of the lighting at a time.
 The graph's ToneMap node (PBR Neutral at unit exposure) is fused into the lighting
 resolve: exposure, the curve and sRGB encoding run before the RGBA8 write, so radiance
 above one compresses toward white instead of clipping, and the exported image holds
@@ -6042,6 +6053,8 @@ loads that output afterward. Background coverage remains clear. Half-float mater
 storage and reconstructed positions introduce numerical differences; native tests
 compare against the same material callback in clustered forward within two linear
 RGBA8 codes per channel. This is a correctness tolerance, not a performance claim.
+Clustered forward applies no sky visibility, so where another object hides part of a
+surface's sky, the deferred result is darker than the forward one.
 
 Emissive triangles are integrated over their actual transformed geometry. The
 Lambert term uses the polygon's projected solid angle with view-dependent Schlick
@@ -6346,11 +6359,80 @@ before the first lighting resolve that has enough draw budget. Until then each
 light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
 prepare a replacement, and failed preparation retains the previous drawable
 generation. The directional slots share the mesh-light atlas when the scene
-has both kinds of casters; each one takes a quarter of the 2048 × 2048 atlas, so
-a second directional map halves the space left for mesh-light cube faces. The whole-scene fit keeps the shadow stable as the
+has both kinds of casters; each one takes a quarter of the 2048 × 2048 atlas, as do
+the [sky visibility](#sky-visibility) maps, so with two directional maps one quarter is
+left for mesh-light cube faces. The whole-scene fit keeps the shadow stable as the
 camera moves. In large scenes, each texel covers more ground, so nearby edges
 can appear coarse. Recook existing clustered deferred shader packages to use
 the corrected directional shadow comparison.
+
+### Sky visibility
+
+Without occlusion, environment and Atmosphere sky light reach every surface,
+including interiors under roofs and floors: in the Sample project's Sponza at sunset
+the vaults and corridors glowed orange and blue while the Sun itself was correctly
+shadowed. The default therefore renders 64 orthographic depth maps of the scene
+from fixed directions over the upper (+Y) hemisphere, once per prepared scene, into
+one 1024 × 1024 quarter of the shadow atlas: 126 × 126 texels each inside a
+one-texel gutter, fitted to the scene bounds like the
+[directional maps](#directional-shadows). The directions follow a spherical
+Fibonacci spiral, so each covers an equal solid angle and no azimuth is favoured.
+`RenderGraphSceneResourceReport::SkyVisibilityMaps` reports the count, zero for a
+scene without geometry.
+
+The resolve moves each receiver 1.5 map texels along its normal and tests it
+against the maps whose directions face the surface or its reflection, with the same
+bilinear caster-plane comparison as the directional maps. The cosine-weighted
+fraction of those directions that see past the scene scales the environment
+irradiance, from above and below the horizon alike; a surface facing straight down
+sees no sky direction and receives none. A cosine-power lobe about the reflection
+vector, narrowing with smoothness up to an exponent of 8, weights the visibility
+that scales the specular environment. With an Atmosphere, the visible directions
+also replace the quadrature about the normal for diffuse sky light: each one adds
+its sky radiance times its cosine and solid angle, and the sky table's ground half
+adds one radiance over the projected solid angle below the horizon, scaled by the
+same visibility. The quadrature about the normal took 12 samples that crossed the
+horizon one at a time as normals varied, which drew stepped bands on vaults and a
+horizontal line across walls near eye height; the fixed directions' weights vary
+continuously with the normal.
+
+Openings narrower than the spacing between directions, about 25 degrees, can fall
+between them, and texel-sized geometry can leak, because the maps are coarse:
+126 texels across the scene bounds. Interiors receive no light that bounces off
+other surfaces, so rooms lit only through openings are darker than with the
+unoccluded sky; probe GI and baked charts provide that light where configured.
+Clustered forward profiles and the built-in Lit viewport do not apply sky
+visibility. Until the maps are drawn after publication, the atlas reads as open
+sky. In the measured Sponza view at 1200 × 900 on an Apple M5 under a heavily loaded
+machine, the lighting resolve took about 14 to 16 ms with sky visibility and 7 to
+10 ms without; per-pass GPU time in the viewport's statistics overlay shows the cost
+on a given machine.
+
+### Lighting views
+
+`ViewDescription::LightingView` makes the clustered deferred resolve draw one term
+of its lighting instead of the final colour, to see where the light at a pixel
+comes from. In the editor, choose them from the World viewport's output menu
+([Inspect lighting terms](editor-workspace.md#inspect-lighting-terms)).
+
+| View | Shows |
+| --- | --- |
+| `DirectLights` | Shadowed light from every directional, point and spot light |
+| `Light` | Shadowed light from the light `LightingViewSourceId` names |
+| `ShadowCoverage` | That light's shadow-map test, independent of its angle to the surface: white lit, black shadowed, magenta where the light has maps but none covers the surface (it lights unshadowed there), cyan where it has no map |
+| `SkyDiffuse`, `SkySpecular` | Environment or Atmosphere sky light, after sky visibility |
+| `AreaLights` | Shadowed light from emissive meshes |
+| `AerialPerspective` | Light the Atmosphere scatters between the camera and the surface |
+| `DominantLight` | Each pixel in the hue of its largest contributor, brighter where the final colour is (from 35% so dim pixels stay readable); black where nothing lights it |
+| `SkyVisibility` | The cosine-weighted sky visibility as grey; magenta without sky visibility maps |
+
+Radiance views keep the pass's ToneMap exposure and curve, so they compare
+directly with the final output. `GetDeferredLightingViewHue` returns the
+dominant-light hue of each contributor: the sky, the area lights together, then
+each analytic light in ascending source ID order. A light the scene does not hold
+draws black in `Light` and cyan in `ShadowCoverage`. A value outside the
+enumeration rejects the update and keeps the last image. Clustered forward profiles
+ignore the field.
 
 ### Mesh-light shadows
 

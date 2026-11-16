@@ -4823,7 +4823,7 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
                                    MaterialVersion& output,
                                    LightSelection& report) noexcept
 {
-    return createLitMaterial(program, description, output, report, nullptr, 0, 0);
+    return createLitMaterial(program, description, output, report, nullptr, 0, 0, 0);
 }
 Status Renderer::createLitMaterial(MaterialProgram program,
                                    const LitMaterialDescription& description,
@@ -4831,14 +4831,17 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                                    LightSelection& outSelection,
                                    const ShadowRegion* directionalShadowsOrNull,
                                    usize directionalShadowCount,
+                                   usize skyVisibilityCount,
                                    uint32 shadowAtlasTexels) noexcept
 {
     if (mState.Get() == nullptr || mState->LightingSetup != Status::Ready)
     {
         return Status::NotReady;
     }
-    if (directionalShadowCount > SHADOW_REGION_CAPACITY ||
-        (directionalShadowCount != 0 && (directionalShadowsOrNull == nullptr || shadowAtlasTexels == 0)))
+    const usize leadingShadowCount = directionalShadowCount + skyVisibilityCount;
+    if (directionalShadowCount > SHADOW_REGION_CAPACITY || leadingShadowCount > SHADOW_REGION_CAPACITY ||
+        (skyVisibilityCount != 0 && skyVisibilityCount != SKY_VISIBILITY_DIRECTION_COUNT) ||
+        (leadingShadowCount != 0 && (directionalShadowsOrNull == nullptr || shadowAtlasTexels == 0)))
     {
         return Status::InvalidDescription;
     }
@@ -5130,8 +5133,7 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     parameters.Pbr = {description.Metallic,
                       description.Roughness,
                       static_cast<float32>(selected.Count),
-                      atlas != nullptr ? static_cast<float32>(atlas->Count)
-                                       : static_cast<float32>(directionalShadowCount)};
+                      atlas != nullptr ? static_cast<float32>(atlas->Count) : static_cast<float32>(leadingShadowCount)};
     parameters.Emission = {description.Emission.X,
                            description.Emission.Y,
                            description.Emission.Z,
@@ -5219,12 +5221,16 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                 (static_cast<float32>(rectangle.Y) + 0.5F) / height,
                 (static_cast<float32>(rectangle.X + rectangle.Width) - 0.5F) / width,
                 (static_cast<float32>(rectangle.Y + rectangle.Height) - 0.5F) / height};
-            usize lightIndex = 0;
-            while (lightIndex < selected.Count && selected.Lights[lightIndex].SourceId != region.Light.SourceId)
+            usize lightIndex = SKY_VISIBILITY_REGION_TAG;
+            if (regionIndex < directionalShadowCount || atlas != nullptr)
             {
-                ++lightIndex;
+                lightIndex = 0;
+                while (lightIndex < selected.Count && selected.Lights[lightIndex].SourceId != region.Light.SourceId)
+                {
+                    ++lightIndex;
+                }
+                LUDUS_ASSERT(lightIndex < selected.Count);
             }
-            LUDUS_ASSERT(lightIndex < selected.Count);
             parameters.ShadowData[firstWord + MATRIX_ROW_COUNT + 1] = {region.Bias,
                                                                        static_cast<float32>(lightIndex),
                                                                        1 / width,
@@ -5243,7 +5249,7 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     else
     {
         const float32 extent = static_cast<float32>(shadowAtlasTexels);
-        for (usize i = 0; i < directionalShadowCount; ++i)
+        for (usize i = 0; i < leadingShadowCount; ++i)
         {
             packShadowRegion(i, directionalShadowsOrNull[i], extent, extent);
         }
@@ -5672,7 +5678,7 @@ Status Renderer::prepareDeferredShadows(Snapshot snapshot,
             outDraw = draw;
             return Status::Ready;
         };
-        for (uint32 index = 0; index < inoutAtlas.DirectionalCount; ++index)
+        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.SkyCount; ++index)
         {
             const ShadowRegion& directional = inoutAtlas.Directional[index];
             const Status status =
@@ -5762,7 +5768,8 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         inoutAtlas.Recording.IsCleared = true;
     }
-    const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < inoutAtlas.DirectionalCount;
+    const uint32 leadingCount = inoutAtlas.DirectionalCount + inoutAtlas.SkyCount;
+    const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < leadingCount;
     if (shouldDrawDirectional == false && inoutAtlas.Recording.NextFace >= inoutAtlas.Faces.GetSize())
     {
         return Status::Ready;
@@ -5819,9 +5826,10 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         return Status::Ready;
     };
-    // Directional maps come first, each whole within the draw budget; the triangle budget only paces cube faces.
+    // Directional and sky visibility maps come first, each whole within the draw budget; the triangle budget only
+    // paces cube faces.
     bool canDrawDirectional = false;
-    while (inoutAtlas.Recording.DrawnDirectional < inoutAtlas.DirectionalCount)
+    while (inoutAtlas.Recording.DrawnDirectional < leadingCount)
     {
         const internal::MeshLightShadowFaceDraw& draw =
             inoutAtlas.DirectionalDraws[inoutAtlas.Recording.DrawnDirectional];

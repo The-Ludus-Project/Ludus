@@ -1,5 +1,7 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 
+#include <ludus/graphics/renderer/renderer.hpp>
+
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -751,5 +753,26 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
     }
     output = matrix;
     return rhi::RasterStatus::Ready;
+}
+math::Vector3 GetDeferredLightingViewHue(uint32 category) noexcept
+{
+    // The shader's GetLightingViewHue: a fully saturated, full-value HSV hue.
+    constexpr float64 HUE_OFFSET = LUDUS_DEFERRED_LIGHTING_VIEW_HUE_OFFSET;
+    constexpr float64 HUE_STEP = LUDUS_DEFERRED_LIGHTING_VIEW_HUE_STEP;
+    constexpr float64 SEXTANTS = 6;
+    constexpr float64 HALF_TURN_SEXTANTS = 3;
+    constexpr usize CHANNEL_COUNT = 3;
+    const float64 turns = HUE_OFFSET + static_cast<float64>(category) * HUE_STEP;
+    const float64 hue = turns - math::Floor(turns);
+    StaticArray<float32, CHANNEL_COUNT> channels{};
+    for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+    {
+        // Red, green and blue peak a third of a turn apart.
+        const float64 shifted = hue + static_cast<float64>(CHANNEL_COUNT - channel) / CHANNEL_COUNT;
+        const float64 phase = shifted - math::Floor(shifted);
+        channels[channel] =
+            static_cast<float32>(math::Clamp(math::Abs(phase * SEXTANTS - HALF_TURN_SEXTANTS) - 1, 0.0, 1.0));
+    }
+    return {channels[0], channels[1], channels[2]};
 }
 } // namespace ludus::graphics::renderer

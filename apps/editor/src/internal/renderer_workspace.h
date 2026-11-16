@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
 
 #include "internal/controller.h"
 #include "internal/external_code_editor.h"
@@ -727,5 +728,7 @@ private:
     RenderGraphSource mPreviewSourceVersion = RenderGraphSource::Draft;
     foundation::math::Matrix4 mPreviewWorldToClip = foundation::math::Matrix4::Identity();
     foundation::float32 mPreviewExposureStops = 0;
+    graphics::renderer::DeferredLightingView mPreviewLightingView = graphics::renderer::DeferredLightingView::Final;
+    foundation::uint64 mPreviewLightingViewSourceId = 0;
 };
 } // namespace ludus::editor
