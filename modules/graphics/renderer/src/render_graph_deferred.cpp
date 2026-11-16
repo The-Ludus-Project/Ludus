@@ -36,6 +36,7 @@ struct ViewParameters final
     math::Vector4 EyeWorld;
     math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
     math::Vector4 Options;
+    math::Vector4 LightingView{}; // X: DeferredLightingView code. Y: one-based light index it isolates, or zero.
     math::Vector4 AtmosphereRadialUpWorld{};
     math::Vector4 AtmosphereSunWorld{};
     math::Vector4 AtmosphereIlluminance{};
@@ -405,7 +406,7 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                            bool hasShadowAtlas,
                                            rhi::TextureViewHandle shadowAtlas,
                                            const content::render_graph_format::Pass& operation,
-                                           uint32 atmosphereSunIndex) noexcept
+                                           const DeferredResolveLights& lights) noexcept
 {
     if (mTargetsOrNull != nullptr || inoutTargets.mStatus != Status::Ready)
     {
@@ -461,6 +462,10 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         mExposure,
         static_cast<float32>(mToneCurve),
     };
+    parameters.LightingView = {static_cast<float32>(camera.LightingView),
+                               static_cast<float32>(lights.LightingViewLightIndex),
+                               0,
+                               0};
     if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
     {
         constexpr float64 METRES_PER_KILOMETRE = LUDUS_ATMOSPHERE_METRES_PER_KILOMETRE;
@@ -476,7 +481,10 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                               upWorld.Y,
                                               upWorld.Z,
                                               static_cast<float32>(altitude / METRES_PER_KILOMETRE)};
-        parameters.AtmosphereSunWorld = {sunWorld.X, sunWorld.Y, sunWorld.Z, static_cast<float32>(atmosphereSunIndex)};
+        parameters.AtmosphereSunWorld = {sunWorld.X,
+                                         sunWorld.Y,
+                                         sunWorld.Z,
+                                         static_cast<float32>(lights.AtmosphereSunIndex)};
         parameters.AtmosphereIlluminance = {atmosphere.SolarIlluminance.X,
                                             atmosphere.SolarIlluminance.Y,
                                             atmosphere.SolarIlluminance.Z,

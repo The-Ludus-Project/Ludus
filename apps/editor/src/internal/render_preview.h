@@ -240,6 +240,19 @@ public:
     {
         return mRasterExposureStops;
     }
+    /// Lighting term the clustered deferred World output draws instead of its final colour, and the analytic light
+    /// that Light and ShadowCoverage isolate (render-graph-authoring.md, "Lighting views"). A view session choice,
+    /// not persisted; graphs without a clustered deferred final output ignore it. Values outside DeferredLightingView
+    /// preserve the current choice. GUI thread only.
+    void SetLightingView(graphics::renderer::DeferredLightingView view, foundation::uint64 sourceId);
+    [[nodiscard]] LUDUS_INLINE graphics::renderer::DeferredLightingView GetLightingView() const noexcept
+    {
+        return mLightingView;
+    }
+    [[nodiscard]] LUDUS_INLINE foundation::uint64 GetLightingViewSourceId() const noexcept
+    {
+        return mLightingViewSourceId;
+    }
     /// Select the viewport toolbar's size preset by index (below VIEWPORT_SIZE_PRESET_COUNT);
     /// other values preserve it. The viewport letterboxes its frame to the preset and requests
     /// the drawable from ComputeViewportDrawableSize. Persisted by Navigation; GUI thread only.
@@ -400,6 +413,8 @@ Q_SIGNALS:
     void Changed();
     void NavigationChanged();
     void RasterExposureChanged();
+    /// SetLightingView changed the lighting view or its light.
+    void LightingViewChanged();
     void RenderAdmissionChanged();
     void RendererPreferenceChanged(bool shouldForceRaster);
     void DeviceRequested();
@@ -452,6 +467,8 @@ private:
     foundation::float32 mLookSensitivity = 1;
     foundation::float32 mFlySpeed = 1;
     foundation::float32 mRasterExposureStops = 0;
+    graphics::renderer::DeferredLightingView mLightingView = graphics::renderer::DeferredLightingView::Final;
+    foundation::uint64 mLightingViewSourceId = 0;
     /// Viewport size preset index; see SetViewportSize.
     foundation::usize mViewportSizeIndex = 0;
     QString mSelectedId;

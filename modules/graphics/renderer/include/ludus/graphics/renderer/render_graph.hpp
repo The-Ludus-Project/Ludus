@@ -536,6 +536,11 @@ struct RenderGraphSceneResourceReport final
     /// prepared deferred scene left without a map because two brighter ones hold them. They illuminate unshadowed;
     /// clear their raster shadow request to make that explicit.
     foundation::uint32 UnshadowedDirectionalLights = 0;
+    /// Sky visibility maps of the latest prepared deferred scene: SKY_VISIBILITY_DIRECTION_COUNT
+    /// (deferred_layout.h) orthographic depth maps from fixed upper-hemisphere directions, rendered once into the
+    /// shadow atlas, or zero for a scene without geometry. The resolve integrates environment and Atmosphere sky
+    /// light over those directions only where they see past the scene (render-graph-authoring.md, "Sky visibility").
+    foundation::uint32 SkyVisibilityMaps = 0;
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final

@@ -1150,18 +1150,21 @@ struct RenderGraph::State final
                 return Status::OutOfMemory;
             }
             inoutPass = core::UniquePtr<internal::RenderGraphDeferredPass>{allocationOrNull};
-            const Status status =
-                inoutPass->Initialize(inoutTargets,
-                                      GetContext(format::Technique::ColorAndDepth),
-                                      view,
-                                      camera,
-                                      lighting.GetMeshLights(),
-                                      lighting.GetMeshLightCount(),
-                                      lighting.GetMeshLightGridWord(),
-                                      lighting.HasShadowAtlas(),
-                                      lighting.GetShadowAtlasView(),
-                                      operation,
-                                      lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId));
+            const Status status = inoutPass->Initialize(
+                inoutTargets,
+                GetContext(format::Technique::ColorAndDepth),
+                view,
+                camera,
+                lighting.GetMeshLights(),
+                lighting.GetMeshLightCount(),
+                lighting.GetMeshLightGridWord(),
+                lighting.HasShadowAtlas(),
+                lighting.GetShadowAtlasView(),
+                operation,
+                {
+                    .AtmosphereSunIndex = lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId),
+                    .LightingViewLightIndex = lighting.FindLightIndex(camera.LightingViewSourceId),
+                });
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -3349,7 +3352,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         const ViewDescription& camera = cameras[cameraIndex];
         if (math::IsFinite(camera.RasterExposureStops) == false ||
-            math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS)
+            math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS ||
+            static_cast<uint32>(camera.LightingView) > DEFERRED_LIGHTING_VIEW_LAST)
         {
             return Status::InvalidDescription;
         }

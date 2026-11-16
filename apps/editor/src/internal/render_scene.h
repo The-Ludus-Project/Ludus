@@ -13,6 +13,7 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/runtime/resources/scene.h>
 
+#include <QHash>
 #include <QImage>
 #include <QJsonObject>
 #include <QSet>
@@ -161,6 +162,9 @@ struct RenderScene final
     QString LogicalId;
     bool Lit = false;
     graphics::renderer::LightSelection AuthoredLights{};
+    /// Entity names of the authored lights by source ID, for lighting-view menus and legends. Kept through Merge;
+    /// imported lights have none.
+    QHash<foundation::uint64, QString> LightNames;
     /// Source IDs of enabled authored lights excluded from raster shadow-map assignment.
     /// Kept with the World snapshot when cooked lighting is composed or switched.
     QVector<foundation::uint64> RasterUnshadowedLightIds;

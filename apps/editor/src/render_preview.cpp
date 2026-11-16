@@ -1486,6 +1486,17 @@ void RenderPreview::SetRasterExposureStops(float32 stops)
     mRasterExposureStops = stops;
     Q_EMIT RasterExposureChanged();
 }
+void RenderPreview::SetLightingView(graphics::renderer::DeferredLightingView view, uint64 sourceId)
+{
+    if (static_cast<uint32>(view) > graphics::renderer::DEFERRED_LIGHTING_VIEW_LAST ||
+        (view == mLightingView && sourceId == mLightingViewSourceId))
+    {
+        return;
+    }
+    mLightingView = view;
+    mLightingViewSourceId = sourceId;
+    Q_EMIT LightingViewChanged();
+}
 void RenderPreview::SetViewportSize(usize presetIndex)
 {
     if (presetIndex >= VIEWPORT_SIZE_PRESET_COUNT || presetIndex == mViewportSizeIndex)

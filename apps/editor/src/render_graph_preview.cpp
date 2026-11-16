@@ -529,6 +529,7 @@ struct RenderGraphPreview::State final
         uint32 Height = 0;
         uint32 Cameras = 0;
         bool HasRasterExposure = false;
+        bool HasLightingViews = false;
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
@@ -1024,6 +1025,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             plan.Resources[pass.Color].Backing == plan.Resources[target.Resource].Backing)
         {
             target.HasRasterExposure = pass.Program == format::Technique::ColorAndDepth && pass.ToneMappingExposure > 0;
+            target.HasLightingViews = pass.Program == format::Technique::ColorAndDepth;
             break;
         }
     }
@@ -1195,6 +1197,14 @@ const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 bool RenderGraphPreview::CanAdjustRasterExposure() const noexcept
 {
     return mState->Active.HasRasterExposure == true && mState->IsFrozen == false;
+}
+bool RenderGraphPreview::CanShowLightingViews() const noexcept
+{
+    return mState->Active.HasLightingViews == true && mState->IsFrozen == false;
+}
+QVector<renderer::DirectLight> RenderGraphPreview::GetExtractionLights() const
+{
+    return mState->Extraction.Lights;
 }
 bool RenderGraphPreview::FindActiveCaptureProblem(uint32 resource,
                                                   renderer::RenderGraphCaptureProblem& outProblem) const noexcept
