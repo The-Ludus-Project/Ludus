@@ -3350,14 +3350,14 @@ void WorldWorkspace::RenderInspector()
             QStringList otherEarthLights;
             for (const QJsonValue candidate : Document_.Draft().value(QStringLiteral("entities")).toArray())
             {
-                const QJsonObject entity = candidate.toObject();
-                if (Document_.GetEntityKey(entity) != Selected_ &&
-                    IsWorldEarthLight(entity.value(QStringLiteral("components"))
+                const QJsonObject otherEntity = candidate.toObject();
+                if (Document_.GetEntityKey(otherEntity) != Selected_ &&
+                    IsWorldEarthLight(otherEntity.value(QStringLiteral("components"))
                                           .toObject()
                                           .value(QStringLiteral("light"))
                                           .toObject()) == true)
                 {
-                    otherEarthLights.append(entity.value(QStringLiteral("name")).toString());
+                    otherEarthLights.append(otherEntity.value(QStringLiteral("name")).toString());
                 }
             }
             ConfigureCelestialLightFields(*group, *rows, Fields_, otherEarthLights);
