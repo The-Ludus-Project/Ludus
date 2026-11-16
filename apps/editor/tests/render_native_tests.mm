@@ -1,3 +1,4 @@
+#include "editor_default_graph.h"
 #include "internal/level.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_gpu_generation.h"
@@ -5,6 +6,7 @@
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/readback.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_object_interaction.h"
@@ -1078,6 +1080,12 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
     REQUIRE(extraction.SurfaceCharts.size() == litRoom.Objects.size());
     CHECK(extraction.SurfaceCharts.first().SourceId == extraction.Items.first().SourceId);
     CHECK(extraction.SurfaceCharts.last().SourceId == 0);
+    // The receiver has no chart; deferred Baked Lighting passes sample the saved probe atlas for it instead.
+    CHECK(extraction.ProbeReceiverIds == QVector<uint64>{extraction.Items.last().SourceId});
+    CHECK(extraction.ShaderInputs.ProbeVolume.Atlas.Width == saved->ProbeAtlas.Width);
+    CHECK(extraction.ShaderInputs.ProbeVolume.Atlas.Height == saved->ProbeAtlas.Height);
+    CHECK(extraction.ShaderInputs.ProbeVolume.IrradianceScale == saved->ProbeAtlas.IrradianceScale);
+    CHECK(extraction.ShaderInputs.ProbeVolume.Grid.Spacing == litRoom.ProbeGrid.Spacing);
     reopened.Poll(litRoom);
     CHECK(reopened.GetReady() == saved);
     // Keep the receiver and geometry in place; move only the volume away from them.
@@ -1992,6 +2000,314 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
     const QString withoutProbes = measureGpu();
     WARN("GPU with probe lookups " << withProbes.toStdString() << "; outside the volume " << withoutProbes.toStdString()
                                    << "; atlas " << atlasBytes << " bytes");
+    preview.Stop();
+}
+
+TEST_CASE("Force raster's default graph adds GI Probe Receivers' baked bounce like the native Lit viewport",
+          "[.render-native][lighting][probe-gi]")
+{
+    namespace default_graph = ludus::render_graph_packages::editor_default_graph;
+    const QString runtime = GetDefaultRenderGraphRuntime();
+    REQUIRE(runtime.isEmpty() == false);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(640, 480);
+    viewport.show();
+    bool hasStarted = false;
+    // The doorway admits bounce from both rooms; the closed wall keeps the dark half dark.
+    for (const ProbeDivider divider : {ProbeDivider::AxisWall, ProbeDivider::Doorway})
+    {
+        QVector<math::Vector3> receiversWorld;
+        for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
+        {
+            receiversWorld.append(
+                {.05F + PROBE_PATH_STEP_METRES * static_cast<float32>(i), PROBE_CELL_CENTRE_Y_METRES, 0});
+        }
+        const RenderScene scene = MakeProbeQualificationScene(divider,
+                                                              receiversWorld,
+                                                              QByteArrayLiteral("gi-probe-graph/") +
+                                                                  QByteArray::number(static_cast<uint32>(divider)));
+        REQUIRE(preview.SetScene(scene) == true);
+        if (hasStarted == false)
+        {
+            preview.SetShading(PreviewShading::Lit);
+            REQUIRE(preview.Start() == true);
+            hasStarted = true;
+        }
+        const bool hasBaked = WaitForProbeBake(preview, scene);
+        INFO(preview.Status().toStdString());
+        REQUIRE(hasBaked == true);
+        rr::ViewDescription litView;
+        const QImage lit = ReadProbeFrame(preview, litView);
+
+        RenderGraphPreview graph(
+            {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+            ludus::shaders::renderer_composite::Vertex(),
+            ludus::shaders::renderer_composite::Fragment());
+        REQUIRE(graph.Attach(preview.GetDevice(), preview.GetSurface()) == true);
+        graph.SetReferenceSize(lit.size());
+        rr::ViewDescription graphView;
+        QString error;
+        REQUIRE(preview.DescribeConventionalView(static_cast<uint32>(lit.width()),
+                                                 static_cast<uint32>(lit.height()),
+                                                 graphView,
+                                                 error) == true);
+        RenderGraphExtraction extraction;
+        REQUIRE(MakeRenderGraphExtraction(preview.Scene(), graphView, 1, extraction, error, preview.GetSurfaceBake()) ==
+                true);
+        REQUIRE(extraction.ProbeReceiverIds.size() == receiversWorld.size());
+        graph.SetExtraction(extraction);
+        REQUIRE(graph.Load(runtime) == RenderGraphPreviewLoad::Staged);
+        constexpr int32 GRAPH_DEADLINE_MILLISECONDS = 30000;
+        constexpr int32 POLL_MILLISECONDS = 2;
+        QElapsedTimer timer;
+        timer.start();
+        while (graph.GetPresentedGeneration() == 0 && timer.elapsed() < GRAPH_DEADLINE_MILLISECONDS)
+        {
+            graph.Tick();
+            QApplication::processEvents();
+            QTest::qWait(POLL_MILLISECONDS);
+        }
+        INFO(graph.GetDisplayStatus().toStdString());
+        REQUIRE(graph.GetPresentedGeneration() != 0);
+        CHECK(graph.GetProbeReceiverDrawCount() == static_cast<usize>(receiversWorld.size()));
+        const QImage raster = graph.GetImage();
+        REQUIRE(raster.size() == lit.size());
+        rr::ViewDescription presented;
+        REQUIRE(graph.TryGetPresentedView(presented) == true);
+        for (const math::Vector3& receiverWorld : receiversWorld)
+        {
+            const float32 native = MeasureProbeReceiver(lit, litView, receiverWorld, scene.Definition->Eye).Irradiance;
+            const float32 forced =
+                MeasureProbeReceiver(raster, presented, receiverWorld, scene.Definition->Eye).Irradiance;
+            CAPTURE(static_cast<uint32>(divider), receiverWorld.X, native, forced);
+            // Both paths evaluate the same atlas lookup and diffuse term; only display quantization differs.
+            constexpr float32 ABSOLUTE_TOLERANCE = .02F;
+            constexpr float32 RELATIVE_TOLERANCE = .03F;
+            CHECK(math::Abs(forced - native) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native);
+        }
+        graph.Detach();
+    }
+    preview.Stop();
+}
+
+namespace
+{
+constexpr float32 CHART_ROOM_HALF_WIDTH_METRES = 1.5F;
+constexpr float32 CHART_LIGHT_INTENSITY = 3;
+// A grey floor and back wall facing each other across their corner, lit by one always-on point light. Their charts
+// carry each other's bounce, which realtime lighting omits, so a draw that ignores its chart reads differently.
+RenderScene MakeSurfaceChartScene()
+{
+    using ludus::resources::SceneDefinition;
+    using ludus::resources::SceneLight;
+    SharedPtr<SceneDefinition> definition;
+    REQUIRE(TryMakeShared<SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    SceneDefinition& data = *definition;
+    constexpr uint32 FLOOR = 0;
+    constexpr uint32 WALL = 1;
+    constexpr uint32 OBJECT_COUNT = WALL + 1;
+    constexpr uint64 FIRST_SOURCE = 500;
+    constexpr float32 HALF = CHART_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 SPAN = 2 * CHART_ROOM_HALF_WIDTH_METRES;
+    REQUIRE(data.Meshes.TryResize(OBJECT_COUNT) == true);
+    AddProbeQuad(data.Meshes[FLOOR], {{-HALF, 0, -HALF}, {0, 0, SPAN}, {SPAN, 0, 0}});
+    AddProbeQuad(data.Meshes[WALL], {{-HALF, 0, -HALF}, {SPAN, 0, 0}, {0, SPAN, 0}});
+    REQUIRE(data.Materials.TryResize(1) == true);
+    REQUIRE(data.Objects.TryResize(OBJECT_COUNT) == true);
+    for (uint32 index = 0; index < OBJECT_COUNT; ++index)
+    {
+        data.Objects[index].SourceId = FIRST_SOURCE + index;
+        data.Objects[index].Mesh = index;
+        data.Objects[index].Material = 0;
+    }
+    data.Eye = {0, 1.2F, 3.5F};
+    data.Target = {0, .6F, -HALF};
+    data.Up = {0, 1, 0};
+    REQUIRE(data.Lights.TryResize(1) == true);
+    SceneLight& light = data.Lights[0];
+    light.SourceId = FIRST_SOURCE - 1;
+    light.Kind = ludus::resources::SceneLightKind::Point;
+    light.PositionWorld = {.4F, .9F, -.6F};
+    light.IntensityRgb = {CHART_LIGHT_INTENSITY, 0, 0};
+    light.Range = 6;
+
+    RenderScene scene;
+    scene.LogicalId = QStringLiteral("level/surface-chart-comparison");
+    scene.Identity = QByteArrayLiteral("surface-chart-comparison");
+    scene.AssetsIdentity = QByteArrayLiteral("surface-chart-comparison-assets");
+    scene.Lit = true;
+    scene.StartView =
+    {
+        .EyeWorld = {static_cast<float64>(data.Eye.X),
+                     static_cast<float64>(data.Eye.Y),
+                     static_cast<float64>(data.Eye.Z)},
+        .TargetWorld = {static_cast<float64>(data.Target.X),
+                        static_cast<float64>(data.Target.Y),
+                        static_cast<float64>(data.Target.Z)},
+        .UpWorld = data.Up,
+        .VerticalFov = data.VerticalFov,
+    };
+    scene.HasStartView = true;
+    scene.Center = data.Target;
+    scene.Radius = 3;
+    scene.Meshes.resize(OBJECT_COUNT);
+    scene.Surfaces.resize(1);
+    scene.Surfaces[0].Tint = {PROBE_RECEIVER_ALBEDO, PROBE_RECEIVER_ALBEDO, PROBE_RECEIVER_ALBEDO, 1};
+    scene.Surfaces[0].Roughness = 1;
+    for (uint32 index = 0; index < OBJECT_COUNT; ++index)
+    {
+        PreviewObject object;
+        object.Id = QString::number(data.Objects[index].SourceId);
+        object.Transform = data.Objects[index].Transform;
+        object.Mesh = static_cast<int32>(index);
+        object.Surface = 0;
+        scene.Objects.append(object);
+    }
+    QString error;
+    REQUIRE(RenderScene::LoadCookedLights(data, scene.AuthoredLights, error) == true);
+    scene.AlwaysOnLightIds.append(light.SourceId);
+    scene.Definition = Move(definition);
+    return scene;
+}
+// Scene-linear red radiance at a world point of a presented frame: the 3 x 3 pixels around its projection, decoded
+// from sRGB and the viewport's PBR Neutral curve at exposure one.
+float32 MeasureSceneRed(const QImage& image, const rr::ViewDescription& view, math::Vector3 pointWorld)
+{
+    const math::Vector2 centre = ProjectToPixel(view, image, pointWorld);
+    const QPoint centrePixel(static_cast<int32>(centre.X), static_cast<int32>(centre.Y));
+    constexpr int32 RADIUS_PIXELS = 1;
+    float64 sum = 0;
+    uint32 count = 0;
+    for (int32 y = -RADIUS_PIXELS; y <= RADIUS_PIXELS; ++y)
+    {
+        for (int32 x = -RADIUS_PIXELS; x <= RADIUS_PIXELS; ++x)
+        {
+            const QPoint positionPixel = centrePixel + QPoint(x, y);
+            REQUIRE(image.rect().contains(positionPixel) == true);
+            const QColor color = image.pixelColor(positionPixel);
+            const math::Vector3 display = {DecodeSrgb(static_cast<float64>(color.redF())),
+                                           DecodeSrgb(static_cast<float64>(color.greenF())),
+                                           DecodeSrgb(static_cast<float64>(color.blueF()))};
+            sum += static_cast<float64>(rr::InvertPbrNeutral(display).X);
+            ++count;
+        }
+    }
+    return static_cast<float32>(sum / count);
+}
+} // namespace
+
+TEST_CASE("Force raster's default graph draws static surfaces' baked charts like the native Lit viewport",
+          "[.render-native][lighting][surface-chart]")
+{
+    namespace default_graph = ludus::render_graph_packages::editor_default_graph;
+    const QString runtime = GetDefaultRenderGraphRuntime();
+    REQUIRE(runtime.isEmpty() == false);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(640, 480);
+    viewport.show();
+    const RenderScene scene = MakeSurfaceChartScene();
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+    const QByteArray key = preview_lighting::MakeKey(scene);
+    const bool hasBaked = QTest::qWaitFor(
+        [&]() {
+            const QSharedPointer<const WorldSurfaceBake> bake = preview.GetSurfaceBake();
+            return bake.isNull() == false && bake->LightingKey == key &&
+                   preview.Status().contains(QStringLiteral("always-on lighting baked")) == true;
+        },
+        PROBE_BAKE_DEADLINE_MILLISECONDS);
+    INFO(preview.Status().toStdString());
+    REQUIRE(hasBaked == true);
+    REQUIRE(Frames(preview, preview.Frames() + 3) == true);
+    rr::ViewDescription litView;
+    const QImage lit = ReadProbeFrame(preview, litView);
+
+    // Renders the default graph for one extraction; a null bake draws every surface in realtime.
+    const auto renderGraph =
+        [&](const QSharedPointer<const WorldSurfaceBake>& bake, QImage& outImage, rr::ViewDescription& outView) {
+            RenderGraphPreview graph(
+                {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+                ludus::shaders::renderer_composite::Vertex(),
+                ludus::shaders::renderer_composite::Fragment());
+            REQUIRE(graph.Attach(preview.GetDevice(), preview.GetSurface()) == true);
+            graph.SetReferenceSize(lit.size());
+            rr::ViewDescription graphView;
+            QString error;
+            REQUIRE(preview.DescribeConventionalView(static_cast<uint32>(lit.width()),
+                                                     static_cast<uint32>(lit.height()),
+                                                     graphView,
+                                                     error) == true);
+            RenderGraphExtraction extraction;
+            REQUIRE(MakeRenderGraphExtraction(preview.Scene(), graphView, 1, extraction, error, bake) == true);
+            graph.SetExtraction(extraction);
+            REQUIRE(graph.Load(runtime) == RenderGraphPreviewLoad::Staged);
+            constexpr int32 GRAPH_DEADLINE_MILLISECONDS = 30000;
+            constexpr int32 POLL_MILLISECONDS = 2;
+            QElapsedTimer timer;
+            timer.start();
+            while (graph.GetPresentedGeneration() == 0 && timer.elapsed() < GRAPH_DEADLINE_MILLISECONDS)
+            {
+                graph.Tick();
+                QApplication::processEvents();
+                QTest::qWait(POLL_MILLISECONDS);
+            }
+            INFO(graph.GetDisplayStatus().toStdString());
+            REQUIRE(graph.GetPresentedGeneration() != 0);
+            const usize chartDraws = graph.GetSurfaceChartDrawCount();
+            outImage = graph.GetImage();
+            REQUIRE(outImage.size() == lit.size());
+            REQUIRE(graph.TryGetPresentedView(outView) == true);
+            graph.Detach();
+            return chartDraws;
+        };
+    QImage baked;
+    rr::ViewDescription bakedView;
+    // Both static surfaces draw through the deferred chart G-buffer.
+    CHECK(renderGraph(preview.GetSurfaceBake(), baked, bakedView) == static_cast<usize>(scene.Objects.size()));
+    QImage realtime;
+    rr::ViewDescription realtimeView;
+    CHECK(renderGraph({}, realtime, realtimeView) == 0);
+
+    // Points on the floor and the wall, nearer and farther from their shared corner.
+    constexpr float32 HALF = CHART_ROOM_HALF_WIDTH_METRES;
+    constexpr usize POINT_COUNT = 6;
+    const StaticArray<math::Vector3, POINT_COUNT> pointsWorld{
+        math::Vector3{-.6F, 0, -.9F},
+        {.2F, 0, -1.2F},
+        {.8F, 0, -.3F},
+        {-.6F, .3F, -HALF},
+        {.2F, .8F, -HALF},
+        {.9F, 1.4F, -HALF},
+    };
+    // Both paths sample the same chart texels and evaluate the same diffuse and live specular terms; only display
+    // quantization and half-float G-buffer storage differ.
+    constexpr float32 ABSOLUTE_TOLERANCE = .02F;
+    constexpr float32 RELATIVE_TOLERANCE = .03F;
+    float32 largestRealtimeError = 0;
+    QString table = QStringLiteral("x\ty\tz\tnative\tforced\trealtime\n");
+    for (const math::Vector3& pointWorld : pointsWorld)
+    {
+        const float32 native = MeasureSceneRed(lit, litView, pointWorld);
+        const float32 forced = MeasureSceneRed(baked, bakedView, pointWorld);
+        const float32 live = MeasureSceneRed(realtime, realtimeView, pointWorld);
+        CAPTURE(pointWorld.X, pointWorld.Y, pointWorld.Z, native, forced, live);
+        CHECK(math::Abs(forced - native) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native);
+        largestRealtimeError = math::Max(largestRealtimeError,
+                                         math::Abs(live - native) / (ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native));
+        table += QStringLiteral("%1\t%2\t%3\t%4\t%5\t%6\n")
+                     .arg(static_cast<float64>(pointWorld.X), 0, 'f', 2)
+                     .arg(static_cast<float64>(pointWorld.Y), 0, 'f', 2)
+                     .arg(static_cast<float64>(pointWorld.Z), 0, 'f', 2)
+                     .arg(static_cast<float64>(native), 0, 'f', 4)
+                     .arg(static_cast<float64>(forced), 0, 'f', 4)
+                     .arg(static_cast<float64>(live), 0, 'f', 4);
+    }
+    WARN(table.toStdString());
+    // Realtime lighting misses the bounce and the chart reconstruction, so this comparison discriminates.
+    CHECK(largestRealtimeError > 1);
     preview.Stop();
 }
 

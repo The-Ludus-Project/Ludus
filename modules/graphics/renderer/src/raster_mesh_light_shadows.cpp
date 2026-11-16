@@ -421,21 +421,42 @@ rhi::RasterRectangle GetDirectionalShadowInterior(uint32 index) noexcept
             DIRECTIONAL_SHADOW_TEXELS - 2 * GUTTER_TEXELS,
             DIRECTIONAL_SHADOW_TEXELS - 2 * GUTTER_TEXELS};
 }
-uint32 GetDirectionalShadowAtlasTexels(uint32 directionalCount) noexcept
+rhi::RasterRectangle GetSkyVisibilityInterior(const rhi::RasterRectangle& squareInterior, uint32 direction) noexcept
 {
-    // Z-order fills a square of twice the side, four slots, after one slot; MAX_DIRECTIONAL_SHADOW_REGIONS fits it.
+    // The square's interior starts one gutter texel in; each slot keeps its own gutter.
+    constexpr uint32 GUTTER_TEXELS = 1;
+    return {squareInterior.X + (direction % SKY_VISIBILITY_SLOTS_PER_SIDE) * SKY_VISIBILITY_SLOT_TEXELS,
+            squareInterior.Y + (direction / SKY_VISIBILITY_SLOTS_PER_SIDE) * SKY_VISIBILITY_SLOT_TEXELS,
+            SKY_VISIBILITY_SLOT_TEXELS - 2 * GUTTER_TEXELS,
+            SKY_VISIBILITY_SLOT_TEXELS - 2 * GUTTER_TEXELS};
+}
+math::Vector3 GetSkyVisibilityDirection(uint32 direction) noexcept
+{
+    // pi (3 - sqrt(5)): the azimuth step that spreads a spiral's successive points most evenly.
+    constexpr float64 GOLDEN_ANGLE_RADIANS = 2.39996322972865332;
+    constexpr float64 HALF_STEP = 0.5;
+    const float64 sine = (static_cast<float64>(direction) + HALF_STEP) / SKY_VISIBILITY_DIRECTION_COUNT;
+    const float64 cosine = math::Sqrt(math::Max(1 - sine * sine, 0.0));
+    const float64 azimuth = static_cast<float64>(direction) * GOLDEN_ANGLE_RADIANS;
+    return {static_cast<float32>(cosine * math::Cos(azimuth)),
+            static_cast<float32>(sine),
+            static_cast<float32>(cosine * math::Sin(azimuth))};
+}
+uint32 GetReservedShadowAtlasTexels(uint32 reservedSquareCount) noexcept
+{
+    // Z-order fills a square of twice the side, four slots, after one slot; MAX_RESERVED_SHADOW_SQUARES fits it.
     constexpr uint32 SLOTS_IN_DOUBLED_SQUARE = 4;
-    static_assert(MAX_DIRECTIONAL_SHADOW_REGIONS <= SLOTS_IN_DOUBLED_SQUARE);
-    return directionalCount <= 1 ? DIRECTIONAL_SHADOW_TEXELS : 2 * DIRECTIONAL_SHADOW_TEXELS;
+    static_assert(MAX_RESERVED_SHADOW_SQUARES <= SLOTS_IN_DOUBLED_SQUARE);
+    return reservedSquareCount <= 1 ? DIRECTIONAL_SHADOW_TEXELS : 2 * DIRECTIONAL_SHADOW_TEXELS;
 }
 bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCasters,
                                         uint32 atlasTexels,
-                                        uint32 directionalCount) noexcept
+                                        uint32 reservedSquareCount) noexcept
 {
     const uint32 atlasCells = atlasTexels / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;
     if (atlasTexels % MIN_MESH_LIGHT_SHADOW_FACE_TEXELS != 0 || atlasCells == 0 ||
         (atlasCells & (atlasCells - 1)) != 0 || atlasCells > (1U << MORTON_AXIS_BITS) ||
-        directionalCount > MAX_DIRECTIONAL_SHADOW_REGIONS)
+        reservedSquareCount > MAX_RESERVED_SHADOW_SQUARES)
     {
         return false;
     }
@@ -465,9 +486,9 @@ bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCaste
     constexpr uint32 DIRECTIONAL_CELL_COUNT = DIRECTIONAL_CELLS_PER_SIDE * DIRECTIONAL_CELLS_PER_SIDE;
     static_assert(MAX_MESH_LIGHT_SHADOW_FACE_TEXELS <= DIRECTIONAL_SHADOW_TEXELS);
     static_assert((DIRECTIONAL_CELLS_PER_SIDE & (DIRECTIONAL_CELLS_PER_SIDE - 1)) == 0);
-    const uint32 reservedCells = directionalCount * DIRECTIONAL_CELL_COUNT;
+    const uint32 reservedCells = reservedSquareCount * DIRECTIONAL_CELL_COUNT;
     const uint64 atlasArea = uint64{atlasTexels} * atlasTexels;
-    const uint64 reservedArea = uint64{directionalCount} * DIRECTIONAL_SHADOW_TEXELS * DIRECTIONAL_SHADOW_TEXELS;
+    const uint64 reservedArea = uint64{reservedSquareCount} * DIRECTIONAL_SHADOW_TEXELS * DIRECTIONAL_SHADOW_TEXELS;
     while (true)
     {
         uint64 area = reservedArea;

@@ -109,8 +109,6 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
             material.Scattering.AlphaU == material.Scattering.AlphaV) &&
            (content::scene_format::RequiresZeroMetallic(material.Scattering.Model) == false ||
             material.Metallic == 0) &&
-           (content::scene_format::IsEmissionAllowed(material.Scattering.Model) == true ||
-            (material.Emission == math::Vector3{} && material.EmissionTexture.Bytes == nullptr)) &&
            material.HasError == false && ReferenceColor(material.BaseColor, 1) &&
            ReferenceColor(material.Emission, MAX_EMISSION) && math::IsFinite(material.Metallic) &&
            material.Metallic >= 0 && material.Metallic <= 1 && math::IsFinite(material.Roughness) &&

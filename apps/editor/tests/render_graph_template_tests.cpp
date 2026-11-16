@@ -404,7 +404,9 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
     QJsonArray edges;
     for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
     {
-        if (value.toObject().value(QStringLiteral("to")).toString() != QStringLiteral("raster.depth"))
+        // The ray libraries declare no optional Baked Lighting input, which the engine default connects.
+        const QString destination = value.toObject().value(QStringLiteral("to")).toString();
+        if (destination != QStringLiteral("raster.depth") && destination != QStringLiteral("raster.bakedLighting"))
         {
             edges.append(value);
         }
@@ -1013,7 +1015,8 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
     {
         QJsonObject edge = value.toObject();
-        if (hasRays == true && edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
+        if ((hasRays == true && edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth")) ||
+            edge.value(QStringLiteral("to")) == QStringLiteral("raster.bakedLighting"))
         {
             continue;
         }
@@ -1721,7 +1724,8 @@ void ReplaceRasterSubgraph(RenderGraphDocument& inoutDocument, const QString& su
     for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
     {
         QJsonObject edge = value.toObject();
-        if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
+        if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth") ||
+            edge.value(QStringLiteral("to")) == QStringLiteral("raster.bakedLighting"))
         {
             continue;
         }

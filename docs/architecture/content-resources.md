@@ -568,9 +568,8 @@ LUSCN v14 admits skin, written for a
 the v7 record: its K vector holds the RGB scattering distance in metres, each in
 [0, `MAX_SKIN_SCATTERING_DISTANCE`] (0.1 m), and every other scattering field keeps
 its default, so equal skin materials cook to equal bytes. The v6 record's metallic
-must be zero, and the record stores no emission, emission power or emission
-texture (`IsEmissionAllowed`); the decoder rejects anything else. Its base colour
-and roughness are the record's ordinary fields, so a zero distance is the
+must be zero; the decoder rejects any other value. Its base colour, roughness and
+emission are the record's ordinary fields, so a zero distance is the
 metallic-roughness material.
 
 LUSCN v12 admits medium interfaces, written for a

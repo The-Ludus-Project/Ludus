@@ -29,6 +29,10 @@
 // The specular term also uses the point only when the sphere's angular radius, radius / distance, stays below this
 // fraction of the GGX alpha (roughness squared), so the LTC density barely varies across the emitter.
 #define LUDUS_MESH_LIGHT_FAR_SPECULAR_ANGLE_PER_ALPHA 0.25
+// The dominant-light view draws contributor category c with hue frac(OFFSET + c * STEP), the golden ratio's
+// conjugate spreading successive categories far apart on the colour wheel; the sky starts on blue.
+#define LUDUS_DEFERRED_LIGHTING_VIEW_HUE_OFFSET 0.6
+#define LUDUS_DEFERRED_LIGHTING_VIEW_HUE_STEP 0.6180339887498949
 // Mesh-light shadow lookups move the receiver this many shadow-map texels along its normal, so a surface does not
 // shadow itself where the map's depth steps across it at grazing angles.
 #define LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS 1.5

@@ -55,14 +55,18 @@ MIT license), which the import records like any other source license.
 | `many_lights/emitter-field-diffuse.luscene.json` | The Cornell room with a 40 × 40 field of small emitters (3200 emissive triangles) in four radiance levels and three tints; one object per level and tint; rough dielectric walls. | The diffuse variant of the hidden `[.ris-projected-solid-angle-benchmark]` |
 | `many_lights/emitter-field-specular.luscene.json` | The same field over glossy metal (roughness 0.2), which mirrors the emitters. | The specular variant of `[.ris-projected-solid-angle-benchmark]` |
 | `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen, an [aperture](#aperture) whose vertical slit is 80 cm long with a 5 cm opening, and a white Lambertian wall 1 m behind the screen. The slit's long edges are knife edges; in a default World its opening is an editable entity field. The camera stands between the screen and the wall. At a design wavelength of 5 mm and the 5 cm opening, the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import and aperture-deferral checks of `ludus_scene_import_tests` and the `[aperture]` import test of `ludus_editor_tests`; no renderer test yet |
+| `diffraction/knife-edge.luscene.json` | A thin half-plane with one central straight edge. The receiver crosses the geometric shadow boundary at x = 0. | Scene cook and the [diffraction reference setup](#diffraction-reference-scenes) |
+| `diffraction/right-angle-wedge.luscene.json` | Two perpendicular faces with a shared vertical edge. The receiver crosses the geometric shadow boundary at x = 1 m. | Scene cook and the [diffraction reference setup](#diffraction-reference-scenes) |
+| `diffraction/double-slit.luscene.json` | A thin screen with two fixed vertical openings, each 4 cm wide and 1 m tall, with their centres 20 cm apart. | Scene cook and the [diffraction reference setup](#diffraction-reference-scenes) |
 | `materials/closure-program-block.luscene.json` | A weathered gold block on a grey floor under a square one-sided ceiling light. The block's [closure program](#closure-program) mixes a rust diffuse lobe, a gold conductor and a cosine-power sheen whose weights read the metallic and base colour inputs. | The closure-program cook check of `ludus_scene_import_tests` and the `[program]` World import test of `ludus_editor_tests` |
 | `materials/skin-diffusion-bench.luscene.json` | A head-sized bench for [skin](#skin): a skin block beside a glossy white non-skin block at the same depth, a dark bar floating in front that casts a sharp shadow band across both faces, and a small one-sided light in front of them. The bar's silhouette is a depth edge over the skin and the white block a material edge at equal depth. Its scattering distances are exaggerated so the spread covers several pixels of the test image. | The skin cook and decode check of `ludus_scene_import_tests` |
 | `materials/grain-mix-board.luscene.json` | A board leaning back on a grey floor under a square one-sided ceiling light. Its [closure program](#closure-program) reads a scalar grain mask from the base colour input: a white diffuse lobe takes the complement and a glossy gold conductor takes the mask. The authored base colour is an interior mask; a base texture supplies the grain. | The `[scene-source]` check of `ludus_render_graph_ray_tests`, which requires the file to compile to the [texture-weighted mixing](renderer-systems.md#texture-weighted-mixing-of-distinct-lobes) tests' program record, and the grain-mix cook check of `ludus_scene_import_tests` |
 | `materials/hair-card-patch.luscene.json` | A flat vertical [hair card](#hair-card) with a vertical strand beside an ordinary metallic/roughness control card of the same base colour and roughness, under a square one-sided ceiling light above a grey floor. | The hair-card cook check of `ludus_scene_import_tests`; import it into World to compare the strand highlight with the control |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
-All but the single slit, the large line grid and the skin bench use the Cornell room camera of the GPU tests: eye at
-(0, 0, 3.4) looking down −z, with a vertical field of view of 2·atan(1/2.2) ≈ 48.89°.
+The diffraction scenes, large line grid and skin bench have their own cameras. The other
+scenes use the Cornell room camera of the GPU tests: eye at (0, 0, 3.4) looking down −z,
+with a vertical field of view of 2·atan(1/2.2) ≈ 48.89°.
 The large line grid's camera stands at (15, 0.6, 10) and looks along −x, with a
 vertical field of view of 2·atan(1/1.2) ≈ 79.61°. The single slit's camera stands at
 (0, 0, −0.1) and looks down −z at the wall, with a vertical field of view of
@@ -109,6 +113,46 @@ you change a fixture, regenerate the file's polygons from it (the louvre slats c
 from `TryBuildLouvre` in `shadow_occlusion_oracle.cpp`) and print each coordinate
 with the shortest decimal that round-trips, so it reads back as the same binary64
 value.
+
+### Diffraction reference scenes
+
+Import these files into World to see the setup from behind the screen, or cook them with
+`ludus-cook import`. The three fixtures use original Ludus meshes. Each has a single
+5 mm square emitter at z = 0.5 m facing −z, a diffracting edge or screen at z = 0, and a
+Lambertian receiver at z = −1 m. Use a design wavelength of 5 mm. The scene sources store
+the geometry and preview materials. Set the wavelength and physical boundary conditions
+in the reference calculation.
+
+- **Knife edge.** Sweep the receiver along x at y = 0 through x = 0. The screen covers
+  the negative-x side. [Sommerfeld's half-plane solution](https://pmc.ncbi.nlm.nih.gov/articles/PMC4844525/)
+  gives an independent reference for the ideal conducting half-plane with plane-wave
+  illumination. Use matched illumination when comparing the fixture's finite source.
+- **Right-angle wedge.** The faces border the x ≤ 0, z ≤ 0 quadrant, leaving a 270°
+  exterior (UTD wedge index 3/2). The source centre is at (−0.5, 0, 0.5) m. The wall
+  sweep at y = 0 crosses the direct shadow boundary at x = 1 m. To test both the direct
+  and reflected shadow boundaries, sweep virtual receivers on an arc centred on the
+  edge in the xz plane. With angles measured from +z toward +x, the reflected and
+  direct boundaries are at 45° and 135° respectively for the source centre.
+  The smooth metal material is a preview proxy. Use the conducting boundary conditions
+  and polarization of the chosen analytic comparison.
+  [Kouyoumjian and Pathak's conducting wedge](https://ntrs.nasa.gov/citations/19750029381)
+  and [ITU-R P.526-16 §6](https://www.itu.int/dms_pubrec/itu-r/rec/p/R-REC-P.526-16-202511-I%21%21PDF-E.pdf#page=42)
+  describe the perfect and finite conductor cases, respectively.
+- **Double slit.** Sweep the wall along x at y = 0 through the central fringe.
+  Under the centred point-source approximation, the paraxial fringe spacing near
+  the centre is λ times the screen-to-wall distance divided by the slit-centre
+  separation, or about 25 mm. For a quantitative reference, sum the fields from the
+  two openings before computing intensity, then integrate intensity over the
+  area source for spatially incoherent emission. The geometry is a symmetric
+  slit-only case inspired by
+  [Steinberg and Pharr, *Wave Tracing*, Figure 3](https://doi.org/10.1111/cgf.70322),
+  which compares UTD and Fraunhofer predictions and also studies a setup with reflectors.
+
+For a quantitative comparison, use receiver irradiance or derive it from raw linear
+wall radiance using the wall's Lambertian factor. Match the source and receiver geometry,
+wavelength and material assumptions to the reference. The cook regression covers geometry
+and lighting inputs. The [scalar paraxial Wave Tracing profile](../development/render-graph-authoring.md#trace-scene-optical-connections)
+exercises angular-spectrum propagation in its own tests. Its scope excludes UTD edge operators.
 
 ## Document layout
 
@@ -324,10 +368,7 @@ diffuse from `base_color` and a GGX specular lobe from `roughness`.
 
 `scattering_distance` is required: write `[0, 0, 0]` for no spread, which shades
 exactly like the same `metallic_roughness` material. `metallic` is rejected
-because skin is a dielectric, and `emission` because skin does not glow: the
-deferred G-buffer stores a skin pixel's scattering distance where its emission
-would go. Use a `metallic_roughness` material for a glowing surface. Distances
-are in metres, so the object must be modelled at real scale; human skin spreads
+because skin is a dielectric. Distances are in metres, so the object must be modelled at real scale; human skin spreads
 red light furthest, over millimetres. The cook stores the material as a LUSCN
 v14 `Skin` record.
 

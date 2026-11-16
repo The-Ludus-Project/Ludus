@@ -22,3 +22,8 @@ shared by the wiki and offline readers.
 - [actual reference review](../../architecture/editor-gui-reference-review.md)
 - [S6 safety and platform qualification](../../architecture/behavior-s6.md)
 - [S7 reference acceptance](../../architecture/behavior-s7.md)
+
+## Author a playable app
+
+The proposed [playable World workflow](../../architecture/playable-world-workflow.md)
+connects startup setup, World preparation, in-editor playtests and export.

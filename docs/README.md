@@ -137,6 +137,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Filesystem architecture](architecture/filesystem.md)
 - [Foundational Headers, Include Strategy, and the Ludus Core Vocabulary](architecture/foundational-headers.md)
 - [Frame and tick updates](architecture/frame-update.md)
+- [From an authored World to a playable app](architecture/playable-world-workflow.md)
 - [Game world architecture](architecture/game-world.md)
 - [Gameplay foundation architecture](architecture/gameplay-foundations.md)
 - [Gameplay languages and visual authoring architecture](architecture/scripting.md)

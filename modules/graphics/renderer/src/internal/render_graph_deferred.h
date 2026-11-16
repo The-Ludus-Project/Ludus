@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/graphics/renderer/deferred_layout.h>
@@ -22,6 +23,9 @@ struct DeferredMaterialBindings final
     /// An opaque packet of the view draws skin with a nonzero scattering distance, so the view runs the skin
     /// diffusion passes.
     bool HasSkin = false;
+    /// Scattering distance in metres (xyz) of each skin profile slot, in slot order; free slots keep stale values,
+    /// which no pixel references.
+    foundation::StaticArray<foundation::math::Vector4, DEFERRED_MAX_SKIN_PROFILES> SkinProfiles{};
 };
 /// Graph-owned fullscreen geometry, shaders and immutable lighting/depth-copy pipelines.
 class RenderGraphDeferredProgram final
@@ -141,6 +145,14 @@ private:
     rhi::RasterStatus mStatus = rhi::RasterStatus::NotReady;
     rhi::RasterStatus mSkinStatus = rhi::RasterStatus::NotReady;
 };
+/// One-based indices into the resolve's packed light array, zero for none.
+struct DeferredResolveLights final
+{
+    /// The directional light an Atmosphere lights as its Sun.
+    foundation::uint32 AtmosphereSunIndex = 0;
+    /// The light ViewDescription::LightingView isolates.
+    foundation::uint32 LightingViewLightIndex = 0;
+};
 /// Per-view camera uniform and common light bindings; owns no mutable scene data. The operation's
 /// ToneMap exposure and curve, when nonzero, are applied by the lighting resolve before RGBA8 output. A view with skin
 /// resolves into the targets' skin targets, spreads the skin diffuse horizontally, then vertically while compositing
@@ -162,7 +174,7 @@ public:
                                                bool hasShadowAtlas,
                                                rhi::TextureViewHandle shadowAtlas,
                                                const content::render_graph_format::Pass& operation,
-                                               foundation::uint32 atmosphereSunIndex) noexcept;
+                                               const DeferredResolveLights& lights) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus
     Draw(Renderer& inoutRenderer, PreparedView view, const rhi::RasterPassDescription& description) noexcept;
@@ -193,6 +205,10 @@ private:
     rhi::RasterPipelineHandle mSkinLightingPipeline{};
     /// Whole-target resolve bindings by slot, kept to select the skin variant's subset.
     foundation::StaticArray<rhi::RasterBindingResource, DEFERRED_BINDING_COUNT> mResolveResources{};
+    /// Per-view skin profile table, SkinProfiles of the view's material bindings, while the view spreads skin.
+    rhi::BufferHandle mSkinProfiles{};
+    /// The view draws skin in its final colour, so it prepares the skin passes.
+    bool mShouldSpreadSkin = false;
     bool mHasSkin = false;
     bool mHasSkinBindings = false;
     /// The resolve uses the atmosphere's lighting variant, so the skin resolve uses its atmosphere variant too.

@@ -47,6 +47,29 @@ TEST_CASE("preview diagnostics replace independently and reveal a changed activa
     CHECK(list.GetCount(ErrorListSeverity::Message) == 1);
 }
 
+TEST_CASE("a World feature the graph does not render is a warning row, not an error",
+          "[editor][render-graph][diagnostics]")
+{
+    ErrorList list;
+    const QString file = QStringLiteral("graphs/Main/main.lurender.json");
+    const QString warning = QStringLiteral("Atmosphere not rendered. The selected graph configuration has no clustered "
+                                           "deferred raster pass.");
+    const QList<ErrorListEntry> feature = MakeRenderGraphFeatureWarningEntries(warning, file);
+    REQUIRE(feature.size() == 1);
+    CHECK(feature.first().Severity == ErrorListSeverity::Warning);
+    CHECK(feature.first().Producer == ErrorListProducer::RenderPreview);
+    CHECK(feature.first().Code == QStringLiteral("RenderGraphFeatureNotRendered"));
+    CHECK(feature.first().Description == warning);
+    CHECK(feature.first().File == file);
+    CHECK(MakeRenderGraphFeatureWarningEntries({}, file).isEmpty() == true);
+    // It sits beside the lighting advisory as its own row.
+    list.ReplaceEntries(ErrorListProducer::RenderPreview,
+                        MakeRenderPreviewWarningEntries(QStringLiteral("The World renders almost black."), file) +
+                            feature);
+    CHECK(list.GetCount(ErrorListSeverity::Warning) == 2);
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 0);
+}
+
 TEST_CASE("a preview advisory is one warning row beside the preview's errors", "[editor][render-graph][diagnostics]")
 {
     ErrorList list;

@@ -158,6 +158,17 @@ struct RenderGraphPrograms final
     /// format::OPAQUE_GBUFFER_PACKAGE_VERSION; empty in earlier packages, which draw every material through
     /// DeferredGBufferFragment.
     rhi::RasterShaderDescription DeferredOpaqueGBufferFragment{};
+    /// Optional G-buffer fragment for GI Probe Receivers of a deferred pass with a connected Baked Lighting input.
+    /// It applies alpha-masked coverage and adds the baked probe volume's diffuse bounce to the emission target.
+    /// Present with HasClusteredDeferred in packages from format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION that connect
+    /// Baked Lighting; empty otherwise, which draws every receiver with realtime lighting.
+    rhi::RasterShaderDescription DeferredProbeGBufferFragment{};
+    /// Optional G-buffer fragment for static surfaces with a ready chart in a deferred pass with a connected Baked
+    /// Lighting input. It applies alpha-masked coverage, adds the chart's baked diffuse to the emission target and
+    /// marks the pixel so the resolve omits the baked lights' live diffuse while keeping their specular. Present with
+    /// HasClusteredDeferred in packages from format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION that connect
+    /// Baked Lighting; empty otherwise, which draws every static surface with realtime lighting.
+    rhi::RasterShaderDescription DeferredSurfaceChartGBufferFragment{};
     /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
     rhi::RasterShaderDescription DeferredLightingVertex{};
     /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.
@@ -463,7 +474,6 @@ struct RenderGraphCoverageRecord final
 enum class RenderGraphSceneRejection : foundation::uint8
 {
     None,               ///< The latest Update was not rejected for a scene-level cause.
-    Atmosphere,         ///< A camera enables an atmosphere; only clustered deferred graphs compose one.
     CameraDepth,        ///< A camera has an infinite far plane or an unknown depth convention.
     Coverage,           ///< Conflicting coverage, or incomplete coverage under RejectIncomplete.
     MaskedDepthPrepass, ///< Alpha-masked materials would be sealed by the opaque depth-only prepass.
@@ -493,8 +503,11 @@ struct RenderGraphSceneRevisions final
 /// Camera-only updates preserve resource acquisition counters. Reuse compares complete copied content.
 struct RenderGraphSceneResourceReport final
 {
-    /// Draw items using the specialized surface-chart shader in the currently drawable scene.
+    /// Draw items using a specialized surface-chart shader (the forward chart fragment or the deferred chart G-buffer)
+    /// in the currently drawable scene.
     foundation::usize SurfaceChartDraws = 0;
+    /// Draw items sampling the baked probe volume through the deferred probe G-buffer in the currently drawable scene.
+    foundation::usize ProbeReceiverDraws = 0;
     foundation::uint64 CreatedMeshes = 0;     ///< Immutable mesh uploads admitted by the cache.
     foundation::uint64 ReusedMeshes = 0;      ///< Exact cached mesh acquisitions.
     foundation::uint64 CreatedTextures = 0;   ///< Immutable texture uploads admitted by the cache.
@@ -523,6 +536,11 @@ struct RenderGraphSceneResourceReport final
     /// prepared deferred scene left without a map because two brighter ones hold them. They illuminate unshadowed;
     /// clear their raster shadow request to make that explicit.
     foundation::uint32 UnshadowedDirectionalLights = 0;
+    /// Sky visibility maps of the latest prepared deferred scene: SKY_VISIBILITY_DIRECTION_COUNT
+    /// (deferred_layout.h) orthographic depth maps from fixed upper-hemisphere directions, rendered once into the
+    /// shadow atlas, or zero for a scene without geometry. The resolve integrates environment and Atmosphere sky
+    /// light over those directions only where they see past the scene (render-graph-authoring.md, "Sky visibility").
+    foundation::uint32 SkyVisibilityMaps = 0;
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final
@@ -537,6 +555,11 @@ struct RenderGraphReport final
     foundation::uint32 Excluded = 0;           ///< Explicit omissions.
     bool IsAccepted = false;                   ///< Candidate was accepted for asynchronous preparation.
     bool IsReady = false;                      ///< Accepted scene is drawable; producer completion is separate.
+    /// The accepted extraction's cameras enable an Atmosphere that this graph cannot compose: only graphs with the
+    /// clustered deferred programs draw one. The graph still draws the World, without the sky, the
+    /// Atmosphere-attenuated Sun, aerial perspective or the night sky, so callers can tell the user what is not
+    /// rendered. False when no camera enables one, when the graph composes it, and before an extraction is accepted.
+    bool IsAtmosphereOmitted = false;
     LightTransformerPreparationReport Model{}; ///< Latest model candidate diagnostics; independent of drawable output.
     /// Mesh-light shadow faces of the drawable scene not yet drawn into its atlas; each Render draws some within its
     /// per-frame budgets, and receivers of an undrawn face read as unoccluded. Zero without a drawable scene or

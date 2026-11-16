@@ -52,6 +52,9 @@ constexpr usize BOX_CORNER_COUNT = 8;
 constexpr usize BOX_INDEX_COUNT = 36;
 constexpr usize FLAT_INPUT_COUNT = 6;
 constexpr usize MAX_RETAINED_SCENES = 3;
+/// Material programs a forward-profile color context prewarms at most: the ordinary program plus the deferred
+/// profile's surface-chart and probe programs (the forward-lit profile has only a chart program).
+constexpr usize FORWARD_MATERIAL_PROGRAM_COUNT = 3;
 /// Frozen ray compute ABI, visibility textures, structured storage and the diagnostic capture slot.
 constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 +
                                                LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
@@ -974,7 +977,11 @@ struct RenderGraph::State final
     StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
     internal::ForwardSceneResources ForwardResources;
     MaterialProgram ForwardProgram{};
+    /// Program drawing static surfaces with a ready chart: the forward chart fragment, or in the deferred profile the
+    /// chart G-buffer fragment.
     MaterialProgram ForwardSurfaceChartProgram{};
+    /// Deferred program drawing GI Probe Receivers through the probe G-buffer fragment.
+    MaterialProgram ForwardProbeProgram{};
     internal::RenderGraphDeferredProgram DeferredProgram;
     bool HasDeferredProgram = false;
     /// Update's cameras in the depth convention this graph draws; see RenderGraph::CanUseReverseDepth.
@@ -982,6 +989,7 @@ struct RenderGraph::State final
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardSurfaceChartProgram = false;
+    bool HasForwardProbeProgram = false;
     bool HasForwardResources = false;
     /// The sample limit an Accumulate on operation averages to: the authored limit, or the capture override
     /// when one is set and the pass accumulates at all. Zero outputs individual samples.
@@ -1142,18 +1150,21 @@ struct RenderGraph::State final
                 return Status::OutOfMemory;
             }
             inoutPass = core::UniquePtr<internal::RenderGraphDeferredPass>{allocationOrNull};
-            const Status status =
-                inoutPass->Initialize(inoutTargets,
-                                      GetContext(format::Technique::ColorAndDepth),
-                                      view,
-                                      camera,
-                                      lighting.GetMeshLights(),
-                                      lighting.GetMeshLightCount(),
-                                      lighting.GetMeshLightGridWord(),
-                                      lighting.HasShadowAtlas(),
-                                      lighting.GetShadowAtlasView(),
-                                      operation,
-                                      lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId));
+            const Status status = inoutPass->Initialize(
+                inoutTargets,
+                GetContext(format::Technique::ColorAndDepth),
+                view,
+                camera,
+                lighting.GetMeshLights(),
+                lighting.GetMeshLightCount(),
+                lighting.GetMeshLightGridWord(),
+                lighting.HasShadowAtlas(),
+                lighting.GetShadowAtlasView(),
+                operation,
+                {
+                    .AtmosphereSunIndex = lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId),
+                    .LightingViewLightIndex = lighting.FindLightIndex(camera.LightingViewSourceId),
+                });
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -1987,6 +1998,7 @@ struct RenderGraph::State final
         ForwardResources.Reset();
         static_cast<void>(
             Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardSurfaceChartProgram));
+        static_cast<void>(Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardProbeProgram));
         static_cast<void>(Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardProgram));
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
@@ -2390,6 +2402,13 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             return Status::InvalidDescription;
         }
     }
+    // The probe and surface-chart G-buffer fragments are optional and accompany only the deferred profile.
+    if ((HasShaderArtifact(programs.DeferredProbeGBufferFragment) == true ||
+         HasShaderArtifact(programs.DeferredSurfaceChartGBufferFragment) == true) &&
+        programs.HasClusteredDeferred == false)
+    {
+        return Status::InvalidDescription;
+    }
     // The opaque G-buffer fragment is optional: packages before format::OPAQUE_GBUFFER_PACKAGE_VERSION omit it.
     if (HasShaderArtifact(programs.DeferredOpaqueGBufferFragment) == true && programs.HasClusteredDeferred == false)
     {
@@ -2785,6 +2804,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         if (candidate->HasForwardProfile() == true)
         {
             limits.Materials = static_cast<uint32>(format::MAX_ITEMS * MAX_RETAINED_SCENES);
+            // The ordinary, surface-chart and probe material programs prewarm together in the deferred profile.
+            limits.MaterialPrograms = static_cast<uint32>(FORWARD_MATERIAL_PROGRAM_COUNT);
         }
         limits.UniformSets = static_cast<uint32>(format::MAX_UNIFORM_SETS * MAX_RETAINED_SCENES);
         status = candidate->Contexts[i].Initialize(device,
@@ -3148,14 +3169,26 @@ Status RenderGraph::Poll() noexcept
         {
             return status;
         }
-        if (HasShaderArtifact(state.Programs.ForwardSurfaceChartFragment) == true)
+        const bool hasDeferredSurfaceCharts = HasShaderArtifact(state.Programs.DeferredSurfaceChartGBufferFragment);
+        if (HasShaderArtifact(state.Programs.ForwardSurfaceChartFragment) == true || hasDeferredSurfaceCharts == true)
         {
             if (state.HasForwardSurfaceChartProgram == false)
             {
-                status = context.prewarmProgram(state.Programs.ForwardVertex,
-                                                state.Programs.ForwardSurfaceChartFragment,
-                                                &state.Programs.ForwardShadow,
-                                                state.ForwardSurfaceChartProgram);
+                // A deferred chart program differs from the ordinary one only in its G-buffer fragment, which also
+                // draws opaque charted surfaces so the realtime opaque G-buffer never reads a chart.
+                status = hasDeferredSurfaceCharts == true
+                             ? context.prewarmProgram(
+                                   state.Programs.ForwardVertex,
+                                   state.Programs.ForwardFragment,
+                                   &state.Programs.ForwardShadow,
+                                   state.ForwardSurfaceChartProgram,
+                                   state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
+                                   &state.Programs.DeferredSurfaceChartGBufferFragment,
+                                   nullptr)
+                             : context.prewarmProgram(state.Programs.ForwardVertex,
+                                                      state.Programs.ForwardSurfaceChartFragment,
+                                                      &state.Programs.ForwardShadow,
+                                                      state.ForwardSurfaceChartProgram);
                 if (IsAccepted(status) == false)
                 {
                     return status;
@@ -3163,6 +3196,32 @@ Status RenderGraph::Poll() noexcept
                 state.HasForwardSurfaceChartProgram = true;
             }
             status = context.GetStatus(state.ForwardSurfaceChartProgram);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+        }
+        if (HasShaderArtifact(state.Programs.DeferredProbeGBufferFragment) == true)
+        {
+            if (state.HasForwardProbeProgram == false)
+            {
+                // Receivers share every stage with the ordinary program except the G-buffer fragment, which also
+                // draws opaque receivers so the realtime opaque G-buffer never samples the probe volume.
+                status = context.prewarmProgram(
+                    state.Programs.ForwardVertex,
+                    state.Programs.ForwardFragment,
+                    &state.Programs.ForwardShadow,
+                    state.ForwardProbeProgram,
+                    state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
+                    &state.Programs.DeferredProbeGBufferFragment,
+                    nullptr);
+                if (IsAccepted(status) == false)
+                {
+                    return status;
+                }
+                state.HasForwardProbeProgram = true;
+            }
+            status = context.GetStatus(state.ForwardProbeProgram);
             if (status != Status::Ready)
             {
                 return status;
@@ -3176,7 +3235,8 @@ Status RenderGraph::Poll() noexcept
                                                        state.ForwardProgram,
                                                        state.Programs.HasClusteredForward,
                                                        state.Programs.HasClusteredDeferred,
-                                                       state.ForwardSurfaceChartProgram);
+                                                       state.ForwardSurfaceChartProgram,
+                                                       state.ForwardProbeProgram);
             if (status != Status::Ready)
             {
                 return status;
@@ -3292,14 +3352,10 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         const ViewDescription& camera = cameras[cameraIndex];
         if (math::IsFinite(camera.RasterExposureStops) == false ||
-            math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS)
+            math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS ||
+            static_cast<uint32>(camera.LightingView) > DEFERRED_LIGHTING_VIEW_LAST)
         {
             return Status::InvalidDescription;
-        }
-        if (camera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
-        {
-            state.LastRejection = RenderGraphSceneRejection::Atmosphere;
-            return Status::Unsupported;
         }
         // The conventional rewrite below needs a finite far plane, and graph overlays bound a finite frustum.
         if ((camera.Depth == DepthConvention::ReverseZ && camera.InfiniteFar == true) ||
@@ -3312,10 +3368,18 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     // Admit each camera in the convention every pass of this graph can draw and rebuild positions from. The
     // conventional rewrite is exact for a finite projection: reverse-Z depth z/w becomes (w - z)/w.
     const bool canUseReverseDepth = state.CanUseReverseDepth();
+    bool isAtmosphereOmitted = false;
     for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
     {
         ViewDescription& admittedCamera = state.AdmittedCameras[cameraIndex];
         admittedCamera = cameras[cameraIndex];
+        // An Atmosphere is an optional World feature: only the clustered deferred programs compose it. Other graphs
+        // draw the World without it (ordinary background, unattenuated directional lights) and report the omission.
+        if (admittedCamera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
+        {
+            admittedCamera.Atmosphere = {};
+            isAtmosphereOmitted = true;
+        }
         if (admittedCamera.Depth == DepthConvention::ReverseZ && canUseReverseDepth == false)
         {
             for (math::Vector4& column : admittedCamera.WorldToClip.Columns)
@@ -3350,6 +3414,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 state.Report.SceneRevision = sceneRevision;
                 state.Report.IsAccepted = true;
                 state.Report.IsReady = false;
+                state.Report.IsAtmosphereOmitted = isAtmosphereOmitted;
             }
             outReport = state.Report;
             return prepared;
@@ -3381,6 +3446,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     state.CoverageCount = 0;
     state.Report = {};
     state.Report.SceneRevision = sceneRevision;
+    state.Report.IsAtmosphereOmitted = isAtmosphereOmitted;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
         for (usize role = 0; role < ROLE_COUNT; ++role)
@@ -3866,10 +3932,12 @@ RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
 }
 namespace
 {
-/// Pipelines one technique row can enumerate: the context's stage variants plus two material programs.
-constexpr usize RECIPE_PIPELINE_CAPACITY = 48;
 /// Handles enumerated per Renderer call; covers its stage variants or one material program.
 constexpr usize RENDERER_PIPELINE_CAPACITY = 16;
+/// Renderer calls one technique row makes: the context's stage variants plus each material program.
+constexpr usize RECIPE_RENDERER_CALLS = 1 + FORWARD_MATERIAL_PROGRAM_COUNT;
+/// Pipelines one technique row can enumerate.
+constexpr usize RECIPE_PIPELINE_CAPACITY = RENDERER_PIPELINE_CAPACITY * RECIPE_RENDERER_CALLS;
 } // namespace
 Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) const noexcept
 {
@@ -3898,7 +3966,10 @@ Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) cons
             const Renderer& context = state.Contexts[i];
             count += context.getProgramPipelines(state.ForwardProgram,
                                                  {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
+            // The forward profile has at most a chart program; the deferred profile may have chart and probe programs.
             count += context.getProgramPipelines(state.ForwardSurfaceChartProgram,
+                                                 {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
+            count += context.getProgramPipelines(state.ForwardProbeProgram,
                                                  {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
         }
         RenderGraphPipelineRecipe& row = report.Recipes[report.RecipeCount++];
@@ -3955,6 +4026,7 @@ RenderGraphReport RenderGraph::GetReport() const noexcept
         {
             report.PendingMeshLightShadowFaces = mState->Current->ForwardGeneration->GetPendingMeshLightShadowFaces();
             report.Resources.SurfaceChartDraws = mState->Current->ForwardGeneration->GetSurfaceChartDrawCount();
+            report.Resources.ProbeReceiverDraws = mState->Current->ForwardGeneration->GetProbeReceiverDrawCount();
         }
     }
     return report;

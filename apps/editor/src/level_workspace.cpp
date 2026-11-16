@@ -853,6 +853,13 @@ void LevelWorkspace::decodeCandidate()
         }
         if (Success_ == true)
         {
+            if (WorldOwned_ == true && Scene_.Identity.isEmpty() == true)
+            {
+                // An empty World still has a drawable grid. Keep its viewport device and camera alive.
+                Scene_.Identity = QCryptographicHash::hash(QByteArrayLiteral("ludus-empty-world-preview") +
+                                                               QJsonDocument(Candidate_).toJson(QJsonDocument::Compact),
+                                                           QCryptographicHash::Sha256);
+            }
             Scene_.HasStartView =
                 TryParseStartView(Candidate_.value(QStringLiteral("camera")).toObject(), Scene_.StartView);
         }

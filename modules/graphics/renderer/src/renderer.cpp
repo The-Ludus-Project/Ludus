@@ -719,8 +719,9 @@ struct Renderer::State final
         bool Lit = false;
         bool HasBake = false;
         bool Clustered = false;
-        /// A Skin material with a nonzero scattering distance, which the clustered deferred profile spreads.
-        bool IsSkin = false;
+        /// One-based skin profile slot of a Skin material with a nonzero scattering distance, which the clustered
+        /// deferred profile spreads; zero for every other material.
+        uint32 SkinProfile = 0;
         bool ClusterViewCreated = false;
         rhi::TextureHandle ClusterTexture{};
         rhi::TextureViewHandle ClusterView{};
@@ -753,6 +754,13 @@ struct Renderer::State final
     rhi::RasterPipelineHandle OutputPipelines[2]{}, HdrFlat[3]{}, FlatShadow{};
     Array<ProgramRecord> Programs;
     Array<MaterialRecord> Materials;
+    /// One distinct skin scattering distance, shared by the live materials that reference it.
+    struct SkinProfileRecord final
+    {
+        math::Vector3 Distance{};
+        uint32 References = 0;
+    };
+    StaticArray<SkinProfileRecord, DEFERRED_MAX_SKIN_PROFILES> SkinProfiles{};
     Array<PresentationRecord> Presentations;
     rhi::RasterShaderHandle CompositeVertex{}, CompositeFragment{};
     rhi::BindingLayoutHandle CompositeLayout{};
@@ -964,6 +972,10 @@ struct Renderer::State final
             }
             --Programs[m.ProgramSlot].References;
             DropProgram(m.ProgramSlot);
+            if (m.SkinProfile != 0)
+            {
+                --SkinProfiles[m.SkinProfile - 1].References;
+            }
             if (m.Reference && Reference)
             {
                 Reference->CpuBytes -= sizeof(internal::ReferenceSurfaceData);
@@ -973,6 +985,29 @@ struct Renderer::State final
             m = {};
             m.Generation = generation;
         }
+    }
+    /// One-based slot of the skin profile for a Skin scattering's distance: the live profile with that distance, else
+    /// the first free one. Zero when the scattering has no distance, and when all DEFERRED_MAX_SKIN_PROFILES are taken.
+    [[nodiscard]] uint32 FindSkinProfile(const content::scene_format::MaterialScattering& scattering) const noexcept
+    {
+        const math::Vector3 distance{scattering.K[0], scattering.K[1], scattering.K[2]};
+        if (scattering.Model != content::scene_format::MaterialModel::Skin || distance == math::Vector3{})
+        {
+            return 0;
+        }
+        uint32 free = 0;
+        for (usize slot = 0; slot < SkinProfiles.GetSize(); ++slot)
+        {
+            if (SkinProfiles[slot].References != 0 && SkinProfiles[slot].Distance == distance)
+            {
+                return static_cast<uint32>(slot) + 1;
+            }
+            if (free == 0 && SkinProfiles[slot].References == 0)
+            {
+                free = static_cast<uint32>(slot) + 1;
+            }
+        }
+        return free;
     }
     void DropShadow(usize index) noexcept
     {
@@ -1885,6 +1920,8 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
     State& state = *mState;
     const State::ViewRecord& view = state.ViewRecords[Access::Slot(handle)];
     outBindings = {};
+    // The first chart material, else the first opaque packet's material, supplies the resolve's light words.
+    usize selected = view.DrawCount;
     for (usize index = 0; index < view.DrawCount; ++index)
     {
         const State::Packet& packet = view.Packets[index];
@@ -1892,6 +1929,19 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
         {
             continue;
         }
+        if (selected == view.DrawCount)
+        {
+            selected = index;
+        }
+        if (packet.MaterialSlot != NO_MATERIAL && state.Materials[packet.MaterialSlot].HasBake == true)
+        {
+            selected = index;
+            break;
+        }
+    }
+    if (selected < view.DrawCount)
+    {
+        const State::Packet& packet = view.Packets[selected];
         if (packet.MaterialSlot == NO_MATERIAL)
         {
             return Status::Unsupported;
@@ -1934,14 +1984,18 @@ Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMate
         outBindings.Resources[0].Buffer = material.Parameters;
         outBindings.Resources[0].Size = material.ParameterSize;
         outBindings.HasMaterial = true;
-        break;
     }
     for (usize index = 0; index < view.DrawCount && outBindings.HasMaterial == true; ++index)
     {
         const State::Packet& packet = view.Packets[index];
         outBindings.HasSkin =
             outBindings.HasSkin == true || (packet.Pass == Layer::Opaque && packet.MaterialSlot != NO_MATERIAL &&
-                                            state.Materials[packet.MaterialSlot].IsSkin == true);
+                                            state.Materials[packet.MaterialSlot].SkinProfile != 0);
+    }
+    for (usize slot = 0; slot < state.SkinProfiles.GetSize(); ++slot)
+    {
+        const math::Vector3 distance = state.SkinProfiles[slot].Distance;
+        outBindings.SkinProfiles[slot] = {distance.X, distance.Y, distance.Z, 0};
     }
     return Status::Ready;
 }
@@ -3211,8 +3265,14 @@ Status Renderer::CreateMaterialData(MaterialProgram program,
     ++s.Programs[m.ProgramSlot].References;
     m.Lit = lighting != nullptr;
     m.Clustered = clusters != nullptr;
-    m.IsSkin = lighting != nullptr && lighting->Scattering.Model == content::scene_format::MaterialModel::Skin &&
-               (lighting->Scattering.K[0] > 0 || lighting->Scattering.K[1] > 0 || lighting->Scattering.K[2] > 0);
+    // createLitMaterial found the same slot for the parameters; nothing between changed the profiles.
+    m.SkinProfile = lighting != nullptr ? s.FindSkinProfile(lighting->Scattering) : 0;
+    if (m.SkinProfile != 0)
+    {
+        State::SkinProfileRecord& profile = s.SkinProfiles[m.SkinProfile - 1];
+        profile.Distance = {lighting->Scattering.K[0], lighting->Scattering.K[1], lighting->Scattering.K[2]};
+        ++profile.References;
+    }
     m.ParameterSize = size;
     if (lighting != nullptr)
     {
@@ -4836,7 +4896,7 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
                                    MaterialVersion& output,
                                    LightSelection& report) noexcept
 {
-    return createLitMaterial(program, description, output, report, nullptr, 0, 0);
+    return createLitMaterial(program, description, output, report, nullptr, 0, 0, 0);
 }
 Status Renderer::createLitMaterial(MaterialProgram program,
                                    const LitMaterialDescription& description,
@@ -4844,14 +4904,17 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                                    LightSelection& outSelection,
                                    const ShadowRegion* directionalShadowsOrNull,
                                    usize directionalShadowCount,
+                                   usize skyVisibilityCount,
                                    uint32 shadowAtlasTexels) noexcept
 {
     if (mState.Get() == nullptr || mState->LightingSetup != Status::Ready)
     {
         return Status::NotReady;
     }
-    if (directionalShadowCount > SHADOW_REGION_CAPACITY ||
-        (directionalShadowCount != 0 && (directionalShadowsOrNull == nullptr || shadowAtlasTexels == 0)))
+    const usize leadingShadowCount = directionalShadowCount + skyVisibilityCount;
+    if (directionalShadowCount > SHADOW_REGION_CAPACITY || leadingShadowCount > SHADOW_REGION_CAPACITY ||
+        (skyVisibilityCount != 0 && skyVisibilityCount != SKY_VISIBILITY_DIRECTION_COUNT) ||
+        (leadingShadowCount != 0 && (directionalShadowsOrNull == nullptr || shadowAtlasTexels == 0)))
     {
         return Status::InvalidDescription;
     }
@@ -4877,9 +4940,7 @@ Status Renderer::createLitMaterial(MaterialProgram program,
         (description.Scattering.Model == content::scene_format::MaterialModel::Conductor &&
          description.Scattering.AlphaU != description.Scattering.AlphaV) ||
         (content::scene_format::RequiresZeroMetallic(description.Scattering.Model) == true &&
-         description.Metallic != 0) ||
-        (content::scene_format::IsEmissionAllowed(description.Scattering.Model) == false &&
-         (description.Emission != math::Vector3{} || rhi::IsNull(description.EmissionMap) == false)))
+         description.Metallic != 0))
     {
         return Status::InvalidDescription;
     }
@@ -5145,8 +5206,7 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     parameters.Pbr = {description.Metallic,
                       description.Roughness,
                       static_cast<float32>(selected.Count),
-                      atlas != nullptr ? static_cast<float32>(atlas->Count)
-                                       : static_cast<float32>(directionalShadowCount)};
+                      atlas != nullptr ? static_cast<float32>(atlas->Count) : static_cast<float32>(leadingShadowCount)};
     parameters.Emission = {description.Emission.X,
                            description.Emission.Y,
                            description.Emission.Z,
@@ -5193,10 +5253,18 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     }
     if (description.Scattering.Model == content::scene_format::MaterialModel::Skin)
     {
+        // The G-buffer stores the profile slot (DEFERRED_MAX_SKIN_PROFILES); CreateMaterialData takes its reference.
+        const uint32 skinProfile = s.FindSkinProfile(description.Scattering);
+        const bool hasDistance =
+            description.Scattering.K[0] > 0 || description.Scattering.K[1] > 0 || description.Scattering.K[2] > 0;
+        if (hasDistance == true && skinProfile == 0)
+        {
+            return Status::CapacityExceeded;
+        }
         parameters.SkinScattering = {description.Scattering.K[0],
                                      description.Scattering.K[1],
                                      description.Scattering.K[2],
-                                     1};
+                                     static_cast<float32>(skinProfile)};
     }
     if (description.EnvironmentOrNull != nullptr)
     {
@@ -5241,12 +5309,16 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                 (static_cast<float32>(rectangle.Y) + 0.5F) / height,
                 (static_cast<float32>(rectangle.X + rectangle.Width) - 0.5F) / width,
                 (static_cast<float32>(rectangle.Y + rectangle.Height) - 0.5F) / height};
-            usize lightIndex = 0;
-            while (lightIndex < selected.Count && selected.Lights[lightIndex].SourceId != region.Light.SourceId)
+            usize lightIndex = SKY_VISIBILITY_REGION_TAG;
+            if (regionIndex < directionalShadowCount || atlas != nullptr)
             {
-                ++lightIndex;
+                lightIndex = 0;
+                while (lightIndex < selected.Count && selected.Lights[lightIndex].SourceId != region.Light.SourceId)
+                {
+                    ++lightIndex;
+                }
+                LUDUS_ASSERT(lightIndex < selected.Count);
             }
-            LUDUS_ASSERT(lightIndex < selected.Count);
             parameters.ShadowData[firstWord + MATRIX_ROW_COUNT + 1] = {region.Bias,
                                                                        static_cast<float32>(lightIndex),
                                                                        1 / width,
@@ -5265,7 +5337,7 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     else
     {
         const float32 extent = static_cast<float32>(shadowAtlasTexels);
-        for (usize i = 0; i < directionalShadowCount; ++i)
+        for (usize i = 0; i < leadingShadowCount; ++i)
         {
             packShadowRegion(i, directionalShadowsOrNull[i], extent, extent);
         }
@@ -5694,7 +5766,7 @@ Status Renderer::prepareDeferredShadows(Snapshot snapshot,
             outDraw = draw;
             return Status::Ready;
         };
-        for (uint32 index = 0; index < inoutAtlas.DirectionalCount; ++index)
+        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.SkyCount; ++index)
         {
             const ShadowRegion& directional = inoutAtlas.Directional[index];
             const Status status =
@@ -5784,7 +5856,8 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         inoutAtlas.Recording.IsCleared = true;
     }
-    const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < inoutAtlas.DirectionalCount;
+    const uint32 leadingCount = inoutAtlas.DirectionalCount + inoutAtlas.SkyCount;
+    const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < leadingCount;
     if (shouldDrawDirectional == false && inoutAtlas.Recording.NextFace >= inoutAtlas.Faces.GetSize())
     {
         return Status::Ready;
@@ -5841,9 +5914,10 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         return Status::Ready;
     };
-    // Directional maps come first, each whole within the draw budget; the triangle budget only paces cube faces.
+    // Directional and sky visibility maps come first, each whole within the draw budget; the triangle budget only
+    // paces cube faces.
     bool canDrawDirectional = false;
-    while (inoutAtlas.Recording.DrawnDirectional < inoutAtlas.DirectionalCount)
+    while (inoutAtlas.Recording.DrawnDirectional < leadingCount)
     {
         const internal::MeshLightShadowFaceDraw& draw =
             inoutAtlas.DirectionalDraws[inoutAtlas.Recording.DrawnDirectional];

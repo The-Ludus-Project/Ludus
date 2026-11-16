@@ -42,10 +42,14 @@ enum class RenderGraphPreviewWork : foundation::uint8
 [[nodiscard]] QString
 DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
                                      const graphics::renderer::SceneShaderDiagnostics& diagnostics);
-/// Name the World input a graph rejected and the repair, for example the Atmosphere entity that needs a clustered
-/// deferred configuration. Coverage counts come from report. Empty for RenderGraphSceneRejection::None.
+/// Name the World input a graph rejected and the repair, for example a camera with an infinite far plane. Coverage
+/// counts come from report. Empty for RenderGraphSceneRejection::None.
 [[nodiscard]] QString DescribeRenderGraphSceneRejection(graphics::renderer::RenderGraphSceneRejection rejection,
                                                         const graphics::renderer::RenderGraphReport& report);
+/// Warning for a graph that draws the World without its Atmosphere (RenderGraphReport::IsAtmosphereOmitted): what is
+/// not rendered, why, and the repairs. Never blocks drawing.
+/// @param configuration Display name of the drawing graph configuration; empty omits the name.
+[[nodiscard]] QString DescribeOmittedAtmosphere(const QString& configuration);
 /// Viewport status for a failed or restart-requiring candidate, naming its cause and repair when the renderer
 /// attributed one; empty while the candidate is neither Failed nor RestartRequired.
 [[nodiscard]] QString
@@ -66,6 +70,8 @@ struct RenderGraphExtraction final
     QVector<foundation::uint32> MaterialOverrides;
     QSharedPointer<const WorldSurfaceBake> SurfaceBake;
     QVector<graphics::renderer::SceneSurfaceChart> SurfaceCharts;
+    /// Placed GI Probe Receivers that sample SurfaceBake's probe atlas; empty without a ready atlas.
+    QVector<foundation::uint64> ProbeReceiverIds;
     graphics::renderer::SceneShaderInputs ShaderInputs;
     graphics::renderer::ViewDescription View{};
     /// Nonzero caller revision; a changed revision makes the preview prepare again.
@@ -173,6 +179,11 @@ public:
     /// Whether the active final output directly resolves an enabled clustered deferred ToneMap
     /// and the graph camera can accept a view update.
     [[nodiscard]] bool CanAdjustRasterExposure() const noexcept;
+    /// Whether the active final output is drawn by a raster colour pass whose clustered deferred resolve honours
+    /// ViewDescription::LightingView. Clustered forward graphs ignore lighting views.
+    [[nodiscard]] bool CanShowLightingViews() const noexcept;
+    /// Analytic lights of the retained World extraction, in extraction order; empty before one is set.
+    [[nodiscard]] QVector<graphics::renderer::DirectLight> GetExtractionLights() const;
     /// True while a completed graph attachment is being copied for display.
     [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
@@ -358,6 +369,11 @@ public:
     /// text (the active graph keeps drawing while its first frame is presented or a replacement prepares).
     [[nodiscard]] QString GetDisplayStatus() const;
     [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
+    /// Draws of the active graph sampling the baked probe volume; zero without a deferred Baked Lighting pass.
+    [[nodiscard]] foundation::usize GetProbeReceiverDrawCount() const noexcept;
+    /// Whether the active graph draws the latest World extraction without its Atmosphere because it has no clustered
+    /// deferred programs; false without an active graph. See DescribeOmittedAtmosphere.
+    [[nodiscard]] bool IsAtmosphereOmitted() const noexcept;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
     {

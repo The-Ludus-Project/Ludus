@@ -11,6 +11,7 @@
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
@@ -147,12 +148,6 @@ QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection re
     {
         case renderer::RenderGraphSceneRejection::None:
             return {};
-        case renderer::RenderGraphSceneRejection::Atmosphere:
-            return QStringLiteral("This World's Atmosphere entity needs a clustered deferred raster configuration, "
-                                  "and the selected graph configuration has none. Turn on Force raster in the "
-                                  "viewport toolbar to draw the sky with the engine's default raster graph, or "
-                                  "disable the Atmosphere entity in the World to keep this "
-                                  "configuration.");
         case renderer::RenderGraphSceneRejection::CameraDepth:
             return QStringLiteral("The view camera has an infinite far plane or an unknown depth convention, which "
                                   "render graphs cannot draw. Give the camera a finite far plane.");
@@ -180,6 +175,19 @@ QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection re
                                   "configuration, or set those materials' Alpha to Opaque.");
     }
     return {};
+}
+
+QString DescribeOmittedAtmosphere(const QString& configuration)
+{
+    const QString graph = configuration.isEmpty() == true
+                              ? QStringLiteral("The selected graph configuration")
+                              : QStringLiteral("Graph configuration “%1”").arg(configuration);
+    return QStringLiteral("Atmosphere not rendered. %1 has no clustered deferred raster pass, so it draws the World "
+                          "without the sky, haze and night sky: the background is the World environment and the "
+                          "Atmosphere's Sun is not dimmed by the air. Turn on Force raster in the viewport toolbar to "
+                          "see the sky with the engine's default raster graph, or disable the Atmosphere entity in "
+                          "the World.")
+        .arg(graph);
 }
 
 QString DescribeRenderGraphActivationFailure(const renderer::RenderGraphActivationReport& report)
@@ -461,14 +469,35 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
     {
         extraction.SurfaceBake = surfaceBake;
         extraction.SurfaceCharts.reserve(extraction.Items.size());
+        // The atlas belongs to the bake's grid, which the lighting key covers; a mismatched extent supplies none.
+        const WorldProbeAtlas& atlas = surfaceBake->ProbeAtlas;
+        const bool hasProbeAtlas = atlas.Pixels.isEmpty() == false &&
+                                   renderer::HasGiProbeAtlasExtent(scene.ProbeGrid, atlas.Width, atlas.Height);
+        if (hasProbeAtlas == true)
+        {
+            renderer::SceneGiProbeVolume& volume = extraction.ShaderInputs.ProbeVolume;
+            volume.Grid = scene.ProbeGrid;
+            volume.IrradianceScale = atlas.IrradianceScale;
+            volume.Atlas = {reinterpret_cast<const uint8*>(atlas.Pixels.constData()),
+                            static_cast<usize>(atlas.Pixels.size()),
+                            static_cast<usize>(atlas.Width) * content::scene_format::TEXEL_BYTES,
+                            atlas.Width,
+                            atlas.Height,
+                            rhi::RasterFormat::Rgba8Unorm};
+        }
         for (qsizetype index = 0; index < extraction.Items.size(); ++index)
         {
             const renderer::RenderGraphItem& item = extraction.Items.at(index);
             const resources::SceneObject& sourceObject = definitionOrNull->Objects[static_cast<usize>(index)];
             if (scene.GiProbeReceiverIds.contains(sourceObject.SourceId) == true)
             {
-                // Keep the chart table aligned with the draw list and use realtime shading for this receiver.
+                // Keep the chart table aligned with the draw list. Deferred Baked Lighting passes sample the probe
+                // volume for this receiver; other passes shade it in realtime.
                 extraction.SurfaceCharts.append(renderer::SceneSurfaceChart{});
+                if (hasProbeAtlas == true)
+                {
+                    extraction.ProbeReceiverIds.append(item.SourceId);
+                }
                 continue;
             }
             const WorldSurfaceChart& source = surfaceBake->Charts.at(index);
@@ -500,6 +529,7 @@ struct RenderGraphPreview::State final
         uint32 Height = 0;
         uint32 Cameras = 0;
         bool HasRasterExposure = false;
+        bool HasLightingViews = false;
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
@@ -876,7 +906,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     const bool hasDistinctFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
     // Force raster draws the engine's default raster graph whatever the requested graph contains: a graph can
     // trace rays in authored compute pipelines without a RayTracing pass, and an authored raster graph may lack
-    // what the World needs (Atmosphere requires the default clustered deferred programs).
+    // what the World needs (only the default clustered deferred programs draw an Atmosphere).
     // A ray graph named as its own fallback still reads it, so the raytracing pass is rejected below.
     bool shouldUseFallback =
         state.ShouldForceRaster == true && (hasDistinctFallback == true || hasRayTracingPass == true);
@@ -995,6 +1025,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             plan.Resources[pass.Color].Backing == plan.Resources[target.Resource].Backing)
         {
             target.HasRasterExposure = pass.Program == format::Technique::ColorAndDepth && pass.ToneMappingExposure > 0;
+            target.HasLightingViews = pass.Program == format::Technique::ColorAndDepth;
             break;
         }
     }
@@ -1166,6 +1197,14 @@ const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 bool RenderGraphPreview::CanAdjustRasterExposure() const noexcept
 {
     return mState->Active.HasRasterExposure == true && mState->IsFrozen == false;
+}
+bool RenderGraphPreview::CanShowLightingViews() const noexcept
+{
+    return mState->Active.HasLightingViews == true && mState->IsFrozen == false;
+}
+QVector<renderer::DirectLight> RenderGraphPreview::GetExtractionLights() const
+{
+    return mState->Extraction.Lights;
 }
 bool RenderGraphPreview::FindActiveCaptureProblem(uint32 resource,
                                                   renderer::RenderGraphCaptureProblem& outProblem) const noexcept
@@ -1666,8 +1705,8 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         state.Candidate = {};
         EndViewportTrace(state.CandidateActivationTrace, "activated");
         // The activation records only revisions the drawing generation accepted, so a generation replacing one
-        // that rejected the retained extraction (Force raster over a graph without the Atmosphere's clustered
-        // deferred programs) activates without it. Offer the extraction again rather than wait for a World edit.
+        // that rejected the retained extraction (Force raster over a graph that rejects the World's alpha-masked
+        // materials) activates without it. Offer the extraction again rather than wait for a World edit.
         if (IsAccepted(state.ExtractionUpdateStatus) == false)
         {
             state.UpdatedRevision = 0;
@@ -1696,6 +1735,8 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                                       static_cast<usize>(state.Extraction.SurfaceCharts.size())};
         shaderInputs.BakedLightIds = {state.Extraction.Scene.AlwaysOnLightIds.constData(),
                                       static_cast<usize>(state.Extraction.Scene.AlwaysOnLightIds.size())};
+        shaderInputs.ProbeReceiverIds = {state.Extraction.ProbeReceiverIds.constData(),
+                                         static_cast<usize>(state.Extraction.ProbeReceiverIds.size())};
         shaderInputs.Lights = {state.Extraction.Lights.constData(), static_cast<usize>(state.Extraction.Lights.size())};
         shaderInputs.Luminaires = {state.Extraction.Scene.Luminaires.Luminaires,
                                    state.Extraction.Scene.Luminaires.Count};
@@ -1726,7 +1767,8 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             const float64 maximumAltitude =
                 renderer::GetAtmosphereMaximumViewAltitude(atmosphere, state.Extraction.View.OrthographicCamera);
             float64 altitude = 0;
-            if (atmosphere.IsEnabled == true &&
+            // A graph that omits the Atmosphere draws no sky, so its altitude range does not apply.
+            if (atmosphere.IsEnabled == true && graphReport.IsAtmosphereOmitted == false &&
                 renderer::TryGetAtmosphereAltitude(atmosphere, state.Extraction.View.CameraPosition, altitude) ==
                     true &&
                 (altitude < 0 || altitude > maximumAltitude))
@@ -1788,7 +1830,7 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                  rejection.isEmpty() == false)
         {
             // The replacement rejected the World the drawing generation accepts, as when Force raster is turned off
-            // over a graph without clustered deferred programs.
+            // over a graph whose depth-only prepass would seal alpha-masked materials.
             setStatus(rejection + QStringLiteral(" The shown frame is kept."));
         }
     }
@@ -2225,6 +2267,18 @@ usize RenderGraphPreview::GetSurfaceChartDrawCount() const noexcept
 {
     const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
     return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.SurfaceChartDraws : 0;
+}
+
+usize RenderGraphPreview::GetProbeReceiverDrawCount() const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.ProbeReceiverDraws : 0;
+}
+
+bool RenderGraphPreview::IsAtmosphereOmitted() const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    return activeOrNull != nullptr && activeOrNull->GetReport().IsAtmosphereOmitted == true;
 }
 
 QString RenderGraphPreview::GetDisplayStatus() const

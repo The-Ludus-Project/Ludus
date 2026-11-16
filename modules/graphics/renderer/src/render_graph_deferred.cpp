@@ -47,6 +47,7 @@ struct ViewParameters final
     math::Vector4 EyeWorld;
     math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
     math::Vector4 Options;
+    math::Vector4 LightingView{}; // X: DeferredLightingView code. Y: one-based light index it isolates, or zero.
     math::Vector4 AtmosphereRadialUpWorld{};
     math::Vector4 AtmosphereSunWorld{};
     math::Vector4 AtmosphereIlluminance{};
@@ -624,6 +625,7 @@ RenderGraphDeferredPass::~RenderGraphDeferredPass() noexcept
         static_cast<void>(rhi::Destroy(device, mSkinBlurBindings));
         static_cast<void>(rhi::Destroy(device, mSkinCompositeBindings));
         static_cast<void>(rhi::Destroy(device, mParameters));
+        static_cast<void>(rhi::Destroy(device, mSkinProfiles));
     }
 }
 Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTargets,
@@ -636,7 +638,7 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                            bool hasShadowAtlas,
                                            rhi::TextureViewHandle shadowAtlas,
                                            const content::render_graph_format::Pass& operation,
-                                           uint32 atmosphereSunIndex) noexcept
+                                           const DeferredResolveLights& lights) noexcept
 {
     if (mTargetsOrNull != nullptr || inoutTargets.mStatus != Status::Ready)
     {
@@ -692,6 +694,10 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         mExposure,
         static_cast<float32>(mToneCurve),
     };
+    parameters.LightingView = {static_cast<float32>(camera.LightingView),
+                               static_cast<float32>(lights.LightingViewLightIndex),
+                               0,
+                               0};
     if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
     {
         constexpr float64 METRES_PER_KILOMETRE = LUDUS_ATMOSPHERE_METRES_PER_KILOMETRE;
@@ -707,7 +713,10 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                               upWorld.Y,
                                               upWorld.Z,
                                               static_cast<float32>(altitude / METRES_PER_KILOMETRE)};
-        parameters.AtmosphereSunWorld = {sunWorld.X, sunWorld.Y, sunWorld.Z, static_cast<float32>(atmosphereSunIndex)};
+        parameters.AtmosphereSunWorld = {sunWorld.X,
+                                         sunWorld.Y,
+                                         sunWorld.Z,
+                                         static_cast<float32>(lights.AtmosphereSunIndex)};
         parameters.AtmosphereIlluminance = {atmosphere.SolarIlluminance.X,
                                             atmosphere.SolarIlluminance.Y,
                                             atmosphere.SolarIlluminance.Z,
@@ -721,6 +730,16 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                {rhi::BufferRole::Uniform, sizeof(parameters)},
                                {reinterpret_cast<const uint8*>(&parameters), sizeof(parameters)},
                                mParameters);
+    // Lighting views draw single terms through the ordinary resolve, so only the final colour spreads skin.
+    mShouldSpreadSkin = mMaterial.HasSkin == true && camera.LightingView == DeferredLightingView::Final;
+    if (IsAccepted(status) == true && mShouldSpreadSkin == true)
+    {
+        const StaticArray<math::Vector4, DEFERRED_MAX_SKIN_PROFILES>& profiles = mMaterial.SkinProfiles;
+        status = rhi::CreateBuffer(inoutTargets.mProgramOrNull->mDevice,
+                                   {rhi::BufferRole::Uniform, sizeof(profiles)},
+                                   {reinterpret_cast<const uint8*>(profiles.GetData()), sizeof(profiles)},
+                                   mSkinProfiles);
+    }
     mStatus = status;
     return IsAccepted(status) == true ? Poll() : status;
 }
@@ -829,7 +848,7 @@ Status RenderGraphDeferredPass::Poll() noexcept
         mHasBindings = true;
     }
     const Status bindings = rhi::GetStatus(program.mDevice, mBindings);
-    if (bindings != Status::Ready || mMaterial.HasSkin == false)
+    if (bindings != Status::Ready || mShouldSpreadSkin == false)
     {
         return mStatus = bindings;
     }
@@ -856,6 +875,11 @@ Status RenderGraphDeferredPass::pollSkin() noexcept
     {
         return allocated;
     }
+    const Status profiles = rhi::GetStatus(program.mDevice, mSkinProfiles);
+    if (profiles != Status::Ready)
+    {
+        return profiles;
+    }
     if (mHasSkinBindings == false)
     {
         const RenderGraphDeferredProgram::SkinStageResources& lighting =
@@ -879,8 +903,8 @@ Status RenderGraphDeferredPass::pollSkin() noexcept
         constexpr usize BLURRED = static_cast<usize>(RenderGraphDeferredTargets::SkinTarget::Blurred);
         // G-buffer targets follow their resolve slots from DEFERRED_NORMAL_BINDING.
         constexpr usize NORMAL_TARGET = 0;
-        constexpr usize COVERAGE_TARGET = DEFERRED_EMISSION_BINDING - DEFERRED_NORMAL_BINDING;
-        StaticArray<rhi::RasterBindingResource, LUDUS_SKIN_COMPOSITE_BINDING_COUNT> diffusion{};
+        constexpr usize BASE_TARGET = DEFERRED_BASE_BINDING - DEFERRED_NORMAL_BINDING;
+        StaticArray<rhi::RasterBindingResource, LUDUS_SKIN_BINDING_COUNT> diffusion{};
         diffusion[LUDUS_SKIN_SOURCE_BINDING] =
         {
             .Binding = LUDUS_SKIN_SOURCE_BINDING,
@@ -896,10 +920,16 @@ Status RenderGraphDeferredPass::pollSkin() noexcept
             .Binding = LUDUS_SKIN_NORMAL_BINDING,
             .Texture = targets.mSampled[NORMAL_TARGET],
         };
-        diffusion[LUDUS_SKIN_COVERAGE_BINDING] =
+        diffusion[LUDUS_SKIN_BASE_BINDING] =
         {
-            .Binding = LUDUS_SKIN_COVERAGE_BINDING,
-            .Texture = targets.mSampled[COVERAGE_TARGET],
+            .Binding = LUDUS_SKIN_BASE_BINDING,
+            .Texture = targets.mSampled[BASE_TARGET],
+        };
+        diffusion[LUDUS_SKIN_PROFILE_BINDING] =
+        {
+            .Binding = LUDUS_SKIN_PROFILE_BINDING,
+            .Buffer = mSkinProfiles,
+            .Size = sizeof(DeferredMaterialBindings::SkinProfiles),
         };
         diffusion[LUDUS_SKIN_DEPTH_BINDING] = { .Binding = LUDUS_SKIN_DEPTH_BINDING, .Texture = targets.mDepth };
         diffusion[LUDUS_SKIN_VIEW_BINDING] =
