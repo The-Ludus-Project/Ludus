@@ -109,6 +109,11 @@ enum class IrKind : foundation::uint8
     ClearGroupshared,
     /// A group memory barrier, after the clears of an entry point.
     GroupBarrier,
+    /// `barrier groupshared;` or, with IR_ALL_MEMORY, `barrier all;`.
+    Barrier,
+    /// `target = value` into LUSL atomic storage, a store of its `Atomic<T>` element. Children:
+    /// target, value.
+    AtomicStore,
     /// Placeholder for an absent For part.
     Empty,
 
@@ -159,8 +164,17 @@ enum class IrKind : foundation::uint8
     /// A built-in function. Symbol: the intrinsic. Children: the arguments.
     IntrinsicCall,
     /// An operation of a resource, such as `image.Sample(imageSampler, uv)`. Token: the operation
-    /// name. Children: the resource, then the arguments.
+    /// name. Index: the Dimensions helper of `GetDimensions()`, or NO_INDEX. Children: the
+    /// resource, then the arguments.
     ResourceMethodCall,
+    /// An `Interlocked` operation. Symbol: the intrinsic. Flags: IR_ATOMIC_STORAGE when the
+    /// destination is LUSL atomic storage, lowered to an `Atomic<T>` method; IR_BUFFER_DESTINATION
+    /// when it is an element of a buffer rather than `groupshared` memory. Children: the
+    /// destination, the values, then the target of the original value when there is one.
+    AtomicCall,
+    /// A read of an element of LUSL atomic storage, a load of its `Atomic<T>`. Type. Children:
+    /// the element.
+    AtomicLoad,
     /// A vector or matrix construction. Type. Children: the components.
     Construct,
     /// An explicit conversion. Type. Children: the value.
@@ -189,6 +203,9 @@ inline constexpr foundation::uint16 IR_UNROLL = 1U << 8U;
 inline constexpr foundation::uint16 IR_LOOP = 1U << 9U;
 inline constexpr foundation::uint16 IR_DEFAULT = 1U << 10U;
 inline constexpr foundation::uint16 IR_IMPLICIT_THIS = 1U << 11U;
+inline constexpr foundation::uint16 IR_ATOMIC_STORAGE = 1U << 12U;
+inline constexpr foundation::uint16 IR_ALL_MEMORY = 1U << 13U;
+inline constexpr foundation::uint16 IR_BUFFER_DESTINATION = 1U << 14U;
 
 /// System-value semantics of compute entry point parameters, stored in IrNode::Index.
 enum class IrSemantic : foundation::uint8
@@ -252,6 +269,10 @@ enum class IrHelperKind : foundation::uint8
     /// its return type. Fields: the parameter position of each written argument. Body: the
     /// positional Call or MethodCall. A method's adapter is a method of the same struct.
     CallAdapter,
+    /// `_luslDimensionsN(Type resource)`: a texture's level-0 size as `uint2`, or a structured
+    /// buffer's element count as `uint`. Type: the resource type. Symbol: the atomic binding whose
+    /// `Atomic<T>` elements the parameter spells, or NO_SYMBOL.
+    Dimensions,
 };
 
 /// @brief One generated helper; names are `_lusl` + kind + index, so they are deterministic.

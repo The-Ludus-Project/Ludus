@@ -1540,6 +1540,28 @@ private:
         return node;
     }
 
+    /// True at `barrier groupshared;` or `barrier all;`; `barrier` stays a name elsewhere.
+    [[nodiscard]] bool isBarrierStart() const noexcept
+    {
+        return isWord("barrier") == true && (isWord("groupshared", 1) == true || isWord("all", 1) == true) &&
+               isPunctuator(Punctuator::Semicolon, 2) == true;
+    }
+
+    [[nodiscard]] uint32 parseBarrier(bool hasAttributes) noexcept
+    {
+        if (hasAttributes == true)
+        {
+            report(DiagnosticCode::UnexpectedToken, ComposeMessage("a barrier statement takes no attributes"));
+        }
+        const uint32 node = createNode(SyntaxKind::BarrierStatement);
+        ++mPosition;
+        setToken(node, mPosition);
+        ++mPosition;
+        (void)expect(Punctuator::Semicolon, "';' after the barrier");
+        finish(node);
+        return node;
+    }
+
     [[nodiscard]] uint32 parseStatementBody() noexcept
     {
         if (isPunctuator(Punctuator::LeftBracket) == true && isPunctuator(Punctuator::LeftBracket, 1) == true)
@@ -1576,6 +1598,10 @@ private:
         if (isWord("switch") == true)
         {
             return parseSwitch(attributes);
+        }
+        if (isBarrierStart() == true)
+        {
+            return parseBarrier(hasAttributes);
         }
         if (isPunctuator(Punctuator::LeftBrace) == false && isDeclarationStart() == true)
         {
@@ -2294,6 +2320,8 @@ std::string_view GetSyntaxKindName(SyntaxKind kind) noexcept
             return "discard-statement";
         case SyntaxKind::FallthroughStatement:
             return "fallthrough-statement";
+        case SyntaxKind::BarrierStatement:
+            return "barrier-statement";
         case SyntaxKind::Name:
             return "name";
         case SyntaxKind::ScopeExpression:

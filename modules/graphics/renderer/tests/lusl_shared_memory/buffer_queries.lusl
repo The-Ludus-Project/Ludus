@@ -1,0 +1,13 @@
+// L5a GPU evidence: structured buffer element counts, returned by value
+// (docs/modules/tooling/shader-language.md#resources-and-bindings). buffer_queries.slang is the
+// Slang equivalent. Slang's direct Metal backend has no buffer-length query, so Metal builds compile
+// both through SPIR-V and SPIRV-Cross.
+StructuredBuffer<float32x4> values;
+RWStructuredBuffer<uint32> results;
+
+[stage(compute), threads(1, 1, 1)]
+void Main()
+{
+    results[0] = values.GetDimensions();
+    results[1] = results.GetDimensions();
+}

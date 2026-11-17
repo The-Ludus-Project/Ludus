@@ -408,6 +408,7 @@ private:
             case SyntaxKind::ContinueStatement:
             case SyntaxKind::ReturnStatement:
             case SyntaxKind::DiscardStatement:
+            case SyntaxKind::BarrierStatement:
                 return true;
             default:
                 return false;

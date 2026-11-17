@@ -258,6 +258,10 @@ the name.
 | LUSL0554 | `invalid-uniform-parameter` | `uniform` on an `out` or `inout` parameter, or on an entry point's parameter |
 | LUSL0555 | `space-mismatch` | Values of two coordinate spaces combined, assigned, passed or returned, or a matrix applied outside its source space; the message names both spaces and the matrix that would fix it |
 | LUSL0556 | `invalid-space` | A space argument that names no `space`, the wrong number of spaces, or spaces on a type that is not a floating-point vector or matrix |
+| LUSL0557 | `invalid-atomic` | An `Interlocked` call whose destination is not an `int32` or `uint32` element of an `RWStructuredBuffer` or `groupshared` variable, a marked destination, or an original value that is not an `out` argument of the destination's type |
+| LUSL0558 | `atomic-storage-access` | Atomic storage used by a compound assignment, `++`/`--`, an `out`/`inout` argument, or as a whole array or buffer |
+| LUSL0559 | `non-uniform-barrier` | A `barrier` statement, or a call of a function that reaches one, in non-uniform control flow; the message names the deciding line and the varying value |
+| LUSL0560 | `invalid-barrier` | A vertex or fragment entry point that reaches a `barrier` statement |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 | LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
@@ -586,7 +590,8 @@ float32x4 FragmentMain(in Interpolated input)
 
 - **Varying values.** These vary:
   - entry-point inputs, except the compute `GroupId`;
-  - reads of writable resources and of `groupshared` memory;
+  - reads of writable resources and of `groupshared` memory, including the original values of
+    atomics (resource sizes from `GetDimensions()` are uniform);
   - mutable globals and a method's own fields;
   - parameters of ordinary functions not declared `uniform`;
   - results of functions that read any of these;
@@ -604,6 +609,10 @@ float32x4 FragmentMain(in Interpolated input)
   argument for a `uniform` parameter must be uniform (LUSL0553). `uniform`
   qualifies only `in` parameters of ordinary functions (LUSL0554), and
   lowering erases it.
+- **Barriers.** A `barrier` statement must be reached by every invocation of its thread group,
+  which WGSL's `workgroupBarrier` requires and the other targets assume. It follows the
+  derivative rule: in non-uniform flow it is `non-uniform-barrier`, and a function that reaches
+  one carries the requirement to its calls. The compute `GroupId` is uniform across the group.
 - **Scope.** Specializations are checked with their own types, and each error
   is reported once per source position. Calls through an interface requirement
   inside a Slang generic are not followed; the target compiler validates them.
@@ -692,12 +701,70 @@ float32x4 FragmentMain(in CompositeVarying input)
 
 | Type | Element | Operations |
 | --- | --- | --- |
-| `Texture2D<T>` | `float32`, `int32` or `uint32` scalar or vector | `Sample(sampler, uv)`, `SampleLevel(sampler, uv, level)`, `Load(int32x3)` |
-| `RWTexture2D<T>` | as `Texture2D` | `texture[uint32x2]`, read and written |
+| `Texture2D<T>` | `float32`, `int32` or `uint32` scalar or vector | `Sample(sampler, uv)`, `SampleLevel(sampler, uv, level)`, `Load(int32x3)`, `GetDimensions()` |
+| `RWTexture2D<T>` | as `Texture2D` | `texture[uint32x2]`, read and written; `GetDimensions()` |
 | `SamplerState` | none | an argument of `Sample` and `SampleLevel` |
 | `ConstantBuffer<S>` | a struct without `bool` | `buffer.Field`, read-only |
-| `StructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read-only |
-| `RWStructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read and written |
+| `StructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read-only; `GetDimensions()` |
+| `RWStructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read and written; `GetDimensions()`; `int32`/`uint32` elements take `Interlocked` operations |
+
+**Sizes.** `GetDimensions()` returns by value: a texture's level-0 width and height as
+`uint32x2`, a structured buffer's element count as `uint32`. A size is a property of the binding,
+so it is uniform, also for writable resources.
+
+```c
+uint32x2 size = image.GetDimensions();
+uint32 count = values.GetDimensions();
+```
+
+**Atomics.** `InterlockedAdd`, `InterlockedAnd`, `InterlockedOr`, `InterlockedXor`,
+`InterlockedMin` and `InterlockedMax` take a destination and a value, then an optional `out`
+original value. `InterlockedExchange` takes a destination, a value and a required `out` original;
+`InterlockedCompareExchange` a destination, a compare value, a value and a required `out`
+original; `InterlockedCompareStore` a destination, a compare value and a value. Calls are
+statements; values take the destination's type.
+
+```c
+groupshared uint32 bins[BIN_COUNT] = 0;
+RWStructuredBuffer<uint32> counters;
+
+uint32 ticket = 0;
+InterlockedAdd(counters[0], 1, out ticket);
+InterlockedMax(bins[groupIndex % BIN_COUNT], value);
+```
+
+- **Destinations.** An `int32` or `uint32` element of an `RWStructuredBuffer` binding
+  (`counters[i]`) or a `groupshared` scalar or array element (`total`, `bins[i]`). The
+  destination is updated in place, so it takes no mark. Locals, fields, vector components and
+  textures are `invalid-atomic`.
+- **Atomic storage.** A variable an `Interlocked` call updates is atomic storage: lowering
+  declares it `RWStructuredBuffer<Atomic<uint>>` or `groupshared Atomic<uint>`, which every target,
+  WGSL included, accepts. Reads and `=` stores of its elements stay ordinary syntax and lower to
+  `load()` and `store()`. Compound assignments, `++`/`--`, `out`/`inout` arguments and whole-array
+  or whole-buffer values have no atomic spelling and are `atomic-storage-access`.
+- **`extern slang` storage**, such as a render graph's `GraphBuffer0`, keeps its Slang declaration:
+  any `int32` or `uint32` lvalue under it may be a destination (`GraphBuffer0[i].y`), and lowering
+  writes Slang's `InterlockedAdd(destination, value, original)`.
+- **Ordering.** Atomics are relaxed: they order nothing but themselves. Use a barrier to publish
+  ordinary writes to the group.
+
+**Barriers.** `barrier groupshared;` waits for every invocation of the thread group and makes its
+`groupshared` writes visible; `barrier all;` also covers buffer and texture writes. `barrier` is
+contextual: it starts a statement only before `groupshared` or `all` and `;`. Every invocation of
+the group must reach a barrier, so the [uniformity rules](#uniformity-rules) require uniform
+control flow at the barrier and at each call of a function that reaches one
+(`non-uniform-barrier`). Vertex and fragment entry points cannot reach one (`invalid-barrier`).
+
+```c
+for (uint32 stride = GROUP_SIZE / 2; stride > 0; stride = stride >> 1)
+{
+    if (groupIndex < stride)
+    {
+        partial[groupIndex] = partial[groupIndex] + partial[groupIndex + stride];
+    }
+    barrier groupshared; // after the if: every invocation reaches it
+}
+```
 
 - A top-level variable of a resource type, without modifiers or an initializer,
   is a binding. Resources in `extern slang` blocks are the including Slang
@@ -765,9 +832,30 @@ ludus_compile_shader(TARGET my_game NAME composite
   with `renderer_composite.slang`, compares every pixel, and checks the slot
   constants against the reflected bindings.
 
-**Current limits.** No binding arrays (bindless), cube or 3D textures,
-`GetDimensions`, atomics or manual slots yet. Render-graph programs keep
-receiving their bindings from the graph.
+- **Evidence:** `tests/shared_memory_tests.cpp` holds golden and diagnostic tests, and the target
+  tests compile each construct for SPIR-V, ray-query SPIR-V, WGSL and Metal.
+  `modules/graphics/renderer/tests/lusl_shared_memory` runs a LUSL kernel per construct beside
+  its Slang equivalent on the GPU and compares every result word.
+
+**Current limits.**
+- No binding arrays (bindless), cube or 3D textures, or manual slots yet. Render-graph programs
+  keep receiving their bindings from the graph.
+- `GetDimensions()` has no mip-level form and reports level 0.
+- **Buffer lengths on Metal.** Slang's direct Metal backend has no buffer-length query, so a module
+  that calls `GetDimensions()` on a structured buffer fails the portable target set. It compiles
+  for ray-query SPIR-V; Metal artifacts come from SPIR-V through SPIRV-Cross, whose buffer-size
+  table the Metal RHI binds (`ludus_compile_shader` `SOFTWARE_RAY_QUERIES` or `NATIVE_RAY_QUERIES`).
+- **`extern slang` atomics on WGSL.** Slang's `Interlocked` functions need atomic types on WGSL,
+  which only the declaring Slang can provide, so such modules fail the portable set and compile
+  for ray-query SPIR-V, as their Slang originals do.
+- **Compare-exchange on Metal and WGSL** lowers to the targets' weak compare-exchange, which may
+  fail spuriously: the original equals the compare value although nothing was stored. Retry loops
+  should check the stored value, not only the original.
+- Build tools accept `array<atomic<u32>>` and `array<atomic<i32>>` for a reflected
+  read-write `uint32` or `int32` storage buffer in WGSL, the form `Atomic<T>` storage takes; the
+  stride is that of the scalar.
+- Atomic storage holds `int32` and `uint32` elements only: no fields, vectors, textures or 64-bit
+  atomics.
 
 ## Lowering to Slang
 
@@ -813,6 +901,10 @@ The IR is internal. It is the seam for direct backends later.
 | Signed `+`, `-`, `*`, negation, compound assignment, `++`, `--` | A generated `_luslWrapN` helper whose `__target_switch` writes the operation directly, and through unsigned arithmetic on Metal ([signed overflow](../../architecture/shading-language.md#signed-overflow)) |
 | Shifts by a runtime count | The count masked to the operand's width: `value << (count & 31u)` |
 | `[[fallthrough]]` | The next case's statements are copied into the case, each case's statements in their own block, so no target needs switch fallthrough |
+| `image.GetDimensions()` | A generated `_luslDimensionsN(image)` per resource type that calls Slang's `GetDimensions(out ...)` and returns the size |
+| `InterlockedAdd(counters[i], 1, out original)` | `original = counters[i].add(1u)` on `Atomic<T>` storage; Slang's `InterlockedAdd(...)` for `extern slang` storage |
+| `InterlockedExchange(counters[i], value, out original)` | A `__target_switch`: SPIR-V, whose compare-exchange is strong, exchanges through a compare-exchange loop, because the pinned Slang (2026.1.2) crashes emitting SPIR-V 1.3 for a buffer-element exchange whose original is used; other targets call `exchange`. `groupshared` exchanges lower directly |
+| `barrier groupshared;`, `barrier all;` | `GroupMemoryBarrierWithGroupSync();`, `AllMemoryBarrierWithGroupSync();` |
 | `groupshared T name = 0;` | Every compute entry point that reaches the variable, through any calls, clears it first: each thread zeroes a strided slice of its elements, then `GroupMemoryBarrierWithGroupSync()`. The entry point reuses its `GroupIndex` parameter, or gains a hidden `SV_GroupIndex` one. `= void` variables are not cleared |
 | Fields inside methods | `this.Field`, `this.Method(...)` |
 | `[stage(compute), threads(x, y, z)]` | `[shader("compute")]`, `[numthreads(x, y, z)]`; semantics become `SV_DispatchThreadID`, `SV_GroupThreadID`, `SV_GroupID` and `SV_GroupIndex` |

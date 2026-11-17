@@ -221,6 +221,14 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "space-mismatch";
         case DiagnosticCode::InvalidSpace:
             return "invalid-space";
+        case DiagnosticCode::InvalidAtomic:
+            return "invalid-atomic";
+        case DiagnosticCode::AtomicStorageAccess:
+            return "atomic-storage-access";
+        case DiagnosticCode::NonUniformBarrier:
+            return "non-uniform-barrier";
+        case DiagnosticCode::InvalidBarrier:
+            return "invalid-barrier";
         case DiagnosticCode::NamingStyle:
             return "naming-style";
         case DiagnosticCode::BareBoolOperand:

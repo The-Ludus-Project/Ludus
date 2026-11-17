@@ -8,7 +8,7 @@ import unittest
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'cmake/shaders'))
 from native_worker import capture_include_closure, MAX_SOURCE_FILES
-from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, share_glsl_fetch_samplers, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source, emit_text_artifact, MAX_INLINE_TEXT_BYTES
+from compile_raster import verify_wgsl_compute_storage, spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, share_glsl_fetch_samplers, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source, emit_text_artifact, MAX_INLINE_TEXT_BYTES
 
 class NativeWorkerSnapshotTests(unittest.TestCase):
     """The worker receives the source's include closure, not every file under its roots."""
@@ -401,6 +401,27 @@ class RasterReflectionTests(unittest.TestCase):
         for group in ([0,1,1],[257,1,1],[16,17,1],[1,1,65],[1,1],None):
             invalid=copy.deepcopy(data);invalid['entryPoints'][0]['threadGroupSize']=group
             with self.assertRaisesRegex(RuntimeError,'workgroup'):raster_interface(invalid,'compute')
+
+    def test_wgsl_compute_storage_accepts_atomic_integer_elements(self):
+        def interface(kind, scalar, width=1):
+            return {'entries': [{'binding': 3, 'kind': kind, 'scalar': scalar, 'width': width}]}
+        def declaration(access, element):
+            return f'@binding(3) @group(0) var<storage, {access}> counters_0 : array<{element}>;'
+        # Atomic<uint> and Atomic<int> storage (LUSL atomic storage) keeps its scalar's stride.
+        for scalar, wgsl in (('uint32', 'u32'), ('int32', 'i32')):
+            verify_wgsl_compute_storage(declaration('read_write', wgsl), interface('StorageReadWrite', scalar))
+            verify_wgsl_compute_storage(declaration('read_write', f'atomic<{wgsl}>'),
+                                        interface('StorageReadWrite', scalar))
+        rejected = [
+            (declaration('read', 'atomic<u32>'), interface('StorageRead', 'uint32')),
+            (declaration('read_write', 'atomic<i32>'), interface('StorageReadWrite', 'uint32')),
+            (declaration('read_write', 'atomic<f32>'), interface('StorageReadWrite', 'float32')),
+            (declaration('read_write', 'atomic<vec2<u32>>'), interface('StorageReadWrite', 'uint32', 2)),
+            (declaration('read_write', 'f32'), interface('StorageReadWrite', 'uint32')),
+        ]
+        for code, reflected in rejected:
+            with self.subTest(code=code), self.assertRaisesRegex(RuntimeError, 'packing/access'):
+                verify_wgsl_compute_storage(code, reflected)
 
     def test_metal_compute_buffers_ignore_zero_count_texture_metadata(self):
         data = self.compute_fixture()

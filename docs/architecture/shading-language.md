@@ -582,7 +582,8 @@ generated WGSL.
 
 - **Varying values** differ between invocations. These are varying:
   - entry-point inputs, except the compute `GroupId`;
-  - reads of `RWTexture2D`, `RWStructuredBuffer` and `groupshared` memory;
+  - reads of `RWTexture2D`, `RWStructuredBuffer` and `groupshared` memory,
+    including the original values atomics return, but not resource sizes;
   - mutable globals;
   - the parameters of ordinary functions, unless they are declared `uniform`;
   - the fields of a method's own struct;
@@ -915,6 +916,15 @@ L5 records the retained files in one list under `config/`, each with its reason.
 | Manual slots (`vk::binding`, `register`) | 26 | 0 | Host code binds by the generated `<NAME>_slots.h` constants; manual slots only for an RHI-fixed layout, recorded with its reason |
 | Intrinsics: `select`, `sign`, `fma`, `tanh`, `faceforward`, `determinant`, `refract`, `clip` | 17 | 2 | Intrinsic table entries; `fwidth` becomes `abs(ddx) + abs(ddy)`, which the pinned Slang accepts on Metal |
 | Float classification: `isfinite`, `isnan`, `isinf` | 80 | 29 | No new intrinsics: Metal compiles render stages with fast math, which can fold them. Ports call FoundationMath's `IsFiniteBits` |
+
+**Status of L5a resource queries, atomics and barriers:** implemented
+([issue 1729](https://github.com/The-Ludus-Project/Ludus/issues/1729)). `GetDimensions()`
+returns sizes by value, `Interlocked` operations lower to `Atomic<T>` storage (Slang's
+`Interlocked` functions for `extern slang` storage), and `barrier groupshared;` and
+`barrier all;` must be in uniform control flow of a compute stage. Two gaps of the pinned Slang
+remain: buffer lengths have no direct Metal spelling, and `extern slang` atomics have no WGSL
+spelling; both programs compile through ray-query SPIR-V as their Slang originals do. See the
+[module guide](../modules/tooling/shader-language.md#resources-and-bindings).
 
 Generic structs (`LUSL0304`) and `dynamic` dispatch are not needed by any
 current file and stay deferred. Tracked in issues [1729](https://github.com/The-Ludus-Project/Ludus/issues/1729) (resource queries,

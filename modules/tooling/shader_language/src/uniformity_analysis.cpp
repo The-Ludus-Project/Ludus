@@ -11,11 +11,16 @@
 // visible in the signature. Variables are tracked once per function, not per program point, so a
 // variable that ever holds a varying value is varying everywhere in its function.
 //
+// Group barriers (`barrier groupshared;`, `barrier all;`) follow the same rule: every invocation of
+// the thread group must reach them, as WGSL's workgroupBarrier requires, so a barrier, or a call of
+// a function that reaches one, in non-uniform control flow is an error, and so is a barrier that a
+// vertex or fragment entry point reaches.
+//
 // Each function is summarized first, with its parameters uniform: whether it needs uniform control
-// flow (it performs a derivative operation or calls a function that does) and whether its results
-// vary for uniform arguments. Summaries are monotone and recursion is rejected earlier, so
-// repeating the summaries until none changes terminates. A final pass checks every function with
-// its declared parameter uniformity and reports.
+// flow (it performs a derivative operation or calls a function that does), whether it reaches a
+// barrier, and whether its results vary for uniform arguments. Summaries are monotone and recursion is rejected
+// earlier, so repeating the summaries until none changes terminates. A final pass checks every function with its
+// declared parameter uniformity and reports.
 
 #include "internal/analysis.hpp"
 
@@ -79,6 +84,10 @@ struct FunctionSummary final
     bool IsRequiringUniformFlow = false;
     /// The operation or call in the body that makes it so.
     uint32 RequirementToken = NO_TOKEN;
+    /// The function performs a group barrier, or calls a function that does.
+    bool IsReachingBarrier = false;
+    /// The barrier or call in the body that makes it so.
+    uint32 BarrierToken = NO_TOKEN;
     /// A result (the return value or an `out`/`inout` parameter) varies for uniform arguments.
     bool IsProducingVarying = false;
     /// Why it varies.
@@ -120,8 +129,9 @@ public:
         {
             return false;
         }
-        // Each repetition sets at least one summary flag, and there are two per function.
-        const usize maximumRounds = 2 * mBodies.GetSize() + 1;
+        // Each repetition sets at least one summary flag, and there are three per function.
+        constexpr usize SUMMARY_FLAGS = 3;
+        const usize maximumRounds = SUMMARY_FLAGS * mBodies.GetSize() + 1;
         for (usize round = 0; round < maximumRounds && mIsOutOfMemory == false; ++round)
         {
             mHasSummaryChanged = false;
@@ -341,7 +351,27 @@ private:
         }
         mIsReporting = true;
         walkBody(block);
+        reportStageBarrier(body);
         mIsReporting = false;
+    }
+
+    /// Barriers synchronize compute thread groups; a vertex or fragment entry point has none.
+    void reportStageBarrier(const FunctionBody& body) noexcept
+    {
+        const Symbol& function = getModel().Symbols[body.Function];
+        const FunctionSummary& summary = mSummaries[body.Function];
+        if (function.Stage == EntryStage::None || function.Stage == EntryStage::Compute ||
+            summary.IsReachingBarrier == false)
+        {
+            return;
+        }
+        DiagnosticMessage message = ComposeMessage("entry point '",
+                                                   spell(function.NameToken),
+                                                   "' reaches the barrier at line ",
+                                                   getLine(summary.BarrierToken),
+                                                   ", but barriers synchronize the thread groups of compute "
+                                                   "stages; move the work that needs it into a compute entry point");
+        report(DiagnosticCode::InvalidBarrier, function.NameToken, message);
     }
 
     void walkBody(uint32 block) noexcept
@@ -390,6 +420,21 @@ private:
         }
     }
 
+    void requireBarrierFlow(uint32 token) noexcept
+    {
+        if (mMode != Mode::Summarize || mCurrentFunction == NO_SYMBOL)
+        {
+            return;
+        }
+        FunctionSummary& summary = mSummaries[mCurrentFunction];
+        if (summary.IsReachingBarrier == false)
+        {
+            summary.IsReachingBarrier = true;
+            summary.BarrierToken = token;
+            mHasSummaryChanged = true;
+        }
+    }
+
     // ----- Diagnostics ---------------------------------------------------------------------------
 
     void report(DiagnosticCode code, uint32 token, const DiagnosticMessage& message) noexcept
@@ -399,7 +444,14 @@ private:
             return;
         }
         // A specialized template reports once, not once per specialization.
-        const uint8 bit = code == DiagnosticCode::NonUniformDerivative ? 1 : 2;
+        constexpr uint8 DERIVATIVE_BIT = 1;
+        constexpr uint8 ARGUMENT_BIT = 2;
+        constexpr uint8 BARRIER_BIT = 4;
+        constexpr uint8 STAGE_BIT = 8;
+        const uint8 bit = code == DiagnosticCode::NonUniformDerivative ? DERIVATIVE_BIT
+                          : code == DiagnosticCode::NonUniformBarrier  ? BARRIER_BIT
+                          : code == DiagnosticCode::InvalidBarrier     ? STAGE_BIT
+                                                                       : ARGUMENT_BIT;
         if ((mReportedTokens[token] & bit) != 0)
         {
             return;
@@ -483,6 +535,28 @@ private:
         report(DiagnosticCode::NonUniformDerivative, token, message);
     }
 
+    /// Report a barrier, or a call that reaches one, at `token` in non-uniform control flow.
+    void reportDivergentBarrier(uint32 token, uint32 barrierOrNone) noexcept
+    {
+        if (mFlow.IsDivergent() == false || mIsReporting == false)
+        {
+            return;
+        }
+        DiagnosticMessage message =
+            ComposeMessage("'", spell(token), "' must be reached by every invocation of the group");
+        if (barrierOrNone != NO_TOKEN)
+        {
+            AppendPart(message, " because it reaches the barrier at line ");
+            AppendPart(message, getLine(barrierOrNone));
+        }
+        AppendPart(message, ", but it runs after the decision at line ");
+        AppendPart(message, getLine(mFlow.Condition));
+        AppendPart(message, ", which ");
+        appendCause(message, mFlow.Cause);
+        AppendPart(message, "; move the barrier out of the branch, or decide on a uniform value such as GroupId");
+        report(DiagnosticCode::NonUniformBarrier, token, message);
+    }
+
     // ----- Statements ----------------------------------------------------------------------------
 
     /// Enter a new region of non-uniform control flow when `value` decides it. Nested decisions
@@ -552,6 +626,12 @@ private:
             case SyntaxKind::ReturnStatement:
                 visitReturn(node);
                 return;
+            case SyntaxKind::BarrierStatement: {
+                const uint32 token = getNode(node).FirstToken;
+                requireBarrierFlow(token);
+                reportDivergentBarrier(token, NO_TOKEN);
+                return;
+            }
             default:
                 // `discard` demotes to a helper invocation and leaves the flow's uniformity alone.
                 return;
@@ -878,7 +958,9 @@ private:
         const bool isMember = getKind(callee) == SyntaxKind::MemberExpression;
         const uint32 object = isMember == true ? firstChild(callee) : NO_NODE;
         Varying value = evaluate(object);
-        if (kind == CallKind::ResourceMethod && isWritableResource(object) == true)
+        // A resource's size is a property of the binding, uniform even for writable memory.
+        const bool isDimensions = kind == CallKind::ResourceMethod && spell(getNode(callee).Token) == "GetDimensions";
+        if (kind == CallKind::ResourceMethod && isWritableResource(object) == true && isDimensions == false)
         {
             const uint32 token = getNode(object).Token;
             value = Varying{VaryingKind::WritableMemory, token, token};
@@ -915,6 +997,11 @@ private:
                 reportDivergentDerivative(token,
                                           summary.RequirementToken,
                                           "call it before the branch, or decide on a uniform value");
+            }
+            if (summary.IsReachingBarrier == true)
+            {
+                requireBarrierFlow(token);
+                reportDivergentBarrier(token, summary.BarrierToken);
             }
             if (summary.IsProducingVarying == true)
             {
