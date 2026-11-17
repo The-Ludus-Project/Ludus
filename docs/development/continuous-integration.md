@@ -614,6 +614,11 @@ before building, then exercises Foundation, Win32, RHI and the source runtime
 suite, including renderer, content, text, worker, GameHost and Behavior. Its positive
 control requires both a clean startup and a specific fatal heap-buffer-overflow
 finding. The job archives the probe, control logs and exact CTest results.
+Sanitized WARP work is slow and varies with the hosted runner, so this job has
+a 90-minute limit instead of 60, and `ludus_render_graph_dxil_tests` has a
+1200-second CTest deadline under ASan/UBSan instead of 600. On a typical runner
+the job takes about 41 minutes and that suite about 510 seconds; a slow runner
+needs about 1.5 times as long.
 Windows quality subprocesses share the editor's suspended-process admission and
 kill-on-close Job owner. Their tests verify descendant cleanup, output bounds
 and timeout behavior.

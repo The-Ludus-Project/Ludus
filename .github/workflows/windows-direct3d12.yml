@@ -36,7 +36,8 @@ jobs:
   msvc:
     name: MSVC host and D3D12 / ${{ matrix.generator }}${{ matrix.flavor && format(' ({0})', matrix.flavor) || '' }}
     runs-on: windows-2022
-    timeout-minutes: 60
+    # MSVC ASan took 41 min on a typical hosted runner and about 63 min on a slow one.
+    timeout-minutes: ${{ matrix.generator == 'MSVC ASan' && 90 || 60 }}
     strategy:
       fail-fast: false
       matrix:
