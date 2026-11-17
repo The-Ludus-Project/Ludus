@@ -81,7 +81,7 @@ elseif(WIN32)
     # (docs/architecture/windows-direct3d12.md). Unimplemented feature families
     # use the portable Unsupported implementations.
     target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/compute_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/measurement_d3d12.cpp src/debug_d3d12.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>"
-        src/native_interop_d3d12.cpp src/hosted_d3d12.cpp src/hosted_consumer_d3d12.cpp src/surface_unsupported.cpp)
+        src/native_interop_d3d12.cpp src/hosted_d3d12.cpp src/hosted_consumer_d3d12.cpp)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
 else()

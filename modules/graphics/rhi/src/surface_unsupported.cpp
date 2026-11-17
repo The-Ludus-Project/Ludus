@@ -1,8 +1,8 @@
 #include "internal/surface.h"
 
-// R14b single-surface backends (Direct3D 12 and the browser dispatcher): the
-// session hosts only its primary surface, so CreateSurface reports Unsupported before any
-// backend work. Primary-surface completion is not tracked per surface on these backends.
+// R14b single-surface backend (the browser dispatcher): the session hosts only its
+// primary surface, so CreateSurface reports Unsupported before any backend work.
+// Primary-surface completion is not tracked per surface on this backend.
 namespace ludus::graphics::rhi::backend
 {
 foundation::usize AdditionalSurfaceLimit() noexcept
