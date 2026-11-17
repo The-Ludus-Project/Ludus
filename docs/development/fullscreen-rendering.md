@@ -320,7 +320,8 @@ Creation requires a Ready device and no open frame, and returns
 `CapacityExceeded` when the device hosts its maximum. A target that another live
 surface of the device already borrows, an invalid window or an extent above the
 enabled frame dimension returns `InvalidDescription` with the output still null.
-Every surface shares the primary surface's color format, because pipelines are
+On WebGPU, another selector that names a canvas a live surface already uses is
+the same target. Every surface shares the primary surface's color format, because pipelines are
 created for it; a target that needs another format (a Metal or Direct3D 12 hosted
 surface on a windowed or headless device) returns `Unsupported`. Vulkan surfaces also share the
 primary's window system, because the surface render pass and its final image
@@ -328,7 +329,9 @@ layout come from it: a Wayland device hosts Wayland surfaces, a headless device
 headless ones and a hosted device hosted ones. Vulkan builds the new surface's
 swapchain during `CreateSurface`, so a Wayland surface the queue cannot present
 to, or one whose swapchain needs another format, returns `Failed`. Direct3D 12
-creates a Win32 surface's swap chain during `CreateSurface` too. Surface
+creates a Win32 surface's swap chain during `CreateSurface` too. WebGPU surfaces
+are canvases: a canvas that already holds another context mode, such as WebGL 2,
+returns `Failed`. Surface
 identities are never reused. A destroyed surface, a surface of another device and a surface from a
 previous session return `InvalidHandle`, and `GetFrameInfo` for a surface other
 than the open frame's returns `InvalidState`.
@@ -337,9 +340,12 @@ A created surface is lost when its platform target stops accepting frames: a
 Cocoa view that left the window it was borrowed from, a Vulkan surface that
 reports `VK_ERROR_SURFACE_LOST_KHR` or whose swapchain cannot be rebuilt, a
 Win32 window that was destroyed or whose swap chain fails to resize or present
-without device removal, or a hosted consumer that failed. The backend waits for
-that surface's submitted frames (Vulkan and Direct3D 12 wait for the queue to
-idle), retires its presentation resources and restores the borrowed view. Its frame calls then
+without device removal, a hosted consumer that failed, or a WebGPU canvas that
+left the document, whose configuration fails validation or whose context cannot
+supply a texture. The backend waits for that surface's submitted frames (Vulkan
+and Direct3D 12 wait for the queue to idle; WebGPU keeps the canvas textures of
+submitted work alive itself), retires its presentation resources and restores
+the borrowed view. Its frame calls then
 return `SurfaceLost`, while the device, its resources and its other surfaces keep
 working. `DestroySurface` retires a created surface in the same way, also after
 its loss or after device failure. The primary surface keeps the facade's
@@ -354,20 +360,29 @@ complete; it is polled without waiting, so it can lag the GPU.
 handed to the hosted consumer. It is not a display time, and headless surfaces
 present nothing.
 
+WebGPU validates a created canvas's configuration asynchronously, so
+`CreateSurface` can return `Ready` for a canvas that is lost before its first
+frame. Configuration results and completion callbacks carry the identity of the
+surface that issued them: after `DestroySurface`, a late result is ignored, also
+when a new surface reuses the slot, and frames still in flight are not counted.
+WebGPU asks the queue for completion only when `GetSurfaceInfo` reads the
+counters, so `RenderedFrames` advances on a later call. `PresentedFrames` counts
+frames that submitted their canvas texture, which the browser presents when the
+current task returns.
+
 Metal implements additional surfaces for Cocoa, headless and hosted targets,
-Vulkan for Wayland, headless and hosted targets, and Direct3D 12 for Win32,
-headless and hosted targets. A Vulkan device imported through
+Vulkan for Wayland, headless and hosted targets, Direct3D 12 for Win32,
+headless and hosted targets, and WebGPU for browser canvases. A Vulkan device imported through
 `CreateNativeDevice` renders only its headless primary. On Vulkan,
 `RenderedFrames` follows each frame's fence and `PresentedFrames` counts
 presentations the queue accepted (`VK_SUCCESS` or `VK_SUBOPTIMAL_KHR`). On
 Direct3D 12, `RenderedFrames` follows each frame's queue fence value and
 `PresentedFrames` counts successful `Present` calls (an occluded window still
 succeeds). Direct3D 12 surfaces share one surface depth buffer, which is resized
-when consecutive frames target different extents. The browser backends still
-host only their primary surface and return `Unsupported` from `CreateSurface`;
-their primary surfaces report `SubmittedFrames` but not render or presentation
-completion. A WebGL 2 context
-belongs to one canvas, so WebGL 2 cannot host a second surface on one device.
+when consecutive frames target different extents. A WebGL 2 context belongs to
+one canvas, so a WebGL 2 device, including an Auto fallback, hosts only its
+primary surface: `CreateSurface` returns `Unsupported`, and the primary reports
+`SubmittedFrames` but not render or presentation completion.
 
 The reference-backend lifecycle suite covers independent targets and counters,
 one frame per device, primary-surface protection, borrowed-target, capacity and
@@ -383,7 +398,14 @@ resizes and retires the second while the primary keeps its image; it runs on
 Metal and, in the Linux batch, on Vulkan. The Windows Direct3D 12 suite clears
 and reads back two headless surfaces at independently resized extents, and
 loses a second Win32 surface when its window is destroyed while the first keeps
-presenting. Wayland surface loss has no automated coverage yet.
+presenting. The browser surface probe (`ludus_web_surface_semantics`) runs the
+real WebGPU port against a recording Node provider with one context per canvas.
+It renders and resizes several canvases of one device; rejects borrowed,
+missing, WebGL 2 and over-capacity canvases and stale handles; ignores late
+configuration and completion results of destroyed surfaces whose slot was
+reused; and loses one canvas when its configuration fails during an open frame
+and another when it leaves the document, while the primary keeps presenting.
+Wayland surface loss has no automated coverage yet.
 
 ### Profile, format and limit negotiation
 
