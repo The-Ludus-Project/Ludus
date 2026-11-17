@@ -616,15 +616,38 @@ float ComputeEnvironmentSolidAngle(uint row, uint width, uint height)
     // Subtractive cosine loses FP32 precision near poles; use the sine identity.
     return (2 * PI / float(width)) * 2 * sin(PI * (float(row) + .5) / float(height)) * sin(PI / (2 * float(height)));
 }
+// Matches EvaluateFilteredEnvironment in environment.cpp.
+float3 EvaluateFilteredEnvironment(float2 coordinates, uint width, uint height)
+{
+    float x = coordinates.x * float(width) - 0.5;
+    float y = clamp(coordinates.y * float(height) - 0.5, 0, float(height - 1));
+    int lowerX = int(floor(x));
+    uint left = lowerX < 0 ? width - 1 : uint(lowerX);
+    uint right = left + 1 == width ? 0 : left + 1;
+    uint top = uint(y);
+    uint bottom = min(top + 1, height - 1);
+    uint topRow = SurfaceLayout.w + top * width;
+    uint bottomRow = SurfaceLayout.w + bottom * width;
+    float fractionX = x - float(lowerX);
+    float3 upper = lerp(SceneValue(topRow + left).xyz, SceneValue(topRow + right).xyz, fractionX);
+    float3 lower = lerp(SceneValue(bottomRow + left).xyz, SceneValue(bottomRow + right).xyz, fractionX);
+    return lerp(upper, lower, y - float(top));
+}
+
 // RGB radiance and solid-angle density of the frozen environment in one direction.
-float4 EvaluateEnvironmentWorld(float3 directionWorld)
+float4 EvaluateEnvironmentWorld(float3 directionWorld, bool shouldFilterRadiance)
 {
     if (SurfaceLayout.w == 0)
         return float4(Environment.xyz, 1 / (4 * PI));
     uint width = asuint(SceneValue(SurfaceLayout.w - 1).x);
     uint height = asuint(SceneValue(SurfaceLayout.w - 1).y);
-    uint2 cell =
-        min(uint2(ComputeEnvironmentCoordinates(directionWorld) * float2(width, height)), uint2(width - 1, height - 1));
+    float2 coordinates = ComputeEnvironmentCoordinates(directionWorld);
+    if (shouldFilterRadiance == true)
+    {
+        // This lookup is for a primary miss, which always has unit MIS weight.
+        return float4(EvaluateFilteredEnvironment(coordinates, width, height), 0);
+    }
+    uint2 cell = min(uint2(coordinates * float2(width, height)), uint2(width - 1, height - 1));
     uint pixel = cell.y * width + cell.x;
     float4 value = SceneValue(SurfaceLayout.w + pixel);
     float previous = pixel == 0 ? 0 : SceneValue(SurfaceLayout.w + pixel - 1).w;
@@ -1928,8 +1951,11 @@ PathSample TracePath(uint pixel, uint sample)
         throughput *= segmentTransmittance;
         if (hit.Triangle == NO_TRIANGLE)
         {
-            float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld);
-            if (depth == 0 && Tile.w != 0)
+            bool hasSky = depth == 0 && Tile.w != 0;
+            bool shouldFilterEnvironment =
+                hasSky == true && SceneValue(Tile.w - 1 + LUDUS_REFERENCE_SKY_FILTER_ENVIRONMENT).w > 0;
+            float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld, shouldFilterEnvironment);
+            if (hasSky == true)
             {
                 environment.xyz += EvaluateReferenceSky(Tile.w - 1, ray.DirectionWorld);
             }

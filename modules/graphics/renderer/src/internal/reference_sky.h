@@ -24,6 +24,11 @@ struct ReferenceSky final
     {
         return Words[LUDUS_REFERENCE_SKY_UP_WORLD] != foundation::math::Vector4{};
     }
+
+    [[nodiscard]] LUDUS_INLINE constexpr bool ShouldFilterEnvironment() const noexcept
+    {
+        return Words[LUDUS_REFERENCE_SKY_FILTER_ENVIRONMENT].W > 0;
+    }
 };
 
 [[nodiscard]] rhi::RasterStatus PrepareReferenceSky(const ReferenceCaptureDescription& description,

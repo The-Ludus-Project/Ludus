@@ -179,6 +179,26 @@ math::Vector3 EvaluateEnvironment(const EnvironmentData& data, math::Vector3 dir
 {
     return ReadColor(data.Pixels[FindPixel(data, direction)]);
 }
+math::Vector3 EvaluateFilteredEnvironment(const EnvironmentData& data, math::Vector3 directionWorld) noexcept
+{
+    const math::Vector2 uv = ComputeEnvironmentUv(directionWorld);
+    const float32 x = uv.X * static_cast<float32>(data.Width) - 0.5F;
+    const float32 y =
+        math::Clamp(uv.Y * static_cast<float32>(data.Height) - 0.5F, 0.0F, static_cast<float32>(data.Height - 1));
+    const int32 lowerX = static_cast<int32>(math::Floor(static_cast<float64>(x)));
+    const uint32 left = lowerX < 0 ? data.Width - 1 : static_cast<uint32>(lowerX);
+    const uint32 right = left + 1 == data.Width ? 0 : left + 1;
+    const uint32 top = static_cast<uint32>(y);
+    const uint32 bottom = math::Min(top + 1, data.Height - 1);
+    const usize topRow = static_cast<usize>(top) * data.Width;
+    const usize bottomRow = static_cast<usize>(bottom) * data.Width;
+    const float32 fractionX = x - static_cast<float32>(lowerX);
+    const math::Vector3 upper =
+        math::Lerp(ReadColor(data.Pixels[topRow + left]), ReadColor(data.Pixels[topRow + right]), fractionX);
+    const math::Vector3 lower =
+        math::Lerp(ReadColor(data.Pixels[bottomRow + left]), ReadColor(data.Pixels[bottomRow + right]), fractionX);
+    return math::Lerp(upper, lower, y - static_cast<float32>(top));
+}
 float32 EvaluateEnvironmentPdf(const EnvironmentData& data, math::Vector3 direction) noexcept
 {
     if (data.Weight == 0)
