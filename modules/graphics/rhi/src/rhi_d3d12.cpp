@@ -80,6 +80,9 @@ constexpr uint32 TARGET_DESCRIPTOR_COUNT = FRAME_COUNT + 1;
 /// Bound on a CPU wait for GPU work. A healthy device finishes a clear far sooner;
 /// a removed device signals every fence, so a timeout means the queue is hung.
 constexpr DWORD FENCE_TIMEOUT_MILLISECONDS = 10000;
+/// Further wait on the software adapter after FENCE_TIMEOUT_MILLISECONDS. WARP executes on
+/// the CPU, and a cold clustered-deferred frame on a slow host runs past the hardware guard.
+constexpr DWORD SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS = 110000;
 constexpr D3D_FEATURE_LEVEL MINIMUM_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
 /// The fullscreen root signature's only parameter: the uniform as a root CBV at b0, space 0.
 constexpr UINT UNIFORM_ROOT_PARAMETER = 0;
@@ -247,12 +250,29 @@ void LogFailure(const char* operation, HRESULT result) noexcept
     {
         return true;
     }
-    if (FAILED(gFence->SetEventOnCompletion(value, gFenceEventOrNull)) == true)
+    const HRESULT armed = gFence->SetEventOnCompletion(value, gFenceEventOrNull);
+    if (FAILED(armed) == true)
     {
+        LogFailure("Fence completion event", armed);
         return false;
     }
-    if (WaitForSingleObject(gFenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS) != WAIT_OBJECT_0)
+    DWORD waited = WaitForSingleObject(gFenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS);
+    if (waited == WAIT_TIMEOUT && isSoftwareAdapter == true)
     {
+        LUDUS_LOG_WARN(LOG_RHI,
+                       "Direct3D 12: the software adapter is still executing after {} ms; waiting up to {} ms more",
+                       static_cast<uint32>(FENCE_TIMEOUT_MILLISECONDS),
+                       static_cast<uint32>(SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS));
+        waited = WaitForSingleObject(gFenceEventOrNull, SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS);
+    }
+    if (waited != WAIT_OBJECT_0)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI,
+                        "Direct3D 12: fence value {} did not complete (wait result {:x}, completed {}); "
+                        "the queue is hung or the frame is too heavy for this adapter",
+                        value,
+                        static_cast<uint32>(waited),
+                        gFence->GetCompletedValue());
         return false;
     }
     const uint64 signaled = gFence->GetCompletedValue();
@@ -1639,15 +1659,33 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     constexpr usize SURFACE_GREEN = 1;
     constexpr usize SURFACE_RED = 2;
     constexpr usize SURFACE_ALPHA = 3;
+    // Each refusal names its cause: a bare false left deferred WARP failures undiagnosable.
     if (isRendering == false || gSwapChain.Get() != nullptr || isRecording == true || gHeadless.Get() == nullptr)
     {
+        LUDUS_LOG_ERROR(LOG_RHI,
+                        "Direct3D 12: headless readback needs an idle headless frame (rendering {}, swap chain {}, "
+                        "recording {}, headless target {})",
+                        isRendering,
+                        gSwapChain.Get() != nullptr,
+                        isRecording,
+                        gHeadless.Get() != nullptr);
         return false;
     }
     const D3D12_RESOURCE_DESC source = gHeadless->GetDesc();
     const usize width = static_cast<usize>(source.Width);
     const usize height = source.Height;
-    if (pixels.size() != width * height * SURFACE_BYTES_PER_PIXEL || WaitForIdle() == false)
+    if (pixels.size() != width * height * SURFACE_BYTES_PER_PIXEL)
     {
+        LUDUS_LOG_ERROR(LOG_RHI,
+                        "Direct3D 12: headless readback received {} bytes for a {} x {} target",
+                        pixels.size(),
+                        width,
+                        height);
+        return false;
+    }
+    if (WaitForIdle() == false)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: headless readback could not drain the queue before copying");
         return false;
     }
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
@@ -1675,20 +1713,30 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
         .Flags = D3D12_RESOURCE_FLAG_NONE,
     };
     ID3D12Resource* bufferOrNull = nullptr;
-    if (FAILED(gDevice->CreateCommittedResource(&heap,
-                                                D3D12_HEAP_FLAG_NONE,
-                                                &bufferDescription,
-                                                D3D12_RESOURCE_STATE_COPY_DEST,
-                                                nullptr,
-                                                GetInterfaceId(bufferOrNull),
-                                                GetInterfaceOutput(bufferOrNull))) == true)
+    const HRESULT created = gDevice->CreateCommittedResource(&heap,
+                                                             D3D12_HEAP_FLAG_NONE,
+                                                             &bufferDescription,
+                                                             D3D12_RESOURCE_STATE_COPY_DEST,
+                                                             nullptr,
+                                                             GetInterfaceId(bufferOrNull),
+                                                             GetInterfaceOutput(bufferOrNull));
+    if (FAILED(created) == true)
     {
+        LogFailure("Headless readback buffer creation", created);
         return false;
     }
     ComOwner<ID3D12Resource> buffer = Adopt(bufferOrNull);
     ID3D12CommandAllocator* allocator = gAllocators[gSlot].Get();
-    if (FAILED(allocator->Reset()) == true || FAILED(gCommands->Reset(allocator, nullptr)) == true)
+    const HRESULT allocatorReset = allocator->Reset();
+    if (FAILED(allocatorReset) == true)
     {
+        LogFailure("Headless readback command allocator reset", allocatorReset);
+        return false;
+    }
+    const HRESULT commandsReset = gCommands->Reset(allocator, nullptr);
+    if (FAILED(commandsReset) == true)
+    {
+        LogFailure("Headless readback command list reset", commandsReset);
         return false;
     }
     const D3D12_RESOURCE_BARRIER toCopy =
@@ -1708,20 +1756,25 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
         MakeTransition(gHeadless.Get(),
                        { .Before = D3D12_RESOURCE_STATE_COPY_SOURCE, .After = D3D12_RESOURCE_STATE_COMMON });
     gCommands->ResourceBarrier(1, &toCommon);
-    if (FAILED(gCommands->Close()) == true)
+    const HRESULT closed = gCommands->Close();
+    if (FAILED(closed) == true)
     {
+        LogFailure("Headless readback command list close", closed);
         return false;
     }
     ID3D12CommandList* const lists[] = {gCommands.Get()};
     gQueue->ExecuteCommandLists(1, lists);
     if (WaitForIdle() == false)
     {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: headless readback copy did not complete");
         return false;
     }
     void* mappedOrNull = nullptr;
     const D3D12_RANGE readRange = { .Begin = 0, .End = static_cast<SIZE_T>(readbackBytes) };
-    if (FAILED(buffer->Map(0, &readRange, &mappedOrNull)) == true || mappedOrNull == nullptr)
+    const HRESULT mapped = buffer->Map(0, &readRange, &mappedOrNull);
+    if (FAILED(mapped) == true || mappedOrNull == nullptr)
     {
+        LogFailure("Headless readback buffer map", mapped);
         return false;
     }
     const uint8* bytes = static_cast<const uint8*>(mappedOrNull);
