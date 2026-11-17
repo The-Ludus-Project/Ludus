@@ -615,10 +615,14 @@ suite, including renderer, content, text, worker, GameHost and Behavior. Its pos
 control requires both a clean startup and a specific fatal heap-buffer-overflow
 finding. The job archives the probe, control logs and exact CTest results.
 Sanitized WARP work is slow and varies with the hosted runner, so this job has
-a 90-minute limit instead of 60, and `ludus_render_graph_dxil_tests` has a
-1200-second CTest deadline under ASan/UBSan instead of 600. On a typical runner
-the job takes about 41 minutes and that suite about 510 seconds; a slow runner
-needs about 1.5 times as long.
+a 90-minute limit instead of 60. CTest runs `ludus_render_graph_dxil_tests` as
+four Catch2 shards, `ludus_render_graph_dxil_tests_0` to `_3`, each with a
+600-second deadline, or 1200 seconds under ASan/UBSan. A failing shard prints
+the duration of each of its cases. The qualification inventory requires every
+shard index named by `--shard-count`. On a typical runner the job takes about
+41 minutes and the whole suite about 510 seconds; a slow runner needs about
+1.5 times as long. Unsanitized, the suite grew from about 270 seconds to over
+600 on 17 November 2026 as default-graph cases were added.
 Windows quality subprocesses share the editor's suspended-process admission and
 kill-on-close Job owner. Their tests verify descendant cleanup, output bounds
 and timeout behavior.
