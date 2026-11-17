@@ -901,6 +901,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mWorldFeatures->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mWorldFeatures->setSelectionBehavior(QAbstractItemView::SelectRows);
     mWorldFeatures->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Read-only rows: arrow keys move between them, and Tab leaves the table instead of walking its cells (WCAG 2.1.2).
+    mWorldFeatures->setTabKeyNavigation(false);
     mWorldFeatures->setWordWrap(true);
     mWorldFeatures->verticalHeader()->hide();
     mWorldFeatures->horizontalHeader()->setStretchLastSection(true);
