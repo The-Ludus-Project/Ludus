@@ -677,15 +677,26 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
     target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE
         LUDUS_RG2_SURFACE_PACKAGE="${rg2_surface_RUNTIME_PACKAGE}"
         LUDUS_RG2_BOUND_PACKAGE="${rg2_bound_RUNTIME_PACKAGE}")
-    add_test(NAME ludus_render_graph_dxil_tests COMMAND ludus_render_graph_dxil_tests)
-    # WARP compiles the clustered deferred, mesh-light and shadow pipelines cold in this one process.
-    # MSVC ASan took 510 s on a typical hosted runner and needs about 1.5x that on a slow one.
+    # WARP compiles each case's clustered deferred, mesh-light and shadow pipelines cold. The whole
+    # suite grew from 270 s to over 600 s unsanitized as default-graph cases were added, so CTest runs
+    # it as Catch2 shards (declaration order, contiguous), each with its own deadline; a shard that
+    # fails prints every case's duration. MSVC ASan took 510 s for the whole suite on a typical
+    # hosted runner and needs about 1.5x that on a slow one. windows_qualification.py discovers the
+    # shards from their --shard-count and --shard-index arguments.
+    # Thanks to Catch2's authors, "Command line", test sharding:
+    # https://github.com/catchorg/Catch2/blob/v3.4.0/docs/command-line.md#test-sharding
+    set(render_graph_dxil_shard_count 4)
     set(render_graph_dxil_timeout_seconds 600)
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
         set(render_graph_dxil_timeout_seconds 1200)
     endif()
-    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu"
-        TIMEOUT ${render_graph_dxil_timeout_seconds})
+    math(EXPR render_graph_dxil_last_shard "${render_graph_dxil_shard_count} - 1")
+    foreach(shard_index RANGE 0 ${render_graph_dxil_last_shard})
+        add_test(NAME ludus_render_graph_dxil_tests_${shard_index} COMMAND ludus_render_graph_dxil_tests
+            --shard-count ${render_graph_dxil_shard_count} --shard-index ${shard_index} --durations yes)
+        set_tests_properties(ludus_render_graph_dxil_tests_${shard_index} PROPERTIES
+            LABELS "unit;render-graph;dxil;gpu" TIMEOUT ${render_graph_dxil_timeout_seconds})
+    endforeach()
     if(TARGET ludus-shader-worker)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
