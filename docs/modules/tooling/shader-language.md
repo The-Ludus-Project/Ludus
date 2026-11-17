@@ -851,6 +851,9 @@ ludus_compile_shader(TARGET my_game NAME composite
 - **Compare-exchange on Metal and WGSL** lowers to the targets' weak compare-exchange, which may
   fail spuriously: the original equals the compare value although nothing was stored. Retry loops
   should check the stored value, not only the original.
+- Build tools accept `array<atomic<u32>>` and `array<atomic<i32>>` for a reflected
+  read-write `uint32` or `int32` storage buffer in WGSL, the form `Atomic<T>` storage takes; the
+  stride is that of the scalar.
 - Atomic storage holds `int32` and `uint32` elements only: no fields, vectors, textures or 64-bit
   atomics.
 
@@ -900,6 +903,7 @@ The IR is internal. It is the seam for direct backends later.
 | `[[fallthrough]]` | The next case's statements are copied into the case, each case's statements in their own block, so no target needs switch fallthrough |
 | `image.GetDimensions()` | A generated `_luslDimensionsN(image)` per resource type that calls Slang's `GetDimensions(out ...)` and returns the size |
 | `InterlockedAdd(counters[i], 1, out original)` | `original = counters[i].add(1u)` on `Atomic<T>` storage; Slang's `InterlockedAdd(...)` for `extern slang` storage |
+| `InterlockedExchange(counters[i], value, out original)` | A `__target_switch`: SPIR-V, whose compare-exchange is strong, exchanges through a compare-exchange loop, because the pinned Slang (2026.1.2) crashes emitting SPIR-V 1.3 for a buffer-element exchange whose original is used; other targets call `exchange`. `groupshared` exchanges lower directly |
 | `barrier groupshared;`, `barrier all;` | `GroupMemoryBarrierWithGroupSync();`, `AllMemoryBarrierWithGroupSync();` |
 | `groupshared T name = 0;` | Every compute entry point that reaches the variable, through any calls, clears it first: each thread zeroes a strided slice of its elements, then `GroupMemoryBarrierWithGroupSync()`. The entry point reuses its `GroupIndex` parameter, or gains a hidden `SV_GroupIndex` one. `= void` variables are not cleared |
 | Fields inside methods | `this.Field`, `this.Method(...)` |

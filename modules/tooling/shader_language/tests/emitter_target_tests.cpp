@@ -802,7 +802,10 @@ void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex)
     InterlockedAnd(counters[0], 0xff);
     InterlockedOr(counters[1], 1);
     InterlockedXor(counters[2], 2, out original);
-    InterlockedExchange(counters[3], id.x, out original);
+    // A used buffer-element exchange: the pinned Slang crashes on its direct SPIR-V 1.3 form.
+    uint32 swapped = 0;
+    InterlockedExchange(counters[3], id.x, out swapped);
+    InterlockedExchange(bins[2], swapped, out swapped);
     InterlockedCompareExchange(counters[4], 0, id.x, out original);
     InterlockedCompareStore(counters[5], 0, 7);
     InterlockedAdd(balances[0], -1, out balance);
@@ -811,7 +814,7 @@ void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex)
     barrier all;
     uint32x2 size = image.GetDimensions() + target.GetDimensions();
     counters[6] = total;
-    results[id.x] = original + reduced + size.x + size.y + uint32(balance) + counters[7];
+    results[id.x] = original + swapped + reduced + size.x + size.y + uint32(balance) + counters[7];
 }
 )");
     (void)LowerInto(files, false);
@@ -863,6 +866,7 @@ void Main(in uint32x3 id : DispatchThreadId)
     uint32 previous = 0;
     InterlockedAdd(GraphBuffer0[id.x].y, 1, out previous);
     InterlockedCompareExchange(GraphBuffer0[0].x, 0, previous, out previous);
+    InterlockedExchange(GraphBuffer0[2].w, id.x, out previous);
     GraphBuffer0[1].z = previous;
 }
 )");

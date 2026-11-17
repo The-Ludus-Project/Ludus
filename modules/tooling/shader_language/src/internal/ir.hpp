@@ -168,7 +168,8 @@ enum class IrKind : foundation::uint8
     /// resource, then the arguments.
     ResourceMethodCall,
     /// An `Interlocked` operation. Symbol: the intrinsic. Flags: IR_ATOMIC_STORAGE when the
-    /// destination is LUSL atomic storage, lowered to an `Atomic<T>` method. Children: the
+    /// destination is LUSL atomic storage, lowered to an `Atomic<T>` method; IR_BUFFER_DESTINATION
+    /// when it is an element of a buffer rather than `groupshared` memory. Children: the
     /// destination, the values, then the target of the original value when there is one.
     AtomicCall,
     /// A read of an element of LUSL atomic storage, a load of its `Atomic<T>`. Type. Children:
@@ -204,6 +205,7 @@ inline constexpr foundation::uint16 IR_DEFAULT = 1U << 10U;
 inline constexpr foundation::uint16 IR_IMPLICIT_THIS = 1U << 11U;
 inline constexpr foundation::uint16 IR_ATOMIC_STORAGE = 1U << 12U;
 inline constexpr foundation::uint16 IR_ALL_MEMORY = 1U << 13U;
+inline constexpr foundation::uint16 IR_BUFFER_DESTINATION = 1U << 14U;
 
 /// System-value semantics of compute entry point parameters, stored in IrNode::Index.
 enum class IrSemantic : foundation::uint8

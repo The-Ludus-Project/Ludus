@@ -25,32 +25,50 @@ LUDUS_SHADER_BINDING(1) RWStructuredBuffer<uint> results LUDUS_SHADER_STORAGE_RE
 LUDUS_SHADER_BINDING(2) RWStructuredBuffer<Atomic<int>> balances LUDUS_SHADER_STORAGE_REGISTER(2);
 groupshared Atomic<uint> bins[BIN_COUNT];
 
-[shader("compute")][numthreads(64, 1, 1)] void Main(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex) {
-    if (groupIndex < BIN_COUNT)
+// The pinned Slang (2026.1.2) crashes emitting SPIR-V 1.3 for a used buffer-element exchange, so
+// SPIR-V, whose compare-exchange is strong, exchanges through a compare-exchange loop.
+uint ExchangeSwapped(){__target_switch{case spirv : uint expected = counters[SWAPPED].load();
+for (;;)
+{
+    const uint observed = counters[SWAPPED].compareExchange(expected, SWAP_VALUE);
+    if (observed == expected)
     {
-        bins[groupIndex].store(0);
+        return expected;
     }
-    GroupMemoryBarrierWithGroupSync();
-    const uint ticket = counters[TICKETS].add(1);
-    results[ticket] = ticket + 1;
-    counters[MAXIMUM].max(id.x);
-    counters[MINIMUM].min(id.x);
-    const uint bit = 1u << (id.x % WORD_BITS);
-    counters[OR_BITS].or (bit);
-    counters[XOR_IDS].xor (id.x);
-    counters[AND_BITS].and (~bit);
-    counters[STORED].compareExchange(0, STORE_VALUE);
-    if (counters[CLAIMED].compareExchange(0, CLAIM_VALUE) == 0)
-    {
-        counters[WINNERS].add(1);
-    }
-    counters[SWAPPED_SUM].add(counters[SWAPPED].exchange(SWAP_VALUE));
-    balances[0].add(-1);
-    balances[1].min(-int(id.x));
-    bins[groupIndex % BIN_COUNT].add(1);
-    GroupMemoryBarrierWithGroupSync();
-    if (groupIndex < BIN_COUNT)
-    {
-        counters[BINS + groupIndex].add(bins[groupIndex].load());
-    }
+    expected = observed;
 }
+default:
+    return counters[SWAPPED].exchange(SWAP_VALUE);
+    }
+    }
+
+    [shader("compute")][numthreads(64, 1, 1)] void Main(uint3 id : SV_DispatchThreadID,
+                                                        uint groupIndex : SV_GroupIndex) {
+        if (groupIndex < BIN_COUNT)
+        {
+            bins[groupIndex].store(0);
+        }
+        GroupMemoryBarrierWithGroupSync();
+        const uint ticket = counters[TICKETS].add(1);
+        results[ticket] = ticket + 1;
+        counters[MAXIMUM].max(id.x);
+        counters[MINIMUM].min(id.x);
+        const uint bit = 1u << (id.x % WORD_BITS);
+        counters[OR_BITS].or (bit);
+        counters[XOR_IDS].xor (id.x);
+        counters[AND_BITS].and (~bit);
+        counters[STORED].compareExchange(0, STORE_VALUE);
+        if (counters[CLAIMED].compareExchange(0, CLAIM_VALUE) == 0)
+        {
+            counters[WINNERS].add(1);
+        }
+        counters[SWAPPED_SUM].add(ExchangeSwapped());
+        balances[0].add(-1);
+        balances[1].min(-int(id.x));
+        bins[groupIndex % BIN_COUNT].add(1);
+        GroupMemoryBarrierWithGroupSync();
+        if (groupIndex < BIN_COUNT)
+        {
+            counters[BINS + groupIndex].add(bins[groupIndex].load());
+        }
+    }

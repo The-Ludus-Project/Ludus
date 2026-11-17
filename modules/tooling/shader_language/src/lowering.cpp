@@ -2047,6 +2047,12 @@ private:
         {
             at(result).Flags |= IR_ATOMIC_STORAGE;
         }
+        const uint32 root = getAccessRoot(destination);
+        const uint32 rootSymbol = getKind(root) == SyntaxKind::Name ? symbolOf(root) : NO_SYMBOL;
+        if (rootSymbol != NO_SYMBOL && getSymbol(rootSymbol).IsGroupshared == false)
+        {
+            at(result).Flags |= IR_BUFFER_DESTINATION;
+        }
         for (uint32 argument = nextSibling(firstChild(node)); argument != NO_NODE && mIsFatal == false;
              argument = nextSibling(argument))
         {

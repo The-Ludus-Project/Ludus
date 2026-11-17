@@ -1866,6 +1866,11 @@ private:
             case IrKind::Evaluate:
             case IrKind::AtomicStore:
                 mapLine(node.Location);
+                if (isBufferExchange(statement) == true)
+                {
+                    writeBufferExchange(at(statement).FirstChild);
+                    return;
+                }
                 writeIndent();
                 writeSimpleStatement(statement);
                 write(";");
@@ -2371,6 +2376,150 @@ private:
         {
             write(isDelimited == true ? "" : ")");
         }
+    }
+
+    /// True for an `InterlockedExchange` statement into a buffer element.
+    [[nodiscard]] bool isBufferExchange(uint32 statement) const noexcept
+    {
+        const IrNode& node = at(statement);
+        if (node.Kind != IrKind::Evaluate || node.FirstChild == NO_IR || at(node.FirstChild).Kind != IrKind::AtomicCall)
+        {
+            return false;
+        }
+        const IrNode& call = at(node.FirstChild);
+        return INTRINSICS[call.Symbol].Family == IntrinsicFamily::AtomicExchange &&
+               (call.Flags & IR_BUFFER_DESTINATION) != 0;
+    }
+
+    /// `InterlockedExchange` into a buffer element. The pinned Slang (2026.1.2) crashes while
+    /// emitting SPIR-V 1.3 for a buffer-element exchange whose original value is used, so SPIR-V,
+    /// whose compare-exchange is strong, exchanges through a compare-exchange loop; the other
+    /// targets exchange directly. The value is evaluated once.
+    void writeBufferExchange(uint32 expression) noexcept
+    {
+        const IrNode& node = at(expression);
+        const bool isAtomic = (node.Flags & IR_ATOMIC_STORAGE) != 0;
+        const uint32 destination = node.FirstChild;
+        const uint32 value = at(destination).NextSibling;
+        const uint32 original = at(value).NextSibling;
+        const uint32 type = at(destination).Type;
+        const auto writeTemporary = [this,
+                                     expression](std::string_view stem) { // ludus-style: inferred-type: lambda closure
+            write(stem);
+            writeUnsigned(expression);
+        };
+        const auto writeLine = [this](std::string_view text) { // ludus-style: inferred-type: lambda closure
+            writeIndent();
+            write(text);
+            newline();
+        };
+        writeLine("{");
+        ++mIndent;
+        writeIndent();
+        writeType(type);
+        write(" ");
+        writeTemporary("_luslValue");
+        write(" = ");
+        writeExpression(value, true);
+        write(";");
+        newline();
+        writeLine("__target_switch");
+        writeLine("{");
+        writeLine("case spirv:");
+        ++mIndent;
+        writeIndent();
+        writeType(type);
+        write(" ");
+        writeTemporary("_luslExpected");
+        write(" = ");
+        writeExpression(destination, false);
+        write(isAtomic == true ? ".load();" : ";");
+        newline();
+        writeLine("for (;;)");
+        writeLine("{");
+        ++mIndent;
+        writeIndent();
+        writeType(type);
+        write(" ");
+        writeTemporary("_luslObserved");
+        if (isAtomic == true)
+        {
+            write(" = ");
+            writeExpression(destination, false);
+            write(".compareExchange(");
+            writeTemporary("_luslExpected");
+            write(", ");
+            writeTemporary("_luslValue");
+            write(");");
+        }
+        else
+        {
+            write(";");
+            newline();
+            writeIndent();
+            write("InterlockedCompareExchange(");
+            writeExpression(destination, true);
+            write(", ");
+            writeTemporary("_luslExpected");
+            write(", ");
+            writeTemporary("_luslValue");
+            write(", ");
+            writeTemporary("_luslObserved");
+            write(");");
+        }
+        newline();
+        writeIndent();
+        write("if (");
+        writeTemporary("_luslObserved");
+        write(" == ");
+        writeTemporary("_luslExpected");
+        write(")");
+        newline();
+        writeLine("{");
+        writeLine("    break;");
+        writeLine("}");
+        writeIndent();
+        writeTemporary("_luslExpected");
+        write(" = ");
+        writeTemporary("_luslObserved");
+        write(";");
+        newline();
+        --mIndent;
+        writeLine("}");
+        writeIndent();
+        writeExpression(original, true);
+        write(" = ");
+        writeTemporary("_luslExpected");
+        write(";");
+        newline();
+        --mIndent;
+        writeLine("default:");
+        ++mIndent;
+        writeIndent();
+        if (isAtomic == true)
+        {
+            writeExpression(original, true);
+            write(" = ");
+            writeExpression(destination, false);
+            write(".exchange(");
+            writeTemporary("_luslValue");
+            write(");");
+        }
+        else
+        {
+            write("InterlockedExchange(");
+            writeExpression(destination, true);
+            write(", ");
+            writeTemporary("_luslValue");
+            write(", ");
+            writeExpression(original, true);
+            write(");");
+        }
+        newline();
+        --mIndent;
+        writeLine("}");
+        --mIndent;
+        writeLine("}");
     }
 
     void writeMethodCall(uint32 expression) noexcept

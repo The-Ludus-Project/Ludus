@@ -203,6 +203,28 @@ void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex)
     CHECK(Contains(slang, "results[id.x] = original + _luslDimensions0(counters);"));
 }
 
+TEST_CASE("LUSL buffer exchanges compare-exchange on SPIR-V", "[shader-language][shared-memory]")
+{
+    // The pinned Slang crashes emitting SPIR-V 1.3 for a used buffer-element exchange.
+    const std::string slang = Lower(std::string(PRELUDE) + R"([stage(compute), threads(8, 1, 1)]
+void Main(in uint32x3 id : DispatchThreadId)
+{
+    uint32 swapped = 0;
+    InterlockedExchange(counters[id.x], 5, out swapped);
+    InterlockedExchange(total, swapped, out swapped);
+    results[id.x] = swapped;
+}
+)");
+    CHECK(Contains(slang, R"(    {
+        uint _luslValue)"));
+    CHECK(Contains(slang, "        __target_switch\n        {\n        case spirv:\n"));
+    CHECK(Contains(slang, " = counters[id.x].load();"));
+    CHECK(Contains(slang, " = counters[id.x].compareExchange(_luslExpected"));
+    CHECK(Contains(slang, "        default:\n            swapped = counters[id.x].exchange(_luslValue"));
+    // groupshared exchanges compile directly.
+    CHECK(Contains(slang, "    swapped = total.exchange(swapped);"));
+}
+
 TEST_CASE("LUSL atomics on extern slang storage keep Slang's Interlocked calls", "[shader-language][shared-memory]")
 {
     const std::string slang = Lower(R"(extern slang
