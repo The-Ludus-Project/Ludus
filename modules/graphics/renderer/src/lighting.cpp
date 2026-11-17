@@ -660,22 +660,26 @@ rhi::RasterStatus EvaluateLitBrdf(math::Vector3 baseColor,
     math::Vector3 result;
     const auto nv = math::Max(math::Dot(normal, view), 0.0F);
     const auto nl = math::Max(math::Dot(normal, light), 0.0F);
-    math::Vector3 half;
-    if (nv > 0 && nl > 0 && math::TryNormalize(view + light, half) == math::MathStatus::Success)
+    math::Vector3 halfWorld;
+    if (nv > 0 && nl > 0 && math::TryNormalize(view + light, halfWorld) == math::MathStatus::Success)
     {
         // Thanks to Google/Filament authors, "Physically Based Rendering in Filament",
         // sections 4.4.1-4.4.4 and 5.2.2, https://google.github.io/filament/main/filament.html.
         // Adopt GGX, correlated Smith visibility and Schlick; use Fresnel-weighted Lambert
         // diffuse and single scattering (no compensation/DFG LUT). CPU reference, not copied code.
-        const auto nh = math::Clamp(math::Dot(normal, half), 0.0F, 1.0F);
-        const auto lh = math::Clamp(math::Dot(light, half), 0.0F, 1.0F);
-        const auto alpha = roughness * roughness, a2 = alpha * alpha;
-        const float32 denominator = (1 - nh * nh) + nh * nh * a2;
-        const auto distribution = a2 / (math::kPiF * denominator * denominator);
-        const auto visibility =
-            0.5F /
-            math::Max(nl * math::Sqrt(nv * nv * (1 - a2) + a2) + nv * math::Sqrt(nl * nl * (1 - a2) + a2), 1e-6F);
-        const auto fresnelWeight = Fifth(1 - lh);
+        // Use the squared cross product from Filament section 4.4.2 to retain the angle near the highlight.
+        const float32 halfCosine = math::Clamp(math::Dot(normal, halfWorld), 0.0F, 1.0F);
+        const float32 halfSineSquared = halfCosine > 0 ? math::LengthSquared(math::Cross(normal, halfWorld)) : 1.0F;
+        const float32 halfLightCosine = math::Clamp(math::Dot(light, halfWorld), 0.0F, 1.0F);
+        const float32 alpha = roughness * roughness;
+        const float32 alphaSquared = alpha * alpha;
+        const float32 denominator = halfSineSquared + halfCosine * halfCosine * alphaSquared;
+        const float32 distribution = alphaSquared / (math::kPiF * denominator * denominator);
+        constexpr float32 MINIMUM_VISIBILITY_DENOMINATOR = 1e-6F;
+        const float32 visibility = 0.5F / math::Max(nl * math::Sqrt(nv * nv * (1 - alphaSquared) + alphaSquared) +
+                                                        nv * math::Sqrt(nl * nl * (1 - alphaSquared) + alphaSquared),
+                                                    MINIMUM_VISIBILITY_DENOMINATOR);
+        const float32 fresnelWeight = Fifth(1 - halfLightCosine);
         const float32 colors[]{baseColor.X, baseColor.Y, baseColor.Z};
         float32 channels[3]{};
         for (usize i = 0; i < 3; ++i)
