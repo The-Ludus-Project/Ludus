@@ -206,7 +206,8 @@ public:
         if (mSink.HasErrors() == false && mSink.HasOutOfMemory() == false && mIsFatal == false)
         {
             const internal::AnalysisInputs inputs{mRequest, mInput, mTree, mModel};
-            if (internal::AnalyzeFlow(inputs, mSink) == false || internal::AnalyzeSpaces(inputs, mSink) == false)
+            if (internal::AnalyzeFlow(inputs, mSink) == false || internal::AnalyzeAtomics(inputs, mSink) == false ||
+                internal::AnalyzeSpaces(inputs, mSink) == false)
             {
                 mSink.ReportOutOfMemory();
             }
@@ -5610,7 +5611,8 @@ private:
     }
 
     /// @brief The operations of a resource: `Sample(sampler, uv)`, `SampleLevel(sampler, uv, level)`
-    /// and `Load(pixel)` of a Texture2D. Arguments are positional.
+    /// and `Load(pixel)` of a Texture2D, and `GetDimensions()` of textures (`uint32x2` width and
+    /// height of level 0) and structured buffers (`uint32` element count). Arguments are positional.
     [[nodiscard]] uint32 checkResourceMethod(uint32 node,
                                              uint32 callee,
                                              uint32 objectType,
@@ -5619,6 +5621,11 @@ private:
     {
         const SemanticType& shape = getType(objectType);
         const std::string_view name = spellNode(callee);
+        if (name == "GetDimensions" && shape.Resource != ResourceKind::Sampler &&
+            shape.Resource != ResourceKind::ConstantBuffer)
+        {
+            return checkDimensions(node, shape.Resource, arguments);
+        }
         constexpr uint32 UV_COMPONENTS = 2;
         constexpr uint32 LOAD_COMPONENTS = 3;
         /// Arguments of Sample (sampler, uv) and SampleLevel (sampler, uv, level).
@@ -5654,8 +5661,8 @@ private:
                    ComposeMessage(typeName.GetView(),
                                   " has no operation '",
                                   name,
-                                  "'; a Texture2D offers Sample, SampleLevel and Load, buffers and RWTexture2D are "
-                                  "indexed"));
+                                  "'; a Texture2D offers Sample, SampleLevel, Load and GetDimensions, structured "
+                                  "buffers and RWTexture2D are indexed and offer GetDimensions"));
             return TypeTable::ERROR_TYPE;
         }
         if (rejectMarks(node, arguments, "resource operations") == false)
@@ -5692,6 +5699,24 @@ private:
         return shape.Element;
     }
 
+    /// `resource.GetDimensions()`: a texture's level-0 size as `uint32x2`, or a structured buffer's
+    /// element count as `uint32`, returned by value.
+    [[nodiscard]] uint32 checkDimensions(uint32 node, ResourceKind kind, const Array<uint32>& arguments) noexcept
+    {
+        if (arguments.IsEmpty() == false)
+        {
+            report(DiagnosticCode::NoMatchingOverload,
+                   node,
+                   ComposeMessage("'GetDimensions' takes no arguments; it returns the size by value"));
+            return TypeTable::ERROR_TYPE;
+        }
+        constexpr uint32 TEXTURE_DIMENSIONS = 2;
+        mModel.NodeCallKinds[node] = CallKind::ResourceMethod;
+        const bool isTexture = kind == ResourceKind::Texture2D || kind == ResourceKind::RWTexture2D;
+        return isTexture == true ? mTypes.GetVector(ScalarKind::Uint32, TEXTURE_DIMENSIONS)
+                                 : mTypes.GetScalar(ScalarKind::Uint32);
+    }
+
     [[nodiscard]] bool rejectMarks(uint32 node, const Array<uint32>& arguments, std::string_view what) noexcept
     {
         for (const uint32 argument : arguments)
@@ -5709,11 +5734,254 @@ private:
         return true;
     }
 
+    // ----- Atomics -------------------------------------------------------------------------------
+
+    /// How an atomic destination is stored.
+    enum class AtomicStorage : foundation::uint8
+    {
+        /// Not valid storage for an atomic operation; reported.
+        Invalid,
+        /// A `groupshared` variable or RWStructuredBuffer binding declared in LUSL; lowered to
+        /// `Atomic<T>` storage.
+        Lusl,
+        /// Storage an `extern slang` block declares; lowered to Slang's `Interlocked` functions.
+        Extern,
+    };
+
+    /// @brief An `Interlocked` call: `InterlockedAdd(destination, value)`, with an `out` original
+    /// value last where the operation offers one. The destination is an `int32` or `uint32`
+    /// element of an RWStructuredBuffer or `groupshared` variable; it is updated in place, so it
+    /// takes no mark.
+    [[nodiscard]] uint32 checkAtomic(uint32 node,
+                                     uint32 symbol,
+                                     const Array<uint32>& arguments,
+                                     const Array<internal::ArgumentFacts>& facts) noexcept
+    {
+        const internal::IntrinsicSpelling& intrinsic = internal::INTRINSICS[symbol];
+        const uint32 operandCount = internal::GetAtomicOperandCount(intrinsic.Family);
+        const internal::AtomicOriginal original = internal::GetAtomicOriginal(intrinsic.Family);
+        const usize leading = usize{1} + operandCount;
+        const bool hasOriginal = arguments.GetSize() == leading + 1 && original != internal::AtomicOriginal::None;
+        const bool isCountValid =
+            hasOriginal == true || (arguments.GetSize() == leading && original != internal::AtomicOriginal::Required);
+        if (isCountValid == false)
+        {
+            const std::string_view values =
+                operandCount == 1 ? "a destination and a value" : "a destination, a compare value and a value";
+            const std::string_view last = original == internal::AtomicOriginal::Required ? ", then 'out original'"
+                                          : original == internal::AtomicOriginal::Optional
+                                              ? ", then an optional 'out original'"
+                                              : "";
+            report(DiagnosticCode::NoMatchingOverload,
+                   node,
+                   ComposeMessage("'", intrinsic.Name, "' takes ", values, last));
+            return TypeTable::ERROR_TYPE;
+        }
+        for (usize i = 0; i < arguments.GetSize(); ++i)
+        {
+            const SyntaxNode& argument = getNode(arguments[i]);
+            if (argument.Token != NO_TOKEN || getKind(firstChild(arguments[i])) == SyntaxKind::InitializerList)
+            {
+                report(DiagnosticCode::InvalidAtomic,
+                       arguments[i],
+                       ComposeMessage("'",
+                                      intrinsic.Name,
+                                      "' takes positional values without names or initializer lists"));
+                return TypeTable::ERROR_TYPE;
+            }
+            if (isError(facts[i].Type) == true)
+            {
+                return TypeTable::ERROR_TYPE;
+            }
+        }
+        const uint32 destination = firstChild(arguments[0]);
+        const uint32 type = facts[0].Type;
+        if (getNode(arguments[0]).Direction != ParameterDirection::Unmarked)
+        {
+            internal::FixBuilder fix(mRequest, mInput);
+            fix.Remove(getNode(destination).FirstToken - 1);
+            report(DiagnosticCode::InvalidAtomic,
+                   arguments[0],
+                   ComposeMessage("the destination of '",
+                                  intrinsic.Name,
+                                  "' is updated in place, not copied; remove the mark"),
+                   fix.GetFix());
+            return TypeTable::ERROR_TYPE;
+        }
+        const SemanticType& shape = getType(type);
+        if (shape.Kind != TypeKind::Scalar || (shape.Scalar != ScalarKind::Int32 && shape.Scalar != ScalarKind::Uint32))
+        {
+            const TypeNameText found = nameOf(type);
+            report(DiagnosticCode::InvalidAtomic,
+                   destination,
+                   ComposeMessage("'", intrinsic.Name, "' updates an int32 or uint32 value, found ", found.GetView()));
+            return TypeTable::ERROR_TYPE;
+        }
+        if (requireAssignable(destination) == false)
+        {
+            return TypeTable::ERROR_TYPE;
+        }
+        uint32 root = NO_SYMBOL;
+        const AtomicStorage storage = classifyAtomicDestination(destination, intrinsic.Name, root);
+        if (storage == AtomicStorage::Invalid)
+        {
+            return TypeTable::ERROR_TYPE;
+        }
+        bool isValid = true;
+        for (usize i = 1; i < leading; ++i)
+        {
+            const uint32 value = firstChild(arguments[i]);
+            if (getNode(arguments[i]).Direction != ParameterDirection::Unmarked)
+            {
+                report(DiagnosticCode::DirectionMismatch,
+                       arguments[i],
+                       ComposeMessage("the values of '", intrinsic.Name, "' are inputs; remove the mark"));
+                isValid = false;
+                continue;
+            }
+            isValid = coerce(value, type, false) == true && isValid == true;
+            (void)setType(arguments[i], mModel.NodeTypes[value]);
+        }
+        if (hasOriginal == true && checkAtomicOriginal(arguments[leading], type, intrinsic.Name) == false)
+        {
+            isValid = false;
+        }
+        if (isValid == false)
+        {
+            return TypeTable::ERROR_TYPE;
+        }
+        (void)setType(arguments[0], type);
+        if (storage == AtomicStorage::Lusl)
+        {
+            mModel.Symbols[root].IsAtomic = true;
+        }
+        mModel.NodeSymbols[node] = symbol;
+        mModel.NodeCallKinds[node] = CallKind::Atomic;
+        return TypeTable::VOID_TYPE;
+    }
+
+    /// The `out original` argument of an atomic call: marked `out`, assignable, of the destination's type.
+    [[nodiscard]] bool checkAtomicOriginal(uint32 argument, uint32 type, std::string_view intrinsic) noexcept
+    {
+        const uint32 value = firstChild(argument);
+        const ParameterDirection mark = getNode(argument).Direction;
+        if (mark != ParameterDirection::Out)
+        {
+            const uint32 valueToken = getNode(value).FirstToken;
+            internal::FixBuilder fix(mRequest, mInput);
+            if (mark == ParameterDirection::Unmarked)
+            {
+                fix.InsertBefore(valueToken, "out ");
+            }
+            else
+            {
+                fix.Replace(valueToken - 1, "out");
+            }
+            report(DiagnosticCode::DirectionMismatch,
+                   argument,
+                   ComposeMessage("'", intrinsic, "' writes the original value; mark the argument 'out value'"),
+                   fix.GetFix());
+            return false;
+        }
+        if (requireAssignable(value) == false)
+        {
+            return false;
+        }
+        if (mModel.NodeTypes[value] != type)
+        {
+            const TypeNameText expected = nameOf(type);
+            const TypeNameText found = nameOf(mModel.NodeTypes[value]);
+            report(DiagnosticCode::InvalidAtomic,
+                   value,
+                   ComposeMessage("the original value of '",
+                                  intrinsic,
+                                  "' is ",
+                                  expected.GetView(),
+                                  ", like its destination; found ",
+                                  found.GetView()));
+            return false;
+        }
+        (void)setType(argument, type);
+        return true;
+    }
+
+    /// @brief Classify the destination of an atomic call and report invalid storage.
+    ///
+    /// LUSL storage must be a `groupshared` scalar or array element (`total`, `bins[i]`) or an
+    /// element of an RWStructuredBuffer binding of `int32` or `uint32` (`counters[i]`), so lowering
+    /// can declare it `Atomic<T>`. Storage an `extern slang` block declares may be reached through
+    /// fields and components, as Slang's `Interlocked` functions allow.
+    [[nodiscard]] AtomicStorage
+    classifyAtomicDestination(uint32 destination, std::string_view intrinsic, uint32& outRoot) noexcept
+    {
+        uint32 current = destination;
+        uint32 indexSteps = 0;
+        uint32 otherSteps = 0;
+        uint32 resourceSteps = 0;
+        while (getKind(current) == SyntaxKind::IndexExpression || getKind(current) == SyntaxKind::MemberExpression ||
+               getKind(current) == SyntaxKind::ParenthesizedExpression)
+        {
+            const uint32 base = firstChild(current);
+            if (getKind(current) == SyntaxKind::IndexExpression)
+            {
+                ++indexSteps;
+                resourceSteps = isResource(mModel.NodeTypes[base]) == true ? indexSteps + otherSteps : resourceSteps;
+            }
+            else if (getKind(current) == SyntaxKind::MemberExpression)
+            {
+                ++otherSteps;
+            }
+            current = base;
+        }
+        const uint32 root = getKind(current) == SyntaxKind::Name ? mModel.NodeSymbols[current] : NO_SYMBOL;
+        outRoot = root;
+        const Symbol* declaredOrNull = root == NO_SYMBOL ? nullptr : &mModel.Symbols[root];
+        const bool isGroupshared = declaredOrNull != nullptr && declaredOrNull->Kind == SymbolKind::Variable &&
+                                   declaredOrNull->IsGroupshared == true;
+        const bool isBuffer = declaredOrNull != nullptr && declaredOrNull->Kind == SymbolKind::Variable &&
+                              isResource(declaredOrNull->Type) == true &&
+                              getType(declaredOrNull->Type).Resource == ResourceKind::RWStructuredBuffer &&
+                              (declaredOrNull->Slot != NO_LOCATION || declaredOrNull->IsExtern == true);
+        if ((isGroupshared == true || isBuffer == true) && declaredOrNull->IsExtern == true)
+        {
+            return AtomicStorage::Extern;
+        }
+        // A LUSL buffer element is the buffer's own index, the outermost step of the path.
+        const bool isLuslBufferElement = isBuffer == true && otherSteps == 0 && indexSteps == 1 && resourceSteps == 1;
+        const bool isLuslGroupshared = isGroupshared == true && otherSteps == 0;
+        if (isLuslBufferElement == true || isLuslGroupshared == true)
+        {
+            return AtomicStorage::Lusl;
+        }
+        if (isBuffer == true || isGroupshared == true)
+        {
+            report(DiagnosticCode::InvalidAtomic,
+                   destination,
+                   ComposeMessage("'",
+                                  intrinsic,
+                                  "' updates a whole element of LUSL atomic storage, which lowering declares "
+                                  "Atomic<T>; declare an RWStructuredBuffer<uint32> or a groupshared uint32 "
+                                  "array, not fields or components"));
+            return AtomicStorage::Invalid;
+        }
+        report(DiagnosticCode::InvalidAtomic,
+               destination,
+               ComposeMessage("'",
+                              intrinsic,
+                              "' updates shared memory: an element of an RWStructuredBuffer binding or a "
+                              "groupshared variable; a local value needs no atomic operation"));
+        return AtomicStorage::Invalid;
+    }
+
     [[nodiscard]] uint32 checkIntrinsic(uint32 node,
                                         uint32 symbol,
                                         const Array<uint32>& arguments,
                                         const Array<internal::ArgumentFacts>& facts) noexcept
     {
+        if (internal::IsAtomicFamily(internal::INTRINSICS[symbol].Family) == true)
+        {
+            return checkAtomic(node, symbol, arguments, facts);
+        }
         if (rejectMarks(node, arguments, "built-in functions") == false)
         {
             return TypeTable::ERROR_TYPE;

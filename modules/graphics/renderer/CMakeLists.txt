@@ -310,6 +310,21 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME random_parity
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/random_parity.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
+    # LUSL L5a GPU evidence: resource queries, atomics and barriers, each beside its Slang
+    # equivalent (docs/modules/tooling/shader-language.md#resources-and-bindings). Slang's direct
+    # Metal backend has no buffer-length query, so Apple builds compile the buffer queries through
+    # SPIR-V and SPIRV-Cross, whose buffer-size table the Metal RHI binds.
+    target_sources(ludus_renderer_render_tests PRIVATE tests/lusl_shared_memory_tests.cpp)
+    foreach(kernel IN ITEMS queries buffer_queries atomics barriers)
+        set(kernel_profile)
+        if(kernel STREQUAL "buffer_queries" AND APPLE)
+            set(kernel_profile SOFTWARE_RAY_QUERIES)
+        endif()
+        foreach(language IN ITEMS lusl slang)
+            ludus_compile_shader(TARGET ludus_renderer_render_tests NAME ${language}_${kernel} ${kernel_profile}
+                SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/lusl_shared_memory/${kernel}.${language}" COMPUTE Main)
+        endforeach()
+    endforeach()
     # Test-only kernel comparing FoundationMath's shader projected solid angle sampling with C++.
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME projected_solid_angle_parity
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/projected_solid_angle_parity.slang" COMPUTE ComputeMain

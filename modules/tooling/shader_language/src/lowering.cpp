@@ -147,6 +147,32 @@ private:
         return getModel().NodeSymbols[node];
     }
 
+    /// The node an access path through parentheses, indices and fields starts from.
+    [[nodiscard]] uint32 getAccessRoot(uint32 node) const noexcept
+    {
+        while (getKind(node) == SyntaxKind::ParenthesizedExpression || getKind(node) == SyntaxKind::IndexExpression ||
+               getKind(node) == SyntaxKind::MemberExpression)
+        {
+            node = firstChild(node);
+        }
+        return node;
+    }
+
+    /// True for an element of LUSL atomic storage: a scalar whose access path starts from a
+    /// variable that an `Interlocked` call updates (Symbol::IsAtomic).
+    [[nodiscard]] bool isAtomicElement(uint32 node) const noexcept
+    {
+        const uint32 root = getAccessRoot(node);
+        if (getKind(root) != SyntaxKind::Name)
+        {
+            return false;
+        }
+        const uint32 symbol = symbolOf(root);
+        const uint32 type = typeOf(node);
+        return symbol != NO_SYMBOL && getSymbol(symbol).IsAtomic == true && type != NO_TYPE &&
+               getType(type).Kind == TypeKind::Scalar;
+    }
+
     [[nodiscard]] bool isUntyped(uint32 type) const noexcept
     {
         return type == TypeTable::UNTYPED_INTEGER_TYPE || type == TypeTable::UNTYPED_FLOAT_TYPE;
@@ -1105,6 +1131,14 @@ private:
             case SyntaxKind::DiscardStatement:
                 (void)addChild(parent, IrKind::Discard, statement);
                 return;
+            case SyntaxKind::BarrierStatement: {
+                const uint32 node = addChild(parent, IrKind::Barrier, statement);
+                if (node != NO_IR && spell(getSyntax(statement).Token) == "all")
+                {
+                    at(node).Flags |= IR_ALL_MEMORY;
+                }
+                return;
+            }
             default:
                 // static_assert is checked by the front end; [[fallthrough]] is resolved by lowerSwitch.
                 return;
@@ -1197,8 +1231,20 @@ private:
                 return;
             }
             at(node).Index = index;
-            appendChild(node, lowerValue(target, NO_TYPE));
+            appendChild(node, lowerTarget(target));
             appendChild(node, lowerValue(value, targetType));
+            return;
+        }
+        if (assignment == Punctuator::Equal && isAtomicElement(target) == true)
+        {
+            // The checker allows only `=` on atomic storage: a store of its Atomic<T> element.
+            const uint32 store = addChild(parent, IrKind::AtomicStore, statement);
+            if (store == NO_IR)
+            {
+                return;
+            }
+            appendChild(store, lowerTarget(target));
+            appendChild(store, lowerValue(value, targetType));
             return;
         }
         const uint32 node = addChild(parent, IrKind::Assign, statement);
@@ -1212,7 +1258,7 @@ private:
         {
             at(node).Flags |= IR_MASK_SHIFT;
         }
-        appendChild(node, lowerValue(target, NO_TYPE));
+        appendChild(node, lowerTarget(target));
         appendChild(node, lowerValue(value, targetType));
     }
 
@@ -1357,7 +1403,7 @@ private:
                 return literal;
             }
             case SyntaxKind::Name:
-                return lowerName(node, type);
+                return loadAtomic(node, lowerName(node, type));
             case SyntaxKind::ScopeExpression: {
                 const uint32 symbol = symbolOf(node);
                 const bool isEnumerator = symbol != NO_SYMBOL && getSymbol(symbol).Kind == SymbolKind::Enumerator;
@@ -1406,12 +1452,44 @@ private:
                 return member;
             }
             case SyntaxKind::IndexExpression:
-                return lowerIndex(node, type);
+                return loadAtomic(node, lowerIndex(node, type));
             case SyntaxKind::InitializerList:
                 return lowerInitializerList(node, type);
             default:
                 return NO_IR;
         }
+    }
+
+    /// Wrap a read of an atomic storage element in a load; the target of a store or an atomic
+    /// operation (mTargetNode) is the element itself.
+    [[nodiscard]] uint32 loadAtomic(uint32 node, uint32 access) noexcept
+    {
+        if (access == NO_IR || node == mTargetNode || isAtomicElement(node) == false)
+        {
+            return access;
+        }
+        const uint32 load = addNode(IrKind::AtomicLoad, node);
+        if (load == NO_IR)
+        {
+            return NO_IR;
+        }
+        at(load).Type = at(access).Type;
+        appendChild(load, access);
+        return load;
+    }
+
+    /// Lower the storage an assignment, an atomic operation or an `out` value writes.
+    [[nodiscard]] uint32 lowerTarget(uint32 node) noexcept
+    {
+        while (getKind(node) == SyntaxKind::ParenthesizedExpression)
+        {
+            node = firstChild(node);
+        }
+        const uint32 saved = mTargetNode;
+        mTargetNode = node;
+        const uint32 target = lowerValue(node, NO_TYPE);
+        mTargetNode = saved;
+        return target;
     }
 
     [[nodiscard]] uint32 lowerName(uint32 node, uint32 type) noexcept
@@ -1749,8 +1827,14 @@ private:
                     at(result).LastChild = object;
                 }
                 at(result).Token = getSyntax(callee).Token;
+                if (isDimensionsCall(callee) == true)
+                {
+                    at(result).Index = requireDimensionsHelper(firstChild(callee), node);
+                }
                 return result;
             }
+            case CallKind::Atomic:
+                return lowerAtomic(node);
             case CallKind::Function:
             case CallKind::Method:
                 break;
@@ -1928,6 +2012,51 @@ private:
 
     /// A built-in call, construction or conversion: positional values, each meeting
     /// `argumentContext` when it is untyped.
+    [[nodiscard]] bool isDimensionsCall(uint32 callee) const noexcept
+    {
+        return spell(getSyntax(callee).Token) == "GetDimensions";
+    }
+
+    /// The Dimensions helper for the resource `object` names: one per resource type, and one per
+    /// atomic binding, whose parameter spells its Atomic<T> elements.
+    [[nodiscard]] uint32 requireDimensionsHelper(uint32 object, uint32 origin) noexcept
+    {
+        const uint32 root = getAccessRoot(object);
+        const uint32 symbol = getKind(root) == SyntaxKind::Name ? symbolOf(root) : NO_SYMBOL;
+        IrHelper helper;
+        helper.Kind = IrHelperKind::Dimensions;
+        helper.Type = typeOf(object);
+        helper.Symbol = symbol != NO_SYMBOL && getSymbol(symbol).IsAtomic == true ? symbol : NO_SYMBOL;
+        return findOrAddHelper(helper, origin);
+    }
+
+    /// `InterlockedOp(destination, values..., out original)`. The destination and the original are
+    /// targets; the values take the destination's type.
+    [[nodiscard]] uint32 lowerAtomic(uint32 node) noexcept
+    {
+        const uint32 result = addNode(IrKind::AtomicCall, node);
+        if (result == NO_IR)
+        {
+            return NO_IR;
+        }
+        const uint32 destination = firstChild(nextSibling(firstChild(node)));
+        const uint32 type = typeOf(destination);
+        at(result).Type = TypeTable::VOID_TYPE;
+        at(result).Symbol = symbolOf(node);
+        if (isAtomicElement(destination) == true)
+        {
+            at(result).Flags |= IR_ATOMIC_STORAGE;
+        }
+        for (uint32 argument = nextSibling(firstChild(node)); argument != NO_NODE && mIsFatal == false;
+             argument = nextSibling(argument))
+        {
+            const uint32 value = firstChild(argument);
+            const bool isTarget = value == destination || getSyntax(argument).Direction == ParameterDirection::Out;
+            appendChild(result, isTarget == true ? lowerTarget(value) : lowerValue(value, type));
+        }
+        return result;
+    }
+
     [[nodiscard]] uint32 lowerPositional(uint32 node, IrKind kind, uint32 type, uint32 argumentContext) noexcept
     {
         const uint32 result = addNode(kind, node);
@@ -1949,6 +2078,8 @@ private:
     const EmitOptions& mOptions;
     DiagnosticSink& mSink;
     IrModule& mModule;
+    /// The syntax node lowerTarget is lowering, which is written rather than loaded.
+    uint32 mTargetNode = NO_NODE;
     foundation::StaticArray<uint32, SCALAR_KIND_COUNT> mScalarTypes = {{
         NO_TYPE,
         NO_TYPE,

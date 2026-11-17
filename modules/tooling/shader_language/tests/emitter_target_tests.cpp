@@ -770,6 +770,113 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
     }
 }
 
+TEST_CASE("Lowered LUSL resource queries, atomics and barriers compile for every portable target",
+          "[shader-language][emitter-targets]")
+{
+    // L5a (docs/modules/tooling/shader-language.md#resources-and-bindings): texture sizes, every
+    // Interlocked operation on Atomic<T> storage, and both barriers.
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add(std::string(ROOT), R"(static const uint32 BIN_COUNT = 4;
+Texture2D<float32x4> image;
+RWTexture2D<float32x4> target;
+RWStructuredBuffer<uint32> counters;
+RWStructuredBuffer<int32> balances;
+RWStructuredBuffer<uint32> results;
+groupshared uint32 total = 0;
+groupshared uint32 bins[BIN_COUNT] = 0;
+uint32 Reduce(in uint32 groupIndex)
+{
+    barrier groupshared;
+    return bins[groupIndex % BIN_COUNT];
+}
+[stage(compute), threads(8, 1, 1)]
+void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex)
+{
+    uint32 original = 0;
+    int32 balance = 0;
+    InterlockedAdd(total, 1);
+    InterlockedAdd(bins[groupIndex % BIN_COUNT], 1, out original);
+    InterlockedMax(bins[0], groupIndex);
+    InterlockedMin(bins[1], groupIndex);
+    InterlockedAnd(counters[0], 0xff);
+    InterlockedOr(counters[1], 1);
+    InterlockedXor(counters[2], 2, out original);
+    InterlockedExchange(counters[3], id.x, out original);
+    InterlockedCompareExchange(counters[4], 0, id.x, out original);
+    InterlockedCompareStore(counters[5], 0, 7);
+    InterlockedAdd(balances[0], -1, out balance);
+    InterlockedMin(balances[1], -3);
+    uint32 reduced = Reduce(groupIndex);
+    barrier all;
+    uint32x2 size = image.GetDimensions() + target.GetDimensions();
+    counters[6] = total;
+    results[id.x] = original + reduced + size.x + size.y + uint32(balance) + counters[7];
+}
+)");
+    (void)LowerInto(files, false);
+    for (const compiler::Target target :
+         {compiler::Target::Spirv, compiler::Target::SpirvRayQuery, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        std::string diagnostics;
+        const compiler::Status status = CompileFor(slang, files, target, diagnostics);
+        INFO("target " << static_cast<int>(target) << "\n" << diagnostics);
+        CHECK(status == compiler::Status::Ready);
+    }
+
+    // A structured buffer's length: Slang's direct Metal backend has no buffer-length query, so the
+    // portable set (one session for SPIR-V, WGSL and Metal) rejects it, naming GetDimensions. The
+    // ray-query SPIR-V profile accepts it; Metal artifacts of such programs come from SPIR-V
+    // through SPIRV-Cross, whose buffer-size table the Metal RHI binds.
+    Files buffers;
+    buffers.Add(std::string(ROOT), R"(StructuredBuffer<float32x4> values;
+RWStructuredBuffer<uint32> results;
+[stage(compute), threads(8, 1, 1)]
+void Main(in uint32x3 id : DispatchThreadId)
+{
+    results[id.x] = values.GetDimensions() + results.GetDimensions();
+}
+)");
+    (void)LowerInto(buffers, false);
+    std::string rayQueryDiagnostics;
+    CHECK(CompileFor(slang, buffers, compiler::Target::SpirvRayQuery, rayQueryDiagnostics) == compiler::Status::Ready);
+    INFO(rayQueryDiagnostics);
+    std::string portableDiagnostics;
+    CHECK(CompileFor(slang, buffers, compiler::Target::Spirv, portableDiagnostics) == compiler::Status::CompileFailed);
+    INFO(portableDiagnostics);
+    CHECK(portableDiagnostics.find("'metal'") != std::string::npos);
+    CHECK(portableDiagnostics.find("GetDimensions") != std::string::npos);
+
+    // Storage an extern slang block declares keeps Slang's Interlocked functions. WGSL requires
+    // atomic types that only the declaring Slang can provide, so the portable set rejects them,
+    // naming InterlockedAdd; the ray-query SPIR-V profile, as the graph programs that use them
+    // today, accepts them.
+    Files graph;
+    graph.Add("shaders/graph.slang", "RWStructuredBuffer<uint4> GraphBuffer0;\n");
+    graph.Add(std::string(ROOT), R"(extern slang "graph.slang"
+{
+    RWStructuredBuffer<uint32x4> GraphBuffer0;
+};
+[stage(compute), threads(8, 1, 1)]
+void Main(in uint32x3 id : DispatchThreadId)
+{
+    uint32 previous = 0;
+    InterlockedAdd(GraphBuffer0[id.x].y, 1, out previous);
+    InterlockedCompareExchange(GraphBuffer0[0].x, 0, previous, out previous);
+    GraphBuffer0[1].z = previous;
+}
+)");
+    (void)LowerInto(graph, false);
+    std::string graphDiagnostics;
+    CHECK(CompileFor(slang, graph, compiler::Target::SpirvRayQuery, graphDiagnostics) == compiler::Status::Ready);
+    INFO(graphDiagnostics);
+    std::string wgslDiagnostics;
+    CHECK(CompileFor(slang, graph, compiler::Target::Wgsl, wgslDiagnostics) == compiler::Status::CompileFailed);
+    INFO(wgslDiagnostics);
+    CHECK(wgslDiagnostics.find("'wgsl'") != std::string::npos);
+    CHECK(wgslDiagnostics.find("InterlockedAdd") != std::string::npos);
+}
+
 namespace
 {
 /// Opcodes and NonSemantic.Shader.DebugInfo.100 instructions the debug-view test reads.
