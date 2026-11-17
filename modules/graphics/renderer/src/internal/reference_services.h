@@ -32,6 +32,16 @@ constexpr usize FINGERPRINT_INSTANCE_BYTES = 7 * sizeof(uint64) + 14 * sizeof(fl
 constexpr usize FINGERPRINT_SURFACE_MAP_BYTES = 3 * sizeof(uint64) + sizeof(float32) + 5 * sizeof(uint32);
 constexpr usize FINGERPRINT_LIGHT_BYTES = sizeof(uint64) + sizeof(uint32) + 13 * sizeof(float32);
 constexpr usize FINGERPRINT_ENVIRONMENT_BYTES = 3 * sizeof(float32);
+// A directional light with an apparent disk appends its angular radius; a delta light hashes no extra bytes.
+[[nodiscard]] usize GetLightDiskFingerprintBytes(const DirectLight* lights, usize count) noexcept
+{
+    usize bytes = 0;
+    for (usize i = 0; i < count; ++i)
+    {
+        bytes += lights[i].AngularRadiusRadians != 0 ? sizeof(float32) : 0;
+    }
+    return bytes;
+}
 /// Serialized width of one fingerprinted RGB or world-space vector.
 constexpr usize FINGERPRINT_VECTOR_BYTES = 3 * sizeof(float32);
 // Panel luminaire: source ID, center/tangent/bitangent, half extent and the five beam scalars. A scene without
@@ -223,7 +233,7 @@ bool SameReferenceLight(const DirectLight& a, const DirectLight& b) noexcept
 {
     return a.SourceId == b.SourceId && a.Kind == b.Kind && a.Color == b.Color && a.Intensity == b.Intensity &&
            a.Position == b.Position && a.Direction == b.Direction && a.Range == b.Range && a.InnerCos == b.InnerCos &&
-           a.OuterCos == b.OuterCos;
+           a.OuterCos == b.OuterCos && a.AngularRadiusRadians == b.AngularRadiusRadians;
 }
 bool SameReferenceIntegral(const ReferenceJob& a,
                            const ReferenceCaptureDescription& b,
@@ -322,6 +332,7 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
     usize bytes =
         triangleBytes + inoutJob.Scene.InstanceCount * FINGERPRINT_INSTANCE_BYTES +
         inoutJob.Description.LightCount * FINGERPRINT_LIGHT_BYTES +
+        GetLightDiskFingerprintBytes(inoutJob.Lights, inoutJob.Description.LightCount) +
         (inoutJob.LuminaireCount != 0 ? sizeof(uint32) + inoutJob.LuminaireCount * FINGERPRINT_LUMINAIRE_BYTES : 0) +
         FINGERPRINT_ENVIRONMENT_BYTES +
         (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
@@ -493,6 +504,11 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         scalar(light.Range);
         scalar(light.InnerCos);
         scalar(light.OuterCos);
+        // A delta light keeps its existing identity bytes.
+        if (light.AngularRadiusRadians != 0)
+        {
+            scalar(light.AngularRadiusRadians);
+        }
     }
     if (inoutJob.LuminaireCount != 0)
     {
@@ -1065,7 +1081,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         uint64(typedMaterials) *
             (sizeof(uint32) + content::scene_format::MATERIAL_SCATTERING_FLOATS * sizeof(float32)) +
         uint64(surfaceMaps) * FINGERPRINT_SURFACE_MAP_BYTES + uint64(lights.Count) * FINGERPRINT_LIGHT_BYTES +
-        FINGERPRINT_ENVIRONMENT_BYTES + (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
+        GetLightDiskFingerprintBytes(lights.Lights, lights.Count) + FINGERPRINT_ENVIRONMENT_BYTES +
+        (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
         GetMediumFingerprintBytes(mediumTriangles * REFERENCE_MEDIUM_TRIANGLE_CORNERS) +
         GetReferenceSkyFingerprintBytes(sky);
     const uint64 nativeSetup =

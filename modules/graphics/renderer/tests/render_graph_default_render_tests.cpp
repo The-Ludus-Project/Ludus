@@ -22,6 +22,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -63,6 +64,8 @@ void RequireTextureReady(rhi::DeviceHandle device, rhi::TextureHandle texture, r
     }
     REQUIRE(status == rhi::RasterStatus::Ready);
 }
+/// The Sun's default apparent disk radius, for directional penumbra filtering checks.
+constexpr float32 SUN_ANGULAR_RADIUS_RADIANS = renderer::AtmosphereDescription::DEFAULT_SOLAR_RADIUS_RADIANS;
 /// Projection of the far oblique cameras: the World viewport's centimetre near plane and a narrow field of view.
 constexpr float32 EDITOR_NEAR_PLANE_METERS = .01F;
 constexpr float32 EDITOR_FAR_PLANE_METERS = 400;
@@ -1648,6 +1651,97 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(static_cast<uint32>(fixture.Pixels[center]) <= 1);
         CHECK(static_cast<uint32>(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2 + HEIGHT / 8)]) >= 254);
     }
+    SECTION("a directional disk widens the shadow edge and keeps the lit level")
+    {
+        // A receiver quad and the wall at x = 0.15, whose top 0.5 m above the receiver ends the 45 degree light's
+        // shadow at x = -0.35. A disk of angular radius r leaves the receivers whose wall-top elevation lies within r
+        // of 45 degrees in penumbra: x in [-0.370, -0.330] for r = 0.02, about 19 pixels of the zoomed view.
+        materials[1].Emission = {};
+        constexpr float32 RECEIVER_HALF_EXTENT_METERS = .6F;
+        constexpr float32 RECEIVER_HEIGHT_METERS = .5F;
+        constexpr usize QUAD_VERTEX_COUNT = 4;
+        constexpr usize QUAD_INDEX_COUNT = 6;
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{
+            {{-RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, -RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS},
+             {-RECEIVER_HALF_EXTENT_METERS, RECEIVER_HALF_EXTENT_METERS, RECEIVER_HEIGHT_METERS}}};
+        const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadNormals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+        const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 0, 2, 3}};
+        meshes[0].Geometry = {quadPositions.GetData(),
+                              quadPositions.GetSize(),
+                              quadIndices.GetData(),
+                              quadIndices.GetSize()};
+        meshes[0].Geometry.Normals = quadNormals.GetData();
+        items[1] = items[2];
+        // The view spans x in [-0.45, -0.25] around the edge.
+        constexpr float32 ZOOM = 10;
+        constexpr float32 EDGE_METERS = -.35F;
+        fixture.Cameras[0].WorldToClip.Columns[0].X = ZOOM;
+        fixture.Cameras[0].WorldToClip.Columns[1].Y = ZOOM;
+        fixture.Cameras[0].WorldToClip.Columns[3].X = -ZOOM * EDGE_METERS;
+        // Only the blue light casts. Its otherwise identical green control shows the unoccluded contribution.
+        StaticArray<renderer::DirectLight, 2> lights;
+        lights[0].SourceId = 1;
+        lights[0].Kind = renderer::LightKind::Directional;
+        lights[0].Color = {0, 0, 1};
+        lights[0].Intensity = 2;
+        lights[0].Direction = {-1, 0, -1};
+        lights[1] = lights[0];
+        lights[1].SourceId = 2;
+        lights[1].Color = {0, 1, 0};
+        lights[1].ShouldCastRasterShadows = false;
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+        const auto countPenumbraColumns = [&]() {
+            constexpr float32 PENUMBRA_LOWER_FRACTION = .2F;
+            constexpr float32 PENUMBRA_UPPER_FRACTION = .8F;
+            uint32 columns = 0;
+            for (uint32 x = 0; x < WIDTH; ++x)
+            {
+                const usize pixel = GetPixel(x, HEIGHT / 2);
+                const float32 control = fixture.Pixels[pixel + 1];
+                const float32 shadowed = fixture.Pixels[pixel + 2];
+                columns += shadowed > PENUMBRA_LOWER_FRACTION * control && shadowed < PENUMBRA_UPPER_FRACTION * control
+                               ? 1U
+                               : 0U;
+            }
+            return columns;
+        };
+        const usize lit = GetPixel(0, HEIGHT / 2);
+        const usize shadowed = GetPixel(WIDTH - 1, HEIGHT / 2);
+        constexpr float32 CHANNEL_TOLERANCE = 2;
+        constexpr uint8 SATURATED_CHANNEL = 250;
+
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        REQUIRE(fixture.Pixels[lit + 1] > 32);
+        REQUIRE(fixture.Pixels[lit + 1] < SATURATED_CHANNEL);
+        CHECK(math::Abs(float32(fixture.Pixels[lit + 2]) - float32(fixture.Pixels[lit + 1])) <= CHANNEL_TOLERANCE);
+        CHECK(fixture.Pixels[shadowed + 2] <= 1);
+        // A delta light keeps the hard edge of the bilinear comparison.
+        constexpr uint32 HARD_EDGE_COLUMNS = 2;
+        CHECK(countPenumbraColumns() <= HARD_EDGE_COLUMNS);
+
+        constexpr float32 DISK_RADIUS_RADIANS = .02F;
+        lights[0].AngularRadiusRadians = DISK_RADIUS_RADIANS;
+        lights[1].AngularRadiusRadians = DISK_RADIUS_RADIANS;
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        const uint32 penumbraColumns = countPenumbraColumns();
+        CAPTURE(penumbraColumns);
+        constexpr uint32 MINIMUM_PENUMBRA_COLUMNS = 6;
+        CHECK(penumbraColumns >= MINIMUM_PENUMBRA_COLUMNS);
+        // The disk keeps the light's illuminance where it is wholly visible and its umbra where it is wholly hidden.
+        CHECK(math::Abs(float32(fixture.Pixels[lit + 2]) - float32(fixture.Pixels[lit + 1])) <= CHANNEL_TOLERANCE);
+        CHECK(fixture.Pixels[shadowed + 2] <= 1);
+        // Visibility falls monotonically across the edge.
+        for (uint32 x = 1; x < WIDTH; ++x)
+        {
+            CAPTURE(x);
+            CHECK(float32(fixture.Pixels[GetPixel(x, HEIGHT / 2) + 2]) <=
+                  float32(fixture.Pixels[GetPixel(x - 1, HEIGHT / 2) + 2]) + CHANNEL_TOLERANCE);
+        }
+    }
     SECTION("grazing directional light illuminates its own receiver uniformly")
     {
         materials[1].Emission = {};
@@ -1733,6 +1827,8 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         lights[0].Color = {1, 0, 0};
         lights[0].Intensity = 8;
         lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
+        // The Sun's apparent disk widens the comparison filter; a flat receiver must stay free of acne with it too.
+        lights[0].AngularRadiusRadians = GENERATE(0.0F, SUN_ANGULAR_RADIUS_RADIANS);
         lights[1] = lights[0];
         lights[1].SourceId = 2;
         lights[1].Color = {0, 1, 0};
@@ -1795,6 +1891,8 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         lights[0].Color = {1, 0, 0};
         lights[0].Intensity = 8;
         lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
+        // The Sun's apparent disk widens the comparison filter; a flat receiver must stay free of acne with it too.
+        lights[0].AngularRadiusRadians = GENERATE(0.0F, SUN_ANGULAR_RADIUS_RADIANS);
         lights[1] = lights[0];
         lights[1].SourceId = 2;
         lights[1].Color = {0, 1, 0};

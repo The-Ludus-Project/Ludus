@@ -366,9 +366,122 @@ int GetEyeFlags(Varying input)
 {
     return int(input.EyeWorld.w + 0.5);
 }
-// Visibility of positionWorld in shadow region region, bilinearly filtered over its four nearest texels.
+// The encoded depth and slope a shadow map stores at uv: the mesh-light atlas in the deferred resolve.
+float4 ReadShadowCode(float2 uv)
+{
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    return meshLightShadowAtlas.SampleLevel(shadowSampler, uv, 0);
+#else
+    return shadowTexture.SampleLevel(shadowSampler, uv, 0);
+#endif
+}
+// One shadow region lookup: the receiver's place in the map and how far its position may be off its surface.
+struct ShadowLookup
+{
+    float4 Rectangle;
+    float4 Settings;
+    float2 ReceiverTexel;
+    float ReceiverDepth;
+    float2 UncertaintyTexel;
+    float UncertaintyDepth;
+};
+// The depth the caster stored at sampleUv has at the receiver's location, and the tolerance its comparison allows.
+float ProjectShadowCaster(in ShadowLookup lookup, float2 sampleUv, out float outTolerance, out float outStored)
+{
+    float4 code = ReadShadowCode(sampleUv);
+    float2 centerTexel = sampleUv / lookup.Settings.zw;
+    // Thanks to Microsoft, "Cascaded Shadow Maps", Depth Bias,
+    // https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps,
+    // for comparing depths at matching locations across a PCF filter.
+    // Light projections map planes to planes, so each caster plane is projected to the receiver's
+    // location from the slope stored at the sampled texel. A fixed bias alone cannot cover the depth
+    // a grazing light spans across one texel: Sun-lit floors then shadowed themselves in texel stripes
+    // that aliased into blotches moving with the camera.
+    float2 slope = DecodeShadowSlope(code.ba);
+    outStored = DecodeShadowDepth(code.rg);
+    // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
+    // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
+    outTolerance = lookup.Settings.x + lookup.UncertaintyDepth + dot(abs(slope), lookup.UncertaintyTexel);
+    return outStored + dot(slope, lookup.ReceiverTexel - centerTexel);
+}
+// Visibility of the receiver against the four map texels nearest sampleTexel, bilinearly weighted.
+float CompareShadowTexels(in ShadowLookup lookup, float2 sampleTexel)
+{
+    float2 lowerTexel = floor(sampleTexel - 0.5) + 0.5;
+    float2 fraction = sampleTexel - lowerTexel;
+    float visible = 0;
+    const int SHADOW_FILTER_TAP_COUNT = 4;
+    for (int tap = 0; tap < SHADOW_FILTER_TAP_COUNT; ++tap)
+    {
+        float2 corner = float2(tap & 1, (tap >> 1) & 1);
+        float2 sampleUv = clamp((lowerTexel + corner) * lookup.Settings.zw, lookup.Rectangle.xy, lookup.Rectangle.zw);
+        float tolerance;
+        float stored;
+        float projected = ProjectShadowCaster(lookup, sampleUv, tolerance, stored);
+        float2 weights = lerp(1 - fraction, fraction, corner);
+        float weight = weights.x * weights.y;
+        visible += lookup.ReceiverDepth - tolerance <= projected ? weight : 0;
+    }
+    return visible;
+}
+// Directional penumbrae (DirectLight::AngularRadiusRadians). Thanks to Randima Fernando, "Percentage-Closer Soft
+// Shadows", ACM SIGGRAPH 2005 Sketches, p. 35, https://doi.org/10.1145/1187112.1187153, for estimating the penumbra
+// from the average blocker depth and widening the comparison filter by it, and to Helmut Vogel, "A better way to
+// construct the sunflower head", Mathematical Biosciences 44(3-4), 1979, pp. 179-189,
+// https://doi.org/10.1016/0025-5564(79)90080-4, for the evenly spread golden-angle disk of taps. A disk of angular
+// radius r casts a penumbra of radius tan(r) times the distance from the blocker to the receiver along the light; the
+// orthographic map turns depth and texel offsets into metres through its projection rows. The filter radius is
+// clamped to DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS, which bounds the cost and keeps wider penumbrae soft but too narrow.
+static const int DIRECTIONAL_PENUMBRA_TAP_COUNT = 16;
+static const float DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS = 32;
+static const float GOLDEN_ANGLE_RADIANS = 2.39996322972865332; // pi * (3 - sqrt(5))
+// Golden-angle disk tap `tap` of DIRECTIONAL_PENUMBRA_TAP_COUNT, inside the unit disk.
+float2 GetDirectionalPenumbraTap(int tap)
+{
+    float radius = sqrt((float(tap) + 0.5) / float(DIRECTIONAL_PENUMBRA_TAP_COUNT));
+    float angle = float(tap) * GOLDEN_ANGLE_RADIANS;
+    return radius * float2(cos(angle), sin(angle));
+}
+// Visibility of the receiver from a directional light's disk whose angular radius has tangent diskTangent.
+// texelsPerDepth converts a map depth difference into map texels of penumbra radius per unit disk tangent.
+float FilterDirectionalPenumbra(in ShadowLookup lookup, float diskTangent, float2 texelsPerDepth)
+{
+    // Nothing nearer than the map's near plane can block: it bounds the widest penumbra the receiver can be in.
+    float2 searchTexels = clamp(diskTangent * lookup.ReceiverDepth * texelsPerDepth,
+                                float2(1),
+                                float2(DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS));
+    float blockerSum = 0;
+    float blockerCount = 0;
+    for (int tap = 0; tap < DIRECTIONAL_PENUMBRA_TAP_COUNT; ++tap)
+    {
+        float2 sampleTexel = floor(lookup.ReceiverTexel + GetDirectionalPenumbraTap(tap) * searchTexels) + 0.5;
+        float2 sampleUv = clamp(sampleTexel * lookup.Settings.zw, lookup.Rectangle.xy, lookup.Rectangle.zw);
+        float tolerance;
+        float stored;
+        float projected = ProjectShadowCaster(lookup, sampleUv, tolerance, stored);
+        if (lookup.ReceiverDepth - tolerance > projected)
+        {
+            blockerSum += stored;
+            blockerCount += 1;
+        }
+    }
+    if (blockerCount == 0)
+        return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+    float blockerDepth = blockerSum / blockerCount;
+    float2 radiusTexels = min(diskTangent * max(lookup.ReceiverDepth - blockerDepth, 0) * texelsPerDepth,
+                              float2(DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS));
+    // A penumbra narrower than a texel is the bilinear comparison's own transition.
+    if (max(radiusTexels.x, radiusTexels.y) < 1)
+        return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+    float visible = 0;
+    for (int tap = 0; tap < DIRECTIONAL_PENUMBRA_TAP_COUNT; ++tap)
+        visible += CompareShadowTexels(lookup, lookup.ReceiverTexel + GetDirectionalPenumbraTap(tap) * radiusTexels);
+    return visible / float(DIRECTIONAL_PENUMBRA_TAP_COUNT);
+}
+// Visibility of positionWorld in shadow region region, bilinearly filtered over its four nearest texels, or over a
+// directional light's penumbra when its disk has a positive angular radius.
 // outIsInside is false, and the result one, when the position falls outside the region's projection.
-float SampleShadowRegion(int region, float3 positionWorld, Varying input, out bool outIsInside)
+float SampleShadowRegion(int region, int light, float3 positionWorld, Varying input, out bool outIsInside)
 {
     outIsInside = false;
     float4 settings = material.ShadowData[region * SHADOW_REGION_WORDS + 5];
@@ -383,14 +496,18 @@ float SampleShadowRegion(int region, float3 positionWorld, Varying input, out bo
     if (abs(ndc.x) > 1 || abs(ndc.y) > 1 || ndc.z < 0 || ndc.z > 1)
         return 1;
     outIsInside = true;
-    float4 rect = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
+    ShadowLookup lookup;
+    lookup.Rectangle = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
+    lookup.Settings = settings;
+    float4 rect = lookup.Rectangle;
     float2 projectedUv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     // Every region is drawn with its interior as the viewport, so the projection maps clip edges to viewport
     // edges. The atlas rectangle supplied by the host bounds legal texel centres.
     float2 uv = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv);
-    float2 receiverTexel = uv / settings.zw;
-    float2 lowerTexel = floor(receiverTexel - 0.5) + 0.5;
-    float2 fraction = receiverTexel - lowerTexel;
+    lookup.ReceiverTexel = uv / settings.zw;
+    lookup.ReceiverDepth = ndc.z;
+    // Map texels per unit of normalized device coordinates.
+    float2 texelsPerNdc = 0.5 * (rect.zw - rect.xy + settings.zw) / settings.zw;
 #ifdef LUDUS_DEFERRED_MESH_LIGHTS
     // A receiver rebuilt from depth may sit off its surface by PositionUncertaintyWorld. Express that
     // displacement in map texels and light depth, so each tap can allow for it below.
@@ -399,42 +516,28 @@ float SampleShadowRegion(int region, float3 positionWorld, Varying input, out bo
                dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz, input.PositionUncertaintyWorld),
                dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz, input.PositionUncertaintyWorld)) /
         clip.w;
-    float2 uncertaintyTexel = abs(uncertaintyClip.xy) * 0.5 * (rect.zw - rect.xy + settings.zw) / settings.zw;
-    float uncertaintyDepth = abs(uncertaintyClip.z);
+    lookup.UncertaintyTexel = abs(uncertaintyClip.xy) * texelsPerNdc;
+    lookup.UncertaintyDepth = abs(uncertaintyClip.z);
 #else
     // Forward passes interpolate the receiver's exact position.
-    float2 uncertaintyTexel = float2(0);
-    float uncertaintyDepth = 0;
+    lookup.UncertaintyTexel = float2(0);
+    lookup.UncertaintyDepth = 0;
 #endif
-    float visible = 0;
-    const int SHADOW_FILTER_TAP_COUNT = 4;
-    for (int tap = 0; tap < SHADOW_FILTER_TAP_COUNT; ++tap)
+    float diskTangent = material.Lights[light * 4 + 3].z;
+    // Only an orthographic directional region has a disk: its projection's last row is (0, 0, 0, 1).
+    if (diskTangent > 0 && material.Lights[light * 4].w == 0 &&
+        dot(material.ShadowData[region * SHADOW_REGION_WORDS + 3].xyz,
+            material.ShadowData[region * SHADOW_REGION_WORDS + 3].xyz) == 0)
     {
-        float2 corner = float2(tap & 1, (tap >> 1) & 1);
-        float2 sampleUv = clamp((lowerTexel + corner) * settings.zw, rect.xy, rect.zw);
-#ifdef LUDUS_DEFERRED_MESH_LIGHTS
-        float4 code = meshLightShadowAtlas.SampleLevel(shadowSampler, sampleUv, 0);
-#else
-        float4 code = shadowTexture.SampleLevel(shadowSampler, sampleUv, 0);
-#endif
-        float2 centerTexel = sampleUv / settings.zw;
-        // Thanks to Microsoft, "Cascaded Shadow Maps", Depth Bias,
-        // https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps,
-        // for comparing depths at matching locations across a PCF filter.
-        // Light projections map planes to planes, so each caster plane is projected to the receiver's
-        // location from the slope stored at the sampled texel. A fixed bias alone cannot cover the depth
-        // a grazing light spans across one texel: Sun-lit floors then shadowed themselves in texel stripes
-        // that aliased into blotches moving with the camera.
-        float2 slope = DecodeShadowSlope(code.ba);
-        float stored = DecodeShadowDepth(code.rg) + dot(slope, receiverTexel - centerTexel);
-        float2 weights = lerp(1 - fraction, fraction, corner);
-        float weight = weights.x * weights.y;
-        // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
-        // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
-        float tolerance = settings.x + uncertaintyDepth + dot(abs(slope), uncertaintyTexel);
-        visible += ndc.z - tolerance <= stored ? weight : 0;
+        // Orthographic rows are the light basis scaled by NDC units per metre: a depth difference spans
+        // 1 / |depth row| metres, and one metre across spans |row| NDC units.
+        float metresPerDepth = 1 / length(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz);
+        float2 texelsPerMetre =
+            texelsPerNdc * float2(length(material.ShadowData[region * SHADOW_REGION_WORDS].xyz),
+                                  length(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz));
+        return FilterDirectionalPenumbra(lookup, diskTangent, metresPerDepth * texelsPerMetre);
     }
-    return visible;
+    return CompareShadowTexels(lookup, lookup.ReceiverTexel);
 }
 // Shadow-map coverage of a light at a receiver, for the shadow coverage debug view.
 static const int SHADOW_COVERAGE_NONE = 0;    // The light has no map.
@@ -461,7 +564,7 @@ float ComputeShadowCoverage(int light, Varying input, out int outCoverage)
         hasLocalShadowCoverage = hasLocalShadowCoverage || material.Lights[light * 4].w >= 1;
         outCoverage = SHADOW_COVERAGE_OUTSIDE;
         bool isInside;
-        float visible = SampleShadowRegion(region, input.PositionWorld, input, isInside);
+        float visible = SampleShadowRegion(region, light, input.PositionWorld, input, isInside);
         if (isInside == true)
         {
             outCoverage = SHADOW_COVERAGE_INSIDE;

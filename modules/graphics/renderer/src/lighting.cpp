@@ -98,6 +98,9 @@ bool NormalizeLight(DirectLight& inoutLight) noexcept
            math::IsFinite(light.Direction) == true && math::IsFinite(light.Range) == true && light.Range >= 0.01F &&
            light.Range <= 1000000 && math::IsFinite(light.InnerCos) == true && math::IsFinite(light.OuterCos) == true &&
            light.OuterCos > -1 && light.OuterCos < light.InnerCos && light.InnerCos <= 1 &&
+           math::IsFinite(light.AngularRadiusRadians) == true && light.AngularRadiusRadians >= 0 &&
+           light.AngularRadiusRadians <= MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS &&
+           (light.Kind == LightKind::Directional || light.AngularRadiusRadians == 0) &&
            (light.Kind == LightKind::Point ||
             math::TryNormalize(light.Direction, light.Direction) == math::MathStatus::Success);
 }

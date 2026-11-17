@@ -4,7 +4,7 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 12
+#define LUDUS_REFERENCE_KERNEL_VERSION 13
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
@@ -40,6 +40,12 @@
 #define LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION                                                                    \
     (LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION +                                                                        \
      LUDUS_REFERENCE_MAX_DEPTH * LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE)
+// A directional light with a positive angular radius draws its disk direction from the two dimensions at
+// DIRECTIONAL_DISK_FIRST + DIRECTIONAL_DISK_DIMENSIONS * depth, after every directional selection dimension, in every
+// sampling mode. A delta light draws none, so its addresses and output are unchanged.
+#define LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION                                                               \
+    (LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + LUDUS_REFERENCE_MAX_DEPTH)
+#define LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS 2
 
 // Sampler version 2 bounce slots (docs/architecture/many-area-light-sampling-reference-review.md, "Random layout,
 // sampler version 2"). Slots 0-7 keep their version-1 meanings, with slots 1-2 also holding the diffuse
