@@ -1292,6 +1292,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             {
                 const Status casters = BuildRasterMeshLightShadowCasters(candidate.MeshLightWords,
                                                                          candidate.MeshLightCount,
+                                                                         candidate.BoundsWorld,
                                                                          candidate.MeshLightShadowCasters,
                                                                          shadows);
                 if (casters != Status::Ready)

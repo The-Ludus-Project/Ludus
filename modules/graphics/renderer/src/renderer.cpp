@@ -1,5 +1,6 @@
 #include "internal/reference_coating.h"
 #include "internal/reference_dielectric.h"
+#include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/hair_card.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/views.hpp>
@@ -5749,6 +5750,19 @@ Status Renderer::prepareDeferredShadows(Snapshot snapshot,
                     instance.WorldRows[row] = worldRows.Columns[row];
                 }
                 instance.Color = {1, 1, 1, 1};
+                if (casterOrNull != nullptr)
+                {
+                    // A cube face stores linear depth (renderer_shadow_depth.slang, SelectShadowDepth). The flat
+                    // shadow fragment rebuilds it from its rasterized depth with the near distance and range in the
+                    // colour; masked shadow pipelines evaluate it exactly from the world position with the
+                    // projection's clip z row.
+                    instance.Color = {static_cast<float32>(LUDUS_LINEAR_SHADOW_DEPTH_TAG),
+                                      casterOrNull->NearMeters,
+                                      casterOrNull->RangeMeters,
+                                      1};
+                    // Column 2 of the transpose: the projection's clip z row.
+                    instance.Eye = math::Transpose(worldToClip).Columns[2];
+                }
                 const uint32 first = static_cast<uint32>(instances.GetSize());
                 if (instances.TryAdd(instance) == false)
                 {

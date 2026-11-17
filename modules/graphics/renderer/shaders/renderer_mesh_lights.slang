@@ -277,8 +277,9 @@ MeshLightReceiver MakeMeshLightReceiver(in SurfaceSample surface, float3 positio
     return receiver;
 }
 // Cube shadow faces of the mesh-light shadow casters (raster_mesh_light_shadows.h). Each face stores, as 16 bits in
-// red and green, the conventional depth of the nearest occluder seen from its caster; the face bases repeat
-// FACE_BASES in raster_mesh_light_shadows.cpp, which tests them against math::TryLookAt.
+// red and green, the linear depth (forward - near) / (far - near) of the nearest occluder seen from its caster, so a
+// code spans the same distance everywhere in the face and the near plane can sit just in front of the emitters. The
+// face bases repeat FACE_BASES in raster_mesh_light_shadows.cpp, which tests them against math::TryLookAt.
 // Thanks to William T. Reeves, David H. Salesin and Robert L. Cook, "Rendering Antialiased Shadows with Depth Maps",
 // SIGGRAPH 1987, pp. 283-291, https://doi.org/10.1145/37401.37435, for filtering a receiver's depth comparison over
 // nearby map samples, and to Randima Fernando, "Percentage-Closer Soft Shadows", ACM SIGGRAPH 2005 Sketches, p. 35,
@@ -326,10 +327,10 @@ struct MeshLightShadowFace
     // the uncertainty of a receiver rebuilt from depth.
     float PlaneUncertainty;
 };
-// Conventional depth of a forward distance in the face projection.
+// Linear depth of a forward distance in the face projection, as the face stores it.
 float ComputeMeshLightShadowDepth(in MeshLightShadowFace face, float forward)
 {
-    return face.FarMeters * (forward - face.NearMeters) / (forward * (face.FarMeters - face.NearMeters));
+    return (forward - face.NearMeters) / (face.FarMeters - face.NearMeters);
 }
 // The stored occluder depth at a texel, clamped into the face slot, and the depth the receiver's tangent plane has
 // along that texel's ray: comparing with the plane rather than with the receiver point keeps a flat receiver from
@@ -346,8 +347,13 @@ void ReadMeshLightShadowTexel(in MeshLightShadowFace face, float2 texel, out flo
     float along = -dot(face.NormalWorld, directionWorld);
     // A ray that never meets the plane in front of the caster sees no receiver there: nothing can shadow it.
     float forward = along > 0 ? max(face.PlaneHeight - face.PlaneUncertainty, 0) / along : face.FarMeters;
-    outPlane = ComputeMeshLightShadowDepth(face, clamp(forward, face.NearMeters, face.FarMeters)) -
-               LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES / SHADOW_DEPTH_CODE_MAXIMUM;
+    // The comparison allows for the 16-bit codes and for an opaque occluder's depth, rebuilt from its rasterized
+    // float32 depth, which is uncertain by forward^2 / near times LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR metres.
+    float planeForward = clamp(forward, face.NearMeters, face.FarMeters);
+    float rebuiltError = LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR * planeForward * planeForward /
+                         (face.NearMeters * (face.FarMeters - face.NearMeters));
+    outPlane = ComputeMeshLightShadowDepth(face, planeForward) -
+               LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES / SHADOW_DEPTH_CODE_MAXIMUM - rebuiltError;
 }
 // Fraction of the caster's view of the receiver that no occluder blocks; one without a caster or shadow table.
 // positionUncertaintyWorld is how far positionWorld may lie from the surface, zero for an exact position.
@@ -420,8 +426,7 @@ float ComputeMeshLightShadowVisibility(uint tableWord,
     }
     // The blocker's forward distance inverts the depth mapping; its penumbra scales with the light radius.
     float blockerDepth = blockerSum / blockerCount;
-    float blockerForward =
-        face.NearMeters * face.FarMeters / (face.FarMeters - blockerDepth * (face.FarMeters - face.NearMeters));
+    float blockerForward = face.NearMeters + blockerDepth * (face.FarMeters - face.NearMeters);
     float penumbraMeters = shape.x * max(forward - blockerForward, 0) / max(blockerForward, face.NearMeters);
     float radius =
         clamp(penumbraMeters / (2 * face.Tangent * forward / face.Texels), 1, MESH_LIGHT_SHADOW_GUTTER_TEXELS);

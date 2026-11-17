@@ -5,6 +5,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
@@ -13,9 +14,9 @@
 #include <ludus/graphics/rhi/raster.h>
 
 // Cached cube shadow maps for raster mesh lights (render-graph-authoring.md, "Mesh-light shadows"). Emitter polygon
-// records are grouped into casters; each caster renders up to six cube faces of conventional depth once per
-// prepared scene with the renderer's flat shadow pipeline, and the deferred resolve compares a receiver's depth in
-// the same face projection with them.
+// records are grouped into casters; each caster renders up to six cube faces of linear depth once per prepared scene
+// with the renderer's shadow pipelines, and the deferred resolve compares a receiver's depth in the same face
+// projection with them.
 namespace ludus::graphics::renderer::internal
 {
 /// Atlas texel origin of one face slot.
@@ -32,10 +33,12 @@ struct MeshLightShadowCaster final
     foundation::math::Vector3 PositionWorld;
     /// Radius of the sphere enclosing every member polygon, in metres; scales the penumbra.
     foundation::float32 LightRadiusMeters = 0;
-    /// Occluders nearer along a face's axis are ignored: a two-sided caster's own emitting surfaces, and a sliver
-    /// in front of a one-sided caster. At least a hundredth of the range, which bounds 16-bit depth precision.
+    /// Occluders nearer along a face's axis are ignored: a two-sided caster's own emitting surfaces, and the half of
+    /// a one-sided caster's offset that lies in front of its emitters. Faces store linear depth, whose precision
+    /// does not depend on it.
     foundation::float32 NearMeters = 0;
-    /// Every receiver a member can light lies within this distance; it is the faces' far plane.
+    /// Every receiver a member can light, and every receiver in the scene bounds, lies within this distance; it is
+    /// the faces' far plane, and the 16-bit depth codes span (RangeMeters - NearMeters) / 65535 metres each.
     foundation::float32 RangeMeters = 0;
     /// Sum of the members' largest emission channel times area, which ranks casters for atlas space.
     foundation::float32 Flux = 0;
@@ -155,12 +158,15 @@ struct MeshLightShadowReport final
 /// that needs at most MAX_MESH_LIGHT_SHADOW_CASTERS casters is used, or the coarsest up to that limit. A caster with
 /// two-sided members, or one-sided members beyond 30 degrees of their flux-weighted mean normal, encloses them:
 /// it renders all six faces from their sphere centre with a near distance of at least its radius. Otherwise it
-/// renders from just in front of them. Call before AppendRasterMeshLightGrid, which groups cell lists by caster.
-/// Face slots are left unallocated.
+/// renders from just in front of them, with a near distance of half that offset. A caster's range is the farthest
+/// reach of its members' light, clamped to the farthest corner of receiversWorld (when it is not empty) widened by
+/// how far the resolve's normal offset can move a receiver. Call before AppendRasterMeshLightGrid, which groups cell
+/// lists by caster. Face slots are left unallocated.
 /// @return Ready; InvalidDescription for malformed records or OutOfMemory, preserving every output.
 [[nodiscard]] rhi::RasterStatus
 BuildRasterMeshLightShadowCasters(foundation::Array<foundation::math::Vector4>& inoutWords,
                                   foundation::uint32 recordCount,
+                                  const foundation::math::Aabb3& receiversWorld,
                                   foundation::Array<MeshLightShadowCaster>& outCasters,
                                   MeshLightShadowReport& outReport) noexcept;
 /// Give every caster power-of-two face slots of MIN_MESH_LIGHT_SHADOW_FACE_TEXELS to
@@ -182,14 +188,16 @@ AppendRasterMeshLightShadowTable(foundation::Array<foundation::math::Vector4>& i
 /// Tangent of half the field of view a face slot is rendered with: its interior spans 90 degrees and its gutter
 /// extends beyond, so the full slot of faceTexels spans faceTexels / (faceTexels - 2 * gutter).
 [[nodiscard]] foundation::float32 GetRasterMeshLightShadowTangent(foundation::uint32 faceTexels) noexcept;
-/// The conventional-depth world-to-clip transform rendering one face slot of a caster, from its near distance to
-/// its range.
+/// The world-to-clip transform rendering one face slot of a caster, from its near distance to its range. Its
+/// rasterized depth z / w is conventional, and every row is divided by the range so that clip z itself is the
+/// linear depth (forward - near) / (range - near) the face stores (renderer_shadow_depth.slang,
+/// SelectShadowDepth).
 /// @return Ready, or InvalidDescription preserving outWorldToClip for a face outside [0, 6) or a degenerate caster.
 [[nodiscard]] rhi::RasterStatus MakeRasterMeshLightShadowFaceToClip(const MeshLightShadowCaster& caster,
                                                                     foundation::uint32 face,
                                                                     foundation::math::Matrix4& outWorldToClip) noexcept;
 /// CPU mirror of the resolve's lookup: the face a receiver falls in, its atlas texel coordinates (texel centres at
-/// half-integers) and its conventional depth in that face's projection (MakeRasterMeshLightShadowFaceToClip).
+/// half-integers) and its linear depth in that face's projection: the clip z of MakeRasterMeshLightShadowFaceToClip.
 /// @return False, leaving the outputs unchanged, for a receiver at the caster position.
 [[nodiscard]] bool LocateRasterMeshLightShadowTexel(const MeshLightShadowCaster& caster,
                                                     foundation::math::Vector3 positionWorld,

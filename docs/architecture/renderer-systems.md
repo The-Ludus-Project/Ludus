@@ -3768,15 +3768,30 @@ oracle it stays at 0.083–0.089 after 256 frames, so no old lighting is blended
 ForceRaster selects the default graph, and Automatic does so where native rays are
 unavailable. That fallback's unshadowed polygon integral follows the oracle within
 0.016 in the unobstructed control. It then multiplies by one cube-map caster's
-visibility. The caster's face near plane is at least a hundredth of its range, and
-the range is the emitter's culling reach, tens of metres for this emitter. Both
-blockers, 0.22 m and 0.47 m in front of the caster, lie inside that near distance
-([Mesh-light shadows](../development/render-graph-authoring.md#mesh-light-shadows)),
-so the fallback leaves the receiver at full visibility. Its mean visibility
-exceeds the oracle's by 0.23–0.33, by up to 0.89 at a pixel, and it never darkens a
-pixel. In a diagnostic run with the far blocker 0.57 m in front of the caster, its
-shadow returned with the nearly hard edge of a filter clamped to the four-texel
-gutter.
+visibility. The caster's faces store linear depth, and its range stops at the scene
+bounds, so its near plane sits 1.4 cm in front of the emitter
+([Mesh-light shadows](../development/render-graph-authoring.md#mesh-light-shadows))
+and both blockers, 0.22 m and 0.47 m in front of the caster, cast shadows. Before
+that change, a near plane of a hundredth of the emitter's tens-of-metres culling reach
+hid both blockers: mean visibility exceeded the oracle's by 0.23–0.33 and by up to
+0.89 at a pixel. One point per caster cannot reproduce this emitter's penumbra, which
+spans hundreds of shadow texels, while the filter stays within the four-texel gutter.
+The shadows are nearly hard: darker than the oracle inside the caster's own shadow and
+lighter outside it. Visibility error against the oracle, over the near-blocker
+control and the four motion steps:
+
+| Raster fallback visibility error | Value |
+| --- | ---: |
+| Mean signed | −0.095 to 0.005 |
+| RMS | 0.32–0.41 |
+| Mean false light (positive error per pixel) | 0.096–0.147 |
+| Mean false darkening (negative error per pixel) | 0.14–0.21 |
+| Largest false light / false darkening | 0.81 / 0.83 |
+| Mean false light where the oracle sees at most half the emitter (684–1,578 pixels) | 0.019–0.095 |
+
+The fixture bounds the mean signed error, mean false light, RMS and false light over
+the half-shadowed pixels at about one and a half times these values. A fallback that
+ignores the blockers fails the false-light bounds.
 
 | Tiled vbuffer NEE timing, 21 samples | Median | p95 |
 | --- | ---: | ---: |

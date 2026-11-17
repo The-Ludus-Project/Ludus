@@ -3,10 +3,12 @@
 #include "../src/internal/raster_mesh_lights.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 namespace
@@ -20,6 +22,11 @@ constexpr usize CORNER_COUNT = 3;
 constexpr uint32 CASTER_CORNER = renderer::MESH_LIGHT_POLYGON_HEADER_WORDS + renderer::MESH_LIGHT_SHADOW_CASTER_CORNER;
 /// Distance between emitters placed far enough apart that they never share a caster, in metres.
 constexpr float32 SEPARATION_METERS = 4;
+/// Empty receiver bounds, which leave each caster's range at its members' culling reach.
+constexpr math::Aabb3 NO_RECEIVER_BOUNDS = math::EmptyAabb3();
+/// The axis of each cube face: +X, -X, +Y, -Y, +Z, -Z.
+constexpr StaticArray<math::Vector3, renderer::MESH_LIGHT_SHADOW_FACE_COUNT> FACE_FORWARD_WORLD{
+    {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
 /// Deterministic uniform values in [0, 1).
 struct Sequence final
 {
@@ -92,7 +99,8 @@ TEST_CASE("mesh-light shadow casters merge nearby emitters and separate distant 
     AddTriangle(words, {SEPARATION_METERS, 3, 0}, .05F, {0, -1, 0}, {1, 1, 1}, false);
     Array<internal::MeshLightShadowCaster> casters;
     internal::MeshLightShadowReport report;
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 4, casters, report) == rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 4, NO_RECEIVER_BOUNDS, casters, report) ==
+            rhi::RasterStatus::Ready);
     REQUIRE(casters.GetSize() == 2);
     CHECK(report.Casters == 2);
     CHECK(report.ShadowedRecords == 4);
@@ -108,8 +116,9 @@ TEST_CASE("mesh-light shadow casters merge nearby emitters and separate distant 
     CHECK((panel.FaceMask & (1U << 2)) == 0);
     CHECK((panel.FaceMask & (1U << 3)) != 0);
     CHECK(report.Faces == 10);
-    // One-sided: its emitters lie behind it, so the near distance only tracks the range.
-    CHECK(panel.NearMeters >= .01F * panel.RangeMeters - 1e-6F);
+    // One-sided: its emitters lie behind it, so the near distance is half its offset in front of them, whatever the
+    // range: faces store linear depth, whose precision does not depend on the near distance.
+    CHECK(panel.NearMeters == Catch::Approx(.5F * (3 - panel.PositionWorld.Y)).margin(1e-6F));
     CHECK(panel.RangeMeters > panel.NearMeters);
     // The range covers every receiver the grid would list for a member.
     math::Vector3 reachCenterWorld;
@@ -117,6 +126,39 @@ TEST_CASE("mesh-light shadow casters merge nearby emitters and separate distant 
     REQUIRE(internal::GetRasterMeshLightReach({words.GetData(), words.GetSize()}, 0, reachCenterWorld, reachRadius) ==
             true);
     CHECK(panel.RangeMeters >= math::Length(reachCenterWorld - panel.PositionWorld) + reachRadius - 1e-4F);
+}
+
+TEST_CASE("mesh-light shadow ranges stop at the receiver bounds", "[mesh-area][mesh-light-shadows]")
+{
+    // A bright downward panel whose culling reach is far beyond a 4 m room.
+    Array<math::Vector4> words;
+    AddTriangle(words, {0, 3, 0}, .2F, {0, -1, 0}, {1000, 1000, 1000}, false);
+    Array<math::Vector4> unboundedWords;
+    REQUIRE(unboundedWords.TryAddRange({words.GetData(), words.GetSize()}) == true);
+    const math::Aabb3 roomWorld{{-2, 0, -2}, {2, 3, 2}};
+    Array<internal::MeshLightShadowCaster> casters;
+    Array<internal::MeshLightShadowCaster> unbounded;
+    internal::MeshLightShadowReport report;
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 1, roomWorld, casters, report) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(unboundedWords, 1, NO_RECEIVER_BOUNDS, unbounded, report) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(casters.GetSize() == 1);
+    REQUIRE(unbounded.GetSize() == 1);
+    const internal::MeshLightShadowCaster& caster = casters[0];
+    // The farthest room corner from the caster, which sits just below the panel.
+    const math::Vector3 positionWorld = caster.PositionWorld;
+    const math::Vector3 farthestWorld{math::Max(positionWorld.X - roomWorld.Min.X, roomWorld.Max.X - positionWorld.X),
+                                      math::Max(positionWorld.Y - roomWorld.Min.Y, roomWorld.Max.Y - positionWorld.Y),
+                                      math::Max(positionWorld.Z - roomWorld.Min.Z, roomWorld.Max.Z - positionWorld.Z)};
+    const float32 farthest = math::Length(farthestWorld);
+    CHECK(unbounded[0].RangeMeters > 10 * farthest);
+    // Every receiver, moved by the resolve's normal offset, stays within the range; no more than an eighth beyond.
+    CHECK(caster.RangeMeters >= farthest);
+    CHECK(caster.RangeMeters <= 1.125F * farthest + 1e-4F);
+    CHECK(caster.NearMeters == unbounded[0].NearMeters);
+    // So each 16-bit linear depth code spans well under a tenth of a millimetre.
+    CHECK((caster.RangeMeters - caster.NearMeters) / 65535 < 1e-4F);
 }
 
 TEST_CASE("two-sided emitters shadow every cube face and opposing normals stay apart",
@@ -128,7 +170,8 @@ TEST_CASE("two-sided emitters shadow every cube face and opposing normals stay a
     AddTriangle(words, {0, 0, -.01F}, .05F, {0, 0, -1}, {1, 1, 1}, false);
     Array<internal::MeshLightShadowCaster> casters;
     internal::MeshLightShadowReport report;
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 2, casters, report) == rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 2, NO_RECEIVER_BOUNDS, casters, report) ==
+            rhi::RasterStatus::Ready);
     REQUIRE(casters.GetSize() == 2);
     CHECK(casters[0].FaceMask == (1U << renderer::MESH_LIGHT_SHADOW_FACE_COUNT) - 1);
     // Two-sided: the caster sits inside its emitter, which must not occlude what it lights.
@@ -155,7 +198,7 @@ TEST_CASE("bulbs of opposing one-sided facets merge into enclosing casters when 
     }
     Array<internal::MeshLightShadowCaster> casters;
     internal::MeshLightShadowReport report;
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 2 * BULB_COUNT, casters, report) ==
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 2 * BULB_COUNT, NO_RECEIVER_BOUNDS, casters, report) ==
             rhi::RasterStatus::Ready);
     REQUIRE(casters.GetSize() == BULB_COUNT);
     CHECK(report.UnshadowedRecords == 0);
@@ -210,7 +253,8 @@ TEST_CASE("one-sided facets spread beyond the cone about their mean normal share
     addLamp(balanced, 1);
     Array<internal::MeshLightShadowCaster> casters;
     internal::MeshLightShadowReport report;
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(balanced, 3, casters, report) == rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(balanced, 3, NO_RECEIVER_BOUNDS, casters, report) ==
+            rhi::RasterStatus::Ready);
     REQUIRE(casters.GetSize() == 1);
     CHECK(casters[0].PositionWorld.Y < 3);
     CHECK((casters[0].FaceMask & (1U << 2)) == 0);
@@ -219,8 +263,11 @@ TEST_CASE("one-sided facets spread beyond the cone about their mean normal share
     constexpr usize LOPSIDED_COUNT = 5;
     Array<math::Vector4> lopsided;
     addLamp(lopsided, LOPSIDED_COUNT);
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(lopsided, LOPSIDED_COUNT + 2, casters, report) ==
-            rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(lopsided,
+                                                        LOPSIDED_COUNT + 2,
+                                                        NO_RECEIVER_BOUNDS,
+                                                        casters,
+                                                        report) == rhi::RasterStatus::Ready);
     REQUIRE(casters.GetSize() == 1);
     CHECK(casters[0].FaceMask == (1U << renderer::MESH_LIGHT_SHADOW_FACE_COUNT) - 1);
     CHECK(casters[0].NearMeters >= casters[0].LightRadiusMeters);
@@ -245,7 +292,8 @@ TEST_CASE("mesh-light shadow casters stop at the limit and leave dimmer records 
     }
     Array<internal::MeshLightShadowCaster> casters;
     internal::MeshLightShadowReport report;
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, COUNT, casters, report) == rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, COUNT, NO_RECEIVER_BOUNDS, casters, report) ==
+            rhi::RasterStatus::Ready);
     CHECK(casters.GetSize() == renderer::MAX_MESH_LIGHT_SHADOW_CASTERS);
     CHECK(report.UnshadowedRecords == EXTRA);
     for (uint32 record = 0; record < COUNT; ++record)
@@ -270,7 +318,8 @@ TEST_CASE("mesh-light shadow faces pack without overlap and shrink to fit", "[me
     }
     Array<internal::MeshLightShadowCaster> casters;
     internal::MeshLightShadowReport report;
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, COUNT, casters, report) == rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, COUNT, NO_RECEIVER_BOUNDS, casters, report) ==
+            rhi::RasterStatus::Ready);
     struct AllocationCase final
     {
         uint32 AtlasTexels = 0;
@@ -391,9 +440,12 @@ TEST_CASE("mesh-light shadow lookup matches the face projections", "[mesh-area][
         const float32 interior = 1.0F / internal::GetRasterMeshLightShadowTangent(caster.FaceTexels);
         CHECK(math::Abs(ndcX) <= interior + 1e-4F);
         CHECK(math::Abs(ndcY) <= interior + 1e-4F);
+        // Rasterized depth stays conventional; clip z itself is the linear depth the face stores.
         CHECK(clip.Z / clip.W >= 0);
         CHECK(clip.Z / clip.W <= 1);
-        CHECK(math::Abs(depth - clip.Z / clip.W) < 1e-4F);
+        CHECK(math::Abs(depth - clip.Z) < 1e-5F);
+        const float32 forward = math::Dot(positionWorld - caster.PositionWorld, FACE_FORWARD_WORLD[face]);
+        CHECK(math::Abs(depth - (forward - caster.NearMeters) / (caster.RangeMeters - caster.NearMeters)) < 1e-5F);
         const float32 texels = static_cast<float32>(caster.FaceTexels);
         CHECK(math::Abs(texel.X - (static_cast<float32>(caster.FaceOrigins[face].X) + (ndcX * .5F + .5F) * texels)) <
               1e-2F);
@@ -429,7 +481,8 @@ TEST_CASE("mesh-light grid cells list each caster's records together", "[mesh-ar
     }
     Array<internal::MeshLightShadowCaster> casters;
     internal::MeshLightShadowReport report;
-    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, COUNT, casters, report) == rhi::RasterStatus::Ready);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, COUNT, NO_RECEIVER_BOUNDS, casters, report) ==
+            rhi::RasterStatus::Ready);
     REQUIRE(casters.GetSize() == 2);
     uint32 gridWord = 0;
     REQUIRE(internal::AppendRasterMeshLightGrid(words, COUNT, {{-1, 0, -1}, {SEPARATION_METERS + 1, 2, 1}}, gridWord) ==
