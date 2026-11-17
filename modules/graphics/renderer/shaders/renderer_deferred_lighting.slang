@@ -245,6 +245,7 @@ DeferredRadiance ResolveDeferredRadiance(in DeferredVarying value, bool shouldSe
     float3 areaLights = EvaluateRasterMeshLightLobes(surface,
                                                      input.PositionWorld,
                                                      input.PositionUncertaintyWorld,
+                                                     value.PositionClip.xy,
                                                      uint(deferredView.TargetSizePixel.z),
                                                      uint(deferredView.TargetSizePixel.w),
                                                      shouldSeparate,

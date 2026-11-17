@@ -284,84 +284,149 @@ MeshLightReceiver MakeMeshLightReceiver(in SurfaceSample surface, float3 positio
 // SIGGRAPH 1987, pp. 283-291, https://doi.org/10.1145/37401.37435, for filtering a receiver's depth comparison over
 // nearby map samples, and to Randima Fernando, "Percentage-Closer Soft Shadows", ACM SIGGRAPH 2005 Sketches, p. 35,
 // https://doi.org/10.1145/1187112.1187153, for widening that filter by the penumbra a light of the caster's radius
-// casts from the average blocker depth. Here the filter is clamped to each face's gutter.
+// casts from the depth of the blockers found around the receiver.
+//
+// The light is a disk of the caster's disk radius (MESH_LIGHT_SHADOW_DISK_WORDS): across a one-sided caster's emitter
+// normal, else facing the receiver. The segment from the receiver to the light point at radius * u (u in the unit
+// disk) reaches height z above the disk's plane where the caster sees the direction
+// receiver + radius * u * (height / z - 1), receiver and height being the receiver's offset from the caster and its
+// height above the plane. Every tap is such a direction, looked up on whichever cube face holds it, so the search and
+// the filter cross face seams and widen with the light instead of stopping at the four-texel face gutter. An occluder
+// behind the plane, such as the emitter itself, hides nothing. Thanks to Gael Guennebaud, Loic Barthe and Mathias
+// Paulin, "Real-time Soft Shadow Mapping by Backprojection", Eurographics Symposium on Rendering 2006, pp. 227-234,
+// https://doi.org/10.2312/EGWR/EGSR06/227-234, for backprojecting shadow-map samples from the receiver onto the light:
+// here it only decides whether a found occluder can hide part of the light, not how much. Where the found occluders lie
+// at two clearly different heights, each light point is tested at both, and an occluder counts only in its own height
+// band, so a blocker near the light keeps its wide penumbra beside a sharp one near the receiver. Each light point's
+// visibility is weighted by its diffuse form factor at the receiver, as the exact integral weights it.
+//
+// The taps are a golden-angle disk (Vogel, GOLDEN_ANGLE_RADIANS) rotated per pixel by Jorge Jimenez's interleaved
+// gradient noise, "Next Generation Post Processing in Call of Duty: Advanced Warfare", SIGGRAPH 2014 Advances in
+// Real-Time Rendering course, https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare,
+// which turns the steps a fixed pattern leaves across a wide penumbra into a fine dither.
 static const float3 MESH_LIGHT_SHADOW_FORWARD[MESH_LIGHT_SHADOW_FACE_COUNT] =
     {float3(1, 0, 0), float3(-1, 0, 0), float3(0, 1, 0), float3(0, -1, 0), float3(0, 0, 1), float3(0, 0, -1)};
 static const float3 MESH_LIGHT_SHADOW_RIGHT[MESH_LIGHT_SHADOW_FACE_COUNT] =
     {float3(0, 0, 1), float3(0, 0, -1), float3(-1, 0, 0), float3(-1, 0, 0), float3(-1, 0, 0), float3(1, 0, 0)};
 static const float3 MESH_LIGHT_SHADOW_UP[MESH_LIGHT_SHADOW_FACE_COUNT] =
     {float3(0, 1, 0), float3(0, 1, 0), float3(0, 0, -1), float3(0, 0, 1), float3(0, 1, 0), float3(0, 1, 0)};
-// Blocker search and filter taps: the centre and the corners, then a ring of eight, in units of the filter radius.
-static const uint MESH_LIGHT_SHADOW_BLOCKER_TAP_COUNT = 5;
-static const uint MESH_LIGHT_SHADOW_FILTER_TAP_COUNT = 9;
-static const float2 MESH_LIGHT_SHADOW_BLOCKER_TAPS[MESH_LIGHT_SHADOW_BLOCKER_TAP_COUNT] = {float2(0, 0),
-                                                                                           float2(-1, -1),
-                                                                                           float2(1, -1),
-                                                                                           float2(-1, 1),
-                                                                                           float2(1, 1)};
-static const float2 MESH_LIGHT_SHADOW_FILTER_TAPS[MESH_LIGHT_SHADOW_FILTER_TAP_COUNT] = {float2(0, 0),
-                                                                                         float2(1, 0),
-                                                                                         float2(0.7071068, 0.7071068),
-                                                                                         float2(0, 1),
-                                                                                         float2(-0.7071068, 0.7071068),
-                                                                                         float2(-1, 0),
-                                                                                         float2(-0.7071068, -0.7071068),
-                                                                                         float2(0, -1),
-                                                                                         float2(0.7071068, -0.7071068)};
-// One face lookup: the slot, the projection and the receiver's tangent plane relative to the caster.
-struct MeshLightShadowFace
+// Blocker search taps: the receiver's own direction, then rings of lateral widths an octave apart below the widest, the
+// near plane's, each with taps evenly spaced in angle, so a receiver within half a ring's width of an occluder's hard
+// shadow always finds it. Filter taps: light points over the whole disk at the blockers' width, once per height layer.
+static const uint MESH_LIGHT_SHADOW_SEARCH_RING_COUNT = 4;
+static const uint MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT = 3;
+static const uint MESH_LIGHT_SHADOW_SEARCH_TAP_COUNT =
+    1 + MESH_LIGHT_SHADOW_SEARCH_RING_COUNT * MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT;
+static const uint MESH_LIGHT_SHADOW_FILTER_TAP_COUNT = 12;
+// Largest lateral width over the receiver's distance, about the tangent of a tap's angle from the receiver's direction
+// (63 degrees): an occluder nearer the light's plane than about half its radius is searched and filtered as if it lay
+// farther, so its penumbra is too narrow.
+static const float MESH_LIGHT_SHADOW_MAXIMUM_SPREAD = 2;
+// The found occluders form two height layers when the lower one's lateral width exceeds the higher one's by this
+// factor and by a texel: a light point's segment crosses them in directions the other layer's width would misplace.
+static const float MESH_LIGHT_SHADOW_LAYER_SPREAD_RATIO = 1.5;
+// A light whose widest penumbra at the receiver spans at most this many shadow texels searches only the receiver's own
+// direction: its rings would read the same few texels.
+static const float MESH_LIGHT_SHADOW_NARROW_TEXELS = 2;
+// Interleaved gradient noise: frac(SCALE * frac(dot(pixel, WEIGHTS))), Jimenez 2014.
+static const float2 MESH_LIGHT_SHADOW_NOISE_WEIGHTS = float2(0.06711056, 0.00583715);
+static const float MESH_LIGHT_SHADOW_NOISE_SCALE = 52.9829189;
+// One caster's lookup: its face slots and projection, and the receiver's tangent plane relative to the caster.
+struct MeshLightShadowView
 {
-    float2 Origin;
-    float2 Maximum;
+    // The atlas origins of faces (+X, -X), (+Y, -Y) and (+Z, -Z); negative for a face the caster does not render.
+    float4 OriginsX;
+    float4 OriginsY;
+    float4 OriginsZ;
     float Texels;
     float Tangent;
     float NearMeters;
     float FarMeters;
-    float3 ForwardWorld;
-    float3 RightWorld;
-    float3 UpWorld;
+    float InverseRange;
+    // LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR / (near * range): a stored depth rebuilt from rasterized float32
+    // depth is uncertain by this times forward^2.
+    float RebuiltErrorScale;
     float3 NormalWorld;
-    // dot(normal, caster - receiver): the caster's height above the receiver's plane.
-    float PlaneHeight;
-    // How far the receiver's plane may lie from the surface along its normal, in metres: the normal component of
-    // the uncertainty of a receiver rebuilt from depth.
-    float PlaneUncertainty;
+    // dot(normal, caster - receiver), the caster's height above the receiver's plane, less how far that plane may
+    // lie from the surface along its normal: the normal component of the uncertainty of a receiver rebuilt from depth.
+    float PlaneReach;
 };
-// Linear depth of a forward distance in the face projection, as the face stores it.
-float ComputeMeshLightShadowDepth(in MeshLightShadowFace face, float forward)
+// Two interleaved gradient noise values in [0, 1) of a pixel position: of the pixel and of its transpose. The second
+// is not a shifted copy of the first, as the noise of a translated pixel would be.
+float2 ComputeMeshLightShadowNoise(float2 positionPixel)
 {
-    return (forward - face.NearMeters) / (face.FarMeters - face.NearMeters);
+    float2 pixel = floor(positionPixel);
+    return frac(MESH_LIGHT_SHADOW_NOISE_SCALE * frac(float2(dot(pixel, MESH_LIGHT_SHADOW_NOISE_WEIGHTS),
+                                                            dot(pixel.yx, MESH_LIGHT_SHADOW_NOISE_WEIGHTS))));
 }
-// The stored occluder depth at a texel, clamped into the face slot, and the depth the receiver's tangent plane has
-// along that texel's ray: comparing with the plane rather than with the receiver point keeps a flat receiver from
-// shadowing itself where its depth changes across the filter. The plane is taken as near the caster as the
-// receiver's uncertainty allows, which widens the comparison by the depth that displacement spans along the ray.
-void ReadMeshLightShadowTexel(in MeshLightShadowFace face, float2 texel, out float outStored, out float outPlane)
+// The cube face whose frustum holds a nonzero direction from the caster, and the direction's component along it.
+uint GetMeshLightShadowFace(float3 directionWorld, out float outForward)
 {
-    float2 position = clamp(floor(texel), face.Origin, face.Maximum);
-    float2 code = meshLightShadowAtlas.Load(int3(int2(position), 0)).rg;
-    outStored = DecodeShadowDepth(code);
-    float2 uv = (position + 0.5 - face.Origin) / face.Texels;
-    float2 ndc = float2(uv.x * 2 - 1, 1 - uv.y * 2);
-    float3 directionWorld = face.ForwardWorld + (face.RightWorld * ndc.x + face.UpWorld * ndc.y) * face.Tangent;
-    float along = -dot(face.NormalWorld, directionWorld);
+    float3 magnitude = abs(directionWorld);
+    uint axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
+    float component = axis == 0 ? directionWorld.x : (axis == 1 ? directionWorld.y : directionWorld.z);
+    outForward = abs(component);
+    return 2 * axis + (component < 0 ? 1 : 0);
+}
+// The atlas origin of a face of the view's caster, negative when the caster does not render it.
+float2 GetMeshLightShadowOrigin(in MeshLightShadowView view, uint face)
+{
+    float4 origins = face < 2 ? view.OriginsX : (face < 4 ? view.OriginsY : view.OriginsZ);
+    return face % 2 == 0 ? origins.xy : origins.zw;
+}
+// A 2D direction turned by the angle whose cosine and sine are `turn`.
+float2 TurnMeshLightShadowTap(float2 direction, float2 turn)
+{
+    return float2(direction.x * turn.x - direction.y * turn.y, direction.x * turn.y + direction.y * turn.x);
+}
+// The occluder the caster sees in a nonzero direction, on whichever face holds it: whether it lies in front of the
+// receiver's tangent plane along that texel's ray, and its offset from the caster, the texel's ray to its stored
+// depth. Comparing with the plane rather than with the receiver point keeps a flat receiver from shadowing itself
+// where its depth changes across the filter. The plane is taken as near the caster as the receiver's uncertainty
+// allows, which widens the comparison by the depth that displacement spans along the ray. A face the caster does not
+// render, behind its one-sided emitters, holds no occluder.
+bool ReadMeshLightShadowDirection(in MeshLightShadowView view, float3 directionWorld, out float3 outOccluderWorld)
+{
+    outOccluderWorld = float3(0);
+    float forward;
+    uint face = GetMeshLightShadowFace(directionWorld, forward);
+    float2 origin = GetMeshLightShadowOrigin(view, face);
+    if (origin.x < 0)
+    {
+        return false;
+    }
+    float3 forwardWorld = MESH_LIGHT_SHADOW_FORWARD[face];
+    float3 rightWorld = MESH_LIGHT_SHADOW_RIGHT[face];
+    float3 upWorld = MESH_LIGHT_SHADOW_UP[face];
+    float2 ndc = float2(dot(directionWorld, rightWorld), dot(directionWorld, upWorld)) / (forward * view.Tangent);
+    float2 texel = origin + float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * view.Texels;
+    float2 position = clamp(floor(texel), origin, origin + view.Texels - 1);
+    float stored = DecodeShadowDepth(meshLightShadowAtlas.Load(int3(int2(position), 0)).rg);
+    float2 uv = (position + 0.5 - origin) / view.Texels;
+    float2 texelNdc = float2(uv.x * 2 - 1, 1 - uv.y * 2);
+    float3 texelDirectionWorld = forwardWorld + (rightWorld * texelNdc.x + upWorld * texelNdc.y) * view.Tangent;
+    float along = -dot(view.NormalWorld, texelDirectionWorld);
     // A ray that never meets the plane in front of the caster sees no receiver there: nothing can shadow it.
-    float forward = along > 0 ? max(face.PlaneHeight - face.PlaneUncertainty, 0) / along : face.FarMeters;
+    float planeForward = along > 0 ? view.PlaneReach / along : view.FarMeters;
     // The comparison allows for the 16-bit codes and for an opaque occluder's depth, rebuilt from its rasterized
-    // float32 depth, which is uncertain by forward^2 / near times LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR metres.
-    float planeForward = clamp(forward, face.NearMeters, face.FarMeters);
-    float rebuiltError = LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR * planeForward * planeForward /
-                         (face.NearMeters * (face.FarMeters - face.NearMeters));
-    outPlane = ComputeMeshLightShadowDepth(face, planeForward) -
-               LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES / SHADOW_DEPTH_CODE_MAXIMUM - rebuiltError;
+    // float32 depth.
+    planeForward = clamp(planeForward, view.NearMeters, view.FarMeters);
+    float plane = (planeForward - view.NearMeters) * view.InverseRange -
+                  LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES / SHADOW_DEPTH_CODE_MAXIMUM -
+                  view.RebuiltErrorScale * planeForward * planeForward;
+    outOccluderWorld = texelDirectionWorld * (view.NearMeters + stored / view.InverseRange);
+    return stored < plane;
 }
-// Fraction of the caster's view of the receiver that no occluder blocks; one without a caster or shadow table.
-// positionUncertaintyWorld is how far positionWorld may lie from the surface, zero for an exact position.
+// Fraction of the caster's light disk that no occluder hides from the receiver, each light point weighted by its
+// diffuse form factor there; one without a caster or shadow table. positionUncertaintyWorld is how far positionWorld
+// may lie from the surface, zero for an exact position, and noise in [0, 1)^2 turns the receiver's taps and offsets
+// their search widths (ComputeMeshLightShadowNoise).
 float ComputeMeshLightShadowVisibility(uint tableWord,
                                        uint casterKey,
                                        float3 positionWorld,
                                        float3 positionUncertaintyWorld,
-                                       float3 normalWorld)
+                                       float3 normalWorld,
+                                       float2 noise)
 {
     if (tableWord == 0 || casterKey == 0)
     {
@@ -370,75 +435,177 @@ float ComputeMeshLightShadowVisibility(uint tableWord,
     uint casterWord = tableWord + MESH_LIGHT_SHADOW_HEADER_WORDS + (casterKey - 1) * MESH_LIGHT_SHADOW_CASTER_WORDS;
     float4 placement = meshLightWords[casterWord];
     float4 shape = meshLightWords[casterWord + 1];
-    MeshLightShadowFace face;
-    face.FarMeters = placement.w;
-    face.NearMeters = shape.y * placement.w;
-    face.Texels = shape.z;
-    face.Tangent = shape.w;
-    face.NormalWorld = normalWorld;
+    MeshLightShadowView view;
+    view.OriginsX = meshLightWords[casterWord + 2];
+    view.OriginsY = meshLightWords[casterWord + 3];
+    view.OriginsZ = meshLightWords[casterWord + 4];
+    view.FarMeters = placement.w;
+    view.NearMeters = shape.y * placement.w;
+    view.Texels = shape.z;
+    view.Tangent = shape.w;
+    view.InverseRange = 1 / (view.FarMeters - view.NearMeters);
+    view.RebuiltErrorScale = LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR * view.InverseRange / view.NearMeters;
+    view.NormalWorld = normalWorld;
     // One texel spans 2 * tangent * forward / texels metres at forward distance; the distance bounds it.
-    float texelMeters = 2 * face.Tangent * length(positionWorld - placement.xyz) / face.Texels;
+    float texelSpread = 2 * view.Tangent / view.Texels;
+    float texelMeters = texelSpread * length(positionWorld - placement.xyz);
     float3 deltaWorld =
         positionWorld + normalWorld * (LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS * texelMeters) - placement.xyz;
-    face.PlaneHeight = -dot(normalWorld, deltaWorld);
+    float planeHeight = -dot(normalWorld, deltaWorld);
     // A receiver rebuilt from conventional depth lies centimetres off its surface tens of metres from the camera.
     // Behind the surface, its plane would meet the receiver's own stored depth first and shadow it in a pattern that
     // changes with every pixel and camera pose.
-    face.PlaneUncertainty = abs(dot(normalWorld, positionUncertaintyWorld));
-    float3 magnitude = abs(deltaWorld);
-    uint axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
-    float component = axis == 0 ? deltaWorld.x : (axis == 1 ? deltaWorld.y : deltaWorld.z);
-    uint index = 2 * axis + (component < 0 ? 1 : 0);
-    float4 origins = meshLightWords[casterWord + 2 + index / 2];
-    face.Origin = index % 2 == 0 ? origins.xy : origins.zw;
-    face.Maximum = face.Origin + face.Texels - 1;
-    face.ForwardWorld = MESH_LIGHT_SHADOW_FORWARD[index];
-    face.RightWorld = MESH_LIGHT_SHADOW_RIGHT[index];
-    face.UpWorld = MESH_LIGHT_SHADOW_UP[index];
-    float forward = dot(deltaWorld, face.ForwardWorld);
-    // A receiver facing away from the caster, inside its near distance or beyond its range is left unshadowed.
-    if (face.Origin.x < 0 || face.PlaneHeight <= 0 || forward <= face.NearMeters || forward >= face.FarMeters)
+    view.PlaneReach = max(planeHeight - abs(dot(normalWorld, positionUncertaintyWorld)), 0);
+    float forward;
+    uint face = GetMeshLightShadowFace(deltaWorld, forward);
+    // A receiver facing away from the caster, behind its one-sided emitters, inside its near distance or beyond its
+    // range is left unshadowed.
+    if (GetMeshLightShadowOrigin(view, face).x < 0 || planeHeight <= 0 || forward <= view.NearMeters ||
+        forward >= view.FarMeters)
     {
         return 1;
     }
-    float2 ndc = float2(dot(deltaWorld, face.RightWorld), dot(deltaWorld, face.UpWorld)) / (forward * face.Tangent);
-    float2 texel = face.Origin + float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * face.Texels;
-    // Average depth of the occluders around the receiver.
-    float blockerSum = 0;
-    float blockerCount = 0;
-    for (uint tap = 0; tap < MESH_LIGHT_SHADOW_BLOCKER_TAP_COUNT; ++tap)
+    float distance = length(deltaWorld);
+    // The light disk: in the plane across a one-sided caster's emitter normal, else facing the receiver. A table
+    // without disk words (no flag in its header) has only the enclosing sphere's radius.
+    float4 header = meshLightWords[tableWord];
+    float4 disk = float4(0, 0, 0, shape.x);
+    if (header.w > 0)
     {
-        float stored;
-        float plane;
-        ReadMeshLightShadowTexel(face,
-                                 texel + MESH_LIGHT_SHADOW_BLOCKER_TAPS[tap] * MESH_LIGHT_SHADOW_GUTTER_TEXELS * 0.5,
-                                 stored,
-                                 plane);
-        if (stored < plane)
+        disk = meshLightWords[tableWord + MESH_LIGHT_SHADOW_HEADER_WORDS +
+                              uint(header.x) * MESH_LIGHT_SHADOW_CASTER_WORDS +
+                              (casterKey - 1) * MESH_LIGHT_SHADOW_DISK_WORDS];
+    }
+    float3 lightNormalWorld = dot(disk.xyz, disk.xyz) > 0 ? disk.xyz : deltaWorld / distance;
+    float lightRadius = disk.w;
+    // The receiver's height above the light's plane; a segment to a light point reaches height z at fraction z /
+    // height.
+    float height = dot(deltaWorld, lightNormalWorld);
+    if (height <= 0)
+    {
+        return 1;
+    }
+    float3 helperWorld = abs(lightNormalWorld.z) < MESH_LIGHT_FRAME_AXIS_THRESHOLD ? float3(0, 0, 1) : float3(1, 0, 0);
+    float3 tangentWorld = normalize(cross(helperWorld, lightNormalWorld));
+    float3 bitangentWorld = cross(lightNormalWorld, tangentWorld);
+    float rotation = 2 * PI * noise.x;
+    float2 rotationDirection = float2(cos(rotation), sin(rotation));
+    float2 goldenTurn = float2(cos(GOLDEN_ANGLE_RADIANS), sin(GOLDEN_ANGLE_RADIANS));
+    // The segment from the receiver to light point radius * u crosses height z where the caster sees the direction
+    // deltaWorld + radius * u * (height / z - 1): its lateral width at z, in metres beside the receiver.
+    float widestLateral = MESH_LIGHT_SHADOW_MAXIMUM_SPREAD * distance;
+    float searchLateral = min(lightRadius * (height / view.NearMeters - 1), widestLateral);
+    // The rings span at most an octave each; rings narrower than a texel would only repeat the receiver's own tap.
+    float ringOctaves =
+        min(log2(max(searchLateral / (texelSpread * distance), 1)) / MESH_LIGHT_SHADOW_SEARCH_RING_COUNT, 1);
+    float inverseHeightSum = 0;
+    float blockerCount = 0;
+    float nearestInverseHeight = 0;
+    float farthestInverseHeight = 1 / view.NearMeters;
+    float3 occluderWorld;
+    // The receiver's own direction always counts, so a receiver the caster's point sees shadowed is never wholly lit.
+    if (ReadMeshLightShadowDirection(view, deltaWorld, occluderWorld) == true)
+    {
+        float inverseHeight = 1 / clamp(dot(occluderWorld, lightNormalWorld), view.NearMeters, height);
+        inverseHeightSum = inverseHeight;
+        blockerCount = 1;
+        nearestInverseHeight = inverseHeight;
+        farthestInverseHeight = inverseHeight;
+    }
+    float2 spokeTurn = float2(cos(2 * PI / MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT),
+                              sin(2 * PI / MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT));
+    float2 ringDirection = rotationDirection;
+    uint ringCount =
+        searchLateral > MESH_LIGHT_SHADOW_NARROW_TEXELS * texelMeters ? MESH_LIGHT_SHADOW_SEARCH_RING_COUNT : 0;
+    for (uint ring = 0; ring < ringCount; ++ring)
+    {
+        float lateral = searchLateral * exp2(-(float(ring) + noise.y) * ringOctaves);
+        float2 spokeDirection = ringDirection;
+        for (uint spoke = 0; spoke < MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT; ++spoke)
         {
-            blockerSum += stored;
-            ++blockerCount;
+            float3 directionWorld =
+                deltaWorld + (tangentWorld * spokeDirection.x + bitangentWorld * spokeDirection.y) * lateral;
+            spokeDirection = TurnMeshLightShadowTap(spokeDirection, spokeTurn);
+            if (ReadMeshLightShadowDirection(view, directionWorld, occluderWorld) == false)
+            {
+                continue;
+            }
+            // Only an occluder between the light's plane and the receiver can hide the light. Seen from the
+            // receiver, it backprojects onto the plane at deltaWorld + (occluder - deltaWorld) * height / (height -
+            // its height); outside the disk it hides none of it.
+            float occluderHeight = dot(occluderWorld, lightNormalWorld);
+            if (occluderHeight <= 0 || occluderHeight >= height)
+            {
+                continue;
+            }
+            float3 lightPointWorld = deltaWorld + (occluderWorld - deltaWorld) * (height / (height - occluderHeight));
+            if (dot(lightPointWorld, lightPointWorld) > lightRadius * lightRadius)
+            {
+                continue;
+            }
+            float inverseHeight = 1 / max(occluderHeight, view.NearMeters);
+            inverseHeightSum += inverseHeight;
+            blockerCount += 1;
+            nearestInverseHeight = max(nearestInverseHeight, inverseHeight);
+            farthestInverseHeight = min(farthestInverseHeight, inverseHeight);
         }
+        ringDirection = TurnMeshLightShadowTap(ringDirection, goldenTurn);
     }
     if (blockerCount == 0)
     {
         return 1;
     }
-    // The blocker's forward distance inverts the depth mapping; its penumbra scales with the light radius.
-    float blockerDepth = blockerSum / blockerCount;
-    float blockerForward = face.NearMeters + blockerDepth * (face.FarMeters - face.NearMeters);
-    float penumbraMeters = shape.x * max(forward - blockerForward, 0) / max(blockerForward, face.NearMeters);
-    float radius =
-        clamp(penumbraMeters / (2 * face.Tangent * forward / face.Texels), 1, MESH_LIGHT_SHADOW_GUTTER_TEXELS);
+    // Filters narrower than a texel would compare the same texel throughout.
+    float meanLateral = clamp(lightRadius * (height * inverseHeightSum / blockerCount - 1), texelMeters, widestLateral);
+    float nearLateral = clamp(lightRadius * (height * nearestInverseHeight - 1), texelMeters, widestLateral);
+    float farLateral = clamp(lightRadius * (height * farthestInverseHeight - 1), texelMeters, widestLateral);
+    bool isLayered =
+        nearLateral > MESH_LIGHT_SHADOW_LAYER_SPREAD_RATIO * farLateral && nearLateral - farLateral > texelMeters;
+    // Occluders lower than this height belong to the near layer.
+    float splitHeight = 2 / (nearestInverseHeight + farthestInverseHeight);
     float lit = 0;
+    float weightSum = 0;
+    float2 tapDirection = rotationDirection;
     for (uint tap = 0; tap < MESH_LIGHT_SHADOW_FILTER_TAP_COUNT; ++tap)
     {
-        float stored;
-        float plane;
-        ReadMeshLightShadowTexel(face, texel + MESH_LIGHT_SHADOW_FILTER_TAPS[tap] * radius, stored, plane);
-        lit += stored < plane ? 0 : 1;
+        float2 offset = tapDirection * sqrt((float(tap) + 0.5) / MESH_LIGHT_SHADOW_FILTER_TAP_COUNT);
+        tapDirection = TurnMeshLightShadowTap(tapDirection, goldenTurn);
+        float3 lateralWorld = tangentWorld * offset.x + bitangentWorld * offset.y;
+        // The light point's diffuse form factor at the receiver weights its visibility; one below the receiver's
+        // horizon needs no lookup.
+        float3 towardLightWorld = lateralWorld * lightRadius - deltaWorld;
+        float lengthSquared = dot(towardLightWorld, towardLightWorld);
+        float weight = max(dot(normalWorld, towardLightWorld), 0) * max(-dot(lightNormalWorld, towardLightWorld), 0) /
+                       (lengthSquared * lengthSquared);
+        if (weight <= 0)
+        {
+            continue;
+        }
+        weightSum += weight;
+        bool isBlocked = false;
+        if (isLayered == false)
+        {
+            if (ReadMeshLightShadowDirection(view, deltaWorld + lateralWorld * meanLateral, occluderWorld) == true)
+            {
+                isBlocked = dot(occluderWorld, lightNormalWorld) > 0;
+            }
+        }
+        else
+        {
+            if (ReadMeshLightShadowDirection(view, deltaWorld + lateralWorld * nearLateral, occluderWorld) == true)
+            {
+                float occluderHeight = dot(occluderWorld, lightNormalWorld);
+                isBlocked = occluderHeight > 0 && occluderHeight < splitHeight;
+            }
+            if (isBlocked == false &&
+                ReadMeshLightShadowDirection(view, deltaWorld + lateralWorld * farLateral, occluderWorld) == true)
+            {
+                isBlocked = dot(occluderWorld, lightNormalWorld) >= splitHeight;
+            }
+        }
+        lit += isBlocked == true ? 0 : weight;
     }
-    return lit / MESH_LIGHT_SHADOW_FILTER_TAP_COUNT;
+    return weightSum > 0 ? lit / weightSum : 1;
 }
 // Entry `entry` of a culling grid list (deferred_layout.h): the header word of one listed record.
 uint GetMeshLightGridEntry(uint entryWord, uint entry)
@@ -452,12 +619,13 @@ uint GetMeshLightGridEntry(uint entryWord, uint entry)
 // and skips listed records whose bound at the sample is below it too. Every shaded surface lies inside the grid, so a
 // position reconstructed outside it reads the nearest boundary cell. Evaluating every record there instead made a
 // few floor pixels walk the whole record list and stall the pass. positionUncertaintyWorld is how far positionWorld may
-// lie from the surface along the view ray; the shadow comparison allows for it. With shouldSeparateDiffuse, the diffuse
-// integrals go to outDiffuse and the result holds only the specular ones, for a skin resolve that spreads the diffuse
-// lighting; otherwise outDiffuse is zero.
+// lie from the surface along the view ray; the shadow comparison allows for it. positionPixel, the sample's pixel
+// position, turns its shadow taps. With shouldSeparateDiffuse, the diffuse integrals go to outDiffuse and the result
+// holds only the specular ones, for a skin resolve that spreads the diffuse lighting; otherwise outDiffuse is zero.
 float3 EvaluateRasterMeshLightLobes(in SurfaceSample surface,
                                     in float3 positionWorld,
                                     in float3 positionUncertaintyWorld,
+                                    in float2 positionPixel,
                                     uint polygonCount,
                                     uint gridWord,
                                     bool shouldSeparateDiffuse,
@@ -506,6 +674,7 @@ float3 EvaluateRasterMeshLightLobes(in SurfaceSample surface,
     // Each cell lists a caster's records together, so one visibility serves a run of them.
     uint visibleCaster = ~0u;
     float visibility = 1;
+    float2 shadowNoise = ComputeMeshLightShadowNoise(positionPixel);
     for (uint entry = 0; entry < entryCount; ++entry)
     {
         uint record = first;
@@ -545,7 +714,8 @@ float3 EvaluateRasterMeshLightLobes(in SurfaceSample surface,
                                                           casterKey,
                                                           positionWorld,
                                                           positionUncertaintyWorld,
-                                                          surface.NormalWorld);
+                                                          surface.NormalWorld,
+                                                          shadowNoise);
             visibleCaster = casterKey;
         }
         if (shouldSeparateDiffuse == true)
@@ -564,6 +734,7 @@ float3 EvaluateRasterMeshLightLobes(in SurfaceSample surface,
 float3 EvaluateRasterMeshLights(in SurfaceSample surface,
                                 in float3 positionWorld,
                                 in float3 positionUncertaintyWorld,
+                                in float2 positionPixel,
                                 uint polygonCount,
                                 uint gridWord)
 {
@@ -571,6 +742,7 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface,
     return EvaluateRasterMeshLightLobes(surface,
                                         positionWorld,
                                         positionUncertaintyWorld,
+                                        positionPixel,
                                         polygonCount,
                                         gridWord,
                                         false,

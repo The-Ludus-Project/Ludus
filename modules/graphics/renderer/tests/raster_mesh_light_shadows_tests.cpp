@@ -128,6 +128,79 @@ TEST_CASE("mesh-light shadow casters merge nearby emitters and separate distant 
     CHECK(panel.RangeMeters >= math::Length(reachCenterWorld - panel.PositionWorld) + reachRadius - 1e-4F);
 }
 
+TEST_CASE("mesh-light shadow casters carry the light disk whose penumbra the resolve estimates",
+          "[mesh-area][mesh-light-shadows]")
+{
+    constexpr float32 PANEL_SIZE_METERS = .2F;
+    constexpr float32 PAIR_SEPARATION_METERS = .4F;
+    constexpr float32 SMALL_SIZE_METERS = .02F;
+    Array<math::Vector4> words;
+    // A downward panel, a pair of small downward triangles within one caster's radius, and a two-sided emitter.
+    AddTriangle(words, {0, 3, 0}, PANEL_SIZE_METERS, {0, -1, 0}, {4, 4, 4}, false);
+    AddTriangle(words, {SEPARATION_METERS, 3, 0}, SMALL_SIZE_METERS, {0, -1, 0}, {2, 2, 2}, false);
+    AddTriangle(words,
+                {SEPARATION_METERS + PAIR_SEPARATION_METERS, 3, 0},
+                SMALL_SIZE_METERS,
+                {0, -1, 0},
+                {2, 2, 2},
+                false);
+    AddTriangle(words, {2 * SEPARATION_METERS, 3, 0}, SMALL_SIZE_METERS, {0, 0, 1}, {1, 1, 1}, true);
+    Array<internal::MeshLightShadowCaster> casters;
+    internal::MeshLightShadowReport report;
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 4, NO_RECEIVER_BOUNDS, casters, report) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(casters.GetSize() == 3);
+    const auto getArea = [&words](usize record) {
+        return words[record * (renderer::MESH_LIGHT_POLYGON_HEADER_WORDS + CORNER_COUNT) +
+                     renderer::MESH_LIGHT_POLYGON_HEADER_WORDS]
+            .W;
+    };
+    // One polygon: its equal-area disk, across its normal, well inside the sphere through its corners.
+    const internal::MeshLightShadowCaster& panel = casters[GetCasterKey(words, 0) - 1];
+    CHECK(panel.LightNormalWorld == math::Vector3{0, -1, 0});
+    CHECK(panel.DiskRadiusMeters ==
+          Catch::Approx(math::Sqrt(getArea(0) / static_cast<float32>(math::kPi))).epsilon(1e-5F));
+    CHECK(panel.DiskRadiusMeters < panel.LightRadiusMeters);
+    // Two small emitters apart: the disk spans their spread, which the uniform disk of the same second moment of
+    // area sets, rather than their tiny areas.
+    REQUIRE(GetCasterKey(words, 1) == GetCasterKey(words, 2));
+    const internal::MeshLightShadowCaster& pair = casters[GetCasterKey(words, 1) - 1];
+    CHECK(pair.DiskRadiusMeters > PAIR_SEPARATION_METERS * .5F);
+    CHECK(pair.DiskRadiusMeters <= pair.LightRadiusMeters);
+    // An enclosing caster's disk faces each receiver, so it carries no normal.
+    const internal::MeshLightShadowCaster& enclosing = casters[GetCasterKey(words, 3) - 1];
+    CHECK(enclosing.LightNormalWorld == math::Vector3{});
+    CHECK(enclosing.DiskRadiusMeters > 0);
+    CHECK(enclosing.DiskRadiusMeters <= enclosing.LightRadiusMeters);
+
+    // The table flags the disk words in its header and appends them after every caster's words, in caster order.
+    Array<math::Vector4> table;
+    REQUIRE(table.TryAdd({}) == true);
+    uint32 tableWord = 0;
+    REQUIRE(internal::AppendRasterMeshLightShadowTable(table,
+                                                       {casters.GetData(), casters.GetSize()},
+                                                       renderer::MESH_LIGHT_SHADOW_ATLAS_TEXELS,
+                                                       tableWord) == rhi::RasterStatus::Ready);
+    CHECK(tableWord == 1);
+    REQUIRE(table.GetSize() == tableWord + renderer::MESH_LIGHT_SHADOW_HEADER_WORDS +
+                                   casters.GetSize() * (renderer::MESH_LIGHT_SHADOW_CASTER_WORDS +
+                                                        renderer::MESH_LIGHT_SHADOW_DISK_WORDS));
+    CHECK(table[tableWord].X == 3);
+    CHECK(table[tableWord].W == 1);
+    const usize diskWord = tableWord + renderer::MESH_LIGHT_SHADOW_HEADER_WORDS +
+                           casters.GetSize() * renderer::MESH_LIGHT_SHADOW_CASTER_WORDS;
+    for (usize caster = 0; caster < casters.GetSize(); ++caster)
+    {
+        const math::Vector4 disk = table[diskWord + caster * renderer::MESH_LIGHT_SHADOW_DISK_WORDS];
+        CHECK(math::Vector3{disk.X, disk.Y, disk.Z} == casters[caster].LightNormalWorld);
+        CHECK(disk.W == casters[caster].DiskRadiusMeters);
+        // The caster's own words still open with its position and range, then its sphere radius.
+        const usize casterWord =
+            tableWord + renderer::MESH_LIGHT_SHADOW_HEADER_WORDS + caster * renderer::MESH_LIGHT_SHADOW_CASTER_WORDS;
+        CHECK(table[casterWord + 1].X == casters[caster].LightRadiusMeters);
+    }
+}
+
 TEST_CASE("mesh-light shadow ranges stop at the receiver bounds", "[mesh-area][mesh-light-shadows]")
 {
     // A bright downward panel whose culling reach is far beyond a 4 m room.

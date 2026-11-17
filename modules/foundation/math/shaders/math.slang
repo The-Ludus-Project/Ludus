@@ -2,6 +2,8 @@
 
 // GPU counterparts of FoundationMath operations; Slang owns shader scalar spellings.
 static const float PI = 3.14159265358979323846;
+// The golden angle pi * (3 - sqrt(5)), which spreads successive azimuths of a sunflower (Vogel) disk evenly.
+static const float GOLDEN_ANGLE_RADIANS = 2.39996322972865332;
 // Thanks to Milton Abramowitz and Irene A. Stegun (eds.), Handbook of Mathematical
 // Functions, NBS Applied Mathematics Series 55 (1964), p.299, equation 7.1.26:
 // https://digital.library.unt.edu/ark:/67531/metadc40302/ . Independently evaluate

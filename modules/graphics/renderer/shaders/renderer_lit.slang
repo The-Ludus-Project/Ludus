@@ -431,7 +431,6 @@ float CompareShadowTexels(in ShadowLookup lookup, float2 sampleTexel)
 // clamped to DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS, which bounds the cost and keeps wider penumbrae soft but too narrow.
 static const int DIRECTIONAL_PENUMBRA_TAP_COUNT = 16;
 static const float DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS = 32;
-static const float GOLDEN_ANGLE_RADIANS = 2.39996322972865332; // pi * (3 - sqrt(5))
 // Golden-angle disk tap `tap` of DIRECTIONAL_PENUMBRA_TAP_COUNT, inside the unit disk.
 float2 GetDirectionalPenumbraTap(int tap)
 {

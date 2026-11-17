@@ -6645,13 +6645,39 @@ Camera-only updates reuse the atlas, and masked materials cast through their
 alpha-tested shadow pipeline. The atlas takes the resolve's material base-colour
 slot, which the resolve never samples; the caster table follows the culling grid,
 whose cull word records its position. A package whose resolve predates shadows
-ignores both, so no package version changes.
+ignores both, so no package version changes. After every caster's words, the table
+holds one light-disk word per caster, which a flag in its header announces: a
+one-sided caster's flux-weighted mean emitter normal (zero for an enclosing caster)
+and the radius of the uniform disk with its members' flux-weighted second moment of
+area, at most its enclosing radius. A single polygon gets about its equal-area disk:
+0.45 m for a 0.8 m square, whose enclosing sphere has 0.57 m. A resolve cooked before
+the disk words reads the casters' words unchanged.
 
 The resolve multiplies each record's unshadowed integral by its caster's visibility at
-the receiver. It offsets the receiver by 1.5 shadow texels along its normal, searches
-five taps for occluders and, when it finds any, filters nine taps over a penumbra of
-the caster radius times (receiver distance - blocker distance) / blocker distance,
-clamped to the gutter. Each tap compares the stored depth with the depth the
+the receiver: the fraction of the caster's light disk that no occluder hides, each
+light point weighted by its diffuse form factor at the receiver. A one-sided caster's
+disk lies across its emitter normal and an enclosing caster's faces the receiver. The
+segment from the receiver to a light point at offset `r u` on the disk (`u` in the
+unit disk) reaches height `z` above the disk's plane in the direction
+`receiver + r u (h / z - 1)` from the caster, where `h` is the receiver's height.
+Every tap is such a direction, looked up on whichever cube face holds it, so the
+search and the filter cross face seams and widen with the light rather than stopping
+at the face gutter. The resolve offsets the receiver by 1.5 shadow texels along its
+normal and searches thirteen taps: the receiver's own direction, then four rings of
+three taps whose lateral widths lie an octave apart below that of the near plane, at
+most twice the receiver's distance. A receiver within half a ring's width of an
+occluder's hard shadow therefore always finds it. A found occluder counts only if it
+lies between the disk's plane and the receiver and, seen from the receiver,
+backprojects onto the disk; the emitters behind the plane hide nothing. When it finds
+any, the resolve filters twelve light points at the blockers' mean inverse height.
+Where the found blockers form two height layers, their widths differing by half
+again and by a texel, each light point is tested at both, and an occluder counts only
+in its own layer, so a blocker beside the light keeps its wide penumbra next to a
+sharp one near the receiver. A light whose widest penumbra spans at most two texels
+searches only the receiver's direction, and every filter spans at least a texel. The
+taps form a golden-angle disk rotated per pixel by interleaved gradient noise, which
+turns the steps of a fixed pattern into a fine, static dither without temporal
+accumulation. Each tap compares the stored depth with the depth the
 receiver's tangent plane has along that texel's ray, so a flat receiver never shadows
 itself at grazing angles. The receiver is rebuilt from the depth buffer, so, as for
 [directional shadows](#directional-shadows), its position is uncertain along the view
@@ -6668,12 +6694,14 @@ and 120 m from an area-lit floor and bounds every pixel by the CPU integral of t
 unshadowed emitter. The grid lists a caster's records together, so one lookup serves
 a run of them. Occluders nearer than a caster's near distance are ignored: half its
 offset in front of one-sided emitters, and its radius when it encloses its members.
-The penumbra is an estimate from one point per caster with a filter that stays
-within the face gutter, so a large emitter's penumbra, which can span hundreds of
-texels, is nearly hard. Under a 0.8 m square of 4.4 nits, blockers 0.22 m and
-0.47 m in front of its caster now shadow the receiver; the
+The penumbra remains an estimate from one point per caster: the disk is round, the
+blockers' heights come from thirteen taps, and occluders nearer the light's plane
+than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
+blockers 0.22 m and 0.47 m in front of its caster, the
 [RT2 area-light fixture](../architecture/renderer-systems.md#partial-area-light-shadows)
-measures the remaining penumbra error against an exact backprojection oracle. Geometry such as window
+measures visibility RMS error 0.063–0.088 against an exact backprojection oracle,
+where the earlier filter, clamped to the four-texel gutter, left nearly hard shadows
+with RMS error 0.32–0.41. Geometry such as window
 glass that the scene draws as opaque also blocks mesh light in the shadow faces.
 
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
@@ -6719,6 +6747,29 @@ The differences lie within the run-to-run spread, which reached 16.7 ms for Spon
 Receivers whose occluders were hidden inside the old near plane now find blockers and
 run the nine-tap filter, which can add a little resolve time where nearby occluders
 are common.
+
+The light-disk filter reads up to thirteen search taps per caster and, where it finds
+blockers, twelve filter taps, or 24 across two layers, instead of five and nine. It
+was timed against the gutter-clamped filter in one process: both packages prepared
+the same World on one device, and twelve blocks of 20 frames alternated between them,
+so GPU clock changes affect both alike. The table gives the median of the block
+medians and of the per-block differences, on the loaded M5 with the
+`macos-clang-debug` editor tests at 1600 x 1080. The inside views use the navigation
+state `{"yaw": 35, "pitch": 8, "zoom": 0.12}`.
+
+| Scene and view | Gutter-clamped filter | Light-disk filter | Difference |
+| --- | ---: | ---: | ---: |
+| Staircase2, default framing | 2.87 ms | 5.39 ms | +2.44 ms |
+| Sponza, default framing | 4.84 ms | 5.77 ms | +0.55 ms |
+| Bistro, default framing | 4.44 ms | 5.13 ms | +0.46 ms |
+| Staircase2, inside | 80.8 ms | 121.2 ms | +40.9 ms |
+| Sponza, inside | 25.8 ms | 29.1 ms | +3.7 ms |
+| Bistro, inside | 29.7 ms | 36.9 ms | +7.6 ms |
+
+Staircase2's large emitters light every receiver near them through thirteen casters,
+and most of its receivers find blockers. Per-pixel tap rotation costs no more than a
+fixed pattern there: the extra time is the taps themselves, about a third in the search
+and two thirds in the filter.
 
 ## Create a saved graph and import it
 
