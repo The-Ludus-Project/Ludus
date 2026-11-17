@@ -1685,11 +1685,12 @@ struct RenderGraphActivation::State final
     uint32 ReferenceWidth = 0;
     uint32 ReferenceHeight = 0;
     RenderGraphActivationReport Report{};
-    void FailCandidate(Status status) noexcept
+    void FailCandidate(Status status, RenderGraphFailureStage stage) noexcept
     {
         Candidate.Reset();
         Report.Candidate = RenderGraphCandidateState::Failed;
         Report.LastFailure = status;
+        Report.CandidateFailureStage = stage;
     }
     /// Publish the complete candidate; the replaced graph retires through RHI completion.
     void Activate() noexcept
@@ -1766,6 +1767,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
     state.Candidate.Reset();
     state.Report.CandidateReport = {};
     state.Report.CandidateRejection = RenderGraphSceneRejection::None;
+    state.Report.CandidateFailureStage = RenderGraphFailureStage::None;
     state.Report.CandidateGeneration = ++state.NextSerial;
     state.Report.CandidateRenderer =
         RequiresHardwareRayTracing(package->GetPlan()) == true
@@ -1782,7 +1784,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
     core::UniquePtr<Generation> generation{allocationOrNull};
     if (generation.Get() == nullptr)
     {
-        state.FailCandidate(Status::OutOfMemory);
+        state.FailCandidate(Status::OutOfMemory, RenderGraphFailureStage::Setup);
         return Status::OutOfMemory;
     }
     generation->Package.Swap(package);
@@ -1795,7 +1797,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
     const core::UniquePtr<RenderGraphPrograms> programs{programsOrNull};
     if (programs.Get() == nullptr)
     {
-        state.FailCandidate(Status::OutOfMemory);
+        state.FailCandidate(Status::OutOfMemory, RenderGraphFailureStage::Setup);
         return Status::OutOfMemory;
     }
     const Status status = generation->Graph.Initialize(state.Device,
@@ -1807,7 +1809,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
                                                        modelOrNull);
     if (IsAccepted(status) == false)
     {
-        state.FailCandidate(status);
+        state.FailCandidate(status, RenderGraphFailureStage::Setup);
         return status;
     }
     state.Candidate.Swap(generation);
@@ -1881,7 +1883,7 @@ Status RenderGraphActivation::Resize(uint32 referenceWidth, uint32 referenceHeig
         const Status candidateStatus = state.Candidate->Graph.Resize(referenceWidth, referenceHeight);
         if (IsAccepted(candidateStatus) == false)
         {
-            state.FailCandidate(candidateStatus);
+            state.FailCandidate(candidateStatus, RenderGraphFailureStage::Resize);
             return candidateStatus;
         }
         if (candidateStatus == Status::Pending)
@@ -1917,7 +1919,7 @@ Status RenderGraphActivation::Poll() noexcept
     const Status candidateStatus = candidate.Graph.Poll();
     if (IsAccepted(candidateStatus) == false)
     {
-        state.FailCandidate(candidateStatus);
+        state.FailCandidate(candidateStatus, candidate.Graph.GetLastFailureStage());
         return state.Active.Get() != nullptr ? activeStatus : candidateStatus;
     }
     if (candidateStatus == Status::Pending)
@@ -1987,7 +1989,7 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     else if (isActiveAccepting == true)
     {
         // The new generation cannot cover what the drawing generation accepts.
-        state.FailCandidate(candidateStatus);
+        state.FailCandidate(candidateStatus, candidate.Graph.GetLastFailureStage());
     }
     if (state.Active.Get() != nullptr)
     {

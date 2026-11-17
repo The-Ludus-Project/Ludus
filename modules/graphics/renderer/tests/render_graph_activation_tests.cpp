@@ -915,6 +915,62 @@ TEST_CASE("Rejected extractions name their scene-level cause for the drawing gra
     CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
 }
 
+TEST_CASE("Rejected generations name the stage that failed, and a newly staged candidate starts without one",
+          "[render-graph][activation]")
+{
+    using Stage = renderer::RenderGraphFailureStage;
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::None);
+    // The drawing graph names the step of its own rejected Update and clears it once an Update is accepted.
+    renderer::RenderGraphReport report;
+    fixture.Cameras[0].RasterExposureStops = 2 * renderer::ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS;
+    CHECK(fixture.Update(report, 2) == rhi::RasterStatus::InvalidDescription);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::CameraValues);
+    fixture.Cameras[0].RasterExposureStops = 0;
+    REQUIRE(fixture.Update(report, 3) == rhi::RasterStatus::Ready);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::None);
+
+    // A candidate needing per-draw values that the drawing graph does not fails at its item values, while the
+    // drawing graph accepts the same extraction and keeps drawing.
+    PackageOptions bound;
+    bound.HasUniforms = true;
+    bound.Generation = 2;
+    REQUIRE(fixture.Activation.Stage(MakePackage(bound)) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    const renderer::RenderGraphActivationReport itemValues = fixture.Activation.GetReport();
+    CHECK(itemValues.Candidate == renderer::RenderGraphCandidateState::Failed);
+    CHECK(itemValues.LastFailure == rhi::RasterStatus::InvalidDescription);
+    CHECK(itemValues.CandidateFailureStage == Stage::ItemValues);
+    CHECK(itemValues.CandidateRejection == renderer::RenderGraphSceneRejection::None);
+    CHECK(itemValues.ActiveGeneration == 1);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::None);
+
+    // Asynchronous pipeline preparation that fails names its own stage; staging clears the previous one.
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    PackageOptions pending;
+    pending.Generation = 3;
+    REQUIRE(fixture.Activation.Stage(MakePackage(pending)) == rhi::RasterStatus::Pending);
+    CHECK(fixture.Activation.GetReport().CandidateFailureStage == Stage::None);
+    ActivationFixture::CompletePending(rhi::RasterStatus::Failed);
+    CHECK(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed);
+    CHECK(fixture.Activation.GetReport().CandidateFailureStage == Stage::PipelinePreparation);
+
+    // A plan rejected before GPU work fails at setup.
+    PackageOptions malformed;
+    malformed.Generation = 4;
+    malformed.Backing = 31;
+    CHECK(fixture.Activation.Stage(MakePackage(malformed)) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Activation.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed);
+    CHECK(fixture.Activation.GetReport().CandidateFailureStage == Stage::Setup);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    fixture.Render();
+}
+
 TEST_CASE("A graph without clustered deferred programs draws a World with an Atmosphere and reports the omission",
           "[render-graph][activation][world-features]")
 {

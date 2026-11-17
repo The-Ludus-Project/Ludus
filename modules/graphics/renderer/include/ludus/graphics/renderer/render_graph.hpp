@@ -508,6 +508,26 @@ enum class RenderGraphSceneRejection : foundation::uint8
     Coverage,           ///< Conflicting coverage, or incomplete coverage under RejectIncomplete.
     MaskedDepthPrepass, ///< Alpha-masked materials would be sealed by the opaque depth-only prepass.
 };
+/// Step at which a graph operation last failed, so a host can say where a generation was rejected and what to repair.
+/// RenderGraph records the steps of Poll and Update (GetLastFailureStage); RenderGraphActivation adds Setup and Resize
+/// for the Initialize and Resize calls it makes on a candidate. A stage locates the check that failed; the returned
+/// rhi::RasterStatus remains the outcome, and RenderGraphSceneRejection still names the attributable scene causes.
+enum class RenderGraphFailureStage : foundation::uint8
+{
+    None,                ///< No failure: the latest call was accepted, pending or not ready, or none was made.
+    Setup,               ///< Initialize rejected the plan, its programs or resource descriptions, or ran out of memory.
+    Resize,              ///< Resize rejected the reference extent or could not recreate the graph's attachments.
+    PipelinePreparation, ///< Poll: preparing the graph's pipelines, programs or resources failed.
+    ScenePreparation,    ///< Poll or Update: preparing an accepted camera or scene on the GPU failed.
+    ExtractionInputs,    ///< Update: mesh, item or camera counts, the scene revisions or the coverage policy.
+    CameraValues,        ///< Update: a camera's exposure, exposure mode or lighting view.
+    ItemValues,          ///< Update: an item's source identity, mesh index or per-draw uniform values.
+    SceneResources,      ///< Update: materials and textures, or the buffers and uniform sets created for the scene.
+    Meshes,              ///< Update: a mesh's bounds or its geometry upload.
+    WorldTables,         ///< Update: resolving the Atmosphere sky and haze tables that ray passes read.
+    LightTransformer,    ///< Update: preparing the light transformer model for the scene.
+    RayScene,            ///< Update: building a ray pass's packed scene and acceleration structure.
+};
 /// Editor and shipping admission are explicit policies.
 enum class RenderGraphCoveragePolicy : foundation::uint8
 {
@@ -899,6 +919,9 @@ public:
     /// Cause of the latest Update's Unsupported result; None after any other result, before the
     /// first Update and after Reset. Diagnostic only: it never changes the drawable or pending scene.
     [[nodiscard]] RenderGraphSceneRejection GetLastRejection() const noexcept;
+    /// Step of the latest Poll or Update that failed; None after an accepted, Pending or NotReady result, before the
+    /// first call and after Reset. Diagnostic only: it never changes the drawable or pending scene. Owner-thread query.
+    [[nodiscard]] RenderGraphFailureStage GetLastFailureStage() const noexcept;
     /// How much of a World feature this graph draws, derived from its programs (see GetWorldFeatureSupport).
     /// NotRendered before Initialize succeeds.
     [[nodiscard]] WorldFeatureSupport GetWorldFeatureSupport(WorldFeature feature) const noexcept;
@@ -1081,6 +1104,18 @@ private:
     /// Allow the internal parity fixture to borrow completed pass history without a public readback API.
     friend class internal::RenderGraphRayPass;
     struct State;
+    /// Body of Poll; it marks State's current step so Poll can record the failing one.
+    [[nodiscard]] rhi::RasterStatus pollPreparation() noexcept;
+    /// Body of Update with the same contract; it marks State's current step so Update can record the failing one.
+    [[nodiscard]] rhi::RasterStatus updateScene(foundation::BorrowedView<const RenderGraphMesh> meshes,
+                                                foundation::BorrowedView<const RenderGraphItem> items,
+                                                foundation::BorrowedView<const ViewDescription> cameras,
+                                                foundation::uint64 sceneRevision,
+                                                RenderGraphCoveragePolicy policy,
+                                                RenderGraphReport& outReport,
+                                                const SceneShaderInputs* sceneInputsOrNull,
+                                                foundation::uint64 contentRevision,
+                                                const RenderGraphSceneRevisions& revisions) noexcept;
     foundation::core::UniquePtr<State> mState;
 };
 } // namespace ludus::graphics::renderer

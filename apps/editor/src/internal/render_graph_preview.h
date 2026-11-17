@@ -55,8 +55,12 @@ DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
 /// @param features Unrendered features; zero yields an empty string.
 [[nodiscard]] QString DescribeUnrenderedWorldFeatures(const QString& configuration,
                                                       graphics::renderer::WorldFeatureMask features);
-/// Viewport status for a failed or restart-requiring candidate, naming its cause and repair when the renderer
-/// attributed one; empty while the candidate is neither Failed nor RestartRequired.
+/// The step a rejected generation failed at and its repair, as a clause that continues "Renderer generation N was
+/// rejected (Status) ...", for example "while resizing its targets to the viewport. Reduce ...". Empty for None.
+[[nodiscard]] QString DescribeRenderGraphFailureStage(graphics::renderer::RenderGraphFailureStage stage);
+/// Viewport status for a failed or restart-requiring candidate. It names the scene-level cause when the renderer
+/// attributed one, otherwise the failing stage and its repair, otherwise only the raw status; empty while the
+/// candidate is neither Failed nor RestartRequired.
 [[nodiscard]] QString
 DescribeRenderGraphActivationFailure(const graphics::renderer::RenderGraphActivationReport& report);
 /// One World extraction converted to RenderGraph records. Mesh geometry borrows Scene's
