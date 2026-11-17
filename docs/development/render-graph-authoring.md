@@ -6654,8 +6654,12 @@ unshadowed emitter. The grid lists a caster's records together, so one lookup se
 a run of them. The penumbra is an estimate from one point per caster: a large
 emitter's contact shadows are approximate, and occluders nearer than a caster's near
 distance (at least a hundredth of its range, and its radius when it encloses its
-members) are ignored. Geometry such as window glass that the scene draws as opaque
-also blocks mesh light in the shadow faces.
+members) are ignored. The range follows the emitter's culling reach, so a bright or
+large emitter ignores nearby occluders: a 0.8 m square of 4.4 nits ignores blockers
+0.22 m and 0.47 m in front of its caster. The
+[RT2 area-light fixture](../architecture/renderer-systems.md#partial-area-light-shadows)
+measures that loss against an exact backprojection oracle. Geometry such as window
+glass that the scene draws as opaque also blocks mesh light in the shadow faces.
 
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
 1600 x 1080, with the editor viewport's device budgets. Each build ran five times,
