@@ -322,15 +322,22 @@ surface of the device already borrows, an invalid window or an extent above the
 enabled frame dimension returns `InvalidDescription` with the output still null.
 Every surface shares the primary surface's color format, because pipelines are
 created for it; a target that needs another format (a Metal hosted surface on a
-Cocoa or headless device) returns `Unsupported`. Surface identities are never
+Cocoa or headless device) returns `Unsupported`. Vulkan surfaces also share the
+primary's window system, because the surface render pass and its final image
+layout come from it: a Wayland device hosts Wayland surfaces, a headless device
+headless ones and a hosted device hosted ones. Vulkan builds the new surface's
+swapchain during `CreateSurface`, so a Wayland surface the queue cannot present
+to, or one whose swapchain needs another format, returns `Failed`. Surface identities are never
 reused. A destroyed surface, a surface of another device and a surface from a
 previous session return `InvalidHandle`, and `GetFrameInfo` for a surface other
 than the open frame's returns `InvalidState`.
 
 A created surface is lost when its platform target stops accepting frames: a
-Cocoa view that left the window it was borrowed from, or a hosted consumer that
-failed. The backend waits for that surface's submitted frames, retires its
-presentation resources and restores the borrowed view. Its frame calls then
+Cocoa view that left the window it was borrowed from, a Vulkan surface that
+reports `VK_ERROR_SURFACE_LOST_KHR` or whose swapchain cannot be rebuilt, or a
+hosted consumer that failed. The backend waits for that surface's submitted
+frames (Vulkan waits for the queue to idle), retires its presentation resources
+and restores the borrowed view. Its frame calls then
 return `SurfaceLost`, while the device, its resources and its other surfaces keep
 working. `DestroySurface` retires a created surface in the same way, also after
 its loss or after device failure. The primary surface keeps the facade's
@@ -345,12 +352,15 @@ complete; it is polled without waiting, so it can lag the GPU.
 handed to the hosted consumer. It is not a display time, and headless surfaces
 present nothing.
 
-Metal implements additional surfaces for Cocoa, headless and hosted targets.
-Vulkan, Direct3D 12 and the browser backends still host only their primary
-surface and return `Unsupported` from `CreateSurface`; their primary surfaces
-report `SubmittedFrames` but not render or presentation completion. A WebGL 2
-context belongs to one canvas, so WebGL 2 cannot host a second surface on one
-device.
+Metal implements additional surfaces for Cocoa, headless and hosted targets,
+and Vulkan for Wayland, headless and hosted targets. A device imported through
+`CreateNativeDevice` renders only its headless primary. On Vulkan,
+`RenderedFrames` follows each frame's fence and `PresentedFrames` counts
+presentations the queue accepted (`VK_SUCCESS` or `VK_SUBOPTIMAL_KHR`).
+Direct3D 12 and the browser backends still host only their primary surface and
+return `Unsupported` from `CreateSurface`; their primary surfaces report
+`SubmittedFrames` but not render or presentation completion. A WebGL 2 context
+belongs to one canvas, so WebGL 2 cannot host a second surface on one device.
 
 The reference-backend lifecycle suite covers independent targets and counters,
 one frame per device, primary-surface protection, borrowed-target, capacity and
@@ -360,7 +370,11 @@ suite clears and reads back two headless surfaces at different, independently
 resized extents, checks render completion, and retires one while the other keeps
 rendering. With `LUDUS_TEST_COCOA=1` it also presents to two Cocoa windows,
 loses the second when its content view is replaced, verifies the restored layer
-and keeps presenting the first.
+and keeps presenting the first. The shared native render suite draws one
+pipeline into two headless surfaces of a device and compares the images, then
+resizes and retires the second while the primary keeps its image; it runs on
+Metal and, in the Linux batch, on Vulkan. Wayland surface loss has no automated
+coverage yet.
 
 ### Profile, format and limit negotiation
 

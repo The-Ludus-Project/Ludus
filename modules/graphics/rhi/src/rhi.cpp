@@ -432,7 +432,8 @@ FrameStatus EndFrameStatus() noexcept
     }
     gFrame = false;
     const auto result = backend::End();
-    if (result == FrameStatus::Ready)
+    // Skipped means the frame was submitted but its presentation was out of date.
+    if (result == FrameStatus::Ready || result == FrameStatus::Skipped)
     {
         ++gSurfaceFrames[gFrameSurface].SubmittedFrames;
     }

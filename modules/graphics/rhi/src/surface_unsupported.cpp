@@ -1,6 +1,6 @@
 #include "internal/surface.h"
 
-// R14b single-surface backends (Vulkan, Direct3D 12 and the browser dispatcher): the
+// R14b single-surface backends (Direct3D 12 and the browser dispatcher): the
 // session hosts only its primary surface, so CreateSurface reports Unsupported before any
 // backend work. Primary-surface completion is not tracked per surface on these backends.
 namespace ludus::graphics::rhi::backend
