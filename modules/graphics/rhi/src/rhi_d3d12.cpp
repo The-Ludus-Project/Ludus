@@ -9,6 +9,7 @@
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
 #include "internal/resources.h"
+#include "internal/surface.h"
 #if defined(LUDUS_RHI_TEST_READBACK)
 #    include "internal/readback.h"
 #endif
@@ -20,6 +21,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/platform/native_window.h>
 
 #include <cstring>
@@ -74,9 +76,11 @@ constexpr DXGI_FORMAT SURFACE_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 constexpr usize CLEAR_COLOR_CHANNELS = 4;
 /// Longest UTF-8 encoding of one UTF-16 code unit (a lone BMP code point).
 constexpr usize MAX_UTF8_BYTES_PER_UTF16_UNIT = 3;
-/// Descriptors: one per swap chain buffer, then the headless target.
+/// Descriptors of one surface: one per swap chain buffer, then the headless target.
 constexpr uint32 HEADLESS_DESCRIPTOR = FRAME_COUNT;
-constexpr uint32 TARGET_DESCRIPTOR_COUNT = FRAME_COUNT + 1;
+constexpr uint32 SURFACE_DESCRIPTOR_COUNT = FRAME_COUNT + 1;
+/// Every surface slot (R14b) owns a contiguous run of SURFACE_DESCRIPTOR_COUNT descriptors.
+constexpr uint32 TARGET_DESCRIPTOR_COUNT = SURFACE_DESCRIPTOR_COUNT * MAX_DEVICE_SURFACES;
 /// Bound on a CPU wait for GPU work. A healthy device finishes a clear far sooner;
 /// a removed device signals every fence, so a timeout means the queue is hung.
 constexpr DWORD FENCE_TIMEOUT_MILLISECONDS = 10000;
@@ -141,22 +145,43 @@ ComOwner<ID3D12CommandAllocator> gAllocators[FRAME_COUNT];
 ComOwner<ID3D12GraphicsCommandList> gCommands;
 ComOwner<ID3D12DescriptorHeap> gTargetHeap;
 uint32 gTargetDescriptorSize = 0;
-ComOwner<IDXGISwapChain3> gSwapChain;
-ComOwner<ID3D12Resource> gBackBuffers[FRAME_COUNT];
-uint32 gSwapWidth = 0;
-uint32 gSwapHeight = 0;
-ComOwner<ID3D12Resource> gHeadless;
-HostedProducer gHosted;
+/// @brief Presentation record of one surface (R14b): its borrowed window, swap chain or
+/// hosted producer, headless target, frame target and completion counters.
+///
+/// Slot 0 is the primary surface. Every surface of a session shares the primary's color
+/// format, so pipelines created for the primary draw to all of them. The surface depth
+/// buffer (raster_draw_d3d12.cpp) is shared and resized to the open frame's extent.
+struct Direct3D12Surface final
+{
+    HWND WindowOrNull = nullptr;
+    ComOwner<IDXGISwapChain3> SwapChain;
+    StaticArray<ComOwner<ID3D12Resource>, FRAME_COUNT> BackBuffers{};
+    uint32 SwapWidth = 0;
+    uint32 SwapHeight = 0;
+    ComOwner<ID3D12Resource> Headless;
+    HostedProducer Hosted;
+    FrameTarget Target{};
+    /// Fence values of this surface's submitted frames not yet observed complete.
+    StaticArray<uint64, FRAME_COUNT> PendingFences{};
+    uint64 RenderedFrames = 0;
+    uint64 PresentedFrames = 0;
+    bool IsConnected = false;
+};
+StaticArray<Direct3D12Surface, MAX_DEVICE_SURFACES> gSurfaces{};
+/// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
+usize gActiveSurface = 0;
+Direct3D12Surface& GetActiveSurface() noexcept
+{
+    return gSurfaces[gActiveSurface];
+}
 /// Shared by every fullscreen pipeline; created with the device.
 ComOwner<ID3D12RootSignature> gRootSignature;
 Shader gShaders[internal::RESOURCE_CAPACITY];
 Uniform gUniforms[internal::RESOURCE_CAPACITY];
 Pipeline gPipelines[internal::RESOURCE_CAPACITY];
-HWND gWindowOrNull = nullptr;
 /// Color target of the open frame: a swap chain buffer or the headless texture.
 ID3D12Resource* gSurfaceOrNull = nullptr;
 D3D12_CPU_DESCRIPTOR_HANDLE gSurfaceDescriptor{};
-FrameTarget gTarget{};
 FrameInfo gFrame{};
 usize gSlot = 0;
 uint32 gToken = 0;
@@ -312,10 +337,12 @@ void LogFailure(const char* operation, HRESULT result) noexcept
     return isDrained;
 }
 
+/// Descriptor `index` (a back buffer or HEADLESS_DESCRIPTOR) of the active surface.
 [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE GetTargetDescriptor(uint32 index) noexcept
 {
     D3D12_CPU_DESCRIPTOR_HANDLE handle = gTargetHeap->GetCPUDescriptorHandleForHeapStart();
-    handle.ptr += static_cast<usize>(index) * gTargetDescriptorSize;
+    const usize surfaceIndex = gActiveSurface * SURFACE_DESCRIPTOR_COUNT + index;
+    handle.ptr += surfaceIndex * gTargetDescriptorSize;
     return handle;
 }
 
@@ -732,7 +759,7 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
 
 void ReleaseBackBuffers() noexcept
 {
-    for (ComOwner<ID3D12Resource>& buffer : gBackBuffers)
+    for (ComOwner<ID3D12Resource>& buffer : GetActiveSurface().BackBuffers)
     {
         buffer.Reset();
     }
@@ -743,25 +770,26 @@ void ReleaseBackBuffers() noexcept
     for (uint32 index = 0; index < FRAME_COUNT; ++index)
     {
         ID3D12Resource* bufferOrNull = nullptr;
-        const HRESULT result =
-            gSwapChain->GetBuffer(index, GetInterfaceId(bufferOrNull), GetInterfaceOutput(bufferOrNull));
+        const HRESULT result = GetActiveSurface().SwapChain->GetBuffer(index,
+                                                                       GetInterfaceId(bufferOrNull),
+                                                                       GetInterfaceOutput(bufferOrNull));
         if (FAILED(result) == true)
         {
             ReleaseBackBuffers();
             return result;
         }
-        gBackBuffers[index] = Adopt(bufferOrNull);
+        GetActiveSurface().BackBuffers[index] = Adopt(bufferOrNull);
         gDevice->CreateRenderTargetView(bufferOrNull, nullptr, GetTargetDescriptor(index));
     }
     DXGI_SWAP_CHAIN_DESC1 description{};
-    const HRESULT result = gSwapChain->GetDesc1(&description);
+    const HRESULT result = GetActiveSurface().SwapChain->GetDesc1(&description);
     if (FAILED(result) == true)
     {
         ReleaseBackBuffers();
         return result;
     }
-    gSwapWidth = description.Width;
-    gSwapHeight = description.Height;
+    GetActiveSurface().SwapWidth = description.Width;
+    GetActiveSurface().SwapHeight = description.Height;
     return S_OK;
 }
 
@@ -797,14 +825,14 @@ void ReleaseBackBuffers() noexcept
         LogFailure("IDXGISwapChain3 query", result);
         return false;
     }
-    gSwapChain = Adopt(swapChain3OrNull);
+    GetActiveSurface().SwapChain = Adopt(swapChain3OrNull);
     // Ludus owns fullscreen policy; DXGI must not toggle it on Alt+Enter.
     static_cast<void>(gFactory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER));
     result = AcquireBackBuffers();
     if (FAILED(result) == true)
     {
         LogFailure("swap chain buffer acquisition", result);
-        gSwapChain.Reset();
+        GetActiveSurface().SwapChain.Reset();
         return false;
     }
     return true;
@@ -813,7 +841,7 @@ void ReleaseBackBuffers() noexcept
 /// Matches the swap chain to the frame target; DXGI stretches it to the client area.
 [[nodiscard]] HRESULT ResizeSwapChain(uint32 width, uint32 height) noexcept
 {
-    if (width == gSwapWidth && height == gSwapHeight)
+    if (width == GetActiveSurface().SwapWidth && height == GetActiveSurface().SwapHeight)
     {
         return S_OK;
     }
@@ -823,7 +851,8 @@ void ReleaseBackBuffers() noexcept
         return DXGI_ERROR_DEVICE_HUNG;
     }
     ReleaseBackBuffers();
-    const HRESULT result = gSwapChain->ResizeBuffers(static_cast<UINT>(FRAME_COUNT), width, height, SURFACE_FORMAT, 0);
+    const HRESULT result =
+        GetActiveSurface().SwapChain->ResizeBuffers(static_cast<UINT>(FRAME_COUNT), width, height, SURFACE_FORMAT, 0);
     if (FAILED(result) == true)
     {
         return result;
@@ -833,9 +862,9 @@ void ReleaseBackBuffers() noexcept
 
 [[nodiscard]] HRESULT PrepareHeadless(uint32 width, uint32 height) noexcept
 {
-    if (gHeadless.Get() != nullptr)
+    if (GetActiveSurface().Headless.Get() != nullptr)
     {
-        const D3D12_RESOURCE_DESC current = gHeadless->GetDesc();
+        const D3D12_RESOURCE_DESC current = GetActiveSurface().Headless->GetDesc();
         if (current.Width == width && current.Height == height)
         {
             return S_OK;
@@ -845,7 +874,7 @@ void ReleaseBackBuffers() noexcept
         {
             return DXGI_ERROR_DEVICE_HUNG;
         }
-        gHeadless.Reset();
+        GetActiveSurface().Headless.Reset();
     }
     const D3D12_HEAP_PROPERTIES heap =
     {
@@ -881,9 +910,125 @@ void ReleaseBackBuffers() noexcept
     {
         return result;
     }
-    gHeadless = Adopt(textureOrNull);
+    GetActiveSurface().Headless = Adopt(textureOrNull);
     gDevice->CreateRenderTargetView(textureOrNull, nullptr, GetTargetDescriptor(HEADLESS_DESCRIPTOR));
     return S_OK;
+}
+
+/// Count this surface's completed frames without waiting.
+void RefreshSurface(Direct3D12Surface& inoutSurface) noexcept
+{
+    const uint64 completed = gFence.Get() != nullptr ? gFence->GetCompletedValue() : 0;
+    if (completed == ~uint64{0})
+    {
+        // A removed device signals nothing reliably; device loss is reported elsewhere.
+        return;
+    }
+    for (uint64& fence : inoutSurface.PendingFences)
+    {
+        if (fence != 0 && fence <= completed)
+        {
+            ++inoutSurface.RenderedFrames;
+            fence = 0;
+        }
+    }
+}
+/// Record a submitted frame of this surface for render-completion reporting.
+void TrackSurfaceFrame(Direct3D12Surface& inoutSurface, uint64 fence) noexcept
+{
+    RefreshSurface(inoutSurface);
+    for (uint64& pending : inoutSurface.PendingFences)
+    {
+        if (pending == 0)
+        {
+            pending = fence;
+            return;
+        }
+    }
+    // Device frame slots bound the frames in flight; wait for the oldest only if all are pending.
+    static_cast<void>(WaitForFence(inoutSurface.PendingFences[0]));
+    RefreshSurface(inoutSurface);
+    inoutSurface.PendingFences[0] = fence;
+}
+/// Borrow a validated window into the active surface record, which keeps its extent as the target.
+[[nodiscard]] bool ConnectSurface(const WindowInfo& window) noexcept
+{
+    Direct3D12Surface& surface = GetActiveSurface();
+    if (window.System == platform::WindowSystem::Win32)
+    {
+        const HWND handle = static_cast<HWND>(window.Win32WindowOrNull);
+        if (CreateSwapChain(handle, window.Width, window.Height) == false)
+        {
+            return false;
+        }
+        surface.WindowOrNull = handle;
+    }
+    if (window.System == platform::WindowSystem::Hosted)
+    {
+        platform::HostedSurfaceChannel* channelOrNull = window.HostedSurfaceOrNull;
+        LUDUS_ASSERT(channelOrNull != nullptr);
+        platform::HostedAdapterIdentity preferred;
+        if (channelOrNull->TryGetConsumerAdapter(preferred) == true &&
+            internal::AreAdaptersEqual(preferred, EncodeHostedAdapter(gDevice->GetAdapterLuid())) == false)
+        {
+            LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: the hosted viewport requires the editor's GPU adapter");
+            return false;
+        }
+        surface.Hosted.Connect(*channelOrNull);
+    }
+    surface.Target = { .Width = window.Width, .Height = window.Height };
+    surface.RenderedFrames = 0;
+    surface.PresentedFrames = 0;
+    surface.IsConnected = true;
+    return true;
+}
+/// @brief Retire the active surface's presentation resources (R14b).
+///
+/// Drains the queue, then releases this surface's swap chain buffers and swap chain,
+/// headless target and hosted producer. Completion counters are kept, so a lost surface
+/// still reports what it rendered.
+void ReleaseActiveSurface() noexcept
+{
+    Direct3D12Surface& surface = GetActiveSurface();
+    static_cast<void>(WaitForIdle());
+    RefreshSurface(surface);
+    surface.Hosted.Disconnect();
+    ReleaseBackBuffers();
+    if (surface.SwapChain.Get() != nullptr)
+    {
+        // Flip-model swap chains must not be released while fullscreen.
+        static_cast<void>(surface.SwapChain->SetFullscreenState(FALSE, nullptr));
+    }
+    surface.SwapChain.Reset();
+    surface.Headless.Reset();
+    surface.SwapWidth = 0;
+    surface.SwapHeight = 0;
+    surface.WindowOrNull = nullptr;
+    surface.Target = {};
+    surface.PendingFences.Fill(0);
+    surface.IsConnected = false;
+}
+/// Retire every created surface (slots above the primary) and route frames to the primary.
+void ReleaseCreatedSurfaces() noexcept
+{
+    for (usize slot = 1; slot < gSurfaces.GetSize(); ++slot)
+    {
+        if (gSurfaces[slot].IsConnected == true)
+        {
+            gActiveSurface = slot;
+            ReleaseActiveSurface();
+        }
+    }
+    gActiveSurface = 0;
+}
+/// @brief A created surface stopped accepting frames: retire only its presentation
+/// resources and report it lost. The device and other surfaces keep working; no frame opens.
+[[nodiscard]] FrameStatus LoseActiveSurface() noexcept
+{
+    const usize slot = gActiveSurface;
+    ReleaseActiveSurface();
+    internal::LoseSurface(slot);
+    return FrameStatus::Skipped;
 }
 
 void ReleaseDevice() noexcept
@@ -921,7 +1066,7 @@ namespace d3d12
 {
 void DiscardRecording() noexcept
 {
-    gHosted.Cancel();
+    GetActiveSurface().Hosted.Cancel();
     if (isRecording == true)
     {
         CloseTimingScopes(*gCommands);
@@ -936,7 +1081,7 @@ ID3D12GraphicsCommandList* GetCommandsOrNull() noexcept
 }
 DXGI_FORMAT GetSurfaceColorFormat() noexcept
 {
-    return gHosted.IsConnected() == true ? HOSTED_SURFACE_FORMAT : SURFACE_FORMAT;
+    return GetActiveSurface().Hosted.IsConnected() == true ? HOSTED_SURFACE_FORMAT : SURFACE_FORMAT;
 }
 Attachment GetSurfaceAttachment() noexcept
 {
@@ -1154,29 +1299,12 @@ bool ConnectWindow(const WindowInfo& window) noexcept
     {
         return false;
     }
-    if (window.System == platform::WindowSystem::Win32)
+    // The legacy and owned startup paths connect only the primary surface.
+    gActiveSurface = 0;
+    if (ConnectSurface(window) == false)
     {
-        const HWND handle = static_cast<HWND>(window.Win32WindowOrNull);
-        if (CreateSwapChain(handle, window.Width, window.Height) == false)
-        {
-            return false;
-        }
-        gWindowOrNull = handle;
+        return false;
     }
-    if (window.System == platform::WindowSystem::Hosted)
-    {
-        platform::HostedSurfaceChannel* channelOrNull = window.HostedSurfaceOrNull;
-        LUDUS_ASSERT(channelOrNull != nullptr);
-        platform::HostedAdapterIdentity preferred;
-        if (channelOrNull->TryGetConsumerAdapter(preferred) == true &&
-            internal::AreAdaptersEqual(preferred, EncodeHostedAdapter(gDevice->GetAdapterLuid())) == false)
-        {
-            LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: the hosted viewport requires the editor's GPU adapter");
-            return false;
-        }
-        gHosted.Connect(*channelOrNull);
-    }
-    gTarget = { .Width = window.Width, .Height = window.Height };
     isConnected = true;
     return true;
 }
@@ -1190,8 +1318,12 @@ void ShutdownRendering() noexcept
     const bool isDrained = WaitForIdle();
     DiscardRecording();
     ReleaseTimings(isDrained);
-    gHosted.Disconnect();
-    gHeadless.Reset();
+    for (Direct3D12Surface& surface : gSurfaces)
+    {
+        RefreshSurface(surface);
+        surface.Hosted.Disconnect();
+        surface.Headless.Reset();
+    }
     gSurfaceOrNull = nullptr;
     gFrame = {};
     gSlot = 0;
@@ -1200,24 +1332,73 @@ void ShutdownRendering() noexcept
 void NativeInteropDetachSurface() noexcept
 {
     ShutdownRendering();
-    ReleaseBackBuffers();
-    if (gSwapChain.Get() != nullptr)
-    {
-        // Flip-model swap chains must not be released while fullscreen.
-        static_cast<void>(gSwapChain->SetFullscreenState(FALSE, nullptr));
-    }
-    gSwapChain.Reset();
-    gSwapWidth = 0;
-    gSwapHeight = 0;
-    gWindowOrNull = nullptr;
-    gTarget = {};
+    ReleaseCreatedSurfaces();
+    ReleaseActiveSurface();
     isConnected = false;
 }
 void Shutdown() noexcept
 {
     NativeInteropDetachSurface();
     ReleaseDevice();
+    gSurfaces[0].RenderedFrames = 0;
+    gSurfaces[0].PresentedFrames = 0;
     gToken = 0;
+}
+usize AdditionalSurfaceLimit() noexcept
+{
+    return isRendering == true ? MAX_DEVICE_SURFACES - 1 : 0;
+}
+StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
+{
+    if (isRendering == false || isRecording == true || slot == 0 || slot >= gSurfaces.GetSize() ||
+        gSurfaces[slot].IsConnected == true || IsValidWindow(window) == false || window.Width > MAX_DIMENSION ||
+        window.Height > MAX_DIMENSION)
+    {
+        return StartupError::InvalidWindow;
+    }
+    // Pipelines target the primary's color format, so every surface of a session shares it.
+    const bool isHosted = window.System == platform::WindowSystem::Hosted;
+    if ((isHosted == true ? HOSTED_SURFACE_FORMAT : SURFACE_FORMAT) != GetSurfaceColorFormat())
+    {
+        return StartupError::BackendUnavailable;
+    }
+    const usize selected = gActiveSurface;
+    gActiveSurface = slot;
+    const bool isCreated = ConnectSurface(window);
+    if (isCreated == false)
+    {
+        ReleaseActiveSurface();
+    }
+    gActiveSurface = selected;
+    if (isCreated == false && IsDeviceRemoved() == true)
+    {
+        static_cast<void>(FailFrame(StartupError::DeviceLost));
+    }
+    return isCreated == true ? StartupError::None : StartupError::SurfaceUnavailable;
+}
+void DestroySurface(usize slot) noexcept
+{
+    if (slot == 0 || slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == false)
+    {
+        return;
+    }
+    const usize selected = gActiveSurface;
+    gActiveSurface = slot;
+    ReleaseActiveSurface();
+    gActiveSurface = selected == slot ? 0 : selected;
+}
+void SelectSurface(usize slot) noexcept
+{
+    gActiveSurface = slot < gSurfaces.GetSize() ? slot : 0;
+}
+SurfaceCompletion GetSurfaceCompletion(usize slot) noexcept
+{
+    if (slot >= gSurfaces.GetSize())
+    {
+        return {};
+    }
+    RefreshSurface(gSurfaces[slot]);
+    return { .RenderedFrames = gSurfaces[slot].RenderedFrames, .PresentedFrames = gSurfaces[slot].PresentedFrames };
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
@@ -1231,7 +1412,7 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::Failed;
     }
-    gTarget = target;
+    GetActiveSurface().Target = target;
     return FrameStatus::Ready;
 }
 FrameStatus Begin() noexcept
@@ -1249,9 +1430,21 @@ FrameStatus Begin() noexcept
     {
         return FailFrame("device", gDevice->GetDeviceRemovedReason());
     }
-    if (gTarget.Width == 0 || gTarget.Height == 0 ||
-        (gTarget.ShouldPresentToSurface == true && gWindowOrNull != nullptr &&
-         (IsIconic(gWindowOrNull) != FALSE || IsWindowVisible(gWindowOrNull) == FALSE)))
+    if (gActiveSurface != 0 && GetActiveSurface().IsConnected == false)
+    {
+        // Lost earlier; the facade reports SurfaceLost.
+        return FrameStatus::Skipped;
+    }
+    // A created surface is lost once its window is destroyed or leaves this thread.
+    if (gActiveSurface != 0 && GetActiveSurface().WindowOrNull != nullptr &&
+        IsOwnedWin32Window(GetActiveSurface().WindowOrNull) == false)
+    {
+        return LoseActiveSurface();
+    }
+    if (GetActiveSurface().Target.Width == 0 || GetActiveSurface().Target.Height == 0 ||
+        (GetActiveSurface().Target.ShouldPresentToSurface == true && GetActiveSurface().WindowOrNull != nullptr &&
+         (IsIconic(GetActiveSurface().WindowOrNull) != FALSE ||
+          IsWindowVisible(GetActiveSurface().WindowOrNull) == FALSE)))
     {
         return FrameStatus::Skipped;
     }
@@ -1262,24 +1455,36 @@ FrameStatus Begin() noexcept
     }
     gSubmitted[gSlot] = 0;
     HRESULT result = S_OK;
-    if (gSwapChain.Get() != nullptr && gTarget.ShouldPresentToSurface == true)
+    if (GetActiveSurface().SwapChain.Get() != nullptr && GetActiveSurface().Target.ShouldPresentToSurface == true)
     {
-        result = ResizeSwapChain(gTarget.Width, gTarget.Height);
+        result = ResizeSwapChain(GetActiveSurface().Target.Width, GetActiveSurface().Target.Height);
+        if (FAILED(result) == true && gActiveSurface != 0 && IsDeviceLossResult(result) == false)
+        {
+            LogFailure("ResizeBuffers", result);
+            return LoseActiveSurface();
+        }
         if (FAILED(result) == true)
         {
             return FailFrame("ResizeBuffers", result);
         }
-        const uint32 index = gSwapChain->GetCurrentBackBufferIndex();
-        gSurfaceOrNull = gBackBuffers[index].Get();
+        const uint32 index = GetActiveSurface().SwapChain->GetCurrentBackBufferIndex();
+        gSurfaceOrNull = GetActiveSurface().BackBuffers[index].Get();
         gSurfaceDescriptor = GetTargetDescriptor(index);
     }
-    else if (gHosted.IsConnected() == true && gTarget.ShouldPresentToSurface == true)
+    else if (GetActiveSurface().Hosted.IsConnected() == true &&
+             GetActiveSurface().Target.ShouldPresentToSurface == true)
     {
-        const HostedAcquire acquired =
-            gHosted.Acquire(gTarget.Width, gTarget.Height, gSurfaceOrNull, gSurfaceDescriptor);
+        const HostedAcquire acquired = GetActiveSurface().Hosted.Acquire(GetActiveSurface().Target.Width,
+                                                                         GetActiveSurface().Target.Height,
+                                                                         gSurfaceOrNull,
+                                                                         gSurfaceDescriptor);
         if (acquired == HostedAcquire::Pending)
         {
             return FrameStatus::Skipped;
+        }
+        if (acquired == HostedAcquire::Failed && gActiveSurface != 0 && IsDeviceRemoved() == false)
+        {
+            return LoseActiveSurface();
         }
         if (acquired == HostedAcquire::Failed)
         {
@@ -1288,12 +1493,12 @@ FrameStatus Begin() noexcept
     }
     else
     {
-        result = PrepareHeadless(gTarget.Width, gTarget.Height);
+        result = PrepareHeadless(GetActiveSurface().Target.Width, GetActiveSurface().Target.Height);
         if (FAILED(result) == true)
         {
             return FailFrame("headless target creation", result);
         }
-        gSurfaceOrNull = gHeadless.Get();
+        gSurfaceOrNull = GetActiveSurface().Headless.Get();
         gSurfaceDescriptor = GetTargetDescriptor(HEADLESS_DESCRIPTOR);
     }
     ID3D12CommandAllocator* allocator = gAllocators[gSlot].Get();
@@ -1316,10 +1521,10 @@ FrameStatus Begin() noexcept
                        { .Before = D3D12_RESOURCE_STATE_PRESENT, .After = D3D12_RESOURCE_STATE_RENDER_TARGET });
     gCommands->ResourceBarrier(1, &toTarget);
     const float32 color[CLEAR_COLOR_CHANNELS] = {
-        static_cast<float32>(gTarget.Red),
-        static_cast<float32>(gTarget.Green),
-        static_cast<float32>(gTarget.Blue),
-        static_cast<float32>(gTarget.Alpha),
+        static_cast<float32>(GetActiveSurface().Target.Red),
+        static_cast<float32>(GetActiveSurface().Target.Green),
+        static_cast<float32>(GetActiveSurface().Target.Blue),
+        static_cast<float32>(GetActiveSurface().Target.Alpha),
     };
     gCommands->ClearRenderTargetView(gSurfaceDescriptor, color, 0, nullptr);
     gCommands->OMSetRenderTargets(1, &gSurfaceDescriptor, FALSE, nullptr);
@@ -1351,14 +1556,18 @@ FrameStatus End() noexcept
     ID3D12CommandList* const lists[] = {gCommands.Get()};
     MarkTimingsQueued();
     gQueue->ExecuteCommandLists(1, lists);
-    if (gSwapChain.Get() != nullptr && gTarget.ShouldPresentToSurface == true)
+    bool isPresented = false;
+    bool isSurfaceLost = false;
+    if (GetActiveSurface().SwapChain.Get() != nullptr && GetActiveSurface().Target.ShouldPresentToSurface == true)
     {
         // Synchronize to vertical blank; DXGI_STATUS_OCCLUDED is a success code.
-        result = gSwapChain->Present(1, 0);
-        if (FAILED(result) == true)
+        result = GetActiveSurface().SwapChain->Present(1, 0);
+        isSurfaceLost = FAILED(result) == true && gActiveSurface != 0 && IsDeviceLossResult(result) == false;
+        if (FAILED(result) == true && isSurfaceLost == false)
         {
             return FailFrame("IDXGISwapChain::Present", result);
         }
+        isPresented = FAILED(result) == false;
     }
     uint64 value = 0;
     if (SignalFence(value) == false)
@@ -1366,9 +1575,21 @@ FrameStatus End() noexcept
         return FailFrame(StartupError::DeviceLost);
     }
     SubmitTimings(value);
-    gHosted.Submit(value);
+    if (GetActiveSurface().Hosted.IsConnected() == true)
+    {
+        GetActiveSurface().Hosted.Submit(value);
+        isPresented = GetActiveSurface().Target.ShouldPresentToSurface == true;
+    }
+    TrackSurfaceFrame(GetActiveSurface(), value);
+    GetActiveSurface().PresentedFrames += isPresented == true ? 1 : 0;
     gSubmitted[gSlot] = value;
     gSlot = (gSlot + 1) % FRAME_COUNT;
+    if (isSurfaceLost == true)
+    {
+        // The frame was submitted; only its created surface stops presenting.
+        LogFailure("IDXGISwapChain::Present", result);
+        static_cast<void>(LoseActiveSurface());
+    }
     return FrameStatus::Ready;
 }
 bool BeginFrame() noexcept
@@ -1660,18 +1881,19 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     constexpr usize SURFACE_RED = 2;
     constexpr usize SURFACE_ALPHA = 3;
     // Each refusal names its cause: a bare false left deferred WARP failures undiagnosable.
-    if (isRendering == false || gSwapChain.Get() != nullptr || isRecording == true || gHeadless.Get() == nullptr)
+    if (isRendering == false || GetActiveSurface().SwapChain.Get() != nullptr || isRecording == true ||
+        GetActiveSurface().Headless.Get() == nullptr)
     {
         LUDUS_LOG_ERROR(LOG_RHI,
                         "Direct3D 12: headless readback needs an idle headless frame (rendering {}, swap chain {}, "
                         "recording {}, headless target {})",
                         isRendering,
-                        gSwapChain.Get() != nullptr,
+                        GetActiveSurface().SwapChain.Get() != nullptr,
                         isRecording,
-                        gHeadless.Get() != nullptr);
+                        GetActiveSurface().Headless.Get() != nullptr);
         return false;
     }
-    const D3D12_RESOURCE_DESC source = gHeadless->GetDesc();
+    const D3D12_RESOURCE_DESC source = GetActiveSurface().Headless->GetDesc();
     const usize width = static_cast<usize>(source.Width);
     const usize height = source.Height;
     if (pixels.size() != width * height * SURFACE_BYTES_PER_PIXEL)
@@ -1740,7 +1962,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
         return false;
     }
     const D3D12_RESOURCE_BARRIER toCopy =
-        MakeTransition(gHeadless.Get(),
+        MakeTransition(GetActiveSurface().Headless.Get(),
                        { .Before = D3D12_RESOURCE_STATE_COMMON, .After = D3D12_RESOURCE_STATE_COPY_SOURCE });
     gCommands->ResourceBarrier(1, &toCopy);
     D3D12_TEXTURE_COPY_LOCATION destination{};
@@ -1748,12 +1970,12 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     destination.PlacedFootprint = footprint;
     D3D12_TEXTURE_COPY_LOCATION copySource{};
-    copySource.pResource = gHeadless.Get();
+    copySource.pResource = GetActiveSurface().Headless.Get();
     copySource.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     copySource.SubresourceIndex = 0;
     gCommands->CopyTextureRegion(&destination, 0, 0, 0, &copySource, nullptr);
     const D3D12_RESOURCE_BARRIER toCommon =
-        MakeTransition(gHeadless.Get(),
+        MakeTransition(GetActiveSurface().Headless.Get(),
                        { .Before = D3D12_RESOURCE_STATE_COPY_SOURCE, .After = D3D12_RESOURCE_STATE_COMMON });
     gCommands->ResourceBarrier(1, &toCommon);
     const HRESULT closed = gCommands->Close();

@@ -2281,7 +2281,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 {
     const auto& pipeline = gRasterPipelines[packet.Pipeline];
     const auto command = gFrames[gFrame].Command;
-    const auto extent = gRasterExtent.width == 0 ? gExtent : gRasterExtent;
+    const VkExtent2D extent = gRasterExtent.width == 0 ? GetActiveSurface().Extent : gRasterExtent;
     internal::RasterArea area;
     if (internal::RasterResolveArea(gRasterRegion, extent.width, extent.height, area) == false)
     {
@@ -2553,7 +2553,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     }
     VkFramebuffer framebuffer = surface ? SurfaceFramebuffer() : gRasterTextures[info.Texture].Framebuffer;
     gRasterExtent =
-        surface ? gExtent
+        surface ? GetActiveSurface().Extent
                 : VkExtent2D{gRasterTextures[info.Texture].Info.Width, gRasterTextures[info.Texture].Info.Height};
     gRasterNativePass = info;
     if (info.ColorCount != 0)
