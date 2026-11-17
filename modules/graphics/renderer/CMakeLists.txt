@@ -679,7 +679,13 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
         LUDUS_RG2_BOUND_PACKAGE="${rg2_bound_RUNTIME_PACKAGE}")
     add_test(NAME ludus_render_graph_dxil_tests COMMAND ludus_render_graph_dxil_tests)
     # WARP compiles the clustered deferred, mesh-light and shadow pipelines cold in this one process.
-    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu" TIMEOUT 600)
+    # MSVC ASan took 510 s on a typical hosted runner and needs about 1.5x that on a slow one.
+    set(render_graph_dxil_timeout_seconds 600)
+    if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
+        set(render_graph_dxil_timeout_seconds 1200)
+    endif()
+    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu"
+        TIMEOUT ${render_graph_dxil_timeout_seconds})
     if(TARGET ludus-shader-worker)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
