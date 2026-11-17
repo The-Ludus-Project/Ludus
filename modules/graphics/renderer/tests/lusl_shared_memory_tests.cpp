@@ -182,7 +182,7 @@ public:
 
         rhi::OrderedGraph graph;
         REQUIRE(rhi::CreateOrderedGraph(mDevice, graph) == S::Ready);
-        StaticArray<rhi::GraphUse, MAX_KERNEL_BUFFERS + 1> uses{};
+        StaticArray<rhi::GraphUse, MAX_KERNEL_BUFFERS + 1> uses;
         usize useCount = 0;
         for (usize i = 0; i < inoutBuffers.GetSize(); ++i)
         {
@@ -274,6 +274,8 @@ private:
     rhi::DeviceStatus mStarted = rhi::DeviceStatus::Failed;
 };
 
+/// A buffer at `slot` of `count` words, each `value`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): slot, then count, as KernelBuffer stores them.
 KernelBuffer MakeBuffer(uint32 slot, usize count, uint32 value = 0, bool isWritten = true)
 {
     KernelBuffer buffer;
