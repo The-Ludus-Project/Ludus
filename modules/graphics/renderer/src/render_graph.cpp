@@ -113,6 +113,10 @@ Status MapDeviceStatus(rhi::DeviceStatus status) noexcept
             return Status::DeviceLost;
         case rhi::DeviceStatus::IdentityExhausted:
             return Status::IdentityExhausted;
+        case rhi::DeviceStatus::SurfaceLost:
+            return Status::Failed;
+        case rhi::DeviceStatus::CapacityExceeded:
+            return Status::CapacityExceeded;
     }
     return Status::InvalidDescription;
 }

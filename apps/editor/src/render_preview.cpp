@@ -108,6 +108,8 @@ QString DescribeBrowserAdmissionFailure(rhi::DeviceStatus status)
         case rhi::DeviceStatus::InvalidHandle:
         case rhi::DeviceStatus::InvalidDescription:
         case rhi::DeviceStatus::Failed:
+        case rhi::DeviceStatus::SurfaceLost:
+        case rhi::DeviceStatus::CapacityExceeded:
             break;
     }
     return QStringLiteral("startup failed");
