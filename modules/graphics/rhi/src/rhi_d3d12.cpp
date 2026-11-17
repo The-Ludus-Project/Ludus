@@ -80,6 +80,9 @@ constexpr uint32 TARGET_DESCRIPTOR_COUNT = FRAME_COUNT + 1;
 /// Bound on a CPU wait for GPU work. A healthy device finishes a clear far sooner;
 /// a removed device signals every fence, so a timeout means the queue is hung.
 constexpr DWORD FENCE_TIMEOUT_MILLISECONDS = 10000;
+/// Further wait on the software adapter after FENCE_TIMEOUT_MILLISECONDS. WARP executes on
+/// the CPU, and a cold clustered-deferred frame on a slow host runs past the hardware guard.
+constexpr DWORD SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS = 110000;
 constexpr D3D_FEATURE_LEVEL MINIMUM_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
 /// The fullscreen root signature's only parameter: the uniform as a root CBV at b0, space 0.
 constexpr UINT UNIFORM_ROOT_PARAMETER = 0;
@@ -247,12 +250,29 @@ void LogFailure(const char* operation, HRESULT result) noexcept
     {
         return true;
     }
-    if (FAILED(gFence->SetEventOnCompletion(value, gFenceEventOrNull)) == true)
+    const HRESULT armed = gFence->SetEventOnCompletion(value, gFenceEventOrNull);
+    if (FAILED(armed) == true)
     {
+        LogFailure("Fence completion event", armed);
         return false;
     }
-    if (WaitForSingleObject(gFenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS) != WAIT_OBJECT_0)
+    DWORD waited = WaitForSingleObject(gFenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS);
+    if (waited == WAIT_TIMEOUT && isSoftwareAdapter == true)
     {
+        LUDUS_LOG_WARN(LOG_RHI,
+                       "Direct3D 12: the software adapter is still executing after {} ms; waiting up to {} ms more",
+                       static_cast<uint32>(FENCE_TIMEOUT_MILLISECONDS),
+                       static_cast<uint32>(SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS));
+        waited = WaitForSingleObject(gFenceEventOrNull, SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS);
+    }
+    if (waited != WAIT_OBJECT_0)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI,
+                        "Direct3D 12: fence value {} did not complete (wait result {:x}, completed {}); "
+                        "the queue is hung or the frame is too heavy for this adapter",
+                        value,
+                        static_cast<uint32>(waited),
+                        gFence->GetCompletedValue());
         return false;
     }
     const uint64 signaled = gFence->GetCompletedValue();
