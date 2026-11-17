@@ -13,6 +13,7 @@ shared by the wiki and offline readers.
 - [renderer systems proposal](../../architecture/renderer-systems.md)
 - [Render pipeline and pass resources](../../architecture/renderer-systems.md#render-pipeline-and-pass-resources)
 - [Material system design](../../architecture/renderer-systems.md#material-system-design)
+- [Large-world raster visibility](../../architecture/renderer-systems.md#large-world-raster-visibility)
 - [Clear-sky atmosphere design](../../architecture/renderer-systems.md#clear-sky-atmosphere-design)
 - [World environment and atmospheric transport](../../architecture/world-environment.md#atmospheric-transport-and-renderer-integration)
 - [reference review](../../architecture/renderer-systems-gems-review.md)
