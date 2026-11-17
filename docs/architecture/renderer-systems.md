@@ -3502,9 +3502,79 @@ control. Both angles had zero falsely lit probes. The contact edge moved
 within a 1.5-pixel limit.
 
 Hard punctual shadows need no history or reconstruction filter.
+
+#### Partial area-light shadows
+
+The `[hybrid-shadows]` area-light fixture
+([`hybrid_area_shadow_tests.cpp`](../../modules/graphics/renderer/tests/hybrid_area_shadow_tests.cpp))
+places a Lambertian receiver plane under a one-sided, 0.8 m square mesh emitter of
+4.4 nits, 1.1 m away. Two opaque planar blockers sit 0.25 m and 0.5 m in front of the
+emitter. The emitter and blockers lie behind the orthographic camera's near plane,
+so every pixel sees the receiver. Four positions of the far blocker move its
+projection beside, then over, the near blocker's. An unobstructed scene and a
+near-blocker-only scene are the controls.
+
+The oracle backprojects both blockers from each receiver point onto the emitter
+plane, clips them to the emitter and subtracts their union by inclusion-exclusion.
+It integrates the receiver cosine over the visible part with the closed-form
+point-to-rectangle form factor. A CPU case checks it against a 1024 × 1024 visibility
+quadrature that intersects each emitter sample's segment with the blocker planes;
+they agree within 0.084% of the unoccluded integral. During the motion, the clipped
+projections go from separate to overlapping at 3,016 of the 6,144 pixels. Thanks to
+George Drettakis and Eugene Fiume for computing an area emitter's visible polygons
+from a receiver point and its diffuse illumination in
+[A Fast Shadow Algorithm for Area Light Sources Using Backprojection, SIGGRAPH ’94, pp. 223–230, §2](https://www-sop.inria.fr/reves/Basilic/1994/DF94/sig94.pdf).
+
+Measured on Apple M5 with Metal, 96 × 64 linear output and centre rays:
+
+| Route | Samples per pixel | Mean signed error | RMS error | Largest error | Overlap-pixel mean signed error |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RT1 GPU compute, every scene | 1,024 | −1.1e-4 to −1.4e-5 | 0.0028–0.0050 | 0.026 | −3.1e-4 to −5.2e-5 |
+| RT1 CPU oracle, one blocker and full overlap | 256 | −1.3e-4 to 7.7e-5 | 0.0087–0.0094 | 0.047 | −1.4e-4 |
+| Tiled vbuffer NEE, raw first frame | 1 | −0.0032 to 0.0015 | 0.089–0.159 | 0.52 | −3.6e-4 to 0.0059 |
+| Tiled vbuffer NEE, Accumulate after 256 frames | 256 | −7.3e-5 to 1.1e-4 | 0.0056–0.0100 | 0.049 | −1.9e-5 to 1.8e-4 |
+
+No RT1 or accumulated pixel lies outside about seven standard errors of the oracle
+(0.04 for GPU RT1, 0.07 for the CPU oracle and the accumulated hybrid image). The
+accumulated hybrid image and GPU RT1 differ by at most 2.1e-4 in mean. The hybrid
+route subtracts the overlap once: its error over overlapping pixels is no larger
+than elsewhere.
+
+The template's reconstruction is its Accumulate running mean. A scene revision
+starts a new mean, so a fresh graph given only the final revision reproduces the
+moved graph's frames bit for bit at every checkpoint. Over the 1,464–3,018 pixels
+whose oracle radiance changes by more than four codes at a motion step, RMS error
+against the new oracle is 0.17–0.20 in the first frame, 0.022–0.025 after 64 frames
+and within the declared 0.02 tolerance by frame 128. Against the previous position's
+oracle it stays at 0.083–0.089 after 256 frames, so no old lighting is blended in.
+
+ForceRaster selects the default graph, and Automatic does so where native rays are
+unavailable. That fallback's unshadowed polygon integral follows the oracle within
+0.016 in the unobstructed control. It then multiplies by one cube-map caster's
+visibility. The caster's face near plane is at least a hundredth of its range, and
+the range is the emitter's culling reach, tens of metres for this emitter. Both
+blockers, 0.22 m and 0.47 m in front of the caster, lie inside that near distance
+([Mesh-light shadows](../development/render-graph-authoring.md#mesh-light-shadows)),
+so the fallback leaves the receiver at full visibility. Its mean visibility
+exceeds the oracle's by 0.23–0.33, by up to 0.89 at a pixel, and it never darkens a
+pixel. In a diagnostic run with the far blocker 0.57 m in front of the caster, its
+shadow returned with the nearly hard edge of a filter clamped to the four-texel
+gutter.
+
+| Tiled vbuffer NEE timing, 21 samples | Median | p95 |
+| --- | ---: | ---: |
+| Far-blocker move to drawable revision, CPU wall time including acceleration update and polling | 22.1 ms | 40.0 ms |
+| `tiles` emitter table, GPU timestamps | 0.043 ms | 0.093 ms |
+| `prefix` tile CDF, GPU timestamps | 0.010 ms | 0.026 ms |
+| `shade` with emitter and BSDF rays and the fused running mean, GPU timestamps | 0.105 ms | 0.179 ms |
+
+The timings come from the opt-in `[.benchmark][hybrid-shadows]` case on a heavily
+loaded machine.
+
 [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
-remaining area-light penumbrae, reflections, indirect diffuse, reconstruction
-and temporal fixtures.
+remaining roughness-aware reflections, bounded indirect diffuse, stale-history
+validation in the World viewport and an installed-SDK app, and Vulkan evidence for
+the automatic raster fallback.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)
