@@ -3867,6 +3867,14 @@ unavailable. That graph reflects only the environment and sky, so the receiver i
 black: the panel's reflection, 0.37–0.45 in mean over the probes, is missing in every
 state. Hybrid reflections is the route that shows offscreen geometry.
 
+| Hybrid reflections timing, 21 samples per run, two runs | Median | p95 |
+| --- | ---: | ---: |
+| Blocker move to drawable revision, CPU wall time including acceleration update and polling | 6.1–6.3 ms | 6.2–6.8 ms |
+| `shade` with shadow rays, the reflection ray and the fused running mean, GPU timestamps | 0.13–0.24 ms | 0.17–0.24 ms |
+
+The timings come from the opt-in `[.benchmark][hybrid-reflections]` case. The shade
+pass's GPU time varied between the two runs with the device clock.
+
 [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
 remaining bounded indirect diffuse, stale-history validation in the World viewport
 and an installed-SDK app, and Vulkan evidence for the automatic raster fallback.
