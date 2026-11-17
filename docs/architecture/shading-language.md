@@ -62,10 +62,13 @@ L4 is in progress:
   [dynamic dispatch evaluation](#interfaces-concepts-and-templates), which keeps
   `dynamic` reserved.
 
-Not yet done from L4: the tree-sitter grammar. It follows the code editor's
-syntax-service milestone, under the
+The tree-sitter grammar shipped with the code editor's syntax-service
+milestone, under the
 [ADR 0026 amendment](../decisions/0026-tree-sitter-syntax-dependency.md#amendment-the-lusl-grammar)
-for Ludus-owned grammars.
+for Ludus-owned grammars ([code editor](code-editor.md)).
+
+L5 is proposed: [migrating the repository's shaders](#migrating-the-repositorys-shaders-l5)
+from Slang to LUSL, in Ludus and in the Sample project.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
@@ -107,9 +110,10 @@ permutation variants.
 
 Non-goals:
 
-- **Not a Slang replacement.** The 451 existing `.slang` files keep working.
-  LUSL and Slang code call each other, and files are migrated one at a time
-  only when someone chooses to.
+- **Slang stays supported.** LUSL lowers to Slang, LUSL and Slang code call
+  each other, and game projects may keep writing Slang. L1–L4 migrated no
+  existing file; [L5](#migrating-the-repositorys-shaders-l5) migrates the
+  repository's own shaders once LUSL can express them.
 - **No new GPU capability.** LUSL cannot express anything the RHI and the
   selected target profile do not already support.
 - **No runtime shader generation.** Shipping runtimes consume cooked packages
@@ -863,6 +867,130 @@ new type or technique.
 | Determinism | Two compilations, on two hosts, compare byte for byte |
 | Robustness | Bounded fuzzing of the preprocessor and parser under ASan/UBSan: no crash, bounded diagnostics |
 
+## Migrating the repository's shaders (L5)
+
+Status: proposed, November 17, 2026. The author asked to migrate every Slang
+source in Ludus and in the Sample project to LUSL. L1–L4 proved the language on
+selected ports; they did not make every existing shader expressible. L5 closes
+the gaps first, then migrates in waves, each with its own evidence.
+
+### Inventory
+
+Counted on `develop` 7c3c2fac2 and Sample 066e06f. A file is blocked when it
+uses a construct LUSL lacks, or includes a blocked file.
+
+| Scope | Slang files | Lines | Uses a gap | Blocked, with includes |
+| --- | --- | --- | --- | --- |
+| Ludus | 495 | 41,839 | 66 | 158 |
+| Sample (tracked) | 81 | 12,611 | 10 | 33 |
+
+Ludus's files are mostly in the renderer (291: 195 render-graph template
+files, 71 recipe shaders, 25 tests) and the SDK consumer tests (169). Sample's
+are its `graphs/Main` programs, most of them instances of engine templates.
+
+### What stays Slang
+
+- The lowering target: generated `.lusl.slang` modules.
+- The RHI interface vocabulary that lowering writes against
+  (`modules/graphics/rhi/shaders`), and RHI tests of Slang input.
+- Slang originals kept as differential oracles, such as
+  `renderer_composite.slang`, which a GPU test compares with
+  `lusl_composite.lusl`.
+- Tests of Slang interoperability and `extern slang`, and the legacy-format
+  fixtures in `scripts/python/fixtures`.
+- Game projects' own sources: Slang remains an accepted source language, and
+  the installed SDK keeps a Slang-callable surface for every shared library.
+
+L5 records the retained files in one list under `config/`, each with its reason.
+
+### L5a: language and library gaps
+
+| Gap | Ludus files | Sample files | Proposed form |
+| --- | --- | --- | --- |
+| `GetDimensions` on textures and buffers | 35 | 10 | Methods returning `uint32x2`/`uint32` by value, not `out` parameters |
+| Atomics on `RWStructuredBuffer` elements and `groupshared` | 4 | 0 | `InterlockedAdd`, `InterlockedCompareExchange` and the rest of the set, with `out` original values marked at the call |
+| Explicit group barriers | 4 | 0 | A barrier statement that the uniformity rules require in uniform control flow |
+| Texture kinds and operations: 3D, cube, arrays, `SampleCmp`, `Gather` | 5 | 0 | Resource types and methods in the binding model |
+| Binding arrays | 2 | 0 | Bounded resource arrays with a named size |
+| Manual slots (`vk::binding`, `register`) | 26 | 0 | Host code binds by the generated `<NAME>_slots.h` constants; manual slots only for an RHI-fixed layout, recorded with its reason |
+| Intrinsics: `select`, `sign`, `fma`, `tanh`, `faceforward`, `determinant`, `refract`, `clip` | 17 | 2 | Intrinsic table entries; `fwidth` becomes `abs(ddx) + abs(ddy)`, which the pinned Slang accepts on Metal |
+| Float classification: `isfinite`, `isnan`, `isinf` | 80 | 29 | No new intrinsics: Metal compiles render stages with fast math, which can fold them. Ports call FoundationMath's `IsFiniteBits` |
+
+Generic structs (`LUSL0304`) and `dynamic` dispatch are not needed by any
+current file and stay deferred. Tracked in issues [1729](https://github.com/The-Ludus-Project/Ludus/issues/1729) (resource queries,
+atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/1730) (texture kinds, binding arrays, intrinsics).
+
+### L5b: shared libraries and build paths
+
+- **Includes outside the source directory.** `ludus_compile_shader` rejects a
+  LUSL include directory outside the source's directory, but renderer recipes
+  include nine roots (FoundationMath, FoundationGeometry, SceneFormat,
+  RenderGraphFormat, RHI and renderer headers). The LUSL path accepts the same
+  include roots as the Slang path.
+- **Host/shader layout headers.** Slang includes C++ layout headers such as
+  `renderer_gpu_preview_layout.h` and `scene_shader_layout.h`. Each gets a
+  LUSL-readable form generated from its C++ owner, so the constants keep one
+  owner.
+- **Ownership of shared libraries.** L3c generates `.luslh` declarations from
+  Slang reflection. When a library such as `math.slang` becomes LUSL, its
+  `.lusl` source is the owner, its Slang consumers include the generated
+  module, and its reflection-generated declarations retire. The installed SDK
+  ships the generated Slang for Slang projects.
+- **Editor authoring.** Shader creation writes `shader_<name>.slang` and
+  render-graph templates instantiate Slang files. New programs default to
+  `.lusl`, with Slang still selectable, so the Editor does not keep making
+  Slang after its templates migrate.
+- **Configuration values for render-graph programs**, still open from L1, close
+  before a template that reads configuration macros migrates.
+
+Tracked in issues [1731](https://github.com/The-Ludus-Project/Ludus/issues/1731) (include roots and layout headers), [1732](https://github.com/The-Ludus-Project/Ludus/issues/1732)
+(Editor authoring) and [1733](https://github.com/The-Ludus-Project/Ludus/issues/1733) (configuration values). Library ownership
+moves in wave 5.
+
+### L5c: qualification before bulk migration
+
+- The ray-storage GPU and SDK fixture
+  ([issue 1385](https://github.com/The-Ludus-Project/Ludus/issues/1385)).
+- Development bounds-check failures reported through the render graph.
+- The Metal loop code-generation and timing measurement for signed-overflow
+  lowering, on a migrated hot kernel.
+- Out-of-line native ray queries: lowering keeps `[noinline]` effective with
+  `out`/`inout` parameters on Metal, and the build still rejects an inlined
+  query in a merged kernel.
+- DXIL validation of migrated programs in Windows CI.
+
+The items other than ray storage are tracked in issue [1734](https://github.com/The-Ludus-Project/Ludus/issues/1734).
+
+### L5d: migration waves
+
+Each wave ports files that only depend on LUSL or retained Slang, deletes the
+Slang originals in the same change and adds the migrated directories to the
+changed-source gate, which then rejects new Slang sources there.
+
+| Wave | Files | Notes | Issue |
+| --- | --- | --- | --- |
+| 1 | Tools, examples, `apps/smoke`, the Editor's shader, standalone SDK consumer shaders | Leaves; shared libraries reached through `extern slang`; adds the retained list and the gate | [1735](https://github.com/The-Ludus-Project/Ludus/issues/1735) |
+| 2 | Renderer recipe shaders (`recipes.json`) | Host binding by generated slot constants | [1736](https://github.com/The-Ludus-Project/Ludus/issues/1736) |
+| 3 | Render-graph templates, one template per change | Sample's instances of a template migrate in a Sample change built against that SDK | [1737](https://github.com/The-Ludus-Project/Ludus/issues/1737) |
+| 4 | Sample's project-only programs | After the templates they include | [1738](https://github.com/The-Ludus-Project/Ludus/issues/1738) |
+| 5 | Shared libraries: FoundationMath, FoundationGeometry, the scene shader API, reservoir and sampling helpers | Last: every remaining consumer is LUSL or reaches them through generated Slang | [1739](https://github.com/The-Ludus-Project/Ludus/issues/1739) |
+
+### Acceptance
+
+For every migrated program:
+- Pixel hashes match its Slang original on each native backend in the same
+  run, as in the L1 and L3 differential tests.
+- Reference path-tracing programs keep their
+  [CPU oracle parity](renderer-systems.md#cpu-and-gpu-reference-implementation-requirement):
+  raw linear outputs within the existing tolerances. The CPU oracle does not
+  change in the same wave.
+- GPU timings of hot passes are compared A/B in one run, because clocks vary
+  between runs; a regression beyond noise needs an explanation before merge.
+
+L5 completes when no repository-owned Slang source remains outside the
+retained list, the changed-source gate enforces it, Sample builds without
+Slang sources, and the shader guides describe LUSL as the default.
+
 ## Delivery plan
 
 | Phase | Scope | Acceptance |
@@ -872,6 +1000,7 @@ new type or technique.
 | L2 | Interfaces, concepts, templates, `if constexpr`, constraint ordering, specialization budget report, `groupshared` clear report | A material-permutation sample matches its Slang-interface version |
 | L3 | Vertex and fragment stages, the standalone binding model, `.luslh` generated from Slang reflection, LUSL output from the schema generator | A raster graph ported with identical pixels |
 | L4 | Language server, tree-sitter grammar, uniformity qualifiers, coordinate-space types, debug-view qualification, dynamic dispatch evaluation | Code editor acceptance for LUSL |
+| L5 (proposed) | [Migrating the repository's shaders](#migrating-the-repositorys-shaders-l5): the missing language features, LUSL-owned shared libraries and build paths, the open qualification items, then migration in waves in Ludus and Sample | No repository-owned Slang source outside the retained list, enforced by the changed-source gate; every migrated program matches its Slang original |
 
 ## Resolved questions
 
