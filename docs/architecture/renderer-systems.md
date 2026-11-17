@@ -2110,7 +2110,8 @@ lit by an authored distant Sun. The first viewport milestone covers a clear
 sky, a resolved solar disk, sunsets and the sunlit portion of twilight for
 cameras at or above the surface and inside the atmosphere. A sunless ray can
 go dark in this profile.
-Clouds are outside the atmosphere system.
+The [World environment architecture](world-environment.md#atmospheric-transport-and-renderer-integration)
+defines how clouds and local fog compose with the clear-sky path.
 
 ### Ownership and inputs
 
