@@ -296,6 +296,24 @@ void MainWindow::BuildMenus()
     QMenu* fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     OpenAction_ = fileMenu->addAction(QStringLiteral("&Open Project..."));
     OpenAction_->setShortcut(QKeySequence::Open);
+#if defined(Q_OS_WASM)
+    // Browsers that edit folders on disk remember the folder last opened; reopening asks for permission again.
+    QAction* reopenFolder = fileMenu->addAction(QStringLiteral("Reopen Last Project Folder"));
+    reopenFolder->setObjectName(QStringLiteral("reopenProjectFolderAction"));
+    connect(reopenFolder, &QAction::triggered, this, [this]() {
+        if (Controller_->Caps().CanOpen == false)
+        {
+            return;
+        }
+        const foundation::uint64 epoch = Controller_->State().ProjectEpoch;
+        ReopenBrowserProjectFolder(this, [this, epoch](const QString& path) {
+            if (Controller_->State().ProjectEpoch == epoch)
+            {
+                OpenProjectPath(path);
+            }
+        });
+    });
+#endif
     auto* samples = fileMenu->addMenu(QStringLiteral("Open &Sample"));
     samples->setObjectName(QStringLiteral("openSampleMenu"));
     for (const auto& id : {QStringLiteral("cornell-box"),
