@@ -651,9 +651,13 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                 ? 1
                 : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, lightPdf));
         const math::Vector3 directionWorld = ReferenceDirection(path.Ray);
-        math::Vector3 radiance = job.EnvironmentOrNull != nullptr
-                                     ? EvaluateEnvironment(*job.EnvironmentOrNull, directionWorld)
-                                     : job.Description.Environment;
+        math::Vector3 radiance = job.Description.Environment;
+        if (job.EnvironmentOrNull != nullptr)
+        {
+            radiance = path.Depth == 0 && job.Sky.ShouldFilterEnvironment() == true
+                           ? EvaluateFilteredEnvironment(*job.EnvironmentOrNull, directionWorld)
+                           : EvaluateEnvironment(*job.EnvironmentOrNull, directionWorld);
+        }
         if (path.Depth == 0 && job.Sky.IsEnabled() == true)
         {
             radiance = radiance + EvaluateReferenceSky(job.Sky, directionWorld);

@@ -2285,7 +2285,9 @@ the disk-free sky, averaged over 2 × 2 directions per texel. The editor uses
 illuminance after transmittance at the observer, zero below the geometric horizon.
 The editor's reference capture supplies the image as the capture's environment
 map. It replaces the imported environment, as the raster's atmosphere lighting
-does. The capture also gives the `SunSourceId` directional light that illuminance.
+does. Both RT1 paths bilinearly reconstruct its radiance on primary misses, with
+longitude wrap and latitude clamp. The capture also gives the `SunSourceId`
+directional light that illuminance.
 The CPU oracle and GPU compute therefore sample one input through their existing
 environment and directional-light estimators. Other lights are unchanged. A camera
 below the ground or above the shell, or an Atmosphere that does not light the scene,
@@ -4961,7 +4963,9 @@ explicitly. They evaluate the original source radiance and its importance PDF,
 including miss and next-event MIS terms; raster SH/prefiltered mips are never added
 to transport. CPU sampling uses exact row solid angles and a binary64 CDF;
 GPU packing stores the normalized CDF in binary32 and evaluates the corresponding
-quantized density. Both use piecewise-constant source radiance. Black maps have a
+quantized density. Both use piecewise-constant source radiance for surface
+transport and imported backgrounds. Primary misses use bilinear reconstruction
+for the [resolved atmosphere](#clear-sky-atmosphere-design). Black maps have a
 valid zero-radiance distribution. Tangents, vertex color, routed UVs and emission
 maps are copied/fingerprinted with the integral. The reference lighting profile remains
 version **4** (geometric emission sidedness); the packed GPU kernel ABI is version

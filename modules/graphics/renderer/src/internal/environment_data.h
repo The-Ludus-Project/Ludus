@@ -44,6 +44,9 @@ void RetainEnvironment(EnvironmentData* dataOrNull) noexcept;
 void ReleaseEnvironment(EnvironmentData* dataOrNull) noexcept;
 void EvaluateEnvironmentBasis(math::Vector3 direction, float32* outBasis) noexcept;
 math::Vector3 EvaluateEnvironment(const EnvironmentData&, math::Vector3 direction) noexcept;
+/// Bilinear RGB reconstruction for the camera-visible atmosphere, wrapping longitude and clamping latitude.
+[[nodiscard]] math::Vector3 EvaluateFilteredEnvironment(const EnvironmentData& data,
+                                                        math::Vector3 directionWorld) noexcept;
 float32 EvaluateEnvironmentPdf(const EnvironmentData&, math::Vector3 direction) noexcept;
 [[nodiscard]] EnvironmentSample SampleEnvironment(const EnvironmentData&, float32 selector, float32 latitude) noexcept;
 } // namespace ludus::graphics::renderer::internal

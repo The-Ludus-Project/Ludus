@@ -2625,6 +2625,97 @@ LobeShape MeasureLobe(const StaticArray<float64, COUNT>& degrees, const StaticAr
 }
 } // namespace
 
+TEST_CASE("RT1 smooths the camera-visible atmosphere on CPU and GPU", "[renderer][gpu][reference-compute]")
+{
+    struct Shutdown final
+    {
+        ~Shutdown()
+        {
+            rhi::Shutdown();
+        }
+    } shutdown;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    QuadItem plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.X += 10;
+        cornerWorld.Z += 10;
+    }
+    UsePlane(sessions, plane);
+
+    // A coarse map with distinct rows and columns makes the interpolation weights observable in linear RGB.
+    constexpr uint32 SIDE = 2;
+    const StaticArray<math::Vector4, SIDE * SIDE> texels{{{1, 2, 3, 1}, {5, 6, 7, 1}, {3, 4, 5, 1}, {7, 8, 9, 1}}};
+    rr::EnvironmentDescription source;
+    source.PixelsOrNull = texels.GetData();
+    source.Width = SIDE;
+    source.Height = SIDE;
+    source.FilterWidth = 16;
+    source.FilterSamples = 16;
+    source.CpuByteBudget = CPU_BUDGET;
+    rr::EnvironmentMap environment;
+    S status = environment.Initialize(sessions.Device, source);
+    const uint64 started = time::NowTicks();
+    while (status == S::Pending && time::NowTicks() - started < TIMEOUT)
+    {
+        threading::YieldThread();
+        status = environment.GetStatus();
+    }
+    REQUIRE(status == S::Ready);
+
+    rr::AtmosphereDescription atmosphere;
+    atmosphere.IsEnabled = true;
+    atmosphere.SolarIlluminance = {};
+    rr::ReferenceCaptureDescription capture = MakeTiltedCapture({0, 0, 1}, 0.01F, 1);
+    capture.TargetSamples = 1;
+    capture.MaxDepth = 1;
+    capture.EnvironmentTextureOrNull = &environment;
+    capture.AtmosphereBackgroundOrNull = &atmosphere;
+
+    const auto checkSky = [&](math::Vector3 expected) {
+        for (Session* session : {&sessions.Cpu, &sessions.Gpu})
+        {
+            Array<rr::ReferencePixel> pixels;
+            rr::ReferenceCaptureInfo info;
+            Capture(*session, capture, sessions.Surface, pixels, info);
+            REQUIRE(pixels.GetSize() == 1);
+            CHECK(info.InvalidContributions == 0);
+            CHECK(pixels[0].Radiance == pixels[0].Emission);
+            CHECK(pixels[0].Direct == math::Vector3{});
+            CHECK(pixels[0].Indirect == math::Vector3{});
+            constexpr float32 RGB_TOLERANCE = 2e-5F;
+            CHECK(math::Length(pixels[0].Emission - expected) <= RGB_TOLERANCE);
+        }
+    };
+
+    {
+        INFO("Imported environment, nearest texel at the equator");
+        atmosphere.ShouldLightScene = false;
+        checkSky({3, 4, 5});
+    }
+    atmosphere.ShouldLightScene = true;
+    {
+        INFO("Atmosphere at the equator, halfway between rows");
+        checkSky({2, 3, 4});
+    }
+    {
+        INFO("Atmosphere at the longitude seam, halfway between all four texels");
+        const math::Vector4 horizontal = capture.WorldToClip.Columns[0];
+        capture.WorldToClip.Columns[0] = capture.WorldToClip.Columns[2];
+        capture.WorldToClip.Columns[2] = -horizontal;
+        checkSky({4, 5, 6});
+    }
+    {
+        INFO("Atmosphere above the northmost texel center");
+        capture.WorldToClip = MakeTiltedCapture({0, 0.8F, 0.6F}, 0.01F, 1).WorldToClip;
+        checkSky({1, 2, 3});
+    }
+}
+
 TEST_CASE("RT1 draws celestial disks and planet points on CPU and GPU", "[renderer][gpu][reference-compute]")
 {
     struct Shutdown final

@@ -323,6 +323,8 @@ struct ReferenceCaptureDescription final
     /// its celestial boundary at CameraPosition when the observer is inside the atmosphere shell.
     /// Solar and lunar disks, stars and planets contribute scene-linear background radiance after
     /// extinction and ground occlusion. Environment and Lights still supply surface lighting.
+    /// When ShouldLightScene is true, supply the resolved atmosphere as EnvironmentTextureOrNull.
+    /// Camera misses then reconstruct its RGB radiance with bilinear filtering.
     /// Null or disabled leaves the ordinary background. Invalid active fields reject the capture.
     const AtmosphereDescription* AtmosphereBackgroundOrNull = nullptr;
 };

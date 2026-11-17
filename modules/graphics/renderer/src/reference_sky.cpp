@@ -301,6 +301,8 @@ rhi::RasterStatus PrepareReferenceSky(const ReferenceCaptureDescription& descrip
         return rhi::RasterStatus::InvalidDescription;
     }
     const float64 horizon = WriteReferenceSkyTransmittance(altitudeMetres, words);
+    words[LUDUS_REFERENCE_SKY_FILTER_ENVIRONMENT].W =
+        atmosphere.ShouldLightScene == true && description.EnvironmentTextureOrNull != nullptr ? 1 : 0;
     words[LUDUS_REFERENCE_SKY_UP_WORLD] = MakeWord(upWorld, static_cast<float32>(horizon));
     words[LUDUS_REFERENCE_SKY_GALACTIC_CENTER_WORLD].W = ComputeAngularFootprint(description);
     return rhi::RasterStatus::Ready;
