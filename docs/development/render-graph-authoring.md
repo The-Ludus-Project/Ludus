@@ -6507,6 +6507,11 @@ camera moves. In large scenes, each texel covers more ground, so nearby edges
 can appear coarse. Recook existing clustered deferred shader packages to use
 the corrected directional shadow comparison.
 
+The proposed
+[large-world visibility design](../architecture/renderer-systems.md#large-world-raster-visibility)
+defines near directional cascades and the skylight qualification for Worlds
+with both room-sized casters and kilometre-scale terrain.
+
 ### Sky visibility
 
 Without occlusion, environment and Atmosphere sky light reach every surface,

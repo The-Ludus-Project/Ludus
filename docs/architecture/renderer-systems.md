@@ -2067,15 +2067,10 @@ invalidates its bake or uses a documented dynamic fallback. Lightmap packing,
 probe placement and content quality belong to cook tools; rendering only consumes
 ready versions. Missing bakes select a declared neutral/ambient fallback.
 
-Dynamic shadows start with one directional cascaded map and a bounded local-light
-atlas. Stabilize cascade texel placement, derive splits from unjittered views,
-reserve filtering gutters, bound bias in light-space/receiver units and expose
-split/bias/occupancy debug modes. Shadow maps may deliberately use conventional
-depth with an explicit sampler/compare contract even when the main view uses
-reverse-Z. Static shadow reuse keys include caster/material/light revisions;
-dynamic casters invalidate affected regions. Point/spot map costs count against
-an explicit per-view/frame budget. No cache claims correctness from “light did
-not move” alone.
+Dynamic shadows use bounded directional and local-light allocations. Each extra
+projection counts against the per-view draw and memory budgets. The
+[large-world visibility design](#large-world-raster-visibility) defines how the
+default graph scales its directional and sky coverage.
 
 An initial lit view follows this author-visible sequence:
 
@@ -2102,6 +2097,166 @@ encoding are mutually exclusive. On a nonlinear unorm target lacking linear
 blending, composite into a supported linear intermediate then encode once.
 Antialiasing starts with a simple spatial variant or verified MSAA path (the Editor viewport's FXAA is the
 spatial variant; see the output pass above); TAA is a later feature needing motion vectors, jitter and history rejection tests.
+
+## Large-world raster visibility
+
+Proposed for the default clustered deferred graph. The current graph fits
+one map per admitted directional light and 64 fixed sky-direction maps to the
+World's scene bounds. With an illustrative 18 km light-space span, the 1022-texel
+directional interior samples about 18 m per texel and the 126-texel sky
+interior about 143 m per texel. The projected span varies by direction. Both
+scales can miss a room-sized roof, and the sky shader's texel-scaled receiver
+offset also grows with the span. Measure direct visibility per light and
+diffuse sky visibility separately. The [current graph
+guide](../development/render-graph-authoring.md#directional-shadows) describes
+the shipped fit, filtering and scene resource reports.
+
+### Stabilized directional cascades
+
+Add one stabilized near cascade for each admitted directional light and retain
+its existing whole-scene map for far receivers and fallback. Keep light
+selection and shadow eligibility tied to the light's source identity. Sun and
+Moon each get independent visibility when both are admitted. The default graph
+owns cascade selection, atlas allocation and lifetime. World extraction and
+games continue to supply camera, light and caster inputs through the existing
+renderer boundary. Preserve the caller-authored atlas contract described in
+[Immutable shadow atlases](#immutable-shadow-atlases).
+
+- Derive a finite near receiver slice from the unjittered camera, including a
+  blend interval at the split. Enclose it in a sphere, use a padded square in
+  the light basis, and snap its center to a world-anchored texel grid. Keep the
+  footprint size fixed for a given lens and split. Select by unjittered
+  view-space depth and blend visibility where both maps provide valid coverage.
+- Extrude the guarded receiver footprint toward the light when collecting
+  casters. Include offscreen roofs, masked geometry and terrain ridges whose
+  bounds can intersect that volume. Fit conservative light-space depth
+  independently of XY, with padding for bias and filtering. Whole terrain
+  meshes remain valid caster inputs. Use finer terrain bounds when available
+  and measure the draw and triangle cost of large single meshes.
+- Start with the current conventional light depth and four-tap caster-plane
+  comparison. Bound bias using the chosen light-space depth range, effective
+  texel size and reconstructed receiver uncertainty. Keep filter taps inside
+  the tile. Measure both self-shadowing and detached contacts at grazing
+  incidence. If far casters force a depth span that makes packed depth too
+  coarse, qualify a higher-precision representation against these measurements.
+- Reuse a region while its snapped projection, caster coverage, geometry,
+  transforms and opacity inputs remain valid. A light-direction change
+  invalidates that light's affected regions. Intensity and color affect
+  admission and shading, and can reuse compatible visibility. Include
+  committed terrain coverage in the cache identity. Measure rebuilds caused
+  by coarse scene revisions during ordinary player and shutter motion.
+- Publish matching shadow data and view metadata through the existing
+  candidate and submission lifecycle. During preparation, use compatible
+  coarse coverage for a new view. Keep the last drawable accepted view when
+  replacement preparation fails. Retain resources through GPU completion and
+  account for overlapping generations. On atlas or draw-budget exhaustion,
+  use the valid whole-scene map and report the downgrade. Retain the declared
+  out-of-coverage behavior, and verify older graph packages and unsupported
+  profiles through their existing raster route.
+
+An initial Metal prototype can pack two 512 × 512 tiles in a separate
+1024 × 1024 attachment to preserve the existing mesh-light and sky slots.
+RGBA8 and a 32-bit depth attachment together occupy 8 MiB before alignment per
+generation. The prototype must measure actual allocation, submission cost and
+peak overlap. Keep this private to the renderer and RHI. Qualify any new
+binding or package layout through the source build and installed SDK before
+requiring it. [Directional implementation and acceptance #1723](https://github.com/The-Ludus-Project/Ludus/issues/1723)
+
+### Diffuse sky visibility
+
+At each receiver, integrate incident sky radiance over visible directions
+weighted by the surface cosine. Compare the existing maps with independent
+geometry rays at the same 64 directions, then compare both with a converged
+hemisphere integral. The first comparison measures spatial lookup error. The
+second measures the directional discretization, including narrow openings.
+Match the production treatment below the horizon or measure that contribution
+separately. Keep diffuse sky, analytic direct light and baked diffuse bounce
+independently inspectable.
+
+If spatial error dominates, prototype a bounded, world-anchored local region
+using the existing direction set. Include remote up-sky casters or combine
+local and distant blocker coverage per direction. Keep the visibility cache
+independent of sky radiance and camera motion. Invalidate affected regions when
+caster geometry, transforms, opacity or terrain coverage changes. For an
+unavailable or exhausted local region, use the coarse sky path and report
+its coverage. If angular error or the resolve cost dominates, compare with a
+compact directional visibility field. Qualify interpolation at thin walls and
+openings with directional radiance and geometry-ray controls. [Baseline sky
+visibility #1620](https://github.com/The-Ludus-Project/Ludus/issues/1620) ·
+[Large-world sky acceptance #1724](https://github.com/The-Ludus-Project/Ludus/issues/1724)
+
+### Qualification and SDK delivery
+
+Use a redistributable roof, wall, doorway and shutter fixture inside a landscape
+spanning approximately 18 km. Keep the landscape in the submitted scene and
+caster set. At fixed world-space receiver probes, record raw visibility and
+scene-linear radiance before tone mapping. Use **Shadow coverage** and
+**Light** for Sun and Moon, then **Sky visibility** and **Sky diffuse** with
+the sky radiance preserved. Include covered, opening,
+exterior and roof-removed controls. Test a grazing angle and an offscreen
+caster whose shadow crosses a visible receiver. Walk and turn through the
+doorway in both directions, cross the split, resize and test a camera cut.
+Independently test pending, failed and successful publication and stale
+completion.
+
+Starting targets are direct visibility at most 0.05 in known shadow and at
+least 0.95 in known light away from the filter band, a near footprint at most
+0.10 m per texel, and camera-induced drift at most one effective near texel
+against world-space edge samples. For sky, start with at most 0.10 absolute
+visibility error and diffuse luminance error at most 10% of the exposed
+control. Choose probes whose dense oracle predicts distinct covered and
+opening values. Confirm the thresholds on the reference geometry before
+collecting acceptance evidence.
+
+Report light and cascade identity, split and overlap, active sky region,
+metres per texel, bias, caster draws and triangles, invalidation cause,
+fallback and generation. On named macOS/Metal hardware at fixed resolution,
+record cold preparation, warmed shadow and resolve median and p95 timings,
+presented frame pacing, atlas occupancy and peak live bytes. Use the
+initial incremental GPU p95 budgets of 1.5 ms for the near cascades and
+3 ms for sky refinement as prototype gates. Start with caps of 8 MiB for
+additional direct map attachments and 16 MiB for additional resident sky
+map color per generation. Measure steady and replacement memory independently,
+including private depth and temporary attachments.
+
+Exercise **Force raster** in the editor and a native app built against a
+relocated arm64 macOS Development SDK at the same engine revision. Recook the
+default graph from that SDK, record the graph identity and compare the same
+probes and camera path through editor Run and a bundled launch outside the
+project directory. Verify the existing fallback on another supported raster
+backend and an older graph package. See the [lighting view
+guide](../development/editor-workspace.md#inspect-lighting-terms) and the
+[SDK installation workflow](../development/project-sdk-workflow.md#install-an-sdk).
+
+### Later shadow techniques
+
+Use fixed stabilized cascades as the portable baseline. Compare
+sample-distribution splits when a measured scene wastes resolution or submits
+too many casters with fixed splits. Quantize changes and measure coverage and
+edge motion at a camera cut or disocclusion. Evaluate moment filtering after
+projection tuning if edge aliasing remains, with matched light leak,
+contact error and memory tests.
+[Lauritzen, Salvi and Lefohn, *Sample Distribution Shadow Maps*](https://doi.org/10.1145/1944745.1944761) ·
+[Moment filtering #1717](https://github.com/The-Ludus-Project/Ludus/issues/1717)
+
+Adaptive shadow maps refine a bounded hierarchy in response to receiver demand.
+Virtual shadow maps take that approach to page residency and directional
+clipmaps. Consider a Metal prototype once fixed cascades miss a measured quality
+target and the renderer can bound caster submission per page, residency,
+invalidation and fallback. Compare camera cuts, large terrain primitives and
+rotating celestial lights against the fixed-cascade baseline. Qualify each
+required capability on the target device.
+[Fernando et al., *Adaptive Shadow Maps*](https://www.graphics.cornell.edu/pubs/2001/FFBG01.pdf) ·
+[Epic's Fortnite virtual shadow map report](https://www.unrealengine.com/tech-blog/virtual-shadow-maps-in-fortnite-battle-royale-chapter-4) ·
+[Apple Metal feature tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
+
+The fixed-footprint design adapts Michal Valient's enclosing-sphere stabilization
+and Microsoft's texel placement and filter guidance. The directional sky-field
+candidate draws on Sloan, Kautz and Snyder's separation of incident lighting
+and precomputed transfer.
+[Valient, *The Rendering Technology of Killzone 2*, GDC 2009](https://www.guerrilla-games.com/media/News/Files/GDC09_Valient_Rendering_Technology_Of_KillZone_2_Extended_Presenter_Notes.pdf) ·
+[Microsoft, *Cascaded Shadow Maps*](https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps) ·
+[Sloan, Kautz and Snyder, *Precomputed Radiance Transfer*, SIGGRAPH 2002](https://www.cs.jhu.edu/~misha/ReadingSeminar/Papers/Sloan02.pdf)
 
 ## Clear-sky atmosphere design
 
