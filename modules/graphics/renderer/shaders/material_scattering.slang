@@ -1,10 +1,10 @@
 #pragma once
+#include "material.h"
 #include "math.slang"
-#include "renderer_gpu_preview_layout.h"
 
 // Thanks to Romain Guy and Mathias Agopian, "Physically Based Rendering in Filament", section 4.4.2,
 // https://google.github.io/filament/Filament.html#toc4.4.2. The cross product preserves sine squared near the
-// highlight. The reference paths use binary32 without Filament's fp16 clamp.
+// highlight. The renderer uses binary32 for this term and preserves its full peak.
 float ComputeGgxNormalDistribution(float3 normalWorld, float3 halfWorld, float alphaSquared)
 {
     float halfCosine = saturate(dot(normalWorld, halfWorld));

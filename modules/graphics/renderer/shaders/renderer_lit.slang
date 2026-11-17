@@ -1,4 +1,5 @@
 #include "lighting_layout.h"
+#include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
 #include "renderer_environment_layout.h"
@@ -225,12 +226,10 @@ float3 EvaluateBrdf(float3 baseColor,
     if (nv <= 0 || nl <= 0 || dot(halfSumWorld, halfSumWorld) < 1e-12)
         return float3(0);
     float3 halfDirectionWorld = NormalizeOrZero(halfSumWorld);
-    float nh = saturate(dot(normalWorld, halfDirectionWorld));
     float lh = saturate(dot(lightDirectionWorld, halfDirectionWorld));
     float a = roughness * roughness;
     float a2 = a * a;
-    float d = (1 - nh * nh) + nh * nh * a2;
-    float distribution = a2 / (PI * d * d);
+    float distribution = ComputeGgxNormalDistribution(normalWorld, halfDirectionWorld, a2);
     float visibility = 0.5 / max(nl * sqrt(nv * nv * (1 - a2) + a2) + nv * sqrt(nl * nl * (1 - a2) + a2), 1e-6);
     float3 f0 = lerp(float3(0.04), baseColor, metallic);
     float3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);
@@ -255,12 +254,10 @@ float3 EvaluateBrdfLobes(float3 baseColor,
     if (nv <= 0 || nl <= 0 || dot(halfSumWorld, halfSumWorld) < 1e-12)
         return float3(0);
     float3 halfDirectionWorld = NormalizeOrZero(halfSumWorld);
-    float nh = saturate(dot(normalWorld, halfDirectionWorld));
     float lh = saturate(dot(lightDirectionWorld, halfDirectionWorld));
     float a = roughness * roughness;
     float a2 = a * a;
-    float d = (1 - nh * nh) + nh * nh * a2;
-    float distribution = a2 / (PI * d * d);
+    float distribution = ComputeGgxNormalDistribution(normalWorld, halfDirectionWorld, a2);
     float visibility = 0.5 / max(nl * sqrt(nv * nv * (1 - a2) + a2) + nv * sqrt(nl * nl * (1 - a2) + a2), 1e-6);
     float3 f0 = lerp(float3(0.04), baseColor, metallic);
     float3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);

@@ -222,6 +222,74 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
             REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(fixture.Pixels)) == true);
         };
+        {
+            // Two times the half-vector tilt gives the light tilt when the view points along the normal.
+            constexpr float64 HALF_VECTOR_TILT_DEGREES = .0135;
+            constexpr float64 DEGREES_PER_HALF_TURN = 180;
+            const float64 halfAngleRadians = HALF_VECTOR_TILT_DEGREES * math::kPi / DEGREES_PER_HALF_TURN;
+            const float64 lightAngleRadians = 2 * halfAngleRadians;
+            const float64 lightCosine = math::Cos(lightAngleRadians);
+            // The sharp metallic lobe needs a low illuminance to keep the linear target below saturation.
+            constexpr float32 LIGHT_ILLUMINANCE_LUX = .00004F;
+            const renderer::DirectLight highlightLight
+            {
+                .SourceId = 1,
+                .Color = {1, 1, 1},
+                .Intensity = LIGHT_ILLUMINANCE_LUX,
+                .Direction = {-static_cast<float32>(math::Sin(lightAngleRadians)),
+                              0,
+                              -static_cast<float32>(lightCosine)},
+                .ShouldCastRasterShadows = false,
+            };
+            const renderer::SceneShaderMaterial originalMaterial = materials[0];
+            const math::Vector3 secondItemTranslation = items[1].MeshToWorld.Translation;
+            materials[0].BaseColor = {1, 1, 1};
+            materials[0].Metallic = 1;
+            materials[0].Roughness = ludus::content::scene_format::MIN_ROUGHNESS;
+            items[1].MeshToWorld.Translation.X = 2;
+            fixture.Cameras[0].OrthographicCamera = true;
+            fixture.Cameras[0].CameraForward = {0, 0, -1};
+            inputs.Lights = {&highlightLight, 1};
+            inputs.Environment = {};
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            render();
+
+            const float64 roughness = static_cast<float64>(materials[0].Roughness);
+            const float64 alpha = roughness * roughness;
+            const float64 alphaSquared = alpha * alpha;
+            const float64 halfSine = math::Sin(halfAngleRadians);
+            const float64 halfCosine = math::Cos(halfAngleRadians);
+            const float64 denominator = halfSine * halfSine + halfCosine * halfCosine * alphaSquared;
+            const float64 distribution = alphaSquared / (math::kPi * denominator * denominator);
+            const float64 visibility =
+                0.5 / (lightCosine + math::Sqrt(lightCosine * lightCosine * (1 - alphaSquared) + alphaSquared));
+            // Unit metallic Fresnel and no diffuse. Allow RGBA8 rounding and the deferred roughness storage error.
+            constexpr float64 UNORM_MAXIMUM = 255;
+            const float64 expectedReflectance = lightCosine * distribution * visibility;
+            const float64 expectedCode =
+                UNORM_MAXIMUM * static_cast<float64>(LIGHT_ILLUMINANCE_LUX) * expectedReflectance;
+            if (profile == 0)
+            {
+                math::Vector3 reflectance;
+                REQUIRE(renderer::EvaluateLitBrdf(materials[0].BaseColor,
+                                                  materials[0].Metallic,
+                                                  materials[0].Roughness,
+                                                  {0, 0, 1},
+                                                  {0, 0, 1},
+                                                  -highlightLight.Direction,
+                                                  reflectance) == rhi::RasterStatus::Ready);
+                constexpr float64 CPU_RELATIVE_TOLERANCE = 0.0001;
+                CHECK(math::Abs(static_cast<float64>(reflectance.X) / expectedReflectance - 1) <=
+                      CPU_RELATIVE_TOLERANCE);
+            }
+            const float64 centerCode = static_cast<float64>(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2)]);
+            CAPTURE(profile, centerCode, expectedCode);
+            CHECK(math::Abs(centerCode - expectedCode) <= 2);
+
+            inputs.Lights = {lights.GetData(), lights.GetSize()};
+            materials[0] = originalMaterial;
+            items[1].MeshToWorld.Translation = secondItemTranslation;
+        }
         for (usize lightingCase = 0; lightingCase < LIGHTING_CASE_COUNT; ++lightingCase)
         {
             const bool hasEnvironmentMap = lightingCase + 1 == LIGHTING_CASE_COUNT;
