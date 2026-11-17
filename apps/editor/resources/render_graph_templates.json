@@ -46,6 +46,15 @@
     },
     {
       "kind": "graph",
+      "identity": "hybrid-reflections",
+      "label": "Hybrid reflections — roughness-aware ray-traced reflections",
+      "category": "hybrid",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["reflections", "glossy", "roughness", "hybrid", "ray tracing"],
+      "description": "Rasterize visibility and depth, light the first surface with ray-shadowed directional, point and spot lights, and trace one reflection ray per pixel from the surface's rough specular lobe, then Accumulate. Reflected surfaces outside the view still appear. Requires native ray tracing."
+    },
+    {
+      "kind": "graph",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
       "category": "ray-traced",

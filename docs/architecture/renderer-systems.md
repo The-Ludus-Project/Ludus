@@ -3810,10 +3810,74 @@ bounds.
 The timings come from the opt-in `[.benchmark][hybrid-shadows]` case on a heavily
 loaded machine.
 
+#### Roughness-aware reflections
+
+The [hybrid reflections template](../development/render-graph-authoring.md#trace-rough-reflections)
+traces one ray per pixel from the first surface's GGX specular lobe and accumulates
+it. The `[hybrid-reflections]` fixture
+([`hybrid_reflection_tests.cpp`](../../modules/graphics/renderer/tests/hybrid_reflection_tests.cpp))
+places a metallic receiver of reflectance 0.9 at z = 0.5, facing the orthographic
+camera. A 3.2 m square Lambertian panel of albedo 0.8 faces it from z = −0.4, and a
+black, two-sided 0.3 m × 0.6 m blocker sits 0.1 m in front of the panel. Both lie
+behind the near plane, so the receiver shows the panel, the blocker's silhouette and
+its shadow on the panel only by reflection. One directional light of 11 lux reaches
+the panel's front at about 11° and only the receiver's back, so the receiver has no
+direct light. The states are receiver roughness 0.2 and 0.5, then four blocker
+positions 0.2 m apart at roughness 0.35. The environment is black.
+
+The oracle integrates the receiver's reflection in float64 over 256 × 256 stratified
+microfacet normals, drawn with density D(h) cos θₕ by the inverse CDF of Walter et al.
+It intersects each reflected direction with the blocker and panel planes, and
+projects the blocker along the light onto the panel for the shadow. Halving the
+strata per side changes no probe by more than 0.0014 at either roughness control. It is evaluated at 384 probes,
+one per 4 × 4 pixel block. Thanks to Bruce Walter, Stephen R. Marschner, Hongsong
+Li and Kenneth E. Torrance for the GGX distribution and its sampling in
+[Microfacet Models for Refraction through Rough Surfaces, EGSR 2007, §5.2](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf),
+and to Eric Heitz for the height-correlated masking-shadowing term and the
+visible-normal proposal in [Understanding the Masking-Shadowing Function in
+Microfacet-Based BRDFs, JCGT 3(2), 2014](https://jcgt.org/published/0003/02/03/) and
+[Sampling the GGX Distribution of Visible Normals, JCGT 7(4), 2018](https://jcgt.org/published/0007/04/01/).
+
+RT1 traces two scattering events without roulette. Measured on Apple M5 with Metal,
+96 × 64 linear output and centre rays:
+
+| Route | Samples per pixel | Compared with | Mean signed error | RMS error | Largest error |
+| --- | ---: | --- | ---: | ---: | ---: |
+| RT1 GPU compute, every state | 1,024 | Oracle probes | −2.6e-4 to 4.2e-4 | 0.0031–0.0068 | 0.023 |
+| RT1 CPU oracle, roughness 0.2 and last motion step | 256 | Oracle probes | −3.6e-4 to −2.3e-4 | 0.0064–0.0099 | 0.044 |
+| Hybrid reflections, raw first frame | 1 | RT1 GPU image | −0.0016 to 0.0019 | 0.097–0.21 | 0.49 |
+| Hybrid reflections, Accumulate after 256 frames | 256 | Oracle probes | −1.1e-4 to 7.3e-4 | 0.0060–0.0126 | 0.053 |
+| Hybrid reflections, Accumulate after 256 frames | 256 | RT1 GPU image | −1.1e-4 to 4.7e-4 | 0.0069–0.0145 | 0.061 |
+
+No RT1 or accumulated value lies outside about seven standard errors of the oracle
+or of RT1, with a per-sample standard deviation bounded by 0.25. RT1 GPU and CPU
+differ by at most 1.3e-4 in mean. Raw error grows with roughness, from RMS 0.097 at
+0.2 to 0.21 at 0.5, as the lobe spreads.
+
+A scene revision starts a new mean, so a fresh graph given only the final revision
+reproduces the moved graph's frames bit for bit at every checkpoint. Each motion
+step changes 978–984 pixels by more than 12 codes in the RT1 images. Over them, the
+RMS error against the new RT1 image is 0.21–0.22 in the first frame, 0.052–0.057
+after 16 frames and 0.028 after 64, and reaches the declared 0.02 tolerance by frame
+128. Against the previous position's RT1 image it stays near 0.10 after 256 frames,
+so no old reflection is blended in.
+
+ForceRaster selects the default graph, and Automatic does so where native rays are
+unavailable. That graph reflects only the environment and sky, so the receiver is
+black: the panel's reflection, 0.37–0.45 in mean over the probes, is missing in every
+state. Hybrid reflections is the route that shows offscreen geometry.
+
+| Hybrid reflections timing, 21 samples per run, two runs | Median | p95 |
+| --- | ---: | ---: |
+| Blocker move to drawable revision, CPU wall time including acceleration update and polling | 6.1–6.3 ms | 6.2–6.8 ms |
+| `shade` with shadow rays, the reflection ray and the fused running mean, GPU timestamps | 0.13–0.24 ms | 0.17–0.24 ms |
+
+The timings come from the opt-in `[.benchmark][hybrid-reflections]` case. The shade
+pass's GPU time varied between the two runs with the device clock.
+
 [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
-remaining roughness-aware reflections, bounded indirect diffuse, stale-history
-validation in the World viewport and an installed-SDK app, and Vulkan evidence for
-the automatic raster fallback.
+remaining bounded indirect diffuse, stale-history validation in the World viewport
+and an installed-SDK app, and Vulkan evidence for the automatic raster fallback.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)

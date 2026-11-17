@@ -1557,6 +1557,60 @@ float3 SampleStandardBsdf(MaterialSample material, float3 viewDirectionWorld, fl
                                 samples);
 }
 
+/// True when the standard BSDF has a separable GGX specular reflection lobe: the MetallicRoughness and Conductor
+/// models, and DiffuseConductorMix with a positive conductor weight. Hybrid effects that trace the specular and
+/// diffuse lobes separately use EvaluateStandardSpecularLobe and SampleStandardSpecularLobe. Glass, coatings,
+/// ProjectBrdf and Program materials have no such lobe here.
+bool HasStandardSpecularLobe(MaterialSample material)
+{
+    if (material.Model == MaterialModel::MetallicRoughness || material.Model == MaterialModel::Conductor)
+        return true;
+    return material.Model == MaterialModel::DiffuseConductorMix && material.Metallic > 0;
+}
+/// The GGX specular lobe of EvaluateStandardBsdf alone, and the solid-angle density of lightDirectionWorld under
+/// SampleStandardSpecularLobe. outValue includes DiffuseConductorMix's conductor weight; the diffuse remainder of
+/// EvaluateStandardBsdf is not included. Both outputs are zero below the shading hemisphere and for materials for
+/// which HasStandardSpecularLobe is false. Requires unit directions.
+void EvaluateStandardSpecularLobe(MaterialSample material,
+                                  float3 viewDirectionWorld,
+                                  float3 lightDirectionWorld,
+                                  out float3 outValue,
+                                  out float outPdf)
+{
+    outValue = 0;
+    outPdf = 0;
+    if (HasStandardSpecularLobe(material) == false)
+        return;
+    EvaluateScatteringSpecularLobe(material.BaseColor,
+                                   material.Metallic,
+                                   material.Roughness,
+                                   material.Model,
+                                   material.Eta,
+                                   material.K,
+                                   material.AlphaU,
+                                   material.ShadingNormalWorld,
+                                   viewDirectionWorld,
+                                   lightDirectionWorld,
+                                   outValue,
+                                   outPdf);
+}
+/// Propose a direction from the GGX specular lobe's visible normals, from two uniform samples in [0,1). Returns zero,
+/// the ordinary rejection, when HasStandardSpecularLobe is false, the viewer is below the shading hemisphere or the
+/// reflected direction leaves it. Its density is EvaluateStandardSpecularLobe's outPdf.
+float3 SampleStandardSpecularLobe(MaterialSample material, float3 viewDirectionWorld, float2 samples)
+{
+    if (HasStandardSpecularLobe(material) == false)
+        return float3(0);
+    // Probability one selects the visible-normal branch of the standard mixture sampler.
+    const float3 directionWorld =
+        SampleScatteringBsdf(material.ShadingNormalWorld,
+                             viewDirectionWorld,
+                             ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU),
+                             1,
+                             float3(0, samples.x, samples.y));
+    return dot(material.ShadingNormalWorld, directionWorld) > 0 ? directionWorld : float3(0);
+}
+
 /// Complete continuation proposal for the typed reference models. Weight already
 /// contains f*cos/pdf; Pdf is solely the external MIS density (estimated for coatings).
 /// A specular (glass) sample carries its complete weight with Pdf one: emission it finds takes the

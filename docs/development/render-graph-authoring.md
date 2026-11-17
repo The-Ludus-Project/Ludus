@@ -4556,6 +4556,17 @@ with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
 sample contains a complete throughput weight and a separate external MIS density.
 The original direction-only helpers retain their coating approximation.
 
+Effects that trace the specular and diffuse lobes separately, such as
+[Hybrid reflections](#trace-rough-reflections), use the GGX specular lobe alone.
+`HasStandardSpecularLobe` is true for `MetallicRoughness`, `Conductor` and a
+`DiffuseConductorMix` with a positive conductor weight. `SampleStandardSpecularLobe`
+proposes a reflection from the lobe's visible normals with two uniform samples, and
+`EvaluateStandardSpecularLobe` returns the lobe's value, including the mix's conductor
+weight, and that proposal's solid-angle density. A zero direction is the ordinary
+rejection: no such lobe, or a reflection below the shading hemisphere. The diffuse
+remainder of `EvaluateStandardBsdf` is not part of the lobe. Glass, coatings,
+`ProjectBrdf` and `Program` materials report no lobe.
+
 A [closure program](../architecture/scene-source-format.md#closure-program)
 material reports `MaterialModel::Program`. `MaterialSample.ProgramOffset`
 locates its packed program. `BaseColor`, `Metallic` and `Roughness` are its
@@ -4856,6 +4867,7 @@ node editor to resize them together.
 | **Visibility buffer + depth** (`visibility-buffer`) | One raster pass exports the exact RGBA8 identity image and its Depth32Float attachment. The identity image is the camera output; its alpha channel encodes identity rather than transparency. No ray-tracing capability is needed. |
 | **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
 | **Hybrid shadows — ray-traced analytic light shadows** (`hybrid-shadows`) | The same raster producer feeds one ray pass that lights the first surface with the World's directional, point and spot lights, each shadowed by a ray, then ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Shadow analytic lights with rays](#shadow-analytic-lights-with-rays). |
+| **Hybrid reflections — roughness-aware ray-traced reflections** (`hybrid-reflections`) | The same raster producer feeds one ray pass that lights the first surface like Hybrid shadows and traces one reflection ray per pixel from its GGX specular lobe, then Accumulate and ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Trace rough reflections](#trace-rough-reflections). |
 | **Tiled vbuffer NEE — many-light direct lighting** (`tiled-vbuffer-nee`) | The same raster producer feeds three ray passes that build one emitter-selection table per 16 × 16 tile and shade direct mesh-emitter lighting with MIS, then Accumulate. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Select emitters per screen tile](#select-emitters-per-screen-tile). |
 
 Create the same packages through the CLI:
@@ -4867,6 +4879,8 @@ ludus render-graph new graphs/Reflections --template visibility-secondary-rays -
   --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/Shadows --template hybrid-shadows --output offscreen \
   --renderer-static --profiles metal wgsl
+ludus render-graph new graphs/RoughReflections --template hybrid-reflections --output offscreen \
+  --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/DirectLighting --template tiled-vbuffer-nee --output offscreen \
   --renderer-static --profiles metal wgsl
 ```
@@ -4875,7 +4889,8 @@ Use `spirv wgsl` for Vulkan. The raster-only template also accepts `wgsl` alone.
 The canonical packages are shipped with the SDK:
 [visibility and depth](../../modules/graphics/renderer/render_graphs/visibility_buffer/main.lurender.json),
 [secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json),
-[hybrid shadows](../../modules/graphics/renderer/render_graphs/hybrid_shadows/main.lurender.json)
+[hybrid shadows](../../modules/graphics/renderer/render_graphs/hybrid_shadows/main.lurender.json),
+[hybrid reflections](../../modules/graphics/renderer/render_graphs/hybrid_reflections/main.lurender.json)
 and [tiled vbuffer NEE](../../modules/graphics/renderer/render_graphs/tiled_vbuffer_nee/main.lurender.json).
 Existing graph folders are never overwritten; cancelling creation writes nothing.
 
@@ -4916,9 +4931,10 @@ because no analytic light reaches its delta lobes.
 
 Punctual lights cast hard shadows, and one deterministic ray per light gives a
 noise-free signal, so the graph keeps no history and applies no reconstruction
-filter: its raw and displayed images differ only by ToneMap. Area-light soft
-shadows, roughness-aware reflections and indirect diffuse remain the later RT2
-effects, with their reconstruction and history contracts. Devices without native
+filter: its raw and displayed images differ only by ToneMap. Area-light soft shadows
+come from the tiled vbuffer NEE template and roughness-aware reflections from
+[Hybrid reflections](#trace-rough-reflections), each with its own reconstruction and
+history contract. Indirect diffuse remains the later RT2 effect. Devices without native
 ray tracing reject preparation; the default raster graph is their shadow route.
 
 The `[hybrid-shadows]` GPU regression renders one closed box blocker over a planar
@@ -5163,6 +5179,50 @@ BSDF sample, pass the trace result, original receiver position and same
 selection policy to `EvaluateLightAlongRay`. Multiply its source PMF by its
 conditional solid-angle density.
 See the [light sampling architecture](../architecture/renderer-systems.md#unified-light-discovery-and-incident-sampling).
+
+#### Trace rough reflections
+
+The **Hybrid reflections** starter is the second RT2 effect: raster primary
+visibility, ray-shadowed analytic light and one reflection ray per pixel whose
+spread follows the surface roughness. `main_shaders/shade.slang` calls
+`LoadVisibilitySurface` and lights the first surface with the World's directional,
+point and spot lights as [Hybrid shadows](#shadow-analytic-lights-with-rays) does,
+with the standard BSDF and one `TestVisibility` shadow ray per light. It then draws
+two values from the invocation stream and calls `SampleStandardSpecularLobe`, which
+proposes a direction from the GGX specular lobe's visible normals, and weights the
+radiance arriving along it by `EvaluateStandardSpecularLobe`'s value times the
+cosine over its density. `TraceClosest` follows the ray. Its hit adds its emission
+and its own ray-shadowed analytic light; a miss adds `EvaluateEnvironment`.
+A reflected surface outside the camera frustum, or behind the camera, still appears.
+
+Each contribution is assigned once. Analytic lights reach the first surface only
+through its shadow rays, and emission, the environment and the light at the hit
+reach it only through the specular lobe. The diffuse lobe traces no ray, so mesh
+emitters and the environment light neither it nor the reflected surface: those are
+[tiled vbuffer NEE](#select-emitters-per-screen-tile) and the later indirect-diffuse
+effect. Materials without a specular lobe (see `HasStandardSpecularLobe`) get no
+reflection; glass shows only its emission, as in Hybrid shadows.
+
+The ray technique grants one surface query, the reflection ray, and 16 visibility
+queries. The first surface and the reflection hit share them equally, so
+`MAXIMUM_SHADOW_RAYS_PER_SURFACE` is 8: the first 8 contributing lights at each
+surface are ray shadowed and any further light adds unshadowed. A pixel's raw
+signal is one reflection sample. The graph's [Accumulate](#accumulate-ray-samples-explicitly)
+node is its reconstruction: a running mean of up to 4096 frames that any accepted
+camera, scene, extent or shader change restarts. The template has no spatial filter
+and no reprojection, so camera motion restarts the noisy first frames; history is
+never carried across a revision. Devices without native ray tracing reject
+preparation. The default raster graph is their route, and it reflects only the
+environment and sky, never scene geometry.
+
+The `[hybrid-reflections]` regressions compare the template, RT1 (CPU oracle and GPU
+compute) and the RT2 raster fallback with a float64 quadrature of a rough metal
+receiver's reflection of an offscreen lit panel, across a roughness sweep and a
+moving blocker. They check the raw frame, the accumulated mean, the error over the
+pixels each motion step changes, and a fresh graph's bit-exact replay. See the
+[fixture and measurements](../architecture/renderer-systems.md#roughness-aware-reflections).
+Run `ludus_renderer_render_tests "[.benchmark][hybrid-reflections]"` for the
+blocker-move preparation latency and the shade pass's GPU time.
 
 ### Select emissive triangles by power
 

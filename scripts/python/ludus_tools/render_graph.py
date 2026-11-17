@@ -1458,7 +1458,8 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     """Publish an editable built-in render graph template in a new directory.
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
-    visibility-secondary-rays, hybrid-shadows, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
+    visibility-secondary-rays, hybrid-shadows, hybrid-reflections, tiled-vbuffer-nee, compute-ray-tracing,
+    simple-compute-ray-tracing,
     veach-guibas-mis, line-sampling, ris-projected-solid-angle, salesin-jarosz-lines,
     polygonal-light-sampling, slice-sampling-luminaire, rough-pair-slice, steinberg-plt, steinberg-physical-optics, wave-tracing, restir-gi,
     rao-blackwell-mh, conditional-restir or one-more-vertex-nee. Offscreen
