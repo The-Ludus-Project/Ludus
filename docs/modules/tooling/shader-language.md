@@ -482,6 +482,9 @@ In the two-, three-operand element-wise rows, a scalar may stand beside vectors:
   - `GroupIndex` (`uint32`).
 - Semantics appear on entry point parameters only.
 
+See [Choose a compute dispatch ID](../../development/fullscreen-rendering.md#choose-a-compute-dispatch-id)
+for the corresponding Slang semantics, indexing examples, and partial workgroups.
+
 **Vertex and fragment entry points** are marked `[stage(vertex)]` and
 `[stage(fragment)]` and are free functions. Their interfaces are laid out by
 rule; see [Resources and bindings](#resources-and-bindings).

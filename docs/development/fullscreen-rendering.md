@@ -1015,6 +1015,47 @@ reflection; bounds checks, shader-local synchronization and race freedom are
 kernel obligations. There is no separate asynchronous queue; indirect dispatch is
 the [R12a profile](#expanded-indirect-draws-and-dispatches-r12a).
 
+### Choose a compute dispatch ID
+
+`[numthreads(x, y, z)]` declares the local shape of one workgroup in Slang.
+`ComputeDispatch::Groups` specifies how many workgroups to launch along each
+axis. Choose the entry-point semantic that matches the storage you index.
+
+| Slang semantic | Type | Use |
+| --- | --- | --- |
+| `SV_DispatchThreadID` | `uint3` | Coordinate in the dispatch. Use `.x` for a 1D buffer or `.xy` for a 2D image with one invocation per element. |
+| `SV_GroupID` | `uint3` | Workgroup coordinate. Use it for one record per tile or for the partial result of a workgroup reduction. |
+| `SV_GroupThreadID` | `uint3` | Coordinate within the workgroup. Use it to address a tile in `groupshared` memory. |
+| `SV_GroupIndex` | `uint` | Linear index within the workgroup, with x varying fastest. Use it for a flat `groupshared` array. |
+
+The dispatch coordinate is `groupId * groupSize + groupThreadId` componentwise.
+The linear local index is `groupThreadId.x + groupSize.x * (groupThreadId.y +
+groupSize.y * groupThreadId.z)`. Request these values through the built-ins.
+Slang lowers them for the selected target. [Microsoft's HLSL system-value
+reference](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-semantics)
+and [Slang's target-specific reference](https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/a2-target-specific-features.html)
+describe those semantics and lowerings.
+
+For one invocation per element, round the logical extent up to whole groups on
+each axis using the reflected local size. Integer ceiling division can use
+`extent / localSize + (extent % localSize != 0)`. Skip a direct dispatch with an
+empty logical extent. For example, a 19 × 11 image and `numthreads(8, 8, 1)`
+need `Groups = {3, 2, 1}`. This launches a 24 × 16 grid. Guard image reads and
+writes against the logical extent. In a cooperative kernel, have invocations
+outside the extent initialize their shared slots with suitable padding and
+participate in the same group barriers as the other invocations. Predicate
+out-of-range resource accesses. [Group barrier reference](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/groupmemorybarrierwithgroupsync).
+
+The [point-neighbor kernel](../../modules/graphics/renderer/shaders/renderer_point_neighbors.slang)
+shows a 1D bounds check. For a 2D example, the [generated scene compute
+entry point](render-graph-authoring.md#author-scene-compute-passes) handles
+dispatch coordinates and edge groups before calling authored shader functions.
+
+Try manual ID arithmetic only for a measured kernel on a named target, with
+generated-code inspection and matching output. Thanks to dickyjim for the 1D
+and 2D examples that informed this guide. [*Which Compute ID for me?*
+(2017)](https://dickyjim.wordpress.com/2017/09/05/which-compute-id-for-me/)
+
 ### Ordered dispatches and indirect commands
 
 Set `GraphPassDescription.Dispatch` to one `ComputeDispatch`; omit raster draws

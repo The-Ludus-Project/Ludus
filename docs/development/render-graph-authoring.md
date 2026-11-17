@@ -1248,8 +1248,16 @@ a fixed color target. Use `"state": {}` for automatic grouping, or
 explicit shapes are `[64, 1, 1]` and `[8, 8, 1]`. All explicit overrides across
 all configurations in one shader bundle must agree; automatic passes inherit
 that choice. With no override the bundle uses 64×1×1. Conflicts and unsupported
-shapes fail the build without rewriting sources. Partial edge groups are bounds
-checked. See the [measured scope and reproduction workflow](../architecture/renderer-systems.md#authored-graph-workgroup-experiment).
+shapes fail the build without rewriting sources. The renderer rounds the
+dispatch up to whole workgroups. The generated compute entry point filters out
+invocations outside the launch region before calling your shader. In the callback,
+use `launch.PositionPixel` for the pixel coordinate and `launch.ExtentPixel` for
+the full image dimensions. Use `launch.PositionPixel.y * launch.ExtentPixel.x +
+launch.PositionPixel.x` for a flat per-pixel buffer sized to that extent.
+Derive any logical tile coordinate from the pixel and the algorithm's tile size
+so it stays stable across workgroup overrides. See the [measured scope and
+reproduction workflow](../architecture/renderer-systems.md#authored-graph-workgroup-experiment)
+and the [dispatch ID guide for standalone kernels](fullscreen-rendering.md#choose-a-compute-dispatch-id).
 
 Runtime package version 21 stores reflected X/Y/Z dimensions after the six fixed
 fields of every ray compute stage. All target artifacts for a role must agree.
