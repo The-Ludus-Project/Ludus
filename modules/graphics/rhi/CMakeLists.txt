@@ -57,7 +57,7 @@ if(EMSCRIPTEN)
     # Browser Auto build: both web sub-backends plus the dispatcher are linked
     # into one artifact, each sub-backend in its own leaf namespace, and the
     # dispatcher provides backend:: with the WebGPU->WebGL 2 fallback policy.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>" src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp src/surface_unsupported.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>" src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
     set_source_files_properties(src/rhi_webgpu.cpp PROPERTIES
         COMPILE_DEFINITIONS "LUDUS_RHI_WEBGPU_NAMESPACE=webgpu")
     set_source_files_properties(src/rhi_webgl.cpp PROPERTIES
