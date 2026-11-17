@@ -71,6 +71,11 @@ bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
 }
+/// A Poll or Update result that records its step: NotReady only asks the caller to retry later.
+bool IsRecordedFailure(Status status) noexcept
+{
+    return IsAccepted(status) == false && status != Status::NotReady;
+}
 bool IsColorTechnique(format::Technique technique) noexcept
 {
     return format::GetTechniqueFamily(technique) == format::Technique::ColorAndDepth ||
@@ -1326,6 +1331,10 @@ struct RenderGraph::State final
     RenderGraphReport Report{};
     /// Cause of the latest Update rejection; separate from Report, which preflight rejection preserves.
     RenderGraphSceneRejection LastRejection = RenderGraphSceneRejection::None;
+    /// Step the running Poll or Update has reached; Poll and Update record it when they fail.
+    RenderGraphFailureStage Step = RenderGraphFailureStage::None;
+    /// Step at which the latest Poll or Update failed (GetLastFailureStage).
+    RenderGraphFailureStage LastFailureStage = RenderGraphFailureStage::None;
     bool IsReady = false;
     bool HasOpenFrame = false;
     bool HasExternalRecording = false;
@@ -3085,12 +3094,22 @@ Status RenderGraph::GetPersistentBuffer(uint32 resource, rhi::BufferHandle& outB
 }
 Status RenderGraph::Poll() noexcept
 {
+    const Status status = pollPreparation();
+    if (mState.Get() != nullptr)
+    {
+        mState->LastFailureStage = IsRecordedFailure(status) == true ? mState->Step : RenderGraphFailureStage::None;
+    }
+    return status;
+}
+Status RenderGraph::pollPreparation() noexcept
+{
     LUDUS_PROFILE_SCOPE(RenderGraphPoll);
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
     }
     State& state = *mState;
+    state.Step = RenderGraphFailureStage::None;
     if (state.HasExternalRecording == true)
     {
         return Status::InvalidState;
@@ -3100,6 +3119,7 @@ Status RenderGraph::Poll() noexcept
     {
         return admitted == Status::Ready ? Status::InvalidState : admitted;
     }
+    state.Step = RenderGraphFailureStage::PipelinePreparation;
     for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
     {
         if (state.IsUsed[i] == false)
@@ -3312,6 +3332,7 @@ Status RenderGraph::Poll() noexcept
         }
     }
     state.IsReady = true;
+    state.Step = RenderGraphFailureStage::ScenePreparation;
     if (state.PendingCamera.Get() != nullptr)
     {
         return state.PollCameras();
@@ -3352,6 +3373,31 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                            uint64 contentRevision,
                            const RenderGraphSceneRevisions& revisions) noexcept
 {
+    const Status status = updateScene(meshes,
+                                      items,
+                                      cameras,
+                                      sceneRevision,
+                                      policy,
+                                      outReport,
+                                      sceneInputsOrNull,
+                                      contentRevision,
+                                      revisions);
+    if (mState.Get() != nullptr)
+    {
+        mState->LastFailureStage = IsRecordedFailure(status) == true ? mState->Step : RenderGraphFailureStage::None;
+    }
+    return status;
+}
+Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
+                                BorrowedView<const RenderGraphItem> items,
+                                BorrowedView<const ViewDescription> cameras,
+                                uint64 sceneRevision,
+                                RenderGraphCoveragePolicy policy,
+                                RenderGraphReport& outReport,
+                                const SceneShaderInputs* sceneInputsOrNull,
+                                uint64 contentRevision,
+                                const RenderGraphSceneRevisions& revisions) noexcept
+{
     LUDUS_PROFILE_SCOPE(RenderGraphUpdate);
     if (mState.Get() == nullptr)
     {
@@ -3359,6 +3405,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     }
     State& state = *mState;
     state.LastRejection = RenderGraphSceneRejection::None;
+    state.Step = RenderGraphFailureStage::None;
     if (state.HasExternalRecording == true)
     {
         return Status::InvalidState;
@@ -3374,6 +3421,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         return Status::InvalidState;
     }
+    state.Step = RenderGraphFailureStage::ExtractionInputs;
     if (meshes.IsValid() == false || items.IsValid() == false || cameras.IsValid() == false ||
         meshes.GetSize() > format::MAX_MESHES || items.GetSize() > format::MAX_ITEMS ||
         cameras.GetSize() != state.Header.CameraCount || sceneRevision == 0 ||
@@ -3381,6 +3429,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         return Status::InvalidDescription;
     }
+    state.Step = RenderGraphFailureStage::CameraValues;
     for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
     {
         const ViewDescription& camera = cameras[cameraIndex];
@@ -3455,6 +3504,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         }
     }
     cameras = {state.AdmittedCameras.GetData(), cameras.GetSize()};
+    state.Step = RenderGraphFailureStage::ExtractionInputs;
     const bool hasRevisions = revisions.Geometry != 0 && revisions.Instances != 0 && revisions.Materials != 0 &&
                               revisions.Lights != 0 && revisions.Environment != 0;
     if (hasRevisions == false && revisions != RenderGraphSceneRevisions{})
@@ -3473,6 +3523,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         {
             return Status::NotReady;
         }
+        state.Step = RenderGraphFailureStage::ScenePreparation;
         const Status prepared = state.PrepareCameras(cameras, sceneRevision);
         if (prepared != Status::IdentityExhausted || meshes.IsEmpty() == true)
         {
@@ -3488,6 +3539,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         }
     }
     LUDUS_PROFILE_SCOPE(RenderGraphBuildScene);
+    state.Step = RenderGraphFailureStage::ItemValues;
     for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
     {
         const RenderGraphItem& item = items[itemIndex];
@@ -3641,6 +3693,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     };
     const bool hasDiagnostic =
         policy == RenderGraphCoveragePolicy::DiagnosticColor && state.HasDiagnosticContext() == true;
+    state.Step = RenderGraphFailureStage::SceneResources;
     if (state.HasForwardProfile() == true)
     {
         bool hasMaskedMaterials = false;
@@ -3686,6 +3739,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             return prepared;
         }
     }
+    state.Step = RenderGraphFailureStage::Meshes;
     for (usize meshIndex = 0; state.HasForwardProfile() == false && meshIndex < meshes.GetSize(); ++meshIndex)
     {
         const RenderGraphMesh& mesh = meshes[meshIndex];
@@ -3745,6 +3799,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             }
         }
     }
+    state.Step = RenderGraphFailureStage::SceneResources;
     // Pack and deduplicate per-draw values for every bound technique. Each distinct value
     // set becomes one immutable uniform set; equal values share it and stay instanced.
     for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
@@ -3854,6 +3909,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                                          policy == RenderGraphCoveragePolicy::DiagnosticColor,
                                          &state.Report.SceneDiagnostics,
                                          sceneRevision};
+    state.Step = RenderGraphFailureStage::WorldTables;
     if (hasWorldTables == true)
     {
         const Status resolved = state.WorldTables.Resolve(rayAtmosphere,
@@ -3870,6 +3926,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         rayScene.AtmosphereSkyTable = state.WorldTables.GetSkyTable();
         rayScene.AerialPerspectiveTable = state.WorldTables.GetAerialPerspectiveTable();
     }
+    state.Step = RenderGraphFailureStage::LightTransformer;
     if (state.Model.Get() != nullptr)
     {
         for (usize pass = 0; pass < state.Header.PassCount; ++pass)
@@ -3891,6 +3948,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             return encoded;
         }
     }
+    state.Step = RenderGraphFailureStage::RayScene;
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         if (state.Passes[pass].Program != format::Technique::RayTracing)
@@ -3963,6 +4021,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         }
         candidate->HasViews[pass] = true;
     }
+    state.Step = RenderGraphFailureStage::ScenePreparation;
     const Status prepared = state.PollScene(*candidate);
     if (IsAccepted(prepared) == false)
     {
@@ -4099,6 +4158,10 @@ BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const n
 RenderGraphSceneRejection RenderGraph::GetLastRejection() const noexcept
 {
     return mState.Get() != nullptr ? mState->LastRejection : RenderGraphSceneRejection::None;
+}
+RenderGraphFailureStage RenderGraph::GetLastFailureStage() const noexcept
+{
+    return mState.Get() != nullptr ? mState->LastFailureStage : RenderGraphFailureStage::None;
 }
 WorldFeatureSupport RenderGraph::GetWorldFeatureSupport(WorldFeature feature) const noexcept
 {

@@ -1322,6 +1322,31 @@ TEST_CASE("a failed candidate names the World input it cannot draw and the repai
     // Without an attributed cause the status keeps the raw outcome.
     CHECK(DescribeRenderGraphActivationFailure(report) ==
           QStringLiteral("Renderer activation failed (Unsupported) for generation 3; the last good scene is kept."));
+    // A failing stage without a scene-level cause names the step, keeps the raw status and offers its repair.
+    report.LastFailure = rhi::RasterStatus::InvalidDescription;
+    report.CandidateFailureStage = renderer::RenderGraphFailureStage::WorldTables;
+    const QString world = DescribeRenderGraphActivationFailure(report);
+    CHECK(world.startsWith(QStringLiteral("Renderer generation 3 was rejected (InvalidDescription) while resolving the "
+                                          "Atmosphere's sky and haze for its ray passes.")) == true);
+    CHECK(world.contains(QStringLiteral("disable the Atmosphere entity")) == true);
+    CHECK(world.endsWith(QStringLiteral("The last good scene is kept.")) == true);
+    report.CandidateFailureStage = renderer::RenderGraphFailureStage::Resize;
+    CHECK(DescribeRenderGraphActivationFailure(report).contains(QStringLiteral("Reduce the connected RenderSize")) ==
+          true);
+    // Every stage other than None has its own clause and next step.
+    QStringList clauses;
+    for (uint8 value = static_cast<uint8>(renderer::RenderGraphFailureStage::Setup);
+         value <= static_cast<uint8>(renderer::RenderGraphFailureStage::RayScene);
+         ++value)
+    {
+        const QString clause = DescribeRenderGraphFailureStage(static_cast<renderer::RenderGraphFailureStage>(value));
+        CHECK(clause.startsWith(QStringLiteral("while ")) == true);
+        CHECK(clause.endsWith(QLatin1Char('.')) == true);
+        CHECK(clauses.contains(clause) == false);
+        clauses.append(clause);
+    }
+    CHECK(DescribeRenderGraphFailureStage(renderer::RenderGraphFailureStage::None).isEmpty() == true);
+    // A scene-level cause, when attributed, takes precedence over the stage.
     report.CandidateRejection = renderer::RenderGraphSceneRejection::CameraDepth;
     const QString depth = DescribeRenderGraphActivationFailure(report);
     CHECK(depth.startsWith(QStringLiteral("Renderer generation 3 cannot draw this World.")) == true);
@@ -1336,7 +1361,9 @@ TEST_CASE("a failed candidate names the World input it cannot draw and the repai
     CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::MaskedDepthPrepass, {}).isEmpty() ==
           false);
     CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::None, {}).isEmpty() == true);
+    // Activation reports a restart with Unsupported.
     report.Candidate = renderer::RenderGraphCandidateState::RestartRequired;
+    report.LastFailure = rhi::RasterStatus::Unsupported;
     CHECK(DescribeRenderGraphActivationFailure(report).startsWith(
               QStringLiteral("Renderer activation requires an editor restart (Unsupported) for generation 3")) == true);
 }

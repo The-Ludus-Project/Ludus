@@ -213,6 +213,62 @@ QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::
              functions.join(QStringLiteral(" and ")));
 }
 
+QString DescribeRenderGraphFailureStage(renderer::RenderGraphFailureStage stage)
+{
+    using Stage = renderer::RenderGraphFailureStage;
+    switch (stage)
+    {
+        case Stage::None:
+            return {};
+        case Stage::Setup:
+            return QStringLiteral("while setting up its passes and shader programs. Build the graph again with Build "
+                                  "Graph and fix the errors it reports; Validate checks its nodes and connections.");
+        case Stage::Resize:
+            return QStringLiteral(
+                "while resizing its targets to the viewport. Reduce the connected RenderSize scale or "
+                "fixed dimensions, or make the viewport smaller.");
+        case Stage::PipelinePreparation:
+            return QStringLiteral(
+                "while preparing its pipelines on this GPU. Fix the shader errors in the Output panel "
+                "and build the graph again, or turn on Force raster to draw the World with the "
+                "engine's default raster graph meanwhile.");
+        case Stage::ScenePreparation:
+            return QStringLiteral("while preparing the World on the GPU. Reopen the World to prepare it again; if this "
+                                  "repeats, hide large objects to find the one the GPU cannot prepare.");
+        case Stage::ExtractionInputs:
+            return QStringLiteral("while admitting the World extraction: its mesh, object or camera counts do not "
+                                  "match what the graph admits. Give the graph one active Camera node for the "
+                                  "viewport, and hide objects if the World exceeds the runtime's object or mesh "
+                                  "limits.");
+        case Stage::CameraValues:
+            return QStringLiteral("while reading the viewport camera's exposure or lighting view. Reset the viewport "
+                                  "exposure and choose Final output in the viewport menu.");
+        case Stage::ItemValues:
+            return QStringLiteral("while reading the objects' per-draw values, which are missing or not finite. Build "
+                                  "the graph again so its uniform table matches the World, and check objects for "
+                                  "non-finite transforms or colors.");
+        case Stage::SceneResources:
+            return QStringLiteral("while uploading the World's materials, textures and per-draw values. Fix or "
+                                  "reassign the materials in the Materials tab whose textures did not load.");
+        case Stage::Meshes:
+            return QStringLiteral("while uploading the World's meshes: a mesh has invalid bounds or geometry. Hide "
+                                  "objects in the Entities list to find it, then import or regenerate it.");
+        case Stage::WorldTables:
+            return QStringLiteral("while resolving the Atmosphere's sky and haze for its ray passes. Check the "
+                                  "Atmosphere entity's Sun and Moon and keep the camera above the ground, or disable "
+                                  "the Atmosphere entity.");
+        case Stage::LightTransformer:
+            return QStringLiteral("while preparing its light transformer model for this World. Check the model "
+                                  "assigned to the graph and its entries in the Error List.");
+        case Stage::RayScene:
+            return QStringLiteral("while building the ray-traced scene for its ray passes: a mesh, material or light "
+                                  "could not be packed for ray tracing. Hide objects or disable lights to find which "
+                                  "one, or turn on Force raster to draw the World with the engine's default raster "
+                                  "graph.");
+    }
+    return {};
+}
+
 QString DescribeRenderGraphActivationFailure(const renderer::RenderGraphActivationReport& report)
 {
     if (report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
@@ -232,6 +288,14 @@ QString DescribeRenderGraphActivationFailure(const renderer::RenderGraphActivati
         return QStringLiteral("Renderer generation %1 cannot draw this World. %2 The last good scene is kept.")
             .arg(report.CandidateGeneration)
             .arg(cause);
+    }
+    const QString stage = DescribeRenderGraphFailureStage(report.CandidateFailureStage);
+    if (stage.isEmpty() == false)
+    {
+        return QStringLiteral("Renderer generation %1 was rejected (%2) %3 The last good scene is kept.")
+            .arg(report.CandidateGeneration)
+            .arg(DescribeRasterStatus(report.LastFailure))
+            .arg(stage);
     }
     return QStringLiteral("Renderer activation failed (%1) for generation %2; the last good scene is kept.")
         .arg(DescribeRasterStatus(report.LastFailure))

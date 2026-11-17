@@ -9221,7 +9221,16 @@ only; unsaved changes remain in the draft. A result for an older saved version n
 replaces the current request. Validation, compilation and activation failures preserve
 the last drawable view; successful replacements publish only after readiness.
 An activation failure appears in the **Error List** with its runtime status and
-candidate generation, independently of compiler results. The viewport and Render
+candidate generation, independently of compiler results. When the renderer cannot
+attribute a scene-level cause, the message names the step that rejected the
+generation and its repair. The steps are: setup, resize, pipeline or scene
+preparation, admitting the extraction, the camera's values, the objects' per-draw
+values, materials and scene resources, meshes, the Atmosphere tables of ray
+passes, the light transformer model, and the ray-traced scene. For example:
+"Renderer generation 3 was rejected (InvalidDescription) while resolving the
+Atmosphere's sky and haze for its ray passes. …" The renderer exposes the step as
+`RenderGraphActivationReport::CandidateFailureStage`, and as
+`RenderGraph::GetLastFailureStage` for its latest `Poll` or `Update`. The viewport and Render
 Preview retain the last drawable view and show the failure. A successful graph
 build does not establish successful activation: its success row is hidden while
 the current renderer reports a problem. A replacement candidate clears the prior
