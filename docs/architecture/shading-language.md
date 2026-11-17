@@ -917,7 +917,8 @@ L5 records the retained files in one list under `config/`, each with its reason.
 | Float classification: `isfinite`, `isnan`, `isinf` | 80 | 29 | No new intrinsics: Metal compiles render stages with fast math, which can fold them. Ports call FoundationMath's `IsFiniteBits` |
 
 Generic structs (`LUSL0304`) and `dynamic` dispatch are not needed by any
-current file and stay deferred.
+current file and stay deferred. Tracked in issues [1729](https://github.com/The-Ludus-Project/Ludus/issues/1729) (resource queries,
+atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/1730) (texture kinds, binding arrays, intrinsics).
 
 ### L5b: shared libraries and build paths
 
@@ -942,6 +943,10 @@ current file and stay deferred.
 - **Configuration values for render-graph programs**, still open from L1, close
   before a template that reads configuration macros migrates.
 
+Tracked in issues [1731](https://github.com/The-Ludus-Project/Ludus/issues/1731) (include roots and layout headers), [1732](https://github.com/The-Ludus-Project/Ludus/issues/1732)
+(Editor authoring) and [1733](https://github.com/The-Ludus-Project/Ludus/issues/1733) (configuration values). Library ownership
+moves in wave 5.
+
 ### L5c: qualification before bulk migration
 
 - The ray-storage GPU and SDK fixture
@@ -954,19 +959,21 @@ current file and stay deferred.
   query in a merged kernel.
 - DXIL validation of migrated programs in Windows CI.
 
+The items other than ray storage are tracked in issue [1734](https://github.com/The-Ludus-Project/Ludus/issues/1734).
+
 ### L5d: migration waves
 
 Each wave ports files that only depend on LUSL or retained Slang, deletes the
 Slang originals in the same change and adds the migrated directories to the
 changed-source gate, which then rejects new Slang sources there.
 
-| Wave | Files | Notes |
-| --- | --- | --- |
-| 1 | Tools, examples, `apps/smoke`, the Editor's shader, standalone SDK consumer shaders | Leaves; shared libraries reached through `extern slang` |
-| 2 | Renderer recipe shaders (`recipes.json`) | Host binding by generated slot constants |
-| 3 | Render-graph templates, one template per change | Sample's instances of a template migrate in a Sample change built against that SDK |
-| 4 | Sample's project-only programs | After the templates they include |
-| 5 | Shared libraries: FoundationMath, FoundationGeometry, the scene shader API, reservoir and sampling helpers | Last: every remaining consumer is LUSL or reaches them through generated Slang |
+| Wave | Files | Notes | Issue |
+| --- | --- | --- | --- |
+| 1 | Tools, examples, `apps/smoke`, the Editor's shader, standalone SDK consumer shaders | Leaves; shared libraries reached through `extern slang`; adds the retained list and the gate | [1735](https://github.com/The-Ludus-Project/Ludus/issues/1735) |
+| 2 | Renderer recipe shaders (`recipes.json`) | Host binding by generated slot constants | [1736](https://github.com/The-Ludus-Project/Ludus/issues/1736) |
+| 3 | Render-graph templates, one template per change | Sample's instances of a template migrate in a Sample change built against that SDK | [1737](https://github.com/The-Ludus-Project/Ludus/issues/1737) |
+| 4 | Sample's project-only programs | After the templates they include | [1738](https://github.com/The-Ludus-Project/Ludus/issues/1738) |
+| 5 | Shared libraries: FoundationMath, FoundationGeometry, the scene shader API, reservoir and sampling helpers | Last: every remaining consumer is LUSL or reaches them through generated Slang | [1739](https://github.com/The-Ludus-Project/Ludus/issues/1739) |
 
 ### Acceptance
 
