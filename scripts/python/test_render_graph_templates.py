@@ -498,6 +498,52 @@ class HybridShadowsTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'hybrid-shadows')
 
 
+
+class HybridReflectionsTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'spirv')):
+        return graph.new_workspace(Path(self.directory.name) / 'HybridReflections', output='offscreen',
+                                   renderer_static=True, profiles=profiles, template='hybrid-reflections')
+
+    def test_raster_visibility_feeds_one_reflection_pass_and_a_running_mean(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual(len(rays), 1)
+        ray_pass = rays[0]
+        self.assertEqual(ray_pass['visibility']['resource'], raster['attachments']['color']['resource'])
+        self.assertEqual(ray_pass['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+        # One stochastic reflection sample per pixel per frame; Accumulate's running mean reconstructs it.
+        self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
+        exported = [operation['resource'] for operation in plan['passes'] if operation['kind'] == 'Export']
+        self.assertIn(raster['attachments']['depth']['resource'], exported)
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        interface = next(technique['scene_interface'] for technique in manifest['techniques']
+                         if 'scene_interface' in technique)
+        self.assertTrue(interface['visibility_buffer'])
+        # The reflection ray is the one closest-hit query.
+        self.assertEqual(interface['surface_queries'], 1)
+        # The first surface and the reflection hit share the interactive visibility ceiling equally.
+        self.assertEqual(interface['visibility_queries'], ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'])
+        shade = root.with_name('main_shaders') / 'shade.slang'
+        self.assertIn(f"MAXIMUM_SHADOW_RAYS_PER_SURFACE = {interface['visibility_queries'] // 2};", shade.read_text())
+
+    def test_reflection_rays_require_a_native_target_and_create_nothing_otherwise(self):
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',))
+        self.assertFalse((Path(self.directory.name) / 'HybridReflections').exists())
+
+    def test_cli_exposes_the_template(self):
+        from ludus_tools.cli import build_parser
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Main', '--template', 'hybrid-reflections',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'hybrid-reflections')
+
 class TiledVbufferNeeTemplateTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

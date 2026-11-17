@@ -733,6 +733,43 @@ float HitEmitterSelection(uint t, uint lightCount)
     uint emitter;
     return FindEmitter(t, emitter) == true ? EmitterSelection(emitter, lightCount) : 0;
 }
+/// GGX terms of the shared specular reflection lobe for unit view and light directions above the shading hemisphere,
+/// whose cosines are nv and nl: Fresnel (Schlick, or complex-IOR for the conductor lobes), Filament's distribution and
+/// the height-correlated Smith visibility, with ViewLambda the view term of the visible-normal density.
+struct GgxReflectionTerms
+{
+    float3 Fresnel;
+    float Distribution;
+    float Visibility;
+    float ViewLambda;
+};
+GgxReflectionTerms EvaluateGgxReflectionTerms(float3 color,
+                                              float metallic,
+                                              MaterialModel model,
+                                              float3 eta,
+                                              float3 extinction,
+                                              float alpha,
+                                              float3 normalWorld,
+                                              float3 v,
+                                              float3 l,
+                                              float nv,
+                                              float nl)
+{
+    GgxReflectionTerms result;
+    float3 halfWorld = NormalizeOrZero(v + l);
+    float vh = saturate(dot(v, halfWorld));
+    float a2 = alpha * alpha;
+    result.Distribution = ComputeGgxNormalDistribution(normalWorld, halfWorld, a2);
+    result.ViewLambda = sqrt(nv * nv * (1 - a2) + a2);
+    float gl = sqrt(nl * nl * (1 - a2) + a2);
+    result.Visibility = .5 / max(nl * result.ViewLambda + nv * gl, 1e-6);
+    float3 f0 = .04 * (1 - metallic) + color * metallic;
+    float term = 1 - vh;
+    result.Fresnel = f0 + (1 - f0) * term * term * term * term * term;
+    if (HasRoughConductorLobe(model) == true)
+        result.Fresnel = ComputeConductorFresnelRgb(vh, eta, extinction);
+    return result;
+}
 void EvaluateScattering(float3 color,
                         float metallic,
                         float roughness,
@@ -778,26 +815,67 @@ void EvaluateScattering(float3 color,
         outPdf = nl / PI;
         return;
     }
-    float3 halfWorld = NormalizeOrZero(v + l);
-    float vh = saturate(dot(v, halfWorld));
-    float alpha = ComputeMaterialAlpha(model, roughness, conductorAlpha);
-    float a2 = alpha * alpha;
-    float distribution = ComputeGgxNormalDistribution(normalWorld, halfWorld, a2);
-    float gv = sqrt(nv * nv * (1 - a2) + a2);
-    float gl = sqrt(nl * nl * (1 - a2) + a2);
-    float visibility = .5 / max(nl * gv + nv * gl, 1e-6);
-    float3 f0 = .04 * (1 - metallic) + color * metallic;
-    float term = 1 - vh;
-    float3 fresnel = f0 + (1 - f0) * term * term * term * term * term;
+    GgxReflectionTerms specular = EvaluateGgxReflectionTerms(color,
+                                                             metallic,
+                                                             model,
+                                                             eta,
+                                                             extinction,
+                                                             ComputeMaterialAlpha(model, roughness, conductorAlpha),
+                                                             normalWorld,
+                                                             v,
+                                                             l,
+                                                             nv,
+                                                             nl);
+    float3 fresnel = specular.Fresnel;
     bool isConductor = model == MaterialModel::Conductor;
-    if (HasRoughConductorLobe(model) == true)
-        fresnel = ComputeConductorFresnelRgb(vh, eta, extinction);
     float diffuseFraction = isConductor == true ? 0 : 1 - metallic;
-    outValue = fresnel * (distribution * visibility) + color * (1 - fresnel) * (diffuseFraction / PI);
+    outValue = fresnel * (specular.Distribution * specular.Visibility) + color * (1 - fresnel) * (diffuseFraction / PI);
     float probability = ComputeMaterialSpecularProbability(model, metallic);
     if (isMix == true)
-        outValue = fresnel * (distribution * visibility * probability) + color * ((1 - probability) / PI);
-    outPdf = probability * distribution / (2 * (nv + gv)) + (1 - probability) * nl / PI;
+        outValue =
+            fresnel * (specular.Distribution * specular.Visibility * probability) + color * ((1 - probability) / PI);
+    outPdf = probability * specular.Distribution / (2 * (nv + specular.ViewLambda)) + (1 - probability) * nl / PI;
+}
+/// The GGX specular lobe of EvaluateScattering alone: its value without the lobe's mixture weight, which is one
+/// except for DiffuseConductorMix, times that weight, and the visible-normal reflection density SampleScatteringBsdf
+/// proposes with probability one. Zero for directions outside the shading hemisphere and for models without the lobe
+/// (Diffuse, a DiffuseConductorMix of conductor weight zero, ProjectBrdf and Program). The remaining lobe of
+/// EvaluateScattering is diffuse. For MetallicRoughness that remainder still depends on the specular Fresnel term.
+void EvaluateScatteringSpecularLobe(float3 color,
+                                    float metallic,
+                                    float roughness,
+                                    MaterialModel model,
+                                    float3 eta,
+                                    float3 extinction,
+                                    float conductorAlpha,
+                                    float3 normalWorld,
+                                    float3 v,
+                                    float3 l,
+                                    out float3 outValue,
+                                    out float outPdf)
+{
+    outValue = 0;
+    outPdf = 0;
+    float nv = dot(normalWorld, v);
+    float nl = dot(normalWorld, l);
+    bool isMix = model == MaterialModel::DiffuseConductorMix;
+    if (nv <= 0 || nl <= 0 || model == MaterialModel::Diffuse || model == MaterialModel::ProjectBrdf ||
+        model == MaterialModel::Program || (isMix == true && metallic == 0))
+        return;
+    GgxReflectionTerms specular = EvaluateGgxReflectionTerms(color,
+                                                             metallic,
+                                                             model,
+                                                             eta,
+                                                             extinction,
+                                                             ComputeMaterialAlpha(model, roughness, conductorAlpha),
+                                                             normalWorld,
+                                                             v,
+                                                             l,
+                                                             nv,
+                                                             nl);
+    float weight = isMix == true ? ComputeMaterialSpecularProbability(model, metallic) : 1;
+    outValue = specular.Fresnel * (specular.Distribution * specular.Visibility * weight);
+    outPdf = specular.Distribution / (2 * (nv + specular.ViewLambda));
 }
 float3 SampleScatteringBsdf(float3 normalWorld, float3 viewDirectionWorld, float alpha, float probability, float3 u)
 {
