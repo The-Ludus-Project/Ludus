@@ -412,6 +412,9 @@ static_assert(LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT + LUDUS_REFERENCE_RIS
               "sampler version 2 slots stay disjoint within one bounce");
 static_assert(LUDUS_GPU_PREVIEW_MAX_DEPTH <= LUDUS_REFERENCE_MAX_DEPTH, "GPU preview mirrors reference addresses");
 static_assert(LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + LUDUS_REFERENCE_MAX_DEPTH - 1 <= math::RandomMaxDimension);
+static_assert(LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION +
+                  LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS * LUDUS_REFERENCE_MAX_DEPTH - 1 <=
+              math::RandomMaxDimension);
 /// Dimensions per scattering event of `sampling`'s sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceDimensionsPerBounce(ReferenceLightSampling sampling) noexcept
 {

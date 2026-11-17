@@ -1086,7 +1086,33 @@ ReferenceLightChoice SelectReferenceLight(uint pixel, uint sample, uint depth, u
                                     emitter,
                                     GetEmitterSelection(emitter, lightCount));
 }
-ReferenceIncidentLight EvaluateAnalyticIncidentLight(uint lightIndex, float3 positionWorld)
+// Uniform direction in the disk of a directional light of positive angular radius; reference_path.cpp
+// SampleDirectionalDisk owns the derivation, the PBRT 4e §A.5.4 attribution and the same operation order. The
+// incident radiance carries E * 2 / (1 + cos r), so the disk keeps the light's illuminance at normal incidence.
+void SampleDirectionalDisk(uint pixel,
+                           uint sample,
+                           uint depth,
+                           float angularRadius,
+                           inout ReferenceIncidentLight inoutResult)
+{
+    float3 axisWorld = inoutResult.DirectionWorld;
+    uint first = LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION + LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS * depth;
+    float firstSample = RandomValue(pixel, sample, first);
+    float secondSample = RandomValue(pixel, sample, first + 1);
+    float halfSine = sin(0.5 * angularRadius);
+    float oneMinusCosMaximum = 2 * halfSine * halfSine;
+    float oneMinusCos = firstSample * oneMinusCosMaximum;
+    float sine = sqrt(max(0, oneMinusCos * (2 - oneMinusCos)));
+    float angle = 2 * PI * secondSample;
+    float3 axisXWorld =
+        NormalizeOrZero(cross(abs(axisWorld.z) < BASIS_POLE_COSINE ? float3(0, 0, 1) : float3(0, 1, 0), axisWorld));
+    float3 axisYWorld = cross(axisWorld, axisXWorld);
+    inoutResult.DirectionWorld =
+        axisXWorld * (sine * cos(angle)) + axisYWorld * (sine * sin(angle)) + axisWorld * (1 - oneMinusCos);
+    inoutResult.Radiance *= 2 / (2 - oneMinusCosMaximum);
+}
+ReferenceIncidentLight
+EvaluateAnalyticIncidentLight(uint pixel, uint sample, uint depth, uint lightIndex, float3 positionWorld)
 {
     ReferenceIncidentLight result = (ReferenceIncidentLight)0;
     uint light = SurfaceLayout.y + lightIndex * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
@@ -1094,12 +1120,16 @@ ReferenceIncidentLight EvaluateAnalyticIncidentLight(uint lightIndex, float3 pos
     float4 positionAndRangeWorld = SceneValue(light + 1);
     float4 directionAndOuterWorld = SceneValue(light + 2);
     uint kind = uint(colorAndKind.w);
+    // A disk is still estimated only by light sampling: no BSDF-sampled path reaches it, so it takes no MIS weight.
     result.IsDelta = true;
     result.Radiance = colorAndKind.xyz;
     if (kind == DIRECTIONAL_LIGHT)
     {
         result.DirectionWorld = -directionAndOuterWorld.xyz;
         result.DistanceWorld = Options.x;
+        float angularRadius = SceneValue(light + LUDUS_GRAPH_LIGHT_SOURCE_WORD).w;
+        if (angularRadius > 0)
+            SampleDirectionalDisk(pixel, sample, depth, angularRadius, result);
         return result;
     }
     float3 deltaWorld = positionAndRangeWorld.xyz - positionWorld;
@@ -1181,7 +1211,7 @@ SampleReferenceIncidentLight(uint pixel, uint sample, uint depth, ReferenceLight
     switch (choice.Kind)
     {
         case ReferenceLightChoiceKind::Analytic:
-            return EvaluateAnalyticIncidentLight(choice.Index, positionWorld);
+            return EvaluateAnalyticIncidentLight(pixel, sample, depth, choice.Index, positionWorld);
         case ReferenceLightChoiceKind::Triangle:
             return SampleTriangleIncidentLight(pixel, sample, depth, choice.Index, positionWorld);
         case ReferenceLightChoiceKind::Environment:
@@ -1387,7 +1417,7 @@ bool EvaluateDirectProposal(inout PathSample inoutPath,
         MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
         return false;
     }
-    ReferenceIncidentLight incident = EvaluateAnalyticIncidentLight(selected, positionWorld);
+    ReferenceIncidentLight incident = EvaluateAnalyticIncidentLight(pixel, sample, depth, selected, positionWorld);
     if (incident.HasFailed == true || IsValidContribution(incident.Radiance) == false)
     {
         MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);

@@ -1154,6 +1154,155 @@ TEST_CASE("RT1 directional shadow rays respect occlusion alongside emissive and 
     }
 }
 
+// The directional estimate at each pixel, isolated from the emitter's by subtracting a capture with the light off:
+// the directional draws use their own dimensions, so the remaining estimates match sample for sample.
+Array<float32> CaptureDirectionalSignal(Session& inoutSession,
+                                        rr::ReferenceCaptureDescription capture,
+                                        rr::DirectLight light,
+                                        rhi::SurfaceHandle surface)
+{
+    capture.Lights = &light;
+    capture.LightCount = 1;
+    Array<rr::ReferencePixel> dark;
+    Array<rr::ReferencePixel> lit;
+    rr::ReferenceCaptureInfo info;
+    const float32 intensity = light.Intensity;
+    light.Intensity = 0;
+    Capture(inoutSession, capture, surface, dark, info);
+    light.Intensity = intensity;
+    Capture(inoutSession, capture, surface, lit, info);
+    CHECK(info.InvalidContributions == 0);
+    Array<float32> signal;
+    REQUIRE(signal.TryResize(lit.GetSize()) == true);
+    for (usize i = 0; i < lit.GetSize(); ++i)
+    {
+        signal[i] = lit[i].Direct.X - dark[i].Direct.X;
+    }
+    return signal;
+}
+
+TEST_CASE("Reference directional disks soften shadows and keep their illuminance on CPU and GPU",
+          "[renderer][gpu][reference-compute]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription deviceDescription;
+    deviceDescription.Required.PortableRaster = true;
+    deviceDescription.Required.Compute = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, deviceDescription, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No offscreen compute adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    const rr::ReferenceLightSampling sampling =
+        GENERATE(rr::ReferenceLightSampling::UniformArea, rr::ReferenceLightSampling::SeparateDirectional);
+    CAPTURE(static_cast<uint32>(sampling));
+
+    // A row of floor receivers from x = -2 to 2 across the end of the L6 wall's shadow. A disk of radius r about the
+    // 45 degree light leaves receivers whose edge elevation atan(2.3 / (1.2 - x)) lies within r of 45 degrees in
+    // penumbra: x in [-1.61, -0.68] for r = 0.1, about seven pixels. Pixels 0 and 1 see the whole disk.
+    constexpr uint32 RECEIVER_COUNT = 32;
+    constexpr uint32 SAMPLE_COUNT = 256;
+    constexpr float32 DISK_RADIUS_RADIANS = 0.1F;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = RECEIVER_COUNT;
+    capture.Height = 1;
+    capture.TargetSamples = SAMPLE_COUNT;
+    capture.MaxDepth = 1;
+    capture.RouletteDepth = 1;
+    capture.CenterRays = true;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 0.5F;
+    capture.WorldToClip.Columns[3].Z = 0.7F;
+    capture.CameraPosition.Z = -0.7F;
+    capture.LightSampling = sampling;
+    rr::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = rr::LightKind::Directional;
+    light.Direction = {-0.70710677F, 0, 0.70710677F};
+    light.Color = {1, 0, 0};
+
+    StaticArray<Array<float32>, 2> disks;
+    usize traversalIndex = 0;
+    for (const rr::ReferenceTraversal traversal :
+         {rr::ReferenceTraversal::CpuOracle, rr::ReferenceTraversal::GpuCompute})
+    {
+        CAPTURE(static_cast<uint32>(traversal));
+        Session session;
+        REQUIRE(Prepare(device, traversal, session) == S::Ready);
+        light.AngularRadiusRadians = 0;
+        const Array<float32> delta = CaptureDirectionalSignal(session, capture, light, surface);
+        light.AngularRadiusRadians = DISK_RADIUS_RADIANS;
+        Array<float32> disk = CaptureDirectionalSignal(session, capture, light, surface);
+        const float32 unblocked = delta[0];
+        REQUIRE(unblocked > 0.1F);
+        // UniformArea picks the directional light at a random half of each pixel's vertices, so its per-pixel
+        // estimates differ by that selection. The delta and disk captures share the selection draws, so their ratio at
+        // a pixel the delta light reaches is the disk's visible fraction without it.
+        constexpr float32 HARD_EDGE_FRACTION = 1e-3F;
+        constexpr float32 SELECTION_NOISE_FRACTION = 0.5F;
+        constexpr float32 PENUMBRA_LOWER_FRACTION = 0.1F;
+        constexpr float32 PENUMBRA_UPPER_FRACTION = 0.95F;
+        constexpr float32 UMBRA_FRACTION = 0.05F;
+        uint32 litPenumbraPixels = 0;
+        uint32 blockedPenumbraPixels = 0;
+        for (usize i = 0; i < delta.GetSize(); ++i)
+        {
+            CAPTURE(i, delta[i], disk[i]);
+            // A zero radius keeps the delta light's hard edge: every receiver is wholly lit or wholly blocked.
+            const bool isBlocked = delta[i] <= HARD_EDGE_FRACTION * unblocked;
+            CHECK((isBlocked == true || delta[i] >= SELECTION_NOISE_FRACTION * unblocked));
+            if (sampling == rr::ReferenceLightSampling::SeparateDirectional && isBlocked == false)
+            {
+                CHECK(math::Abs(delta[i] - unblocked) <= HARD_EDGE_FRACTION * unblocked);
+            }
+            if (isBlocked == true)
+            {
+                blockedPenumbraPixels += disk[i] > UMBRA_FRACTION * unblocked ? 1U : 0U;
+                continue;
+            }
+            const float32 visible = disk[i] / delta[i];
+            litPenumbraPixels += visible > PENUMBRA_LOWER_FRACTION && visible < PENUMBRA_UPPER_FRACTION ? 1U : 0U;
+        }
+        // The disk spreads the edge over its predicted width on both sides of the delta light's edge: x in
+        // [-1.61, -0.68] holds four lit and three blocked pixel centres, and the outermost lit one sees almost all of
+        // the disk.
+        CAPTURE(litPenumbraPixels, blockedPenumbraPixels);
+        constexpr uint32 MINIMUM_LIT_PENUMBRA_PIXELS = 3;
+        constexpr uint32 MINIMUM_BLOCKED_PENUMBRA_PIXELS = 2;
+        CHECK(litPenumbraPixels >= MINIMUM_LIT_PENUMBRA_PIXELS);
+        CHECK(blockedPenumbraPixels >= MINIMUM_BLOCKED_PENUMBRA_PIXELS);
+        // Where the whole disk is visible it delivers the delta light's illuminance: the projected solid angle of a
+        // cap above the horizon is pi sin(r)^2 times its centre cosine. The residual is Monte Carlo error over the
+        // disk and the rough GGX lobe's variation across it.
+        constexpr float32 FLUX_TOLERANCE = 0.01F;
+        CHECK(math::Abs(disk[0] / delta[0] - 1) <= FLUX_TOLERANCE);
+        CHECK(math::Abs(disk[1] / delta[1] - 1) <= FLUX_TOLERANCE);
+        disks[traversalIndex++] = Move(disk);
+    }
+    // Matched samples draw matched disk directions. Float32 traversal near the occluder edge may still flip a
+    // sample's visibility, each worth 1 / SAMPLE_COUNT of the unblocked estimate.
+    constexpr float32 PARITY_TOLERANCE = 2e-3F;
+    constexpr float32 FLIPPED_SAMPLES = 2;
+    const float32 unblocked = disks[0][0];
+    for (usize i = 0; i < disks[0].GetSize(); ++i)
+    {
+        CAPTURE(i, disks[0][i], disks[1][i]);
+        CHECK(math::Abs(disks[0][i] - disks[1][i]) <=
+              (PARITY_TOLERANCE + FLIPPED_SAMPLES / static_cast<float32>(SAMPLE_COUNT)) * unblocked);
+    }
+}
+
 TEST_CASE("GPU-compute reference preserves bounded white sRGB textures and vertex colors",
           "[renderer][gpu][reference-compute][reference-color]")
 {

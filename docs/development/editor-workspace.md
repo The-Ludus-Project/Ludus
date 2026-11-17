@@ -2345,7 +2345,11 @@ positive. A **Custom Orbit** light keeps its own observer coordinates. The
 World frame is +X east, +Y up, and −Z north.
 
 Properties shows the calculated sea-level direct illuminance in lux, linear RGB
-colour and apparent diameter. The clear-sky model dims and warms direct light
+colour and apparent diameter. The same apparent diameter softens the light's
+direct shadows into a penumbra in raster shadow maps and in reference captures.
+Its illuminance is unchanged. The override below replaces only colour and
+intensity, so the disk size still follows the preset. See
+[Directional light angular size](../architecture/renderer-systems.md#directional-light-angular-size). The clear-sky model dims and warms direct light
 near the horizon, and a body at or below the geometric horizon contributes zero
 direct light. Enable **Override Earth Colour and Intensity** to use the light's
 authored values with the same celestial motion and disk geometry. Previously

@@ -5183,7 +5183,8 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                 match |= actual.SourceId == expected.SourceId && actual.Kind == expected.Kind &&
                          actual.Direction == expected.Direction && actual.Position == expected.Position &&
                          actual.Range == expected.Range && actual.InnerCos == expected.InnerCos &&
-                         actual.OuterCos == expected.OuterCos;
+                         actual.OuterCos == expected.OuterCos &&
+                         actual.AngularRadiusRadians == expected.AngularRadiusRadians;
             }
             if (match == false)
             {
@@ -5293,6 +5294,10 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                 shouldReplaceDiffuse == true || light.SourceId == description.BakedDirectLightIds[bakedIndex];
         }
         parameters.Lights[i * 4 + 3] = {light.InnerCos, shouldReplaceDiffuse == true ? 1.0F : 0.0F, 0, 0};
+        // The last word's Z: tangent of a directional light's angular radius, which sets its shadow penumbra.
+        constexpr usize LIGHT_PARAMETER_WORD = FORWARD_LIGHT_WORDS - 1;
+        parameters.Lights[i * FORWARD_LIGHT_WORDS + LIGHT_PARAMETER_WORD].Z =
+            math::Sin(light.AngularRadiusRadians) / math::Cos(light.AngularRadiusRadians);
     }
     const auto packShadowRegion =
         [&](usize regionIndex, const ShadowRegion& region, float32 width, float32 height) noexcept {

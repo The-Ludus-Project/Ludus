@@ -503,7 +503,7 @@ Status PackGpuScene(const ReferenceJob& job,
             light.InnerCos,
             GpuBits(static_cast<uint32>(light.SourceId)),
             GpuBits(static_cast<uint32>(light.SourceId >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)),
-            0};
+            light.AngularRadiusRadians};
     }
     data[static_cast<usize>(luminairesWide)] = {GpuBits(job.LuminaireCount), 0, 0, 0};
     for (usize i = 0; i < job.LuminaireCount; ++i)

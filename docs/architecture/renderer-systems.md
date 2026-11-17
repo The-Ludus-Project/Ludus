@@ -2681,6 +2681,68 @@ separation between source selection and per-light sampling and the treatment of
 delta distributions. Ludus uses indexed scene snapshots and explicitly
 addressed randomness for its CPU and shader paths.
 
+### Directional light angular size
+
+A directional light can have an apparent disk. `DirectLight::AngularRadiusRadians`
+gives its angular radius *r* in radians, from 0 to
+`MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS` (0.5). Only directional lights accept
+a nonzero radius. Zero, the default, keeps the delta direction and hard shadows,
+so existing lights render unchanged. The Earth Sun and Earth Moon presets set
+the radius from the celestial sample that also sizes the sky disk. See
+[Celestial directional lights](../development/editor-workspace.md#celestial-directional-lights).
+
+The disk has uniform radiance *L*. `Intensity` stays the illuminance *E* on a
+surface facing the disk centre, so *E* = *L* π sin²*r*. Flux is therefore
+preserved as the radius changes. A receiver that sees the whole disk above its
+horizon gets the same Lambertian illuminance as from the delta light, because
+the projected solid angle of the cap is π sin²*r* times the centre cosine.
+Occluders now leave a penumbra, and glossy lobes see the disk's spread.
+
+**Reference transport.** The CPU oracle and GPU reference sample the disk
+direction uniformly within the cone, after Pharr, Jakob and Humphreys,
+*Physically Based Rendering*, 4th ed., §A.5.4. Each sample carries
+*L*/pdf = *E* · 2/(1 + cos *r*) along one direction and one shadow ray. The
+draw uses two dimensions per depth starting at
+`LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION`, after the directional
+selection dimensions. It uses those dimensions in every light-sampling mode. A
+delta light draws nothing, so its addresses and output are unchanged. BSDF
+samples never reach the disk. The light is estimated by light sampling alone,
+like the delta light, and specular vertices still skip it. Both
+implementations draw 1 − cos θ directly, so sin θ keeps its precision for the
+Sun's 0.0047 radian disk. The reference kernel version is 13.
+
+**Raster shadows.** A directional shadow-map region whose light has a positive
+radius uses percentage-closer soft shadows. This follows Randima Fernando,
+"Percentage-Closer Soft Shadows", SIGGRAPH 2005 Sketches. A blocker search over
+a golden-angle disk of 16 taps estimates the mean blocker depth. Its radius is
+tan *r* times the receiver's depth below the map's near plane. The penumbra
+radius is tan *r* times the blocker-to-receiver distance along the light,
+converted to texels through the orthographic projection rows. Each of 16
+filter taps runs the existing bilinear caster-plane comparison, so grazing
+receivers keep their bias. Without blockers, or with a penumbra under one
+texel, the lookup is the delta light's bilinear comparison.
+
+The filter radius is clamped to 32 texels. Penumbrae wider than that stay soft
+but too narrow. Raster shading still evaluates the BSDF at the disk centre, so
+only visibility sees the disk. Lights without a map, and point, spot and area
+lights, are unchanged.
+
+**Coverage gaps.** These paths keep a delta direction for now:
+
+- the GPU preview kernel;
+- the render-graph scene shader interface (`SampleLight` and `LightInfo`);
+- static lighting bakes cooked from LUSCN light records, which store no radius;
+- runtime scenes loaded from LUSCN.
+
+`tests/renderer` covers each implemented path:
+
+- *Reference directional disks soften shadows and keep their illuminance on CPU
+  and GPU* checks the penumbra width, flux, delta compatibility and matched-sample
+  parity in UniformArea and SeparateDirectional modes.
+- *a directional disk widens the shadow edge and keeps the lit level* checks the
+  raster penumbra and flux.
+- Both far-camera acne cases sweep the Sun's radius.
+
 ### CPU and GPU reference implementation requirement
 
 Building or extending a reference path tracer requires both a CPU oracle and a

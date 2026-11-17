@@ -7127,6 +7127,21 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     components.insert(atmosphereComponent, values);
     REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
             true);
+    // The angular radius a direct light carries for its shadow penumbra; -1 when the scene has no such light.
+    const auto findLightRadius = [&scene](const QString& id) {
+        const uint64 sourceId = ComputeEntitySourceId(id);
+        for (uint32 i = 0; i < scene.AuthoredLights.Count; ++i)
+        {
+            if (scene.AuthoredLights.Lights[i].SourceId == sourceId)
+            {
+                return scene.AuthoredLights.Lights[i].AngularRadiusRadians;
+            }
+        }
+        return -1.0F;
+    };
+    // A static Sun keeps the delta direction and hard shadows of existing directional lights.
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
+    CHECK(findLightRadius(sunId) == 0);
     const auto setEarthPreset = [&reopened, &error](const QString& id, QLatin1StringView preset) {
         const QJsonObject entity = reopened.Entity(id);
         QJsonObject entityComponents = entity.value(QStringLiteral("components")).toObject();
@@ -7160,6 +7175,9 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.SolarIlluminance.X > 100'000);
     CHECK(scene.Atmosphere.Celestial.LunarAngularRadiusRadians > 0.004F);
     CHECK(scene.Atmosphere.Celestial.DirectionToSunAtMoonWorld != math::Vector3{});
+    // Direct shadows use the same disks as the sky.
+    CHECK(findLightRadius(sunId) == scene.Atmosphere.SolarAngularRadiusRadians);
+    CHECK(findLightRadius(moonId) == scene.Atmosphere.Celestial.LunarAngularRadiusRadians);
     REQUIRE(reopened.Undo() == true);
     CHECK(reopened.Draft() == beforeEarthEdit);
     REQUIRE(reopened.RemoveEntities({atmosphereId}, error) == true);

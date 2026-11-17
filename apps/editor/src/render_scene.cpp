@@ -1197,6 +1197,10 @@ bool RenderScene::Load(const QString& root,
                                     name + QStringLiteral(
                                                ": set the active celestial preset fields within their shown ranges."));
                     }
+                    // The Earth Sun and Earth Moon disks soften direct shadows with the same angular size as the sky
+                    // disk; a manual photometry override replaces only colour and intensity.
+                    light.AngularRadiusRadians =
+                        math::Min(earth.AngularRadiusRadians, rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS);
                     if (earth.AngularRadiusRadians > 0 &&
                         lightProperties.value(WORLD_CELESTIAL_MANUAL_PHOTOMETRY).toBool() == false)
                     {
