@@ -101,6 +101,7 @@ struct RecordInfo final
     math::Vector3 NormalWorld;
     bool IsTwoSided = false;
     float32 Flux = 0;
+    float32 AreaSquareMeters = 0;
     math::Vector3 ReachCenterWorld;
     float32 ReachRadius = 0;
     /// Index into the caster list, or casters' size when unshadowed.
@@ -124,6 +125,9 @@ struct CasterBuild final
     /// Whether the caster renders from its members' sphere centre, seeing past them, rather than from in front.
     bool IsEnclosing = false;
     float32 Flux = 0;
+    /// Flux-weighted sum of each member's area / pi plus twice its squared distance from CenterWorld: twice the
+    /// members' second moment of area about the centre, which is the squared radius of the uniform disk sharing it.
+    float32 MomentSum = 0;
 };
 math::Vector3 GetPosition(math::Vector4 word) noexcept
 {
@@ -292,8 +296,8 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         info.NormalWorld = GetPosition(words[offset + NORMAL_WORD]);
         info.IsTwoSided = words[offset + NORMAL_WORD].W != 0;
         const math::Vector4 emission = words[offset + EMISSION_WORD];
-        info.Flux = math::Max(emission.X, math::Max(emission.Y, emission.Z)) *
-                    words[offset + MESH_LIGHT_POLYGON_HEADER_WORDS].W;
+        info.AreaSquareMeters = words[offset + MESH_LIGHT_POLYGON_HEADER_WORDS].W;
+        info.Flux = math::Max(emission.X, math::Max(emission.Y, emission.Z)) * info.AreaSquareMeters;
         if (GetRasterMeshLightReach(words, offset, info.ReachCenterWorld, info.ReachRadius) == false ||
             math::IsFinite(info.CenterWorld) == false || math::IsFinite(info.Flux) == false || info.Radius < 0)
         {
@@ -331,6 +335,8 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         CasterBuild& build = builds[record.Caster];
         build.NormalSumWorld = build.NormalSumWorld + record.NormalWorld * record.Flux;
         build.Flux += record.Flux;
+        build.MomentSum += record.Flux * (record.AreaSquareMeters / static_cast<float32>(math::kPi) +
+                                          2 * math::LengthSquared(record.CenterWorld - build.CenterWorld));
         build.IsEnclosing = build.IsEnclosing == true || record.IsTwoSided == true;
         ++report.ShadowedRecords;
     }
@@ -367,6 +373,10 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         }
         result.PositionWorld = build.CenterWorld + normalWorld * offsetMeters;
         result.LightRadiusMeters = build.Radius;
+        result.LightNormalWorld = build.IsEnclosing == true ? math::Vector3{} : normalWorld;
+        // A caster of zero flux keeps its sphere radius.
+        result.DiskRadiusMeters =
+            build.Flux > 0 ? math::Min(math::Sqrt(build.MomentSum / build.Flux), build.Radius) : build.Radius;
         // A one-sided caster sits in front of its emitters, which lie behind it and never block a receiver they
         // light; an enclosing one sits inside its emitters and must see past them.
         result.NearMeters =
@@ -577,7 +587,8 @@ Status AppendRasterMeshLightShadowTable(Array<math::Vector4>& inoutWords,
 {
     const usize tableWord = inoutWords.GetSize();
     if (inoutWords.TryEnsureCapacity(tableWord + MESH_LIGHT_SHADOW_HEADER_WORDS +
-                                     casters.GetSize() * MESH_LIGHT_SHADOW_CASTER_WORDS) == false)
+                                     casters.GetSize() *
+                                         (MESH_LIGHT_SHADOW_CASTER_WORDS + MESH_LIGHT_SHADOW_DISK_WORDS)) == false)
     {
         return Status::OutOfMemory;
     }
@@ -585,7 +596,7 @@ Status AppendRasterMeshLightShadowTable(Array<math::Vector4>& inoutWords,
     static_cast<void>(inoutWords.TryAdd({static_cast<float32>(casters.GetSize()),
                                          static_cast<float32>(atlasTexels),
                                          1.0F / static_cast<float32>(atlasTexels),
-                                         0}));
+                                         1}));
     for (usize index = 0; index < casters.GetSize(); ++index)
     {
         const MeshLightShadowCaster& caster = casters[index];
@@ -609,6 +620,11 @@ Status AppendRasterMeshLightShadowTable(Array<math::Vector4>& inoutWords,
             const math::Vector2 second = getOrigin(face + 1);
             static_cast<void>(inoutWords.TryAdd({first.X, first.Y, second.X, second.Y}));
         }
+    }
+    for (const MeshLightShadowCaster& caster : casters)
+    {
+        const math::Vector3 normalWorld = caster.LightNormalWorld;
+        static_cast<void>(inoutWords.TryAdd({normalWorld.X, normalWorld.Y, normalWorld.Z, caster.DiskRadiusMeters}));
     }
     outTableWord = static_cast<uint32>(tableWord);
     return Status::Ready;

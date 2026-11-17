@@ -1134,21 +1134,24 @@ TEST_CASE("RT2 raster fallback approximates partial area-light shadows with one 
     CHECK(control.FalseLight == 0);
     CHECK(control.FalseDarkening == 0);
     // Bounds on visibility error against the oracle, about 1.5 times the Metal measurements (mean signed error at
-    // most 0.095 in magnitude, mean false light 0.147, RMS 0.41, shadowed mean false light 0.095 and largest 0.81).
-    // A fallback that ignores both blockers has mean false light 0.23-0.33, and at least 0.5 over shadowed pixels.
+    // most 0.0073 in magnitude, mean false light 0.034, mean false darkening 0.037, RMS 0.088, shadowed mean false
+    // light 0.039 and largest 0.30). One-point cube shadows filtered within the face gutter measured RMS 0.32-0.41
+    // and mean false darkening 0.14-0.21; a fallback that ignores both blockers has mean false light 0.23-0.33, and
+    // at least 0.5 over shadowed pixels.
     /// Pixels where the oracle sees at most this fraction of the emitter are shadowed.
     constexpr float32 SHADOWED_VISIBILITY = .5F;
-    constexpr float64 MAXIMUM_MEAN_SIGNED_ERROR = .15;
-    constexpr float64 MAXIMUM_MEAN_FALSE_LIGHT = .2;
-    constexpr float64 MAXIMUM_VISIBILITY_RMS = .5;
-    constexpr float64 MAXIMUM_SHADOWED_MEAN_FALSE_LIGHT = .15;
-    constexpr float32 MAXIMUM_SHADOWED_FALSE_LIGHT = .9F;
+    constexpr float64 MAXIMUM_MEAN_SIGNED_ERROR = .012;
+    constexpr float64 MAXIMUM_MEAN_FALSE_LIGHT = .05;
+    constexpr float64 MAXIMUM_MEAN_FALSE_DARKENING = .055;
+    constexpr float64 MAXIMUM_VISIBILITY_RMS = .13;
+    constexpr float64 MAXIMUM_SHADOWED_MEAN_FALSE_LIGHT = .06;
+    constexpr float32 MAXIMUM_SHADOWED_FALSE_LIGHT = .45F;
     // The caster's faces store linear depth with a near plane just in front of the emitter, so both blockers (0.22
-    // and 0.47 m in front of the caster) cast shadows. One point per caster cannot reproduce this large emitter's
-    // penumbra, which spans hundreds of shadow texels, while the filter stays within the face gutter: shadows are
-    // nearly hard, darker than the oracle inside the central point's shadow and lighter outside it. The bounds
-    // below hold that approximation to its measured error and, unlike a fallback that ignores the blockers (mean
-    // false light 0.23-0.33), keep shadowed pixels dark.
+    // and 0.47 m in front of the caster) cast shadows. The resolve estimates their penumbrae, which span hundreds of
+    // shadow texels, from light points on the caster's equal-area disk in the emitter's plane: its taps are cube
+    // directions spread by the blockers' heights above that plane, with each blocker layer filtered at its own
+    // height, and weighted by the light point's form factor at the receiver. The remaining error is the disk's
+    // round shape against the square emitter and the dither of twelve filter taps.
     for (usize state = CONTROL_STATE_COUNT - 1; state < STATE_COUNT; ++state)
     {
         CAPTURE(DescribeState(state));
@@ -1203,6 +1206,7 @@ TEST_CASE("RT2 raster fallback approximates partial area-light shadows with one 
                    << shadowedLargestExcess << " over " << shadowedCount << " pixels");
         CHECK(math::Abs(meanSigned) <= MAXIMUM_MEAN_SIGNED_ERROR);
         CHECK(meanLight <= MAXIMUM_MEAN_FALSE_LIGHT);
+        CHECK(darkeningSum / count <= MAXIMUM_MEAN_FALSE_DARKENING);
         CHECK(math::Sqrt(squares / count) <= MAXIMUM_VISIBILITY_RMS);
         CHECK(shadowedMeanLight <= MAXIMUM_SHADOWED_MEAN_FALSE_LIGHT);
         CHECK(shadowedLargestExcess <= MAXIMUM_SHADOWED_FALSE_LIGHT);

@@ -3774,24 +3774,31 @@ bounds, so its near plane sits 1.4 cm in front of the emitter
 and both blockers, 0.22 m and 0.47 m in front of the caster, cast shadows. Before
 that change, a near plane of a hundredth of the emitter's tens-of-metres culling reach
 hid both blockers: mean visibility exceeded the oracle's by 0.23–0.33 and by up to
-0.89 at a pixel. One point per caster cannot reproduce this emitter's penumbra, which
-spans hundreds of shadow texels, while the filter stays within the four-texel gutter.
-The shadows are nearly hard: darker than the oracle inside the caster's own shadow and
-lighter outside it. Visibility error against the oracle, over the near-blocker
-control and the four motion steps:
+0.89 at a pixel. The emitter's penumbra spans hundreds of shadow texels. The
+resolve estimates it from light points on the caster's disk, here the 0.45 m
+equal-area disk in the emitter's plane: its search and filter taps are cube
+directions, spread by the blockers' heights above that plane, with each blocker layer
+filtered at its own height and each light point weighted by its form factor at the
+receiver. Its filter used to stay within the four-texel face gutter, which left
+nearly hard shadows: darker than the oracle inside the caster's own shadow and
+lighter outside it. Visibility error against the oracle, over the near-blocker control
+and the four motion steps:
 
-| Raster fallback visibility error | Value |
-| --- | ---: |
-| Mean signed | −0.095 to 0.005 |
-| RMS | 0.32–0.41 |
-| Mean false light (positive error per pixel) | 0.096–0.147 |
-| Mean false darkening (negative error per pixel) | 0.14–0.21 |
-| Largest false light / false darkening | 0.81 / 0.83 |
-| Mean false light where the oracle sees at most half the emitter (684–1,578 pixels) | 0.019–0.095 |
+| Raster fallback visibility error | Gutter-clamped filter | Light-disk filter |
+| --- | ---: | ---: |
+| Mean signed | −0.095 to 0.005 | −0.0070 to 0.0073 |
+| RMS | 0.32–0.41 | 0.063–0.088 |
+| Mean false light (positive error per pixel) | 0.096–0.147 | 0.023–0.034 |
+| Mean false darkening (negative error per pixel) | 0.14–0.21 | 0.020–0.037 |
+| Largest false light / false darkening | 0.81 / 0.83 | 0.43 / 0.30 |
+| Mean false light where the oracle sees at most half the emitter (684–1,578 pixels) | 0.019–0.095 | 0.029–0.039 |
 
-The fixture bounds the mean signed error, mean false light, RMS and false light over
-the half-shadowed pixels at about one and a half times these values. A fallback that
-ignores the blockers fails the false-light bounds.
+The remaining error is the round disk against the square emitter and the per-pixel
+dither of twelve filter taps. The fixture bounds the mean signed error, mean false
+light and darkening, RMS and false light over the half-shadowed pixels at about one
+and a half times the light-disk values. A fallback that ignores the blockers fails
+the false-light bounds, and the gutter-clamped filter fails the RMS and false-darkening
+bounds.
 
 | Tiled vbuffer NEE timing, 21 samples | Median | p95 |
 | --- | ---: | ---: |

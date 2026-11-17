@@ -31,8 +31,15 @@ struct MeshLightShadowCaster final
     /// Point from which the faces are rendered: the members' enclosing sphere centre, moved a little along the mean
     /// normal of one-sided emitters so it lies in front of them.
     foundation::math::Vector3 PositionWorld;
-    /// Radius of the sphere enclosing every member polygon, in metres; scales the penumbra.
+    /// Radius of the sphere enclosing every member polygon, in metres.
     foundation::float32 LightRadiusMeters = 0;
+    /// Unit flux-weighted mean normal of a one-sided caster's members, which face it; zero for an enclosing caster.
+    /// The resolve places the light disk whose penumbra it estimates in the plane through the caster across it, and
+    /// ignores occluders behind that plane, such as the emitters themselves.
+    foundation::math::Vector3 LightNormalWorld;
+    /// Radius of that light disk, in metres: the uniform disk with the members' flux-weighted second moment of area
+    /// about the caster's sphere centre, at most LightRadiusMeters. A single polygon gets about its equal-area disk.
+    foundation::float32 DiskRadiusMeters = 0;
     /// Occluders nearer along a face's axis are ignored: a two-sided caster's own emitting surfaces, and the half of
     /// a one-sided caster's offset that lies in front of its emitters. Faces store linear depth, whose precision
     /// does not depend on it.
@@ -178,7 +185,8 @@ BuildRasterMeshLightShadowCasters(foundation::Array<foundation::math::Vector4>& 
 [[nodiscard]] bool AllocateRasterMeshLightShadowFaces(foundation::Array<MeshLightShadowCaster>& inoutCasters,
                                                       foundation::uint32 atlasTexels,
                                                       foundation::uint32 reservedSquareCount = 0) noexcept;
-/// Append the caster table (deferred_layout.h, MESH_LIGHT_SHADOW_HEADER_WORDS) and report its first word.
+/// Append the caster table (deferred_layout.h, MESH_LIGHT_SHADOW_HEADER_WORDS), followed by each caster's light-disk
+/// word (MESH_LIGHT_SHADOW_DISK_WORDS), and report its first word.
 /// @return Ready, or OutOfMemory preserving both outputs.
 [[nodiscard]] rhi::RasterStatus
 AppendRasterMeshLightShadowTable(foundation::Array<foundation::math::Vector4>& inoutWords,

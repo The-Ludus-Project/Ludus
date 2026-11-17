@@ -81,12 +81,19 @@ static const LightingLayoutValue MAX_MESH_LIGHT_GRID_ASSIGNMENTS = 1048576;
 /// caster is stored, plus one, in the w of its second corner (this corner index); zero leaves it unshadowed.
 static const LightingLayoutValue MESH_LIGHT_SHADOW_CASTER_CORNER = 1;
 /// The caster table follows the culling grid, and the grid cull word's y holds its first word; zero means no
-/// shadows. Its header word is (caster count, atlas side in texels, reciprocal atlas side, zero).
+/// shadows. Its header word is (caster count, atlas side in texels, reciprocal atlas side, light-disk flag): a flag
+/// of one means MESH_LIGHT_SHADOW_DISK_WORDS per caster follow the casters' words, in caster order; resolves cooked
+/// before the disk words read the zero-flag layout unchanged.
 static const LightingLayoutValue MESH_LIGHT_SHADOW_HEADER_WORDS = 1;
 /// Float4 words per caster: (position xyz in metres, range in metres), (light radius in metres, near distance over
 /// range, face slot side in texels, tangent of the slot's half field of view), then the atlas texel origins of the
 /// six faces, two per word. A face that receives no light has origin (-1, -1) and reads as unoccluded.
 static const LightingLayoutValue MESH_LIGHT_SHADOW_CASTER_WORDS = 5;
+/// Float4 words per caster after every caster's MESH_LIGHT_SHADOW_CASTER_WORDS when the header's flag is one: (unit
+/// normal xyz of a one-sided caster's emitters, which face it, or zero for one enclosing them, radius in metres of the
+/// light disk whose penumbra the resolve estimates). A one-sided caster's disk lies in the plane through the caster
+/// across that normal, and an enclosing caster's faces the receiver.
+static const LightingLayoutValue MESH_LIGHT_SHADOW_DISK_WORDS = 1;
 /// Cube faces of a caster, in +X, -X, +Y, -Y, +Z, -Z order.
 static const LightingLayoutValue MESH_LIGHT_SHADOW_FACE_COUNT = 6;
 /// Most casters per scene. Clustering coarsens until the records fit (render-graph-authoring.md, "Mesh-light
@@ -98,8 +105,9 @@ static const LightingLayoutValue MESH_LIGHT_SHADOW_ATLAS_TEXELS = 2048;
 static const LightingLayoutValue MIN_MESH_LIGHT_SHADOW_FACE_TEXELS = 32;
 /// Largest face slot side in texels, given to the most powerful caster.
 static const LightingLayoutValue MAX_MESH_LIGHT_SHADOW_FACE_TEXELS = 512;
-/// Texels around each face's 90-degree interior, rendered with a wider field of view so filter taps near an edge
-/// stay inside the slot; also the largest filter radius.
+/// Texels around each face's 90-degree interior, rendered with a wider field of view. The deferred resolve looks
+/// every shadow tap up by direction on the face whose interior holds it, so its filter crosses face seams and is not
+/// limited by the gutter.
 static const LightingLayoutValue MESH_LIGHT_SHADOW_GUTTER_TEXELS = 4;
 /// Fixed upper-hemisphere directions whose orthographic depth maps give the deferred resolve its sky visibility
 /// (render-graph-authoring.md, "Sky visibility"). Their regions follow the directional regions in the shadow data.
