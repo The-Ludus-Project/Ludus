@@ -4550,6 +4550,20 @@ there is no retry, energy clamp or hidden change to conductor alpha. Storage
 preserves `AlphaU` and `AlphaV`; reference admission currently requires them to
 match, and requires positive alpha rather than implementing delta transport.
 
+The conductor PDF is per unit solid angle about the reflected direction. For a
+fixed unit view direction `v` and a valid unit light direction `l`, the half
+direction is `h = normalize(v + l)`. Convert a visible-normal density `p_h`
+to a light-direction density with `p_l = p_h / (4 * abs(dot(v, h)))`.
+The CPU and Slang GGX evaluators use the reduced form
+`D(h) / (2 * (viewCosine + lambdaView))` before lobe weighting, where `D` is
+the GGX normal distribution, `viewCosine = dot(n, v)` for shading normal `n`,
+and `lambdaView = sqrt(viewCosine² * (1 - alpha²) + alpha²)`. The factor
+`dot(v, h)` cancels against the same factor in the visible-normal density.
+Use the returned directional PDF directly for MIS with another solid-angle
+proposal.
+See [Mehdi NS, *Introduction to the Jacobian and its use in graphics*, example 2](https://web.archive.org/web/20170911052112/https://mehdins.wordpress.com/2017/09/04/introduction-to-the-jacobian-and-its-use-in-graphics/)
+and [Walter et al., *Microfacet Models for Refraction through Rough Surfaces*, Eq. 14](https://www.graphics.cornell.edu/~bjw/microfacetbsdf.pdf).
+
 CPU/native-query reference transport evaluates the CPU implementation;
 GPU-compute reference transport evaluates the corresponding Slang implementation.
 The authored graph's standard BSDF helpers use the same model selection. Existing
