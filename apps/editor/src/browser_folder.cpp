@@ -1,5 +1,7 @@
 #include "internal/browser_folder.h"
 
+#include <ludus/foundation/base/core.h>
+
 #include <QDir>
 #include <QSet>
 
@@ -100,44 +102,46 @@ QString FormatBrowserByteSize(foundation::uint64 bytes)
     return QStringLiteral("%1 %2").arg(QString::number(value, 'f', 1), units[unit]);
 }
 
-bool AdmitBrowserFolder(const QString& name,
-                        const QList<BrowserFolderEntry>& entries,
-                        BrowserFolderIntent intent,
-                        const BrowserFolderLimits& limits,
-                        QString& outEntry,
-                        QString& outProblem)
+BrowserFolderAdmission AdmitBrowserFolder(const QString& name,
+                                          const QList<BrowserFolderEntry>& entries,
+                                          BrowserFolderIntent intent,
+                                          const BrowserFolderLimits& limits)
 {
+    BrowserFolderAdmission admission;
     const QString generated = GetGeneratedProjectFolderNames().join(QStringLiteral(", "));
     const QString folder = name.isEmpty() == true ? QStringLiteral("The chosen folder") : name;
     const QString invalidName = DescribeInvalidRelativePath(name);
     if (name.isEmpty() == true || name.contains(QLatin1Char('/')) == true || invalidName.isEmpty() == false)
     {
-        outProblem = QStringLiteral("The browser reported the folder name \"%1\", which cannot name a project folder. "
-                                    "Rename the folder, then choose it again.")
-                         .arg(name);
-        return false;
+        admission.Problem =
+            QStringLiteral("The browser reported the folder name \"%1\", which cannot name a project folder. "
+                           "Rename the folder, then choose it again.")
+                .arg(name);
+        return admission;
     }
     if (entries.isEmpty() == true)
     {
-        outProblem = QStringLiteral("%1 contains no files outside its generated folders (%2). Choose the folder "
-                                    "that contains %3.")
-                         .arg(folder,
-                              generated,
-                              intent == BrowserFolderIntent::Project
-                                  ? QStringLiteral("ludus.project.json")
-                                  : QStringLiteral("the scene's .pbrt, .gltf, .glb, .obj or .luscene.json file"));
-        return false;
+        admission.Problem =
+            QStringLiteral("%1 contains no files outside its generated folders (%2). Choose the folder "
+                           "that contains %3.")
+                .arg(folder,
+                     generated,
+                     intent == BrowserFolderIntent::Project
+                         ? QStringLiteral("ludus.project.json")
+                         : QStringLiteral("the scene's .pbrt, .gltf, .glb, .obj or .luscene.json file"));
+        return admission;
     }
     if (entries.size() > limits.MaximumFiles)
     {
-        outProblem = QStringLiteral("%1 has %2 files outside its generated folders (%3); the browser editor opens at "
-                                    "most %4. Move files the project does not need out of the folder, %5.")
-                         .arg(folder,
-                              QString::number(entries.size()),
-                              generated,
-                              QString::number(limits.MaximumFiles),
-                              GetNextStepForLargeProjects());
-        return false;
+        admission.Problem =
+            QStringLiteral("%1 has %2 files outside its generated folders (%3); the browser editor opens at "
+                           "most %4. Move files the project does not need out of the folder, %5.")
+                .arg(folder,
+                     QString::number(entries.size()),
+                     generated,
+                     QString::number(limits.MaximumFiles),
+                     GetNextStepForLargeProjects());
+        return admission;
     }
     QStringList paths;
     paths.reserve(entries.size());
@@ -146,51 +150,55 @@ bool AdmitBrowserFolder(const QString& name,
         const QString reason = DescribeInvalidRelativePath(entry.Path);
         if (reason.isEmpty() == false)
         {
-            outProblem = QStringLiteral("%1/%2 cannot be opened in the browser because %3. Rename it, %4.")
-                             .arg(folder, entry.Path, reason, GetNextStepForLargeProjects());
-            return false;
+            admission.Problem = QStringLiteral("%1/%2 cannot be opened in the browser because %3. Rename it, %4.")
+                                    .arg(folder, entry.Path, reason, GetNextStepForLargeProjects());
+            return admission;
         }
         if (entry.Size > limits.MaximumFileBytes)
         {
-            outProblem = QStringLiteral("%1/%2 is %3; the browser editor reads files of up to %4 (a quarter of its %5 "
-                                        "memory). Move or split the file, %6.")
-                             .arg(folder,
-                                  entry.Path,
-                                  FormatBrowserByteSize(entry.Size),
-                                  FormatBrowserByteSize(limits.MaximumFileBytes),
-                                  FormatBrowserByteSize(BROWSER_EDITOR_MAXIMUM_MEMORY_BYTES),
-                                  GetNextStepForLargeProjects());
-            return false;
+            admission.Problem =
+                QStringLiteral("%1/%2 is %3; the browser editor reads files of up to %4 (a quarter of its %5 "
+                               "memory). Move or split the file, %6.")
+                    .arg(folder,
+                         entry.Path,
+                         FormatBrowserByteSize(entry.Size),
+                         FormatBrowserByteSize(limits.MaximumFileBytes),
+                         FormatBrowserByteSize(BROWSER_EDITOR_MAXIMUM_MEMORY_BYTES),
+                         GetNextStepForLargeProjects());
+            return admission;
         }
         paths.append(name + QLatin1Char('/') + entry.Path);
     }
     if (QSet<QString>(paths.begin(), paths.end()).size() != paths.size())
     {
-        outProblem = QStringLiteral("The browser listed a file of %1 twice. Choose the folder again.").arg(folder);
-        return false;
+        admission.Problem =
+            QStringLiteral("The browser listed a file of %1 twice. Choose the folder again.").arg(folder);
+        return admission;
     }
     QString entry;
     if (intent == BrowserFolderIntent::Project)
     {
         if (paths.contains(name + QStringLiteral("/ludus.project.json")) == false)
         {
-            outProblem = QStringLiteral("%1 has no ludus.project.json at its top level. Choose the project's root "
-                                        "folder, the one that contains ludus.project.json.")
-                             .arg(folder);
-            return false;
+            admission.Problem =
+                QStringLiteral("%1 has no ludus.project.json at its top level. Choose the project's root "
+                               "folder, the one that contains ludus.project.json.")
+                    .arg(folder);
+            return admission;
         }
         entry = name + QStringLiteral("/ludus.project.json");
     }
     else if (ValidateSceneImportPaths(paths, true, entry) == false)
     {
-        outProblem = QStringLiteral("%1 contains no .pbrt, .gltf, .glb, .obj or .luscene.json scene file. Choose "
-                                    "the folder that holds the scene with its textures and models, or import one "
-                                    "scene file or .zip archive.")
-                         .arg(folder);
-        return false;
+        admission.Problem =
+            QStringLiteral("%1 contains no .pbrt, .gltf, .glb, .obj or .luscene.json scene file. Choose "
+                           "the folder that holds the scene with its textures and models, or import one "
+                           "scene file or .zip archive.")
+                .arg(folder);
+        return admission;
     }
-    outEntry = entry;
-    return true;
+    admission.Entry = foundation::Move(entry);
+    return admission;
 }
 
 bool ValidateSceneImportPaths(const QStringList& paths, bool isFolder, QString& outEntry) noexcept
@@ -250,12 +258,15 @@ bool ValidateSceneImportPaths(const QStringList& paths, bool isFolder, QString& 
         }
         unique.insert(path);
     }
-    entry = entry.isEmpty() == true ? otherEntry : entry;
+    if (entry.isEmpty() == true)
+    {
+        entry = foundation::Move(otherEntry);
+    }
     if (entry.isEmpty() == true)
     {
         return false;
     }
-    outEntry = entry;
+    outEntry = foundation::Move(entry);
     return true;
 }
 

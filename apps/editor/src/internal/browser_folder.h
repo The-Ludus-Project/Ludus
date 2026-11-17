@@ -84,20 +84,31 @@ struct BrowserFolderFailure
 /// Format a byte count with binary units for messages, for example `16.0 MiB`.
 [[nodiscard]] QString FormatBrowserByteSize(foundation::uint64 bytes);
 
+/// The outcome of AdmitBrowserFolder.
+struct BrowserFolderAdmission
+{
+    /// The descriptor (Project) or scene entry (Scene) as `name/relative/path`; empty when refused.
+    QString Entry;
+    /// The cause with the measured counts or sizes and the next step; empty when admitted.
+    QString Problem;
+
+    /// Whether the folder can be mounted.
+    [[nodiscard]] bool IsAdmitted() const noexcept
+    {
+        return Problem.isEmpty() == true;
+    }
+};
+
 /// Check a listed folder before anything is mounted or read.
 /// @param name Name of the picked folder; it becomes the project folder name in the session.
 /// @param entries Regular files outside generated folders, relative to the folder.
 /// @param intent What the folder is opened for.
 /// @param limits File-count and per-file limits.
-/// @param outEntry On success, the descriptor (Project) or scene entry (Scene) as `name/relative/path`.
-/// @param outProblem On failure, the cause with the measured counts or sizes and the next step.
-/// @return true when the folder can be mounted; outputs are preserved except the one that reports the outcome.
-[[nodiscard]] bool AdmitBrowserFolder(const QString& name,
-                                      const QList<BrowserFolderEntry>& entries,
-                                      BrowserFolderIntent intent,
-                                      const BrowserFolderLimits& limits,
-                                      QString& outEntry,
-                                      QString& outProblem);
+/// @return The entry to open, or the problem to report.
+[[nodiscard]] BrowserFolderAdmission AdmitBrowserFolder(const QString& name,
+                                                        const QList<BrowserFolderEntry>& entries,
+                                                        BrowserFolderIntent intent,
+                                                        const BrowserFolderLimits& limits);
 
 /// Validate scene import names; on success outEntry is the .pbrt entry if any, else the first other scene entry.
 /// `isFolder` requires every path below one shared top-level folder; otherwise paths are flat file names, or a

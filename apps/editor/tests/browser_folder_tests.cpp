@@ -42,97 +42,83 @@ TEST_CASE("The browser file budget derives from the editor's WebAssembly memory"
 
 TEST_CASE("Browser project folders larger than the former 32 MiB session total are admitted", "[editor][browser]")
 {
-    QString entry = QStringLiteral("previous");
-    QString problem;
-    REQUIRE(AdmitBrowserFolder(QStringLiteral("Dolomites-Survival"),
-                               MakeLargeProject(),
-                               BrowserFolderIntent::Project,
-                               {},
-                               entry,
-                               problem));
-    CHECK(entry == QStringLiteral("Dolomites-Survival/ludus.project.json"));
-    CHECK(problem.isEmpty());
+    const BrowserFolderAdmission admission =
+        AdmitBrowserFolder(QStringLiteral("Dolomites-Survival"), MakeLargeProject(), BrowserFolderIntent::Project, {});
+    REQUIRE(admission.IsAdmitted());
+    CHECK(admission.Entry == QStringLiteral("Dolomites-Survival/ludus.project.json"));
 }
 
 TEST_CASE("Browser folder refusals name the measured size or count and a next step", "[editor][browser]")
 {
-    QString entry = QStringLiteral("previous");
-    QString problem;
+    BrowserFolderAdmission admission;
 
     SECTION("A file larger than the per-file limit")
     {
-        CHECK_FALSE(AdmitBrowserFolder(QStringLiteral("Game"),
+        admission = AdmitBrowserFolder(QStringLiteral("Game"),
                                        MakeLargeProject(),
                                        BrowserFolderIntent::Project,
-                                       { .MaximumFileBytes = 8 * MEBIBYTE },
-                                       entry,
-                                       problem));
-        CHECK(problem.contains(QStringLiteral("Game/assets/objects/9e6c.bin is 16.0 MiB")));
-        CHECK(problem.contains(QStringLiteral("up to 8.0 MiB")));
-        CHECK(problem.contains(QStringLiteral("desktop editor")));
+                                       { .MaximumFileBytes = 8 * MEBIBYTE });
+        CHECK_FALSE(admission.IsAdmitted());
+        CHECK(admission.Problem.contains(QStringLiteral("Game/assets/objects/9e6c.bin is 16.0 MiB")));
+        CHECK(admission.Problem.contains(QStringLiteral("up to 8.0 MiB")));
+        CHECK(admission.Problem.contains(QStringLiteral("desktop editor")));
     }
     SECTION("Too many files")
     {
-        CHECK_FALSE(AdmitBrowserFolder(QStringLiteral("Game"),
+        admission = AdmitBrowserFolder(QStringLiteral("Game"),
                                        MakeLargeProject(),
                                        BrowserFolderIntent::Project,
-                                       { .MaximumFiles = 100 },
-                                       entry,
-                                       problem));
-        CHECK(problem.contains(QStringLiteral("Game has 154 files")));
-        CHECK(problem.contains(QStringLiteral("at most 100")));
-        CHECK(problem.contains(QStringLiteral("out, build, .git, .ludus, node_modules")));
+                                       { .MaximumFiles = 100 });
+        CHECK_FALSE(admission.IsAdmitted());
+        CHECK(admission.Problem.contains(QStringLiteral("Game has 154 files")));
+        CHECK(admission.Problem.contains(QStringLiteral("at most 100")));
+        CHECK(admission.Problem.contains(QStringLiteral("out, build, .git, .ludus, node_modules")));
     }
     SECTION("No descriptor at the top level")
     {
-        CHECK_FALSE(AdmitBrowserFolder(QStringLiteral("assets"),
+        admission = AdmitBrowserFolder(QStringLiteral("assets"),
                                        {{ .Path = QStringLiteral("nested/ludus.project.json"), .Size = 1 }},
                                        BrowserFolderIntent::Project,
-                                       {},
-                                       entry,
-                                       problem));
-        CHECK(problem.contains(QStringLiteral("Choose the project's root folder")));
+                                       {});
+        CHECK_FALSE(admission.IsAdmitted());
+        CHECK(admission.Problem.contains(QStringLiteral("Choose the project's root folder")));
     }
     SECTION("An unusable path")
     {
-        CHECK_FALSE(AdmitBrowserFolder(QStringLiteral("Game"),
+        admission = AdmitBrowserFolder(QStringLiteral("Game"),
                                        {{ .Path = QStringLiteral("ludus.project.json"), .Size = 1 },
                                         { .Path = QStringLiteral("bad\\name.txt"), .Size = 1 }},
                                        BrowserFolderIntent::Project,
-                                       {},
-                                       entry,
-                                       problem));
-        CHECK(problem.contains(QStringLiteral("Game/bad\\name.txt cannot be opened")));
-        CHECK(problem.contains(QStringLiteral("Rename it")));
+                                       {});
+        CHECK_FALSE(admission.IsAdmitted());
+        CHECK(admission.Problem.contains(QStringLiteral("Game/bad\\name.txt cannot be opened")));
+        CHECK(admission.Problem.contains(QStringLiteral("Rename it")));
     }
     SECTION("An empty folder")
     {
-        CHECK_FALSE(AdmitBrowserFolder(QStringLiteral("Game"), {}, BrowserFolderIntent::Scene, {}, entry, problem));
-        CHECK(problem.contains(QStringLiteral("no files outside its generated folders")));
+        admission = AdmitBrowserFolder(QStringLiteral("Game"), {}, BrowserFolderIntent::Scene, {});
+        CHECK_FALSE(admission.IsAdmitted());
+        CHECK(admission.Problem.contains(QStringLiteral("no files outside its generated folders")));
     }
-    CHECK(entry == QStringLiteral("previous"));
+    CHECK(admission.Entry.isEmpty());
 }
 
 TEST_CASE("Browser scene folders select their .pbrt entry first", "[editor][browser]")
 {
-    QString entry;
-    QString problem;
-    REQUIRE(AdmitBrowserFolder(QStringLiteral("Staircase"),
-                               {{ .Path = QStringLiteral("models/stairs.obj"), .Size = 10 },
-                                { .Path = QStringLiteral("scene-v4.pbrt"), .Size = 10 },
-                                { .Path = QStringLiteral("textures/wood.png"), .Size = 10 }},
-                               BrowserFolderIntent::Scene,
-                               {},
-                               entry,
-                               problem));
-    CHECK(entry == QStringLiteral("Staircase/scene-v4.pbrt"));
-    CHECK_FALSE(AdmitBrowserFolder(QStringLiteral("Textures"),
+    BrowserFolderAdmission admission = AdmitBrowserFolder(QStringLiteral("Staircase"),
+                                                          {{ .Path = QStringLiteral("models/stairs.obj"), .Size = 10 },
+                                                           { .Path = QStringLiteral("scene-v4.pbrt"), .Size = 10 },
+                                                           { .Path = QStringLiteral("textures/wood.png"), .Size = 10 }},
+                                                          BrowserFolderIntent::Scene,
+                                                          {});
+    REQUIRE(admission.IsAdmitted());
+    CHECK(admission.Entry == QStringLiteral("Staircase/scene-v4.pbrt"));
+    admission = AdmitBrowserFolder(QStringLiteral("Textures"),
                                    {{ .Path = QStringLiteral("wood.png"), .Size = 10 }},
                                    BrowserFolderIntent::Scene,
-                                   {},
-                                   entry,
-                                   problem));
-    CHECK(problem.contains(QStringLiteral("no .pbrt, .gltf, .glb, .obj or .luscene.json")));
+                                   {});
+    CHECK_FALSE(admission.IsAdmitted());
+    CHECK(admission.Problem.contains(QStringLiteral("no .pbrt, .gltf, .glb, .obj or .luscene.json")));
     QString flat;
     CHECK(ValidateSceneImportPaths({QStringLiteral("archive.zip")}, false, flat));
     CHECK(flat == QStringLiteral("archive.zip"));

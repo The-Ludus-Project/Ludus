@@ -1329,9 +1329,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         }
     });
 #if defined(Q_OS_WASM)
-    intro->setText(QStringLiteral("Browser Worlds live in this session's in-memory project; export the project to keep "
-                                  "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
-                                  "session and cooks it here. Play and runtime binding require the native editor."));
+    intro->setText(
+        QStringLiteral("Browser Worlds are saved to a project folder opened from disk in Chrome or Edge; "
+                       "otherwise download the project to keep them. Import scene… reads a scene folder in "
+                       "place, or copies a .zip or .pbrt with its files, and cooks it here. Play and runtime "
+                       "binding require the native editor."));
 #endif
     initializeTerrainAuthoring();
     bindViewportInteraction();
