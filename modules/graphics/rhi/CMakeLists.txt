@@ -57,7 +57,7 @@ if(EMSCRIPTEN)
     # Browser Auto build: both web sub-backends plus the dispatcher are linked
     # into one artifact, each sub-backend in its own leaf namespace, and the
     # dispatcher provides backend:: with the WebGPU->WebGL 2 fallback policy.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>" src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>" src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp src/surface_unsupported.cpp)
     set_source_files_properties(src/rhi_webgpu.cpp PROPERTIES
         COMPILE_DEFINITIONS "LUDUS_RHI_WEBGPU_NAMESPACE=webgpu")
     set_source_files_properties(src/rhi_webgl.cpp PROPERTIES
@@ -81,11 +81,11 @@ elseif(WIN32)
     # (docs/architecture/windows-direct3d12.md). Unimplemented feature families
     # use the portable Unsupported implementations.
     target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/compute_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/measurement_d3d12.cpp src/debug_d3d12.cpp "$<TARGET_OBJECTS:ludus_rhi_ray_unsupported>"
-        src/native_interop_d3d12.cpp src/hosted_d3d12.cpp src/hosted_consumer_d3d12.cpp)
+        src/native_interop_d3d12.cpp src/hosted_d3d12.cpp src/hosted_consumer_d3d12.cpp src/surface_unsupported.cpp)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
 else()
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp src/surface_unsupported.cpp)
     target_link_libraries(ludus_graphics_rhi PRIVATE volk::volk_headers)
     file(READ "${PROJECT_SOURCE_DIR}/config/vulkan_memory_allocator.json" vma_pin)
     string(JSON vma_header_sha GET "${vma_pin}" sha256 "vk_mem_alloc.h")

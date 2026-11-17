@@ -2,7 +2,9 @@
 #include "internal/device.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
+#include "internal/surface.h"
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/device.h>
 
 #include <initializer_list>
@@ -28,6 +30,14 @@ extern bool HasSelectedAdapter;
 extern AdapterInfo SelectedAdapter;
 extern AdapterIdentity StartedAdapter;
 extern bool ShouldCompleteDuringStart;
+extern foundation::usize AdditionalSurfaces;
+extern StartupError NextSurfaceError;
+extern foundation::usize SelectedSurface;
+extern foundation::uint32 DestroyedSurfaces;
+extern foundation::usize LastDestroyedSurface;
+extern bool ShouldLoseNextSurface;
+extern foundation::StaticArray<SurfaceCompletion, MAX_DEVICE_SURFACES> SurfaceCompletions;
+extern foundation::StaticArray<FrameTarget, MAX_DEVICE_SURFACES> SurfaceTargets;
 } // namespace ludus::graphics::rhi::backend
 using namespace ludus::graphics::rhi;
 namespace
@@ -47,6 +57,14 @@ void Reset() noexcept
     backend::SelectedAdapter = {};
     backend::StartedAdapter = {};
     backend::ShouldCompleteDuringStart = false;
+    backend::AdditionalSurfaces = 0;
+    backend::NextSurfaceError = StartupError::None;
+    backend::SelectedSurface = 0;
+    backend::DestroyedSurfaces = 0;
+    backend::LastDestroyedSurface = 0;
+    backend::ShouldLoseNextSurface = false;
+    backend::SurfaceCompletions.Fill({});
+    backend::SurfaceTargets.Fill({});
 }
 void Ready() noexcept
 {
@@ -563,4 +581,195 @@ TEST_CASE("R14a a session on another adapter than requested is torn down", "[rhi
     backend::SelectedAdapter.Identity = description.Adapter;
     REQUIRE(CreateDevice({}, {}, description, device, surface) == DeviceStatus::Ready);
     REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+}
+
+TEST_CASE("R14b surfaces of one device keep independent targets, frames and counters", "[rhi][device][surface]")
+{
+    Reset();
+    backend::AdditionalSurfaces = MAX_DEVICE_SURFACES - 1;
+    DeviceHandle device;
+    SurfaceHandle primary;
+    REQUIRE(CreateDevice({}, { .Width = 64, .Height = 32 }, {}, device, primary) == DeviceStatus::Pending);
+    SurfaceHandle second;
+    CHECK(CreateSurface(device, { .Width = 320, .Height = 200 }, second) == DeviceStatus::NotReady);
+    CHECK(second == SurfaceHandle{});
+    Ready();
+    REQUIRE(CreateSurface(device, { .Width = 320, .Height = 200 }, second) == DeviceStatus::Ready);
+    CHECK(second != SurfaceHandle{});
+    CHECK(second != primary);
+    const SurfaceHandle published = second;
+    CHECK(CreateSurface(device, { .Width = 320, .Height = 200 }, second) == DeviceStatus::InvalidState);
+    CHECK(second == published);
+
+    SurfaceInfo info;
+    REQUIRE(GetSurfaceInfo(device, primary, info) == DeviceStatus::Ready);
+    CHECK(info.IsPrimary);
+    CHECK(info.Width == 64);
+    REQUIRE(GetSurfaceInfo(device, second, info) == DeviceStatus::Ready);
+    CHECK_FALSE(info.IsPrimary);
+    CHECK(info.State == SurfaceState::Ready);
+    CHECK(info.Width == 320);
+    CHECK(info.Height == 200);
+    CHECK(info.SubmittedFrames == 0);
+
+    // Each surface keeps its own target; resizing one leaves the other unchanged.
+    REQUIRE(SetFrameTarget(device, second, { .Width = 640, .Height = 360 }) == DeviceStatus::Ready);
+    REQUIRE(SetFrameTarget(device, primary, { .Width = 100, .Height = 50 }) == DeviceStatus::Ready);
+    CHECK(backend::SurfaceTargets[1].Width == 640);
+    CHECK(backend::SurfaceTargets[0].Width == 100);
+    REQUIRE(GetSurfaceInfo(device, second, info) == DeviceStatus::Ready);
+    CHECK(info.Width == 640);
+    CHECK(info.Height == 360);
+
+    // One frame per device: it belongs to the surface BeginFrame chose.
+    REQUIRE(BeginFrame(device, second) == DeviceStatus::Ready);
+    CHECK(backend::SelectedSurface == 1);
+    FrameInfo acquired{ .Width = 777 };
+    CHECK(GetFrameInfo(device, primary, acquired) == DeviceStatus::InvalidState);
+    CHECK(acquired.Width == 777);
+    REQUIRE(GetFrameInfo(device, second, acquired) == DeviceStatus::Ready);
+    CHECK(BeginFrame(device, primary) == DeviceStatus::InvalidState);
+    CHECK(SetFrameTarget(device, primary, {}) == DeviceStatus::InvalidState);
+    SurfaceHandle during;
+    CHECK(CreateSurface(device, {}, during) == DeviceStatus::InvalidState);
+    SurfaceHandle open = second;
+    CHECK(DestroySurface(device, open) == DeviceStatus::InvalidState);
+    CHECK(open == second);
+    REQUIRE(EndFrame(device) == DeviceStatus::Ready);
+    REQUIRE(BeginFrame(device, primary) == DeviceStatus::Ready);
+    CHECK(backend::SelectedSurface == 0);
+    REQUIRE(EndFrame(device) == DeviceStatus::Ready);
+    REQUIRE(BeginFrame(device, second) == DeviceStatus::Ready);
+    REQUIRE(EndFrame(device) == DeviceStatus::Ready);
+
+    // Submission and presentation are counted per surface and reported apart from rendering.
+    backend::SurfaceCompletions[1].RenderedFrames = 1;
+    REQUIRE(GetSurfaceInfo(device, second, info) == DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.PresentedFrames == 2);
+    CHECK(info.RenderedFrames == 1);
+    REQUIRE(GetSurfaceInfo(device, primary, info) == DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 1);
+
+    // The legacy facade keeps driving the primary surface.
+    REQUIRE(BeginFrameStatus() == FrameStatus::Ready);
+    CHECK(backend::SelectedSurface == 0);
+    REQUIRE(EndFrameStatus() == FrameStatus::Ready);
+    REQUIRE(GetSurfaceInfo(device, primary, info) == DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 2);
+
+    // The primary surface retires only with its device.
+    SurfaceHandle primaryCopy = primary;
+    CHECK(DestroySurface(device, primaryCopy) == DeviceStatus::InvalidState);
+    CHECK(primaryCopy == primary);
+    REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+}
+
+TEST_CASE("R14b surface admission rejects borrowed targets, capacity and backend refusals", "[rhi][device][surface]")
+{
+    Reset();
+    DeviceHandle device;
+    SurfaceHandle primary;
+    ludus::foundation::int32 view = 0;
+    WindowInfo cocoa{ .System = ludus::platform::WindowSystem::Cocoa, .Width = 32, .Height = 32 };
+    cocoa.CocoaView = &view;
+    REQUIRE(CreateDevice({}, cocoa, {}, device, primary) == DeviceStatus::Pending);
+    Ready();
+    SurfaceHandle surface;
+    CHECK(CreateSurface(device, {}, surface) == DeviceStatus::Unsupported);
+    backend::AdditionalSurfaces = 2;
+    // A target another live surface borrows, including the primary, is refused.
+    CHECK(CreateSurface(device, cocoa, surface) == DeviceStatus::InvalidDescription);
+    CHECK(CreateSurface(device, { .Width = 8192, .Height = 1 }, surface) == DeviceStatus::InvalidDescription);
+    backend::NextSurfaceError = StartupError::InvalidWindow;
+    CHECK(CreateSurface(device, {}, surface) == DeviceStatus::InvalidDescription);
+    backend::NextSurfaceError = StartupError::BackendUnavailable;
+    CHECK(CreateSurface(device, {}, surface) == DeviceStatus::Unsupported);
+    backend::NextSurfaceError = StartupError::SurfaceUnavailable;
+    CHECK(CreateSurface(device, {}, surface) == DeviceStatus::Failed);
+    CHECK(surface == SurfaceHandle{});
+    DeviceInfo deviceInfo;
+    CHECK(GetDeviceInfo(device, deviceInfo) == DeviceStatus::Ready);
+    backend::NextSurfaceError = StartupError::None;
+    SurfaceHandle first;
+    SurfaceHandle second;
+    SurfaceHandle third;
+    REQUIRE(CreateSurface(device, {}, first) == DeviceStatus::Ready);
+    REQUIRE(CreateSurface(device, {}, second) == DeviceStatus::Ready);
+    CHECK(CreateSurface(device, {}, third) == DeviceStatus::CapacityExceeded);
+    CHECK(third == SurfaceHandle{});
+    REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+    DeviceHandle stale = device;
+    CHECK(CreateSurface(stale, {}, third) == DeviceStatus::InvalidHandle);
+}
+
+TEST_CASE("R14b losing or destroying one surface leaves the device and other surfaces working",
+          "[rhi][device][surface]")
+{
+    Reset();
+    backend::AdditionalSurfaces = 2;
+    DeviceHandle device;
+    SurfaceHandle primary;
+    REQUIRE(CreateDevice({}, {}, {}, device, primary) == DeviceStatus::Pending);
+    Ready();
+    SurfaceHandle kept;
+    SurfaceHandle lost;
+    REQUIRE(CreateSurface(device, {}, kept) == DeviceStatus::Ready);
+    REQUIRE(CreateSurface(device, {}, lost) == DeviceStatus::Ready);
+    REQUIRE(SetFrameTarget(device, lost, { .Width = 16, .Height = 16 }) == DeviceStatus::Ready);
+    backend::ShouldLoseNextSurface = true;
+    CHECK(BeginFrame(device, lost) == DeviceStatus::SurfaceLost);
+    DeviceInfo deviceInfo;
+    REQUIRE(GetDeviceInfo(device, deviceInfo) == DeviceStatus::Ready);
+    CHECK_FALSE(deviceInfo.FrameOpen);
+    SurfaceInfo info;
+    REQUIRE(GetSurfaceInfo(device, lost, info) == DeviceStatus::Ready);
+    CHECK(info.State == SurfaceState::Lost);
+    CHECK(BeginFrame(device, lost) == DeviceStatus::SurfaceLost);
+    CHECK(SetFrameTarget(device, lost, {}) == DeviceStatus::SurfaceLost);
+    REQUIRE(GetSurfaceInfo(device, kept, info) == DeviceStatus::Ready);
+    CHECK(info.State == SurfaceState::Ready);
+    REQUIRE(BeginFrame(device, kept) == DeviceStatus::Ready);
+    REQUIRE(EndFrame(device) == DeviceStatus::Ready);
+    REQUIRE(BeginFrame(device, primary) == DeviceStatus::Ready);
+    REQUIRE(EndFrame(device) == DeviceStatus::Ready);
+
+    // Destroying the lost surface retires only its slot; stale copies are rejected.
+    const SurfaceHandle staleLost = lost;
+    REQUIRE(DestroySurface(device, lost) == DeviceStatus::Ready);
+    CHECK(lost == SurfaceHandle{});
+    CHECK(backend::DestroyedSurfaces == 1);
+    CHECK(backend::LastDestroyedSurface == 2);
+    CHECK(BeginFrame(device, staleLost) == DeviceStatus::InvalidHandle);
+    CHECK(GetSurfaceInfo(device, staleLost, info) == DeviceStatus::InvalidHandle);
+    SurfaceHandle staleCopy = staleLost;
+    CHECK(DestroySurface(device, staleCopy) == DeviceStatus::InvalidHandle);
+    CHECK(staleCopy == staleLost);
+
+    // A replacement reuses the slot under a new identity.
+    SurfaceHandle replacement;
+    REQUIRE(CreateSurface(device, {}, replacement) == DeviceStatus::Ready);
+    CHECK(replacement != staleLost);
+    CHECK(BeginFrame(device, staleLost) == DeviceStatus::InvalidHandle);
+    REQUIRE(GetSurfaceInfo(device, replacement, info) == DeviceStatus::Ready);
+    CHECK(info.State == SurfaceState::Ready);
+    CHECK(info.SubmittedFrames == 0);
+    REQUIRE(BeginFrame(device, replacement) == DeviceStatus::Ready);
+    REQUIRE(EndFrame(device) == DeviceStatus::Ready);
+
+    // Device loss stops every surface, yet created surfaces can still be destroyed.
+    internal::Fail(backend::PendingToken, StartupError::DeviceLost);
+    CHECK(BeginFrame(device, kept) == DeviceStatus::DeviceLost);
+    REQUIRE(DestroySurface(device, kept) == DeviceStatus::Ready);
+
+    // Surfaces never outlive their device or move to the next session.
+    REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+    DeviceHandle next;
+    SurfaceHandle nextPrimary;
+    REQUIRE(CreateDevice({}, {}, {}, next, nextPrimary) == DeviceStatus::Pending);
+    Ready();
+    CHECK(BeginFrame(next, replacement) == DeviceStatus::InvalidHandle);
+    CHECK(BeginFrame(next, primary) == DeviceStatus::InvalidHandle);
+    CHECK(GetSurfaceInfo(next, replacement, info) == DeviceStatus::InvalidHandle);
+    REQUIRE(DestroyDevice(next) == DeviceStatus::Ready);
 }

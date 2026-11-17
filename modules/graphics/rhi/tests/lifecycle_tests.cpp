@@ -2,8 +2,11 @@
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
+#include "internal/surface.h"
 #include "reference_raster.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 
@@ -93,17 +96,67 @@ bool EndFrame() noexcept
 {
     return false;
 }
-FrameStatus SetTarget(const FrameTarget&) noexcept
+// R14b fake surfaces: AdditionalSurfaces sets the host limit; the slot SelectSurface
+// last chose receives SetTarget, Begin and End.
+foundation::usize AdditionalSurfaces = 0;
+StartupError NextSurfaceError = StartupError::None;
+foundation::usize SelectedSurface = 0;
+/// DestroySurface calls and the slot of the most recent one.
+foundation::uint32 DestroyedSurfaces = 0;
+foundation::usize LastDestroyedSurface = 0;
+/// The next Begin on a created surface reports that surface lost instead of acquiring.
+bool ShouldLoseNextSurface = false;
+foundation::StaticArray<SurfaceCompletion, MAX_DEVICE_SURFACES> SurfaceCompletions{};
+foundation::StaticArray<FrameTarget, MAX_DEVICE_SURFACES> SurfaceTargets{};
+foundation::usize AdditionalSurfaceLimit() noexcept
 {
+    return AdditionalSurfaces;
+}
+StartupError CreateSurface(foundation::usize slot, const WindowInfo&) noexcept
+{
+    if (NextSurfaceError == StartupError::None)
+    {
+        SurfaceCompletions[slot] = {};
+        SurfaceTargets[slot] = {};
+    }
+    return NextSurfaceError;
+}
+void DestroySurface(foundation::usize slot) noexcept
+{
+    ++DestroyedSurfaces;
+    LastDestroyedSurface = slot;
+    SurfaceCompletions[slot] = {};
+}
+void SelectSurface(foundation::usize slot) noexcept
+{
+    SelectedSurface = slot;
+}
+SurfaceCompletion GetSurfaceCompletion(foundation::usize slot) noexcept
+{
+    return SurfaceCompletions[slot];
+}
+FrameStatus SetTarget(const FrameTarget& target) noexcept
+{
+    SurfaceTargets[SelectedSurface] = target;
     return FrameStatus::Ready;
 }
 FrameStatus Begin() noexcept
 {
+    if (ShouldLoseNextSurface == true && SelectedSurface != 0)
+    {
+        ShouldLoseNextSurface = false;
+        internal::LoseSurface(SelectedSurface);
+        return FrameStatus::Skipped;
+    }
     return NextFrame;
 }
 FrameStatus End() noexcept
 {
     reference::CloseAnnotationScopes();
+    if (NextFrameEnd == FrameStatus::Ready)
+    {
+        ++SurfaceCompletions[SelectedSurface].PresentedFrames;
+    }
     return NextFrameEnd;
 }
 } // namespace ludus::graphics::rhi::backend

@@ -291,6 +291,77 @@ macOS Metal suite lists the system devices, starts on a catalog entry and
 rejects an unknown identity. Vulkan and Direct3D 12 use the same contract;
 their first hardware runs are the Linux batch and Windows Direct3D 12 lanes.
 
+### Multiple surfaces per device (R14b)
+
+`CreateDevice` publishes the device's primary surface. `CreateSurface` borrows
+another platform target as a further surface of the same ready device, up to
+`MAX_DEVICE_SURFACES` in all. Each surface keeps its own frame target,
+presentation resources (a drawable layer, hosted producer or headless texture),
+depth attachment and counters, so surfaces resize, present and retire
+independently. A device still has one open frame at a time; `BeginFrame` chooses
+the surface it acquires, and `EndFrame` presents it.
+
+```cpp
+namespace rhi = ludus::graphics::rhi;
+rhi::SurfaceHandle inspector;
+const auto created = rhi::CreateSurface(device, inspectorWindow, inspector);
+// Unsupported: this backend hosts only its primary surface; draw the inspector
+// into a texture of the primary frame instead.
+rhi::SetFrameTarget(device, inspector, { .Width = width, .Height = height });
+if (rhi::BeginFrame(device, inspector) == rhi::DeviceStatus::SurfaceLost)
+{
+    // The inspector's view left its window. The device and other surfaces still
+    // work: destroy this surface and create one for the new target.
+    rhi::DestroySurface(device, inspector);
+}
+```
+
+Creation requires a Ready device and no open frame, and returns
+`CapacityExceeded` when the device hosts its maximum. A target that another live
+surface of the device already borrows, an invalid window or an extent above the
+enabled frame dimension returns `InvalidDescription` with the output still null.
+Every surface shares the primary surface's color format, because pipelines are
+created for it; a target that needs another format (a Metal hosted surface on a
+Cocoa or headless device) returns `Unsupported`. Surface identities are never
+reused. A destroyed surface, a surface of another device and a surface from a
+previous session return `InvalidHandle`, and `GetFrameInfo` for a surface other
+than the open frame's returns `InvalidState`.
+
+A created surface is lost when its platform target stops accepting frames: a
+Cocoa view that left the window it was borrowed from, or a hosted consumer that
+failed. The backend waits for that surface's submitted frames, retires its
+presentation resources and restores the borrowed view. Its frame calls then
+return `SurfaceLost`, while the device, its resources and its other surfaces keep
+working. `DestroySurface` retires a created surface in the same way, also after
+its loss or after device failure. The primary surface keeps the facade's
+contract: it is retired only by `DestroyDevice`, and its acquisition failures
+still fail the device.
+
+`GetSurfaceInfo` reports a surface's state, window system, last accepted target
+and three counters. `SubmittedFrames` counts frames ended on the surface.
+`RenderedFrames` counts those whose GPU work the owner thread has observed
+complete; it is polled without waiting, so it can lag the GPU.
+`PresentedFrames` counts frames scheduled on the platform presentation queue or
+handed to the hosted consumer. It is not a display time, and headless surfaces
+present nothing.
+
+Metal implements additional surfaces for Cocoa, headless and hosted targets.
+Vulkan, Direct3D 12 and the browser backends still host only their primary
+surface and return `Unsupported` from `CreateSurface`; their primary surfaces
+report `SubmittedFrames` but not render or presentation completion. A WebGL 2
+context belongs to one canvas, so WebGL 2 cannot host a second surface on one
+device.
+
+The reference-backend lifecycle suite covers independent targets and counters,
+one frame per device, primary-surface protection, borrowed-target, capacity and
+backend refusals, loss isolation, slot reuse under a new identity, stale and
+cross-session rejection, and destruction after device loss. The macOS Metal
+suite clears and reads back two headless surfaces at different, independently
+resized extents, checks render completion, and retires one while the other keeps
+rendering. With `LUDUS_TEST_COCOA=1` it also presents to two Cocoa windows,
+loses the second when its content view is replaced, verifies the restored layer
+and keeps presenting the first.
+
 ### Profile, format and limit negotiation
 
 `DeviceDescription::RequiredProfile` adds copied raster, compute and format
