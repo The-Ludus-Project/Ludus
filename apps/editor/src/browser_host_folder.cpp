@@ -32,6 +32,7 @@ extern "C" ludus::foundation::int32 LudusHostMountSelection(ludus::foundation::i
                                                             const char* options);
 extern "C" void LudusHostDiscardSelection(ludus::foundation::int32 selection);
 extern "C" void LudusHostSetMonitor(emscripten::EM_VAL target);
+extern "C" ludus::foundation::int32 LudusHostIsWritable(const char* path);
 
 namespace ludus::editor
 {
@@ -160,12 +161,11 @@ void AcceptPickedFolder(const QSharedPointer<FolderRequest>& request, const emsc
             .Size = static_cast<foundation::uint64>(item["size"].as<foundation::float64>()),
         });
     }
-    QString entry;
-    QString problem;
-    if (AdmitBrowserFolder(name, entries, request->Intent, {}, entry, problem) == false)
+    const BrowserFolderAdmission admission = AdmitBrowserFolder(name, entries, request->Intent, {});
+    if (admission.IsAdmitted() == false)
     {
         LudusHostDiscardSelection(selection);
-        ShowMessage(request->Owner, QMessageBox::Warning, problem);
+        ShowMessage(request->Owner, QMessageBox::Warning, admission.Problem);
         return;
     }
     const QString mountPoint = FOLDER_MOUNT_ROOT.toString() + QString::number(++FolderSerial);
@@ -195,7 +195,7 @@ void AcceptPickedFolder(const QSharedPointer<FolderRequest>& request, const emsc
                                    "or Edge to save in place.")
                         .arg(name));
     }
-    request->Completed(mountPoint + QLatin1Char('/') + entry);
+    request->Completed(mountPoint + QLatin1Char('/') + admission.Entry);
 }
 
 /// Prepare the request's event callbacks; `start` asks the JavaScript side to pick or reopen.
@@ -273,6 +273,12 @@ void OpenBrowserFolder(QWidget* owner, BrowserFolderIntent intent, const std::fu
     StartFolderRequest(owner, intent, loaded, [intent](emscripten::EM_VAL target, const char* options) {
         LudusHostPickFolder(target, intent == BrowserFolderIntent::Project ? 0 : 1, options);
     });
+}
+
+bool IsBrowserFolderWritable(const QString& path)
+{
+    const QByteArray bytes = path.toUtf8();
+    return path.isEmpty() == false && LudusHostIsWritable(bytes.constData()) != 0;
 }
 
 void ReopenBrowserProjectFolder(QWidget* owner, const std::function<void(const QString&)>& loaded)

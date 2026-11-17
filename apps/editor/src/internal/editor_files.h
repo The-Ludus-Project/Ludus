@@ -72,6 +72,8 @@ void OpenBrowserFolder(QWidget* owner, BrowserFolderIntent intent, const std::fu
 /// Reopen the project folder last opened read-write in this browser, after the browser confirms permission
 /// (a prompt that needs the click that triggered this call). Reports when none is remembered.
 void ReopenBrowserProjectFolder(QWidget* owner, const std::function<void(const QString&)>& loaded);
+/// Whether `path` lies in a folder opened from disk whose saves are written back to it.
+[[nodiscard]] bool IsBrowserFolderWritable(const QString& path);
 // Starts a browser download, which cannot confirm the user's destination/save.
 [[nodiscard]] bool DownloadEditorDocument(QWidget* owner, const QString& path);
 [[nodiscard]] bool DownloadEditorProject(QWidget* owner, const QString& descriptor);

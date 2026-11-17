@@ -1747,8 +1747,12 @@ void MainWindow::RenderStatus()
 
     QString next;
 #if defined(Q_OS_WASM)
-    next = QStringLiteral("Download your changes to keep them. Use the desktop editor to repair setup and build "
-                          "your project. Browser Play runs a shipped sample; it does not rebuild your changes.");
+    next = IsBrowserFolderWritable(state.DescriptorPath) == true
+               ? QStringLiteral("Saves go to this project's folder on disk. Use the desktop editor to repair setup "
+                                "and build your project. Browser Play runs a shipped sample; it does not rebuild your "
+                                "changes.")
+               : QStringLiteral("Download your changes to keep them. Use the desktop editor to repair setup and build "
+                                "your project. Browser Play runs a shipped sample; it does not rebuild your changes.");
 #else
     if (state.OperationPhase == Phase::CleanupUnknown)
     {

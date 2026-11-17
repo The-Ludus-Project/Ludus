@@ -3,7 +3,7 @@
 #include "internal/browser_folder.h"
 #include "internal/scene_archive.h"
 
-#include <ludus/foundation/base/types.h>
+#include <ludus/foundation/base/core.h>
 
 #include <QDir>
 #include <QDirIterator>
@@ -629,7 +629,7 @@ bool EncodeEditorProjectArchive(const QString& directory, QByteArray& outArchive
         result.append(QByteArray((512 - data.size() % 512) % 512, '\0'));
     }
     result.append(QByteArray(1024, '\0'));
-    outArchive = result;
+    outArchive = foundation::Move(result);
     return true;
 }
 
