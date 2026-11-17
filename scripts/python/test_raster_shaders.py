@@ -25,14 +25,15 @@ class NativeWorkerSnapshotTests(unittest.TestCase):
             self.write(shaders, 'root.slang', '#include "local.slang"\n#include "detail/near.h"\n')
             self.write(shaders, 'local.slang', '#include "shared.slang"\n#if 0\n#include "guarded.h"\n#endif\n')
             self.write(shaders, 'detail/near.h', '#include "sibling.h"\n')
-            self.write(shaders, 'detail/sibling.h', '// beside its includer\n')
+            self.write(shaders, 'detail/sibling.h', '#include "slots.inc"\n')
+            self.write(shaders, 'detail/slots.inc', '// a C++-shared fragment, as deferred_binding_slots.inc\n')
             self.write(shared, 'shared.slang', '// from the second root\n')
             self.write(shared, 'guarded.h', '// inactive branches are still captured\n')
             for index in range(MAX_SOURCE_FILES):
                 self.write(shared, f'unrelated_{index}.slang', '// never included\n')
             files, origins = capture_include_closure('root.slang', [shaders, shared])
             self.assertEqual(set(files), {'root.slang', 'local.slang', 'shared.slang', 'guarded.h',
-                                          'detail/near.h', 'detail/sibling.h'})
+                                          'detail/near.h', 'detail/sibling.h', 'detail/slots.inc'})
             self.assertEqual(origins['shared.slang'], shared / 'shared.slang')
 
     def test_ambiguity_and_bounds_apply_to_the_closure(self):
