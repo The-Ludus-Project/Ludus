@@ -3621,20 +3621,20 @@ TEST_CASE("Earth locations resolve their tzdb time zone offline", "[editor][worl
     REQUIRE(GetEarthTimeZoneIds().contains(QStringLiteral("Asia/Seoul")) == true);
     REQUIRE(GetEarthTimeZoneIds().contains(QStringLiteral("America/Toronto")) == true);
     // A country's zones win over a closer zone across the border; without a country the nearest zone wins.
-    CHECK(FindEarthTimeZone(43.46527, -80.52229, u"CA") == QStringLiteral("America/Toronto"));
-    CHECK(FindEarthTimeZone(37.5665, 126.978, u"kr") == QStringLiteral("Asia/Seoul"));
+    CHECK(FindEarthTimeZone(43.46527, -80.52229, QStringLiteral("CA")) == QStringLiteral("America/Toronto"));
+    CHECK(FindEarthTimeZone(37.5665, 126.978, QStringLiteral("kr")) == QStringLiteral("Asia/Seoul"));
     CHECK(FindEarthTimeZone(37.5665, 126.978, {}) == QStringLiteral("Asia/Seoul"));
-    CHECK(FindEarthTimeZone(42.3149, -83.0364, u"CA") == QStringLiteral("America/Toronto"));
+    CHECK(FindEarthTimeZone(42.3149, -83.0364, QStringLiteral("CA")) == QStringLiteral("America/Toronto"));
     CHECK(FindEarthTimeZone(42.3149, -83.0364, {}) == QStringLiteral("America/Detroit"));
-    CHECK(FindEarthTimeZone(-33.8688, 151.2093, u"ZZ") == QStringLiteral("Australia/Sydney"));
+    CHECK(FindEarthTimeZone(-33.8688, 151.2093, QStringLiteral("ZZ")) == QStringLiteral("Australia/Sydney"));
 
-    CHECK(IsEarthTimeZoneIdValid(u"UTC") == true);
-    CHECK(IsEarthTimeZoneIdValid(u"America/Argentina/Buenos_Aires") == true);
-    CHECK(IsEarthTimeZoneIdValid(u"Etc/GMT-14") == true);
-    CHECK(IsEarthTimeZoneIdValid(u"") == false);
-    CHECK(IsEarthTimeZoneIdValid(u"Asia//Seoul") == false);
-    CHECK(IsEarthTimeZoneIdValid(u"../Seoul") == false);
-    CHECK(IsEarthTimeZoneIdValid(u"Asia/Seoul ") == false);
+    CHECK(IsEarthTimeZoneIdValid(QStringLiteral("UTC")) == true);
+    CHECK(IsEarthTimeZoneIdValid(QStringLiteral("America/Argentina/Buenos_Aires")) == true);
+    CHECK(IsEarthTimeZoneIdValid(QStringLiteral("Etc/GMT-14")) == true);
+    CHECK(IsEarthTimeZoneIdValid(QString()) == false);
+    CHECK(IsEarthTimeZoneIdValid(QStringLiteral("Asia//Seoul")) == false);
+    CHECK(IsEarthTimeZoneIdValid(QStringLiteral("../Seoul")) == false);
+    CHECK(IsEarthTimeZoneIdValid(QStringLiteral("Asia/Seoul ")) == false);
 }
 
 TEST_CASE("Earth preview time shows a time zone's clock and keeps the reading across zones",

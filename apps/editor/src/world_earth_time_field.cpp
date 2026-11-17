@@ -64,6 +64,31 @@ QDateTime ConvertClockToInstant(const QDateTime& clock, const QTimeZone& timeZon
 {
     return QDateTime(clock.date(), clock.time(), timeZone).toUTC();
 }
+
+/// The tzdb zone for an IANA id, or an invalid zone when the id is unknown or this Qt build has no zone data.
+QTimeZone FindTimeZone(const QString& timeZoneId)
+{
+    if (timeZoneId == WORLD_EARTH_UTC_TIME_ZONE)
+    {
+        return GetUtcTimeZone();
+    }
+    // The browser editor's Qt omits the timezone feature, which leaves only UTC and fixed-offset zones.
+#if QT_CONFIG(timezone)
+    return QTimeZone(timeZoneId.toLatin1());
+#else
+    return QTimeZone();
+#endif
+}
+
+/// The zone's offset name at an instant, such as "UTC+09:00".
+QString GetOffsetName(const QTimeZone& timeZone, const QDateTime& instant)
+{
+#if QT_CONFIG(timezone)
+    return timeZone.displayName(instant, QTimeZone::OffsetName);
+#else
+    return instant.toTimeZone(timeZone).timeZoneAbbreviation();
+#endif
+}
 } // namespace
 
 WorldEarthTimeField::WorldEarthTimeField(float64 daysSinceEpoch, const QString& timeZoneId, QWidget& inoutParent)
@@ -133,8 +158,7 @@ QDateTime WorldEarthTimeField::getInstant() const
 void WorldEarthTimeField::setTimeZone(const QString& timeZoneId)
 {
     mTimeZoneId = timeZoneId;
-    const QTimeZone timeZone =
-        timeZoneId == WORLD_EARTH_UTC_TIME_ZONE ? GetUtcTimeZone() : QTimeZone(timeZoneId.toLatin1());
+    const QTimeZone timeZone = FindTimeZone(timeZoneId);
     mIsTimeZoneKnown = timeZone.isValid();
     mTimeZone = mIsTimeZoneKnown == true ? timeZone : GetUtcTimeZone();
     mDateTime->setDateTimeRange(
@@ -158,7 +182,7 @@ void WorldEarthTimeField::updateCaption()
     }
     else if (mTimeZoneId != WORLD_EARTH_UTC_TIME_ZONE)
     {
-        zone = QStringLiteral("%1, %2").arg(mTimeZoneId, mTimeZone.displayName(getInstant(), QTimeZone::OffsetName));
+        zone = QStringLiteral("%1, %2").arg(mTimeZoneId, GetOffsetName(mTimeZone, getInstant()));
     }
     mCaption->setText(QStringLiteral("Date && Time (%1)").arg(zone));
     mDateTime->setAccessibleName(QStringLiteral("Date and time (%1)").arg(zone));
