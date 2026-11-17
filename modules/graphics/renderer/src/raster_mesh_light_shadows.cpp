@@ -12,7 +12,9 @@
 // and filtered by the fraction of closer samples (percentage-closer filtering, used by the resolve): each caster
 // stores, per cube-face texel, the depth of the nearest occluder, and a receiver deeper than it is shadowed. The maps
 // are rendered once per prepared scene, because lights and geometry are static while the camera moves, with the
-// renderer's flat shadow pipeline, which stores conventional depth as 16 bits in red and green.
+// renderer's shadow pipelines. Cube faces store linear forward depth as 16 bits in red and green: conventional depth
+// resolves only distance^2 / (near * 65535) there, which forced a near plane far beyond the occluders around a bright
+// emitter, while linear depth resolves (range - near) / 65535 at every distance with any near plane.
 namespace ludus::graphics::renderer::internal
 {
 using namespace foundation;
@@ -54,9 +56,12 @@ constexpr float32 ONE_SIDED_OFFSET_RELATIVE = 0.05F;
 constexpr float32 FACE_BEHIND_COSINE = -0.81649658F;
 /// The range always exceeds the near distance by at least this factor, so the projection stays well formed.
 constexpr float32 MINIMUM_RANGE_OVER_NEAR = 2;
-/// The near distance is at least this fraction of the range: 16-bit conventional depth resolves about
-/// distance^2 / (near * 65535), so a centimetre near plane would blur occluders metres away.
-constexpr float32 NEAR_RANGE_FRACTION = 0.01F;
+/// How much farther from a caster than the surface the resolve looks a receiver up: it moves the receiver
+/// LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS texels along its normal, and a texel of the smallest face slot spans
+/// 2 * distance / (MIN_MESH_LIGHT_SHADOW_FACE_TEXELS - 2 * MESH_LIGHT_SHADOW_GUTTER_TEXELS) at that distance.
+constexpr float32 RECEIVER_LOOKUP_REACH =
+    1 + 2 * static_cast<float32>(LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS) /
+            static_cast<float32>(MIN_MESH_LIGHT_SHADOW_FACE_TEXELS - 2 * MESH_LIGHT_SHADOW_GUTTER_TEXELS);
 /// Smallest near distance in metres, for a degenerate two-sided caster.
 constexpr float32 MINIMUM_NEAR_METERS = 0.001F;
 /// Largest 16-bit depth code.
@@ -261,6 +266,7 @@ struct LargerSlotFirst final
 
 Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
                                          uint32 recordCount,
+                                         const math::Aabb3& receiversWorld,
                                          Array<MeshLightShadowCaster>& outCasters,
                                          MeshLightShadowReport& outReport) noexcept
 {
@@ -392,7 +398,19 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
     }
     for (MeshLightShadowCaster& caster : casters)
     {
-        caster.NearMeters = math::Max(caster.NearMeters, NEAR_RANGE_FRACTION * caster.RangeMeters);
+        // Every receiver lies inside receiversWorld, so a culling reach beyond its farthest corner (tens of metres or
+        // more for a bright emitter in a small room) would only coarsen the depth codes.
+        if (math::IsEmpty(receiversWorld) == false)
+        {
+            const math::Vector3 positionWorld = caster.PositionWorld;
+            const math::Vector3 farthestWorld{math::Max(math::Abs(positionWorld.X - receiversWorld.Min.X),
+                                                        math::Abs(receiversWorld.Max.X - positionWorld.X)),
+                                              math::Max(math::Abs(positionWorld.Y - receiversWorld.Min.Y),
+                                                        math::Abs(receiversWorld.Max.Y - positionWorld.Y)),
+                                              math::Max(math::Abs(positionWorld.Z - receiversWorld.Min.Z),
+                                                        math::Abs(receiversWorld.Max.Z - positionWorld.Z))};
+            caster.RangeMeters = math::Min(caster.RangeMeters, math::Length(farthestWorld) * RECEIVER_LOOKUP_REACH);
+        }
         caster.RangeMeters = math::Max(caster.RangeMeters, caster.NearMeters * MINIMUM_RANGE_OVER_NEAR);
         report.Faces += GetBitCount(caster.FaceMask);
         if (math::IsFinite(caster.PositionWorld) == false || math::IsFinite(caster.RangeMeters) == false)
@@ -622,12 +640,21 @@ Status MakeRasterMeshLightShadowFaceToClip(const MeshLightShadowCaster& caster,
     {
         return Status::InvalidDescription;
     }
-    // Conventional depth, as BuildPointShadowMatrix converts its reverse-Z projection.
+    // Conventional depth, as BuildPointShadowMatrix converts its reverse-Z projection: clip z is
+    // range * (forward - near) / (range - near) and clip w the forward distance. Dividing every row by the range
+    // leaves the rasterized position and depth unchanged and makes clip z the linear depth the face stores.
+    const float32 inverseRange = 1.0F / caster.RangeMeters;
     for (math::Vector4& column : viewToClip.Columns)
     {
         column.Z = column.W - column.Z;
+        column = column * inverseRange;
     }
-    outWorldToClip = viewToClip * worldToView;
+    const math::Matrix4 worldToClip = viewToClip * worldToView;
+    if (math::IsFinite(worldToClip) == false)
+    {
+        return Status::InvalidDescription;
+    }
+    outWorldToClip = worldToClip;
     return Status::Ready;
 }
 
@@ -661,10 +688,8 @@ bool LocateRasterMeshLightShadowTexel(const MeshLightShadowCaster& caster,
     outFace = face;
     outTexel = {static_cast<float32>(caster.FaceOrigins[face].X) + (ndcX * 0.5F + 0.5F) * texels,
                 static_cast<float32>(caster.FaceOrigins[face].Y) + (0.5F - ndcY * 0.5F) * texels};
-    // Conventional depth of the face projection: far * (z - near) / (z * (far - near)) for forward distance z.
-    const float32 nearMeters = caster.NearMeters;
-    const float32 farMeters = caster.RangeMeters;
-    outDepth = farMeters * (forward - nearMeters) / (forward * (farMeters - nearMeters));
+    // Linear depth of the face projection's clip z: (z - near) / (range - near) for forward distance z.
+    outDepth = (forward - caster.NearMeters) / (caster.RangeMeters - caster.NearMeters);
     return true;
 }
 

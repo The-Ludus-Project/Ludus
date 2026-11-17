@@ -1133,12 +1133,22 @@ TEST_CASE("RT2 raster fallback approximates partial area-light shadows with one 
     ReportError(route, 0, control);
     CHECK(control.FalseLight == 0);
     CHECK(control.FalseDarkening == 0);
-    // The caster's face near plane is at least a hundredth of its range, the emitter's culling reach of tens of
-    // metres, so both blockers (0.22 and 0.47 m in front of the caster) lie inside it and the fallback ignores them.
-    // The fixture records that documented approximation; it bounds only false darkening, which the fallback must
-    // never add.
-    // Visibility ratio slack: two RGBA8 codes over the dimmest control pixels, about 0.1 in the image corners.
-    constexpr float32 MAXIMUM_FALSE_DARKENING = .05F;
+    // Bounds on visibility error against the oracle, about 1.5 times the Metal measurements (mean signed error at
+    // most 0.095 in magnitude, mean false light 0.147, RMS 0.41, shadowed mean false light 0.095 and largest 0.81).
+    // A fallback that ignores both blockers has mean false light 0.23-0.33, and at least 0.5 over shadowed pixels.
+    /// Pixels where the oracle sees at most this fraction of the emitter are shadowed.
+    constexpr float32 SHADOWED_VISIBILITY = .5F;
+    constexpr float64 MAXIMUM_MEAN_SIGNED_ERROR = .15;
+    constexpr float64 MAXIMUM_MEAN_FALSE_LIGHT = .2;
+    constexpr float64 MAXIMUM_VISIBILITY_RMS = .5;
+    constexpr float64 MAXIMUM_SHADOWED_MEAN_FALSE_LIGHT = .15;
+    constexpr float32 MAXIMUM_SHADOWED_FALSE_LIGHT = .9F;
+    // The caster's faces store linear depth with a near plane just in front of the emitter, so both blockers (0.22
+    // and 0.47 m in front of the caster) cast shadows. One point per caster cannot reproduce this large emitter's
+    // penumbra, which spans hundreds of shadow texels, while the filter stays within the face gutter: shadows are
+    // nearly hard, darker than the oracle inside the central point's shadow and lighter outside it. The bounds
+    // below hold that approximation to its measured error and, unlike a fallback that ignores the blockers (mean
+    // false light 0.23-0.33), keep shadowed pixels dark.
     for (usize state = CONTROL_STATE_COUNT - 1; state < STATE_COUNT; ++state)
     {
         CAPTURE(DescribeState(state));
@@ -1147,10 +1157,15 @@ TEST_CASE("RT2 raster fallback approximates partial area-light shadows with one 
         // Visibility: route ratio against its own control, oracle ratio against the unoccluded integral.
         float64 squares = 0;
         float64 sum = 0;
+        float64 lightSum = 0;
+        float64 darkeningSum = 0;
         float32 largestExcess = 0;
         float32 largestDeficit = 0;
         float64 overlapSum = 0;
         usize overlapCount = 0;
+        float64 shadowedLightSum = 0;
+        float32 shadowedLargestExcess = 0;
+        usize shadowedCount = 0;
         for (usize pixel = 0; pixel < images[state].GetSize(); ++pixel)
         {
             const float32 measured = images[state][pixel] / images[0][pixel];
@@ -1158,6 +1173,8 @@ TEST_CASE("RT2 raster fallback approximates partial area-light shadows with one 
             const float32 error = measured - expected;
             sum += Widen(error);
             squares += Widen(error) * Widen(error);
+            lightSum += Widen(math::Max(error, 0.0F));
+            darkeningSum += Widen(math::Max(-error, 0.0F));
             largestExcess = math::Max(largestExcess, error);
             largestDeficit = math::Min(largestDeficit, error);
             if (oracle.IsOverlapping[pixel] == true)
@@ -1165,14 +1182,30 @@ TEST_CASE("RT2 raster fallback approximates partial area-light shadows with one 
                 overlapSum += Widen(error);
                 ++overlapCount;
             }
+            if (expected <= SHADOWED_VISIBILITY)
+            {
+                shadowedLightSum += Widen(math::Max(error, 0.0F));
+                shadowedLargestExcess = math::Max(shadowedLargestExcess, error);
+                ++shadowedCount;
+            }
         }
         const float64 count = static_cast<float64>(images[state].GetSize());
-        WARN(route << ", " << DescribeState(state) << ": visibility mean signed error " << sum / count << ", RMS "
-                   << math::Sqrt(squares / count) << ", largest false light " << largestExcess
-                   << ", largest false darkening " << -largestDeficit << ", overlap mean signed "
+        const float64 meanSigned = sum / count;
+        const float64 meanLight = lightSum / count;
+        const float64 shadowedMeanLight =
+            shadowedCount == 0 ? 0 : shadowedLightSum / static_cast<float64>(shadowedCount);
+        WARN(route << ", " << DescribeState(state) << ": visibility mean signed error " << meanSigned << ", RMS "
+                   << math::Sqrt(squares / count) << ", mean false light " << meanLight << ", mean false darkening "
+                   << darkeningSum / count << ", largest false light " << largestExcess << ", largest false darkening "
+                   << -largestDeficit << ", overlap mean signed "
                    << (overlapCount == 0 ? 0 : overlapSum / static_cast<float64>(overlapCount)) << " over "
-                   << overlapCount << " pixels");
-        CHECK(-largestDeficit <= MAXIMUM_FALSE_DARKENING);
+                   << overlapCount << " pixels, shadowed mean false light " << shadowedMeanLight << " and largest "
+                   << shadowedLargestExcess << " over " << shadowedCount << " pixels");
+        CHECK(math::Abs(meanSigned) <= MAXIMUM_MEAN_SIGNED_ERROR);
+        CHECK(meanLight <= MAXIMUM_MEAN_FALSE_LIGHT);
+        CHECK(math::Sqrt(squares / count) <= MAXIMUM_VISIBILITY_RMS);
+        CHECK(shadowedMeanLight <= MAXIMUM_SHADOWED_MEAN_FALSE_LIGHT);
+        CHECK(shadowedLargestExcess <= MAXIMUM_SHADOWED_FALSE_LIGHT);
     }
 }
 

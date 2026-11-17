@@ -6613,11 +6613,26 @@ it lights, and it renders no cube face that lies wholly behind them. Any other c
 encloses its members: two-sided emitters, or facets facing many ways. It sits at the
 centre of their enclosing sphere, renders all six faces and ignores occluders within
 its radius. Each caster's range is its members' culling reach, so every receiver the
-grid lists for a member is inside it.
+grid lists for a member is inside it, clamped to the farthest corner of the scene
+bounds widened by an eighth for the resolve's normal offset. A bright emitter's reach
+can be hundreds of metres, and the range sets the depth precision below.
 
 After the scene is published, each caster's cube faces are rendered once, with the
-renderer's flat shadow pipeline, into one 2048 x 2048 RGBA8 atlas holding 16-bit
-conventional depth. Face slots are powers of two from 32 to 512 texels, sized by the
+renderer's shadow pipelines, into one 2048 x 2048 RGBA8 atlas holding 16-bit linear
+depth, (forward distance - near) / (range - near). Each code spans
+(range - near) / 65,535 metres everywhere in the face: under 0.1 mm for a 4 m room and
+1.5 cm for a 1 km range. Conventional depth would resolve only
+distance² / (near × 65,535) metres, which forced a near plane of a hundredth of the
+range and ignored every occluder closer than that. A one-sided caster's near plane is
+therefore only half its offset in front of its emitters, at least 5 mm, and an
+enclosing caster's is its radius. Face instances tag their colour red, and the face
+projection is divided by the range so that its clip z is that linear depth while the
+rasterized depth stays conventional. The flat shadow fragment rebuilds linear depth
+from its float32 rasterized depth with the near distance and range the instance
+colour carries. That depth is uncertain by about distance² / near × 2.4e-7 metres, so
+the resolve widens each comparison by as much: 0.02 mm at 1 m from a 1.4 cm near
+plane, 2 cm at 20 m from a 5 mm one. Masked materials evaluate linear depth exactly
+from the world position and the projection's depth row. Face slots are powers of two from 32 to 512 texels, sized by the
 square root of the caster's flux share and halved together until they fit, and each
 slot has a four-texel gutter rendered with a slightly wider field of view. The first
 frame clears the atlas to the far depth. Faces are then drawn whole, brightest caster
@@ -6651,14 +6666,14 @@ receivers shadow slightly later, and occluders that close to them cast no shadow
 The `[mesh-light-shadows]` regression sweeps sub-pixel poses of an oblique camera 50
 and 120 m from an area-lit floor and bounds every pixel by the CPU integral of the
 unshadowed emitter. The grid lists a caster's records together, so one lookup serves
-a run of them. The penumbra is an estimate from one point per caster: a large
-emitter's contact shadows are approximate, and occluders nearer than a caster's near
-distance (at least a hundredth of its range, and its radius when it encloses its
-members) are ignored. The range follows the emitter's culling reach, so a bright or
-large emitter ignores nearby occluders: a 0.8 m square of 4.4 nits ignores blockers
-0.22 m and 0.47 m in front of its caster. The
+a run of them. Occluders nearer than a caster's near distance are ignored: half its
+offset in front of one-sided emitters, and its radius when it encloses its members.
+The penumbra is an estimate from one point per caster with a filter that stays
+within the face gutter, so a large emitter's penumbra, which can span hundreds of
+texels, is nearly hard. Under a 0.8 m square of 4.4 nits, blockers 0.22 m and
+0.47 m in front of its caster now shadow the receiver; the
 [RT2 area-light fixture](../architecture/renderer-systems.md#partial-area-light-shadows)
-measures that loss against an exact backprojection oracle. Geometry such as window
+measures the remaining penumbra error against an exact backprojection oracle. Geometry such as window
 glass that the scene draws as opaque also blocks mesh light in the shadow faces.
 
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
@@ -6688,6 +6703,22 @@ averaged 27 ms on the loaded machine. With the gain of the mesh-light resolve ra
 64 times so that the lights dominate, 2.2% of Bistro's pixels darken by more than
 eight steps against an unshadowed resolve (0.5% with 64 casters). Sponza's bulbs emit
 too little to change its eight-bit image.
+
+Storing linear depth leaves the casters, faces and face-drawing frames unchanged.
+Measured with the same benchmark at the default framing of each World, the develop
+baseline and the linear-depth build ran interleaved (old, new, new, old) on the loaded
+machine:
+
+| Scene | Runs per build | Frame after faces, conventional depth (median of runs, fastest) | Frame after faces, linear depth (median of runs, fastest) |
+| --- | ---: | --- | --- |
+| Staircase2 | 16 | 4.7 ms, 4.1 ms | 5.0 ms, 4.3 ms |
+| Sponza | 16 | 9.1 ms, 5.1 ms | 9.5 ms, 5.9 ms |
+| Bistro | 6 | 7.9 ms, 6.3 ms | 7.2 ms, 5.2 ms |
+
+The differences lie within the run-to-run spread, which reached 16.7 ms for Sponza.
+Receivers whose occluders were hidden inside the old near plane now find blockers and
+run the nine-tap filter, which can add a little resolve time where nearby occluders
+are common.
 
 ## Create a saved graph and import it
 

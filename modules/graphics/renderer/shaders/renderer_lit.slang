@@ -1404,9 +1404,13 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 {
     return ShadeMaterial(SampleMaterial(input), input);
 }
+// Masked coverage for a shadow map. A mesh-light cube face's instance tags its colour red, which IsBakeValid carries,
+// and gives in EyeWorld the world-space row of its face projection's clip z, the linear depth it stores
+// (SelectShadowDepth); PositionWorld is exact at the fragment, so the row needs no further varying.
 [shader("fragment")] float4 ShadowMain(Varying input) : SV_Target
 {
-    float4 encoded = EncodeShadowDepth(input.PositionClip.z);
+    float linearDepth = dot(input.PositionWorld, input.EyeWorld.xyz) + input.EyeWorld.w;
+    float4 encoded = EncodeShadowDepth(SelectShadowDepth(input.PositionClip.z, input.IsBakeValid, linearDepth));
     SampleBaseTexel(input);
     return encoded;
 }

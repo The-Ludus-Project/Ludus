@@ -39,3 +39,11 @@
 // A stored depth shadows a receiver only when nearer by more than this many 16-bit depth codes, absorbing the
 // quantization of the RGBA8 atlas.
 #define LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES 3.0
+// A shadow-map instance whose colour red holds this value stores linear depth (renderer_shadow_depth.slang,
+// SelectShadowDepth): mesh-light cube faces, whose colour green and blue hold the face's near distance and range.
+// Every other instance colour channel lies in [0, 1].
+#define LUDUS_LINEAR_SHADOW_DEPTH_TAG (-1.0)
+// Opaque cube-face fragments rebuild linear depth from their rasterized float32 depth, which is uncertain by about
+// this much (four units in the last place below one). The resolve widens its comparison by the forward^2 / near
+// metres that spans at each tap.
+#define LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR 2.384185791015625e-7
