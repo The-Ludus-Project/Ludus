@@ -701,7 +701,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         Changed(Scene_->StatusText());
     });
 #if defined(Q_OS_WASM)
-    // Browser: copy the chosen scene into MEMFS first; the session copy is then cooked in process.
+    // Browser: a scene folder is read in place; single files and .zip archives are copied into MEMFS.
+    // Either way the scene is then cooked in process.
     QMenu* importChoices = new QMenu(Import_);
     const auto importBrowserScene = [this](bool isFolder) {
         OpenBrowserSceneImport(this, isFolder, [this](const QString& source) { (void)PreviewImportScene(source); });

@@ -20,6 +20,12 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 
+# Maximum WebAssembly memory of the browser editor (QT_WASM_MAXIMUM_MEMORY below). The browser
+# file budget derives from it (src/internal/browser_folder.h); native builds compile the same
+# admission code for its tests.
+set(ludus_editor_wasm_maximum_memory_bytes 2147483648)
+add_compile_definitions(LUDUS_EDITOR_WASM_MAXIMUM_MEMORY_BYTES=${ludus_editor_wasm_maximum_memory_bytes}ULL)
+
 if(EMSCRIPTEN)
     set(editor_process_sources src/browser_processes.cpp)
     set(editor_audio_source src/audio_preview_browser.cpp)
@@ -755,7 +761,9 @@ ludus_editor_add_objects(ludus_editor_content
     src/internal/content_types.h src/content_types.cpp src/content_filter.cpp src/content_asset_catalog.cpp
     src/internal/content_thumbnails.h src/content_thumbnails.cpp
     src/internal/state_view.h src/state_view.cpp
-    src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp)
+    src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp
+    src/internal/browser_folder.h src/browser_folder.cpp
+    $<$<BOOL:${EMSCRIPTEN}>:src/browser_host_folder.cpp>)
 # Thumbnails decode cooked SceneFormat texture records; the scene catalog limits come from SceneCook's header only.
 target_link_libraries(ludus_editor_content PUBLIC ludus_editor_presentation Qt6::Core Qt6::Widgets
     Ludus::AudioContent Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
@@ -1340,6 +1348,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/content_import_gate_tests.cpp
         tests/content_browser_tests.cpp
         tests/project_setup_dialog_tests.cpp
+        tests/browser_folder_tests.cpp
         tests/engine_pin_tests.cpp
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
@@ -1654,10 +1663,15 @@ if(EMSCRIPTEN)
     # editor_files.cpp compiles in this object library, before the final editor's usage requirements apply.
     target_link_libraries(ludus_editor_content PRIVATE Qt6::CorePrivate)
     target_link_libraries(ludus_editor PRIVATE Qt6::GuiPrivate)
-    set_property(TARGET ludus_editor APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js")
-    set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432 QT_WASM_MAXIMUM_MEMORY 2147483648)
-    target_link_options(ludus_editor PRIVATE "-sASYNCIFY_STACK_SIZE=131072"
-        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js")
+    set_property(TARGET ludus_editor APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/browser/host_folder.js")
+    set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432
+        QT_WASM_MAXIMUM_MEMORY ${ludus_editor_wasm_maximum_memory_bytes})
+    # host_folder.js suspends open() and rename() deep inside Qt and engine file code while a
+    # folder file is read or a save reaches disk; the Asyncify buffer holds those call stacks.
+    target_link_options(ludus_editor PRIVATE "-sASYNCIFY_STACK_SIZE=524288"
+        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js"
+        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/host_folder.js")
 endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)

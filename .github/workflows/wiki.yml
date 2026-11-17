@@ -129,6 +129,9 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: python scripts/build-web-editor --bootstrap
+      - name: Check host project folders through the Wasm file-system harness
+        if: steps.payload.outputs.cache-hit != 'true'
+        run: python scripts/build-web-editor --test-host-folder
       - name: Validate editor assets, memory and notices
         id: validate-editor
         run: python scripts/build-web-editor --check-package

@@ -22,8 +22,13 @@ than opening a guide.
   it; engine setup and building happen in the desktop editor. See
   [new projects](../../development/browser-editor.md#new-projects).
 - Use **File → Open Project** and select the folder containing
-  `ludus.project.json`. The browser copies the folder's files, including source,
-  shaders and assets, into its session filesystem, preserving relative paths.
+  `ludus.project.json`. The editor works on that folder in place: nothing is
+  uploaded, and each file is read from disk when the editor first needs it. In
+  Chrome and Edge, allow the browser to edit the folder; saves then go straight
+  to its files, and **File → Reopen Last Project Folder** opens it again in a
+  later visit. Firefox and Safari open the folder read-only; keep edits with
+  **Download Project Folder**. See
+  [project folders on disk](../../development/browser-editor.md#project-folders-on-disk).
 - Use **File → Open Sample** for writable copies of Cornell Box, Live Edit Game,
   Scripted Game or the installed SDK example. Each copy has its own folder;
   sample originals remain available for starting again.
@@ -56,20 +61,24 @@ document and retry. Content imports yield before beginning bounded validation,
 then run on the browser's single filesystem owner. Input pauses during decoding;
 cancellation can revoke a request before this work begins.
 
-Project imports admit at most 4096 files and 32 MiB per session; individual
+Opened project folders may hold at most 4096 files, each of at most 512 MiB
+(a quarter of the editor's memory); their total size is not limited. Individual
 configuration documents remain limited to 1 MiB. Generated `out`, `build`,
-`.git`, `.ludus` and `node_modules` trees are omitted during project import and
-export. Project exports are limited to
-4096 regular files and 32 MiB. Symbolic links and paths exceeding ustar limits
-cannot be exported. Select a source folder without generated build outputs. Invalid
-imports preserve the current document. Document formats and validation are the
-same as in the desktop application.
+`.git`, `.ludus` and `node_modules` trees are skipped when a folder is opened
+and exported. Project exports are limited to 4096 regular files and 512 MiB.
+Symbolic links and paths exceeding ustar limits cannot be exported. A refused
+folder or file is reported with its size or count and what to do next, and
+preserves the current document. Document formats and validation are the same as
+in the desktop application.
 
 ## Session storage
 
-Files and edits live in the current browser session. Reloading or closing the
-page discards them; browser history and the desktop filesystem do not recover
-those edits. Download your changes before leaving. After an edit, the page asks
+In Chrome and Edge, saves to a project folder opened from disk are written to
+that folder; the editor reports a save that could not reach it and keeps the
+edit in the tab. Everything else (samples, new projects, imports, and folders
+opened read-only in Firefox or Safari) lives in the current browser session.
+Reloading or closing the page discards it; browser history and the desktop
+filesystem do not recover those edits. Download your changes before leaving. After an edit, the page asks
 for confirmation before reload/close. The browser manages download destinations,
 so the application cannot confirm whether you accepted or cancelled a download.
 

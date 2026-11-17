@@ -1,5 +1,6 @@
 #include "internal/editor_files.h"
 
+#include "internal/browser_folder.h"
 #include "internal/scene_archive.h"
 
 #include <ludus/foundation/base/types.h>
@@ -36,53 +37,16 @@ namespace ludus::editor
 {
 namespace
 {
-/// Most files one imported project may contain.
-constexpr qsizetype MAX_IMPORTED_PROJECT_FILES = 4096;
 /// Archive bytes one entry may add beyond its data: a 512-byte ustar header,
 /// up to 511 bytes of block padding and the 1024-byte end-of-archive marker.
 constexpr foundation::int64 ARCHIVE_ENTRY_OVERHEAD_BYTES = 2048;
-
-bool IsGeneratedProjectPath(const QString& relative)
-{
-    for (const auto& name : {QStringLiteral("out"),
-                             QStringLiteral("build"),
-                             QStringLiteral(".git"),
-                             QStringLiteral(".ludus"),
-                             QStringLiteral("node_modules")})
-    {
-        if (relative == name || relative.startsWith(name + QLatin1Char('/')))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-/// A file Ludus::SceneCook can import as a best-effort scene entry; the importer
-/// itself is chosen from the file's content.
-[[maybe_unused]] bool IsSceneEntryName(const QString& name)
-{
-    for (const QString& extension : {QStringLiteral(".pbrt"),
-                                     QStringLiteral(".gltf"),
-                                     QStringLiteral(".glb"),
-                                     QStringLiteral(".obj"),
-                                     QStringLiteral(".luscene.json")})
-    {
-        if (name.endsWith(extension, Qt::CaseInsensitive) == true)
-        {
-            return true;
-        }
-    }
-    return false;
-}
 } // namespace
 #if defined(Q_OS_WASM)
 namespace
 {
 constexpr foundation::int64 MAX_DOCUMENT_BYTES = 1024LL * 1024;
-constexpr foundation::int64 MAX_IMPORT_BYTES = 32 * MAX_DOCUMENT_BYTES;
-/// Most entries accepted from the browser picker before generated folders are skipped.
-constexpr foundation::uint32 MAX_PICKED_BROWSER_FILES = 100000;
+/// Bytes that document, audio and archive imports may copy into the session in total.
+constexpr foundation::int64 MAX_IMPORT_BYTES = static_cast<foundation::int64>(BROWSER_FILE_BUDGET_BYTES);
 foundation::int64 ImportedBytes = 0;
 foundation::uint32 ImportSerial = 0;
 
@@ -96,7 +60,6 @@ struct BrowserImport
     QList<foundation::uint32> Indices;
     emscripten::val Files = emscripten::val::undefined();
     foundation::uint32 Index = 0;
-    bool Folder = false;
     bool IsAudioSource = false;
     bool Admitted = false;
     foundation::int64 ChargedBytes = 0;
@@ -108,6 +71,17 @@ struct BrowserImport
     std::function<void(const QString&)> Completed;
 };
 QSharedPointer<BrowserImport> PendingImport;
+/// Why copying `requestedBytes` more would exceed the session's import budget, and what to do instead.
+QString DescribeSessionImportBudget(foundation::uint64 requestedBytes)
+{
+    return QStringLiteral("This import needs %1, but imported copies in this tab may hold at most %2 (a quarter of "
+                          "the editor's %3 memory) and %4 are already used. Reload the page to release earlier "
+                          "imports, or open the scene's folder with Scene folder… to read it in place.")
+        .arg(FormatBrowserByteSize(requestedBytes),
+             FormatBrowserByteSize(static_cast<foundation::uint64>(MAX_IMPORT_BYTES)),
+             FormatBrowserByteSize(BROWSER_EDITOR_MAXIMUM_MEMORY_BYTES),
+             FormatBrowserByteSize(static_cast<foundation::uint64>(ImportedBytes)));
+}
 void Report(QWidget* owner, const QString& message)
 {
     auto* dialog =
@@ -129,6 +103,12 @@ void OpenEditorDocument(QWidget* owner,
                         const std::function<void(const QString&)>& loaded)
 {
 #if defined(Q_OS_WASM)
+    if (dialog.ProjectFolder == true)
+    {
+        // Folders open in place, without copying them into the session.
+        OpenBrowserFolder(owner, BrowserFolderIntent::Project, loaded);
+        return;
+    }
     if (PendingImport)
     {
         return;
@@ -136,7 +116,6 @@ void OpenEditorDocument(QWidget* owner,
     auto state = QSharedPointer<BrowserImport>::create();
     PendingImport = state;
     state->Owner = owner;
-    state->Folder = dialog.ProjectFolder;
     state->IsAudioSource = dialog.IsAudioSource;
     state->Completed = loaded;
     const QWeakPointer<BrowserImport> weak(state);
@@ -147,23 +126,11 @@ void OpenEditorDocument(QWidget* owner,
     // check size before reading, and release selection on cancellation.
     // https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/file
     // https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/cancel_event
-    // MDN contributors, "HTMLInputElement: webkitdirectory property": retain
-    // File.webkitRelativePath while copying a selected directory hierarchy.
-    // https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/webkitdirectory
     // Only this private adapter depends on the exact pinned Qt implementation.
     // https://code.qt.io/cgit/qt/qtbase.git/tree/src/corelib/platform/wasm/qstdweb.cpp?h=v6.10.3
     state->Input = emscripten::val::global("document").call<emscripten::val>("createElement", emscripten::val("input"));
     state->Input.set("type", emscripten::val("file"));
-    if (state->Folder)
-    {
-        state->Input.set("webkitdirectory", true);
-        state->Input.set("multiple", true);
-    }
-    else
-    {
-        state->Input.set("accept",
-                         emscripten::val(state->IsAudioSource == true ? ".wav,.flac" : ".json,application/json"));
-    }
+    state->Input.set("accept", emscripten::val(state->IsAudioSource == true ? ".wav,.flac" : ".json,application/json"));
     state->Input.set("hidden", true);
     auto finish = [weak]() {
         const auto state = weak.toStrongRef();
@@ -198,10 +165,9 @@ void OpenEditorDocument(QWidget* owner,
             }
             const auto files = state->Input["files"];
             const auto count = files["length"].as<foundation::uint32>();
-            if (count == 0 || count > MAX_PICKED_BROWSER_FILES || (state->Folder == false && count != 1))
+            if (count != 1)
             {
-                Report(state->Owner,
-                       QStringLiteral("Choose a source project folder with at most 4096 imported files."));
+                Report(state->Owner, QStringLiteral("Choose one file."));
                 finish();
                 return;
             }
@@ -209,9 +175,7 @@ void OpenEditorDocument(QWidget* owner,
             for (foundation::uint32 index = 0; index < count; ++index)
             {
                 const qstdweb::File file(files[index]);
-                const auto path = state->Folder
-                                      ? QString::fromStdString(files[index]["webkitRelativePath"].as<std::string>())
-                                      : QFileInfo(QString::fromStdString(file.name())).fileName();
+                const QString path = QFileInfo(QString::fromStdString(file.name())).fileName();
                 const bool isAudioName = path.endsWith(QStringLiteral(".wav"), Qt::CaseInsensitive) == true ||
                                          path.endsWith(QStringLiteral(".flac"), Qt::CaseInsensitive) == true;
                 if (state->IsAudioSource == true && isAudioName == false)
@@ -220,31 +184,30 @@ void OpenEditorDocument(QWidget* owner,
                     finish();
                     return;
                 }
-                if (state->Folder && IsGeneratedProjectPath(path.section(QLatin1Char('/'), 1)))
-                {
-                    continue;
-                }
                 total += file.size();
                 const foundation::uint64 maximumFileBytes = state->IsAudioSource == true
                                                                 ? audio::BROWSER_ENCODED_CAP_BYTES
                                                                 : static_cast<foundation::uint64>(MAX_DOCUMENT_BYTES);
-                if (file.size() > static_cast<foundation::uint64>(MAX_IMPORT_BYTES) ||
-                    total > static_cast<foundation::uint64>(MAX_IMPORT_BYTES - ImportedBytes) ||
-                    (state->Folder == false && (file.size() == 0 || file.size() > maximumFileBytes)))
+                if (file.size() == 0 || file.size() > maximumFileBytes)
                 {
                     Report(state->Owner,
-                           QStringLiteral("Import refused: invalid paths or the 32 MiB session limit exceeded."));
+                           QStringLiteral("%1 is %2; this import accepts files of 1 byte to %3. Choose another file.")
+                               .arg(path, FormatBrowserByteSize(file.size()), FormatBrowserByteSize(maximumFileBytes)));
+                    finish();
+                    return;
+                }
+                if (total > static_cast<foundation::uint64>(MAX_IMPORT_BYTES - ImportedBytes))
+                {
+                    Report(state->Owner, DescribeSessionImportBudget(total));
                     finish();
                     return;
                 }
                 state->Paths.append(path);
                 state->Indices.append(index);
             }
-            if (ValidateEditorImportPaths(state->Paths, state->Folder, state->Descriptor) == false)
+            if (ValidateEditorImportPaths(state->Paths, false, state->Descriptor) == false)
             {
-                Report(state->Owner,
-                       QStringLiteral(
-                           "Choose a folder containing ludus.project.json with valid, unique relative file paths."));
+                Report(state->Owner, QStringLiteral("Choose a file with a plain name (no path separators)."));
                 finish();
                 return;
             }
@@ -301,9 +264,8 @@ void OpenEditorDocument(QWidget* owner,
                     return;
                 }
                 state->Admitted = true;
-                const auto descriptor = state->Folder ? QDir(state->Directory).filePath(state->Descriptor) : path;
                 finish();
-                state->Completed(descriptor);
+                state->Completed(path);
             });
             state->Reader->readAsArrayBuffer(qstdweb::File(files[state->Indices[0]]).slice(0, state->Size));
         });
@@ -324,85 +286,15 @@ void OpenEditorDocument(QWidget* owner,
 }
 
 #if defined(Q_OS_WASM)
-namespace
-{
-[[nodiscard]] bool ValidateSceneImportPaths(const QStringList& paths, bool folder, QString& outEntry) noexcept
-{
-    if (paths.isEmpty() == true || paths.size() > 4096)
-    {
-        return false;
-    }
-    QSet<QString> unique;
-    QString root;
-    QString entry;
-    // A .pbrt entry wins; glTF/OBJ files are entries only for scenes without one,
-    // because pbrt scenes may ship .obj companions.
-    QString otherEntry;
-    const auto consider = [&entry, &otherEntry](const QString& name, const QString& path) {
-        if (name.endsWith(QStringLiteral(".pbrt"), Qt::CaseInsensitive) == true)
-        {
-            entry = entry.isEmpty() == true ? path : entry;
-        }
-        else if (IsSceneEntryName(name) == true && otherEntry.isEmpty() == true)
-        {
-            otherEntry = path;
-        }
-    };
-    for (const QString& path : paths)
-    {
-        const QStringList parts = path.split(QLatin1Char('/'));
-        if (path.toUtf8().size() > 4096 || QDir::isAbsolutePath(path) == true ||
-            path.contains(QLatin1Char('\\')) == true || path.contains(QChar(0)) == true ||
-            unique.contains(path) == true)
-        {
-            return false;
-        }
-        for (const QString& part : parts)
-        {
-            if (part.isEmpty() == true || part == QStringLiteral(".") || part == QStringLiteral(".."))
-            {
-                return false;
-            }
-        }
-        if (folder == true)
-        {
-            if (parts.size() < 2 || (root.isEmpty() == false && parts.first() != root))
-            {
-                return false;
-            }
-            root = parts.first();
-            consider(parts.back(), path);
-        }
-        else if (parts.size() != 1)
-        {
-            return false;
-        }
-        else if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive) == true)
-        {
-            if (paths.size() != 1)
-            {
-                return false; // An archive carries its own companions.
-            }
-            entry = path;
-        }
-        else
-        {
-            consider(path, path);
-        }
-        unique.insert(path);
-    }
-    entry = entry.isEmpty() == true ? otherEntry : entry;
-    if (entry.isEmpty() == true)
-    {
-        return false;
-    }
-    outEntry = entry;
-    return true;
-}
-} // namespace
-
 void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<void(const QString&)>& loaded)
 {
+    if (isFolder == true)
+    {
+        // A scene folder keeps the relative textures/ and models/ paths that the entry references; it is read
+        // in place like a project folder.
+        OpenBrowserFolder(owner, BrowserFolderIntent::Scene, loaded);
+        return;
+    }
     if (PendingImport)
     {
         return;
@@ -410,24 +302,15 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
     QSharedPointer<BrowserImport> state = QSharedPointer<BrowserImport>::create();
     PendingImport = state;
     state->Owner = owner;
-    state->Folder = isFolder;
     state->Completed = loaded;
     const QWeakPointer<BrowserImport> weak(state);
     state->Input = emscripten::val::global("document").call<emscripten::val>("createElement", emscripten::val("input"));
     state->Input.set("type", emscripten::val("file"));
     state->Input.set("multiple", true);
-    if (isFolder == true)
-    {
-        // A scene folder keeps the relative textures/ and models/ paths that the entry references.
-        state->Input.set("webkitdirectory", true);
-    }
-    else
-    {
-        // One .zip archive, or a scene entry plus its companion files picked together (flat).
-        state->Input.set("accept",
-                         emscripten::val(".pbrt,.gltf,.glb,.bin,.obj,.mtl,.json,.zip,application/zip,image/*,"
-                                         ".ply,.spd,.exr,.hdr"));
-    }
+    // One .zip archive, or a scene entry plus its companion files picked together (flat).
+    state->Input.set("accept",
+                     emscripten::val(".pbrt,.gltf,.glb,.bin,.obj,.mtl,.json,.zip,application/zip,image/*,"
+                                     ".ply,.spd,.exr,.hdr"));
     state->Input.set("hidden", true);
     auto finish = [weak]() {
         const QSharedPointer<BrowserImport> state = weak.toStrongRef();
@@ -462,7 +345,7 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
             }
             const emscripten::val files = state->Input["files"];
             const foundation::uint32 count = files["length"].as<foundation::uint32>();
-            if (count == 0 || count > 100000)
+            if (count == 0 || count > static_cast<foundation::uint32>(MAX_BROWSER_FOLDER_FILES))
             {
                 Report(state->Owner,
                        QStringLiteral(
@@ -474,31 +357,26 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
             for (foundation::uint32 index = 0; index < count; ++index)
             {
                 const qstdweb::File file(files[index]);
-                const QString path = state->Folder
-                                         ? QString::fromStdString(files[index]["webkitRelativePath"].as<std::string>())
-                                         : QFileInfo(QString::fromStdString(file.name())).fileName();
+                const QString path = QFileInfo(QString::fromStdString(file.name())).fileName();
                 if (path.isEmpty() == true)
                 {
                     continue;
                 }
                 total += file.size();
-                if (file.size() > static_cast<foundation::uint64>(MAX_IMPORT_BYTES) ||
-                    total > static_cast<foundation::uint64>(MAX_IMPORT_BYTES - ImportedBytes))
+                if (total > static_cast<foundation::uint64>(MAX_IMPORT_BYTES - ImportedBytes))
                 {
-                    Report(state->Owner,
-                           QStringLiteral("Import refused: the 32 MiB session import limit was exceeded."));
+                    Report(state->Owner, DescribeSessionImportBudget(total));
                     finish();
                     return;
                 }
                 state->Paths.append(path);
                 state->Indices.append(index);
             }
-            if (ValidateSceneImportPaths(state->Paths, state->Folder, state->Descriptor) == false)
+            if (ValidateSceneImportPaths(state->Paths, false, state->Descriptor) == false)
             {
-                // Fall back to a single-file picker if the directory selection had no scene entry.
                 Report(state->Owner,
-                       QStringLiteral("Choose a folder containing a .pbrt, .gltf, .glb, .obj or .luscene.json entry "
-                                      "(and its textures/models), or a single entry / .zip file."));
+                       QStringLiteral("Choose one .pbrt, .gltf, .glb, .obj or .luscene.json file with its companion "
+                                      "files, or one .zip archive, or use Scene folder… for a folder."));
                 finish();
                 return;
             }
@@ -534,7 +412,7 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
                     return;
                 }
                 const QByteArray bytes = qstdweb::Uint8Array(result).copyToQByteArray();
-                if (state->Name.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive) == true && state->Folder == false)
+                if (state->Name.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive) == true)
                 {
                     // Expand the archive into MEMFS beside the other session imports.
                     // Charge the declared expanded size, not the compressed file, against the
@@ -616,7 +494,7 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
 
 bool ValidateEditorImportPaths(const QStringList& paths, bool folder, QString& descriptor)
 {
-    if (paths.isEmpty() || paths.size() > MAX_IMPORTED_PROJECT_FILES || (folder == false && paths.size() != 1))
+    if (paths.isEmpty() || paths.size() > MAX_BROWSER_FOLDER_FILES || (folder == false && paths.size() != 1))
     {
         return false;
     }
@@ -660,14 +538,30 @@ bool ValidateEditorImportPaths(const QStringList& paths, bool folder, QString& d
     return true;
 }
 
-bool EncodeEditorProjectArchive(const QString& directory, QByteArray& archive)
+bool EncodeEditorProjectArchive(const QString& directory, QByteArray& outArchive, foundation::uint64 maximumBytes)
 {
-    constexpr foundation::int64 maxBytes = 32LL * 1024 * 1024;
+    const foundation::int64 maxBytes = static_cast<foundation::int64>(maximumBytes);
     if (QDir(directory).exists() == false)
     {
         return false;
     }
+    // Size the archive first so building it never doubles a large buffer.
+    foundation::int64 expectedBytes = ARCHIVE_ENTRY_OVERHEAD_BYTES;
+    QDirIterator sizes(directory, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (sizes.hasNext() == true)
+    {
+        const QString path = sizes.next();
+        if (IsGeneratedProjectPath(QDir(directory).relativeFilePath(path)) == false)
+        {
+            expectedBytes += QFileInfo(path).size() + ARCHIVE_ENTRY_OVERHEAD_BYTES;
+        }
+        if (expectedBytes > maxBytes)
+        {
+            return false;
+        }
+    }
     QByteArray result;
+    result.reserve(static_cast<qsizetype>(expectedBytes));
     QDirIterator files(directory, QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
     foundation::uint32 count = 0;
     while (files.hasNext())
@@ -687,7 +581,7 @@ bool EncodeEditorProjectArchive(const QString& directory, QByteArray& archive)
             continue;
         }
         QFile input(path);
-        if (++count > MAX_IMPORTED_PROJECT_FILES || QFileInfo(path).isSymLink() ||
+        if (++count > MAX_BROWSER_FOLDER_FILES || QFileInfo(path).isSymLink() ||
             input.open(QIODevice::ReadOnly) == false || input.size() > maxBytes ||
             result.size() + input.size() + ARCHIVE_ENTRY_OVERHEAD_BYTES > maxBytes)
         {
@@ -735,7 +629,7 @@ bool EncodeEditorProjectArchive(const QString& directory, QByteArray& archive)
         result.append(QByteArray((512 - data.size() % 512) % 512, '\0'));
     }
     result.append(QByteArray(1024, '\0'));
-    archive = result;
+    outArchive = result;
     return true;
 }
 
@@ -982,10 +876,14 @@ bool DownloadEditorProject(QWidget* owner, const QString& descriptor)
     const auto directory = QFileInfo(descriptor).absolutePath();
     if (QFileInfo::exists(descriptor) == false || EncodeEditorProjectArchive(directory, bytes) == false)
     {
-        Report(
-            owner,
-            QStringLiteral(
-                "Could not export the project: maximum 4096 regular files and 32 MiB; unsupported paths or symlinks."));
+        Report(owner,
+               QStringLiteral("Could not export %1: a download holds at most %2 regular files and %3 outside the "
+                              "generated folders (%4), with names of up to 255 bytes and no symbolic links. Remove "
+                              "files the project does not need, or open it in the desktop editor.")
+                   .arg(QFileInfo(directory).fileName(),
+                        QString::number(MAX_BROWSER_FOLDER_FILES),
+                        FormatBrowserByteSize(BROWSER_FILE_BUDGET_BYTES),
+                        GetGeneratedProjectFolderNames().join(QStringLiteral(", "))));
         return false;
     }
     const auto name = (QFileInfo(directory).fileName() + QStringLiteral(".tar")).toUtf8();
