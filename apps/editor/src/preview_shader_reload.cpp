@@ -36,10 +36,10 @@ QAtomicInteger<quint64> gNextRevision{1};
 QStringList GetDirectoryStamp(const QString& directory)
 {
     QStringList stamp;
+    QStringList patterns = GetPreviewShaderIncludePatterns();
+    patterns.append(QStringLiteral("*.json"));
     const QFileInfoList entries =
-        QDir(directory).entryInfoList({QStringLiteral("*.slang"), QStringLiteral("*.h"), QStringLiteral("*.json")},
-                                      QDir::Files | QDir::NoDotAndDotDot,
-                                      QDir::Name);
+        QDir(directory).entryInfoList(patterns, QDir::Files | QDir::NoDotAndDotDot, QDir::Name);
     for (const QFileInfo& entry : entries)
     {
         stamp.append(QStringLiteral("%1|%2|%3")

@@ -502,6 +502,13 @@ TEST_CASE("Live shader snapshots of the renderer recipes fit the compiler limit"
     {
         CHECK(snapshot.Names.contains(recipe.Source) == true);
     }
+    // The shadow depth encoding includes the binding slots shared with C++ as a .inc fragment.
+    bool hasSharedFragment = false;
+    for (const QString& name : snapshot.Names)
+    {
+        hasSharedFragment = hasSharedFragment || name.endsWith(QStringLiteral("deferred_binding_slots.inc"));
+    }
+    CHECK(hasSharedFragment == true);
     CHECK(snapshot.CandidatePaths.size() >= snapshot.Names.size());
     for (const QString& path : snapshot.Paths)
     {
