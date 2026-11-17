@@ -148,13 +148,9 @@ transmission needs a separate material qualification. A later RT1 foliage
 profile must admit the same frozen placements, geometry, deformation time and
 coverage on the CPU and GPU and satisfy the [reference parity contract](renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
 
-The World owns an immutable wind snapshot, beginning with an authored mean
-velocity in world metres per second and bounded, analytic gusts at an explicit
-presentation time. Velocity points in the direction air moves. A future
-provider can compose local sources over bounded spatial footprints and clamp
-total speed. Qualify a gridded field when a named consumer needs spatial
-behavior beyond the analytic sources. Any gameplay wind query has its own
-simulation-tick sample.
+Consume the [World environment wind snapshot](world-environment.md#clocks-positions-and-wind)
+at the accepted presentation time. Foliage owns deformation and conservative
+bounds. World owns the wind provider and any simulation-tick query.
 
 Evaluate wind at the root with a world-anchored gust phase plus a stable
 per-instance phase. Combine root-weighted main bend and bounded near-LOD
