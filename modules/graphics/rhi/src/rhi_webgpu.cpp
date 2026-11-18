@@ -1,6 +1,7 @@
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
+#include "internal/owner.h"
 #include "internal/profile.h"
 #include "internal/raster.h"
 #include "internal/resources.h"
@@ -36,14 +37,8 @@ namespace
 {
 using namespace ludus::foundation;
 constexpr logging::LogCategory LOG_RHI{"RHI-WebGPU"};
-WGPUInstance gInstance = nullptr;
-WGPUAdapter gAdapter = nullptr;
-WGPUDevice gDevice = nullptr;
-WGPUQueue gQueue = nullptr;
-bool gCompatibility = false;
-uint32 gMaxDimension = 0;
-uint64 gMaxUniformSize = 0;
-uint32 gSession = 0;
+/// Vertices of the one fullscreen triangle a fullscreen pipeline draws.
+constexpr uint32 FULLSCREEN_TRIANGLE_VERTICES = 3;
 
 /// @brief R14b presentation record of one canvas surface of the device.
 ///
@@ -76,23 +71,48 @@ struct WebSurface final
     /// Frames that submitted the canvas texture, which the browser presents after the task.
     uint64 PresentedFrames = 0;
 };
-StaticArray<WebSurface, MAX_DEVICE_SURFACES> gSurfaces;
-/// Slot routed to SetTarget/Begin/End; see backend::SelectSurface.
-usize gActiveSurface = 0;
+/// @brief Instance, adapter, device, queue, surfaces and open frame of one device owner (R14c).
+struct WebGpuState final
+{
+    WGPUInstance Instance = nullptr;
+    WGPUAdapter Adapter = nullptr;
+    WGPUDevice Device = nullptr;
+    WGPUQueue Queue = nullptr;
+    bool IsCompatibilityLevel = false;
+    uint32 MaxDimension = 0;
+    uint64 MaxUniformSize = 0;
+    uint32 Session = 0;
+    StaticArray<WebSurface, MAX_DEVICE_SURFACES> Surfaces;
+    /// Slot routed to SetTarget/Begin/End; see backend::SelectSurface.
+    usize ActiveSurface = 0;
+    /// Queue completion queries in flight, zero or one; see RequestSurfaceCompletion.
+    usize PendingCompletionQueries = 0;
+    WGPUTexture Texture = nullptr;
+    WGPUTextureView View = nullptr;
+    WGPUCommandEncoder Encoder = nullptr;
+    WGPUTexture DepthTexture = nullptr;
+    WGPUTextureView DepthView = nullptr;
+    WGPURenderPassEncoder Pass = nullptr;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<WebGpuState, MAX_DEVICE_OWNERS> gWebGpuStates{};
+/// WebGpuState of the bound owner slot.
+WebGpuState& GetWebGpu() noexcept
+{
+    return gWebGpuStates[internal::GetBoundOwnerSlot()];
+}
 /// Last callback ticket issued. Tickets keep growing across sessions, so a slot reused by a
 /// new surface never matches a late callback of its previous occupant.
 uint32 gLastTicket = 0;
-/// Queue completion queries in flight, zero or one; see RequestSurfaceCompletion.
-usize gPendingCompletionQueries = 0;
 
 WebSurface& GetActiveSurface() noexcept
 {
-    return gSurfaces[gActiveSurface];
+    return GetWebGpu().Surfaces[GetWebGpu().ActiveSurface];
 }
 /// Color format every surface and surface pipeline uses: the primary canvas's format.
 WGPUTextureFormat GetSurfaceFormat() noexcept
 {
-    return gSurfaces[0].Configuration.format;
+    return GetWebGpu().Surfaces[0].Configuration.format;
 }
 uint32 TakeTicket() noexcept
 {
@@ -106,58 +126,52 @@ uint32 TakeTicket() noexcept
 /// Slot whose current occupant owns `ticket`, or MAX_DEVICE_SURFACES for a retired surface.
 usize FindSurfaceTicket(uint32 ticket) noexcept
 {
-    for (usize slot = 0; slot < gSurfaces.GetSize(); ++slot)
+    for (usize slot = 0; slot < GetWebGpu().Surfaces.GetSize(); ++slot)
     {
-        if (ticket != 0 && gSurfaces[slot].Ticket == ticket)
+        if (ticket != 0 && GetWebGpu().Surfaces[slot].Ticket == ticket)
         {
             return slot;
         }
     }
     return MAX_DEVICE_SURFACES;
 }
-WGPUTexture gTexture = nullptr;
-WGPUTextureView gView = nullptr;
-WGPUCommandEncoder gEncoder = nullptr;
-WGPUTexture gDepthTexture = nullptr;
-WGPUTextureView gDepthView = nullptr;
-WGPURenderPassEncoder gPass = nullptr;
 
 void ReleaseFrame() noexcept
 {
-    if (gPass != nullptr)
+    if (GetWebGpu().Pass != nullptr)
     {
-        wgpuRenderPassEncoderRelease(gPass);
+        wgpuRenderPassEncoderRelease(GetWebGpu().Pass);
     }
-    if (gEncoder != nullptr)
+    if (GetWebGpu().Encoder != nullptr)
     {
-        wgpuCommandEncoderRelease(gEncoder);
+        wgpuCommandEncoderRelease(GetWebGpu().Encoder);
     }
-    if (gView != nullptr)
+    if (GetWebGpu().View != nullptr)
     {
-        wgpuTextureViewRelease(gView);
+        wgpuTextureViewRelease(GetWebGpu().View);
     }
-    if (gTexture != nullptr)
+    if (GetWebGpu().Texture != nullptr)
     {
-        wgpuTextureRelease(gTexture);
+        wgpuTextureRelease(GetWebGpu().Texture);
     }
-    if (gDepthView != nullptr)
+    if (GetWebGpu().DepthView != nullptr)
     {
-        wgpuTextureViewRelease(gDepthView);
+        wgpuTextureViewRelease(GetWebGpu().DepthView);
     }
-    if (gDepthTexture != nullptr)
+    if (GetWebGpu().DepthTexture != nullptr)
     {
-        wgpuTextureRelease(gDepthTexture);
+        wgpuTextureRelease(GetWebGpu().DepthTexture);
     }
-    gDepthView = nullptr;
-    gDepthTexture = nullptr;
-    gPass = nullptr;
-    gEncoder = nullptr;
-    gView = nullptr;
-    gTexture = nullptr;
+    GetWebGpu().DepthView = nullptr;
+    GetWebGpu().DepthTexture = nullptr;
+    GetWebGpu().Pass = nullptr;
+    GetWebGpu().Encoder = nullptr;
+    GetWebGpu().View = nullptr;
+    GetWebGpu().Texture = nullptr;
 }
 FrameStatus FrameFailure() noexcept
 {
-    internal::Fail(gSession, StartupError::RenderingUnavailable);
+    internal::Fail(GetWebGpu().Session, StartupError::RenderingUnavailable);
     return FrameStatus::Failed;
 }
 
@@ -224,7 +238,7 @@ void Diagnose(WGPUStringView message) noexcept
 /// frames still in flight are not counted.
 void ReleaseSurface(usize slot) noexcept
 {
-    WebSurface& surface = gSurfaces[slot];
+    WebSurface& surface = GetWebGpu().Surfaces[slot];
     if (surface.IsConfigured == true && surface.SurfaceOrNull != nullptr)
     {
         wgpuSurfaceUnconfigure(surface.SurfaceOrNull);
@@ -267,10 +281,10 @@ void SurfaceConfigured(WGPUPopErrorScopeStatus status,
         return;
     }
     Diagnose(message);
-    if (gEncoder != nullptr && gActiveSurface == slot)
+    if (GetWebGpu().Encoder != nullptr && GetWebGpu().ActiveSurface == slot)
     {
         // The open frame still owns this canvas texture; End submits it, then retires the slot.
-        gSurfaces[slot].IsLossPending = true;
+        GetWebGpu().Surfaces[slot].IsLossPending = true;
         return;
     }
     LoseCreatedSurface(slot);
@@ -279,16 +293,16 @@ void SurfaceConfigured(WGPUPopErrorScopeStatus status,
 /// that surface instead of reaching the device's uncaptured-error handler.
 void ConfigureCreatedSurface(usize slot) noexcept
 {
-    WebSurface& surface = gSurfaces[slot];
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
+    WebSurface& surface = GetWebGpu().Surfaces[slot];
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_Validation);
     wgpuSurfaceConfigure(surface.SurfaceOrNull, &surface.Configuration);
     surface.IsConfigured = true;
     WGPUPopErrorScopeCallbackInfo callback = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = SurfaceConfigured;
-    callback.userdata1 = Userdata(gSession);
+    callback.userdata1 = Userdata(GetWebGpu().Session);
     callback.userdata2 = Userdata(surface.Ticket);
-    (void)wgpuDevicePopErrorScope(gDevice, callback);
+    (void)wgpuDevicePopErrorScope(GetWebGpu().Device, callback);
 }
 /// Queue completion of every frame submitted before the query. A surface destroyed or replaced
 /// since then carries another ticket, so its late completion is ignored.
@@ -298,12 +312,12 @@ void SurfacesRendered(WGPUQueueWorkDoneStatus status, WGPUStringView, void* sess
     {
         return;
     }
-    gPendingCompletionQueries = 0;
+    GetWebGpu().PendingCompletionQueries = 0;
     if (status != WGPUQueueWorkDoneStatus_Success)
     {
         return;
     }
-    for (WebSurface& surface : gSurfaces)
+    for (WebSurface& surface : GetWebGpu().Surfaces)
     {
         if (surface.Ticket != 0 && surface.QueriedTicket == surface.Ticket &&
             surface.QueriedFrames > surface.RenderedFrames)
@@ -316,12 +330,12 @@ void SurfacesRendered(WGPUQueueWorkDoneStatus status, WGPUStringView, void* sess
 /// a caller reads surface counters, so frames add no completion callbacks of their own.
 void RequestSurfaceCompletion() noexcept
 {
-    if (gPendingCompletionQueries != 0 || gQueue == nullptr)
+    if (GetWebGpu().PendingCompletionQueries != 0 || GetWebGpu().Queue == nullptr)
     {
         return;
     }
     bool hasPendingFrames = false;
-    for (WebSurface& surface : gSurfaces)
+    for (WebSurface& surface : GetWebGpu().Surfaces)
     {
         surface.QueriedFrames = surface.SubmittedFrames;
         surface.QueriedTicket = surface.Ticket;
@@ -332,12 +346,12 @@ void RequestSurfaceCompletion() noexcept
     {
         return;
     }
-    gPendingCompletionQueries = 1;
+    GetWebGpu().PendingCompletionQueries = 1;
     WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = SurfacesRendered;
-    callback.userdata1 = Userdata(gSession);
-    (void)wgpuQueueOnSubmittedWorkDone(gQueue, callback);
+    callback.userdata1 = Userdata(GetWebGpu().Session);
+    (void)wgpuQueueOnSubmittedWorkDone(GetWebGpu().Queue, callback);
 }
 void Configured(WGPUPopErrorScopeStatus status,
                 WGPUErrorType error,
@@ -356,9 +370,10 @@ void Configured(WGPUPopErrorScopeStatus status,
         internal::Fail(token, StartupError::SurfaceUnavailable);
         return;
     }
-    internal::Complete(token,
-                       StartupError::None,
-                       { .MaxFrameDimension2D = gMaxDimension, .MaxUniformBufferSize = gMaxUniformSize });
+    internal::Complete(
+        token,
+        StartupError::None,
+        { .MaxFrameDimension2D = GetWebGpu().MaxDimension, .MaxUniformBufferSize = GetWebGpu().MaxUniformSize });
 }
 void DeviceReady(WGPURequestDeviceStatus status,
                  WGPUDevice device,
@@ -387,13 +402,14 @@ void DeviceReady(WGPURequestDeviceStatus status,
         internal::Fail(token, StartupError::DeviceUnavailable);
         return;
     }
-    gDevice = device;
-    gQueue = wgpuDeviceGetQueue(device);
+    GetWebGpu().Device = device;
+    GetWebGpu().Queue = wgpuDeviceGetQueue(device);
     WGPULimits limits = WGPU_LIMITS_INIT;
     WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
     if (wgpuDeviceGetLimits(device, &limits) != WGPUStatus_Success ||
-        wgpuSurfaceGetCapabilities(gSurfaces[0].SurfaceOrNull, gAdapter, &capabilities) != WGPUStatus_Success ||
-        capabilities.formatCount == 0 || gQueue == nullptr)
+        wgpuSurfaceGetCapabilities(GetWebGpu().Surfaces[0].SurfaceOrNull, GetWebGpu().Adapter, &capabilities) !=
+            WGPUStatus_Success ||
+        capabilities.formatCount == 0 || GetWebGpu().Queue == nullptr)
     {
         wgpuSurfaceCapabilitiesFreeMembers(capabilities);
         internal::Fail(token, StartupError::SurfaceUnavailable);
@@ -405,9 +421,10 @@ void DeviceReady(WGPURequestDeviceStatus status,
         internal::Fail(token, StartupError::DeviceUnavailable);
         return;
     }
-    gMaxDimension = limits.maxTextureDimension2D;
-    gMaxUniformSize = limits.maxUniformBufferBindingSize < limits.maxBufferSize ? limits.maxUniformBufferBindingSize
-                                                                                : limits.maxBufferSize;
+    GetWebGpu().MaxDimension = limits.maxTextureDimension2D;
+    GetWebGpu().MaxUniformSize = limits.maxUniformBufferBindingSize < limits.maxBufferSize
+                                     ? limits.maxUniformBufferBindingSize
+                                     : limits.maxBufferSize;
     WGPUSurfaceConfiguration configuration = WGPU_SURFACE_CONFIGURATION_INIT;
     configuration.device = device;
     configuration.format = capabilities.formats[0];
@@ -417,9 +434,9 @@ void DeviceReady(WGPURequestDeviceStatus status,
     configuration.height = 1;
     configuration.presentMode = WGPUPresentMode_Fifo;
     wgpuDevicePushErrorScope(device, WGPUErrorFilter_Validation);
-    wgpuSurfaceConfigure(gSurfaces[0].SurfaceOrNull, &configuration);
-    gSurfaces[0].IsConfigured = true;
-    gSurfaces[0].Configuration = configuration;
+    wgpuSurfaceConfigure(GetWebGpu().Surfaces[0].SurfaceOrNull, &configuration);
+    GetWebGpu().Surfaces[0].IsConfigured = true;
+    GetWebGpu().Surfaces[0].Configuration = configuration;
     wgpuSurfaceCapabilitiesFreeMembers(capabilities);
     WGPUPopErrorScopeCallbackInfo callback = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
@@ -435,13 +452,13 @@ void AdapterReady(WGPURequestAdapterStatus status,
 void RequestAdapter(uint32 token) noexcept
 {
     WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-    options.compatibleSurface = gSurfaces[0].SurfaceOrNull;
-    options.featureLevel = gCompatibility ? WGPUFeatureLevel_Compatibility : WGPUFeatureLevel_Core;
+    options.compatibleSurface = GetWebGpu().Surfaces[0].SurfaceOrNull;
+    options.featureLevel = GetWebGpu().IsCompatibilityLevel ? WGPUFeatureLevel_Compatibility : WGPUFeatureLevel_Core;
     WGPURequestAdapterCallbackInfo callback = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = AdapterReady;
     callback.userdata1 = Userdata(token);
-    (void)wgpuInstanceRequestAdapter(gInstance, &options, callback);
+    (void)wgpuInstanceRequestAdapter(GetWebGpu().Instance, &options, callback);
 }
 void AdapterReady(WGPURequestAdapterStatus status,
                   WGPUAdapter adapter,
@@ -464,9 +481,9 @@ void AdapterReady(WGPURequestAdapterStatus status,
         {
             wgpuAdapterRelease(adapter);
         }
-        if (gCompatibility == false)
+        if (GetWebGpu().IsCompatibilityLevel == false)
         {
-            gCompatibility = true;
+            GetWebGpu().IsCompatibilityLevel = true;
             RequestAdapter(token);
             return;
         }
@@ -474,7 +491,7 @@ void AdapterReady(WGPURequestAdapterStatus status,
         internal::Fail(token, StartupError::AdapterUnavailable);
         return;
     }
-    gAdapter = adapter;
+    GetWebGpu().Adapter = adapter;
     WGPUDeviceDescriptor descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
     // Thanks to W3C GPU for the Web Working Group, WebGPU, GPUDeviceDescriptor.requiredLimits:
     // https://www.w3.org/TR/webgpu/#dom-gpudevicedescriptor-requiredlimits
@@ -584,8 +601,8 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
     {
         return StartupError::InvalidWindow;
     }
-    gInstance = wgpuCreateInstance(nullptr);
-    if (gInstance == nullptr)
+    GetWebGpu().Instance = wgpuCreateInstance(nullptr);
+    if (GetWebGpu().Instance == nullptr)
     {
         return StartupError::InstanceUnavailable;
     }
@@ -593,17 +610,17 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
     source.selector = { .data = window.CanvasSelector, .length = WGPU_STRLEN };
     WGPUSurfaceDescriptor descriptor = WGPU_SURFACE_DESCRIPTOR_INIT;
     descriptor.nextInChain = &source.chain;
-    gSurfaces[0].SurfaceOrNull = wgpuInstanceCreateSurface(gInstance, &descriptor);
-    if (gSurfaces[0].SurfaceOrNull == nullptr)
+    GetWebGpu().Surfaces[0].SurfaceOrNull = wgpuInstanceCreateSurface(GetWebGpu().Instance, &descriptor);
+    if (GetWebGpu().Surfaces[0].SurfaceOrNull == nullptr)
     {
         return StartupError::SurfaceUnavailable;
     }
-    gSurfaces[0].SelectorOrNull = window.CanvasSelector;
-    gSurfaces[0].IsConnected = true;
-    gSurfaces[0].Ticket = TakeTicket();
-    gActiveSurface = 0;
-    gCompatibility = false;
-    gSession = token;
+    GetWebGpu().Surfaces[0].SelectorOrNull = window.CanvasSelector;
+    GetWebGpu().Surfaces[0].IsConnected = true;
+    GetWebGpu().Surfaces[0].Ticket = TakeTicket();
+    GetWebGpu().ActiveSurface = 0;
+    GetWebGpu().IsCompatibilityLevel = false;
+    GetWebGpu().Session = token;
     RequestAdapter(token);
     return StartupError::None;
 }
@@ -611,37 +628,37 @@ void Shutdown() noexcept
 {
     // The facade invalidates callback tokens before this can trigger device loss.
     ReleaseFrame();
-    for (usize slot = 0; slot < gSurfaces.GetSize(); ++slot)
+    for (usize slot = 0; slot < GetWebGpu().Surfaces.GetSize(); ++slot)
     {
         ReleaseSurface(slot);
-        gSurfaces[slot] = {};
+        GetWebGpu().Surfaces[slot] = {};
     }
-    gActiveSurface = 0;
-    gPendingCompletionQueries = 0;
-    if (gQueue != nullptr)
+    GetWebGpu().ActiveSurface = 0;
+    GetWebGpu().PendingCompletionQueries = 0;
+    if (GetWebGpu().Queue != nullptr)
     {
-        wgpuQueueRelease(gQueue);
+        wgpuQueueRelease(GetWebGpu().Queue);
     }
-    if (gDevice != nullptr)
+    if (GetWebGpu().Device != nullptr)
     {
-        wgpuDeviceDestroy(gDevice);
-        wgpuDeviceRelease(gDevice);
+        wgpuDeviceDestroy(GetWebGpu().Device);
+        wgpuDeviceRelease(GetWebGpu().Device);
     }
-    if (gAdapter != nullptr)
+    if (GetWebGpu().Adapter != nullptr)
     {
-        wgpuAdapterRelease(gAdapter);
+        wgpuAdapterRelease(GetWebGpu().Adapter);
     }
-    if (gInstance != nullptr)
+    if (GetWebGpu().Instance != nullptr)
     {
-        wgpuInstanceRelease(gInstance);
+        wgpuInstanceRelease(GetWebGpu().Instance);
     }
-    gQueue = nullptr;
-    gDevice = nullptr;
-    gAdapter = nullptr;
-    gInstance = nullptr;
-    gMaxDimension = 0;
-    gMaxUniformSize = 0;
-    gSession = 0;
+    GetWebGpu().Queue = nullptr;
+    GetWebGpu().Device = nullptr;
+    GetWebGpu().Adapter = nullptr;
+    GetWebGpu().Instance = nullptr;
+    GetWebGpu().MaxDimension = 0;
+    GetWebGpu().MaxUniformSize = 0;
+    GetWebGpu().Session = 0;
 }
 bool Initialize(const ApplicationInfo&) noexcept
 {
@@ -664,19 +681,40 @@ bool EndFrame() noexcept
 {
     return false;
 }
+bool AreSameCanvases(const char* first, const char* second) noexcept
+{
+    return IsSameCanvas(first, second) == 1;
+}
+bool IsCanvasPresentedByOtherOwner(const char* selector) noexcept
+{
+    const usize bound = internal::GetBoundOwnerSlot();
+    for (usize owner = 0; owner < MAX_DEVICE_OWNERS; ++owner)
+    {
+        for (const WebSurface& surface : gWebGpuStates[owner].Surfaces)
+        {
+            if (owner != bound && surface.IsConnected == true && surface.SelectorOrNull != nullptr &&
+                IsSameCanvas(surface.SelectorOrNull, selector) == 1)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 usize AdditionalSurfaceLimit() noexcept
 {
-    return gDevice != nullptr && gQueue != nullptr ? MAX_DEVICE_SURFACES - 1 : 0;
+    return GetWebGpu().Device != nullptr && GetWebGpu().Queue != nullptr ? MAX_DEVICE_SURFACES - 1 : 0;
 }
 StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
 {
-    if (gDevice == nullptr || slot == 0 || slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == true ||
-        window.System != ludus::platform::WindowSystem::WebCanvas || window.CanvasSelector == nullptr ||
-        window.Width > gMaxDimension || window.Height > gMaxDimension)
+    if (GetWebGpu().Device == nullptr || slot == 0 || slot >= GetWebGpu().Surfaces.GetSize() ||
+        GetWebGpu().Surfaces[slot].IsConnected == true || window.System != ludus::platform::WindowSystem::WebCanvas ||
+        window.CanvasSelector == nullptr || window.Width > GetWebGpu().MaxDimension ||
+        window.Height > GetWebGpu().MaxDimension)
     {
         return StartupError::InvalidWindow;
     }
-    for (const WebSurface& surface : gSurfaces)
+    for (const WebSurface& surface : GetWebGpu().Surfaces)
     {
         if (surface.IsConnected == true && IsSameCanvas(surface.SelectorOrNull, window.CanvasSelector) == 1)
         {
@@ -697,7 +735,7 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
     source.selector = { .data = window.CanvasSelector, .length = WGPU_STRLEN };
     WGPUSurfaceDescriptor descriptor = WGPU_SURFACE_DESCRIPTOR_INIT;
     descriptor.nextInChain = &source.chain;
-    WGPUSurface createdOrNull = wgpuInstanceCreateSurface(gInstance, &descriptor);
+    WGPUSurface createdOrNull = wgpuInstanceCreateSurface(GetWebGpu().Instance, &descriptor);
     if (createdOrNull == nullptr)
     {
         return StartupError::SurfaceUnavailable;
@@ -705,7 +743,7 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
     // Pipelines target the primary format, so every canvas must accept it.
     WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
     const bool hasCapabilities =
-        wgpuSurfaceGetCapabilities(createdOrNull, gAdapter, &capabilities) == WGPUStatus_Success;
+        wgpuSurfaceGetCapabilities(createdOrNull, GetWebGpu().Adapter, &capabilities) == WGPUStatus_Success;
     bool hasFormat = false;
     for (usize i = 0; hasCapabilities == true && i < capabilities.formatCount; ++i)
     {
@@ -717,12 +755,12 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
         wgpuSurfaceRelease(createdOrNull);
         return hasCapabilities == true ? StartupError::BackendUnavailable : StartupError::SurfaceUnavailable;
     }
-    WebSurface& surface = gSurfaces[slot];
+    WebSurface& surface = GetWebGpu().Surfaces[slot];
     surface = {};
     surface.SurfaceOrNull = createdOrNull;
     surface.SelectorOrNull = window.CanvasSelector;
     surface.Target = { .Width = window.Width, .Height = window.Height };
-    surface.Configuration = gSurfaces[0].Configuration;
+    surface.Configuration = GetWebGpu().Surfaces[0].Configuration;
     // A zero extent leaves the canvas size alone; the first nonzero target reconfigures.
     surface.Configuration.width = window.Width;
     surface.Configuration.height = window.Height;
@@ -734,28 +772,32 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
 }
 void DestroySurface(usize slot) noexcept
 {
-    if (slot == 0 || slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == false)
+    if (slot == 0 || slot >= GetWebGpu().Surfaces.GetSize() || GetWebGpu().Surfaces[slot].IsConnected == false)
     {
         return;
     }
     ReleaseSurface(slot);
-    if (gActiveSurface == slot)
+    if (GetWebGpu().ActiveSurface == slot)
     {
-        gActiveSurface = 0;
+        GetWebGpu().ActiveSurface = 0;
     }
 }
 void SelectSurface(usize slot) noexcept
 {
-    gActiveSurface = slot < gSurfaces.GetSize() ? slot : 0;
+    GetWebGpu().ActiveSurface = slot < GetWebGpu().Surfaces.GetSize() ? slot : 0;
 }
 backend::SurfaceCompletion GetSurfaceCompletion(usize slot) noexcept
 {
-    if (slot >= gSurfaces.GetSize())
+    if (slot >= GetWebGpu().Surfaces.GetSize())
     {
         return {};
     }
     RequestSurfaceCompletion();
-    return { .RenderedFrames = gSurfaces[slot].RenderedFrames, .PresentedFrames = gSurfaces[slot].PresentedFrames };
+    return
+    {
+        .RenderedFrames = GetWebGpu().Surfaces[slot].RenderedFrames,
+        .PresentedFrames = GetWebGpu().Surfaces[slot].PresentedFrames,
+    };
 }
 namespace
 {
@@ -766,14 +808,15 @@ bool ValidColor(float64 value) noexcept
 /// Retire the selected created surface after its canvas stopped accepting frames; no frame opens.
 FrameStatus LoseActiveSurface() noexcept
 {
-    LoseCreatedSurface(gActiveSurface);
+    LoseCreatedSurface(GetWebGpu().ActiveSurface);
     return FrameStatus::Skipped;
 }
 } // namespace
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
-    if (target.Width > gMaxDimension || target.Height > gMaxDimension || ValidColor(target.Red) == false ||
-        ValidColor(target.Green) == false || ValidColor(target.Blue) == false || ValidColor(target.Alpha) == false)
+    if (target.Width > GetWebGpu().MaxDimension || target.Height > GetWebGpu().MaxDimension ||
+        ValidColor(target.Red) == false || ValidColor(target.Green) == false || ValidColor(target.Blue) == false ||
+        ValidColor(target.Alpha) == false)
     {
         return FrameStatus::InvalidState;
     }
@@ -784,7 +827,7 @@ FrameStatus Begin() noexcept
 {
     WebSurface& surface = GetActiveSurface();
     const FrameTarget& target = surface.Target;
-    const bool isCreated = gActiveSurface != 0;
+    const bool isCreated = GetWebGpu().ActiveSurface != 0;
     if (target.Width == 0 || target.Height == 0 || (isCreated == true && surface.IsConnected == false))
     {
         return FrameStatus::Skipped;
@@ -796,8 +839,8 @@ FrameStatus Begin() noexcept
         // An offscreen submission needs an encoder, not a canvas texture. Avoid
         // getCurrentTexture/configure so candidate preparation cannot publish a
         // cleared canvas in place of the last presented image.
-        gEncoder = wgpuDeviceCreateCommandEncoder(gDevice, nullptr);
-        if (gEncoder == nullptr)
+        GetWebGpu().Encoder = wgpuDeviceCreateCommandEncoder(GetWebGpu().Device, nullptr);
+        if (GetWebGpu().Encoder == nullptr)
         {
             return FrameFailure();
         }
@@ -816,7 +859,7 @@ FrameStatus Begin() noexcept
         surface.Configuration.height = target.Height;
         if (isCreated == true)
         {
-            ConfigureCreatedSurface(gActiveSurface);
+            ConfigureCreatedSurface(GetWebGpu().ActiveSurface);
             if (surface.IsConnected == false)
             {
                 // A synchronous validation result retired this slot.
@@ -831,7 +874,7 @@ FrameStatus Begin() noexcept
     }
     WGPUSurfaceTexture current = WGPU_SURFACE_TEXTURE_INIT;
     wgpuSurfaceGetCurrentTexture(surface.SurfaceOrNull, &current);
-    gTexture = current.texture;
+    GetWebGpu().Texture = current.texture;
     if (current.status == WGPUSurfaceGetCurrentTextureStatus_Timeout ||
         current.status == WGPUSurfaceGetCurrentTextureStatus_Outdated)
     {
@@ -846,7 +889,7 @@ FrameStatus Begin() noexcept
     }
     if ((current.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
          current.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) ||
-        gTexture == nullptr)
+        GetWebGpu().Texture == nullptr)
     {
         if (isCreated == true)
         {
@@ -856,15 +899,15 @@ FrameStatus Begin() noexcept
         }
         return FrameFailure();
     }
-    gView = wgpuTextureCreateView(gTexture, nullptr);
-    gEncoder = wgpuDeviceCreateCommandEncoder(gDevice, nullptr);
-    if (gView == nullptr || gEncoder == nullptr)
+    GetWebGpu().View = wgpuTextureCreateView(GetWebGpu().Texture, nullptr);
+    GetWebGpu().Encoder = wgpuDeviceCreateCommandEncoder(GetWebGpu().Device, nullptr);
+    if (GetWebGpu().View == nullptr || GetWebGpu().Encoder == nullptr)
     {
         return FrameFailure();
     }
     RasterFrameExtent();
     WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    color.view = gView;
+    color.view = GetWebGpu().View;
     color.loadOp = WGPULoadOp_Clear;
     color.storeOp = WGPUStoreOp_Store;
     color.clearValue = { .r = target.Red, .g = target.Green, .b = target.Blue, .a = target.Alpha };
@@ -875,45 +918,45 @@ FrameStatus Begin() noexcept
     depthTexture.size = {target.Width, target.Height, 1};
     depthTexture.format = WGPUTextureFormat_Depth24Plus;
     depthTexture.usage = WGPUTextureUsage_RenderAttachment;
-    gDepthTexture = wgpuDeviceCreateTexture(gDevice, &depthTexture);
-    if (gDepthTexture == nullptr)
+    GetWebGpu().DepthTexture = wgpuDeviceCreateTexture(GetWebGpu().Device, &depthTexture);
+    if (GetWebGpu().DepthTexture == nullptr)
     {
         return FrameFailure();
     }
-    gDepthView = wgpuTextureCreateView(gDepthTexture, nullptr);
-    if (gDepthView == nullptr)
+    GetWebGpu().DepthView = wgpuTextureCreateView(GetWebGpu().DepthTexture, nullptr);
+    if (GetWebGpu().DepthView == nullptr)
     {
         return FrameFailure();
     }
     WGPURenderPassDepthStencilAttachment depth = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
-    depth.view = gDepthView;
+    depth.view = GetWebGpu().DepthView;
     depth.depthLoadOp = WGPULoadOp_Clear;
     depth.depthStoreOp = WGPUStoreOp_Discard;
     depth.depthClearValue = 1;
     descriptor.depthStencilAttachment = &depth;
     TimingBegin();
-    gPass = wgpuCommandEncoderBeginRenderPass(gEncoder, &descriptor);
-    return gPass != nullptr ? FrameStatus::Ready : FrameFailure();
+    GetWebGpu().Pass = wgpuCommandEncoderBeginRenderPass(GetWebGpu().Encoder, &descriptor);
+    return GetWebGpu().Pass != nullptr ? FrameStatus::Ready : FrameFailure();
 }
 FrameStatus End() noexcept
 {
-    const usize slot = gActiveSurface;
-    const bool isPresenting = gTexture != nullptr;
-    if (gPass != nullptr)
+    const usize slot = GetWebGpu().ActiveSurface;
+    const bool isPresenting = GetWebGpu().Texture != nullptr;
+    if (GetWebGpu().Pass != nullptr)
     {
-        wgpuRenderPassEncoderEnd(gPass);
+        wgpuRenderPassEncoderEnd(GetWebGpu().Pass);
     }
     TimingEnd();
-    WGPUCommandBuffer commands = wgpuCommandEncoderFinish(gEncoder, nullptr);
+    WGPUCommandBuffer commands = wgpuCommandEncoderFinish(GetWebGpu().Encoder, nullptr);
     if (commands == nullptr)
     {
         return FrameFailure();
     }
-    wgpuQueueSubmit(gQueue, 1, &commands);
+    wgpuQueueSubmit(GetWebGpu().Queue, 1, &commands);
     TimingSubmitted();
     wgpuCommandBufferRelease(commands);
     ReleaseFrame();
-    WebSurface& surface = gSurfaces[slot];
+    WebSurface& surface = GetWebGpu().Surfaces[slot];
     ++surface.SubmittedFrames;
     // WebGPU has no explicit present: the browser presents a canvas texture submitted in
     // this task when the task returns, so a submitted canvas frame counts as presented.
@@ -929,7 +972,7 @@ FrameStatus End() noexcept
 }
 WGPUDevice ProbeDevice() noexcept
 {
-    return gDevice;
+    return GetWebGpu().Device;
 }
 WGPUTextureFormat ProbeFormat() noexcept
 {
@@ -937,7 +980,7 @@ WGPUTextureFormat ProbeFormat() noexcept
 }
 WGPURenderPassEncoder ProbePass() noexcept
 {
-    return gPass;
+    return GetWebGpu().Pass;
 }
 
 namespace
@@ -961,9 +1004,20 @@ struct Pipeline final
     WGPUBindGroup Group = nullptr;
     usize UniformSlot = 0;
 };
-Shader gShaders[internal::RESOURCE_CAPACITY];
-Uniform gUniforms[internal::RESOURCE_CAPACITY];
-Pipeline gPipelines[internal::RESOURCE_CAPACITY];
+/// @brief Fullscreen shader, uniform and pipeline slots of one device owner (R14c).
+struct WebGpuResourceState final
+{
+    foundation::StaticArray<Shader, internal::RESOURCE_CAPACITY> Shaders{};
+    foundation::StaticArray<Uniform, internal::RESOURCE_CAPACITY> Uniforms{};
+    foundation::StaticArray<Pipeline, internal::RESOURCE_CAPACITY> Pipelines{};
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<WebGpuResourceState, MAX_DEVICE_OWNERS> gWebGpuResourceStates{};
+/// WebGpuResourceState of the bound owner slot.
+WebGpuResourceState& GetWebGpuResources() noexcept
+{
+    return gWebGpuResourceStates[internal::GetBoundOwnerSlot()];
+}
 void ResourceChecked(WGPUPopErrorScopeStatus status,
                      WGPUErrorType error,
                      WGPUStringView message,
@@ -986,73 +1040,73 @@ void CheckResource(uint32 id) noexcept
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = ResourceChecked;
     callback.userdata1 = Userdata(id);
-    (void)wgpuDevicePopErrorScope(gDevice, callback);
+    (void)wgpuDevicePopErrorScope(GetWebGpu().Device, callback);
 }
 } // namespace
 ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32 id) noexcept
 {
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_Validation);
     WGPUShaderSourceWGSL source = WGPU_SHADER_SOURCE_WGSL_INIT;
     source.code = { .data = description.Wgsl.data(), .length = description.Wgsl.size() };
     WGPUShaderModuleDescriptor descriptor = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
     descriptor.nextInChain = &source.chain;
-    auto& shader = gShaders[slot];
+    Shader& shader = GetWebGpuResources().Shaders[slot];
     std::memcpy(shader.Entry, description.WgslEntry.data(), description.WgslEntry.size());
     shader.Entry[description.WgslEntry.size()] = '\0';
-    shader.Module = wgpuDeviceCreateShaderModule(gDevice, &descriptor);
+    shader.Module = wgpuDeviceCreateShaderModule(GetWebGpu().Device, &descriptor);
     CheckResource(id);
     return shader.Module != nullptr ? ResourceStatus::Pending : ResourceStatus::Failed;
 }
 ResourceStatus CreateUniform(usize slot, const backend::UniformDescription& description, uint32 id) noexcept
 {
     const usize size = description.Size;
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
-    auto& uniform = gUniforms[slot];
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_Validation);
+    Uniform& uniform = GetWebGpuResources().Uniforms[slot];
     uniform.Size = size;
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     descriptor.size = size;
     descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-    uniform.Buffer = wgpuDeviceCreateBuffer(gDevice, &descriptor);
+    uniform.Buffer = wgpuDeviceCreateBuffer(GetWebGpu().Device, &descriptor);
     CheckResource(id);
     return uniform.Buffer != nullptr ? ResourceStatus::Pending : ResourceStatus::Failed;
 }
 ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& resources, uint32 id) noexcept
 {
     const usize vertex = resources.Vertex, fragment = resources.Fragment, uniform = resources.Uniform;
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
-    auto& pipeline = gPipelines[slot];
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_Validation);
+    Pipeline& pipeline = GetWebGpuResources().Pipelines[slot];
     pipeline.UniformSlot = uniform;
     WGPUBindGroupLayoutEntry binding = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     binding.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     binding.buffer.type = WGPUBufferBindingType_Uniform;
-    binding.buffer.minBindingSize = gUniforms[uniform].Size;
+    binding.buffer.minBindingSize = GetWebGpuResources().Uniforms[uniform].Size;
     WGPUBindGroupLayoutDescriptor bindings = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     bindings.entryCount = 1;
     bindings.entries = &binding;
-    pipeline.Bindings = wgpuDeviceCreateBindGroupLayout(gDevice, &bindings);
+    pipeline.Bindings = wgpuDeviceCreateBindGroupLayout(GetWebGpu().Device, &bindings);
     WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout.bindGroupLayoutCount = 1;
     layout.bindGroupLayouts = &pipeline.Bindings;
-    pipeline.Layout = wgpuDeviceCreatePipelineLayout(gDevice, &layout);
+    pipeline.Layout = wgpuDeviceCreatePipelineLayout(GetWebGpu().Device, &layout);
     WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-    entry.buffer = gUniforms[uniform].Buffer;
-    entry.size = gUniforms[uniform].Size;
+    entry.buffer = GetWebGpuResources().Uniforms[uniform].Buffer;
+    entry.size = GetWebGpuResources().Uniforms[uniform].Size;
     WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     group.layout = pipeline.Bindings;
     group.entryCount = 1;
     group.entries = &entry;
-    pipeline.Group = wgpuDeviceCreateBindGroup(gDevice, &group);
+    pipeline.Group = wgpuDeviceCreateBindGroup(GetWebGpu().Device, &group);
     WGPUColorTargetState color = WGPU_COLOR_TARGET_STATE_INIT;
     color.format = GetSurfaceFormat();
     WGPUFragmentState fragmentState = WGPU_FRAGMENT_STATE_INIT;
-    fragmentState.module = gShaders[fragment].Module;
-    fragmentState.entryPoint = { .data = gShaders[fragment].Entry, .length = WGPU_STRLEN };
+    fragmentState.module = GetWebGpuResources().Shaders[fragment].Module;
+    fragmentState.entryPoint = { .data = GetWebGpuResources().Shaders[fragment].Entry, .length = WGPU_STRLEN };
     fragmentState.targetCount = 1;
     fragmentState.targets = &color;
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pipeline.Layout;
-    descriptor.vertex.module = gShaders[vertex].Module;
-    descriptor.vertex.entryPoint = { .data = gShaders[vertex].Entry, .length = WGPU_STRLEN };
+    descriptor.vertex.module = GetWebGpuResources().Shaders[vertex].Module;
+    descriptor.vertex.entryPoint = { .data = GetWebGpuResources().Shaders[vertex].Entry, .length = WGPU_STRLEN };
     descriptor.fragment = &fragmentState;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
@@ -1060,7 +1114,7 @@ ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& reso
     depth.depthWriteEnabled = WGPUOptionalBool_False;
     depth.depthCompare = WGPUCompareFunction_Always;
     descriptor.depthStencil = &depth;
-    pipeline.Object = wgpuDeviceCreateRenderPipeline(gDevice, &descriptor);
+    pipeline.Object = wgpuDeviceCreateRenderPipeline(GetWebGpu().Device, &descriptor);
     CheckResource(id);
     return pipeline.Object != nullptr && pipeline.Group != nullptr && pipeline.Layout != nullptr &&
                    pipeline.Bindings != nullptr
@@ -1069,25 +1123,25 @@ ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& reso
 }
 void DestroyShader(usize slot) noexcept
 {
-    if (gShaders[slot].Module != nullptr)
+    if (GetWebGpuResources().Shaders[slot].Module != nullptr)
     {
-        wgpuShaderModuleRelease(gShaders[slot].Module);
+        wgpuShaderModuleRelease(GetWebGpuResources().Shaders[slot].Module);
     }
-    gShaders[slot] = {};
+    GetWebGpuResources().Shaders[slot] = {};
 }
 void DestroyUniform(usize slot) noexcept
 {
-    if (gUniforms[slot].Buffer != nullptr)
+    if (GetWebGpuResources().Uniforms[slot].Buffer != nullptr)
     {
         // Release the host reference. Submitted command buffers retain GPU use;
         // explicit buffer.destroy would invalidate pending submissions.
-        wgpuBufferRelease(gUniforms[slot].Buffer);
+        wgpuBufferRelease(GetWebGpuResources().Uniforms[slot].Buffer);
     }
-    gUniforms[slot] = {};
+    GetWebGpuResources().Uniforms[slot] = {};
 }
 void DestroyPipeline(usize slot) noexcept
 {
-    auto& pipeline = gPipelines[slot];
+    Pipeline& pipeline = GetWebGpuResources().Pipelines[slot];
     if (pipeline.Object != nullptr)
     {
         wgpuRenderPipelineRelease(pipeline.Object);
@@ -1108,7 +1162,7 @@ void DestroyPipeline(usize slot) noexcept
 }
 void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
+    std::memcpy(GetWebGpuResources().Uniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 FrameInfo GetFrameInfo() noexcept
 {
@@ -1131,20 +1185,20 @@ ResourceStatus Draw(usize slot) noexcept
     {
         return ResourceStatus::InvalidState;
     }
-    const auto& pipeline = gPipelines[slot];
-    const auto& uniform = gUniforms[pipeline.UniformSlot];
+    const Pipeline& pipeline = GetWebGpuResources().Pipelines[slot];
+    const Uniform& uniform = GetWebGpuResources().Uniforms[pipeline.UniformSlot];
     // Queue order: write N precedes submission N, which precedes write N+1.
-    wgpuQueueWriteBuffer(gQueue, uniform.Buffer, 0, uniform.Bytes, uniform.Size);
-    wgpuRenderPassEncoderSetViewport(gPass,
+    wgpuQueueWriteBuffer(GetWebGpu().Queue, uniform.Buffer, 0, uniform.Bytes, uniform.Size);
+    wgpuRenderPassEncoderSetViewport(GetWebGpu().Pass,
                                      0,
                                      0,
                                      static_cast<float32>(target.Width),
                                      static_cast<float32>(target.Height),
                                      0,
                                      1);
-    wgpuRenderPassEncoderSetPipeline(gPass, pipeline.Object);
-    wgpuRenderPassEncoderSetBindGroup(gPass, 0, pipeline.Group, 0, nullptr);
-    wgpuRenderPassEncoderDraw(gPass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderSetPipeline(GetWebGpu().Pass, pipeline.Object);
+    wgpuRenderPassEncoderSetBindGroup(GetWebGpu().Pass, 0, pipeline.Group, 0, nullptr);
+    wgpuRenderPassEncoderDraw(GetWebGpu().Pass, FULLSCREEN_TRIANGLE_VERTICES, 1, 0, 0);
     return ResourceStatus::Ready;
 }
 } // namespace ludus::graphics::rhi::LUDUS_RHI_WEBGPU_NAMESPACE

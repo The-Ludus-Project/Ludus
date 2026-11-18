@@ -61,6 +61,11 @@ WGPURenderPassEncoder ProbePass() noexcept;
 // surface.h; WebGL 2 has one context per canvas, so the dispatcher hosts only its primary.
 namespace ludus::graphics::rhi::webgpu
 {
+/// True when both selectors name one canvas element of the document.
+bool AreSameCanvases(const char* first, const char* second) noexcept;
+/// R14c: true when `selector` names the canvas of a connected surface of an owner other than
+/// the bound one.
+bool IsCanvasPresentedByOtherOwner(const char* selector) noexcept;
 ludus::foundation::usize AdditionalSurfaceLimit() noexcept;
 StartupError CreateSurface(ludus::foundation::usize slot, const WindowInfo& window) noexcept;
 void DestroySurface(ludus::foundation::usize slot) noexcept;
@@ -144,6 +149,9 @@ void LifetimeReset() noexcept;
 } // namespace ludus::graphics::rhi::webgpu
 namespace ludus::graphics::rhi::webgl
 {
+/// Make the bound owner's WebGL 2 context current for the GL calls that follow (R14c).
+/// Each owner has its own context; a context-less owner leaves the current context alone.
+void MakeContextCurrent() noexcept;
 bool AllocatorBlockBytes(foundation::uint64&) noexcept;
 MeasurementAdapter TimingAdapter() noexcept;
 RasterStatus TimingArm() noexcept;

@@ -18,6 +18,8 @@ inline constexpr foundation::usize RASTER_DRAWS = 1024;
 inline constexpr foundation::usize LIFETIME_BATCHES = 4;
 inline constexpr foundation::usize LIFETIME_BATCH_DRAWS = 256;
 inline constexpr foundation::usize LIFETIME_TRANSFERS = 4;
+/// Transfer directions of a lifetime ring: upload (0) and readback (1).
+inline constexpr foundation::usize LIFETIME_DIRECTIONS = 2;
 inline constexpr foundation::usize LIFETIME_TRANSFER_BYTES = foundation::usize{256} * 1024;
 /// Buffer slice offsets and sizes are whole 32-bit words.
 inline constexpr foundation::usize BUFFER_ALIGNMENT_BYTES = 4;

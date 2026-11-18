@@ -424,11 +424,11 @@ presenting.
 
 ### Multiple device owners (R14c)
 
-On Metal, Vulkan and Direct3D 12, one process can own up to `MAX_DEVICE_OWNERS`
-devices at once. Each `CreateDevice` call starts an independent owner. An owner
+On Metal, Vulkan, Direct3D 12, WebGPU and WebGL 2, one process can own up to
+`MAX_DEVICE_OWNERS` devices at once. Each `CreateDevice` call starts an independent owner. An owner
 has its own native device and command queue, startup and loss state, resource
 registries, ordered graphs, transfer rings, pipeline-preparation worker,
-submission ordinals and surfaces. Every owner can select its own catalog adapter. All owners are used from the one
+submission ordinals and surfaces. Every native owner can select its own catalog adapter. All owners are used from the one
 owner thread. Frames of different owners are independent: one device can hold an
 open frame while another opens, submits and completes its own.
 
@@ -438,9 +438,8 @@ rhi::DeviceHandle preview;
 rhi::SurfaceHandle previewSurface;
 const auto created = rhi::CreateDevice(app, previewWindow, request, preview, previewSurface);
 // CapacityExceeded: every owner slot is live; destroy an owner first.
-// InvalidState: this backend keeps one owner (WebGPU, WebGL 2), a Vulkan device
-// adopted with CreateNativeDevice is live, or a facade session from rhi::Start is
-// running; reuse the existing device instead.
+// InvalidState: a Vulkan device adopted with CreateNativeDevice is live, or a
+// facade session from rhi::Start is running; reuse the existing device instead.
 ```
 
 The facade keeps every owner's state apart. Handles carry their owner, so a
@@ -487,8 +486,20 @@ Backend notes:
   the process, so later owners use it too. The optional PIX event runtime is
   loaded once per process and unloaded when the last owner releases it. An
   adopted device may run beside owned devices.
-- **WebGPU and WebGL 2** keep one process session: a second `CreateDevice`
-  returns `InvalidState` while the first lives, as before.
+- **WebGPU and WebGL 2.** Each owner binds its own sub-backend, so one owner can
+  run WebGPU beside another's WebGL 2 context, and an Auto owner falls back to
+  WebGL 2 on its own. A WebGPU owner requests its own adapter and device. A
+  WebGL 2 owner has its own context, and the backend makes that context current
+  before every call into it, because GL calls address whichever context is
+  current. Every asynchronous WebGPU callback identifies its owner, by the
+  owner's startup token, a process-wide resource identity or its transfer cell,
+  before it touches owner state, and timer queries are kept per owner. A canvas holds one context, and startup
+  replaces the canvas node, so a selector that names a canvas another owner
+  presents to is refused even when the selector string differs (`canvas#view`
+  for `#view`): `CreateDevice` fails with `StartupError::InvalidWindow`, and
+  `CreateSurface` returns `InvalidDescription`. Each further owner adds about
+  260 KiB of zero-filled static memory to a browser build, mostly the fullscreen
+  uniform slots.
 
 The reference-backend lifecycle suite creates two owners and checks capacity,
 cross-owner rejection of resources, surfaces and borrowed targets, independent frames and
@@ -506,6 +517,15 @@ while the other keeps reading and rendering, and starts a replacement beside
 the survivor. A second case starts owners on an explicit and an automatic
 adapter, lists adapters while they live, and fills every owner slot before
 checking `CapacityExceeded`.
+
+The browser SDK consumer (`tests/sdk_consumer/r14c.cpp`, run by
+`raster-browser-test.mjs`) starts two owners on two canvases: both on WebGPU,
+both on WebGL 2, and one of each. Each owner clears its canvas between the other
+owner's operations and reads back its own buffer, and neither resolves the
+other's buffer. A selector that aliases the first canvas is refused. The test
+checks both canvases' colors, destroys the first owner while the second keeps
+drawing, and starts a replacement on the freed canvas that rejects the destroyed
+owner's handle.
 
 ### Profile, format and limit negotiation
 

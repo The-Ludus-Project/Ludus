@@ -291,6 +291,9 @@ jobs:
             out/build/raster-web-sdk/r18c.js
             out/build/raster-web-sdk/r18c.wasm
             out/build/raster-web-sdk/r18c.html
+            out/build/raster-web-sdk/r14c.js
+            out/build/raster-web-sdk/r14c.wasm
+            out/build/raster-web-sdk/r14c.html
             out/build/raster-web-sdk/random_parity.js
             out/build/raster-web-sdk/random_parity.wasm
             out/build/raster-web-sdk/random_parity.html

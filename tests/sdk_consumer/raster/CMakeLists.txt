@@ -121,6 +121,16 @@ if(EMSCRIPTEN)
     configure_file(../r11.html r11.html COPYONLY)
 endif()
 
+# R14c browser device owners: two canvases, each API and one of each. Needs no shaders.
+if(EMSCRIPTEN)
+    add_executable(ludus_sdk_r14c_consumer ../r14c.cpp)
+    target_link_libraries(ludus_sdk_r14c_consumer PRIVATE Ludus::GraphicsRhi)
+    target_compile_options(ludus_sdk_r14c_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+    target_link_options(ludus_sdk_r14c_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    set_target_properties(ludus_sdk_r14c_consumer PROPERTIES OUTPUT_NAME r14c SUFFIX ".js")
+    configure_file(../r14c.html r14c.html COPYONLY)
+endif()
+
 add_executable(ludus_sdk_r18c_consumer ../r18c.cpp)
 target_link_libraries(ludus_sdk_r18c_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
 target_compile_options(ludus_sdk_r18c_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)

@@ -7,55 +7,78 @@ namespace ludus::graphics::rhi::LUDUS_RHI_WEBGPU_NAMESPACE
 {
 namespace
 {
-GpuTiming gTiming;
-WGPUQuerySet gTimingQueries = nullptr;
-WGPUBuffer gTimingResolve = nullptr, gTimingReadback = nullptr;
-internal::RasterSequence<uint32> gTimingGenerations;
-uint32 gTimingGeneration = 0;
-bool gTimingMapRequested = false;
-void TimingMapped(WGPUMapAsyncStatus status, WGPUStringView, void* userdata, void*) noexcept
+/// Timestamps of one frame sample: both ends of the first and of the last marker pass.
+constexpr uint32 TIMING_QUERY_COUNT = 4;
+/// Index of the timestamp that closes the frame interval opened by index 0.
+constexpr usize TIMING_LAST_QUERY = 3;
+/// Bytes of the resolved timestamps of one sample.
+constexpr uint64 TIMING_READBACK_BYTES = uint64{TIMING_QUERY_COUNT} * sizeof(uint64);
+/// @brief Frame timestamp queries, readback and sample state of one device owner (R14c).
+struct MeasurementWebGpuState final
 {
-    if (Token(userdata) != gTimingGeneration || gTimingReadback == nullptr)
+    GpuTiming Timing;
+    WGPUQuerySet Queries = nullptr;
+    WGPUBuffer Resolve = nullptr;
+    WGPUBuffer Readback = nullptr;
+    internal::RasterSequence<uint32> Generations;
+    uint32 Generation = 0;
+    bool IsMapRequested = false;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<MeasurementWebGpuState, MAX_DEVICE_OWNERS> gMeasurementWebGpuStates{};
+/// MeasurementWebGpuState of the bound owner slot.
+MeasurementWebGpuState& GetMeasurementWebGpu() noexcept
+{
+    return gMeasurementWebGpuStates[internal::GetBoundOwnerSlot()];
+}
+void TimingMapped(WGPUMapAsyncStatus status, WGPUStringView, void* userdata, void* session) noexcept
+{
+    // Generations count per owner (R14c); the session token binds the owner that mapped.
+    if (internal::Current(Token(session)) == false)
+    {
+        return;
+    }
+    if (Token(userdata) != GetMeasurementWebGpu().Generation || GetMeasurementWebGpu().Readback == nullptr)
     {
         return;
     }
     if (status != WGPUMapAsyncStatus_Success)
     {
-        gTiming.State = GpuTimingState::Failed;
+        GetMeasurementWebGpu().Timing.State = GpuTimingState::Failed;
         return;
     }
-    const auto* mapped = wgpuBufferGetConstMappedRange(gTimingReadback, 0, 32);
-    uint64 values[4]{};
+    const void* mapped = wgpuBufferGetConstMappedRange(GetMeasurementWebGpu().Readback, 0, TIMING_READBACK_BYTES);
+    uint64 values[TIMING_QUERY_COUNT]{};
     if (mapped != nullptr)
     {
         std::memcpy(values, mapped, sizeof(values));
     }
-    wgpuBufferUnmap(gTimingReadback);
-    if (Token(userdata) != gTimingGeneration)
+    wgpuBufferUnmap(GetMeasurementWebGpu().Readback);
+    if (Token(userdata) != GetMeasurementWebGpu().Generation)
     {
         return;
     }
-    if (mapped != nullptr && values[3] >= values[0])
+    if (mapped != nullptr && values[TIMING_LAST_QUERY] >= values[0])
     {
-        gTiming.DurationNanoseconds = static_cast<float64>(values[3] - values[0]);
-        gTiming.State = GpuTimingState::Available;
+        GetMeasurementWebGpu().Timing.DurationNanoseconds = static_cast<float64>(values[TIMING_LAST_QUERY] - values[0]);
+        GetMeasurementWebGpu().Timing.State = GpuTimingState::Available;
     }
     else
     {
-        gTiming.State = GpuTimingState::Disjoint;
+        GetMeasurementWebGpu().Timing.State = GpuTimingState::Disjoint;
     }
 }
 void TimingMarker(bool first) noexcept
 {
     WGPUPassTimestampWrites writes = WGPU_PASS_TIMESTAMP_WRITES_INIT;
-    writes.querySet = gTimingQueries;
+    writes.querySet = GetMeasurementWebGpu().Queries;
     // The pinned emdawn bridge forwards UINT32_MAX instead of omitting absent indices.
     // Use both endpoints in each marker; indices 0 and 3 enclose the entire frame.
     writes.beginningOfPassWriteIndex = first ? 0 : 2;
     writes.endOfPassWriteIndex = first ? 1 : 3;
     WGPUComputePassDescriptor description = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
     description.timestampWrites = &writes;
-    auto pass = wgpuCommandEncoderBeginComputePass(gEncoder, &description);
+    WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(GetWebGpu().Encoder, &description);
     wgpuComputePassEncoderEnd(pass);
     wgpuComputePassEncoderRelease(pass);
 }
@@ -69,7 +92,7 @@ MeasurementAdapter TimingAdapter() noexcept
 {
     MeasurementAdapter output;
     WGPUAdapterInfo info = WGPU_ADAPTER_INFO_INIT;
-    if (wgpuAdapterGetInfo(gAdapter, &info) == WGPUStatus_Success)
+    if (wgpuAdapterGetInfo(GetWebGpu().Adapter, &info) == WGPUStatus_Success)
     {
         internal::CopyMeasurementName(info.description.data, info.description.length, output.Name);
         if (output.Name[0] == '\0')
@@ -87,99 +110,113 @@ MeasurementAdapter TimingAdapter() noexcept
 }
 void TimingReset() noexcept
 {
-    gTimingGeneration = 0;
-    gTimingMapRequested = false;
-    if (gTimingQueries != nullptr)
+    GetMeasurementWebGpu().Generation = 0;
+    GetMeasurementWebGpu().IsMapRequested = false;
+    if (GetMeasurementWebGpu().Queries != nullptr)
     {
-        wgpuQuerySetDestroy(gTimingQueries);
-        wgpuQuerySetRelease(gTimingQueries);
+        wgpuQuerySetDestroy(GetMeasurementWebGpu().Queries);
+        wgpuQuerySetRelease(GetMeasurementWebGpu().Queries);
     }
-    if (gTimingResolve != nullptr)
+    if (GetMeasurementWebGpu().Resolve != nullptr)
     {
-        wgpuBufferDestroy(gTimingResolve);
-        wgpuBufferRelease(gTimingResolve);
+        wgpuBufferDestroy(GetMeasurementWebGpu().Resolve);
+        wgpuBufferRelease(GetMeasurementWebGpu().Resolve);
     }
-    if (gTimingReadback != nullptr)
+    if (GetMeasurementWebGpu().Readback != nullptr)
     {
-        wgpuBufferDestroy(gTimingReadback);
-        wgpuBufferRelease(gTimingReadback);
+        wgpuBufferDestroy(GetMeasurementWebGpu().Readback);
+        wgpuBufferRelease(GetMeasurementWebGpu().Readback);
     }
-    gTimingQueries = nullptr;
-    gTimingResolve = nullptr;
-    gTimingReadback = nullptr;
-    gTiming = {};
+    GetMeasurementWebGpu().Queries = nullptr;
+    GetMeasurementWebGpu().Resolve = nullptr;
+    GetMeasurementWebGpu().Readback = nullptr;
+    GetMeasurementWebGpu().Timing = {};
 }
 GpuTiming TimingPoll() noexcept
 {
-    return gTiming;
+    return GetMeasurementWebGpu().Timing;
 }
 RasterStatus TimingArm() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed || gTiming.State == GpuTimingState::Pending)
+    if (GetMeasurementWebGpu().Timing.State == GpuTimingState::Armed ||
+        GetMeasurementWebGpu().Timing.State == GpuTimingState::Pending)
     {
         return RasterStatus::InvalidState;
     }
-    if (wgpuDeviceHasFeature(gDevice, WGPUFeatureName_TimestampQuery) == false)
+    if (wgpuDeviceHasFeature(GetWebGpu().Device, WGPUFeatureName_TimestampQuery) == false)
     {
-        gTiming = { .State = GpuTimingState::Unavailable };
+        GetMeasurementWebGpu().Timing = { .State = GpuTimingState::Unavailable };
         return RasterStatus::Unsupported;
     }
-    internal::TimingArmRollback rollback(gTiming);
+    internal::TimingArmRollback rollback(GetMeasurementWebGpu().Timing);
     TimingReset();
-    gTimingGeneration = gTimingGenerations.Take();
-    if (gTimingGeneration == 0)
+    GetMeasurementWebGpu().Generation = GetMeasurementWebGpu().Generations.Take();
+    if (GetMeasurementWebGpu().Generation == 0)
     {
         return RasterStatus::CapacityExceeded;
     }
     WGPUQuerySetDescriptor query = WGPU_QUERY_SET_DESCRIPTOR_INIT;
     query.type = WGPUQueryType_Timestamp;
-    query.count = 4;
-    gTimingQueries = wgpuDeviceCreateQuerySet(gDevice, &query);
+    query.count = TIMING_QUERY_COUNT;
+    GetMeasurementWebGpu().Queries = wgpuDeviceCreateQuerySet(GetWebGpu().Device, &query);
     WGPUBufferDescriptor buffer = WGPU_BUFFER_DESCRIPTOR_INIT;
-    buffer.size = 32;
+    buffer.size = TIMING_READBACK_BYTES;
     buffer.usage = WGPUBufferUsage_QueryResolve | WGPUBufferUsage_CopySrc;
-    gTimingResolve = wgpuDeviceCreateBuffer(gDevice, &buffer);
+    GetMeasurementWebGpu().Resolve = wgpuDeviceCreateBuffer(GetWebGpu().Device, &buffer);
     buffer.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
-    gTimingReadback = wgpuDeviceCreateBuffer(gDevice, &buffer);
-    if (gTimingQueries == nullptr || gTimingResolve == nullptr || gTimingReadback == nullptr)
+    GetMeasurementWebGpu().Readback = wgpuDeviceCreateBuffer(GetWebGpu().Device, &buffer);
+    if (GetMeasurementWebGpu().Queries == nullptr || GetMeasurementWebGpu().Resolve == nullptr ||
+        GetMeasurementWebGpu().Readback == nullptr)
     {
         TimingReset();
         return RasterStatus::OutOfMemory;
     }
-    gTiming.State = GpuTimingState::Armed;
+    GetMeasurementWebGpu().Timing.State = GpuTimingState::Armed;
     rollback.Accept();
     return RasterStatus::Ready;
 }
 void TimingBegin() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementWebGpu().Timing.State == GpuTimingState::Armed)
     {
         TimingMarker(true);
     }
 }
 void TimingEnd() noexcept
 {
-    if (gTiming.State != GpuTimingState::Armed)
+    if (GetMeasurementWebGpu().Timing.State != GpuTimingState::Armed)
     {
         return;
     }
     TimingMarker(false);
-    wgpuCommandEncoderResolveQuerySet(gEncoder, gTimingQueries, 0, 4, gTimingResolve, 0);
-    wgpuCommandEncoderCopyBufferToBuffer(gEncoder, gTimingResolve, 0, gTimingReadback, 0, 32);
-    gTiming.State = GpuTimingState::Pending;
+    wgpuCommandEncoderResolveQuerySet(GetWebGpu().Encoder,
+                                      GetMeasurementWebGpu().Queries,
+                                      0,
+                                      TIMING_QUERY_COUNT,
+                                      GetMeasurementWebGpu().Resolve,
+                                      0);
+    wgpuCommandEncoderCopyBufferToBuffer(GetWebGpu().Encoder,
+                                         GetMeasurementWebGpu().Resolve,
+                                         0,
+                                         GetMeasurementWebGpu().Readback,
+                                         0,
+                                         TIMING_READBACK_BYTES);
+    GetMeasurementWebGpu().Timing.State = GpuTimingState::Pending;
 }
 void TimingSubmitted() noexcept
 {
-    if (gTiming.State != GpuTimingState::Pending || gTimingGeneration == 0 || gTimingMapRequested)
+    if (GetMeasurementWebGpu().Timing.State != GpuTimingState::Pending || GetMeasurementWebGpu().Generation == 0 ||
+        GetMeasurementWebGpu().IsMapRequested)
     {
         return;
     }
-    gTimingMapRequested = true;
+    GetMeasurementWebGpu().IsMapRequested = true;
     WGPUBufferMapCallbackInfo callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = TimingMapped;
-    callback.userdata1 = Userdata(gTimingGeneration);
-    (void)wgpuBufferMapAsync(gTimingReadback, WGPUMapMode_Read, 0, 32, callback);
+    callback.userdata1 = Userdata(GetMeasurementWebGpu().Generation);
+    callback.userdata2 = Userdata(GetWebGpu().Session);
+    (void)wgpuBufferMapAsync(GetMeasurementWebGpu().Readback, WGPUMapMode_Read, 0, TIMING_READBACK_BYTES, callback);
 }
 bool RasterAllocationBytes(internal::RasterKind, usize, uint64& bytes) noexcept
 {

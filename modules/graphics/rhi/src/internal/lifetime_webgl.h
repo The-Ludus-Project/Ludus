@@ -18,7 +18,20 @@ struct LifetimeGlTransfer final
     bool Index = false;
     bool Busy = false;
 };
-LifetimeGlTransfer gLifetimeGl[2][internal::LIFETIME_TRANSFERS];
+/// @brief Upload (0) and readback (1) transfer cells of one device owner (R14c).
+struct LifetimeWebGlState final
+{
+    foundation::StaticArray<foundation::StaticArray<LifetimeGlTransfer, internal::LIFETIME_TRANSFERS>,
+                            internal::LIFETIME_DIRECTIONS>
+        Transfers{};
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<LifetimeWebGlState, MAX_DEVICE_OWNERS> gLifetimeWebGlStates{};
+/// LifetimeWebGlState of the bound owner slot.
+LifetimeWebGlState& GetLifetimeWebGl() noexcept
+{
+    return gLifetimeWebGlStates[internal::GetBoundOwnerSlot()];
+}
 RasterStatus LifetimeGlStage(LifetimeGlTransfer& transfer, bool readback, bool index) noexcept
 {
     if (transfer.Busy)
@@ -52,14 +65,14 @@ RasterStatus LifetimeGlFence(LifetimeGlTransfer& transfer) noexcept
     {
         // Commands may already have changed a destination. A GL error does not
         // prove completion: close this session before any slice/resource reuse.
-        internal::Fail(gSession, StartupError::RenderingUnavailable);
+        internal::Fail(GetWebGl().Session, StartupError::RenderingUnavailable);
         return status;
     }
     transfer.Sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     glFlush();
     if (transfer.Sync == nullptr)
     {
-        internal::Fail(gSession, StartupError::RenderingUnavailable);
+        internal::Fail(GetWebGl().Session, StartupError::RenderingUnavailable);
         return RasterStatus::Failed;
     }
     transfer.Busy = true;
@@ -68,7 +81,7 @@ RasterStatus LifetimeGlFence(LifetimeGlTransfer& transfer) noexcept
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    return gLifetimeGl[readback ? 1 : 0][slot].Busy == false;
+    return GetLifetimeWebGl().Transfers[readback ? 1 : 0][slot].Busy == false;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
                             const BufferDescription& info,
@@ -78,7 +91,7 @@ RasterStatus LifetimeUpload(usize transferSlot,
 {
     const auto bufferSlot = uploadTarget.Buffer;
 
-    auto& transfer = gLifetimeGl[0][transferSlot];
+    LifetimeGlTransfer& transfer = GetLifetimeWebGl().Transfers[0][transferSlot];
     const bool index = info.Role == BufferRole::Index16 || info.Role == BufferRole::Index32;
     const auto ready = LifetimeGlStage(transfer, false, index);
     if (ready != RasterStatus::Ready)
@@ -86,13 +99,13 @@ RasterStatus LifetimeUpload(usize transferSlot,
         return ready;
     }
     const auto target = index ? GL_ELEMENT_ARRAY_BUFFER : GL_ARRAY_BUFFER;
-    glGenBuffers(1, &gRasterBuffers[bufferSlot]);
-    glBindBuffer(target, gRasterBuffers[bufferSlot]);
+    glGenBuffers(1, &GetRasterWebGl().Buffers[bufferSlot]);
+    glBindBuffer(target, GetRasterWebGl().Buffers[bufferSlot]);
     glBufferData(target, static_cast<GLsizeiptr>(size), nullptr, GL_STATIC_DRAW);
     glBindBuffer(target, 0);
     glBindBuffer(GL_COPY_READ_BUFFER, transfer.Staging);
     glBufferSubData(GL_COPY_READ_BUFFER, 0, static_cast<GLsizeiptr>(size), bytes);
-    glBindBuffer(GL_COPY_WRITE_BUFFER, gRasterBuffers[bufferSlot]);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, GetRasterWebGl().Buffers[bufferSlot]);
     glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, static_cast<GLsizeiptr>(size));
     glBindBuffer(GL_COPY_READ_BUFFER, 0);
     glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
@@ -103,13 +116,13 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole role, const interna
     const auto bufferSlot = range.Buffer;
     const auto offset = range.Offset;
     const auto size = range.Size;
-    auto& transfer = gLifetimeGl[1][transferSlot];
+    LifetimeGlTransfer& transfer = GetLifetimeWebGl().Transfers[1][transferSlot];
     const auto ready = LifetimeGlStage(transfer, true, role == BufferRole::Index16 || role == BufferRole::Index32);
     if (ready != RasterStatus::Ready)
     {
         return ready;
     }
-    glBindBuffer(GL_COPY_READ_BUFFER, gRasterBuffers[bufferSlot]);
+    glBindBuffer(GL_COPY_READ_BUFFER, GetRasterWebGl().Buffers[bufferSlot]);
     glBindBuffer(GL_COPY_WRITE_BUFFER, transfer.Staging);
     glCopyBufferSubData(GL_COPY_READ_BUFFER,
                         GL_COPY_WRITE_BUFFER,
@@ -125,7 +138,7 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole role, const interna
 RasterStatus
 LifetimeBufferUpdate(usize slot, BufferRole role, const internal::LifetimeCopyRange& range, const uint8* bytes) noexcept
 {
-    auto& transfer = gLifetimeGl[0][slot];
+    LifetimeGlTransfer& transfer = GetLifetimeWebGl().Transfers[0][slot];
     const auto ready = LifetimeGlStage(transfer, false, role == BufferRole::Index16 || role == BufferRole::Index32);
     if (ready != RasterStatus::Ready)
     {
@@ -133,7 +146,7 @@ LifetimeBufferUpdate(usize slot, BufferRole role, const internal::LifetimeCopyRa
     }
     glBindBuffer(GL_COPY_READ_BUFFER, transfer.Staging);
     glBufferSubData(GL_COPY_READ_BUFFER, 0, static_cast<GLsizeiptr>(range.Size), bytes);
-    glBindBuffer(GL_COPY_WRITE_BUFFER, gRasterBuffers[range.Buffer]);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, GetRasterWebGl().Buffers[range.Buffer]);
     glCopyBufferSubData(GL_COPY_READ_BUFFER,
                         GL_COPY_WRITE_BUFFER,
                         0,
@@ -146,7 +159,7 @@ LifetimeBufferUpdate(usize slot, BufferRole role, const internal::LifetimeCopyRa
 RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer& info, const uint8* bytes) noexcept
 {
     const bool readback = info.Operation == internal::TextureTransferOperation::Readback;
-    auto& transfer = gLifetimeGl[readback ? 1 : 0][slot];
+    LifetimeGlTransfer& transfer = GetLifetimeWebGl().Transfers[readback ? 1 : 0][slot];
     const auto ready = LifetimeGlStage(transfer, readback, false);
     if (ready != RasterStatus::Ready)
     {
@@ -161,7 +174,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, static_cast<GLsizeiptr>(info.Size), bytes);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, static_cast<GLint>(info.RowPitch / 4));
-        glBindTexture(GL_TEXTURE_2D, gRasterTextures[info.Destination]);
+        glBindTexture(GL_TEXTURE_2D, GetRasterWebGl().Textures[info.Destination]);
         glTexSubImage2D(GL_TEXTURE_2D,
                         static_cast<GLint>(destination.Mip),
                         static_cast<GLint>(destination.X),
@@ -184,7 +197,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         glFramebufferTexture2D(GL_FRAMEBUFFER,
                                GL_COLOR_ATTACHMENT0,
                                GL_TEXTURE_2D,
-                               gRasterTextures[info.Source],
+                               GetRasterWebGl().Textures[info.Source],
                                static_cast<GLint>(source.Mip));
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         {
@@ -209,7 +222,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         }
         else
         {
-            glBindTexture(GL_TEXTURE_2D, gRasterTextures[info.Destination]);
+            glBindTexture(GL_TEXTURE_2D, GetRasterWebGl().Textures[info.Destination]);
             glCopyTexSubImage2D(GL_TEXTURE_2D,
                                 static_cast<GLint>(destination.Mip),
                                 static_cast<GLint>(destination.X),
@@ -223,12 +236,12 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glDeleteFramebuffers(1, &framebuffer);
     }
-    if (readback == false && gRasterTextureDescriptions[info.Destination].Attachment)
+    if (readback == false && GetRasterWebGl().TextureDescriptions[info.Destination].Attachment)
     {
-        const auto& description = gRasterTextureDescriptions[info.Destination];
+        const TextureDescription& description = GetRasterWebGl().TextureDescriptions[info.Destination];
         const auto width = static_cast<GLint>(description.Width), height = static_cast<GLint>(description.Height);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, gRasterSampleFramebuffers[info.Destination]);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gRasterFramebuffers[info.Destination]);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, GetRasterWebGl().SampleFramebuffers[info.Destination]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GetRasterWebGl().Framebuffers[info.Destination]);
         glDisable(GL_SCISSOR_TEST);
         glBlitFramebuffer(0, 0, width, height, 0, height, width, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -237,7 +250,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 }
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
-    auto& transfer = gLifetimeGl[readback ? 1 : 0][slot];
+    LifetimeGlTransfer& transfer = GetLifetimeWebGl().Transfers[readback ? 1 : 0][slot];
     if (transfer.Busy == false || transfer.Sync == nullptr)
     {
         return RasterStatus::Failed;
@@ -251,9 +264,9 @@ RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
     {
         return RasterStatus::Pending;
     }
-    internal::Fail(gSession,
-                   emscripten_is_webgl_context_lost(gContext) ? StartupError::DeviceLost
-                                                              : StartupError::RenderingUnavailable);
+    internal::Fail(GetWebGl().Session,
+                   emscripten_is_webgl_context_lost(GetWebGl().Context) ? StartupError::DeviceLost
+                                                                        : StartupError::RenderingUnavailable);
     return RasterStatus::Failed;
 }
 RasterStatus LifetimeCopyReadback(usize slot, uint8* output, usize size) noexcept
@@ -263,14 +276,14 @@ RasterStatus LifetimeCopyReadback(usize slot, uint8* output, usize size) noexcep
     {
         return ready;
     }
-    glBindBuffer(GL_COPY_READ_BUFFER, gLifetimeGl[1][slot].Staging);
+    glBindBuffer(GL_COPY_READ_BUFFER, GetLifetimeWebGl().Transfers[1][slot].Staging);
     LifetimeGlCopyBytes(output, static_cast<uint32>(size));
     glBindBuffer(GL_COPY_READ_BUFFER, 0);
     return RasterGlResult();
 }
 void LifetimeReleaseTransfer(bool readback, usize slot) noexcept
 {
-    auto& transfer = gLifetimeGl[readback ? 1 : 0][slot];
+    LifetimeGlTransfer& transfer = GetLifetimeWebGl().Transfers[readback ? 1 : 0][slot];
     if (transfer.Sync != nullptr)
     {
         glDeleteSync(transfer.Sync);
@@ -281,7 +294,8 @@ void LifetimeReleaseTransfer(bool readback, usize slot) noexcept
 void LifetimeReset() noexcept
 {
     // RasterReset already established idle/loss for context-owned teardown.
-    for (auto& direction : gLifetimeGl)
+    for (foundation::StaticArray<LifetimeGlTransfer, internal::LIFETIME_TRANSFERS>& direction :
+         GetLifetimeWebGl().Transfers)
     {
         for (auto& transfer : direction)
         {
@@ -299,10 +313,10 @@ void LifetimeReset() noexcept
 }
 void RasterDiscardSubmission() noexcept
 {
-    if (gRasterReserved != nullptr)
+    if (GetRasterWebGl().ReservedOrNull != nullptr)
     {
-        *gRasterReserved = {};
-        gRasterReserved = nullptr;
+        *GetRasterWebGl().ReservedOrNull = {};
+        GetRasterWebGl().ReservedOrNull = nullptr;
     }
 }
 } // namespace ludus::graphics::rhi::LUDUS_RHI_WEBGL_NAMESPACE

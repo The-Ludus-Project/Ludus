@@ -28,35 +28,52 @@ struct RasterWebCompletion final
     bool Busy = false;
     bool Submitted = false;
 };
-internal::StorageTable<WGPUBuffer> gRasterBuffers;
-internal::StorageTable<WGPUTexture> gRasterTextures;
-internal::StorageTable<TextureDescription> gRasterTextureDescriptions;
-internal::StorageTable<WGPUTexture> gRasterDepths;
-internal::StorageTable<WGPUTextureView> gRasterAttachmentViews;
-internal::StorageTable<WGPUTextureView> gRasterViewDepths;
-internal::StorageTable<WGPUTextureView> gRasterDepthViews;
-internal::StorageTable<WGPUTextureView> gRasterViews;
-internal::StorageTable<WGPUSampler> gRasterSamplers;
-internal::StorageTable<RasterWebShader> gRasterShaders;
-internal::StorageTable<WGPUBindGroupLayout> gRasterLayouts;
-internal::StorageTable<WGPUBindGroup> gRasterSets;
-internal::StorageTable<RasterWebPipeline> gRasterPipelines;
 struct ComputeWebPipeline final
 {
     WGPUComputePipeline Object = nullptr;
     WGPUPipelineLayout Layout = nullptr;
     uint32 Request = 0;
 };
-internal::StorageTable<ComputeWebPipeline> gComputePipelines;
-internal::StorageTable<RasterWebCompletion> gRasterCompletions;
-RasterWebCompletion* gRasterReserved = nullptr;
-uint64 gRasterCompleted = 0;
+/// @brief Portable raster and compute objects, completions and draw area of one device owner (R14c).
+struct RasterWebGpuState final
+{
+    internal::StorageTable<WGPUBuffer> Buffers;
+    internal::StorageTable<WGPUTexture> Textures;
+    internal::StorageTable<TextureDescription> TextureDescriptions;
+    internal::StorageTable<WGPUTexture> Depths;
+    internal::StorageTable<WGPUTextureView> AttachmentViews;
+    internal::StorageTable<WGPUTextureView> ViewDepths;
+    internal::StorageTable<WGPUTextureView> DepthViews;
+    internal::StorageTable<WGPUTextureView> Views;
+    internal::StorageTable<WGPUSampler> Samplers;
+    internal::StorageTable<RasterWebShader> Shaders;
+    internal::StorageTable<WGPUBindGroupLayout> Layouts;
+    internal::StorageTable<WGPUBindGroup> Sets;
+    internal::StorageTable<RasterWebPipeline> Pipelines;
+    internal::StorageTable<ComputeWebPipeline> ComputePipelines;
+    internal::StorageTable<RasterWebCompletion> Completions;
+    RasterWebCompletion* ReservedOrNull = nullptr;
+    uint64 Completed = 0;
+    internal::RasterArea Area{};
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<RasterWebGpuState, MAX_DEVICE_OWNERS> gRasterWebGpuStates{};
+/// RasterWebGpuState of the bound owner slot.
+RasterWebGpuState& GetRasterWebGpu() noexcept
+{
+    return gRasterWebGpuStates[internal::GetBoundOwnerSlot()];
+}
 void RasterValidated(WGPUPopErrorScopeStatus status,
                      WGPUErrorType error,
                      WGPUStringView message,
                      void* request,
-                     void*) noexcept
+                     void* session) noexcept
 {
+    // Request numbers are per owner (R14c); the session token binds the owner that issued it.
+    if (internal::Current(Token(session)) == false)
+    {
+        return;
+    }
     const auto result = status != WGPUPopErrorScopeStatus_Success ? RasterStatus::Failed
                         : error == WGPUErrorType_NoError          ? RasterStatus::Ready
                         : error == WGPUErrorType_OutOfMemory      ? RasterStatus::OutOfMemory
@@ -71,11 +88,20 @@ void RasterPipelineCreated(WGPUCreatePipelineAsyncStatus status,
                            WGPURenderPipeline object,
                            WGPUStringView message,
                            void* userdata,
-                           void*) noexcept
+                           void* session) noexcept
 {
+    // Request numbers are per owner (R14c); the session token binds the owner that issued it.
+    if (internal::Current(Token(session)) == false)
+    {
+        if (object != nullptr)
+        {
+            wgpuRenderPipelineRelease(object);
+        }
+        return;
+    }
     const auto request = Token(userdata);
     bool adopted = false;
-    for (auto& pipeline : gRasterPipelines)
+    for (RasterWebPipeline& pipeline : GetRasterWebGpu().Pipelines)
     {
         if (pipeline.Request == request)
         {
@@ -101,11 +127,20 @@ void ComputePipelineCreated(WGPUCreatePipelineAsyncStatus status,
                             WGPUComputePipeline object,
                             WGPUStringView message,
                             void* userdata,
-                            void*) noexcept
+                            void* session) noexcept
 {
+    // Request numbers are per owner (R14c); the session token binds the owner that issued it.
+    if (internal::Current(Token(session)) == false)
+    {
+        if (object != nullptr)
+        {
+            wgpuComputePipelineRelease(object);
+        }
+        return;
+    }
     const auto request = Token(userdata);
     bool adopted = false;
-    for (auto& pipeline : gComputePipelines)
+    for (ComputeWebPipeline& pipeline : GetRasterWebGpu().ComputePipelines)
     {
         if (pipeline.Request == request)
         {
@@ -130,8 +165,8 @@ void ComputePipelineCreated(WGPUCreatePipelineAsyncStatus status,
 void RasterScopes(uint32 request) noexcept
 {
     internal::RasterExpect(request, internal::RasterCallbacks::Two);
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_OutOfMemory);
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_OutOfMemory);
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_Validation);
 }
 RasterStatus RasterPop(uint32 request) noexcept
 {
@@ -139,8 +174,9 @@ RasterStatus RasterPop(uint32 request) noexcept
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = RasterValidated;
     callback.userdata1 = Userdata(request);
-    (void)wgpuDevicePopErrorScope(gDevice, callback);
-    (void)wgpuDevicePopErrorScope(gDevice, callback);
+    callback.userdata2 = Userdata(GetWebGpu().Session);
+    (void)wgpuDevicePopErrorScope(GetWebGpu().Device, callback);
+    (void)wgpuDevicePopErrorScope(GetWebGpu().Device, callback);
     return RasterStatus::Pending;
 }
 void RasterDone(WGPUQueueWorkDoneStatus status, WGPUStringView, void* userdata, void*) noexcept
@@ -155,9 +191,9 @@ void RasterDone(WGPUQueueWorkDoneStatus status, WGPUStringView, void* userdata, 
     }
     if (status == WGPUQueueWorkDoneStatus_Success)
     {
-        if (ordinal > gRasterCompleted)
+        if (ordinal > GetRasterWebGpu().Completed)
         {
-            gRasterCompleted = ordinal;
+            GetRasterWebGpu().Completed = ordinal;
         }
     }
     else
@@ -181,7 +217,7 @@ bool GetDescriptorArenaUsage(internal::DescriptorArenaUsage&) noexcept
 BindingCapabilities BindingLimits() noexcept
 {
     WGPULimits limits = WGPU_LIMITS_INIT;
-    if (gDevice == nullptr || wgpuDeviceGetLimits(gDevice, &limits) != WGPUStatus_Success)
+    if (GetWebGpu().Device == nullptr || wgpuDeviceGetLimits(GetWebGpu().Device, &limits) != WGPUStatus_Success)
     {
         return {};
     }
@@ -210,7 +246,7 @@ BindingCapabilities BindingLimits() noexcept
 RasterCapabilities RasterLimits() noexcept
 {
     WGPULimits limits = WGPU_LIMITS_INIT;
-    if (gDevice == nullptr || wgpuDeviceGetLimits(gDevice, &limits) != WGPUStatus_Success ||
+    if (GetWebGpu().Device == nullptr || wgpuDeviceGetLimits(GetWebGpu().Device, &limits) != WGPUStatus_Success ||
         limits.maxVertexBuffers < 2 || limits.maxVertexAttributes < 8 || limits.maxVertexBufferArrayStride < 256 ||
         limits.maxBindingsPerBindGroup < internal::RASTER_BINDINGS || limits.maxUniformBuffersPerShaderStage < 8 ||
         limits.maxSampledTexturesPerShaderStage < 8 || limits.maxSamplersPerShaderStage < 8)
@@ -234,13 +270,14 @@ RasterCapabilities RasterLimits() noexcept
 // no storage/copy/MSAA or R8/RG8 attachment path is advertised.
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
-    if (gDevice == nullptr || (internal::CompressedTexture(format) &&
-                               wgpuDeviceHasFeature(gDevice, WGPUFeatureName_TextureCompressionBC) == false))
+    if (GetWebGpu().Device == nullptr ||
+        (internal::CompressedTexture(format) &&
+         wgpuDeviceHasFeature(GetWebGpu().Device, WGPUFeatureName_TextureCompressionBC) == false))
     {
         return {};
     }
     WGPULimits limits = WGPU_LIMITS_INIT;
-    if (wgpuDeviceGetLimits(gDevice, &limits) != WGPUStatus_Success)
+    if (wgpuDeviceGetLimits(GetWebGpu().Device, &limits) != WGPUStatus_Success)
     {
         return {};
     }
@@ -277,7 +314,7 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
 {
     const ComputeCapabilities compute = ComputeLimits();
     WGPULimits limits = WGPU_LIMITS_INIT;
-    if (compute.MaxStorageRange == 0 || wgpuDeviceGetLimits(gDevice, &limits) != WGPUStatus_Success)
+    if (compute.MaxStorageRange == 0 || wgpuDeviceGetLimits(GetWebGpu().Device, &limits) != WGPUStatus_Success)
     {
         return {};
     }
@@ -309,14 +346,14 @@ IndirectCapabilities IndirectLimits() noexcept
         .MaxCommandsPerDraw = internal::MAX_INDIRECT_COMMANDS_PER_DRAW,
         .HasNonIndexedDraws = true,
         .HasDrawOffsets = true,
-        .HasFirstInstance = wgpuDeviceHasFeature(gDevice, WGPUFeatureName_IndirectFirstInstance) == true,
+        .HasFirstInstance = wgpuDeviceHasFeature(GetWebGpu().Device, WGPUFeatureName_IndirectFirstInstance) == true,
         .HasIndirectDispatch = true,
     };
 }
 ComputeCapabilities ComputeLimits() noexcept
 {
     WGPULimits limits = WGPU_LIMITS_INIT;
-    if (gDevice == nullptr || wgpuDeviceGetLimits(gDevice, &limits) != WGPUStatus_Success ||
+    if (GetWebGpu().Device == nullptr || wgpuDeviceGetLimits(GetWebGpu().Device, &limits) != WGPUStatus_Success ||
         limits.maxStorageBuffersPerShaderStage < 4 || limits.maxComputeInvocationsPerWorkgroup < 256)
     {
         return {};
@@ -339,21 +376,22 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
 {
     RasterScopes(request);
     internal::RasterExpect(request, internal::RasterCallbacks::Three);
-    auto& pipeline = gComputePipelines[slot];
+    ComputeWebPipeline& pipeline = GetRasterWebGpu().ComputePipelines[slot];
     pipeline.Request = request;
     WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout.bindGroupLayoutCount = 1;
-    layout.bindGroupLayouts = &gRasterLayouts[info.Layout];
-    pipeline.Layout = wgpuDeviceCreatePipelineLayout(gDevice, &layout);
+    layout.bindGroupLayouts = &GetRasterWebGpu().Layouts[info.Layout];
+    pipeline.Layout = wgpuDeviceCreatePipelineLayout(GetWebGpu().Device, &layout);
     WGPUComputePipelineDescriptor descriptor = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pipeline.Layout;
-    descriptor.compute.module = gRasterShaders[info.Shader].Object;
-    descriptor.compute.entryPoint = {gRasterShaders[info.Shader].Entry, WGPU_STRLEN};
+    descriptor.compute.module = GetRasterWebGpu().Shaders[info.Shader].Object;
+    descriptor.compute.entryPoint = {GetRasterWebGpu().Shaders[info.Shader].Entry, WGPU_STRLEN};
     WGPUCreateComputePipelineAsyncCallbackInfo callback = WGPU_CREATE_COMPUTE_PIPELINE_ASYNC_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = ComputePipelineCreated;
     callback.userdata1 = Userdata(request);
-    wgpuDeviceCreateComputePipelineAsync(gDevice, &descriptor, callback);
+    callback.userdata2 = Userdata(GetWebGpu().Session);
+    wgpuDeviceCreateComputePipelineAsync(GetWebGpu().Device, &descriptor, callback);
     return RasterPop(request);
 }
 // Thanks to W3C, "WebGPU", compute passes and resource usage scopes: closing
@@ -361,20 +399,22 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
 // https://www.w3.org/TR/webgpu/#compute-passes
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
-    auto pass = wgpuCommandEncoderBeginComputePass(gEncoder, nullptr);
+    WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(GetWebGpu().Encoder, nullptr);
     if (pass == nullptr)
     {
         return RasterStatus::OutOfMemory;
     }
-    wgpuComputePassEncoderSetPipeline(pass, gComputePipelines[packet.Pipeline].Object);
+    wgpuComputePassEncoderSetPipeline(pass, GetRasterWebGpu().ComputePipelines[packet.Pipeline].Object);
     wgpuComputePassEncoderSetBindGroup(pass,
                                        0,
-                                       gRasterSets[packet.Set],
+                                       GetRasterWebGpu().Sets[packet.Set],
                                        packet.DynamicOffsetCount,
                                        packet.DynamicOffsets);
     if (packet.Indirect != internal::RASTER_INVALID)
     {
-        wgpuComputePassEncoderDispatchWorkgroupsIndirect(pass, gRasterBuffers[packet.Indirect], packet.IndirectOffset);
+        wgpuComputePassEncoderDispatchWorkgroupsIndirect(pass,
+                                                         GetRasterWebGpu().Buffers[packet.Indirect],
+                                                         packet.IndirectOffset);
     }
     else
     {
@@ -402,8 +442,8 @@ RasterStatus RasterCreateBuffer(usize slot,
                        : info.Role == BufferRole::StorageIndirect ? WGPUBufferUsage_Storage | WGPUBufferUsage_Indirect
                                                                   : WGPUBufferUsage_Index;
     descriptor.usage |= WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
-    auto object = wgpuDeviceCreateBuffer(gDevice, &descriptor);
-    gRasterBuffers[slot] = object;
+    WGPUBuffer object = wgpuDeviceCreateBuffer(GetWebGpu().Device, &descriptor);
+    GetRasterWebGpu().Buffers[slot] = object;
     if (object != nullptr && wgpuBufferGetMapState(object) == WGPUBufferMapState_Mapped)
     {
         void* mapped = wgpuBufferGetMappedRange(object, 0, descriptor.size);
@@ -449,9 +489,9 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     {
         descriptor.usage = WGPUTextureUsage_RenderAttachment;
     }
-    auto texture = wgpuDeviceCreateTexture(gDevice, &descriptor);
-    gRasterTextures[slot] = texture;
-    gRasterTextureDescriptions[slot] = info;
+    WGPUTexture texture = wgpuDeviceCreateTexture(GetWebGpu().Device, &descriptor);
+    GetRasterWebGpu().Textures[slot] = texture;
+    GetRasterWebGpu().TextureDescriptions[slot] = info;
     if (texture != nullptr && info.Attachment == false && info.DeferredInitialization == false)
     {
         uint32 width = info.Width, height = info.Height;
@@ -469,7 +509,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
             const WGPUExtent3D extent{internal::TextureBlockRows(info.Format, width) * block,
                                       internal::TextureBlockRows(info.Format, height) * block,
                                       internal::TextureSlices(info, level)};
-            wgpuQueueWriteTexture(gQueue,
+            wgpuQueueWriteTexture(GetWebGpu().Queue,
                                   &destination,
                                   upload.Bytes.GetDataOrNull() + mip.Offset,
                                   mip.RowPitch * layout.rowsPerImage * extent.depthOrArrayLayers,
@@ -485,16 +525,16 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         attachment.dimension = WGPUTextureViewDimension_2D;
         attachment.mipLevelCount = 1;
         attachment.arrayLayerCount = 1;
-        gRasterAttachmentViews[slot] = wgpuTextureCreateView(texture, &attachment);
+        GetRasterWebGpu().AttachmentViews[slot] = wgpuTextureCreateView(texture, &attachment);
         descriptor.format = info.Stencil ? WGPUTextureFormat_Depth24PlusStencil8 : WGPUTextureFormat_Depth32Float;
         descriptor.usage = WGPUTextureUsage_RenderAttachment |
                            (info.SampleCount == 1 ? WGPUTextureUsage_TextureBinding : WGPUTextureUsage_None);
-        gRasterDepths[slot] = wgpuDeviceCreateTexture(gDevice, &descriptor);
-        if (gRasterDepths[slot] != nullptr)
+        GetRasterWebGpu().Depths[slot] = wgpuDeviceCreateTexture(GetWebGpu().Device, &descriptor);
+        if (GetRasterWebGpu().Depths[slot] != nullptr)
         {
-            gRasterDepthViews[slot] = wgpuTextureCreateView(gRasterDepths[slot], &attachment);
+            GetRasterWebGpu().DepthViews[slot] = wgpuTextureCreateView(GetRasterWebGpu().Depths[slot], &attachment);
         }
-        if (gRasterAttachmentViews[slot] == nullptr || gRasterDepthViews[slot] == nullptr)
+        if (GetRasterWebGpu().AttachmentViews[slot] == nullptr || GetRasterWebGpu().DepthViews[slot] == nullptr)
         {
             internal::RasterFail(request, RasterStatus::OutOfMemory);
         }
@@ -520,12 +560,13 @@ RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& sour
     view.aspect = source.View.Aspect == TextureAspect::Depth     ? WGPUTextureAspect_DepthOnly
                   : source.View.Aspect == TextureAspect::Stencil ? WGPUTextureAspect_StencilOnly
                                                                  : WGPUTextureAspect_All;
-    gRasterViews[slot] = wgpuTextureCreateView(
-        source.View.Aspect == TextureAspect::Color ? gRasterTextures[source.Texture] : gRasterDepths[source.Texture],
-        &view);
+    GetRasterWebGpu().Views[slot] =
+        wgpuTextureCreateView(source.View.Aspect == TextureAspect::Color ? GetRasterWebGpu().Textures[source.Texture]
+                                                                         : GetRasterWebGpu().Depths[source.Texture],
+                              &view);
     if (source.View.Attachment)
     {
-        gRasterViewDepths[slot] = wgpuTextureCreateView(gRasterDepths[source.Texture], &view);
+        GetRasterWebGpu().ViewDepths[slot] = wgpuTextureCreateView(GetRasterWebGpu().Depths[source.Texture], &view);
     }
     return RasterPop(request);
 }
@@ -542,7 +583,7 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& info, uin
         info.MipFilter == RasterMipFilter::Linear ? WGPUMipmapFilterMode_Linear : WGPUMipmapFilterMode_Nearest;
     descriptor.lodMinClamp = info.MinLod;
     descriptor.lodMaxClamp = info.MipFilter == RasterMipFilter::None ? 0 : info.MaxLod;
-    gRasterSamplers[slot] = wgpuDeviceCreateSampler(gDevice, &descriptor);
+    GetRasterWebGpu().Samplers[slot] = wgpuDeviceCreateSampler(GetWebGpu().Device, &descriptor);
     return RasterPop(request);
 }
 RasterStatus RasterCreateShader(usize slot,
@@ -555,8 +596,8 @@ RasterStatus RasterCreateShader(usize slot,
     source.code = {info.Wgsl.data(), info.Wgsl.size()};
     WGPUShaderModuleDescriptor descriptor = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
     descriptor.nextInChain = &source.chain;
-    auto& shader = gRasterShaders[slot];
-    shader.Object = wgpuDeviceCreateShaderModule(gDevice, &descriptor);
+    RasterWebShader& shader = GetRasterWebGpu().Shaders[slot];
+    shader.Object = wgpuDeviceCreateShaderModule(GetWebGpu().Device, &descriptor);
     std::memcpy(shader.Entry, info.WgslEntry.data(), info.WgslEntry.size());
     shader.Entry[info.WgslEntry.size()] = '\0';
     return RasterPop(request);
@@ -610,7 +651,7 @@ RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, 
     WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = info.Count;
     descriptor.entries = entries;
-    gRasterLayouts[slot] = wgpuDeviceCreateBindGroupLayout(gDevice, &descriptor);
+    GetRasterWebGpu().Layouts[slot] = wgpuDeviceCreateBindGroupLayout(GetWebGpu().Device, &descriptor);
     return RasterPop(request);
 }
 RasterStatus RasterCreateSet(usize slot,
@@ -629,37 +670,37 @@ RasterStatus RasterCreateSet(usize slot,
         if (source.Kind == RasterBindingKind::UniformBuffer || source.Kind == RasterBindingKind::StorageRead ||
             source.Kind == RasterBindingKind::StorageReadWrite)
         {
-            entry.buffer = gRasterBuffers[info.Slots[i]];
+            entry.buffer = GetRasterWebGpu().Buffers[info.Slots[i]];
             entry.offset = info.Offsets[i];
             entry.size = info.Sizes[i];
         }
         else if (internal::ViewBinding(source.Kind))
         {
-            entry.textureView = gRasterViews[info.Slots[i]];
+            entry.textureView = GetRasterWebGpu().Views[info.Slots[i]];
         }
         else
         {
-            entry.sampler = gRasterSamplers[info.Slots[i]];
+            entry.sampler = GetRasterWebGpu().Samplers[info.Slots[i]];
         }
     }
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    descriptor.layout = gRasterLayouts[info.Layout];
+    descriptor.layout = GetRasterWebGpu().Layouts[info.Layout];
     descriptor.entryCount = layout.Count;
     descriptor.entries = entries;
-    gRasterSets[slot] = wgpuDeviceCreateBindGroup(gDevice, &descriptor);
+    GetRasterWebGpu().Sets[slot] = wgpuDeviceCreateBindGroup(GetWebGpu().Device, &descriptor);
     return RasterPop(request);
 }
 RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo& info, uint32 request) noexcept
 {
     RasterScopes(request);
-    auto& pipeline = gRasterPipelines[slot];
+    RasterWebPipeline& pipeline = GetRasterWebGpu().Pipelines[slot];
     pipeline.Info = info;
     pipeline.Request = request;
     internal::RasterExpect(request, internal::RasterCallbacks::Three);
     WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout.bindGroupLayoutCount = 1;
-    layout.bindGroupLayouts = &gRasterLayouts[info.Layout];
-    pipeline.Layout = wgpuDeviceCreatePipelineLayout(gDevice, &layout);
+    layout.bindGroupLayouts = &GetRasterWebGpu().Layouts[info.Layout];
+    pipeline.Layout = wgpuDeviceCreatePipelineLayout(GetWebGpu().Device, &layout);
     constexpr usize VERTEX_STREAM_COUNT = sizeof(info.Streams) / sizeof(info.Streams[0]);
     constexpr usize VERTEX_ATTRIBUTE_COUNT = sizeof(info.Attributes) / sizeof(info.Attributes[0]);
     // Only initialized attributeCount prefixes reach WebGPU. Value-initializing
@@ -706,8 +747,8 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
         target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = gRasterShaders[info.Fragment].Object;
-    fragment.entryPoint = {gRasterShaders[info.Fragment].Entry, WGPU_STRLEN};
+    fragment.module = GetRasterWebGpu().Shaders[info.Fragment].Object;
+    fragment.entryPoint = {GetRasterWebGpu().Shaders[info.Fragment].Entry, WGPU_STRLEN};
     WGPUColorTargetState targets[4]{};
     for (usize i = 0; i < info.ColorCount; ++i)
     {
@@ -764,8 +805,8 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     descriptor.multisample.count = info.SampleCount;
     descriptor.multisample.alphaToCoverageEnabled = info.ShouldUseAlphaToCoverage;
     descriptor.layout = pipeline.Layout;
-    descriptor.vertex.module = gRasterShaders[info.Vertex].Object;
-    descriptor.vertex.entryPoint = {gRasterShaders[info.Vertex].Entry, WGPU_STRLEN};
+    descriptor.vertex.module = GetRasterWebGpu().Shaders[info.Vertex].Object;
+    descriptor.vertex.entryPoint = {GetRasterWebGpu().Shaders[info.Vertex].Entry, WGPU_STRLEN};
     descriptor.vertex.bufferCount = info.StreamCount;
     descriptor.vertex.buffers = buffers;
     descriptor.fragment = &fragment;
@@ -775,7 +816,8 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = RasterPipelineCreated;
     callback.userdata1 = Userdata(request);
-    wgpuDeviceCreateRenderPipelineAsync(gDevice, &descriptor, callback);
+    callback.userdata2 = Userdata(GetWebGpu().Session);
+    wgpuDeviceCreateRenderPipelineAsync(GetWebGpu().Device, &descriptor, callback);
     return RasterPop(request);
 }
 // Thanks to the W3C GPU for the Web Working Group, WebGPU, "GPUObjectBase label":
@@ -783,19 +825,19 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
 void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
 {
     const WGPUStringView label{name, std::strlen(name)};
-    if (kind == internal::RasterKind::Buffer && gRasterBuffers[slot] != nullptr)
+    if (kind == internal::RasterKind::Buffer && GetRasterWebGpu().Buffers[slot] != nullptr)
     {
-        wgpuBufferSetLabel(gRasterBuffers[slot], label);
+        wgpuBufferSetLabel(GetRasterWebGpu().Buffers[slot], label);
     }
     else if (kind == internal::RasterKind::Texture)
     {
-        if (gRasterTextures[slot] != nullptr)
+        if (GetRasterWebGpu().Textures[slot] != nullptr)
         {
-            wgpuTextureSetLabel(gRasterTextures[slot], label);
+            wgpuTextureSetLabel(GetRasterWebGpu().Textures[slot], label);
         }
-        if (gRasterDepths[slot] != nullptr)
+        if (GetRasterWebGpu().Depths[slot] != nullptr)
         {
-            wgpuTextureSetLabel(gRasterDepths[slot], label);
+            wgpuTextureSetLabel(GetRasterWebGpu().Depths[slot], label);
         }
     }
 }
@@ -804,94 +846,94 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            if (gRasterBuffers[slot])
+            if (GetRasterWebGpu().Buffers[slot])
             {
-                wgpuBufferRelease(gRasterBuffers[slot]);
+                wgpuBufferRelease(GetRasterWebGpu().Buffers[slot]);
             }
-            gRasterBuffers[slot] = nullptr;
+            GetRasterWebGpu().Buffers[slot] = nullptr;
             break;
         case internal::RasterKind::Texture:
-            if (gRasterTextures[slot])
+            if (GetRasterWebGpu().Textures[slot])
             {
-                wgpuTextureRelease(gRasterTextures[slot]);
+                wgpuTextureRelease(GetRasterWebGpu().Textures[slot]);
             }
-            if (gRasterAttachmentViews[slot])
+            if (GetRasterWebGpu().AttachmentViews[slot])
             {
-                wgpuTextureViewRelease(gRasterAttachmentViews[slot]);
+                wgpuTextureViewRelease(GetRasterWebGpu().AttachmentViews[slot]);
             }
-            if (gRasterDepthViews[slot])
+            if (GetRasterWebGpu().DepthViews[slot])
             {
-                wgpuTextureViewRelease(gRasterDepthViews[slot]);
+                wgpuTextureViewRelease(GetRasterWebGpu().DepthViews[slot]);
             }
-            if (gRasterDepths[slot])
+            if (GetRasterWebGpu().Depths[slot])
             {
-                wgpuTextureRelease(gRasterDepths[slot]);
+                wgpuTextureRelease(GetRasterWebGpu().Depths[slot]);
             }
-            gRasterAttachmentViews[slot] = gRasterDepthViews[slot] = nullptr;
-            gRasterDepths[slot] = nullptr;
-            gRasterTextures[slot] = nullptr;
+            GetRasterWebGpu().AttachmentViews[slot] = GetRasterWebGpu().DepthViews[slot] = nullptr;
+            GetRasterWebGpu().Depths[slot] = nullptr;
+            GetRasterWebGpu().Textures[slot] = nullptr;
             break;
         case internal::RasterKind::View:
-            if (gRasterViews[slot])
+            if (GetRasterWebGpu().Views[slot])
             {
-                wgpuTextureViewRelease(gRasterViews[slot]);
+                wgpuTextureViewRelease(GetRasterWebGpu().Views[slot]);
             }
-            gRasterViews[slot] = nullptr;
-            if (gRasterViewDepths[slot])
+            GetRasterWebGpu().Views[slot] = nullptr;
+            if (GetRasterWebGpu().ViewDepths[slot])
             {
-                wgpuTextureViewRelease(gRasterViewDepths[slot]);
+                wgpuTextureViewRelease(GetRasterWebGpu().ViewDepths[slot]);
             }
-            gRasterViewDepths[slot] = nullptr;
+            GetRasterWebGpu().ViewDepths[slot] = nullptr;
             break;
         case internal::RasterKind::Sampler:
-            if (gRasterSamplers[slot])
+            if (GetRasterWebGpu().Samplers[slot])
             {
-                wgpuSamplerRelease(gRasterSamplers[slot]);
+                wgpuSamplerRelease(GetRasterWebGpu().Samplers[slot]);
             }
-            gRasterSamplers[slot] = nullptr;
+            GetRasterWebGpu().Samplers[slot] = nullptr;
             break;
         case internal::RasterKind::Shader:
-            if (gRasterShaders[slot].Object)
+            if (GetRasterWebGpu().Shaders[slot].Object)
             {
-                wgpuShaderModuleRelease(gRasterShaders[slot].Object);
+                wgpuShaderModuleRelease(GetRasterWebGpu().Shaders[slot].Object);
             }
-            gRasterShaders[slot] = {};
+            GetRasterWebGpu().Shaders[slot] = {};
             break;
         case internal::RasterKind::Layout:
-            if (gRasterLayouts[slot])
+            if (GetRasterWebGpu().Layouts[slot])
             {
-                wgpuBindGroupLayoutRelease(gRasterLayouts[slot]);
+                wgpuBindGroupLayoutRelease(GetRasterWebGpu().Layouts[slot]);
             }
-            gRasterLayouts[slot] = nullptr;
+            GetRasterWebGpu().Layouts[slot] = nullptr;
             break;
         case internal::RasterKind::Set:
-            if (gRasterSets[slot])
+            if (GetRasterWebGpu().Sets[slot])
             {
-                wgpuBindGroupRelease(gRasterSets[slot]);
+                wgpuBindGroupRelease(GetRasterWebGpu().Sets[slot]);
             }
-            gRasterSets[slot] = nullptr;
+            GetRasterWebGpu().Sets[slot] = nullptr;
             break;
         case internal::RasterKind::Pipeline:
-            if (gRasterPipelines[slot].Object)
+            if (GetRasterWebGpu().Pipelines[slot].Object)
             {
-                wgpuRenderPipelineRelease(gRasterPipelines[slot].Object);
+                wgpuRenderPipelineRelease(GetRasterWebGpu().Pipelines[slot].Object);
             }
-            if (gRasterPipelines[slot].Layout)
+            if (GetRasterWebGpu().Pipelines[slot].Layout)
             {
-                wgpuPipelineLayoutRelease(gRasterPipelines[slot].Layout);
+                wgpuPipelineLayoutRelease(GetRasterWebGpu().Pipelines[slot].Layout);
             }
-            gRasterPipelines[slot] = {};
+            GetRasterWebGpu().Pipelines[slot] = {};
             break;
         case internal::RasterKind::ComputePipeline:
-            if (gComputePipelines[slot].Object)
+            if (GetRasterWebGpu().ComputePipelines[slot].Object)
             {
-                wgpuComputePipelineRelease(gComputePipelines[slot].Object);
+                wgpuComputePipelineRelease(GetRasterWebGpu().ComputePipelines[slot].Object);
             }
-            if (gComputePipelines[slot].Layout)
+            if (GetRasterWebGpu().ComputePipelines[slot].Layout)
             {
-                wgpuPipelineLayoutRelease(gComputePipelines[slot].Layout);
+                wgpuPipelineLayoutRelease(GetRasterWebGpu().ComputePipelines[slot].Layout);
             }
-            gComputePipelines[slot] = {};
+            GetRasterWebGpu().ComputePipelines[slot] = {};
             break;
         case internal::RasterKind::RayGeometry:
         case internal::RasterKind::RayScene:
@@ -902,38 +944,37 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
             break;
     }
 }
-internal::RasterArea gRasterArea{};
 void RasterFrameExtent() noexcept
 {
-    gRasterArea = {};
+    GetRasterWebGpu().Area = {};
 }
 RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 {
-    if (gRasterArea.Empty)
+    if (GetRasterWebGpu().Area.Empty)
     {
         return RasterStatus::Ready;
     }
-    const auto& pipeline = gRasterPipelines[packet.Pipeline];
-    wgpuRenderPassEncoderSetPipeline(gPass, pipeline.Object);
-    wgpuRenderPassEncoderSetStencilReference(gPass, pipeline.Info.StencilReference);
-    wgpuRenderPassEncoderSetBindGroup(gPass,
+    const RasterWebPipeline& pipeline = GetRasterWebGpu().Pipelines[packet.Pipeline];
+    wgpuRenderPassEncoderSetPipeline(GetWebGpu().Pass, pipeline.Object);
+    wgpuRenderPassEncoderSetStencilReference(GetWebGpu().Pass, pipeline.Info.StencilReference);
+    wgpuRenderPassEncoderSetBindGroup(GetWebGpu().Pass,
                                       0,
-                                      gRasterSets[packet.Set],
+                                      GetRasterWebGpu().Sets[packet.Set],
                                       packet.DynamicOffsetCount,
                                       packet.DynamicOffsets);
     for (usize i = 0; i < pipeline.Info.StreamCount; ++i)
     {
-        wgpuRenderPassEncoderSetVertexBuffer(gPass,
+        wgpuRenderPassEncoderSetVertexBuffer(GetWebGpu().Pass,
                                              static_cast<uint32>(i),
-                                             gRasterBuffers[packet.Vertices[i]],
+                                             GetRasterWebGpu().Buffers[packet.Vertices[i]],
                                              packet.Offsets[i],
                                              WGPU_WHOLE_SIZE);
     }
     const bool isIndexed = packet.Indices != internal::RASTER_INVALID;
     if (isIndexed == true)
     {
-        wgpuRenderPassEncoderSetIndexBuffer(gPass,
-                                            gRasterBuffers[packet.Indices],
+        wgpuRenderPassEncoderSetIndexBuffer(GetWebGpu().Pass,
+                                            GetRasterWebGpu().Buffers[packet.Indices],
                                             packet.Index32 ? WGPUIndexFormat_Uint32 : WGPUIndexFormat_Uint16,
                                             packet.IndexOffset,
                                             WGPU_WHOLE_SIZE);
@@ -946,27 +987,29 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
             const uint64 offset = packet.IndirectOffset + usize{command} * packet.IndirectStride;
             if (isIndexed == true)
             {
-                wgpuRenderPassEncoderDrawIndexedIndirect(gPass, gRasterBuffers[packet.Indirect], offset);
+                wgpuRenderPassEncoderDrawIndexedIndirect(GetWebGpu().Pass,
+                                                         GetRasterWebGpu().Buffers[packet.Indirect],
+                                                         offset);
             }
             else
             {
-                wgpuRenderPassEncoderDrawIndirect(gPass, gRasterBuffers[packet.Indirect], offset);
+                wgpuRenderPassEncoderDrawIndirect(GetWebGpu().Pass, GetRasterWebGpu().Buffers[packet.Indirect], offset);
             }
         }
     }
     else
     {
-        wgpuRenderPassEncoderDrawIndexed(gPass, packet.IndexCount, packet.InstanceCount, 0, 0, 0);
+        wgpuRenderPassEncoderDrawIndexed(GetWebGpu().Pass, packet.IndexCount, packet.InstanceCount, 0, 0, 0);
     }
     return RasterStatus::Ready;
 }
 void RasterEndPass() noexcept
 {
-    if (gPass != nullptr)
+    if (GetWebGpu().Pass != nullptr)
     {
-        wgpuRenderPassEncoderEnd(gPass);
-        wgpuRenderPassEncoderRelease(gPass);
-        gPass = nullptr;
+        wgpuRenderPassEncoderEnd(GetWebGpu().Pass);
+        wgpuRenderPassEncoderRelease(GetWebGpu().Pass);
+        GetWebGpu().Pass = nullptr;
     }
 }
 RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
@@ -989,7 +1032,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     const auto& state = info.Description;
     const bool surface = info.Texture == internal::RASTER_INVALID;
     WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    color.view = surface ? gView : gRasterAttachmentViews[info.Texture];
+    color.view = surface ? GetWebGpu().View : GetRasterWebGpu().AttachmentViews[info.Texture];
     // Discard has no WebGPU load operation; security initialization clears, but
     // the semantic ledger deliberately keeps those contents undefined.
     color.loadOp = state.ColorLoad == RasterLoad::Load ? WGPULoadOp_Load : WGPULoadOp_Clear;
@@ -999,7 +1042,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
                         static_cast<float64>(state.Clear[2]),
                         static_cast<float64>(state.Clear[3])};
     WGPURenderPassDepthStencilAttachment depth = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
-    depth.view = surface ? gDepthView : gRasterDepthViews[info.Texture];
+    depth.view = surface ? GetWebGpu().DepthView : GetRasterWebGpu().DepthViews[info.Texture];
     depth.depthReadOnly = state.DepthReadOnly;
     // The browser bridge forwards this value even for read-only depth. Keep
     // the ignored value finite instead of forwarding the C API's NaN default.
@@ -1016,10 +1059,10 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
         const auto& c = info.Colors[i];
         auto& output = colors[i];
         output = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-        output.view = gRasterViews[c.View];
+        output.view = GetRasterWebGpu().Views[c.View];
         if (c.ResolveView != internal::RASTER_INVALID)
         {
-            output.resolveTarget = gRasterViews[c.ResolveView];
+            output.resolveTarget = GetRasterWebGpu().Views[c.ResolveView];
         }
         output.loadOp = c.Load == RasterLoad::Load ? WGPULoadOp_Load : WGPULoadOp_Clear;
         output.storeOp = c.Store == RasterStore::Store ? WGPUStoreOp_Store : WGPUStoreOp_Discard;
@@ -1030,7 +1073,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     }
     if (info.ColorCount != 0)
     {
-        depth.view = gRasterViewDepths[info.Colors[0].View];
+        depth.view = GetRasterWebGpu().ViewDepths[info.Colors[0].View];
     }
     if (info.Stencil)
     {
@@ -1047,40 +1090,40 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     pass.depthStencilAttachment = &depth;
     const uint32 width = surface == true ? GetActiveSurface().Target.Width : info.Width;
     const uint32 height = surface == true ? GetActiveSurface().Target.Height : info.Height;
-    if (internal::RasterResolveArea(state, width, height, gRasterArea) == false)
+    if (internal::RasterResolveArea(state, width, height, GetRasterWebGpu().Area) == false)
     {
         return RasterStatus::InvalidDescription;
     }
-    gPass = wgpuCommandEncoderBeginRenderPass(gEncoder, &pass);
-    if (gPass == nullptr)
+    GetWebGpu().Pass = wgpuCommandEncoderBeginRenderPass(GetWebGpu().Encoder, &pass);
+    if (GetWebGpu().Pass == nullptr)
     {
         return RasterStatus::Failed;
     }
-    const auto& v = gRasterArea.Viewport;
-    const auto& c = gRasterArea.Scissor;
-    wgpuRenderPassEncoderSetViewport(gPass,
+    const RasterRectangle& v = GetRasterWebGpu().Area.Viewport;
+    const RasterRectangle& c = GetRasterWebGpu().Area.Scissor;
+    wgpuRenderPassEncoderSetViewport(GetWebGpu().Pass,
                                      static_cast<float32>(v.X),
                                      static_cast<float32>(v.Y),
                                      static_cast<float32>(v.Width),
                                      static_cast<float32>(v.Height),
                                      0,
                                      1);
-    wgpuRenderPassEncoderSetScissorRect(gPass, c.X, c.Y, c.Width, c.Height);
+    wgpuRenderPassEncoderSetScissorRect(GetWebGpu().Pass, c.X, c.Y, c.Width, c.Height);
     return RasterStatus::Ready;
 }
 RasterStatus RasterReserveSubmission() noexcept
 {
-    if (gRasterReserved != nullptr)
+    if (GetRasterWebGpu().ReservedOrNull != nullptr)
     {
         return RasterStatus::Ready;
     }
     for (usize i = 0; i < internal::CurrentStorageLimits().Submissions; ++i)
     {
-        auto& completion = gRasterCompletions[i];
+        RasterWebCompletion& completion = GetRasterWebGpu().Completions[i];
         if (completion.Busy == false)
         {
-            completion = {0, gSession, true, false};
-            gRasterReserved = &completion;
+            completion = {0, GetWebGpu().Session, true, false};
+            GetRasterWebGpu().ReservedOrNull = &completion;
             return RasterStatus::Ready;
         }
     }
@@ -1088,34 +1131,34 @@ RasterStatus RasterReserveSubmission() noexcept
 }
 void RasterSubmit(uint64 ordinal) noexcept
 {
-    if (gRasterReserved == nullptr)
+    if (GetRasterWebGpu().ReservedOrNull == nullptr)
     {
         return;
     }
-    auto* completion = gRasterReserved;
-    gRasterReserved = nullptr;
+    RasterWebCompletion* completion = GetRasterWebGpu().ReservedOrNull;
+    GetRasterWebGpu().ReservedOrNull = nullptr;
     completion->Ordinal = ordinal;
     completion->Submitted = true;
     WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = RasterDone;
     callback.userdata1 = completion;
-    (void)wgpuQueueOnSubmittedWorkDone(gQueue, callback);
+    (void)wgpuQueueOnSubmittedWorkDone(GetWebGpu().Queue, callback);
 }
 uint64 RasterCompleted() noexcept
 {
-    return gRasterCompleted;
+    return GetRasterWebGpu().Completed;
 }
 void RasterReset() noexcept
 {
-    if (gRasterReserved != nullptr)
+    if (GetRasterWebGpu().ReservedOrNull != nullptr)
     {
-        *gRasterReserved = {};
-        gRasterReserved = nullptr;
+        *GetRasterWebGpu().ReservedOrNull = {};
+        GetRasterWebGpu().ReservedOrNull = nullptr;
     }
     // Submitted callback cells stay occupied until their old-session callback drains.
     // Reusing their addresses during restart would let late callbacks retire new work.
-    gRasterCompleted = 0;
+    GetRasterWebGpu().Completed = 0;
 }
 void RasterShutdown() noexcept {}
 
@@ -1124,35 +1167,40 @@ RasterStatus RasterGrow(internal::RasterKind kind, usize count) noexcept
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            return gRasterBuffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGpu().Buffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Texture:
-            return gRasterTextures.EnsureSlots(count) && gRasterTextureDescriptions.EnsureSlots(count) &&
-                           gRasterDepths.EnsureSlots(count) && gRasterAttachmentViews.EnsureSlots(count) &&
-                           gRasterDepthViews.EnsureSlots(count)
+            return GetRasterWebGpu().Textures.EnsureSlots(count) &&
+                           GetRasterWebGpu().TextureDescriptions.EnsureSlots(count) &&
+                           GetRasterWebGpu().Depths.EnsureSlots(count) &&
+                           GetRasterWebGpu().AttachmentViews.EnsureSlots(count) &&
+                           GetRasterWebGpu().DepthViews.EnsureSlots(count)
                        ? RasterStatus::Ready
                        : internal::StorageFailure();
         case internal::RasterKind::View:
-            return gRasterViews.EnsureSlots(count) && gRasterViewDepths.EnsureSlots(count) ? RasterStatus::Ready
-                                                                                           : internal::StorageFailure();
+            return GetRasterWebGpu().Views.EnsureSlots(count) && GetRasterWebGpu().ViewDepths.EnsureSlots(count)
+                       ? RasterStatus::Ready
+                       : internal::StorageFailure();
         case internal::RasterKind::Sampler:
-            return gRasterSamplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGpu().Samplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Shader:
-            return gRasterShaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGpu().Shaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Layout:
-            return gRasterLayouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGpu().Layouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Set:
-            return gRasterSets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGpu().Sets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Pipeline:
-            return gRasterPipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGpu().Pipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::ComputePipeline:
-            return gComputePipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGpu().ComputePipelines.EnsureSlots(count) ? RasterStatus::Ready
+                                                                         : internal::StorageFailure();
         default:
             return RasterStatus::InvalidDescription;
     }
 }
 RasterStatus RasterPrepareStorage() noexcept
 {
-    return gRasterCompletions.EnsureSlots(internal::CurrentStorageLimits().Submissions) ? RasterStatus::Ready
-                                                                                        : internal::StorageFailure();
+    return GetRasterWebGpu().Completions.EnsureSlots(internal::CurrentStorageLimits().Submissions)
+               ? RasterStatus::Ready
+               : internal::StorageFailure();
 }
 } // namespace ludus::graphics::rhi::LUDUS_RHI_WEBGPU_NAMESPACE
