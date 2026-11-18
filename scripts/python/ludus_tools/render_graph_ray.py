@@ -417,14 +417,12 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     launch.PositionPixel = uint2(pixel % Dimensions.x, pixel / Dimensions.x);
     launch.ExtentPixel = Dimensions.xy;
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
-    float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
-    float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    farPositionWorld /= farPositionWorld.w;
-    launch.CameraRay.OriginWorld = CameraPositionWorld.w != 0 ? nearPositionWorld.xyz : CameraPositionWorld.xyz;
-    launch.CameraRay.DirectionWorld = NormalizeOrZero(farPositionWorld.xyz - launch.CameraRay.OriginWorld);
-    launch.CameraRay.MinDistanceWorld = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
-    launch.CameraRay.MaxDistanceWorld = dot(farPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
+    CameraRaySegment camera = MakeCameraRaySegment(ClipToEye, CameraPositionWorld.xyz, CameraPositionWorld.w != 0,
+                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2), 0);
+    launch.CameraRay.OriginWorld = camera.OriginWorld;
+    launch.CameraRay.DirectionWorld = camera.DirectionWorld;
+    launch.CameraRay.MinDistanceWorld = camera.MinDistanceWorld;
+    launch.CameraRay.MaxDistanceWorld = camera.MaxDistanceWorld;
     Ray ray = RAY_GENERATION(launch);
     if (any(isfinite(ray.OriginWorld) == false) || any(isfinite(ray.DirectionWorld) == false) ||
         isfinite(ray.MinDistanceWorld) == false || isfinite(ray.MaxDistanceWorld) == false ||
@@ -684,7 +682,8 @@ float3 EvaluateGraphRay(uint pixel)
     RayLaunch launch;
     launch.PositionPixel = uint2(pixel % Dimensions.x, pixel / Dimensions.x);
     launch.ExtentPixel = Dimensions.xy;
-    launch.CameraClipToWorld = ClipToWorld;
+    launch.CameraClipToWorld = MakeCameraClipToWorld(ClipToEye, CameraPositionWorld.xyz);
+    launch.CameraClipToEye = ClipToEye;
     launch.CameraPositionWorld = CameraPositionWorld.xyz;
     launch.IsOrthographic = CameraPositionWorld.w != 0;
     launch.IsFullImageDispatch = all(Tile.xy == uint2(0)) && all(Tile.zw == Dimensions.xy);
@@ -694,15 +693,7 @@ float3 EvaluateGraphRay(uint pixel)
     queries.RandomPixel = pixel;
     queries.RandomSampleIndex = launch.SampleIndex;
     queries.NextRandomDimension = 0;
-    float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
-    float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
-    float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    farPositionWorld /= farPositionWorld.w;
-    launch.CameraRay.OriginWorld = CameraPositionWorld.w != 0 ? nearPositionWorld.xyz : CameraPositionWorld.xyz;
-    launch.CameraRay.DirectionWorld = NormalizeOrZero(farPositionWorld.xyz - launch.CameraRay.OriginWorld);
-    launch.CameraRay.MinDistanceWorld = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
-    launch.CameraRay.MaxDistanceWorld = dot(farPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
+    launch.CameraRay = MakeCameraRay(launch, float2(0.5));
     float3 radiance = RAY_GENERATION(scene, launch, queries);
     if (queries.HasFailed == true)
     {

@@ -78,6 +78,10 @@ struct RayLaunch
     uint2 ExtentPixel;
     Ray CameraRay;
     float4x4 CameraClipToWorld;
+    /// Clip to eye-relative world: world axes with the origin at CameraPositionWorld. Build camera rays from it and
+    /// add the eye last, as MakeCameraRay does; CameraClipToWorld loses pixel-scale directions to its eye * w terms
+    /// when the camera is far from the world origin with a centimetre near plane.
+    float4x4 CameraClipToEye;
     float3 CameraPositionWorld;
     bool IsOrthographic;
     /// True when this invocation belongs to an entire-image dispatch rather than a capture row band.
@@ -1851,16 +1855,16 @@ SceneInfo GetSceneInfo(SceneContext scene)
 Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
 {
     float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
-    float4 nearPositionWorld = mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
-    float4 farPositionWorld = mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    farPositionWorld /= farPositionWorld.w;
+    CameraRaySegment camera = MakeCameraRaySegment(launch.CameraClipToEye,
+                                                   launch.CameraPositionWorld,
+                                                   launch.IsOrthographic,
+                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2),
+                                                   0);
     Ray ray;
-    ray.OriginWorld = launch.IsOrthographic == true ? nearPositionWorld.xyz : launch.CameraPositionWorld;
-    ray.DirectionWorld = NormalizeOrZero(farPositionWorld.xyz - ray.OriginWorld);
-    ray.MinDistanceWorld =
-        launch.IsOrthographic == true ? 0 : dot(nearPositionWorld.xyz - ray.OriginWorld, ray.DirectionWorld);
-    ray.MaxDistanceWorld = dot(farPositionWorld.xyz - ray.OriginWorld, ray.DirectionWorld);
+    ray.OriginWorld = camera.OriginWorld;
+    ray.DirectionWorld = camera.DirectionWorld;
+    ray.MinDistanceWorld = camera.MinDistanceWorld;
+    ray.MaxDistanceWorld = camera.MaxDistanceWorld;
     return ray;
 }
 
