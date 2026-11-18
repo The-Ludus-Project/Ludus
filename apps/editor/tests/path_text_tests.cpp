@@ -98,12 +98,13 @@ TEST_CASE("A document name drops its qualifier before it elides, and keeps its s
     CHECK(shownName == name);
     CHECK(shownQualifier == GetDocumentQualifierSeparator() + qualifier);
 
-    // Short of the whole qualifier: it is cut from the middle, the name stays whole.
+    // Short of the whole qualifier: it is cut at its end, so it reads from its start ("main · Hybr…", not
+    // "main · Hybr…ions"); the name stays whole.
     const int partWidth = metrics.horizontalAdvance(name + GetDocumentQualifierSeparator() + qualifier.left(8));
     ElideDocumentName(name, qualifier, metrics, partWidth, shownName, shownQualifier);
     CHECK(shownName == name);
-    CHECK(shownQualifier.startsWith(GetDocumentQualifierSeparator()) == true);
-    CHECK(shownQualifier.contains(QStringLiteral("\u2026")) == true);
+    CHECK(shownQualifier.startsWith(GetDocumentQualifierSeparator() + qualifier.left(3)) == true);
+    CHECK(shownQualifier.endsWith(QStringLiteral("\u2026")) == true);
     CHECK(metrics.horizontalAdvance(shownName + shownQualifier) <= partWidth);
 
     // Only the name fits: no qualifier at all rather than a stub.

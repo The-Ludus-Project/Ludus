@@ -15,6 +15,7 @@
 #include "internal/editor_files.h"
 #include "internal/editor_icons.h"
 #include "internal/error_list.h"
+#include "internal/path_text.h"
 #include "internal/profiling_panel.h"
 #include "internal/project_creation_dialog.h"
 #include "internal/project_explorer.h"
@@ -1276,16 +1277,29 @@ void MainWindow::RenderRecentProjects()
     }
     const qsizetype missingStart = listed.size();
     listed.append(missing);
+    // Worktrees of one game share its name; each such row also names the folder that tells it apart.
+    QStringList listedNames;
+    QStringList listedPaths;
+    for (const RecentProject& project : std::as_const(listed))
+    {
+        listedNames.append(project.Name);
+        listedPaths.append(project.DescriptorPath);
+    }
+    const QStringList qualifiers = GetRecentProjectQualifiers(listedNames, listedPaths);
     for (qsizetype row = 0; row < listed.size(); ++row)
     {
         const RecentProject& project = listed.at(row);
         const bool isMissing = row >= missingStart;
-        const QString name = isMissing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
+        const QString qualified = qualifiers.at(row).isEmpty() == true
+                                      ? project.Name
+                                      : project.Name + GetDocumentQualifierSeparator() + qualifiers.at(row);
+        const QString name = isMissing ? QStringLiteral("%1 (missing)").arg(qualified) : qualified;
         // The text is what assistive technology reads; RecentProjectDelegate draws the name and path from the roles.
         auto* item = new QListWidgetItem(name + QStringLiteral("\n") + project.DescriptorPath, RecentList_);
         item->setIcon(windowIcon());
         item->setData(Qt::UserRole, project.DescriptorPath);
         item->setData(RECENT_PROJECT_NAME_ROLE, project.Name);
+        item->setData(RECENT_PROJECT_QUALIFIER_ROLE, qualifiers.at(row));
         item->setData(RECENT_PROJECT_IS_MISSING_ROLE, isMissing);
         item->setData(RECENT_PROJECT_STARTS_MISSING_SECTION_ROLE, row == missingStart);
         item->setToolTip(isMissing ? QStringLiteral("%1\nThis project's file is missing. Remove it from the list.")

@@ -258,6 +258,15 @@ TEST_CASE("Explorer rows show document names, tell shared names apart by folder 
     CHECK(FindExplorerItem(shaders, QStringLiteral("sky"))->data(0, DOCUMENT_QUALIFIER_ROLE).toString().isEmpty() ==
           true);
 
+    // Every row, groups and the project included, is a name that elides at its end ("main · Hybrid…") rather than
+    // a path that elides in its middle, and has its whole text in a tooltip.
+    for (QTreeWidgetItemIterator iterator(tree); *iterator != nullptr; ++iterator)
+    {
+        const QTreeWidgetItem* row = *iterator;
+        CHECK(row->data(0, DOCUMENT_QUALIFIER_ROLE).isValid() == true);
+        CHECK(row->toolTip(0).isEmpty() == false);
+    }
+
     // The search still matches the whole file name and its folder.
     QLineEdit* filter = explorer.findChild<QLineEdit*>(QStringLiteral("projectExplorerFilter"));
     REQUIRE(filter != nullptr);

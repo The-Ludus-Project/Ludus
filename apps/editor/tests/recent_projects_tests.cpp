@@ -1,5 +1,6 @@
 #include "internal/controller.h"
 #include "internal/main_window.h"
+#include "internal/path_text.h"
 #include "internal/recent_project_delegate.h"
 #include "internal/recent_projects.h"
 
@@ -453,4 +454,74 @@ TEST_CASE("The Start page says why New Project is unavailable", "[editor][recent
     CHECK(reason->isHidden() == false);
     CHECK(reason->text().contains(QStringLiteral("unsaved changes")));
     CHECK(button->toolTip() == reason->text());
+}
+
+TEST_CASE("Recent projects that share a name show the folder that tells them apart", "[editor][recent]")
+{
+    // Worktrees of one repository: the project folder is the same, the worktree folder differs.
+    const QStringList names = {QStringLiteral("Dolomites Survival"),
+                               QStringLiteral("Dolomites Survival"),
+                               QStringLiteral("dolomites survival"),
+                               QStringLiteral("Knife Edge")};
+    const QStringList paths = {QStringLiteral("/work/Ludus/Samples/Dolomites/project.json"),
+                               QStringLiteral("/work/milestone-2/Samples/Dolomites/project.json"),
+                               QStringLiteral("/work/milestone-1/Samples/Dolomites/project.json"),
+                               QStringLiteral("/work/Ludus/Samples/KnifeEdge/project.json")};
+    const QStringList qualifiers = GetRecentProjectQualifiers(names, paths);
+    REQUIRE(qualifiers.size() == names.size());
+    CHECK(qualifiers.at(0) == QStringLiteral("Ludus"));
+    CHECK(qualifiers.at(1) == QStringLiteral("milestone-2"));
+    CHECK(qualifiers.at(2) == QStringLiteral("milestone-1"));
+    // A name nobody else uses needs no qualifier.
+    CHECK(qualifiers.at(3).isEmpty());
+
+    // One folder is enough when the project folders already differ.
+    const QStringList siblings = GetRecentProjectQualifiers(
+        {QStringLiteral("Demo"), QStringLiteral("Demo")},
+        {QStringLiteral("/work/a/Demo/project.json"), QStringLiteral("/work/a/Demo copy/project.json")});
+    CHECK(siblings == QStringList({QStringLiteral("Demo"), QStringLiteral("Demo copy")}));
+
+    // When no one folder differs by itself, the trailing folders down from the first that differs do.
+    const QStringList crossed =
+        GetRecentProjectQualifiers({QStringLiteral("Sample"), QStringLiteral("Sample"), QStringLiteral("Sample")},
+                                   {QStringLiteral("/a/repro/Sample/project.json"),
+                                    QStringLiteral("/b/repro/Sample/project.json"),
+                                    QStringLiteral("/a/other/Sample/project.json")});
+    CHECK(crossed ==
+          QStringList(
+              {QStringLiteral("a/repro/Sample"), QStringLiteral("b/repro/Sample"), QStringLiteral("a/other/Sample")}));
+}
+
+TEST_CASE("The start page qualifies recent projects that share a name", "[editor][recent]")
+{
+    QTemporaryDir directory;
+    const QString history = directory.filePath(QStringLiteral("recent.json"));
+    QStringList paths;
+    for (const QString& worktree : {QStringLiteral("milestone-1"), QStringLiteral("milestone-2")})
+    {
+        REQUIRE(QDir(directory.path()).mkpath(worktree + QStringLiteral("/Dolomites")));
+        paths.append(WriteProject(directory,
+                                  worktree + QStringLiteral("/Dolomites/project.json"),
+                                  QByteArrayLiteral("Dolomites Survival")));
+    }
+    const QString unique = WriteProject(directory, QStringLiteral("kept.json"), QByteArrayLiteral("Kept"));
+    {
+        EditorController previous(NoTooling(), nullptr, history);
+        previous.OpenProject(unique);
+        previous.OpenProject(paths.at(0));
+        previous.OpenProject(paths.at(1));
+    }
+    EditorController controller(NoTooling(), nullptr, history);
+    MainWindow window(&controller);
+    QListWidget* list = window.findChild<QListWidget*>(QStringLiteral("recentProjectsList"));
+    REQUIRE(list != nullptr);
+    REQUIRE(list->count() == 3);
+    // Most recent first: milestone-2, milestone-1, then the project nobody shares a name with.
+    CHECK(list->item(0)->data(RECENT_PROJECT_QUALIFIER_ROLE).toString() == QStringLiteral("milestone-2"));
+    CHECK(list->item(1)->data(RECENT_PROJECT_QUALIFIER_ROLE).toString() == QStringLiteral("milestone-1"));
+    CHECK(list->item(2)->data(RECENT_PROJECT_QUALIFIER_ROLE).toString().isEmpty());
+    // Assistive technology reads the qualifier too, so the rows do not sound alike either.
+    CHECK(list->item(0)->text().startsWith(QStringLiteral("Dolomites Survival") + GetDocumentQualifierSeparator() +
+                                           QStringLiteral("milestone-2")));
+    CHECK(list->item(2)->text().startsWith(QStringLiteral("Kept\n")));
 }

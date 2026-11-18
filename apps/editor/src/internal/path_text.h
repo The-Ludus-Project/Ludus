@@ -52,8 +52,9 @@ public:
 [[nodiscard]] QString RemoveKnownSuffix(const QString& fileName, QStringView knownSuffix);
 
 /// A document name and its qualifier as drawn in a field of width pixels. Both are whole when they fit;
-/// otherwise the qualifier is elided from the middle, then dropped, and only then is the name elided at its
-/// end, so it reads from its start like the list's sort order ("SliceSamplingCo…"). A shown qualifier starts with
+/// otherwise the qualifier is elided at its end, then dropped, and only then is the name elided at its end, so
+/// both read from their start like the list's sort order ("main · Hybrid…", "SliceSamplingCo…"). A shown qualifier
+/// starts with
 /// GetDocumentQualifierSeparator(); outShownQualifier is empty when there is none or no room for it.
 void ElideDocumentName(const QString& name,
                        const QString& qualifier,

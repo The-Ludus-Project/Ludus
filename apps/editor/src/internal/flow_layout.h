@@ -7,9 +7,11 @@
 
 namespace ludus::editor
 {
-/// Lays its items out left to right at their size hints and wraps onto a new row when the next one would not fit, so
-/// a row of buttons in a narrow dock grows taller instead of clipping a label ("Import WAV / FL"). An item wider than
-/// the row takes the whole row. Hidden items take no space. GUI thread only.
+/// Lays its items out in one row at their size hints while they fit. When they do not, they wrap into a grid of
+/// equal cells as wide as the widest item, stretched to fill each row, so a row of buttons in a narrow dock grows
+/// taller instead of clipping a label ("Import WAV / FL") and the wrapped buttons line up instead of leaving a
+/// ragged edge. A row narrower than the widest item gives every item the whole row. Hidden items take no space.
+/// GUI thread only.
 class FlowLayout final : public QLayout
 {
 public:

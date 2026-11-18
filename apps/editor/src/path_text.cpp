@@ -123,7 +123,8 @@ void ElideDocumentName(const QString& name,
     const int remaining = qualifierWidth - separatorWidth;
     if (remaining >= metrics.horizontalAdvance(QStringLiteral("\u2026")) * MINIMUM_QUALIFIER_ELLIPSIS_WIDTHS)
     {
-        outShownQualifier = GetDocumentQualifierSeparator() + metrics.elidedText(qualifier, Qt::ElideMiddle, remaining);
+        // Read from its start like the name; the row's tooltip has the whole path.
+        outShownQualifier = GetDocumentQualifierSeparator() + metrics.elidedText(qualifier, Qt::ElideRight, remaining);
     }
 }
 
