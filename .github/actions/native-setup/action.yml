@@ -54,33 +54,30 @@ runs:
           # still need a Vulkan loader and Mesa's software device.
           packages+=(qt6-base-dev qt6-declarative-dev qt6-wayland libvulkan1 mesa-vulkan-drivers)
         fi
-        # Stalled package mirrors must fail promptly so the command can be retried.
+        # Bound each network attempt, including mirrors that keep sending data
+        # slowly enough to avoid APT's inactivity timeout.
         apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
-        # Network inactivity timeouts do not bound the whole operation. One
-        # runner remained in update for 47 minutes without producing output.
-        # Installs usually take under a minute but a slow mirror stretches them
-        # past ten (batches 44188537277 and 44207367534), so each command gets
-        # APT_ATTEMPTS attempts, each with its own deadline, before the job fails.
         APT_ATTEMPTS=3
-        run_apt() {
+        fetch_with_apt() {
           local limit="$1"
           shift
           local attempt
           local status=0
           for ((attempt = 1; attempt <= APT_ATTEMPTS; ++attempt)); do
             status=0
-            timeout --signal=TERM --kill-after=30s "$limit" sudo apt-get "${apt_options[@]}" "$@" || status=$?
+            sudo timeout --signal=TERM --kill-after=30s "$limit" apt-get "${apt_options[@]}" "$@" || status=$?
             if [[ "$status" -eq 0 ]]; then
               return 0
             fi
             echo "::warning::apt-get $1 attempt $attempt of $APT_ATTEMPTS failed with exit status $status"
-            # A deadline can interrupt dpkg; finish its configuration before the next attempt.
-            sudo dpkg --configure -a || true
           done
           return "$status"
         }
-        run_apt 5m update -qq
-        run_apt 10m install -y -qq "${packages[@]}"
+        fetch_with_apt 5m update -qq
+        fetch_with_apt 10m install --download-only -y -qq "${packages[@]}"
+        # The download deadline must never interrupt dpkg mid-transaction.
+        # Installation uses the cached packages and the overall CI job timeout.
+        sudo apt-get install --no-download -y -qq "${packages[@]}"
     - name: Select Lavapipe for Linux sanitizer tests
       if: runner.os == 'Linux' && github.job == 'sanitizers' && inputs.preset == 'linux-clang-asan-ubsan' && inputs.editor == 'true'
       shell: bash
