@@ -1,6 +1,6 @@
 ---
 name: ludus-reference-review
-description: Evaluate a publication, talk, PDF, link, tip, coding convention, or anecdote for a concrete Ludus improvement. Use when the user asks how an idea applies to Ludus or wants to carry it through implementation, validation, and follow-up tracking.
+description: Evaluate a publication, talk, PDF, link, tip, coding convention, or anecdote against current Ludus behavior and planned engine, editor, and app work. Use when the user asks how an idea applies to Ludus or wants to carry it through implementation, validation, and follow-up tracking.
 ---
 
 # Review a reference for Ludus
@@ -16,22 +16,33 @@ it would change the decision and you cannot resolve the gap another way.
 
 ## Assess the engine, editor, and apps
 
-Check the source against all three parts of Ludus:
+For each area, establish what works today and ask which upcoming decision the
+reference could change. Look for that decision in an owning design, roadmap
+milestone, issue, or named consumer's requirements. A technique that offers
+little benefit today may matter when a planned change alters its assumptions.
 
-- **Engine.** Inspect the owning subsystem, current behavior, tests, and
-  roadmap. Identify supported capabilities and concrete technical gaps.
+- **Engine.** Inspect the owning subsystem, current behavior, and tests.
+  Check whether a planned workload, subsystem, or architecture change creates
+  a use for the idea or changes its tradeoffs.
 - **Editor.** Trace the relevant authoring and preview workflow. Check where
-  users get feedback and where the workflow still requires manual work.
+  users get feedback and where the workflow still requires manual work. Ask
+  how a planned authoring task would change what users need to edit, preview,
+  or diagnose.
 - **Apps built with Ludus.** Check what a game or app built with the SDK or
   authored in the editor can use. Where relevant, trace the feature through
   Play, build, and packaging on a named target. Check the app's behavior and
-  fallbacks independently of the editor preview.
+  fallbacks independently of the editor preview. Identify any planned app,
+  SDK use case, or target whose runtime requirements change the decision.
 
-Record a decision and its evidence for each area. Implement supported work
-within the current scope and record its validation. Put concrete remaining
-work in the backlog. For deferred work, name the prerequisite or evidence
-that would trigger reconsideration. When an idea is already covered or has
-no relevant use, record the existing owner or the reason.
+For each area, report the current finding and the future decision it informs.
+Cite the plan or consumer, label inferred uses as hypotheses, and say when
+you found no relevant future use. If the value comes later, name the earliest
+design choice where revisiting the idea would matter and what comparison or
+acceptance evidence would settle it.
+
+Implement supported work within the current scope, record its validation,
+and track concrete remaining work. When an idea is already covered, name
+the existing owner.
 
 ## Track follow-up work
 
