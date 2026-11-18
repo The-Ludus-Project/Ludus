@@ -28,6 +28,7 @@
 #endif
 #include "internal/script_workspace.h"
 #include "internal/search_tool_window.h"
+#include "internal/settings_page.h"
 #include "internal/setup_guidance.h"
 #include "internal/state_view.h"
 #include "internal/timing_panel.h"
@@ -1585,6 +1586,43 @@ void MainWindow::RenderCapabilities()
 
 namespace
 {
+/// Property holding the detail rows a setup details widget shows, so an unchanged status does not rebuild them.
+constexpr const char* SHOWN_SETUP_DETAILS_PROPERTY = "shownSetupDetails";
+
+/// Show rows as the setup details form's quiet name and value rows; no rows hides the form.
+void ShowSetupDetails(QWidget& inoutDetails, const QList<QPair<QString, QString>>& rows)
+{
+    QStringList identity;
+    for (const QPair<QString, QString>& row : rows)
+    {
+        identity.append(row.first + QLatin1Char('\n') + row.second);
+    }
+    inoutDetails.setVisible(rows.isEmpty() == false);
+    if (inoutDetails.property(SHOWN_SETUP_DETAILS_PROPERTY).toStringList() == identity)
+    {
+        return;
+    }
+    inoutDetails.setProperty(SHOWN_SETUP_DETAILS_PROPERTY, identity);
+    QFormLayout* form = qobject_cast<QFormLayout*>(inoutDetails.layout());
+    LUDUS_REQUIRE(form != nullptr);
+    while (form->rowCount() > 0)
+    {
+        form->removeRow(0);
+    }
+    for (const QPair<QString, QString>& row : rows)
+    {
+        QLabel* label = new QLabel(row.first, &inoutDetails);
+        label->setProperty("visualRole", QStringLiteral("secondary"));
+        QLabel* value = new QLabel(row.second, &inoutDetails);
+        value->setObjectName(QStringLiteral("projectSetupDetail"));
+        MarkSelectableValue(*value);
+        // One line each: paths and revisions have no spaces to wrap at; the tooltip and a copy hold the whole text.
+        value->setWordWrap(false);
+        value->setToolTip(row.second);
+        form->addRow(label, value);
+    }
+}
+
 /// How far along a repair is shown, by the phase the controller reports. Phases it does not map show a busy bar.
 constexpr foundation::int32 PROGRESS_STARTING = 10;
 constexpr foundation::int32 PROGRESS_CONFIGURING = 35;
@@ -1768,20 +1806,28 @@ void MainWindow::RenderStatus()
 {
     const WorkspaceState& state = Controller_->State();
     const auto& project = state.Saved;
-    const QString engine = project.HasEngine
-                               ? QStringLiteral("Required engine: Ludus %1\nRequired components: %2")
-                                     .arg(project.Engine.Version, project.Engine.Components.join(QStringLiteral(", ")))
-                               : QStringLiteral("Engine selection is owned by this project's build definitions.");
-    ProjectIdentity_->setText(
-        QStringLiteral("Project folder: %1\n%2\nSaved build profile: %3")
-            .arg(QDir::toNativeSeparators(QFileInfo(state.DescriptorPath).absolutePath()), engine, project.Preset));
-    QString setupStatus = state.SetupStatus.isEmpty() ? QStringLiteral("Setup has not been checked for this project.")
-                                                      : ReplaceResultCodeNames(state.SetupStatus);
-    if (state.EnginePin.State != EnginePinState::None && state.EnginePin.State != EnginePinState::Current)
+    mProjectFolderOrNull->setText(QDir::toNativeSeparators(QFileInfo(state.DescriptorPath).absolutePath()));
+    mProjectFolderOrNull->setToolTip(mProjectFolderOrNull->text());
+    mProjectEngineOrNull->setText(project.HasEngine == true
+                                      ? QStringLiteral("Ludus %1").arg(project.Engine.Version)
+                                      : QStringLiteral("Owned by this project's build definitions"));
+    mProjectComponentsOrNull->setText(project.Engine.Components.join(QStringLiteral(", ")));
+    if (SettingsSection* sectionOrNull = qobject_cast<SettingsSection*>(mProjectComponentsOrNull->parentWidget()))
     {
-        setupStatus += QStringLiteral("\nEngine: %1").arg(state.EnginePin.Message);
+        sectionOrNull->GetForm().setRowVisible(mProjectComponentsOrNull,
+                                               project.HasEngine == true &&
+                                                   project.Engine.Components.isEmpty() == false);
     }
-    ProjectSetupStatus_->setText(setupStatus);
+    mSavedProfileOrNull->setText(project.Preset);
+    const QString enginePinProblem =
+        state.EnginePin.State != EnginePinState::None && state.EnginePin.State != EnginePinState::Current
+            ? state.EnginePin.Message
+            : QString();
+    const ProjectSetupSummary setupView =
+        DescribeProjectSetup(ReplaceResultCodeNames(state.SetupStatus), enginePinProblem);
+    mSetupChipOrNull->SetStatus(setupView.Tone, setupView.Chip);
+    ProjectSetupStatus_->setText(setupView.Summary);
+    ShowSetupDetails(*mSetupDetailsOrNull, setupView.Details);
     const bool hasSetupProblem =
         state.Document == DocumentState::ProjectLoaded && state.SetupProblem.isEmpty() == false;
     if (hasSetupProblem == false)

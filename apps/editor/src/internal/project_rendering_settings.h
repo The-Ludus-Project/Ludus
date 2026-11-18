@@ -28,6 +28,11 @@ public:
     void SetProjectEditable(bool canEdit);
     /// True when keyboard focus belongs to these graph-backed controls.
     [[nodiscard]] bool ContainsFocus() const;
+    /// The labelled rows, so a host page can align their labels with its own forms.
+    [[nodiscard]] QFormLayout& GetForm() const noexcept
+    {
+        return *mFields;
+    }
 
 private:
     void refresh();
