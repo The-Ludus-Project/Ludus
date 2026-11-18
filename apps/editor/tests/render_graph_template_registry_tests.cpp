@@ -176,6 +176,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("guided-restir-fg-plus"),
                                                  QStringLiteral("conditional-restir"),
                                                  QStringLiteral("visibility-buffer"),
+                                                 QStringLiteral("opaque-material-resolve"),
                                                  QStringLiteral("visibility-secondary-rays"),
                                                  QStringLiteral("one-more-vertex-nee"),
                                                  QStringLiteral("light-transformer")});
@@ -203,6 +204,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                   QStringLiteral("GuidedRestirFgPlus"),
                                   QStringLiteral("ConditionalRestir"),
                                   QStringLiteral("VisibilityBuffer"),
+                                  QStringLiteral("OpaqueMaterialResolve"),
                                   QStringLiteral("VisibilitySecondaryRays"),
                                   QStringLiteral("OneMoreVertexNee"),
                                   QStringLiteral("LightTransformer")});

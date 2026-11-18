@@ -92,11 +92,10 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
     selected = [technique for technique in techniques.values() if is_forward(technique)]
     if not selected:
         return programs
-    is_deferred_profile = len(selected) == 1 and is_deferred(selected[0])
-    is_clustered_profile = len(selected) == 1 and is_clustered(selected[0])
-    allowed = {'DefaultStaticOpaque.ColorAndDepth', 'DefaultStaticOpaque.DepthOnly'} if is_clustered_profile else {'DefaultStaticOpaque.ColorAndDepth'}
-    build.require(len(selected) == 1 and set(techniques) <= allowed and selected[0]['id'] == 'DefaultStaticOpaque.ColorAndDepth',
-                  'Capability', 'ForwardLit', 'the first forward profile requires one opaque ColorAndDepth technique')
+    build.require(len(selected) == 1 and selected[0]['id'] == 'DefaultStaticOpaque.ColorAndDepth',
+                  'Capability', 'ForwardLit', 'assign the forward scene profile to one opaque ColorAndDepth technique')
+    is_deferred_profile = is_deferred(selected[0])
+    is_clustered_profile = is_clustered(selected[0])
     recipes = build.document(build.read(helper / 'recipes.json'), 'renderer recipes')
     # Capture the renderer manifest and its literal shader closure; consumers never guess paths/entries.
     build.require('_ludus_forward/recipes.json' not in snapshot.files, 'Source', 'ForwardLit', 'reserved engine forward helper path')
@@ -114,8 +113,8 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
             capture(child)
     technique = selected[0]
     depth = techniques.get('DefaultStaticOpaque.DepthOnly')
-    build.require(depth is None or depth['vertex'] == technique['vertex'], 'Capability', 'ClusteredForward',
-                  'the prepass must declare the same authored geometry program as color')
+    build.require(depth is None or (is_clustered_profile and depth['vertex'] == technique['vertex']), 'Capability', 'ClusteredForward',
+                  'use a clustered profile and the same authored geometry program for the depth prepass and color')
     build.require(is_deferred_profile is False or programs.get('DeferredLighting', {}).get('stage') == 'fragment',
                   'Capability', 'ClusteredDeferred', 'an authored DeferredLighting fragment callback is required')
     result = dict(programs)
@@ -179,6 +178,16 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
         result[identity] = {'id': identity, 'stage': stage, 'source': '_ludus_forward/' + recipe['source'],
                             'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'forward_wrapper': code,
                             'forward_group': 'ForwardSetup'}
+    # A regular raster technique needs its own authored entries. The forward profile wraps its
+    # callbacks with a different vertex interface and binding layout.
+    for sibling in techniques.values():
+        if sibling is technique or sibling is depth:
+            continue
+        for stage in ('vertex', 'fragment'):
+            identity = sibling.get(stage)
+            if identity is not None:
+                build.require('forward_wrapper' not in result[identity], 'ShaderInterface', sibling['id'],
+                              f'{identity} belongs to the forward scene profile. Assign a separate {stage} program.')
     return result
 
 

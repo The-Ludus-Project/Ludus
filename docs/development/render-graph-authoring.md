@@ -4863,7 +4863,7 @@ Burns and Warren A. Hunt, [*The Visibility Buffer: A Cache-Friendly Approach to
 Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/).
 
 In an open graph, right-click the canvas or a configuration in **Outline**
-and choose **Apply Configuration Template...**, then **Visibility buffer + depth**,
+and choose **Apply Configuration Template...**, then **Visibility buffer + depth**, **Opaque material resolve**,
 **Visibility + secondary rays** or [**Tiled vbuffer NEE**](#select-emitters-per-screen-tile).
 Enter a new configuration name or select an
 existing empty one. In a library asset, this fills that configuration. On the root
@@ -4873,14 +4873,18 @@ parent configuration. Existing nonempty configurations are preserved.
 | Configuration template | Parent inputs | Outputs |
 | --- | --- | --- |
 | Visibility buffer + depth | `scene: Scene`, `view: View`, `visibility: ColorTexture`, `depth: DepthTexture` | `visibility: ColorTexture`, optional `depth: DepthTexture` |
+| Opaque material resolve | `scene: Scene`, `view: View`, `color: ColorTexture` | Shaded `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
 | Visibility + secondary rays | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
 | Tiled vbuffer NEE — many-light direct lighting | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
 | [Compute ray tracing — primary hits + direct lighting](#use-the-compute-ray-tracing-template) | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture` |
 
 Connect the first template's two attachment inputs to matching single-sample
-RGBA8/Depth32Float targets. For the ray templates, connect a separate shaded color target;
-its internal visibility/depth targets derive their size from that color input.
-Both use the parent's camera view. Route the primary output to the next pass or
+RGBA8/Depth32Float targets. For **Opaque material resolve** and the ray templates, connect a separate shaded color target.
+Their internal visibility and depth targets take their size from that input.
+**Opaque material resolve** uses Metal or Vulkan compute and rasterized visibility.
+To keep the default clustered renderer available, wire the resolve in a separate root
+configuration. Each configuration selects its own lighting pipeline when cooked.
+All templates use the parent's camera view. Route the primary output to the next pass or
 Export; inspection outputs need connections only when consumed.
 
 Applying a template adds its graph, shader sources, compatible identity attributes
@@ -8665,7 +8669,7 @@ double-click or context menu uses that spot.
 | --- | --- |
 | Type in the search field | Matches names, purposes and common terms, such as `hdr` for ToneMap or `fsr` for the FSR upscalers; the category list shows how many matches each category has |
 | Up/Down, Enter or a click | Choose a result. A node is added at the opening position in one undoable edit; an Upscale preset places its Upscale node there and arranges its helpers automatically |
-| Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), [Simple triangle loop](#use-the-simple-triangle-loop-template), Visibility buffer + depth and Visibility + secondary rays |
+| Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), [Simple triangle loop](#use-the-simple-triangle-loop-template), Visibility buffer + depth, Opaque material resolve and Visibility + secondary rays |
 | Choose a graph | Inserts a Subgraph reference to its default configuration at the opening position, in one undoable edit; change the referenced configuration afterward through the canvas node fields or Properties |
 | Tab / Shift+Tab | Switch between All, Snippets, Nodes and Graphs |
 | Click a category | Show only that category |

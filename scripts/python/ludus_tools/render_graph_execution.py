@@ -485,16 +485,20 @@ def _runtime_contents(path, configuration):
                   'use an explicitly authored --renderer-static build manifest')
     plan, resources, passes, cameras = lower_plan(package, configuration)
     has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
-    ray_recipes = [recipe for recipe in package['recipes'] if recipe['technique'] == ray.TECHNIQUE and
+    selected_techniques = set(plan['techniques'])
+    ray_recipes = [recipe for recipe in package['recipes'] if ray.TECHNIQUE in selected_techniques and
+                   recipe['technique'] == ray.TECHNIQUE and
                    recipe.get('visibility_buffer', False) == has_visibility and
                    recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
     stages = {}
     roles = program_roles(package)
     vertex_schemas = []
-    selected_techniques = set(plan['techniques'])
+    # Scene compute also carries the static setup shaders. Only executed techniques
+    # select the configuration's lighting profile and its supporting stages.
+    stage_techniques = selected_techniques.copy()
     if ray.TECHNIQUE in selected_techniques:
-        selected_techniques.add('DefaultStaticOpaque.ColorAndDepth')
-    for technique in sorted(selected_techniques):
+        stage_techniques.add('DefaultStaticOpaque.ColorAndDepth')
+    for technique in sorted(stage_techniques):
         program_name = roles[technique]
         recipes = ray_recipes if technique == ray.TECHNIQUE else [r for r in package['recipes'] if r['technique'] == technique]
         build.require(recipes, 'Configuration', technique, 'no shader profile matches the selected visibility inputs')
@@ -634,7 +638,7 @@ def _runtime_contents(path, configuration):
     build.require(not has_light_transformer or (persistent and ray_pass_count == 1 and
                   ray_passes[0]['Traversal'] == 'ComputeBvh' and ray_passes[0]['Buffer0'] != ABSENT),
                   'Capability', 'light_transformer', 'use one ComputeBvh scene compute pass wired to an embedding Buffer')
-    recipe_keys = _routed_recipe_keys(package, configuration, selected_techniques, ray_recipes, roles)
+    recipe_keys = _routed_recipe_keys(package, configuration, stage_techniques, ray_recipes, roles)
     return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'atmosphere_sky': world_feature_profiles['atmosphere_sky'] == {True}, 'aerial_perspective': world_feature_profiles['aerial_perspective'] == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,

@@ -26,7 +26,9 @@ struct VisibilityTemplate final
     QString Directory;
     QString ProgramPrefix;
     QString Name;
-    bool HasRays = false;
+    bool HasSceneInterface = false;
+    QString ManifestFile = QStringLiteral("main.lushader.json.in");
+    QString LibraryFile = QStringLiteral("library.lurender.json");
 };
 
 /// Every visibility template shares this raster producer and its sources.
@@ -52,6 +54,17 @@ bool FindVisibilityTemplate(const QString& identity, VisibilityTemplate& outTemp
     if (identity == QStringLiteral("visibility-buffer"))
     {
         outTemplate = GetRasterTemplate();
+        return true;
+    }
+    if (identity == QStringLiteral("opaque-material-resolve"))
+    {
+        outTemplate = {GetRasterTemplate().Identity,
+                       QStringLiteral("opaque_material_resolve/"),
+                       QStringLiteral("Visibility"),
+                       QStringLiteral("Opaque material resolve"),
+                       true,
+                       QStringLiteral("resolve.lushader.json.in"),
+                       QStringLiteral("resolve_library.lurender.json")};
         return true;
     }
     if (identity == QStringLiteral("visibility-secondary-rays"))
@@ -303,13 +316,15 @@ bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
     return true;
 }
 
-bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
-                                 QJsonObject& inoutManifest,
-                                 const QJsonObject& source,
-                                 const VisibilityTemplate& selected,
-                                 TemplateInstance& inoutInstance,
-                                 QString& outError)
+bool MergeVisibilitySceneInterface(RenderGraphSnapshot& inoutSnapshot,
+                                   QJsonObject& inoutManifest,
+                                   const QJsonObject& source,
+                                   const VisibilityTemplate& selected,
+                                   TemplateInstance& inoutInstance,
+                                   QString& outError)
 {
+    const QJsonObject sourceTechnique = source.value(QStringLiteral("techniques")).toArray().last().toObject();
+    const QJsonObject defaults = sourceTechnique.value(QStringLiteral("scene_interface")).toObject();
     QJsonArray techniques = inoutManifest.value(QStringLiteral("techniques")).toArray();
     for (qsizetype index = 0; index < techniques.size(); ++index)
     {
@@ -326,40 +341,37 @@ bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
                 QStringLiteral("The ray scene interface has an unsupported version. Use scene interface version 1.");
             return false;
         }
-        const QString payloadFile = interface.value(QStringLiteral("payload")).toString();
-        QByteArray payload;
-        if (payloadFile.isEmpty() == true)
+        if (defaults.contains(QStringLiteral("payload")) == true)
         {
-            QFile defaults(QStringLiteral(":/shader-api/scene_payload.slang"));
-            if (defaults.open(QIODevice::ReadOnly) == true)
+            const QString payloadFile = interface.value(QStringLiteral("payload")).toString();
+            QByteArray payload;
+            if (payloadFile.isEmpty() == true)
             {
-                payload = defaults.readAll();
+                QFile defaultPayload(QStringLiteral(":/shader-api/scene_payload.slang"));
+                if (defaultPayload.open(QIODevice::ReadOnly) == true)
+                {
+                    payload = defaultPayload.readAll();
+                }
+            }
+            else
+            {
+                payload = inoutSnapshot.Files.value(payloadFile);
+            }
+            // Accept comments, whitespace and custom payload fields; the compiler owns full grammar validation.
+            QString declaration = QString::fromUtf8(payload);
+            static const QRegularExpression COMMENTS(QStringLiteral("/\\*[\\s\\S]*?\\*/|//[^\\r\\n]*"));
+            declaration.remove(COMMENTS);
+            static const QRegularExpression PAYLOAD(QStringLiteral("struct\\s+ScenePayload\\s*\\{([^{}]*)\\}\\s*;"));
+            static const QRegularExpression RADIANCE(QStringLiteral("\\bfloat3\\s+Radiance\\s*;"));
+            const QRegularExpressionMatch match = PAYLOAD.match(declaration);
+            if (match.hasMatch() == false || RADIANCE.match(match.captured(1)).hasMatch() == false)
+            {
+                outError = QStringLiteral("Shared ray payload %1 needs a float3 Radiance field in ScenePayload. "
+                                          "Add that field while retaining existing fields and retry.")
+                               .arg(payloadFile);
+                return false;
             }
         }
-        else
-        {
-            payload = inoutSnapshot.Files.value(payloadFile);
-        }
-        // Accept comments, whitespace and custom payload fields; the compiler owns full grammar validation.
-        QString declaration = QString::fromUtf8(payload);
-        static const QRegularExpression COMMENTS(QStringLiteral("/\\*[\\s\\S]*?\\*/|//[^\\r\\n]*"));
-        declaration.remove(COMMENTS);
-        static const QRegularExpression PAYLOAD(QStringLiteral("struct\\s+ScenePayload\\s*\\{([^{}]*)\\}\\s*;"));
-        static const QRegularExpression RADIANCE(QStringLiteral("\\bfloat3\\s+Radiance\\s*;"));
-        const QRegularExpressionMatch match = PAYLOAD.match(declaration);
-        if (match.hasMatch() == false || RADIANCE.match(match.captured(1)).hasMatch() == false)
-        {
-            outError = QStringLiteral("Shared ray payload %1 needs a float3 Radiance field in ScenePayload. "
-                                      "Add that field while retaining existing fields and retry.")
-                           .arg(payloadFile);
-            return false;
-        }
-        const QJsonObject defaults = source.value(QStringLiteral("techniques"))
-                                         .toArray()
-                                         .last()
-                                         .toObject()
-                                         .value(QStringLiteral("scene_interface"))
-                                         .toObject();
         if (interface.contains(QStringLiteral("version")) == false)
         {
             interface.insert(QStringLiteral("version"), defaults.value(QStringLiteral("version")));
@@ -379,32 +391,107 @@ bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
         inoutManifest.insert(QStringLiteral("techniques"), techniques);
         return true;
     }
-    QJsonObject technique = source.value(QStringLiteral("techniques")).toArray().last().toObject();
+    QJsonObject technique = sourceTechnique;
     for (const QString& stage :
          {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
     {
-        technique.insert(stage, GetVisibilityProgramName(technique.value(stage).toString(), selected, inoutInstance));
+        if (technique.contains(stage) == true)
+        {
+            technique.insert(stage,
+                             GetVisibilityProgramName(technique.value(stage).toString(), selected, inoutInstance));
+        }
     }
     QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
     const QString relative = interface.value(QStringLiteral("payload")).toString();
-    const QString destination = selected.Directory + relative;
-    const QByteArray payload = ReadVisibilityTemplate(selected.Identity, relative);
-    if (payload.isEmpty() == true)
+    if (relative.isEmpty() == false)
     {
-        outError = QStringLiteral("Visibility payload source %1 is unavailable; repair the editor installation.")
-                       .arg(relative);
-        return false;
+        const QString destination = selected.Directory + relative;
+        const QByteArray payload = ReadVisibilityTemplate(selected.Identity, relative);
+        if (payload.isEmpty() == true)
+        {
+            outError = QStringLiteral("Visibility payload source %1 is unavailable; repair the editor installation.")
+                           .arg(relative);
+            return false;
+        }
+        if (InsertTemplateSource(inoutSnapshot, destination, payload, inoutInstance) == false)
+        {
+            outError =
+                QStringLiteral("Shared visibility payload source %1 already has different contents.").arg(destination);
+            return false;
+        }
+        interface.insert(QStringLiteral("payload"), destination);
     }
-    if (InsertTemplateSource(inoutSnapshot, destination, payload, inoutInstance) == false)
-    {
-        outError =
-            QStringLiteral("Shared visibility payload source %1 already has different contents.").arg(destination);
-        return false;
-    }
-    interface.insert(QStringLiteral("payload"), destination);
     technique.insert(QStringLiteral("scene_interface"), interface);
     techniques.append(technique);
     inoutManifest.insert(QStringLiteral("techniques"), techniques);
+    return true;
+}
+
+void RenameVisibilityPrograms(QJsonObject& inoutRecord,
+                              const VisibilityTemplate& selected,
+                              const TemplateInstance& instance)
+{
+    QJsonArray nodes = inoutRecord.value(QStringLiteral("nodes")).toArray();
+    for (qsizetype index = 0; index < nodes.size(); ++index)
+    {
+        QJsonObject node = nodes.at(index).toObject();
+        QJsonArray shaders = node.value(QStringLiteral("shaders")).toArray();
+        for (qsizetype shader = 0; shader < shaders.size(); ++shader)
+        {
+            QJsonObject entry = shaders.at(shader).toObject();
+            entry.insert(
+                QStringLiteral("program"),
+                GetVisibilityProgramName(entry.value(QStringLiteral("program")).toString(), selected, instance));
+            shaders.replace(shader, entry);
+        }
+        if (shaders.isEmpty() == false)
+        {
+            node.insert(QStringLiteral("shaders"), shaders);
+            nodes.replace(index, node);
+        }
+    }
+    inoutRecord.insert(QStringLiteral("nodes"), nodes);
+}
+
+// Keep the producer as an editable Subgraph. Its shader assignments and library file belong
+// to the same numbered import as the resolve when an authored program or source collides.
+bool ImportVisibilityProducer(RenderGraphSnapshot& inoutSnapshot,
+                              QJsonObject& inoutRecord,
+                              TemplateInstance& inoutInstance,
+                              QString& outError)
+{
+    const VisibilityTemplate producer = GetInstanceTemplate(GetRasterTemplate(), inoutInstance);
+    QJsonObject library =
+        QJsonDocument::fromJson(ReadVisibilityTemplate(producer.Identity, producer.LibraryFile)).object();
+    QJsonArray configurations = library.value(QStringLiteral("configurations")).toArray();
+    if (configurations.size() != 1)
+    {
+        outError =
+            QStringLiteral("The visibility producer is missing. Repair the editor installation and apply again.");
+        return false;
+    }
+    QJsonObject configuration = configurations.first().toObject();
+    RenameVisibilityPrograms(configuration, producer, inoutInstance);
+    configurations.replace(0, configuration);
+    library.insert(QStringLiteral("configurations"), configurations);
+    const QString destination = producer.Directory + producer.LibraryFile;
+    if (InsertTemplateSource(inoutSnapshot, destination, EncodeCanonicalJson(library), inoutInstance) == false)
+    {
+        outError = QStringLiteral("The visibility producer %1 already has different contents.").arg(destination);
+        return false;
+    }
+    QJsonArray nodes = inoutRecord.value(QStringLiteral("nodes")).toArray();
+    for (qsizetype index = 0; index < nodes.size(); ++index)
+    {
+        QJsonObject node = nodes.at(index).toObject();
+        if (node.value(QStringLiteral("kind")) == QStringLiteral("Subgraph") &&
+            node.value(QStringLiteral("asset")) == producer.LibraryFile)
+        {
+            node.insert(QStringLiteral("asset"), destination);
+            nodes.replace(index, node);
+        }
+    }
+    inoutRecord.insert(QStringLiteral("nodes"), nodes);
     return true;
 }
 } // namespace
@@ -468,21 +555,20 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
     QJsonObject manifest = QJsonDocument::fromJson(inoutSnapshot.Files.value(manifestFile)).object();
     const QJsonArray profiles = manifest.value(QStringLiteral("profiles")).toArray();
     if (manifest.isEmpty() == true || profiles.isEmpty() == true ||
-        (selected.HasRays == true && profiles.contains(QStringLiteral("metal")) == false &&
+        (selected.HasSceneInterface == true && profiles.contains(QStringLiteral("metal")) == false &&
          profiles.contains(QStringLiteral("spirv")) == false))
     {
-        outError =
-            QStringLiteral("Visibility needs a Renderer manifest; ray passes also need a Metal or Vulkan profile.");
+        outError = QStringLiteral(
+            "Select a Renderer manifest. For scene shading, add a Metal or Vulkan profile and apply again.");
         return RenderGraphDocumentStatus::InvalidEdit;
     }
-    QByteArray bytes = ReadVisibilityTemplate(templateIdentity, QStringLiteral("main.lushader.json.in"));
+    QByteArray bytes = ReadVisibilityTemplate(selected.Identity, selected.ManifestFile);
     bytes.replace("@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@", QJsonDocument(profiles).toJson(QJsonDocument::Compact));
     const QJsonObject source = QJsonDocument::fromJson(bytes).object();
-    const QJsonArray records =
-        QJsonDocument::fromJson(ReadVisibilityTemplate(templateIdentity, QStringLiteral("library.lurender.json")))
-            .object()
-            .value(QStringLiteral("configurations"))
-            .toArray();
+    const QJsonArray records = QJsonDocument::fromJson(ReadVisibilityTemplate(selected.Identity, selected.LibraryFile))
+                                   .object()
+                                   .value(QStringLiteral("configurations"))
+                                   .toArray();
     if (source.isEmpty() == true || records.isEmpty() == true ||
         UpgradeDefaultTemplateBudgets(manifest, source) == false)
     {
@@ -492,34 +578,20 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
     if (MergeVisibilitySchemas(manifest, source, instance, outError) == false ||
         MergeVisibilityPrograms(inoutSnapshot, manifest, source, selected, instance, outError, inoutBudgetOrNull) ==
             false ||
-        (selected.HasRays == true &&
-         MergeVisibilityRayInterface(inoutSnapshot, manifest, source, selected, instance, outError) == false))
+        (selected.HasSceneInterface == true &&
+         MergeVisibilitySceneInterface(inoutSnapshot, manifest, source, selected, instance, outError) == false))
     {
         AppendDraftPreserved(outError);
         return RenderGraphDocumentStatus::Conflict;
     }
     QJsonObject record = records.first().toObject();
     record.insert(QStringLiteral("id"), configuration);
-    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
-    for (qsizetype index = 0; index < nodes.size(); ++index)
+    RenameVisibilityPrograms(record, selected, instance);
+    if (templateIdentity == QStringLiteral("opaque-material-resolve") &&
+        ImportVisibilityProducer(inoutSnapshot, record, instance, outError) == false)
     {
-        QJsonObject node = nodes.at(index).toObject();
-        QJsonArray shaders = node.value(QStringLiteral("shaders")).toArray();
-        for (qsizetype shader = 0; shader < shaders.size(); ++shader)
-        {
-            QJsonObject entry = shaders.at(shader).toObject();
-            entry.insert(
-                QStringLiteral("program"),
-                GetVisibilityProgramName(entry.value(QStringLiteral("program")).toString(), selected, instance));
-            shaders.replace(shader, entry);
-        }
-        if (shaders.isEmpty() == false)
-        {
-            node.insert(QStringLiteral("shaders"), shaders);
-            nodes.replace(index, node);
-        }
+        return RenderGraphDocumentStatus::Conflict;
     }
-    record.insert(QStringLiteral("nodes"), nodes);
     if (destinationIndex < 0)
     {
         configurations.append(record);
