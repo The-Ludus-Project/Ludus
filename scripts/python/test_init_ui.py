@@ -409,6 +409,32 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(result.with_rad_debugger, linux)
         self.assertEqual(result.with_editor, linux)
 
+    def test_short_screen_scrolls_the_options_and_keeps_the_buttons_on_screen(self):
+        def accept(window, widgets):
+            window.update()
+            screen_bottom = window.winfo_screenheight()
+            self.assertLessEqual(window.winfo_height(), init_theme.usable_screen_height(window, 1.0) + 1)
+            for text in ("Cancel", "Initialize"):
+                button = next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                              and widget.cget("text") == text)
+                self.assertTrue(button.winfo_viewable())
+                self.assertLessEqual(button.winfo_rooty() + button.winfo_height(), screen_bottom)
+            # Tabbing to an option scrolled out of view brings it back.
+            canvas = next(widget for widget in widgets if widget.winfo_class() == "Canvas"
+                          and widget.winfo_height() > window.winfo_height() // 2)
+            last = [widget for widget in widgets if widget.winfo_class() == "TCheckbutton"
+                    and widget.winfo_ismapped()][-1]
+            last.focus_force()
+            window.update()
+            bottom = last.winfo_rooty() + last.winfo_height()
+            self.assertLessEqual(bottom, canvas.winfo_rooty() + canvas.winfo_height())
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+
+        # Shorter than the selector, as on a 1280x720 display or a laptop with the Dock shown.
+        with patch.object(init_theme, "usable_screen_height", return_value=420):
+            self.assertIsNotNone(self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development"))
+
     def test_denoiser_checkbox_follows_host_support_and_opts_out(self):
         supported = init_denoiser.preset_supports(engine.NATIVE_PRESET_PREFIX + "-development")
 

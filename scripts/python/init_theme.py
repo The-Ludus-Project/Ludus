@@ -49,7 +49,15 @@ Icons
         done
 
     Step states and banners use small vector symbols drawn on a canvas, so
-    they look the same on every platform and stay sharp at any scale.
+    they look the same on every platform and stay sharp at any scale. Check
+    boxes are the Editor's (a rounded ``size.checkbox`` box with the control
+    border, filled with the accent and ticked when on), drawn into images at
+    the display scale because Tk's own indicator is an X on some platforms.
+
+Size
+    A window is never taller than its screen's usable height; the option
+    selector scrolls its options so the header and the Cancel and Initialize
+    buttons stay on screen.
 """
 from __future__ import annotations
 
@@ -110,7 +118,19 @@ PREFERRED_MONOSPACE = {
 }
 
 PROGRESS_THICKNESS_POINTS = 8
-CHECKBOX_INDICATOR_POINTS = 14
+CHECKBOX_INDICATOR_POINTS = TOKENS["size"]["checkbox"]
+CONTROL_RADIUS_POINTS = TOKENS["radius"]["control"]
+# The Editor's check box (apps/editor/src/editor_style.cpp): tick stroke and its points as fractions of the box.
+CHECKBOX_TICK_STROKE_POINTS = 1.5
+CHECKBOX_TICK_POINTS = ((0.27, 0.52), (0.43, 0.68), (0.74, 0.34))
+# Samples per pixel edge when the check box is drawn, so its rounded corners and tick are smooth.
+CHECKBOX_SUPERSAMPLING = 4
+# Room kept free around a window for the title bar and, where Tk cannot see them, the menu bar, Dock or taskbar.
+WINDOW_FRAME_ALLOWANCE_POINTS = 48
+USABLE_SCREEN_FRACTION = 0.9
+# A window never asks to be shorter than this, or its whole height when that is less.
+MINIMUM_WINDOW_HEIGHT_POINTS = 360
+SCROLL_STEP_POINTS = 24
 FOCUS_THICKNESS_POINTS = 1
 HIGH_CONTRAST_FOCUS_THICKNESS_POINTS = 2
 SYMBOL_STROKE_DIVISOR = 8.0
@@ -587,17 +607,15 @@ class Theme:
             style.configure(f"{surface}.Mono.TLabel", background=background, foreground=palette.secondary_text,
                             font=fonts.mono)
             style.configure(f"{surface}.TCheckbutton", background=background, foreground=palette.text,
-                            indicatorbackground=palette.panel, indicatorforeground=palette.on_primary,
-                            indicatorsize=self.space(CHECKBOX_INDICATOR_POINTS),
-                            indicatormargin=(0, 0, self.space(SPACE_SMALL), 0), padding=(0, self.space(2)),
-                            focuscolor=palette.focus, font=fonts.body)
+                            padding=(0, self.space(2)), focuscolor=palette.focus, font=fonts.body)
             style.map(f"{surface}.TCheckbutton",
                       background=[("active", background)],
-                      foreground=[("disabled", palette.disabled_text)],
-                      indicatorbackground=[("disabled", palette.raised), ("selected", palette.primary),
-                                           ("pressed", palette.selected)],
-                      indicatorforeground=[("disabled", palette.disabled_text)],
-                      upperbordercolor=[("focus", palette.focus)], lowerbordercolor=[("focus", palette.focus)])
+                      foreground=[("disabled", palette.disabled_text)])
+            # The theme's own indicator is an X on some platforms; draw the Editor's box and tick instead.
+            style.layout(f"{surface}.TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+                (self._checkbox_element(surface), {"side": "left", "sticky": ""}),
+                ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+                    ("Checkbutton.label", {"sticky": "nswe"})]})]})])
         # Cards differ from the window by surface colour; their edge is decorative,
         # so it uses the softer card border rather than the 3:1 control border.
         style.configure("Card.TFrame", background=palette.panel, bordercolor=palette.card_border, relief="solid",
@@ -670,6 +688,10 @@ class Theme:
                         bordercolor=palette.log_background, arrowcolor=palette.secondary_text,
                         lightcolor=palette.raised, darkcolor=palette.raised)
         style.map("Vertical.TScrollbar", background=[("active", palette.selected)])
+        style.configure("Workspace.Vertical.TScrollbar", background=palette.raised, troughcolor=palette.workspace,
+                        bordercolor=palette.workspace, arrowcolor=palette.secondary_text,
+                        lightcolor=palette.raised, darkcolor=palette.raised)
+        style.map("Workspace.Vertical.TScrollbar", background=[("active", palette.selected)])
         style.configure("TSeparator", background=palette.border)
         # Classic Tk widgets, including those of message boxes on X11.
         for option, value in (("*Background", palette.workspace), ("*Foreground", palette.text),
@@ -680,11 +702,111 @@ class Theme:
 
     # -- widgets
 
+    def _checkbox_element(self, surface: str) -> str:
+        """Create (once per look) the image element that draws check boxes on ``surface`` and return its name."""
+        palette = self.palette
+        size = self.space(CHECKBOX_INDICATOR_POINTS)
+        gap = self.space(SPACE_SMALL)
+        edge_width = self.space(HIGH_CONTRAST_FOCUS_THICKNESS_POINTS if self.is_high_contrast
+                                else FOCUS_THICKNESS_POINTS)
+        background = self.surface_colour(surface)
+        key = (surface, background, palette.panel, palette.border, palette.primary, palette.on_primary,
+               palette.disabled_text, size, gap, edge_width)
+        name = f"{surface}.Ludus{abs(hash(key)):x}.indicator"
+        # Elements and images live in the Tk interpreter, which every window of this process shares. The images are
+        # created by name rather than as PhotoImage objects, so they last as long as the interpreter that uses them.
+        images = self.root.__dict__.setdefault("_ludus_checkbox_images", {})
+        if name in images:
+            return name
+
+        def draw(state: str, fill: str, edge: str, mark: str | None) -> str:
+            image = f"{name}.{state}"
+            rows = render_checkbox(size, gap, background=background, fill=fill, edge=edge, mark=mark,
+                                   edge_width=edge_width, radius=self.space(CONTROL_RADIUS_POINTS),
+                                   stroke=max(1.0, CHECKBOX_TICK_STROKE_POINTS * self.scale))
+            self.root.tk.call("image", "create", "photo", image, "-width", size + gap, "-height", size)
+            self.root.tk.call(image, "put", " ".join("{" + " ".join(row) + "}" for row in rows))
+            return image
+
+        states = {
+            "unchecked": draw("unchecked", palette.panel, palette.border, None),
+            "hovered": draw("hovered", palette.panel, palette.primary, None),
+            "checked": draw("checked", palette.primary, palette.primary, palette.on_primary),
+            "disabled": draw("disabled", palette.panel, palette.disabled_text, None),
+            "disabled_checked": draw("disabled_checked", palette.panel, palette.disabled_text, palette.disabled_text),
+        }
+        self.style.element_create(name, "image", states["unchecked"],
+                                  ("disabled", "selected", states["disabled_checked"]),
+                                  ("disabled", states["disabled"]),
+                                  ("selected", states["checked"]),
+                                  ("active", states["hovered"]),
+                                  sticky="")
+        images[name] = states
+        return name
+
     def status_icon(self, tk, parent, surface: str = CARD_SURFACE) -> StatusIcon:
         return StatusIcon(tk, parent, self, self.surface_colour(surface), STATUS_ICON_POINTS)
 
     def banner(self, tk, parent, kind: str) -> Banner:
         return Banner(tk, parent, self, kind)
+
+
+def _hex_to_rgb(colour: str) -> tuple[int, int, int]:
+    return int(colour[1:3], 16), int(colour[3:5], 16), int(colour[5:7], 16)
+
+
+def _rounded_box_distance(x: float, y: float, size: float, radius: float) -> float:
+    """Signed distance from (x, y) to a ``size`` square with ``radius`` corners at the origin; negative inside."""
+    half = size / 2
+    qx = abs(x - half) - (half - radius)
+    qy = abs(y - half) - (half - radius)
+    outside = (max(qx, 0.0) ** 2 + max(qy, 0.0) ** 2) ** 0.5
+    return outside + min(max(qx, qy), 0.0) - radius
+
+
+def _segment_distance(x: float, y: float, start: tuple[float, float], end: tuple[float, float]) -> float:
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    along = max(0.0, min(1.0, ((x - start[0]) * dx + (y - start[1]) * dy) / (dx * dx + dy * dy)))
+    return ((x - start[0] - along * dx) ** 2 + (y - start[1] - along * dy) ** 2) ** 0.5
+
+
+def render_checkbox(size: int, gap: int, *, background: str, fill: str, edge: str, mark: str | None,
+                    edge_width: int, radius: float, stroke: float) -> list[list[str]]:
+    """Rows of ``#rrggbb`` pixels: a rounded box with an edge, a tick when ``mark`` is set, then ``gap`` columns.
+
+    Tk images have no partial transparency, so the box is blended into the surface colour it sits on. Each pixel
+    averages ``CHECKBOX_SUPERSAMPLING`` squared samples, which keeps the corners and the tick smooth.
+    """
+    colours = {name: _hex_to_rgb(value) for name, value in
+               (("background", background), ("fill", fill), ("edge", edge), ("mark", mark or fill))}
+    tick = [(x * size, y * size) for x, y in CHECKBOX_TICK_POINTS]
+    samples = CHECKBOX_SUPERSAMPLING
+    background_hex = background.lower()
+    rows = []
+    for row in range(size):
+        pixels = []
+        for column in range(size):
+            totals = [0, 0, 0]
+            for sample_y in range(samples):
+                for sample_x in range(samples):
+                    x = column + (sample_x + 0.5) / samples
+                    y = row + (sample_y + 0.5) / samples
+                    distance = _rounded_box_distance(x, y, size, radius)
+                    if distance > 0:
+                        colour = colours["background"]
+                    elif distance > -edge_width:
+                        colour = colours["edge"]
+                    elif mark is not None and min(_segment_distance(x, y, tick[index], tick[index + 1])
+                                                  for index in range(len(tick) - 1)) <= stroke / 2:
+                        colour = colours["mark"]
+                    else:
+                        colour = colours["fill"]
+                    for channel in range(3):
+                        totals[channel] += colour[channel]
+            count = samples * samples
+            pixels.append("#" + "".join(f"{round(total / count):02x}" for total in totals))
+        rows.append(pixels + [background_hex] * gap)
+    return rows
 
 
 def status_colour(palette: Palette, status: str) -> str:
@@ -804,10 +926,115 @@ class Banner:
         self.label.configure(wraplength=max(1, pixels - chrome))
 
 
-def centre_window(window) -> None:
-    """Place ``window`` in the middle of its screen at its requested size."""
+class ScrollArea:
+    """A vertically scrolling frame whose scroll bar appears only while its ``content`` is taller than it.
+
+    The area asks for its content's whole size, so it costs nothing on a screen with room. The scroll bar floats
+    over the right edge (the content's own margin) instead of taking width, so showing it never rewraps text.
+    """
+
+    def __init__(self, tk, ttk, parent, theme: Theme, surface: str = WORKSPACE_SURFACE):
+        self.theme = theme
+        background = theme.surface_colour(surface)
+        self.frame = ttk.Frame(parent, style=f"{surface}.TFrame")
+        self.frame.columnconfigure(0, weight=1)
+        self.frame.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(self.frame, background=background, highlightthickness=0, borderwidth=0,
+                                takefocus=0, yscrollincrement=theme.space(SCROLL_STEP_POINTS))
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.content = ttk.Frame(self.canvas, style=f"{surface}.TFrame")
+        self._item = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
+        self.scrollbar = ttk.Scrollbar(self.frame, orient="vertical", command=self.canvas.yview,
+                                       style="Workspace.Vertical.TScrollbar")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.content.bind("<Configure>", lambda _event: self._update(), add="+")
+        self.canvas.bind("<Configure>", self._resize, add="+")
+        self.frame.bind("<Enter>", lambda _event: self._bind_wheel(True), add="+")
+        self.frame.bind("<Leave>", lambda _event: self._bind_wheel(False), add="+")
+        self.frame.bind("<Destroy>", lambda _event: self._bind_wheel(False), add="+")
+
+    def grid(self, **options) -> None:
+        self.frame.grid(**options)
+
+    @property
+    def is_scrollable(self) -> bool:
+        return self.content.winfo_reqheight() > self.canvas.winfo_height() > 1
+
+    def _resize(self, event) -> None:
+        self.canvas.itemconfigure(self._item, width=event.width)
+        self._update()
+
+    def _update(self) -> None:
+        width, height = self.content.winfo_reqwidth(), self.content.winfo_reqheight()
+        self.canvas.configure(width=width, height=height, scrollregion=(0, 0, width, height))
+        if self.is_scrollable:
+            self.scrollbar.place(in_=self.canvas, relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
+        else:
+            self.scrollbar.place_forget()
+            self.canvas.yview_moveto(0.0)
+
+    def _bind_wheel(self, is_inside: bool) -> None:
+        events = ("<MouseWheel>", "<Button-4>", "<Button-5>")
+        for event in events:
+            if is_inside:
+                self.canvas.bind_all(event, self._wheel)
+            else:
+                self.canvas.unbind_all(event)
+
+    def _wheel(self, event):
+        if not self.is_scrollable:
+            return None
+        delta = getattr(event, "delta", 0)
+        upward = event.num == 4 or delta > 0
+        self.canvas.yview_scroll(-1 if upward else 1, "units")
+        return "break"
+
+    def show(self, widget) -> None:
+        """Scroll just enough that ``widget`` (inside the content) is fully visible, as when it takes focus."""
+        if not self.is_scrollable:
+            return
+        self.canvas.update_idletasks()
+        top = widget.winfo_rooty() - self.content.winfo_rooty()
+        bottom = top + widget.winfo_height()
+        total = max(1, self.content.winfo_height())
+        visible_top = self.canvas.canvasy(0)
+        visible_bottom = visible_top + self.canvas.winfo_height()
+        # Tk snaps scrolling to whole steps, so round towards showing all of the widget.
+        step = max(1, int(self.canvas.cget("yscrollincrement")))
+        if top < visible_top:
+            self.canvas.yview_moveto((top // step) * step / total)
+        elif bottom > visible_bottom:
+            self.canvas.yview_moveto(-(-(bottom - self.canvas.winfo_height()) // step) * step / total)
+
+
+def usable_screen_height(window, scale: float = 1.0) -> int:
+    """Height a window's content may take on its screen, leaving room for the title bar and system bars.
+
+    On macOS Tk's maximum size already excludes the menu bar and the Dock; elsewhere the screen fraction keeps
+    a taskbar clear.
+    """
+    screen = window.winfo_screenheight()
+    try:
+        maximum = int(window.wm_maxsize()[1])
+    except Exception:  # noqa: BLE001 - a Tk without a window manager answer.
+        maximum = screen
+    frame = int(round(WINDOW_FRAME_ALLOWANCE_POINTS * scale))
+    return max(1, int(min(maximum, screen * USABLE_SCREEN_FRACTION)) - frame)
+
+
+def fit_to_screen(window, scale: float = 1.0) -> None:
+    """Size ``window`` to its content but never taller than its screen; a ``ScrollArea`` takes up the difference."""
     window.update_idletasks()
-    width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable_screen_height(window, scale))
+    minimum = min(height, int(round(MINIMUM_WINDOW_HEIGHT_POINTS * scale)))
+    window.minsize(width, minimum)
+    window.geometry(f"{width}x{height}")
+
+
+def centre_window(window, scale: float = 1.0) -> None:
+    """Place ``window`` in the middle of its screen at its requested size, or the screen's usable height."""
+    window.update_idletasks()
+    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable_screen_height(window, scale))
     x = max(0, (window.winfo_screenwidth() - width) // 2)
     y = max(0, (window.winfo_screenheight() - height) // 2)
     window.geometry(f"+{x}+{y}")
