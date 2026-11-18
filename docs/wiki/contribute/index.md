@@ -84,7 +84,7 @@ blockers, or validation results change.
 
 Start with a link, PDF, paper, book excerpt, slides, talk, practical tip, coding
 convention or anecdote. Include the Ludus problem if you have one. Otherwise,
-identify a concrete use from the source and the current engine.
+look for a current use or an upcoming Ludus decision the source could inform.
 
 1. **Read and assess the input.** For a publication or talk, record the author,
    title, version and the relevant pages, sections, slides or timestamps. Use
@@ -93,11 +93,16 @@ identify a concrete use from the source and the current engine.
    evidence and assumptions from your interpretation. For an informal tip,
    capture the problem, proposed practice and conditions where it might help.
    Use anecdotes to form hypotheses and check them against Ludus.
-2. **Compare it with Ludus today.** Inspect the owning module, architecture
-   decisions, implementation and tests. Identify a real gap or an existing
+2. **Compare current behavior and planned uses.** Inspect the owning module,
+   architecture decisions, implementation and tests. Identify a real gap or an existing
    equivalent. Check the tradeoffs that matter for that subsystem, such as
    compatibility, performance, determinism, portability or maintenance cost.
    For a convention, check existing guidance and representative call sites.
+   Consider the engine, editor workflows and apps built with Ludus separately.
+   For each, look for a milestone, design or consumer whose requirements could
+   change the conclusion. Cite that evidence and label inferred uses as hypotheses.
+   If the value lies ahead, record when the choice first matters and how to test
+   it. A finding of no relevant planned use is also a valid outcome.
 3. **Decide and act.** Adopt or adapt an idea when it has a clear benefit and
    fits the engine. Use a bounded prototype with a baseline and a success
    criterion when an important uncertainty can be tested. Defer with a concrete
