@@ -19,6 +19,7 @@
 #include "internal/item_selection.h"
 #include "internal/lusl_formatting.h"
 #include "internal/path_text.h"
+#include "internal/property_panel_fit.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_execution_plan.h"
@@ -3583,10 +3584,12 @@ void RendererWorkspace::renderInspector()
             mFields->addRow(hint);
         }
         populateGraphSettings(*mFields, *mInspector);
+        FitPropertiesToWidth(*mInspector);
         return;
     }
     populateNodeFields(*mFields, *mInspector);
     populateGraphSettings(*mFields, *mInspector);
+    FitPropertiesToWidth(*mInspector);
     int32 x = 0;
     int32 y = 0;
     const QJsonObject layout = selectedConfiguration().value(QStringLiteral("layout")).toObject();

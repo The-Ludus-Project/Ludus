@@ -311,7 +311,7 @@ TEST_CASE("semantic overview preserves unknown and disabled activity classificat
                                  {QStringLiteral("to"), QStringLiteral("output.texture")}});
         record.insert(QStringLiteral("edges"), edges);
         WriteRecord(document, record);
-        expected = QStringLiteral("Unknown");
+        expected = QStringLiteral("Activity unknown");
     }
     const uint64 revision = document.GetRevision();
     const QByteArray draft = document.GetDraft(ROOT_GRAPH);
@@ -905,5 +905,37 @@ TEST_CASE("display placement never lays an unplaced card over a placed one",
             INFO(first << " " << second);
             CHECK(cards.at(first).intersects(cards.at(second)) == false);
         }
+    }
+}
+
+TEST_CASE("a per-pixel buffer is a resource and keeps the draft's activity known",
+          "[editor][render-graph][canvas-feedback]")
+{
+    // ComputeRayTracing stores its hits in a Buffer node; that must not make every card read "Activity unknown".
+    CHECK(GetRenderGraphDomain(QStringLiteral("Buffer")) == RenderGraphDomain::Resource);
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject record = ReadRecord(document);
+    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    nodes.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("hits")},
+                             {QStringLiteral("kind"), QStringLiteral("Buffer")},
+                             {QStringLiteral("bytes_per_pixel"), 32},
+                             {QStringLiteral("extent"), QStringLiteral("RenderSize")}});
+    record.insert(QStringLiteral("nodes"), nodes);
+    QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
+    edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("half.size")},
+                             {QStringLiteral("to"), QStringLiteral("hits.size")}});
+    record.insert(QStringLiteral("edges"), edges);
+    WriteRecord(document, record);
+    const QHash<QString, RenderGraphActivityFeedback> activity =
+        InspectRenderGraphActivity(document, ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    REQUIRE(activity.contains(QStringLiteral("hits")) == true);
+    for (QHash<QString, RenderGraphActivityFeedback>::const_iterator entry = activity.cbegin();
+         entry != activity.cend();
+         ++entry)
+    {
+        INFO(entry.key().toStdString());
+        CHECK(entry.value().Activity != RenderGraphActivity::Unknown);
     }
 }

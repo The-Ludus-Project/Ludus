@@ -716,6 +716,7 @@ target_link_libraries(ludus_editor_render_graph_canvas
 ludus_editor_add_objects(ludus_editor_presentation
     src/internal/path_text.h src/path_text.cpp
     src/internal/flow_layout.h src/flow_layout.cpp
+    src/internal/property_panel_fit.h src/property_panel_fit.cpp
     src/internal/chip_strip.h src/chip_strip.cpp
     src/internal/editor_icons.h src/editor_icons.cpp
     src/internal/theme_fonts.h src/theme_fonts.cpp)

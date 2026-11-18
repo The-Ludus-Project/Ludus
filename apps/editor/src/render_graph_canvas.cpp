@@ -118,7 +118,11 @@ constexpr int32 LABEL_POINT_SIZE = 9;
 constexpr int32 MAXIMUM_TITLE_LINES = 3;
 constexpr int32 MAX_CYCLE_SEARCH_STEPS = 1024;
 constexpr float64 INACTIVE_OPACITY = 0.55;
-constexpr float64 FEEDBACK_HEIGHT = 40;
+/// The detailed view's activity caption and resource size share one row at the foot of the card, so a card is only
+/// as tall as its title, its port rows and that row.
+constexpr float64 FEEDBACK_HEIGHT = 22;
+/// The resource size keeps at least this share of the feedback row when it and the activity caption do not both fit.
+constexpr float64 MINIMUM_SIZE_SHARE = 0.4;
 constexpr float64 LINK_HINT_WIDTH = 340;
 constexpr float64 LINK_HINT_OFFSET = 16;
 constexpr float64 NODE_ROW_GAP = 30;
@@ -449,8 +453,8 @@ RenderGraphDomain GetRenderGraphDomain(const QString& kind)
     {
         return RenderGraphDomain::SceneView;
     }
-    if (kind == QStringLiteral("StructuredBuffer") || kind == QStringLiteral("Target") ||
-        kind == QStringLiteral("Export") || kind == QStringLiteral("RenderSize") ||
+    if (kind == QStringLiteral("Buffer") || kind == QStringLiteral("StructuredBuffer") ||
+        kind == QStringLiteral("Target") || kind == QStringLiteral("Export") || kind == QStringLiteral("RenderSize") ||
         kind == QStringLiteral("OutputSize"))
     {
         return RenderGraphDomain::Resource;
@@ -722,6 +726,7 @@ struct RenderGraphCanvas::NodeView final
     QGraphicsSimpleTextItem* SizeLabelOrNull = nullptr;
     QString ActivityText;
     QString CompactActivityText;
+    QString SizeText;
     QGraphicsRectItem* PlanBadgeOrNull = nullptr;
     QGraphicsSimpleTextItem* PlanLabelOrNull = nullptr;
     QString PlanText;
@@ -1369,8 +1374,9 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
         {
             QGraphicsSimpleTextItem& title = *view->TitleLabelOrNull;
             title.setVisible(hasReadableCards);
-            // Without port labels the card body is free, so the overview title wraps into it and its header grows
-            // to hold it; with port rows showing, the title keeps to the one-line header.
+            // Without port labels the card body has nothing to show, so in the overview the coloured header fills
+            // the whole card and its title wraps and centres in it, rather than leaving an empty box under a title
+            // strip; with port rows showing, the title keeps to the one-line header.
             SetScaledLabel(title,
                            hasDetails == true ? view->Title
                                               : (view->Id == GetOutputsNode() ? QStringLiteral("outputs") : view->Id),
@@ -1379,10 +1385,7 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
                            NODE_WIDTH - 2 * NODE_PADDING,
                            hasPortLabels == true ? 0 : view->Frame->rect().height() - NODE_PADDING);
             const float64 titleHeight = title.boundingRect().height() * title.scale();
-            const float64 headerHeight =
-                hasPortLabels == true
-                    ? HEADER_HEIGHT
-                    : math::Min(view->Frame->rect().height(), math::Max(HEADER_HEIGHT, titleHeight + NODE_PADDING));
+            const float64 headerHeight = hasPortLabels == true ? HEADER_HEIGHT : view->Frame->rect().height();
             if (view->HeaderOrNull != nullptr)
             {
                 view->HeaderOrNull->setRect(0, 0, NODE_WIDTH, headerHeight);
@@ -1418,19 +1421,43 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
                                            view->CompactActivityText.isEmpty() == false &&
                                            view->Frame->rect().height() * viewScale >= MINIMUM_STATUS_CARD_HEIGHT;
             activity.setVisible(hasDetails == true || hasCompactCaption == true);
+            // In the detailed view the activity caption and the resource size share the feedback row: the size sits
+            // at the right, and whichever does not fit is shortened (its full text stays in the tooltip).
+            const float64 rowWidth = NODE_WIDTH - 2 * NODE_PADDING;
+            float64 activityWidth = rowWidth;
+            float64 sizeWidth = 0;
+            if (hasDetails == true && view->SizeLabelOrNull != nullptr && view->SizeText.isEmpty() == false)
+            {
+                const float64 annotationScale =
+                    math::Max(1.0, MINIMUM_LABEL_PIXEL_HEIGHT / (QFontMetricsF(activity.font()).height() * viewScale));
+                const QFontMetricsF metrics(activity.font());
+                const float64 naturalActivity = metrics.horizontalAdvance(view->ActivityText) * annotationScale;
+                const float64 naturalSize = metrics.horizontalAdvance(view->SizeText) * annotationScale;
+                sizeWidth = naturalActivity + PORT_LABEL_GAP + naturalSize <= rowWidth
+                                ? naturalSize
+                                : math::Min(naturalSize,
+                                            math::Max(rowWidth * MINIMUM_SIZE_SHARE,
+                                                      rowWidth - naturalActivity - PORT_LABEL_GAP));
+                activityWidth = rowWidth - sizeWidth - PORT_LABEL_GAP;
+            }
             SetScaledLabel(activity,
                            hasDetails == true ? view->ActivityText : view->CompactActivityText,
                            viewScale,
                            CanvasLabelRole::Annotation,
-                           NODE_WIDTH - 2 * NODE_PADDING);
-            activity.setPos(NODE_PADDING,
-                            hasDetails == true ? view->Frame->rect().height() - FEEDBACK_HEIGHT
-                                               : view->Frame->rect().height() - NODE_PADDING -
-                                                     activity.boundingRect().height() * activity.scale());
-        }
-        if (view->SizeLabelOrNull != nullptr)
-        {
-            view->SizeLabelOrNull->setVisible(hasDetails);
+                           activityWidth);
+            const float64 activityHeight = activity.boundingRect().height() * activity.scale();
+            const float64 rowTop = view->Frame->rect().height() - NODE_PADDING / 2 - activityHeight;
+            activity.setPos(NODE_PADDING, rowTop);
+            if (view->SizeLabelOrNull != nullptr)
+            {
+                QGraphicsSimpleTextItem& size = *view->SizeLabelOrNull;
+                size.setVisible(hasDetails == true && view->SizeText.isEmpty() == false);
+                if (size.isVisible() == true)
+                {
+                    SetScaledLabel(size, view->SizeText, viewScale, CanvasLabelRole::Annotation, sizeWidth);
+                    size.setPos(NODE_WIDTH - NODE_PADDING - size.boundingRect().width() * size.scale(), rowTop);
+                }
+            }
         }
     }
     if (mDiagnosticLabelOrNull != nullptr)
@@ -1631,7 +1658,7 @@ void RenderGraphCanvas::Rebuild()
             annotation->setBrush(GetLabelColour());
         }
         view->ActivityLabelOrNull->setPos(NODE_PADDING, height - FEEDBACK_HEIGHT);
-        view->SizeLabelOrNull->setPos(NODE_PADDING, height - FEEDBACK_HEIGHT / 2);
+        view->SizeLabelOrNull->setPos(NODE_PADDING, height - FEEDBACK_HEIGHT);
         mNodes.insert(identity, view);
         return view;
     };
@@ -1842,8 +1869,9 @@ void RenderGraphCanvas::refreshFeedback()
         view->CompactActivityText = isInterface == true                               ? QStringLiteral("Interface")
                                     : state.Activity == RenderGraphActivity::Retained ? QStringLiteral("Draft route")
                                     : state.Activity == RenderGraphActivity::Inactive ? QString()
-                                    : state.Activity == RenderGraphActivity::Disabled ? QStringLiteral("Disabled")
-                                                                                      : QStringLiteral("Unknown");
+                                    : state.Activity == RenderGraphActivity::Disabled
+                                        ? QStringLiteral("Disabled")
+                                        : QStringLiteral("Activity unknown");
         if (view->ActivityLabelOrNull != nullptr)
         {
             view->ActivityLabelOrNull->setText(QFontMetricsF(view->ActivityLabelOrNull->font())
@@ -1946,8 +1974,8 @@ void RenderGraphCanvas::refreshFeedback()
                                 QLatin1Char('\n') + resources.join(QLatin1Char('\n')));
         if (view->SizeLabelOrNull != nullptr)
         {
-            view->SizeLabelOrNull->setText(QFontMetricsF(view->SizeLabelOrNull->font())
-                                               .elidedText(sizeLabel, Qt::ElideRight, NODE_WIDTH - 2 * NODE_PADDING));
+            view->SizeText = sizeLabel;
+            view->SizeLabelOrNull->setText(sizeLabel);
             view->SizeLabelOrNull->setToolTip(resources.join(QLatin1Char('\n')));
         }
     }
