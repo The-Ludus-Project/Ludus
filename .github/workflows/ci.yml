@@ -283,6 +283,8 @@ jobs:
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer
+          out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-metal.log
+          python3 -c 'from pathlib import Path; text=Path("out/bilinear-sdk-metal.log").read_text(); assert "bilinear passed" in text, text'
           mkdir -p out/rg4-evidence
           out/renderer-sdk/ludus_sdk_render_graph_pooling_consumer 2>&1 | tee out/rg4-evidence/metal.log
           python3 -c 'from pathlib import Path; text=Path("out/rg4-evidence/metal.log").read_text(); assert "pooling passed" in text, text'
@@ -1057,6 +1059,8 @@ jobs:
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer 2>&1 | tee out/rg3-sdk-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/rg3-sdk-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'
+          VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-vulkan-validation.log
+          python3 -c 'from pathlib import Path; text=Path("out/bilinear-sdk-vulkan-validation.log").read_text(); assert "bilinear passed" in text and "Validation Error" not in text and "VUID-" not in text, text'
           # RG4 evidence: pooled and serial-control exports, allocation counts, bytes and CPU p50/p95.
           mkdir -p out/rg4-evidence
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_pooling_consumer 2>&1 | tee out/rg4-evidence/vulkan-validation.log

@@ -205,6 +205,24 @@ if(EMSCRIPTEN)
     configure_file(../render-graph-pooling.html render-graph-pooling.html COPYONLY)
 endif()
 
+# Managed bilinear pipelines: the consumer rewrites the cooked offscreen graph into a half-extent scene
+# pass and a BilinearUpscale pass, draws it without a program cache and then twice with one shared
+# cache, and requires one shared native upscale pipeline and byte-identical exports
+# (render_graph_bilinear.cpp).
+add_executable(ludus_sdk_render_graph_bilinear_consumer ../render_graph_bilinear.cpp)
+target_link_libraries(ludus_sdk_render_graph_bilinear_consumer PRIVATE Ludus::GraphicsRenderer Ludus::FoundationTime)
+target_compile_options(ludus_sdk_render_graph_bilinear_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+ludus_compile_renderer_shaders(TARGET ludus_sdk_render_graph_bilinear_consumer SHADERS renderer_composite)
+ludus_compile_render_graph(TARGET ludus_sdk_render_graph_bilinear_consumer NAME rg3_bilinear
+    MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/rg3-inputs/offscreen/main.lushader.json")
+if(EMSCRIPTEN)
+    # As above: report a stack overflow instead of corrupting the allocator's static state.
+    target_link_options(ludus_sdk_render_graph_bilinear_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1
+        -sSTACK_OVERFLOW_CHECK=2)
+    set_target_properties(ludus_sdk_render_graph_bilinear_consumer PROPERTIES OUTPUT_NAME render-graph-bilinear SUFFIX ".js")
+    configure_file(../render-graph-bilinear.html render-graph-bilinear.html COPYONLY)
+endif()
+
 # Cook the installed canonical forward template and exercise its public scene inputs.
 if(NOT EMSCRIPTEN)
     set(forward_source "${Ludus_DIR}/render_graph/templates/forward_lit")
