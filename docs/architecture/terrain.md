@@ -372,12 +372,34 @@ visual palette reduction cannot change gameplay. Color filters in linear space;
 normal maps are decoded, filtered and renormalized by the chosen shading policy.
 
 Use texture arrays where supported and a small ordinary-texture variant otherwise.
-Macro tint plus tiling albedo/normal/roughness provides variation. Optional
-triplanar mapping is useful on steep cliffs but adds texture work; benchmark its
-limited use rather than applying it everywhere. Define UV phase from persistent
-terrain coordinates with checked integer phase/local offsets, so origin rebases
-and edits do not cause texture swimming. Material graphs must respect a bounded
-sample/permutation profile.
+Macro tint plus tiling albedo/normal/roughness provides variation. Define UV phase
+from persistent terrain coordinates with checked integer phase/local offsets,
+so origin rebases and edits do not cause texture swimming. Material graphs must
+respect a bounded sample/permutation profile.
+
+Keep planar mapping as the terrain baseline. Evaluate triplanar mapping on an
+opt-in cliff material when the planar projection visibly stretches a real
+surface. Project color and normal data with the same coordinates and weights.
+For the first raster comparison, use Whiteout blending per projection. Decode
+linear tangent-space normals, use each projection's own frame, and apply any
+UV sign flip to the matching tangent-normal component. Bring each result
+into the same space, blend with normalized axis weights, then normalize the
+combined shading normal. A neutral map or zero normal strength must reproduce
+the base shading normal. Geometry and collision continue to use their existing
+normals.
+
+Compare against the planar material on the same cooked terrain, camera and
+lighting. Check directional detail on both signs of each axis, transitions
+between axes, grazing mips, and texture phase across page boundaries and an origin
+rebase. Measure raster GPU time and texture sample cost on the selected target.
+Verify the same material in the saved World, Editor Play and an independently
+packaged native SDK app. Any reference path tracing support must follow the
+[CPU and GPU parity contract](renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
+
+Thanks to **Ben Golus** for the projection-frame Whiteout blend and the
+directional UV-mirroring examples. The Unity comparisons motivate the candidate
+and the signed-axis checks. Ludus needs its own quality and timing evidence.
+[*Normal Mapping for a Triplanar Shader*, Whiteout Blend and Mirrored UVs (2017)](https://bgolus.medium.com/normal-mapping-for-a-triplanar-shader-10bf39dca05a).
 
 Thanks to **Ferenc Pintér**, *Large-Scale Terrain Rendering for Outdoor Games*,
 GPU Pro 2, chapter II.3, printed pp. 77–93, for combining procedural soil maps,
