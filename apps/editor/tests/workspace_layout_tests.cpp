@@ -383,6 +383,9 @@ TEST_CASE("World stays visible beside tool windows and receives focused document
     CHECK(well->GetActiveDocumentOrNull() == world);
     CHECK(world->isVisible() == true);
     CHECK(world->width() > Dock(window, QStringLiteral("projectExplorerDock"))->width());
+    // The explorer opens wide enough for its toolbar and a document name; a narrow window keeps this minimum.
+    constexpr ludus::foundation::int32 MINIMUM_EXPLORER_DOCK_PIXELS = 220;
+    CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->width() >= MINIMUM_EXPLORER_DOCK_PIXELS);
     REQUIRE(world->Create(QFileInfo(directory.path()).canonicalFilePath() + QStringLiteral("/layout.world.json")) ==
             true);
     for (const QSize& size : {QSize(1400, 900), QSize(1100, 760), QSize(900, 640)})

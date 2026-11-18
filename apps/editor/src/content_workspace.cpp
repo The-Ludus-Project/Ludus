@@ -1,7 +1,9 @@
 #include "design_tokens.h"
+#include "internal/chip_strip.h"
 #include "internal/content_browser.h"
 #include "internal/editor_files.h"
 #include "internal/editor_icons.h"
+#include "internal/flow_layout.h"
 #include "internal/item_selection.h"
 #include "internal/state_view.h"
 
@@ -117,9 +119,10 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     Search_->setPlaceholderText(QStringLiteral("Search name, type or path"));
     Search_->setClearButtonEnabled(true);
     layout->addWidget(Search_);
-    // Type filter chips: none checked shows every type; each checked chip adds its category.
-    QHBoxLayout* chips = new QHBoxLayout;
-    chips->setSpacing(design::SPACING_EXTRA_SMALL);
+    // Type filter chips: none checked shows every type; each checked chip adds its category. Chips the dock's width
+    // cannot hold move into the strip's More menu rather than being clipped ("Meshe…").
+    ChipStrip* chips = new ChipStrip(this);
+    chips->setObjectName(QStringLiteral("contentFilters"));
     for (foundation::usize index = 0; index < CONTENT_CATEGORY_COUNT; ++index)
     {
         const ContentCategory category = static_cast<ContentCategory>(index);
@@ -130,11 +133,10 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
         chip->setProperty("visualRole", QStringLiteral("toggle"));
         chip->setAccessibleName(QStringLiteral("Show only ") + GetContentCategoryName(category).toLower());
         connect(chip, &QToolButton::toggled, this, [this]() { applyFilter(); });
-        chips->addWidget(chip);
+        chips->AddChip(*chip);
         mChips.append(chip);
     }
-    chips->addStretch();
-    layout->addLayout(chips);
+    layout->addWidget(chips);
     Model_ = new ContentCatalogModel(this);
     mThumbnailsOrNull = new ContentThumbnailCache(this);
     Model_->SetThumbnailCache(mThumbnailsOrNull);
@@ -189,7 +191,8 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     progressLayout->addWidget(mProgressBarOrNull, 1);
     mProgressRowOrNull->hide();
     layout->addWidget(mProgressRowOrNull);
-    auto* actions = new QHBoxLayout;
+    // The actions wrap onto another row in a narrow dock instead of clipping their labels.
+    FlowLayout* actions = new FlowLayout(nullptr, design::SPACING_SMALL);
     layout->addLayout(actions);
     const auto button = [this, actions](const QString& label, const char* name) {
         auto* value = new QPushButton(label, this);

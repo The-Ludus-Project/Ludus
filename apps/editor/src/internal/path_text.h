@@ -10,7 +10,7 @@
 // to be dragged wider to be read. See docs/development/editor-workspace.md (Truncation).
 //
 // An item that sets DOCUMENT_QUALIFIER_ROLE is a document name instead (a file name without the suffix its
-// group already names): the name is drawn whole or elided from the middle, never split at a dot, and a
+// group already names): the name is drawn whole or elided at its end, never split at a dot, and a
 // non-empty qualifier follows it dimmed as " · qualifier", cut before the name is.
 
 #include <QColor>
@@ -52,8 +52,8 @@ public:
 [[nodiscard]] QString RemoveKnownSuffix(const QString& fileName, QStringView knownSuffix);
 
 /// A document name and its qualifier as drawn in a field of width pixels. Both are whole when they fit;
-/// otherwise the qualifier is elided from the middle, then dropped, and only then is the name elided from
-/// the middle, so its head and tail stay ("SliceSampl…Coupled"). A shown qualifier starts with
+/// otherwise the qualifier is elided from the middle, then dropped, and only then is the name elided at its
+/// end, so it reads from its start like the list's sort order ("SliceSamplingCo…"). A shown qualifier starts with
 /// GetDocumentQualifierSeparator(); outShownQualifier is empty when there is none or no room for it.
 void ElideDocumentName(const QString& name,
                        const QString& qualifier,

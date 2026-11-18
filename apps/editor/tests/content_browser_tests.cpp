@@ -1,3 +1,4 @@
+#include "internal/chip_strip.h"
 #include "internal/content_browser.h"
 #include "internal/content_import.h"
 #include "internal/state_view.h"
@@ -5,6 +6,7 @@
 
 #include <ludus/audio/content/definitions.h>
 
+#include <QAction>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
@@ -18,6 +20,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPersistentModelIndex>
 #include <QProgressBar>
 #include <QPushButton>
@@ -1074,4 +1077,89 @@ TEST_CASE("Queued imports show overall progress, keep failures readable and retr
     CHECK(workspace.RetryImport(QStringLiteral("source/bad")) == false);
     workspace.Shutdown();
     CHECK(workspace.Finished());
+}
+
+TEST_CASE("Content filters and actions fit a narrow dock without clipping a label", "[editor][content][widget][layout]")
+{
+    // The narrowest a side dock gets, and a width that holds every chip.
+    constexpr int32 NARROW_DOCK_WIDTH = 220;
+    constexpr int32 WIDE_DOCK_WIDTH = 900;
+    constexpr int32 DOCK_HEIGHT = 600;
+    QTemporaryDir root;
+    ContentWorkspace workspace;
+    workspace.SetProject(root.path(), 1);
+    Wait(workspace);
+    workspace.resize(NARROW_DOCK_WIDTH, DOCK_HEIGHT);
+    workspace.show();
+    QApplication::processEvents();
+    ChipStrip* strip = workspace.findChild<ChipStrip*>(QStringLiteral("contentFilters"));
+    REQUIRE(strip != nullptr);
+    CHECK(workspace.minimumSizeHint().width() <= NARROW_DOCK_WIDTH);
+
+    const auto checkWhole = [](const QWidget& widget, const QWidget& container) {
+        CAPTURE(widget.objectName().toStdString(), widget.width(), widget.sizeHint().width());
+        // Laid out at its full size hint, so its label is never shortened, and inside its container.
+        CHECK(widget.width() >= widget.sizeHint().width());
+        const QRect area = QRect(widget.mapTo(&container, QPoint(0, 0)), widget.size());
+        CHECK(area.left() >= 0);
+        CHECK(area.right() < container.width());
+    };
+    QList<QToolButton*> chips;
+    for (QToolButton* button : strip->findChildren<QToolButton*>(Qt::FindDirectChildrenOnly))
+    {
+        if (button != &strip->GetOverflowButton())
+        {
+            chips.append(button);
+        }
+    }
+    REQUIRE(chips.size() == static_cast<qsizetype>(CONTENT_CATEGORY_COUNT));
+    // Chips that do not fit move into More; the shown ones stay whole.
+    CHECK(strip->GetOverflowCount() > 0);
+    CHECK(strip->GetOverflowButton().isVisible() == true);
+    checkWhole(strip->GetOverflowButton(), workspace);
+    int32 hiddenCount = 0;
+    for (QToolButton* chip : chips)
+    {
+        if (chip->isVisible() == true)
+        {
+            checkWhole(*chip, workspace);
+        }
+        else
+        {
+            ++hiddenCount;
+        }
+    }
+    CHECK(hiddenCount == strip->GetOverflowCount());
+    // Every footer action is whole: the row wraps rather than squeezing a label.
+    for (QPushButton* action : workspace.findChildren<QPushButton*>())
+    {
+        if (action->isVisible() == true)
+        {
+            checkWhole(*action, workspace);
+        }
+    }
+
+    // The More menu offers the hidden chips; choosing one turns that filter on and lights More.
+    QMenu* menu = strip->GetOverflowButton().menu();
+    REQUIRE(menu != nullptr);
+    Q_EMIT menu->aboutToShow();
+    const QList<QAction*> entries = menu->actions();
+    REQUIRE(entries.size() == static_cast<qsizetype>(hiddenCount));
+    QToolButton* firstHidden =
+        *std::find_if(chips.cbegin(), chips.cend(), [](const QToolButton* chip) { return chip->isHidden() == true; });
+    CHECK(entries.front()->text() == firstHidden->text());
+    entries.front()->trigger();
+    CHECK(firstHidden->isChecked() == true);
+    CHECK(strip->GetOverflowButton().isChecked() == true);
+
+    // With room for every chip, More goes away and the chips show in order.
+    workspace.resize(WIDE_DOCK_WIDTH, DOCK_HEIGHT);
+    QApplication::processEvents();
+    CHECK(strip->GetOverflowCount() == 0);
+    CHECK(strip->GetOverflowButton().isVisible() == false);
+    for (QToolButton* chip : chips)
+    {
+        CHECK(chip->isVisible() == true);
+    }
+    workspace.Shutdown();
 }

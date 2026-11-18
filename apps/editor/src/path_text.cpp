@@ -104,7 +104,8 @@ void ElideDocumentName(const QString& name,
     outShownQualifier.clear();
     if (nameWidth > width)
     {
-        outShownName = metrics.elidedText(name, Qt::ElideMiddle, width);
+        // A name reads from its start, as it is typed and sorted; the row's tooltip carries the rest.
+        outShownName = metrics.elidedText(name, Qt::ElideRight, width);
         return;
     }
     outShownName = name;
