@@ -133,6 +133,9 @@ namespace
 constexpr int32 WIDTH = 96;
 constexpr int32 HEIGHT = 64;
 constexpr usize ATTEMPTS = 5000;
+/// Wall time a preview wait allows. A graph's first frame includes its cold pipeline preparation,
+/// which outlasted a 5000-tick bound on a slow software-driver runner (batch 44216838899).
+constexpr int64 PREVIEW_WAIT_MILLISECONDS = 60000;
 /// The format owner defines the serialized header words preceding the interface identity.
 constexpr qsizetype INTERFACE_OFFSET = format::HEADER_FIELD_COUNT * sizeof(uint32);
 constexpr qsizetype TRUNCATED_BYTES = 40;
@@ -299,11 +302,14 @@ RenderGraphPreview MakePreview()
                               shaders::renderer_composite::Fragment());
 }
 
-/// Tick until the predicate holds; the GPU completes asynchronously, so yield between ticks.
+/// Tick until the predicate holds or the wait deadline passes; the GPU completes asynchronously, so
+/// yield between ticks.
 template <typename Predicate>
 bool TickUntil(RenderGraphPreview& inoutPreview, Predicate predicate)
 {
-    for (usize attempt = 0; attempt < ATTEMPTS; ++attempt)
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < PREVIEW_WAIT_MILLISECONDS)
     {
         if (predicate() == true)
         {

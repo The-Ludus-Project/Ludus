@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QString>
+#include <QStringList>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -39,10 +40,10 @@ inline PreviewShaderSources CopySources(const PreviewShaderSources& sources, con
     {
         const QString target = QStringLiteral("%1/root%2").arg(root).arg(i);
         REQUIRE(QDir().mkpath(target) == true);
-        QDirIterator files(directories[i],
-                           {QStringLiteral("*.slang"), QStringLiteral("*.h"), QStringLiteral("*.json")},
-                           QDir::Files,
-                           QDirIterator::Subdirectories);
+        // Copy what the live snapshot reads (its include patterns) plus the recipe manifests.
+        QStringList patterns = GetPreviewShaderIncludePatterns();
+        patterns.append(QStringLiteral("*.json"));
+        QDirIterator files(directories[i], patterns, QDir::Files, QDirIterator::Subdirectories);
         while (files.hasNext() == true)
         {
             const QString path = files.next();

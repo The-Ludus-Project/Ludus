@@ -514,6 +514,16 @@ TEST_CASE("Live shader snapshots of the renderer recipes fit the compiler limit"
     {
         CHECK(snapshot.CandidatePaths.contains(path) == true);
     }
+    // The live shader tests edit a copy of the roots; it must hold every file the snapshot reads,
+    // including the .inc fragment (batch 44216838899).
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const PreviewShaderSources copy = tests::CopySources(sources, directory.path());
+    PreviewShaderSnapshot copied;
+    const bool isCopyCaptured = CapturePreviewShaderSnapshot(copy, recipes, copied, error);
+    INFO(error.toStdString());
+    REQUIRE(isCopyCaptured == true);
+    CHECK(copied.Names == snapshot.Names);
 }
 
 TEST_CASE("Live shader snapshots capture only the recipes' include closure", "[editor][shader-reload]")
