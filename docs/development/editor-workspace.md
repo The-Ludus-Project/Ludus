@@ -3499,7 +3499,14 @@ the command line appears without pressing **Refresh**.
 
 Search is live and case-insensitive. Every space-separated word must appear in
 the name, resource ID, type name or path, so `brick wall` finds the material
-named "Red brick wall" and `.wav` finds audio sources. The type chips under the
+named "Red brick wall" and `.wav` finds audio sources. To find the direct users
+of a cooked asset, select its row and choose **Find direct users**. This clears
+the type chips and fills the search box with `uses:` and the exact, case-sensitive
+resource ID. You can also type the query yourself. For example,
+`uses:texture/6e1a2d3c-82e5-4fb3-9bb9-8d52abc2da01` finds materials whose
+saved scene catalog records list that texture. You can combine this query with
+name terms and type chips. An empty result describes only direct references
+in the current cooked scene catalog. The type chips under the
 search box (**Textures**, **Materials**, **Meshes**, **Scenes**, **Audio**,
 **Other**) narrow the list: none checked shows every type, and each checked chip
 adds its category. Each chip shows how many rows match the current search, and

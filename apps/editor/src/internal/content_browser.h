@@ -130,8 +130,11 @@ private:
     qreal mDevicePixelRatio = 1.0;
 };
 
+/// Content search operator selecting rows by an exact direct dependency ID.
+inline constexpr QLatin1StringView CONTENT_USES_PREFIX("uses:");
+
 /// Whether a row matches every search term (case-insensitive, in its ID, name, type or path) and the category mask
-/// (zero accepts every category). Pending imports always match their own ID.
+/// (zero accepts every category). A uses:<ID> term requires an exact, case-sensitive direct scene dependency.
 [[nodiscard]] bool DoesContentRowMatch(const ContentRow& row, const QStringList& terms, ContentCategoryMask mask);
 
 /// Split search text into terms; whitespace separates them.
@@ -305,6 +308,7 @@ private:
     QPushButton* Refresh_ = nullptr;
     QPushButton* Import_ = nullptr;
     QPushButton* Reimport_ = nullptr;
+    QPushButton* mFindUsersOrNull = nullptr;
     QPushButton* mRetryOrNull = nullptr;
     QPushButton* Cancel_ = nullptr;
     QFileSystemWatcher* mWatcherOrNull = nullptr;

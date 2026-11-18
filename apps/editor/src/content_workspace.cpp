@@ -116,7 +116,11 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     Search_ = new QLineEdit(this);
     Search_->setObjectName(QStringLiteral("contentSearch"));
     Search_->setAccessibleName(QStringLiteral("Search content by name, type or path"));
-    Search_->setPlaceholderText(QStringLiteral("Search name, type or path"));
+    Search_->setPlaceholderText(QStringLiteral("Name, type, path or uses:<ID>"));
+    const QString searchHelp = QStringLiteral(
+        "To find cooked assets that directly use a resource, enter uses: followed by its full, case-sensitive ID.");
+    Search_->setToolTip(searchHelp);
+    Search_->setAccessibleDescription(searchHelp);
     Search_->setClearButtonEnabled(true);
     layout->addWidget(Search_);
     // Type filter chips: none checked shows every type; each checked chip adds its category. Chips the dock's width
@@ -203,6 +207,14 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     Refresh_ = button(QStringLiteral("Refresh"), "contentRefresh");
     Import_ = button(QStringLiteral("Import WAV / FLAC…"), "contentImport");
     Reimport_ = button(QStringLiteral("Reimport selected…"), "contentReimport");
+    mFindUsersOrNull = button(QStringLiteral("Find direct users"), "contentFindUsers");
+    connect(mFindUsersOrNull, &QPushButton::clicked, this, [this]() {
+        Search_->setText(CONTENT_USES_PREFIX + SelectedId());
+        for (QToolButton* chip : mChips)
+        {
+            chip->setChecked(false);
+        }
+    });
     mRetryOrNull = button(QStringLiteral("Retry import"), "contentRetry");
     Cancel_ = button(QStringLiteral("Cancel operation"), "contentCancel");
     Status_ = new QLabel(QStringLiteral("Open a project to browse content/catalog.json."), this);
@@ -870,6 +882,7 @@ void ContentWorkspace::RenderActions()
     // Imports queue behind the active one, so Import stays available while another runs.
     Import_->setEnabled(canImport);
     const ContentRow* row = Model_->Row(mFilterOrNull->mapToSource(Table_->currentIndex()));
+    mFindUsersOrNull->setEnabled(row != nullptr && row->Key.isEmpty() == false);
     Reimport_->setEnabled(canImport && row != nullptr && row->Type == ContentType::AudioSource &&
                           row->IsPending == false);
     mRetryOrNull->setEnabled(canImport && row != nullptr && mFailedImports.contains(row->Id) == true);
