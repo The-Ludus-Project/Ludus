@@ -284,14 +284,19 @@ MetalSurface& GetActiveSurface() noexcept
     return GetMetal().Surfaces[GetMetal().ActiveSurface];
 }
 using MetalTexture = id<MTLTexture>;
-MetalTexture CreateSurfaceDepthOrNull(MetalTexture color, MTLStorageMode mode) noexcept
+MetalTexture CreateSurfaceDepthOrNull(MetalTexture colorOrNull, MTLStorageMode mode) noexcept
 {
+    // Depth matches the acquired color extent; without a color texture there is no extent to size it.
+    if (colorOrNull == nil)
+    {
+        return nil;
+    }
     @autoreleasepool
     {
         MTLTextureDescriptor* description =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                                               width:color.width
-                                                              height:color.height
+                                                               width:colorOrNull.width
+                                                              height:colorOrNull.height
                                                            mipmapped:NO];
         description.usage = MTLTextureUsageRenderTarget;
         description.storageMode = mode;

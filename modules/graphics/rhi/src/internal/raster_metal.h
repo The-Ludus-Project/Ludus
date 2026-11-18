@@ -1287,7 +1287,9 @@ void RasterEndPass() noexcept
 }
 RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 {
-    if (info.Texture == internal::RASTER_INVALID &&
+    // A surface graph may be prepared before a frame is acquired. Surface depth takes its extent from
+    // the acquired color texture, so RasterBeginPass creates it once a frame is open.
+    if (info.Texture == internal::RASTER_INVALID && GetMetal().SurfaceTexture != nil &&
         GetSurfaceDepthOrNull(GetMetal().SurfaceTexture, info.Description.DepthLoad, info.Description.DepthStore) ==
             nil)
     {
