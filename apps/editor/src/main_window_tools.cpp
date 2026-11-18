@@ -319,7 +319,11 @@ void MainWindow::renderActiveDocument()
 void MainWindow::renderEmptyStates()
 {
     const bool isProjectLoaded = Controller_->State().Document == DocumentState::ProjectLoaded;
-    mProjectExplorerPages->setCurrentIndex(isProjectLoaded == true ? PROJECT_EXPLORER_PAGE : NO_PROJECT_EXPLORER_PAGE);
+    if (mProjectExplorerPagesOrNull != nullptr)
+    {
+        mProjectExplorerPagesOrNull->setCurrentIndex(isProjectLoaded == true ? PROJECT_EXPLORER_PAGE
+                                                                             : NO_PROJECT_EXPLORER_PAGE);
+    }
     StateViewContent content;
     if (isProjectLoaded == true)
     {

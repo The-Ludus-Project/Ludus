@@ -293,7 +293,7 @@ private:
     QDockWidget* mProjectExplorerDock;
     ProjectExplorer* mProjectExplorer;
     /// The explorer, or in its place with no project open, a state that offers to open one.
-    QStackedWidget* mProjectExplorerPages = nullptr;
+    QStackedWidget* mProjectExplorerPagesOrNull = nullptr;
     StateView* mNoProjectExplorerOrNull = nullptr;
     QDockWidget* mPropertiesDock;
     QStackedWidget* mProperties;

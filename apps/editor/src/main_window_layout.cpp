@@ -409,14 +409,14 @@ void MainWindow::BuildUi()
     mPropertiesDock->setWindowIcon(GetEditorIcon(EditorIcon::Configuration));
     mProperties->setObjectName(QStringLiteral("propertiesStack"));
     mNoProperties->setObjectName(QStringLiteral("propertiesEmpty"));
-    auto* noPropertiesPage = new QWidget(mProperties);
-    auto* noPropertiesLayout = new QVBoxLayout(noPropertiesPage);
+    QWidget* noPropertiesPage = new QWidget(mProperties);
+    QVBoxLayout* noPropertiesLayout = new QVBoxLayout(noPropertiesPage);
     noPropertiesLayout->setContentsMargins(PROPERTIES_HINT_MARGIN_PIXELS,
                                            design::SPACING_EXTRA_LARGE,
                                            PROPERTIES_HINT_MARGIN_PIXELS,
                                            PROPERTIES_HINT_MARGIN_PIXELS);
     mNoProperties->setParent(noPropertiesPage);
-    auto* noPropertiesRow = new QHBoxLayout;
+    QHBoxLayout* noPropertiesRow = new QHBoxLayout;
     noPropertiesRow->addStretch();
     noPropertiesRow->addWidget(mNoProperties, 1);
     noPropertiesRow->addStretch();
@@ -440,11 +440,11 @@ void MainWindow::BuildUi()
     mProjectExplorerDock->setObjectName(QStringLiteral("projectExplorerDock"));
     mProjectExplorerDock->setWindowIcon(GetEditorIcon(EditorIcon::Folder));
     // With no project the explorer has nothing to list, so the dock says so and offers the way in instead.
-    mProjectExplorerPages = new QStackedWidget(mProjectExplorerDock);
-    mProjectExplorerPages->setObjectName(QStringLiteral("projectExplorerPages"));
-    mProjectExplorerPages->addWidget(mProjectExplorer);
-    auto* noProjectPage = new QWidget(mProjectExplorerPages);
-    auto* noProjectLayout = new QVBoxLayout(noProjectPage);
+    mProjectExplorerPagesOrNull = new QStackedWidget(mProjectExplorerDock);
+    mProjectExplorerPagesOrNull->setObjectName(QStringLiteral("projectExplorerPages"));
+    mProjectExplorerPagesOrNull->addWidget(mProjectExplorer);
+    QWidget* noProjectPage = new QWidget(mProjectExplorerPagesOrNull);
+    QVBoxLayout* noProjectLayout = new QVBoxLayout(noProjectPage);
     noProjectLayout->setContentsMargins(PROPERTIES_HINT_MARGIN_PIXELS,
                                         design::SPACING_EXTRA_LARGE,
                                         PROPERTIES_HINT_MARGIN_PIXELS,
@@ -458,17 +458,17 @@ void MainWindow::BuildUi()
     noProject.ActionLabel = QStringLiteral("Open Project...");
     mNoProjectExplorerOrNull->SetContent(noProject);
     // In a row, not aligned, so the wrapped text gets the height it needs at the dock's width.
-    auto* noProjectRow = new QHBoxLayout;
+    QHBoxLayout* noProjectRow = new QHBoxLayout;
     noProjectRow->addStretch();
     noProjectRow->addWidget(mNoProjectExplorerOrNull, 1);
     noProjectRow->addStretch();
     noProjectLayout->addLayout(noProjectRow);
     noProjectLayout->addStretch();
     noProjectPage->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    mProjectExplorerPages->addWidget(noProjectPage);
-    mProjectExplorerPages->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    mProjectExplorerPagesOrNull->addWidget(noProjectPage);
+    mProjectExplorerPagesOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     connect(mNoProjectExplorerOrNull, &StateView::ActionTriggered, this, &MainWindow::OnOpenRequested);
-    mProjectExplorerDock->setWidget(mProjectExplorerPages);
+    mProjectExplorerDock->setWidget(mProjectExplorerPagesOrNull);
     mErrorListDock->setObjectName(QStringLiteral("errorListDock"));
     mErrorListDock->setWindowIcon(GetEditorIcon(EditorIcon::Error));
     mErrorListDock->setWidget(mErrorList);
