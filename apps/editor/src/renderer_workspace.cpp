@@ -608,12 +608,14 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mPath(new PathLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
       mEmptyMessage(new QLabel(this)), mCreateFirst(new QPushButton(QStringLiteral("Create Render Graph..."), this)),
       mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mNavigation(new QWidget(this)),
-      mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Outline"), this)),
-      mViews(new QTabWidget(this)), mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)),
-      mFields(new QFormLayout), mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)),
-      mNewKind(new QComboBox(mInspector)), mNodeCreationMessage(new QLabel(mInspector)),
-      mEdges(new QTableWidget(mInspector)), mEdgeFrom(new QComboBox(mInspector)), mEdgeTo(new QComboBox(mInspector)),
-      mSourceFile(new QComboBox(this)), mSource(new CodeEditor(this)),
+      mStatusPanel(new QScrollArea(this)), mStatusRow(new QWidget(this)), mProblemChip(new QToolButton(this)),
+      mSourcesToggle(new QPushButton(QStringLiteral("Outline"), this)), mViews(new QTabWidget(this)),
+      mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)), mFields(new QFormLayout),
+      mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)), mNewKind(new QComboBox(mInspector)),
+      mNodeCreationMessage(new QLabel(mInspector)), mEdges(new QTableWidget(mInspector)),
+      mEdgeFrom(new QComboBox(mInspector)), mEdgeTo(new QComboBox(mInspector)), mGraphSummary(new QLabel(mInspector)),
+      mNodeTools(new QWidget(mInspector)), mConnections(new QWidget(mInspector)),
+      mConnectionsHeading(new QLabel(mConnections)), mSourceFile(new QComboBox(this)), mSource(new CodeEditor(this)),
       mSourceController(new CodeDocumentController(*mSource, this)),
       mSourceFormatter(new CodeFormatter(*mSourceController, this)), mSourceInterface(new QPlainTextEdit(this)),
       mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)), mStatus(new QLabel(this)),
@@ -703,14 +705,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mLayoutX->setRange(-MAX_COORDINATE, MAX_COORDINATE);
     mLayoutY->setRange(-MAX_COORDINATE, MAX_COORDINATE);
     // With nothing selected the panel describes the graph; node tools and its connections appear with a selection.
-    mGraphSummary = new QLabel(mInspector);
     mGraphSummary->setObjectName(QStringLiteral("renderGraphSummary"));
     mGraphSummary->setTextFormat(Qt::PlainText);
     mGraphSummary->setWordWrap(true);
     mGraphSummary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     mGraphSummary->setForegroundRole(QPalette::PlaceholderText);
     inspectorLayout->addWidget(mGraphSummary);
-    mNodeTools = new QWidget(mInspector);
     mNodeTools->setObjectName(QStringLiteral("renderGraphNodeTools"));
     QVBoxLayout* nodeToolsLayout = new QVBoxLayout(mNodeTools);
     nodeToolsLayout->setContentsMargins(0, 0, 0, 0);
@@ -765,11 +765,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     inspectorLayout->addWidget(mNodeCreationMessage);
     add->setToolTip(QStringLiteral("Add this type to the configuration shown on the canvas, with a unique ID."));
     // Connections of the selected nodes, with pickers that offer only real ports: no endpoint is typed by hand.
-    mConnections = new QWidget(mInspector);
     mConnections->setObjectName(QStringLiteral("renderGraphConnections"));
     QVBoxLayout* connectionsLayout = new QVBoxLayout(mConnections);
     connectionsLayout->setContentsMargins(0, 0, 0, 0);
-    mConnectionsHeading = new QLabel(mConnections);
     mConnectionsHeading->setObjectName(QStringLiteral("renderGraphConnectionsHeading"));
     mConnectionsHeading->setTextFormat(Qt::PlainText);
     mConnectionsHeading->setWordWrap(true);
@@ -1037,7 +1035,6 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mStatusPanel->setFixedHeight(mStatus->fontMetrics().lineSpacing() * STATUS_VISIBLE_LINES + STATUS_PADDING_PIXELS);
     mStatusPanel->setWidget(mStatus);
     // A preview failure the Error List already shows is said once: here it is a compact link to that row.
-    mProblemChip = new QToolButton(this);
     mProblemChip->setObjectName(QStringLiteral("renderGraphProblemChip"));
     mProblemChip->setIcon(GetEditorIcon(EditorIcon::Error));
     mProblemChip->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -1046,7 +1043,6 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mProblemChip->setAccessibleName(QStringLiteral("Show the preview error in the Error List"));
     mProblemChip->hide();
     connect(mProblemChip, &QToolButton::clicked, this, &RendererWorkspace::RequestErrorList);
-    mStatusRow = new QWidget(this);
     mStatusRow->setObjectName(QStringLiteral("renderGraphStatusRow"));
     QHBoxLayout* statusRowLayout = new QHBoxLayout(mStatusRow);
     statusRowLayout->setContentsMargins(0, 0, 0, 0);

@@ -621,8 +621,8 @@ private:
     QWidget* mNavigation;
     QScrollArea* mStatusPanel;
     /// Status panel and the problem chip that replaces it while the Error List shows the problem.
-    QWidget* mStatusRow = nullptr;
-    QToolButton* mProblemChip = nullptr;
+    QWidget* mStatusRow;
+    QToolButton* mProblemChip;
     QPushButton* mSourcesToggle;
     QTabWidget* mViews;
     QScrollArea* mInspectorPanel;
@@ -636,12 +636,12 @@ private:
     QComboBox* mEdgeFrom;
     QComboBox* mEdgeTo;
     /// Counts and outputs of the configuration, shown in Properties while no node is selected.
-    QLabel* mGraphSummary = nullptr;
+    QLabel* mGraphSummary;
     /// Layout position and Remove; shown only with a selection.
-    QWidget* mNodeTools = nullptr;
+    QWidget* mNodeTools;
     /// The selection's connections, endpoint pickers and Connect/Disconnect; shown only with a selection.
-    QWidget* mConnections = nullptr;
-    QLabel* mConnectionsHeading = nullptr;
+    QWidget* mConnections;
+    QLabel* mConnectionsHeading;
     QComboBox* mSourceFile;
     CodeEditor* mSource;
     CodeDocumentController* mSourceController;

@@ -187,9 +187,9 @@ QStringList SplitTitleWords(const QString& name)
     QString word;
     for (const QChar character : name)
     {
-        const bool startsWord = word.isEmpty() == false && character.isUpper() == true &&
-                                (word.back().isLower() == true || word.back().isDigit() == true);
-        if (startsWord == true)
+        const bool isWordStart = word.isEmpty() == false && character.isUpper() == true &&
+                                 (word.back().isLower() == true || word.back().isDigit() == true);
+        if (isWordStart == true)
         {
             words.append(word);
             word.clear();
