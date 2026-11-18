@@ -107,6 +107,7 @@ void RenderGraphShaderAssistance::setStatus(const QString& message)
 {
     mStatus->setText(message.simplified());
     mStatus->setToolTip(message);
+    Q_EMIT StatusTextChanged();
 }
 
 QByteArray RenderGraphShaderAssistance::getIdentity() const

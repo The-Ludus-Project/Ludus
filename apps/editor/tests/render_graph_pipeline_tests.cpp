@@ -21,9 +21,11 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSet>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -3260,4 +3262,67 @@ TEST_CASE("pipeline parts wrap in a narrow panel instead of truncating", "[edito
         CHECK(chip->mapTo(&editor, chip->rect().bottomRight()).x() < NARROW_WIDTH);
         CHECK(chip->toolTip().contains(QStringLiteral("Shader_raytracingpipeline_") + stage) == true);
     }
+}
+
+TEST_CASE("pipeline parts show only their own help and say in one line when they are empty",
+          "[editor][render-graph][pipeline][node-details]")
+{
+    QJsonObject node = MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work"));
+    node.insert(QStringLiteral("outputs"), QJsonArray{});
+    RenderGraphPipelineEditor editor(node);
+    editor.show();
+    QApplication::processEvents();
+    QTabWidget* partsOrNull = editor.findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
+    QLabel* writableHelpOrNull = editor.findChild<QLabel*>(QStringLiteral("renderGraphWritableResourcesHelp"));
+    QLabel* shadersHelpOrNull = editor.findChild<QLabel*>(QStringLiteral("renderGraphShadersHelp"));
+    REQUIRE(partsOrNull != nullptr);
+    REQUIRE(writableHelpOrNull != nullptr);
+    REQUIRE(shadersHelpOrNull != nullptr);
+    int32 writableIndex = -1;
+    for (int32 index = 0; index < partsOrNull->count(); ++index)
+    {
+        partsOrNull->setCurrentIndex(index);
+        QApplication::processEvents();
+        const QString part = partsOrNull->tabText(index);
+        INFO(part.toStdString());
+        CHECK(writableHelpOrNull->isVisible() == (part == QStringLiteral("Writable Resources")));
+        CHECK(shadersHelpOrNull->isVisible() == (part == QStringLiteral("Shaders")));
+        if (part == QStringLiteral("Writable Resources"))
+        {
+            writableIndex = index;
+        }
+    }
+    REQUIRE(writableIndex >= 0);
+    partsOrNull->setCurrentIndex(writableIndex);
+    QApplication::processEvents();
+    QTableWidget* outputsOrNull = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
+    QLabel* emptyOrNull = editor.findChild<QLabel*>(QStringLiteral("renderGraphEmpty_outputs"));
+    QPushButton* addOrNull = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
+    QPushButton* removeOrNull = editor.findChild<QPushButton*>(QStringLiteral("renderGraphRemove_outputs"));
+    REQUIRE(outputsOrNull != nullptr);
+    REQUIRE(emptyOrNull != nullptr);
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(removeOrNull != nullptr);
+    CHECK(emptyOrNull->isVisible() == true);
+    CHECK(outputsOrNull->isVisible() == false);
+    CHECK(removeOrNull->isEnabled() == false);
+    addOrNull->click();
+    CHECK(outputsOrNull->rowCount() == 1);
+    CHECK(outputsOrNull->isVisible() == true);
+    CHECK(emptyOrNull->isVisible() == false);
+    CHECK(removeOrNull->isEnabled() == true);
+    outputsOrNull->setCurrentCell(0, 0);
+    removeOrNull->click();
+    CHECK(emptyOrNull->isVisible() == true);
+    CHECK(outputsOrNull->isVisible() == false);
+}
+
+TEST_CASE("the Shader API side panel wraps declarations at its edge", "[editor][render-graph][node-details]")
+{
+    QWidget host;
+    QPlainTextEdit* text = new QPlainTextEdit(&host);
+    QWidget* page = CreateShaderInterfaceView(text, &host);
+    REQUIRE(page != nullptr);
+    CHECK(text->lineWrapMode() == QPlainTextEdit::WidgetWidth);
+    CHECK(text->wordWrapMode() == QTextOption::WrapAtWordBoundaryOrAnywhere);
 }

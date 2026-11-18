@@ -357,7 +357,9 @@ QWidget* CreateShaderInterfaceView(QPlainTextEdit* textView, QWidget* parent)
     layout->addLayout(searchRow);
     textView->setObjectName(QStringLiteral("renderGraphSourceInterface"));
     textView->setReadOnly(true);
-    textView->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // The side panel is narrow: declarations wrap at its edge (long words anywhere) rather than run past it.
+    textView->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    textView->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
     textView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     textView->setAccessibleName(QStringLiteral("Shader API declarations"));
     layout->addWidget(textView, 1);

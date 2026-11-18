@@ -387,12 +387,14 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
         tabs->addTab(panel,
                      name == QStringLiteral("state") ? QStringLiteral("Pipeline State") : QStringLiteral("Invocation"));
     }
+    // Each part explains itself inside its own page, so a paragraph shows only with the part it describes.
     QLabel* help = new QLabel(QStringLiteral("Each writable resource creates a paired input and output. Connect the "
                                              "texture/buffer to its input and use its output for the updated resource. "
                                              "Target associations are automatic."),
-                              this);
+                              mOutputs->parentWidget());
+    help->setObjectName(QStringLiteral("renderGraphWritableResourcesHelp"));
     help->setWordWrap(true);
-    layout->addWidget(help);
+    static_cast<QVBoxLayout*>(mOutputs->parentWidget()->layout())->insertWidget(0, help);
     layout->addWidget(tabs);
     mError = new QLabel(this);
     mError->setObjectName(QStringLiteral("renderGraphPipelineError"));
@@ -401,7 +403,8 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     QLabel* hint = new QLabel(
         QStringLiteral("New shaders create .slang sources automatically. "
                        "Renaming moves its source; stage edits reuse it. Edit sources in Source; Save writes files."),
-        this);
+        mShaders->parentWidget());
+    hint->setObjectName(QStringLiteral("renderGraphShadersHelp"));
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
     {
         hint->setText(hint->text() +
@@ -418,7 +421,8 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
                            "from a ray pipeline; TraceAndShade then invokes those callbacks."));
     }
     hint->setWordWrap(true);
-    layout->addWidget(hint);
+    // Under the program-scope note at the top of the Shaders part.
+    static_cast<QVBoxLayout*>(mShaders->parentWidget()->layout())->insertWidget(1, hint);
 }
 
 void RenderGraphPipelineEditor::AddOptionsEditor(QWidget* editor)
@@ -680,6 +684,17 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
             connectResourceType(row);
         }
     }
+    // An empty part says so in one line instead of showing an empty table.
+    QLabel* empty = new QLabel(name == QStringLiteral("inputs")
+                                   ? QStringLiteral("No read inputs. Add one to read a texture or buffer.")
+                               : name == QStringLiteral("outputs")
+                                   ? QStringLiteral("No writable resources. Add one to write a texture or buffer.")
+                                   : QStringLiteral("No shaders. Add one to create its .slang source."),
+                               panel);
+    empty->setObjectName(QStringLiteral("renderGraphEmpty_") + name);
+    empty->setWordWrap(true);
+    empty->setForegroundRole(QPalette::PlaceholderText);
+    layout->addWidget(empty);
     layout->addWidget(table);
     QHBoxLayout* buttons = new QHBoxLayout;
     QPushButton* add = new QPushButton(QStringLiteral("Add"), panel);
@@ -742,6 +757,18 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     buttons->addWidget(remove);
     layout->addLayout(buttons);
     layout->addStretch(1);
+    const auto showRows = [table, empty, remove, name]() {
+        const bool isEmpty = table->rowCount() == 0;
+        empty->setVisible(isEmpty);
+        table->setVisible(isEmpty == false);
+        remove->setEnabled(isEmpty == false);
+        // A diagnostic about this part points at whichever of the two is showing.
+        table->setProperty("renderGraphField", isEmpty == true ? QVariant() : QVariant(name));
+        empty->setProperty("renderGraphField", isEmpty == true ? QVariant(name) : QVariant());
+    };
+    showRows();
+    connect(table->model(), &QAbstractItemModel::rowsInserted, empty, showRows);
+    connect(table->model(), &QAbstractItemModel::rowsRemoved, empty, showRows);
     return table;
 }
 

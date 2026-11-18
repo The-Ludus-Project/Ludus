@@ -895,9 +895,6 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     static_cast<void>(
         mSourceSplit->restoreState(QSettings().value(QStringLiteral("renderGraph/sourceSplit")).toByteArray()));
     sourceLayout->addWidget(mSourceSplit, 1);
-    // The status lines sit under the code: they change often and must not move the editor.
-    sourceLayout->addWidget(mSourceStatus);
-    sourceLayout->addWidget(mSourceAssistance->GetStatusLabel());
     connect(mSourceSplit, &QSplitter::splitterMoved, this, [this]() {
         if (mIsChromeVisible == true)
         {
@@ -1047,7 +1044,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QHBoxLayout* statusRowLayout = new QHBoxLayout(mStatusRow);
     statusRowLayout->setContentsMargins(0, 0, 0, 0);
     statusRowLayout->addWidget(mProblemChip);
-    statusRowLayout->addWidget(mStatusPanel, 1);
+    // On the Source view the source's own state (draft, save and build, then shader assistance) leads the one
+    // status row under the code, beside the graph status, instead of taking lines of its own; it changes often
+    // and never moves the editor.
+    statusRowLayout->addWidget(mSourceStatus, 1, Qt::AlignTop);
+    statusRowLayout->addWidget(mSourceAssistance->GetStatusLabel(), 1, Qt::AlignTop);
+    statusRowLayout->addWidget(mStatusPanel, 2);
+    connect(mSourceAssistance, &RenderGraphShaderAssistance::StatusTextChanged, this, [this]() {
+        updateChromeVisibility();
+    });
     QSplitter* horizontal = new QSplitter(Qt::Horizontal, this);
     horizontal->setObjectName(QStringLiteral("renderGraphSplitter"));
     horizontal->addWidget(mTree);
@@ -1625,8 +1630,12 @@ void RendererWorkspace::updateChromeVisibility()
     const bool shouldShowNavigation =
         mIsChromeVisible == true && (mShouldUseCompactSource == false || mViews->currentIndex() != SOURCE_VIEW);
     updateSourceInterfaceVisibility();
+    const bool isSourceView = mViews->currentIndex() == SOURCE_VIEW;
     mNavigation->setVisible(shouldShowNavigation);
-    mStatusRow->setVisible(shouldShowNavigation);
+    mSourceStatus->setVisible(isSourceView);
+    mSourceAssistance->GetStatusLabel()->setVisible(isSourceView == true &&
+                                                    mSourceAssistance->GetStatusLabel()->text().isEmpty() == false);
+    mStatusRow->setVisible(shouldShowNavigation == true || isSourceView == true);
     mTree->setVisible(shouldShowNavigation == true && mSourcesToggle->isChecked() == true);
 }
 
@@ -3635,12 +3644,15 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     }
     if (HasSceneBundle(node) == true)
     {
-        QPushButton* expand = new QPushButton(QStringLiteral("Expand Scene Bundle"), &inoutParent);
+        // A setting of this node's scene input, so it reads as one beside its label rather than as a full-width
+        // command bar; the canvas context menu offers the same switch.
+        QCheckBox* expand = new QCheckBox(QStringLiteral("Show each member as a port"), &inoutParent);
         expand->setObjectName(QStringLiteral("renderGraphExpandSceneBundle"));
-        expand->setCheckable(true);
+        expand->setToolTip(QStringLiteral("Expand Scene Bundle: show the scene's members as separate ports on the "
+                                          "canvas so each can be wired on its own."));
         expand->setChecked(mCanvas->IsSceneBundleExpanded(mSelectedNode));
-        connect(expand, &QPushButton::clicked, this, &RendererWorkspace::expandSceneBundle);
-        outFields.addRow(expand);
+        connect(expand, &QCheckBox::clicked, this, &RendererWorkspace::expandSceneBundle);
+        outFields.addRow(QStringLiteral("Scene bundle"), expand);
     }
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
     {

@@ -5,6 +5,8 @@
 #include <QSet>
 #include <QUrl>
 
+#include <algorithm>
+
 // Thanks to Microsoft and the LSP contributors, Language Server Protocol 3.17,
 // Language Features: Document Symbols, Goto Definition and Find References.
 // Handle hierarchical/flat symbols, Location and LocationLink; map only captured sources.
@@ -176,12 +178,30 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
             continue;
         }
         seen.insert(identity);
-        const QString name = item.value(QStringLiteral("name")).toString().left(MAX_LABEL_UNITS);
-        const QString path = isReadOnly == true
-                                 ? QStringLiteral("Captured shader context (read-only)")
-                                 : (targetFile.isEmpty() == true ? QStringLiteral("Current source") : targetFile);
-        const QString label = (name.isEmpty() == true ? QString{} : name + QStringLiteral(" · ")) + path +
-                              QStringLiteral(":%1").arg(displayLine);
+        QString name = item.value(QStringLiteral("name")).toString().left(MAX_LABEL_UNITS);
+        QString label;
+        if (isReadOnly == true)
+        {
+            // A definition in code the compiler captured with the source (generated declarations or a library
+            // include) is named by its symbol, where it lives and its line, not by an internal path.
+            const QString symbol = text.mid(start, end - start);
+            if (name.isEmpty() == true && symbol.isEmpty() == false && symbol.size() <= MAX_LABEL_UNITS &&
+                std::ranges::none_of(symbol, [](QChar character) { return character.isSpace(); }))
+            {
+                name = symbol;
+            }
+            const QString origin = QUrl(targetUri) == QUrl(uri) || QUrl(targetUri).fileName().isEmpty() == true
+                                       ? QStringLiteral("shader context")
+                                       : QUrl(targetUri).fileName();
+            label = (name.isEmpty() == true ? QString{} : name + QStringLiteral(" — ")) +
+                    QStringLiteral("%1, line %2 (read-only)").arg(origin).arg(displayLine);
+        }
+        else
+        {
+            label = (name.isEmpty() == true ? QString{} : name + QStringLiteral(" · ")) +
+                    (targetFile.isEmpty() == true ? QStringLiteral("Current source") : targetFile) +
+                    QStringLiteral(":%1").arg(displayLine);
+        }
         result.append({label, targetFile, text, start, end, isReadOnly});
     }
     outMessage = result.isEmpty() == true

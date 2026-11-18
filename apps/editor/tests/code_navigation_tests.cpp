@@ -79,6 +79,8 @@ TEST_CASE("Navigation accepts compiler symbols and locations only through captur
     REQUIRE(definition.size() == 1);
     CHECK(definition.first().IsReadOnly == true);
     CHECK(definition.first().Text == unit);
+    // A captured definition is titled by its symbol, where it lives and its line, not by an internal path.
+    CHECK(definition.first().Label == QStringLiteral("Generated — shader context, line 1 (read-only)"));
     QMap<QString, CodeNavigationSource> sources;
     sources.insert(QStringLiteral("file:///helper.slang"),
                    {QStringLiteral("helpers/helper.slang"), QStringLiteral("float Helper();\n")});
