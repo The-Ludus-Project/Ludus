@@ -292,6 +292,15 @@
       "description": "Two-scattering mesh-emitter transport: cached BVH geometry statistics guide an extra vertex between the first surface and a sampled emitter. Exports MIS, geometry-only and BSDF+NEE estimates. Requires Metal or Vulkan compute. Analytic/environment lighting and coated diffuse are unsupported."
     },
     {
+      "kind": "graph",
+      "identity": "opaque-material-resolve",
+      "label": "Opaque material resolve",
+      "category": "raster",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["vbuffer", "visibility", "material", "compute"],
+      "description": "Shade opaque static surfaces from rasterized identity and depth using authored emission and unshadowed analytic lights. Exports color, visibility and depth. Requires Metal or Vulkan compute."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",

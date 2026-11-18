@@ -4922,17 +4922,31 @@ node editor to resize them together.
 | Template | Result |
 | --- | --- |
 | **Visibility buffer + depth** (`visibility-buffer`) | One raster pass exports the exact RGBA8 identity image and its Depth32Float attachment. The identity image is the camera output; its alpha channel encodes identity rather than transparency. No ray-tracing capability is needed. |
+| **Opaque material resolve** (`opaque-material-resolve`) | The visibility subgraph feeds a native compute pass for unshadowed material shading. Exports shaded color, identity and depth. Requires Metal or Vulkan compute. |
 | **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
 | **Hybrid shadows — ray-traced analytic light shadows** (`hybrid-shadows`) | The same raster producer feeds one ray pass that lights the first surface with the World's directional, point and spot lights, each shadowed by a ray, then ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Shadow analytic lights with rays](#shadow-analytic-lights-with-rays). |
 | **Hybrid reflections — roughness-aware ray-traced reflections** (`hybrid-reflections`) | The same raster producer feeds one ray pass that lights the first surface like Hybrid shadows and traces one reflection ray per pixel from its GGX specular lobe, then Accumulate and ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Trace rough reflections](#trace-rough-reflections). |
 | **Hybrid indirect diffuse — one diffuse bounce** (`hybrid-indirect-diffuse`) | Raster first hits feed one native ray pass for direct light and one diffuse bounce. Accumulate reconstructs the scene-linear signal before tone mapping. Exports visibility and depth. See [Trace one diffuse bounce](#trace-one-diffuse-bounce). |
 | **Tiled vbuffer NEE — many-light direct lighting** (`tiled-vbuffer-nee`) | The same raster producer feeds three ray passes that build one emitter-selection table per 16 × 16 tile and shade direct mesh-emitter lighting with MIS, then Accumulate. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Select emitters per screen tile](#select-emitters-per-screen-tile). |
 
+To build on **Opaque material resolve**, open its `OpaqueMaterialResolve`
+library configuration in `resolve_library.lurender.json`. Its inputs are Scene,
+View and a color target. The nested `VisibilityBuffer` uses that target's size.
+The compute node loads the raster hit and evaluates its material, emission and
+unshadowed directional, point and spot lights. Clear pixels show the World
+environment. Edit `main_shaders/resolve.slang` to change the shading, or wire
+another pass to the library's color, visibility or depth output. Color is linear
+RGBA8Unorm and clamps at one. The producer supports single-sample opaque static
+triangles. The resolve uses the native scene-compute profile and issues zero
+ray queries. Select this template explicitly for a new graph.
+
 Create the same packages through the CLI:
 
 ```bash
 ludus render-graph new graphs/Visibility --template visibility-buffer --output offscreen \
   --renderer-static --profiles metal wgsl
+ludus render-graph new graphs/Opaque --template opaque-material-resolve --output offscreen \
+  --renderer-static --profiles metal
 ludus render-graph new graphs/Reflections --template visibility-secondary-rays --output offscreen \
   --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/Shadows --template hybrid-shadows --output offscreen \

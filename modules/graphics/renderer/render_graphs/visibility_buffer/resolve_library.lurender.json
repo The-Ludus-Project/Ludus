@@ -1,0 +1,182 @@
+{
+  "version": 2,
+  "id": "OpaqueMaterialResolveLibrary",
+  "default": "OpaqueMaterialResolve",
+  "configurations": [
+    {
+      "id": "OpaqueMaterialResolve",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "resolve.color",
+          "required": true
+        },
+        {
+          "id": "visibility",
+          "type": "ColorTexture",
+          "source": "raster.visibility",
+          "required": false
+        },
+        {
+          "id": "depth",
+          "type": "DepthTexture",
+          "source": "raster.depth",
+          "required": false
+        }
+      ],
+      "nodes": [
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "visibility",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "Depth32Float",
+          "id": "depth",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "DepthTexture"
+        },
+        {
+          "id": "raster",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "VisibilityBuffer"
+        },
+        {
+          "id": "resolve",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "visibility",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ResolveOpaqueMaterial"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "TriangleLoop"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "raster.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "raster.view"
+        },
+        {
+          "from": "visibility.texture",
+          "to": "raster.visibility"
+        },
+        {
+          "from": "depth.texture",
+          "to": "raster.depth"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "visibility.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "depth.size"
+        },
+        {
+          "from": "input.scene",
+          "to": "resolve.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "resolve.view"
+        },
+        {
+          "from": "input.color",
+          "to": "resolve.color"
+        },
+        {
+          "from": "raster.visibility",
+          "to": "resolve.visibility"
+        },
+        {
+          "from": "raster.depth",
+          "to": "resolve.depth"
+        },
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        }
+      ]
+    }
+  ]
+}
