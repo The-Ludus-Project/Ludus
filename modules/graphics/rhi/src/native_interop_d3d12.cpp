@@ -2,7 +2,10 @@
 
 #include "internal/d3d12_device.h"
 #include "internal/d3d12_transfer.h"
+#include "internal/owner.h"
 #include "internal/storage.h"
+
+#include <ludus/foundation/containers/static_array.hpp>
 
 namespace ludus::graphics::rhi::backend
 {
@@ -17,7 +20,13 @@ struct NativeTextureCommands final
     uint64 ReleaseFence = 0;
 };
 
-internal::StorageTable<NativeTextureCommands> gTextureCommands;
+/// One command table per device owner slot (R14c); see internal/owner.h.
+StaticArray<internal::StorageTable<NativeTextureCommands>, MAX_DEVICE_OWNERS> gTextureCommandTables{};
+/// Native texture publication commands of the bound owner slot.
+internal::StorageTable<NativeTextureCommands>& GetTextureCommands() noexcept
+{
+    return gTextureCommandTables[internal::GetBoundOwnerSlot()];
+}
 
 [[nodiscard]] bool RecordPublication(ID3D12Device& inoutDevice,
                                      ID3D12Resource& inoutResource,
@@ -102,14 +111,14 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
     {
         return RasterStatus::DeviceLost;
     }
-    if (gTextureCommands.EnsureSlots(publication.Lease + 1) == false)
+    if (GetTextureCommands().EnsureSlots(publication.Lease + 1) == false)
     {
         return internal::StorageFailure();
     }
     const D3D12_RESOURCE_STATES before = GetTextureState(publication.Texture);
     if (before != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
     {
-        NativeTextureCommands& commands = gTextureCommands[publication.Lease];
+        NativeTextureCommands& commands = GetTextureCommands()[publication.Lease];
         if (RecordPublication(*deviceOrNull, *textureOrNull, before, commands) == false)
         {
             return deviceOrNull->GetDeviceRemovedReason() == S_OK ? RasterStatus::Failed : RasterStatus::DeviceLost;
@@ -131,9 +140,9 @@ RasterStatus NativeTextureRelease(usize slot) noexcept
     {
         return RasterStatus::DeviceLost;
     }
-    return SignalQueueFence(gTextureCommands[slot].ReleaseFence) == true ? RasterStatus::Pending
-           : deviceOrNull->GetDeviceRemovedReason() != S_OK              ? RasterStatus::DeviceLost
-                                                                         : RasterStatus::Failed;
+    return SignalQueueFence(GetTextureCommands()[slot].ReleaseFence) == true ? RasterStatus::Pending
+           : deviceOrNull->GetDeviceRemovedReason() != S_OK                  ? RasterStatus::DeviceLost
+                                                                             : RasterStatus::Failed;
 }
 
 RasterStatus NativeTexturePoll(usize slot, bool shouldWait) noexcept
@@ -148,7 +157,7 @@ RasterStatus NativeTexturePoll(usize slot, bool shouldWait) noexcept
     {
         return RasterStatus::DeviceLost;
     }
-    const uint64 value = gTextureCommands[slot].ReleaseFence;
+    const uint64 value = GetTextureCommands()[slot].ReleaseFence;
     if (completed >= value)
     {
         return RasterStatus::Ready;
@@ -166,9 +175,9 @@ RasterStatus NativeTexturePoll(usize slot, bool shouldWait) noexcept
 
 void NativeTextureDestroy(usize slot) noexcept
 {
-    if (slot < gTextureCommands.GetSize())
+    if (slot < GetTextureCommands().GetSize())
     {
-        gTextureCommands[slot] = {};
+        GetTextureCommands()[slot] = {};
     }
 }
 

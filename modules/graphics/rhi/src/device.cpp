@@ -98,29 +98,31 @@ bool Valid(DeviceHandle device) noexcept
 /// @brief Bind the lowest free owner slot for a new device (R14c).
 ///
 /// A device-less facade session or native interop teardown pending in any slot rejects
-/// creation, as does a live owner on a backend that hosts one.
-DeviceStatus BindFreeOwnerSlot() noexcept
+/// creation, as does a live owner when the backend hosts this kind of owner only alone.
+DeviceStatus BindFreeOwnerSlot(bool isNativeDevice) noexcept
 {
-    const foundation::usize limit = backend::GetDeviceOwnerLimit();
+    const foundation::usize limit = backend::GetDeviceOwnerLimit(isNativeDevice);
     foundation::usize freeSlot = MAX_DEVICE_OWNERS;
+    foundation::usize liveOwners = 0;
     bool hasUnownedSession = false;
     for (foundation::usize slot = 0; slot < MAX_DEVICE_OWNERS; ++slot)
     {
         internal::BindOwnerSlot(slot);
         if (internal::SessionBusy() == true)
         {
+            ++liveOwners;
             hasUnownedSession = hasUnownedSession == true || internal::DeviceOwner() == 0;
         }
-        else if (freeSlot == MAX_DEVICE_OWNERS && slot < limit)
+        else if (freeSlot == MAX_DEVICE_OWNERS)
         {
             freeSlot = slot;
         }
     }
-    if (hasUnownedSession == true || (freeSlot == MAX_DEVICE_OWNERS && limit <= 1))
+    if (hasUnownedSession == true || (liveOwners >= limit && limit <= 1))
     {
         return DeviceStatus::InvalidState;
     }
-    if (freeSlot == MAX_DEVICE_OWNERS)
+    if (liveOwners >= limit || freeSlot == MAX_DEVICE_OWNERS)
     {
         return DeviceStatus::CapacityExceeded;
     }
@@ -470,7 +472,7 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
     {
         return DeviceStatus::InvalidState;
     }
-    const DeviceStatus reserved = BindFreeOwnerSlot();
+    const DeviceStatus reserved = BindFreeOwnerSlot(false);
     if (reserved != DeviceStatus::Ready)
     {
         return reserved;
@@ -490,7 +492,7 @@ DeviceStatus CreateNativeDevice(const ApplicationInfo& application,
         return DeviceStatus::InvalidState;
     }
     // The imported source is pinned in the slot the device will occupy.
-    const DeviceStatus reserved = BindFreeOwnerSlot();
+    const DeviceStatus reserved = BindFreeOwnerSlot(true);
     if (reserved != DeviceStatus::Ready)
     {
         return reserved;

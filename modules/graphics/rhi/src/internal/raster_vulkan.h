@@ -78,28 +78,11 @@ struct RasterVulkanPipeline final
     VkPipelineLayout Layout = VK_NULL_HANDLE;
     internal::RasterPipelineInfo Info;
 };
-VmaAllocator gRasterAllocator = nullptr;
-internal::StorageTable<RasterVulkanBuffer> gRasterBuffers;
 struct ComputeVulkanPipeline final
 {
     VkPipeline Object = VK_NULL_HANDLE;
     VkPipelineLayout Layout = VK_NULL_HANDLE;
 };
-internal::StorageTable<ComputeVulkanPipeline> gComputePipelines;
-internal::StorageTable<RasterVulkanTexture> gRasterTextures;
-internal::StorageTable<VkImageView> gRasterViews;
-internal::StorageTable<VkImageView> gRasterViewDepths;
-internal::StorageTable<VkSampler> gRasterSamplers;
-internal::StorageTable<RasterVulkanShader> gRasterShaders;
-internal::StorageTable<VkDescriptorSetLayout> gRasterLayouts;
-internal::StorageTable<RasterVulkanSet> gRasterSets;
-internal::StorageTable<RasterDescriptorArena> gRasterDescriptorArenas;
-internal::StorageTable<RasterVulkanPipeline> gRasterPipelines;
-uint64 gRasterOrdinals[FRAMES]{};
-uint64 gRasterCompleted = 0;
-VkExtent2D gRasterExtent{};
-RasterPassDescription gRasterRegion{};
-usize gRasterActiveTexture = internal::RASTER_INVALID;
 struct RasterVkPass final
 {
     VkRenderPass Object = VK_NULL_HANDLE;
@@ -108,7 +91,6 @@ struct RasterVkPass final
     bool Surface = false;
     internal::RasterPassInfo Advanced;
 };
-internal::StorageTable<RasterVkPass> gRasterPasses;
 struct RasterVkFramebuffer final
 {
     VkFramebuffer Object = VK_NULL_HANDLE;
@@ -117,16 +99,48 @@ struct RasterVkFramebuffer final
     usize Count = 0;
     uint32 Width = 0, Height = 0;
 };
-internal::StorageTable<RasterVkFramebuffer> gRasterAdvancedFrames;
-internal::RasterPassInfo gRasterNativePass;
-VulkanSynchronizationTrace gSynchronizationTrace;
 // Opt-in R13a buffer-range trial; the whole-buffer control is the default.
 struct VulkanBufferRangeTrial final
 {
     VulkanBufferRangeLedger Ranges;
     bool IsSelected = false;
 };
-VulkanBufferRangeTrial gBufferRangeTrial;
+/// Raster, compute and pass resources of one device owner (R14c).
+struct RasterVulkanState final
+{
+    VmaAllocator Allocator = nullptr;
+    internal::StorageTable<RasterVulkanBuffer> Buffers;
+    internal::StorageTable<ComputeVulkanPipeline> ComputePipelines;
+    internal::StorageTable<RasterVulkanTexture> Textures;
+    internal::StorageTable<VkImageView> Views;
+    internal::StorageTable<VkImageView> ViewDepths;
+    internal::StorageTable<VkSampler> Samplers;
+    internal::StorageTable<RasterVulkanShader> Shaders;
+    internal::StorageTable<VkDescriptorSetLayout> Layouts;
+    internal::StorageTable<RasterVulkanSet> Sets;
+    internal::StorageTable<RasterDescriptorArena> DescriptorArenas;
+    internal::StorageTable<RasterVulkanPipeline> Pipelines;
+    foundation::StaticArray<uint64, FRAMES> Ordinals{};
+    uint64 Completed = 0;
+    VkExtent2D Extent{};
+    RasterPassDescription Region{};
+    usize ActiveTexture = internal::RASTER_INVALID;
+    internal::StorageTable<RasterVkPass> Passes;
+    internal::StorageTable<RasterVkFramebuffer> AdvancedFrames;
+    internal::RasterPassInfo NativePass;
+    VulkanSynchronizationTrace SynchronizationTrace;
+    VulkanBufferRangeTrial BufferRangeTrial;
+    bool IsHdrProbed = false;
+    bool HasHdr = false;
+    bool HasPreparationDeviceLoss = false;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<RasterVulkanState, MAX_DEVICE_OWNERS> gRasterVulkanStates{};
+/// RasterVulkanState of the bound owner slot.
+RasterVulkanState& GetRasterVulkan() noexcept
+{
+    return gRasterVulkanStates[internal::GetBoundOwnerSlot()];
+}
 VulkanSynchronizationSite GetGraphSynchronizationSite() noexcept
 {
     switch (internal::gGraphLoweringSite.Boundary)
@@ -149,7 +163,7 @@ void RecordFrameSynchronization(VulkanSynchronizationRecord record) noexcept
     record.Submission = site.Submission;
     record.Execution = site.Execution;
     record.GraphResource = site.Resource;
-    gSynchronizationTrace.Append(record);
+    GetRasterVulkan().SynchronizationTrace.Append(record);
 }
 void RecordFrameImageSynchronization(VulkanSynchronizationObject object,
                                      usize slot,
@@ -157,7 +171,7 @@ void RecordFrameImageSynchronization(VulkanSynchronizationObject object,
                                      VkPipelineStageFlags destinationStages,
                                      const VkImageMemoryBarrier& barrier) noexcept
 {
-    if (gSynchronizationTrace.IsEnabled() == false)
+    if (GetRasterVulkan().SynchronizationTrace.IsEnabled() == false)
     {
         return;
     }
@@ -184,7 +198,7 @@ RasterStatus RasterError(VkResult result) noexcept
     (void)Check(result);
     if (result == VK_ERROR_DEVICE_LOST)
     {
-        internal::Fail(gSession, StartupError::DeviceLost);
+        internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
         return RasterStatus::DeviceLost;
     }
     return result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY ? RasterStatus::OutOfMemory
@@ -214,15 +228,15 @@ void RasterVkDependencies(bool surface, VkSubpassDependency (&dependencies)[2]) 
     outgoing.dstSubpass = VK_SUBPASS_EXTERNAL;
     outgoing.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     outgoing.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    outgoing.dstStageMask =
-        surface && gHeadless ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    outgoing.dstAccessMask = surface && gHeadless ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+    outgoing.dstStageMask = surface && GetVulkan().IsHeadless ? VK_PIPELINE_STAGE_TRANSFER_BIT
+                                                              : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    outgoing.dstAccessMask = surface && GetVulkan().IsHeadless ? VK_ACCESS_TRANSFER_READ_BIT : 0;
 }
 VkResult
 RasterVkRenderPass(VkFormat format, bool surface, const RasterPassDescription& state, VkRenderPass& output) noexcept
 {
     const auto limit = internal::CurrentStorageLimits().RasterPassStates;
-    if (gRasterPasses.EnsureSlots(limit) == false)
+    if (GetRasterVulkan().Passes.EnsureSlots(limit) == false)
     {
         return internal::StorageFailure() == RasterStatus::OutOfMemory ? VK_ERROR_OUT_OF_HOST_MEMORY
                                                                        : VK_ERROR_TOO_MANY_OBJECTS;
@@ -230,7 +244,7 @@ RasterVkRenderPass(VkFormat format, bool surface, const RasterPassDescription& s
     RasterVkPass* available = nullptr;
     for (usize i = 0; i < limit; ++i)
     {
-        auto& pass = gRasterPasses[i];
+        RasterVkPass& pass = GetRasterVulkan().Passes[i];
         const auto& cached = pass.State;
         if (pass.Object == VK_NULL_HANDLE)
         {
@@ -267,11 +281,12 @@ RasterVkRenderPass(VkFormat format, bool surface, const RasterPassDescription& s
         state.ColorStore == RasterStore::Store ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
     color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color.initialLayout = surface ? (gHeadless ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
-                                  : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.initialLayout =
+        surface ? (GetVulkan().IsHeadless ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+                : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.finalLayout = color.initialLayout;
     auto& depth = attachments[1];
-    depth.format = gDepthFormat;
+    depth.format = GetVulkan().DepthFormat;
     depth.samples = VK_SAMPLE_COUNT_1_BIT;
     depth.loadOp = state.DepthLoad == RasterLoad::Clear  ? VK_ATTACHMENT_LOAD_OP_CLEAR
                    : state.DepthLoad == RasterLoad::Load ? VK_ATTACHMENT_LOAD_OP_LOAD
@@ -300,7 +315,7 @@ RasterVkRenderPass(VkFormat format, bool surface, const RasterPassDescription& s
     create.pSubpasses = &subpass;
     create.dependencyCount = 2;
     create.pDependencies = dependencies;
-    const auto result = vkCreateRenderPass(gDevice, &create, nullptr, &available->Object);
+    const VkResult result = vkCreateRenderPass(GetVulkan().Device, &create, nullptr, &available->Object);
     if (result == VK_SUCCESS)
     {
         available->Format = format;
@@ -326,14 +341,14 @@ VkAttachmentStoreOp RasterVkStore(RasterStore store) noexcept
 VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass& output) noexcept
 {
     const auto limit = internal::CurrentStorageLimits().RasterPassStates;
-    if (gRasterPasses.EnsureSlots(limit) == false)
+    if (GetRasterVulkan().Passes.EnsureSlots(limit) == false)
     {
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
     RasterVkPass* available = nullptr;
     for (usize i = 0; i < limit; ++i)
     {
-        auto& cached = gRasterPasses[i];
+        RasterVkPass& cached = GetRasterVulkan().Passes[i];
         if (cached.Object == VK_NULL_HANDLE)
         {
             if (available == nullptr)
@@ -389,7 +404,7 @@ VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass
     }
     VkAttachmentDescription& depth = attachments[count];
     depth = { .samples = static_cast<VkSampleCountFlagBits>(info.SampleCount) };
-    depth.format = info.Stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : gDepthFormat;
+    depth.format = info.Stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : GetVulkan().DepthFormat;
     depth.samples = static_cast<VkSampleCountFlagBits>(info.SampleCount);
     depth.loadOp = RasterVkLoad(info.Description.DepthLoad);
     depth.storeOp = RasterVkStore(info.Description.DepthStore);
@@ -425,7 +440,7 @@ VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass
     create.pAttachments = attachments;
     create.subpassCount = 1;
     create.pSubpasses = &subpass;
-    const auto result = vkCreateRenderPass(gDevice, &create, nullptr, &available->Object);
+    const VkResult result = vkCreateRenderPass(GetVulkan().Device, &create, nullptr, &available->Object);
     if (result == VK_SUCCESS)
     {
         available->Advanced = info;
@@ -440,25 +455,25 @@ RasterVkAdvancedFramebuffer(const internal::RasterPassInfo& info, VkRenderPass p
     usize count = 0;
     for (usize i = 0; i < info.ColorCount; ++i)
     {
-        views[count++] = gRasterViews[info.Colors[i].View];
+        views[count++] = GetRasterVulkan().Views[info.Colors[i].View];
     }
-    views[count++] = gRasterViewDepths[info.Colors[0].View];
+    views[count++] = GetRasterVulkan().ViewDepths[info.Colors[0].View];
     for (usize i = 0; i < info.ColorCount; ++i)
     {
         if (info.Colors[i].ResolveView != internal::RASTER_INVALID)
         {
-            views[count++] = gRasterViews[info.Colors[i].ResolveView];
+            views[count++] = GetRasterVulkan().Views[info.Colors[i].ResolveView];
         }
     }
     const auto limit = internal::CurrentStorageLimits().RasterPassStates;
-    if (gRasterAdvancedFrames.EnsureSlots(limit) == false)
+    if (GetRasterVulkan().AdvancedFrames.EnsureSlots(limit) == false)
     {
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
     RasterVkFramebuffer* available = nullptr;
     for (usize i = 0; i < limit; ++i)
     {
-        auto& frame = gRasterAdvancedFrames[i];
+        RasterVkFramebuffer& frame = GetRasterVulkan().AdvancedFrames[i];
         if (frame.Object == VK_NULL_HANDLE)
         {
             if (available == nullptr)
@@ -491,7 +506,7 @@ RasterVkAdvancedFramebuffer(const internal::RasterPassInfo& info, VkRenderPass p
     create.width = info.Width;
     create.height = info.Height;
     create.layers = 1;
-    const auto result = vkCreateFramebuffer(gDevice, &create, nullptr, &available->Object);
+    const VkResult result = vkCreateFramebuffer(GetVulkan().Device, &create, nullptr, &available->Object);
     if (result == VK_SUCCESS)
     {
         available->Pass = pass;
@@ -508,7 +523,7 @@ RasterVkAdvancedFramebuffer(const internal::RasterPassInfo& info, VkRenderPass p
 }
 VkResult RasterAllocator() noexcept
 {
-    if (gRasterAllocator != nullptr)
+    if (GetRasterVulkan().Allocator != nullptr)
     {
         return VK_SUCCESS;
     }
@@ -516,13 +531,13 @@ VkResult RasterAllocator() noexcept
     functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VmaAllocatorCreateInfo info{};
-    info.physicalDevice = gPhysical;
-    info.device = gDevice;
-    info.instance = gInstance;
-    info.vulkanApiVersion = gRayEnabled ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
-    info.flags = gRayEnabled ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0U;
+    info.physicalDevice = GetVulkan().Physical;
+    info.device = GetVulkan().Device;
+    info.instance = GetVulkan().Instance;
+    info.vulkanApiVersion = GetVulkan().IsRayEnabled ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
+    info.flags = GetVulkan().IsRayEnabled ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0U;
     info.pVulkanFunctions = &functions;
-    return vmaCreateAllocator(&info, &gRasterAllocator);
+    return vmaCreateAllocator(&info, &GetRasterVulkan().Allocator);
 }
 VkResult RasterUploadBuffer(VkBufferUsageFlags usage,
                             ludus::foundation::BorrowedView<const uint8> bytes,
@@ -541,7 +556,12 @@ VkResult RasterUploadBuffer(VkBufferUsageFlags usage,
     allocation.usage = VMA_MEMORY_USAGE_AUTO;
     allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     VmaAllocationInfo mapped{};
-    result = vmaCreateBuffer(gRasterAllocator, &info, &allocation, &outBuffer.Object, &outBuffer.Allocation, &mapped);
+    result = vmaCreateBuffer(GetRasterVulkan().Allocator,
+                             &info,
+                             &allocation,
+                             &outBuffer.Object,
+                             &outBuffer.Allocation,
+                             &mapped);
     if (result != VK_SUCCESS)
     {
         return result;
@@ -551,7 +571,7 @@ VkResult RasterUploadBuffer(VkBufferUsageFlags usage,
         return VK_ERROR_MEMORY_MAP_FAILED;
     }
     std::memcpy(mapped.pMappedData, bytes.GetDataOrNull(), bytes.GetSize());
-    return vmaFlushAllocation(gRasterAllocator, outBuffer.Allocation, 0, bytes.GetSize());
+    return vmaFlushAllocation(GetRasterVulkan().Allocator, outBuffer.Allocation, 0, bytes.GetSize());
 }
 VkDescriptorType RasterDescriptor(RasterBindingKind kind, bool hasDynamicOffset = false) noexcept
 {
@@ -584,12 +604,13 @@ VkFormat RasterPixelFormat(RasterFormat format) noexcept
 // https://docs.vulkan.org/refpages/latest/refpages/source/vkGetPhysicalDeviceImageFormatProperties.html
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
-    if (gPhysical == VK_NULL_HANDLE || static_cast<uint8>(format) > static_cast<uint8>(RasterFormat::Bc5RgUnorm))
+    if (GetVulkan().Physical == VK_NULL_HANDLE ||
+        static_cast<uint8>(format) > static_cast<uint8>(RasterFormat::Bc5RgUnorm))
     {
         return {};
     }
     VkPhysicalDeviceFeatures enabled{};
-    vkGetPhysicalDeviceFeatures(gPhysical, &enabled);
+    vkGetPhysicalDeviceFeatures(GetVulkan().Physical, &enabled);
     if (internal::CompressedTexture(format) &&
         (internal::NativeDeviceRequest() != nullptr || enabled.textureCompressionBC != VK_TRUE))
     {
@@ -597,7 +618,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     }
     const auto pixel = RasterPixelFormat(format);
     VkFormatProperties properties{};
-    vkGetPhysicalDeviceFormatProperties(gPhysical, pixel, &properties);
+    vkGetPhysicalDeviceFormatProperties(GetVulkan().Physical, pixel, &properties);
     const VkFormatFeatureFlags required =
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
         VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
@@ -609,7 +630,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                     (format == RasterFormat::Rgba8Unorm ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0U);
     VkImageFormatProperties sampled{};
-    if (vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+    if (vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
                                                  pixel,
                                                  VK_IMAGE_TYPE_2D,
                                                  VK_IMAGE_TILING_OPTIMAL,
@@ -646,7 +667,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     result.MaxArrayLayers = sampled.maxArrayLayers;
     result.PartialViews = true;
     VkImageFormatProperties cube{}, volume{};
-    if (vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+    if (vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
                                                  pixel,
                                                  VK_IMAGE_TYPE_2D,
                                                  VK_IMAGE_TILING_OPTIMAL,
@@ -667,7 +688,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     }
     // Compressed volumes are a separate feature/profile; the R9 BC profile is 2D/array/cube.
     if (internal::CompressedTexture(format) == false &&
-        vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+        vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
                                                  pixel,
                                                  VK_IMAGE_TYPE_3D,
                                                  VK_IMAGE_TILING_OPTIMAL,
@@ -688,15 +709,15 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     VkImageFormatProperties color{}, depth{};
     const bool attachment = result.Uses.ColorAttachment &&
                             (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0 &&
-                            vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+                            vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
                                                                      pixel,
                                                                      VK_IMAGE_TYPE_2D,
                                                                      VK_IMAGE_TILING_OPTIMAL,
                                                                      usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                                                      0,
                                                                      &color) == VK_SUCCESS &&
-                            vkGetPhysicalDeviceImageFormatProperties(gPhysical,
-                                                                     gDepthFormat,
+                            vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
+                                                                     GetVulkan().DepthFormat,
                                                                      VK_IMAGE_TYPE_2D,
                                                                      VK_IMAGE_TILING_OPTIMAL,
                                                                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
@@ -713,7 +734,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     {
         VkImageFormatProperties stencil{};
         result.StencilAttachment = vkGetPhysicalDeviceImageFormatProperties(
-                                       gPhysical,
+                                       GetVulkan().Physical,
                                        VK_FORMAT_D32_SFLOAT_S8_UINT,
                                        VK_IMAGE_TYPE_2D,
                                        VK_IMAGE_TILING_OPTIMAL,
@@ -748,7 +769,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     }
     result.MaxAttachmentDimension2D = attachment ? result.MaxSampledDimension2D : 0;
     VkPhysicalDeviceProperties device{};
-    vkGetPhysicalDeviceProperties(gPhysical, &device);
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &device);
     constexpr usize ATTACHMENT_DIMENSION_BOUND_COUNT = 8;
     const StaticArray<uint32, ATTACHMENT_DIMENSION_BOUND_COUNT> bounds{{color.maxExtent.width,
                                                                         color.maxExtent.height,
@@ -773,22 +794,22 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     {
         VkImageFormatProperties colorCube{}, depthCube{}, stencilCube{};
         const auto depthUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        if (vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+        if (vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
                                                      pixel,
                                                      VK_IMAGE_TYPE_2D,
                                                      VK_IMAGE_TILING_OPTIMAL,
                                                      usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                                      VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
                                                      &colorCube) == VK_SUCCESS &&
-            vkGetPhysicalDeviceImageFormatProperties(gPhysical,
-                                                     gDepthFormat,
+            vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
+                                                     GetVulkan().DepthFormat,
                                                      VK_IMAGE_TYPE_2D,
                                                      VK_IMAGE_TILING_OPTIMAL,
                                                      depthUsage,
                                                      VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
                                                      &depthCube) == VK_SUCCESS &&
             (result.StencilAttachment == false ||
-             vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+             vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
                                                       VK_FORMAT_D32_SFLOAT_S8_UINT,
                                                       VK_IMAGE_TYPE_2D,
                                                       VK_IMAGE_TILING_OPTIMAL,
@@ -823,7 +844,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
         if (result.StencilAttachment)
         {
             VkImageFormatProperties stencil{};
-            if (vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+            if (vkGetPhysicalDeviceImageFormatProperties(GetVulkan().Physical,
                                                          VK_FORMAT_D32_SFLOAT_S8_UINT,
                                                          VK_IMAGE_TYPE_2D,
                                                          VK_IMAGE_TILING_OPTIMAL,
@@ -847,18 +868,17 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
 uint32 RasterColorAttachmentLimit() noexcept
 {
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
     return properties.limits.maxColorAttachments < 4 ? properties.limits.maxColorAttachments : 4;
 }
 uint32 RasterVertexStrideLimit() noexcept
 {
     return 256;
 }
-bool gRasterHdrProbed = false, gRasterHdr = false;
 bool GetDescriptorArenaUsage(internal::DescriptorArenaUsage& outUsage) noexcept
 {
     outUsage = {};
-    for (const RasterDescriptorArena& arena : gRasterDescriptorArenas)
+    for (const RasterDescriptorArena& arena : GetRasterVulkan().DescriptorArenas)
     {
         if (arena.Pool == VK_NULL_HANDLE)
         {
@@ -877,12 +897,12 @@ bool GetDescriptorArenaUsage(internal::DescriptorArenaUsage& outUsage) noexcept
 }
 BindingCapabilities BindingLimits() noexcept
 {
-    if (gPhysical == VK_NULL_HANDLE || gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Physical == VK_NULL_HANDLE || GetVulkan().Device == VK_NULL_HANDLE)
     {
         return {};
     }
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
     const VkPhysicalDeviceLimits& limits = properties.limits;
     uint32 textures = internal::CurrentStorageLimits().DescriptorsPerSet;
     if (limits.maxPerStageDescriptorSampledImages < textures)
@@ -913,8 +933,8 @@ BindingCapabilities BindingLimits() noexcept
         .MaxDescriptorsPerSet = limits.maxPerStageResources < internal::CurrentStorageLimits().DescriptorsPerSet
                                     ? limits.maxPerStageResources
                                     : internal::CurrentStorageLimits().DescriptorsPerSet,
-        .HasUniformTextureIndexing = gHasUniformTextureIndexing,
-        .HasBindlessTextureIndexing = gHasBindlessTextureIndexing,
+        .HasUniformTextureIndexing = GetVulkan().HasUniformTextureIndexing,
+        .HasBindlessTextureIndexing = GetVulkan().HasBindlessTextureIndexing,
         .MaxBindings = static_cast<uint32>(internal::RASTER_BINDINGS),
         .MaxUniformBuffersPerStage = uniforms,
         .MaxSampledTexturesPerStage = textures,
@@ -927,23 +947,23 @@ BindingCapabilities BindingLimits() noexcept
                                  : static_cast<uint32>(internal::RASTER_BINDINGS),
         .HasBufferDescriptorArrays = true,
         .HasSamplerDescriptorArrays = true,
-        .HasRuntimeTextureArrays = gHasRuntimeTextureArrays,
+        .HasRuntimeTextureArrays = GetVulkan().HasRuntimeTextureArrays,
         .HasPartiallyBoundArrays = true,
     };
 }
 RasterCapabilities RasterLimits() noexcept
 {
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
-    if (gRasterHdrProbed == false)
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
+    if (GetRasterVulkan().IsHdrProbed == false)
     {
         VkFormatProperties hdr{};
-        vkGetPhysicalDeviceFormatProperties(gPhysical, VK_FORMAT_R16G16B16A16_SFLOAT, &hdr);
+        vkGetPhysicalDeviceFormatProperties(GetVulkan().Physical, VK_FORMAT_R16G16B16A16_SFLOAT, &hdr);
         constexpr auto required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
                                   VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
                                   VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-        gRasterHdr = (hdr.optimalTilingFeatures & required) == required;
-        gRasterHdrProbed = true;
+        GetRasterVulkan().HasHdr = (hdr.optimalTilingFeatures & required) == required;
+        GetRasterVulkan().IsHdrProbed = true;
     }
     const uint32 max = properties.limits.maxImageDimension2D;
     const usize alignment = properties.limits.minUniformBufferOffsetAlignment;
@@ -959,12 +979,12 @@ RasterCapabilities RasterLimits() noexcept
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &allocation,
     };
-    vkGetPhysicalDeviceProperties2(gPhysical, &extended);
+    vkGetPhysicalDeviceProperties2(GetVulkan().Physical, &extended);
     const usize bufferBytes = internal::GetResourceSizeLimit(allocation.maxMemoryAllocationSize);
     // Devices this backend creates enable fillModeNonSolid whenever it is supported; an admitted
     // device enabled it only when its source declares so.
     VkPhysicalDeviceFeatures features{};
-    vkGetPhysicalDeviceFeatures(gPhysical, &features);
+    vkGetPhysicalDeviceFeatures(GetVulkan().Physical, &features);
     const NativeDeviceDescription* importedOrNull = internal::NativeDeviceRequest();
     const bool hasLineFill = features.fillModeNonSolid == VK_TRUE &&
                              (importedOrNull == nullptr || importedOrNull->HasFillModeNonSolid == true);
@@ -975,18 +995,18 @@ RasterCapabilities RasterLimits() noexcept
             internal::CurrentStorageLimits().ResourcesPerKind,
             internal::CurrentStorageLimits().DrawsPerFrame,
             properties.limits.maxVertexInputAttributes < 16 ? properties.limits.maxVertexInputAttributes : 16,
-            gRasterHdr,
+            GetRasterVulkan().HasHdr,
             bufferBytes,
             hasLineFill};
 }
 ComputeCapabilities ComputeLimits() noexcept
 {
-    if (gPhysical == VK_NULL_HANDLE || gQueueCompute == false)
+    if (GetVulkan().Physical == VK_NULL_HANDLE || GetVulkan().HasQueueCompute == false)
     {
         return {};
     }
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
     const auto& limits = properties.limits;
     if (limits.maxPerStageDescriptorStorageBuffers < 4 || limits.maxComputeWorkGroupInvocations < 256)
     {
@@ -1023,7 +1043,7 @@ IndirectCapabilities IndirectLimits() noexcept
         return {};
     }
     VkPhysicalDeviceFeatures features{};
-    vkGetPhysicalDeviceFeatures(gPhysical, &features);
+    vkGetPhysicalDeviceFeatures(GetVulkan().Physical, &features);
     return
     {
         .ArgumentAlignment = internal::INDIRECT_ARGUMENT_ALIGNMENT_BYTES,
@@ -1046,16 +1066,16 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
         return {};
     }
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
     VkPhysicalDeviceFeatures features{};
-    vkGetPhysicalDeviceFeatures(gPhysical, &features);
+    vkGetPhysicalDeviceFeatures(GetVulkan().Physical, &features);
     const bool hasFragmentStores =
         features.fragmentStoresAndAtomics == VK_TRUE && internal::NativeDeviceRequest() == nullptr;
     bool hasStorageFormats = true;
     for (const RasterFormat format : {RasterFormat::Rgba8Unorm, RasterFormat::Rgba16Float})
     {
         VkFormatProperties formatProperties{};
-        vkGetPhysicalDeviceFormatProperties(gPhysical, RasterPixelFormat(format), &formatProperties);
+        vkGetPhysicalDeviceFormatProperties(GetVulkan().Physical, RasterPixelFormat(format), &formatProperties);
         hasStorageFormats = hasStorageFormats == true &&
                             (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
     }
@@ -1081,7 +1101,6 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
 // A dedicated lane builds pipelines without a shared VkPipelineCache. Captured
 // shader/layout/render-pass handles stay retained by the resource ledger until
 // owner-thread completion (including detached candidates and device shutdown).
-bool hasPreparationDeviceLoss = false;
 RasterStatus GetPreparationStatus(VkResult result) noexcept
 {
     if (result == VK_SUCCESS)
@@ -1093,7 +1112,7 @@ RasterStatus GetPreparationStatus(VkResult result) noexcept
     {
         if (GetPreparation().IsDraining == false)
         {
-            hasPreparationDeviceLoss = true;
+            GetRasterVulkan().HasPreparationDeviceLoss = true;
         }
         return RasterStatus::DeviceLost;
     }
@@ -1147,7 +1166,7 @@ struct VulkanComputePreparation final : NativePreparationTask
     }
     RasterStatus Complete(bool) noexcept override
     {
-        gComputePipelines[ResourceSlot] = Pipeline;
+        GetRasterVulkan().ComputePipelines[ResourceSlot] = Pipeline;
         Pipeline = {};
         const RasterStatus status = GetPreparationStatus(Outcome);
         internal::RasterComplete(Request, status);
@@ -1182,7 +1201,7 @@ struct VulkanRasterPreparation final : NativePreparationTask
     }
     RasterStatus Complete(bool) noexcept override
     {
-        gRasterPipelines[ResourceSlot] = Pipeline;
+        GetRasterVulkan().Pipelines[ResourceSlot] = Pipeline;
         Pipeline = {};
         const RasterStatus status = GetPreparationStatus(Outcome);
         internal::RasterComplete(Request, status);
@@ -1214,7 +1233,7 @@ struct VulkanShaderPreparation final : NativePreparationTask
     }
     RasterStatus Complete(bool) noexcept override
     {
-        gRasterShaders[ResourceSlot] = Shader;
+        GetRasterVulkan().Shaders[ResourceSlot] = Shader;
         Shader.Object = VK_NULL_HANDLE;
         const RasterStatus status = GetPreparationStatus(Outcome);
         internal::RasterComplete(Request, status);
@@ -1230,30 +1249,30 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
     }
     task->IsPipelinePreparation = true;
     task->Kind = internal::RasterKind::ComputePipeline;
-    task->Device = gDevice;
-    task->Bindings = gRasterLayouts[info.Layout];
-    task->Shader = gRasterShaders[info.Shader];
+    task->Device = GetVulkan().Device;
+    task->Bindings = GetRasterVulkan().Layouts[info.Layout];
+    task->Shader = GetRasterVulkan().Shaders[info.Shader];
     task->ResourceSlot = slot;
     task->Request = request;
     return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
-    const auto command = gFrames[gFrame].Command;
-    const auto& pipeline = gComputePipelines[packet.Pipeline];
+    const VkCommandBuffer command = GetVulkan().Frames[GetVulkan().FrameIndex].Command;
+    const ComputeVulkanPipeline& pipeline = GetRasterVulkan().ComputePipelines[packet.Pipeline];
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.Object);
     vkCmdBindDescriptorSets(command,
                             VK_PIPELINE_BIND_POINT_COMPUTE,
                             pipeline.Layout,
                             0,
                             1,
-                            &gRasterSets[packet.Set].Object,
+                            &GetRasterVulkan().Sets[packet.Set].Object,
                             packet.DynamicOffsetCount,
                             packet.DynamicOffsets);
     BeginPhysicalPassTiming(GpuPassKind::Compute);
     if (packet.Indirect != internal::RASTER_INVALID)
     {
-        vkCmdDispatchIndirect(command, gRasterBuffers[packet.Indirect].Object, packet.IndirectOffset);
+        vkCmdDispatchIndirect(command, GetRasterVulkan().Buffers[packet.Indirect].Object, packet.IndirectOffset);
     }
     else
     {
@@ -1264,28 +1283,28 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 }
 void SetVulkanSynchronizationTrace(bool isEnabled) noexcept
 {
-    gSynchronizationTrace.SetEnabled(isEnabled);
+    GetRasterVulkan().SynchronizationTrace.SetEnabled(isEnabled);
 }
 const VulkanSynchronizationTrace& GetVulkanSynchronizationTrace() noexcept
 {
-    return gSynchronizationTrace;
+    return GetRasterVulkan().SynchronizationTrace;
 }
 void SetVulkanBufferRangeTrial(bool isEnabled) noexcept
 {
-    gBufferRangeTrial.IsSelected = isEnabled;
-    gBufferRangeTrial.Ranges.Clear();
+    GetRasterVulkan().BufferRangeTrial.IsSelected = isEnabled;
+    GetRasterVulkan().BufferRangeTrial.Ranges.Clear();
 }
 // The whole-buffer plan (buffer_range_vulkan.h) is the control. The opt-in R13a trial narrows
 // a dependency to the declared use range only while the ledger can prove the range disjoint;
 // the whole-buffer state remains a conservative superset for transfers and later submissions.
 void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
 {
-    const VulkanBufferAccess access = GetVulkanBufferAccess(use, gQueueCompute);
+    const VulkanBufferAccess access = GetVulkanBufferAccess(use, GetVulkan().HasQueueCompute);
     if (access.Stages == 0)
     {
         return;
     }
-    RasterVulkanBuffer& buffer = gRasterBuffers[slot];
+    RasterVulkanBuffer& buffer = GetRasterVulkan().Buffers[slot];
     VulkanBufferState state
     {
         .Stages = buffer.Stage,
@@ -1295,11 +1314,12 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
     };
     const internal::GraphLoweringSite& site = internal::gGraphLoweringSite;
     const VulkanBufferBarrierPlan plan =
-        gBufferRangeTrial.IsSelected == true
-            ? gBufferRangeTrial.Ranges.Plan(slot,
-                                            { .Execution = site.Execution, .Offset = site.Offset, .Size = site.Size },
-                                            access,
-                                            state)
+        GetRasterVulkan().BufferRangeTrial.IsSelected == true
+            ? GetRasterVulkan().BufferRangeTrial.Ranges.Plan(
+                  slot,
+                  { .Execution = site.Execution, .Offset = site.Offset, .Size = site.Size },
+                  access,
+                  state)
             : PlanVulkanBufferBarrier(access, state);
     VkBufferMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -1309,7 +1329,7 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.srcAccessMask = plan.SourceAccess;
     barrier.dstAccessMask = plan.DestinationAccess;
-    vkCmdPipelineBarrier(gFrames[gFrame].Command,
+    vkCmdPipelineBarrier(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
                          plan.SourceStages,
                          plan.DestinationStages,
                          0,
@@ -1323,7 +1343,7 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
     buffer.Access = state.Access;
     buffer.WriterStage = state.WriterStages;
     buffer.WriterAccess = state.WriterAccess;
-    if (gSynchronizationTrace.IsEnabled() == true)
+    if (GetRasterVulkan().SynchronizationTrace.IsEnabled() == true)
     {
         RecordFrameSynchronization(
         {
@@ -1354,14 +1374,14 @@ RasterStatus RasterCreateBuffer(usize slot,
                            : VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     return RasterError(RasterUploadBuffer(usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                           bytes,
-                                          gRasterBuffers[slot]));
+                                          GetRasterVulkan().Buffers[slot]));
 }
 RasterStatus
 RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpload& upload, uint32 request) noexcept
 {
     VkFormatProperties properties{};
     const auto format = RasterPixelFormat(info.Format);
-    vkGetPhysicalDeviceFormatProperties(gPhysical, format, &properties);
+    vkGetPhysicalDeviceFormatProperties(GetVulkan().Physical, format, &properties);
     const VkFormatFeatureFlags required =
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
         VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
@@ -1376,7 +1396,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     {
         return RasterError(result);
     }
-    auto& texture = gRasterTextures[slot];
+    RasterVulkanTexture& texture = GetRasterVulkan().Textures[slot];
     texture.Info = info;
     VkImageCreateInfo image{ .samples = VK_SAMPLE_COUNT_1_BIT };
     image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1394,17 +1414,22 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                   (info.IsStorage ? VK_IMAGE_USAGE_STORAGE_BIT : 0U);
     VmaAllocationCreateInfo allocation{};
     allocation.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    result = vmaCreateImage(gRasterAllocator, &image, &allocation, &texture.Object, &texture.Allocation, nullptr);
+    result =
+        vmaCreateImage(GetRasterVulkan().Allocator, &image, &allocation, &texture.Object, &texture.Allocation, nullptr);
     if (result != VK_SUCCESS)
     {
         return RasterError(result);
     }
     if (info.Attachment)
     {
-        image.format = info.Stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : gDepthFormat;
+        image.format = info.Stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : GetVulkan().DepthFormat;
         image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        result =
-            vmaCreateImage(gRasterAllocator, &image, &allocation, &texture.Depth, &texture.DepthAllocation, nullptr);
+        result = vmaCreateImage(GetRasterVulkan().Allocator,
+                                &image,
+                                &allocation,
+                                &texture.Depth,
+                                &texture.DepthAllocation,
+                                nullptr);
         VkImageViewCreateInfo view{};
         view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -1413,7 +1438,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         if (result == VK_SUCCESS)
         {
-            result = vkCreateImageView(gDevice, &view, nullptr, &texture.ColorView);
+            result = vkCreateImageView(GetVulkan().Device, &view, nullptr, &texture.ColorView);
         }
         view.image = texture.Depth;
         view.format = image.format;
@@ -1421,7 +1446,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
             VK_IMAGE_ASPECT_DEPTH_BIT | (info.Stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0U);
         if (result == VK_SUCCESS)
         {
-            result = vkCreateImageView(gDevice, &view, nullptr, &texture.DepthView);
+            result = vkCreateImageView(GetVulkan().Device, &view, nullptr, &texture.DepthView);
         }
         if (info.SampleCount != 1 || info.Stencil || info.MipLevels != 1 || info.Dimension != TextureDimension::D2)
         {
@@ -1443,7 +1468,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         framebuffer.layers = 1;
         if (result == VK_SUCCESS)
         {
-            result = vkCreateFramebuffer(gDevice, &framebuffer, nullptr, &texture.Framebuffer);
+            result = vkCreateFramebuffer(GetVulkan().Device, &framebuffer, nullptr, &texture.Framebuffer);
         }
         return RasterError(result);
     }
@@ -1465,10 +1490,10 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     {
         VkCommandBufferAllocateInfo allocate{};
         allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocate.commandPool = gCommands;
+        allocate.commandPool = GetVulkan().Commands;
         allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocate.commandBufferCount = 1;
-        result = vkAllocateCommandBuffers(gDevice, &allocate, &command);
+        result = vkAllocateCommandBuffers(GetVulkan().Device, &allocate, &command);
     }
     if (result == VK_SUCCESS)
     {
@@ -1542,7 +1567,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     {
         VkFenceCreateInfo create{};
         create.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        result = vkCreateFence(gDevice, &create, nullptr, &fence);
+        result = vkCreateFence(GetVulkan().Device, &create, nullptr, &fence);
     }
     bool submitted = false;
     if (result == VK_SUCCESS)
@@ -1551,7 +1576,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &command;
-        result = vkQueueSubmit(gQueue, 1, &submit, fence);
+        result = vkQueueSubmit(GetVulkan().Queue, 1, &submit, fence);
         submitted = result == VK_SUCCESS;
     }
     // Immutable content/atlas replacement is a streaming operation: retain owned staging and
@@ -1568,7 +1593,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     }
     if (submitted)
     {
-        result = vkWaitForFences(gDevice, 1, &fence, VK_TRUE, 5000000000ULL);
+        result = vkWaitForFences(GetVulkan().Device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NANOSECONDS);
     }
     // Timeout or host-memory pressure does not establish GPU completion. Keep
     // the staging allocation and command until the fence signals; device loss
@@ -1584,18 +1609,18 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     }
     if (command != VK_NULL_HANDLE)
     {
-        vkFreeCommandBuffers(gDevice, gCommands, 1, &command);
+        vkFreeCommandBuffers(GetVulkan().Device, GetVulkan().Commands, 1, &command);
     }
-    vkDestroyFence(gDevice, fence, nullptr);
+    vkDestroyFence(GetVulkan().Device, fence, nullptr);
     if (staging.Object != VK_NULL_HANDLE)
     {
-        vmaDestroyBuffer(gRasterAllocator, staging.Object, staging.Allocation);
+        vmaDestroyBuffer(GetRasterVulkan().Allocator, staging.Object, staging.Allocation);
     }
     return RasterError(result);
 }
 RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& source, uint32) noexcept
 {
-    auto& texture = gRasterTextures[source.Texture];
+    RasterVulkanTexture& texture = GetRasterVulkan().Textures[source.Texture];
     const auto& range = source.View;
     VkImageViewCreateInfo view{};
     view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1606,7 +1631,7 @@ RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& sour
     view.image = range.Aspect == TextureAspect::Color ? texture.Object : texture.Depth;
     view.format = range.Aspect == TextureAspect::Color ? RasterPixelFormat(texture.Info.Format)
                   : texture.Info.Stencil               ? VK_FORMAT_D32_SFLOAT_S8_UINT
-                                                       : gDepthFormat;
+                                                       : GetVulkan().DepthFormat;
     view.subresourceRange = {range.Aspect == TextureAspect::Color   ? VK_IMAGE_ASPECT_COLOR_BIT
                              : range.Aspect == TextureAspect::Depth ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                                     : VK_IMAGE_ASPECT_STENCIL_BIT,
@@ -1614,14 +1639,14 @@ RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& sour
                              range.MipCount,
                              range.BaseLayer,
                              range.LayerCount};
-    auto result = vkCreateImageView(gDevice, &view, nullptr, &gRasterViews[slot]);
+    VkResult result = vkCreateImageView(GetVulkan().Device, &view, nullptr, &GetRasterVulkan().Views[slot]);
     if (result == VK_SUCCESS && range.Attachment)
     {
         view.image = texture.Depth;
-        view.format = texture.Info.Stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : gDepthFormat;
+        view.format = texture.Info.Stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : GetVulkan().DepthFormat;
         view.subresourceRange.aspectMask =
             VK_IMAGE_ASPECT_DEPTH_BIT | (texture.Info.Stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0U);
-        result = vkCreateImageView(gDevice, &view, nullptr, &gRasterViewDepths[slot]);
+        result = vkCreateImageView(GetVulkan().Device, &view, nullptr, &GetRasterVulkan().ViewDepths[slot]);
     }
     return RasterError(result);
 }
@@ -1640,7 +1665,7 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& info, uin
         info.V == RasterAddress::Clamp ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
     create.addressModeW =
         info.W == RasterAddress::Clamp ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    return RasterError(vkCreateSampler(gDevice, &create, nullptr, &gRasterSamplers[slot]));
+    return RasterError(vkCreateSampler(GetVulkan().Device, &create, nullptr, &GetRasterVulkan().Samplers[slot]));
 }
 RasterStatus RasterCreateShader(usize slot,
                                 const ShaderDescription& info,
@@ -1696,7 +1721,7 @@ RasterStatus RasterCreateShader(usize slot,
     }
     std::memcpy(task->Code.GetData(), info.Spirv.GetDataOrNull(), (info.Spirv.GetSize() * sizeof(uint32)));
     std::memcpy(task->Shader.Entry, info.SpirvEntry.data(), info.SpirvEntry.size());
-    task->Device = gDevice;
+    task->Device = GetVulkan().Device;
     task->ResourceSlot = slot;
     task->Request = request;
     return SubmitNativePreparation(foundation::Move(task), reflected.ShouldPrepareAsynchronously);
@@ -1764,13 +1789,14 @@ RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, 
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT,
             .pNext = &variable,
         };
-        vkGetDescriptorSetLayoutSupport(gDevice, &create, &support);
+        vkGetDescriptorSetLayoutSupport(GetVulkan().Device, &create, &support);
         if (support.supported == VK_FALSE || runtimeCapacity > variable.maxVariableDescriptorCount)
         {
             return RasterStatus::Unsupported;
         }
     }
-    return RasterError(vkCreateDescriptorSetLayout(gDevice, &create, nullptr, &gRasterLayouts[slot]));
+    return RasterError(
+        vkCreateDescriptorSetLayout(GetVulkan().Device, &create, nullptr, &GetRasterVulkan().Layouts[slot]));
 }
 RasterStatus
 RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal::RasterSet& info, uint32) noexcept
@@ -1779,7 +1805,7 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
     // https://docs.vulkan.org/samples/latest/samples/performance/descriptor_management/README.html, for pool
     // amortization. Immutable snapshots retire through the common completion
     // registry; individual sets are freed only after their final GPU use.
-    RasterVulkanSet& set = gRasterSets[slot];
+    RasterVulkanSet& set = GetRasterVulkan().Sets[slot];
     constexpr foundation::StaticArray<VkDescriptorType, DESCRIPTOR_KINDS> types = {
         {
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1806,9 +1832,9 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
     }
     usize arenaSlot = internal::RASTER_INVALID;
     usize emptySlot = internal::RASTER_INVALID;
-    for (usize index = 0; index < gRasterDescriptorArenas.GetSize(); ++index)
+    for (usize index = 0; index < GetRasterVulkan().DescriptorArenas.GetSize(); ++index)
     {
-        const RasterDescriptorArena& arena = gRasterDescriptorArenas[index];
+        const RasterDescriptorArena& arena = GetRasterVulkan().DescriptorArenas[index];
         if (arena.Pool == VK_NULL_HANDLE)
         {
             emptySlot = index;
@@ -1829,13 +1855,13 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
     {
         if (emptySlot == internal::RASTER_INVALID)
         {
-            emptySlot = gRasterDescriptorArenas.GetSize();
-            if (gRasterDescriptorArenas.EnsureSlots(emptySlot + 1) == false)
+            emptySlot = GetRasterVulkan().DescriptorArenas.GetSize();
+            if (GetRasterVulkan().DescriptorArenas.EnsureSlots(emptySlot + 1) == false)
             {
                 return internal::StorageFailure();
             }
         }
-        RasterDescriptorArena& arena = gRasterDescriptorArenas[emptySlot];
+        RasterDescriptorArena& arena = GetRasterVulkan().DescriptorArenas[emptySlot];
         const uint32 recordLimit = internal::CurrentStorageLimits().ResourcesPerKind;
         arena.Capacity = recordLimit < DESCRIPTOR_SETS_PER_ARENA ? recordLimit : DESCRIPTOR_SETS_PER_ARENA;
         for (uint32 count : counts)
@@ -1867,7 +1893,7 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
             .poolSizeCount = sizeCount,
             .pPoolSizes = sizes.GetData(),
         };
-        const VkResult result = vkCreateDescriptorPool(gDevice, &create, nullptr, &arena.Pool);
+        const VkResult result = vkCreateDescriptorPool(GetVulkan().Device, &create, nullptr, &arena.Pool);
         if (result != VK_SUCCESS)
         {
             arena = {};
@@ -1875,7 +1901,7 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
         }
         arenaSlot = emptySlot;
     }
-    RasterDescriptorArena& arena = gRasterDescriptorArenas[arenaSlot];
+    RasterDescriptorArena& arena = GetRasterVulkan().DescriptorArenas[arenaSlot];
     uint32 runtimeCount = 0;
     for (usize entry = 0; entry < layout.Count; ++entry)
     {
@@ -1896,14 +1922,14 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
         .pNext = runtimeCount == 0 ? nullptr : &variable,
         .descriptorPool = arena.Pool,
         .descriptorSetCount = 1,
-        .pSetLayouts = &gRasterLayouts[info.Layout],
+        .pSetLayouts = &GetRasterVulkan().Layouts[info.Layout],
     };
-    const VkResult result = vkAllocateDescriptorSets(gDevice, &allocate, &set.Object);
+    const VkResult result = vkAllocateDescriptorSets(GetVulkan().Device, &allocate, &set.Object);
     if (result != VK_SUCCESS)
     {
         if (arena.LiveSets == 0)
         {
-            vkDestroyDescriptorPool(gDevice, arena.Pool, nullptr);
+            vkDestroyDescriptorPool(GetVulkan().Device, arena.Pool, nullptr);
             arena = {};
         }
         set.Object = VK_NULL_HANDLE;
@@ -1943,7 +1969,7 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
         {
             buffers[index] =
             {
-                .buffer = gRasterBuffers[info.Slots[index]].Object,
+                .buffer = GetRasterVulkan().Buffers[info.Slots[index]].Object,
                 .offset = info.Offsets[index],
                 .range = info.Sizes[index],
             };
@@ -1957,8 +1983,8 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
                                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             images[index] =
             {
-                .sampler = isTexture == false ? gRasterSamplers[info.Slots[index]] : VK_NULL_HANDLE,
-                .imageView = isTexture == true ? gRasterViews[info.Slots[index]] : VK_NULL_HANDLE,
+                .sampler = isTexture == false ? GetRasterVulkan().Samplers[info.Slots[index]] : VK_NULL_HANDLE,
+                .imageView = isTexture == true ? GetRasterVulkan().Views[info.Slots[index]] : VK_NULL_HANDLE,
                 .imageLayout = isTexture == true ? textureLayout : VK_IMAGE_LAYOUT_UNDEFINED,
             };
         }
@@ -1975,7 +2001,11 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
             .pBufferInfo = isBuffer == true ? &buffers[index] : nullptr,
         };
     }
-    vkUpdateDescriptorSets(gDevice, static_cast<uint32>(layout.DescriptorCount), writes.GetData(), 0, nullptr);
+    vkUpdateDescriptorSets(GetVulkan().Device,
+                           static_cast<uint32>(layout.DescriptorCount),
+                           writes.GetData(),
+                           0,
+                           nullptr);
     return RasterStatus::Ready;
 }
 VkResult VulkanRasterPreparation::Build() noexcept
@@ -2128,7 +2158,7 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     VkResult result = VK_SUCCESS;
     if (info.ColorCount == 0)
     {
-        const VkFormat format = info.Target == RasterTarget::Surface       ? gFormat
+        const VkFormat format = info.Target == RasterTarget::Surface       ? GetVulkan().Format
                                 : info.Target == RasterTarget::Rgba16Float ? VK_FORMAT_R16G16B16A16_SFLOAT
                                 : info.Target == RasterTarget::Rgba8Unorm  ? VK_FORMAT_R8G8B8A8_UNORM
                                                                            : VK_FORMAT_R8G8B8A8_SRGB;
@@ -2152,10 +2182,10 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     }
     task->IsPipelinePreparation = true;
     task->Kind = internal::RasterKind::Pipeline;
-    task->Device = gDevice;
-    task->Bindings = gRasterLayouts[info.Layout];
-    task->Vertex = gRasterShaders[info.Vertex];
-    task->Fragment = gRasterShaders[info.Fragment];
+    task->Device = GetVulkan().Device;
+    task->Bindings = GetRasterVulkan().Layouts[info.Layout];
+    task->Vertex = GetRasterVulkan().Shaders[info.Vertex];
+    task->Fragment = GetRasterVulkan().Shaders[info.Fragment];
     task->Info = info;
     task->ResourceSlot = slot;
     task->Request = request;
@@ -2165,106 +2195,118 @@ void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name)
 {
     if (kind == internal::RasterKind::Buffer)
     {
-        SetVulkanObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64>(gRasterBuffers[slot].Object), name);
+        SetVulkanObjectName(VK_OBJECT_TYPE_BUFFER,
+                            reinterpret_cast<uint64>(GetRasterVulkan().Buffers[slot].Object),
+                            name);
     }
     else if (kind == internal::RasterKind::Texture)
     {
-        const RasterVulkanTexture& texture = gRasterTextures[slot];
+        const RasterVulkanTexture& texture = GetRasterVulkan().Textures[slot];
         SetVulkanObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(texture.Object), name);
         SetVulkanObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(texture.Depth), name);
     }
 }
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 {
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return;
     }
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            if (gRasterBuffers[slot].Object != VK_NULL_HANDLE)
+            if (GetRasterVulkan().Buffers[slot].Object != VK_NULL_HANDLE)
             {
-                vmaDestroyBuffer(gRasterAllocator, gRasterBuffers[slot].Object, gRasterBuffers[slot].Allocation);
+                vmaDestroyBuffer(GetRasterVulkan().Allocator,
+                                 GetRasterVulkan().Buffers[slot].Object,
+                                 GetRasterVulkan().Buffers[slot].Allocation);
             }
-            gRasterBuffers[slot] = {};
-            gBufferRangeTrial.Ranges.Forget(slot);
+            GetRasterVulkan().Buffers[slot] = {};
+            GetRasterVulkan().BufferRangeTrial.Ranges.Forget(slot);
             break;
         case internal::RasterKind::Texture:
-            vkDestroyFramebuffer(gDevice, gRasterTextures[slot].Framebuffer, nullptr);
-            vkDestroyImageView(gDevice, gRasterTextures[slot].ColorView, nullptr);
-            vkDestroyImageView(gDevice, gRasterTextures[slot].DepthView, nullptr);
-            if (gRasterTextures[slot].Depth != VK_NULL_HANDLE)
+            vkDestroyFramebuffer(GetVulkan().Device, GetRasterVulkan().Textures[slot].Framebuffer, nullptr);
+            vkDestroyImageView(GetVulkan().Device, GetRasterVulkan().Textures[slot].ColorView, nullptr);
+            vkDestroyImageView(GetVulkan().Device, GetRasterVulkan().Textures[slot].DepthView, nullptr);
+            if (GetRasterVulkan().Textures[slot].Depth != VK_NULL_HANDLE)
             {
-                vmaDestroyImage(gRasterAllocator, gRasterTextures[slot].Depth, gRasterTextures[slot].DepthAllocation);
+                vmaDestroyImage(GetRasterVulkan().Allocator,
+                                GetRasterVulkan().Textures[slot].Depth,
+                                GetRasterVulkan().Textures[slot].DepthAllocation);
             }
-            if (gRasterTextures[slot].Command != VK_NULL_HANDLE)
+            if (GetRasterVulkan().Textures[slot].Command != VK_NULL_HANDLE)
             {
-                vkFreeCommandBuffers(gDevice, gCommands, 1, &gRasterTextures[slot].Command);
-                vkDestroyFence(gDevice, gRasterTextures[slot].Fence, nullptr);
-                const auto& upload = gRasterTextures[slot].Upload;
-                vmaDestroyBuffer(gRasterAllocator, upload.Object, upload.Allocation);
+                vkFreeCommandBuffers(GetVulkan().Device,
+                                     GetVulkan().Commands,
+                                     1,
+                                     &GetRasterVulkan().Textures[slot].Command);
+                vkDestroyFence(GetVulkan().Device, GetRasterVulkan().Textures[slot].Fence, nullptr);
+                const RasterVulkanBuffer& upload = GetRasterVulkan().Textures[slot].Upload;
+                vmaDestroyBuffer(GetRasterVulkan().Allocator, upload.Object, upload.Allocation);
             }
-            if (gRasterTextures[slot].Object != VK_NULL_HANDLE)
+            if (GetRasterVulkan().Textures[slot].Object != VK_NULL_HANDLE)
             {
-                vmaDestroyImage(gRasterAllocator, gRasterTextures[slot].Object, gRasterTextures[slot].Allocation);
+                vmaDestroyImage(GetRasterVulkan().Allocator,
+                                GetRasterVulkan().Textures[slot].Object,
+                                GetRasterVulkan().Textures[slot].Allocation);
             }
-            gRasterTextures[slot] = {};
+            GetRasterVulkan().Textures[slot] = {};
             break;
         case internal::RasterKind::View:
-            for (auto& frame : gRasterAdvancedFrames)
+            for (RasterVkFramebuffer& frame : GetRasterVulkan().AdvancedFrames)
             {
                 bool uses = false;
                 for (usize i = 0; i < frame.Count; ++i)
                 {
-                    uses |= frame.Views[i] == gRasterViews[slot] || frame.Views[i] == gRasterViewDepths[slot];
+                    uses |= frame.Views[i] == GetRasterVulkan().Views[slot] ||
+                            frame.Views[i] == GetRasterVulkan().ViewDepths[slot];
                 }
                 if (uses && frame.Object != VK_NULL_HANDLE)
                 {
-                    vkDestroyFramebuffer(gDevice, frame.Object, nullptr);
+                    vkDestroyFramebuffer(GetVulkan().Device, frame.Object, nullptr);
                     frame = {};
                 }
             }
-            vkDestroyImageView(gDevice, gRasterViewDepths[slot], nullptr);
-            gRasterViewDepths[slot] = VK_NULL_HANDLE;
-            vkDestroyImageView(gDevice, gRasterViews[slot], nullptr);
-            gRasterViews[slot] = VK_NULL_HANDLE;
+            vkDestroyImageView(GetVulkan().Device, GetRasterVulkan().ViewDepths[slot], nullptr);
+            GetRasterVulkan().ViewDepths[slot] = VK_NULL_HANDLE;
+            vkDestroyImageView(GetVulkan().Device, GetRasterVulkan().Views[slot], nullptr);
+            GetRasterVulkan().Views[slot] = VK_NULL_HANDLE;
             break;
         case internal::RasterKind::Sampler:
-            vkDestroySampler(gDevice, gRasterSamplers[slot], nullptr);
-            gRasterSamplers[slot] = VK_NULL_HANDLE;
+            vkDestroySampler(GetVulkan().Device, GetRasterVulkan().Samplers[slot], nullptr);
+            GetRasterVulkan().Samplers[slot] = VK_NULL_HANDLE;
             break;
         case internal::RasterKind::Shader:
-            vkDestroyShaderModule(gDevice, gRasterShaders[slot].Object, nullptr);
-            gRasterShaders[slot] = {};
+            vkDestroyShaderModule(GetVulkan().Device, GetRasterVulkan().Shaders[slot].Object, nullptr);
+            GetRasterVulkan().Shaders[slot] = {};
             break;
         case internal::RasterKind::Layout:
-            vkDestroyDescriptorSetLayout(gDevice, gRasterLayouts[slot], nullptr);
-            gRasterLayouts[slot] = VK_NULL_HANDLE;
+            vkDestroyDescriptorSetLayout(GetVulkan().Device, GetRasterVulkan().Layouts[slot], nullptr);
+            GetRasterVulkan().Layouts[slot] = VK_NULL_HANDLE;
             break;
         case internal::RasterKind::Set:
-            if (gRasterSets[slot].Arena != internal::RASTER_INVALID)
+            if (GetRasterVulkan().Sets[slot].Arena != internal::RASTER_INVALID)
             {
-                RasterDescriptorArena& arena = gRasterDescriptorArenas[gRasterSets[slot].Arena];
-                (void)vkFreeDescriptorSets(gDevice, arena.Pool, 1, &gRasterSets[slot].Object);
+                RasterDescriptorArena& arena = GetRasterVulkan().DescriptorArenas[GetRasterVulkan().Sets[slot].Arena];
+                (void)vkFreeDescriptorSets(GetVulkan().Device, arena.Pool, 1, &GetRasterVulkan().Sets[slot].Object);
                 --arena.LiveSets;
                 if (arena.LiveSets == 0)
                 {
-                    vkDestroyDescriptorPool(gDevice, arena.Pool, nullptr);
+                    vkDestroyDescriptorPool(GetVulkan().Device, arena.Pool, nullptr);
                     arena = {};
                 }
             }
-            gRasterSets[slot] = {};
+            GetRasterVulkan().Sets[slot] = {};
             break;
         case internal::RasterKind::Pipeline:
-            vkDestroyPipeline(gDevice, gRasterPipelines[slot].Object, nullptr);
-            vkDestroyPipelineLayout(gDevice, gRasterPipelines[slot].Layout, nullptr);
-            gRasterPipelines[slot] = {};
+            vkDestroyPipeline(GetVulkan().Device, GetRasterVulkan().Pipelines[slot].Object, nullptr);
+            vkDestroyPipelineLayout(GetVulkan().Device, GetRasterVulkan().Pipelines[slot].Layout, nullptr);
+            GetRasterVulkan().Pipelines[slot] = {};
             break;
         case internal::RasterKind::ComputePipeline:
-            vkDestroyPipeline(gDevice, gComputePipelines[slot].Object, nullptr);
-            vkDestroyPipelineLayout(gDevice, gComputePipelines[slot].Layout, nullptr);
-            gComputePipelines[slot] = {};
+            vkDestroyPipeline(GetVulkan().Device, GetRasterVulkan().ComputePipelines[slot].Object, nullptr);
+            vkDestroyPipelineLayout(GetVulkan().Device, GetRasterVulkan().ComputePipelines[slot].Layout, nullptr);
+            GetRasterVulkan().ComputePipelines[slot] = {};
             break;
         case internal::RasterKind::RayGeometry:
         case internal::RasterKind::RayScene:
@@ -2279,11 +2321,12 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 }
 RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 {
-    const auto& pipeline = gRasterPipelines[packet.Pipeline];
-    const auto command = gFrames[gFrame].Command;
-    const VkExtent2D extent = gRasterExtent.width == 0 ? GetActiveSurface().Extent : gRasterExtent;
+    const RasterVulkanPipeline& pipeline = GetRasterVulkan().Pipelines[packet.Pipeline];
+    const VkCommandBuffer command = GetVulkan().Frames[GetVulkan().FrameIndex].Command;
+    const VkExtent2D extent =
+        GetRasterVulkan().Extent.width == 0 ? GetActiveSurface().Extent : GetRasterVulkan().Extent;
     internal::RasterArea area;
-    if (internal::RasterResolveArea(gRasterRegion, extent.width, extent.height, area) == false)
+    if (internal::RasterResolveArea(GetRasterVulkan().Region, extent.width, extent.height, area) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -2311,19 +2354,23 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
                             pipeline.Layout,
                             0,
                             1,
-                            &gRasterSets[packet.Set].Object,
+                            &GetRasterVulkan().Sets[packet.Set].Object,
                             packet.DynamicOffsetCount,
                             packet.DynamicOffsets);
     for (usize i = 0; i < pipeline.Info.StreamCount; ++i)
     {
         const VkDeviceSize offset = packet.Offsets[i];
-        vkCmdBindVertexBuffers(command, static_cast<uint32>(i), 1, &gRasterBuffers[packet.Vertices[i]].Object, &offset);
+        vkCmdBindVertexBuffers(command,
+                               static_cast<uint32>(i),
+                               1,
+                               &GetRasterVulkan().Buffers[packet.Vertices[i]].Object,
+                               &offset);
     }
     const bool isIndexed = packet.Indices != internal::RASTER_INVALID;
     if (isIndexed == true)
     {
         vkCmdBindIndexBuffer(command,
-                             gRasterBuffers[packet.Indices].Object,
+                             GetRasterVulkan().Buffers[packet.Indices].Object,
                              packet.IndexOffset,
                              packet.Index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
     }
@@ -2336,7 +2383,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
             if (isIndexed == true)
             {
                 vkCmdDrawIndexedIndirect(command,
-                                         gRasterBuffers[packet.Indirect].Object,
+                                         GetRasterVulkan().Buffers[packet.Indirect].Object,
                                          offset,
                                          1,
                                          sizeof(IndexedIndirectArguments));
@@ -2344,7 +2391,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
             else
             {
                 vkCmdDrawIndirect(command,
-                                  gRasterBuffers[packet.Indirect].Object,
+                                  GetRasterVulkan().Buffers[packet.Indirect].Object,
                                   offset,
                                   1,
                                   sizeof(DrawIndirectArguments));
@@ -2359,29 +2406,30 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 }
 void RasterFrameExtent() noexcept
 {
-    gRasterExtent = {};
-    gRasterRegion = {};
-    gRasterActiveTexture = internal::RASTER_INVALID;
+    GetRasterVulkan().Extent = {};
+    GetRasterVulkan().Region = {};
+    GetRasterVulkan().ActiveTexture = internal::RASTER_INVALID;
 }
 void RasterEndPass() noexcept
 {
-    if (gEncoding == false)
+    if (GetVulkan().IsEncoding == false)
     {
         return;
     }
     ClosePassLabels();
-    vkCmdEndRenderPass(gFrames[gFrame].Command);
+    vkCmdEndRenderPass(GetVulkan().Frames[GetVulkan().FrameIndex].Command);
     EndPhysicalPassTiming();
-    gEncoding = false;
-    if (gRasterNativePass.ColorCount != 0)
+    GetVulkan().IsEncoding = false;
+    if (GetRasterVulkan().NativePass.ColorCount != 0)
     {
-        for (usize i = 0; i < gRasterNativePass.ColorCount; ++i)
+        for (usize i = 0; i < GetRasterVulkan().NativePass.ColorCount; ++i)
         {
-            for (const auto slot : {gRasterNativePass.Colors[i].Texture, gRasterNativePass.Colors[i].ResolveTexture})
+            for (const usize slot : {GetRasterVulkan().NativePass.Colors[i].Texture,
+                                     GetRasterVulkan().NativePass.Colors[i].ResolveTexture})
             {
                 if (slot != internal::RASTER_INVALID)
                 {
-                    auto& texture = gRasterTextures[slot];
+                    RasterVulkanTexture& texture = GetRasterVulkan().Textures[slot];
                     texture.ColorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                     texture.ColorStage = texture.ColorWriterStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
                     texture.ColorAccess = texture.ColorWriterAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -2390,9 +2438,9 @@ void RasterEndPass() noexcept
             }
         }
     }
-    if (gRasterActiveTexture != internal::RASTER_INVALID)
+    if (GetRasterVulkan().ActiveTexture != internal::RASTER_INVALID)
     {
-        auto& texture = gRasterTextures[gRasterActiveTexture];
+        RasterVulkanTexture& texture = GetRasterVulkan().Textures[GetRasterVulkan().ActiveTexture];
         texture.ColorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         texture.ColorStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         texture.ColorAccess = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -2404,7 +2452,7 @@ void RasterEndPass() noexcept
 }
 void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
 {
-    RasterVulkanTexture& texture = gRasterTextures[slot];
+    RasterVulkanTexture& texture = GetRasterVulkan().Textures[slot];
     const bool isAttachmentUse = use == RasterTextureUse::ColorAttachment;
     if (texture.Depth != VK_NULL_HANDLE)
     {
@@ -2415,9 +2463,12 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
             0,
             texture.Info.DepthOrLayers,
         };
-        const VulkanDepthBarrier depth =
-            MakeVulkanDepthBarrier(texture.Depth, subresources, texture.DepthLayout, isAttachmentUse, gQueueCompute);
-        vkCmdPipelineBarrier(gFrames[gFrame].Command,
+        const VulkanDepthBarrier depth = MakeVulkanDepthBarrier(texture.Depth,
+                                                                subresources,
+                                                                texture.DepthLayout,
+                                                                isAttachmentUse,
+                                                                GetVulkan().HasQueueCompute);
+        vkCmdPipelineBarrier(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
                              depth.SourceStages,
                              depth.DestinationStages,
                              0,
@@ -2451,7 +2502,7 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
         storage.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         storage.image = texture.Object;
         storage.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, texture.Info.MipLevels, 0, 1};
-        vkCmdPipelineBarrier(gFrames[gFrame].Command,
+        vkCmdPipelineBarrier(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
                              texture.ColorStage | texture.ColorWriterStage,
                              storageStage,
                              0,
@@ -2503,7 +2554,7 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
                                 texture.Info.MipLevels,
                                 0,
                                 texture.Info.Dimension == TextureDimension::D3 ? 1U : texture.Info.DepthOrLayers};
-    vkCmdPipelineBarrier(gFrames[gFrame].Command,
+    vkCmdPipelineBarrier(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
                          texture.ColorStage | texture.ColorWriterStage,
                          stage,
                          0,
@@ -2530,7 +2581,8 @@ RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 {
     VkRenderPass pass = VK_NULL_HANDLE;
     const bool surface = info.Texture == internal::RASTER_INVALID;
-    const auto format = surface ? gFormat : RasterPixelFormat(gRasterTextures[info.Texture].Info.Format);
+    const VkFormat format =
+        surface ? GetVulkan().Format : RasterPixelFormat(GetRasterVulkan().Textures[info.Texture].Info.Format);
     auto result = info.ColorCount == 0 ? RasterVkRenderPass(format, surface, info.Description, pass)
                                        : RasterVkAdvancedPass(info, pass);
     if (result == VK_SUCCESS && info.ColorCount != 0)
@@ -2544,18 +2596,19 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
 {
     const bool surface = info.Texture == internal::RASTER_INVALID;
     VkRenderPass pass = VK_NULL_HANDLE;
-    const auto format = surface ? gFormat : RasterPixelFormat(gRasterTextures[info.Texture].Info.Format);
+    const VkFormat format =
+        surface ? GetVulkan().Format : RasterPixelFormat(GetRasterVulkan().Textures[info.Texture].Info.Format);
     const auto prepared = info.ColorCount == 0 ? RasterVkRenderPass(format, surface, info.Description, pass)
                                                : RasterVkAdvancedPass(info, pass);
     if (prepared != VK_SUCCESS)
     {
         return RasterError(prepared);
     }
-    VkFramebuffer framebuffer = surface ? SurfaceFramebuffer() : gRasterTextures[info.Texture].Framebuffer;
-    gRasterExtent =
-        surface ? GetActiveSurface().Extent
-                : VkExtent2D{gRasterTextures[info.Texture].Info.Width, gRasterTextures[info.Texture].Info.Height};
-    gRasterNativePass = info;
+    VkFramebuffer framebuffer = surface ? SurfaceFramebuffer() : GetRasterVulkan().Textures[info.Texture].Framebuffer;
+    GetRasterVulkan().Extent = surface ? GetActiveSurface().Extent
+                                       : VkExtent2D{GetRasterVulkan().Textures[info.Texture].Info.Width,
+                                                    GetRasterVulkan().Textures[info.Texture].Info.Height};
+    GetRasterVulkan().NativePass = info;
     if (info.ColorCount != 0)
     {
         const auto result = RasterVkAdvancedFramebuffer(info, pass, framebuffer);
@@ -2563,7 +2616,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
         {
             return RasterError(result);
         }
-        gRasterExtent = {info.Width, info.Height};
+        GetRasterVulkan().Extent = {info.Width, info.Height};
         for (usize i = 0; i < info.ColorCount; ++i)
         {
             RasterTextureBarrier(info.Colors[i].Texture, RasterTextureUse::ColorAttachment);
@@ -2573,8 +2626,8 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
             }
         }
     }
-    gRasterRegion = info.Description;
-    gRasterActiveTexture = info.Texture;
+    GetRasterVulkan().Region = info.Description;
+    GetRasterVulkan().ActiveTexture = info.Texture;
     if (surface == false)
     {
         RasterTextureBarrier(info.Texture, RasterTextureUse::ColorAttachment);
@@ -2598,12 +2651,12 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     begin.renderPass = pass;
     begin.framebuffer = framebuffer;
-    begin.renderArea.extent = gRasterExtent;
+    begin.renderArea.extent = GetRasterVulkan().Extent;
     begin.clearValueCount = info.ColorCount == 0 ? 2 : static_cast<uint32>(info.ColorCount + 1);
     begin.pClearValues = info.ColorCount == 0 ? clear : advancedClear;
     BeginPhysicalPassTiming(GpuPassKind::Raster);
-    vkCmdBeginRenderPass(gFrames[gFrame].Command, &begin, VK_SUBPASS_CONTENTS_INLINE);
-    gEncoding = true;
+    vkCmdBeginRenderPass(GetVulkan().Frames[GetVulkan().FrameIndex].Command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    GetVulkan().IsEncoding = true;
     return RasterStatus::Ready;
 }
 RasterStatus RasterReserveSubmission() noexcept
@@ -2612,39 +2665,39 @@ RasterStatus RasterReserveSubmission() noexcept
 }
 void RasterSubmit(uint64 ordinal) noexcept
 {
-    gRasterOrdinals[(gFrame + FRAMES - 1) % FRAMES] = ordinal;
+    GetRasterVulkan().Ordinals[(GetVulkan().FrameIndex + FRAMES - 1) % FRAMES] = ordinal;
 }
 uint64 RasterCompleted() noexcept
 {
     PollNativePreparation();
-    if (hasPreparationDeviceLoss == true)
+    if (GetRasterVulkan().HasPreparationDeviceLoss == true)
     {
-        hasPreparationDeviceLoss = false;
-        internal::Fail(gSession, StartupError::DeviceLost);
+        GetRasterVulkan().HasPreparationDeviceLoss = false;
+        internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
     }
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
-        return gRasterCompleted;
+        return GetRasterVulkan().Completed;
     }
-    for (auto& texture : gRasterTextures)
+    for (RasterVulkanTexture& texture : GetRasterVulkan().Textures)
     {
         if (texture.Fence == VK_NULL_HANDLE)
         {
             continue;
         }
-        const auto result = vkGetFenceStatus(gDevice, texture.Fence);
+        const VkResult result = vkGetFenceStatus(GetVulkan().Device, texture.Fence);
         if (result != VK_SUCCESS && result != VK_NOT_READY)
         {
-            internal::Fail(gSession,
+            internal::Fail(GetVulkan().Session,
                            result == VK_ERROR_DEVICE_LOST ? StartupError::DeviceLost
                                                           : StartupError::RenderingUnavailable);
-            return gRasterCompleted;
+            return GetRasterVulkan().Completed;
         }
         if (result == VK_SUCCESS)
         {
-            vkFreeCommandBuffers(gDevice, gCommands, 1, &texture.Command);
-            vkDestroyFence(gDevice, texture.Fence, nullptr);
-            vmaDestroyBuffer(gRasterAllocator, texture.Upload.Object, texture.Upload.Allocation);
+            vkFreeCommandBuffers(GetVulkan().Device, GetVulkan().Commands, 1, &texture.Command);
+            vkDestroyFence(GetVulkan().Device, texture.Fence, nullptr);
+            vmaDestroyBuffer(GetRasterVulkan().Allocator, texture.Upload.Object, texture.Upload.Allocation);
             texture.Upload = {};
             texture.Command = VK_NULL_HANDLE;
             texture.Fence = VK_NULL_HANDLE;
@@ -2653,70 +2706,70 @@ uint64 RasterCompleted() noexcept
     }
     for (usize i = 0; i < FRAMES; ++i)
     {
-        if (gFrames[i].Fence == VK_NULL_HANDLE)
+        if (GetVulkan().Frames[i].Fence == VK_NULL_HANDLE)
         {
             continue;
         }
-        const auto result = vkGetFenceStatus(gDevice, gFrames[i].Fence);
+        const VkResult result = vkGetFenceStatus(GetVulkan().Device, GetVulkan().Frames[i].Fence);
         if (result != VK_SUCCESS && result != VK_NOT_READY)
         {
-            internal::Fail(gSession,
+            internal::Fail(GetVulkan().Session,
                            result == VK_ERROR_DEVICE_LOST ? StartupError::DeviceLost
                                                           : StartupError::RenderingUnavailable);
-            return gRasterCompleted;
+            return GetRasterVulkan().Completed;
         }
-        if (result == VK_SUCCESS && gRasterOrdinals[i] > gRasterCompleted)
+        if (result == VK_SUCCESS && GetRasterVulkan().Ordinals[i] > GetRasterVulkan().Completed)
         {
-            gRasterCompleted = gRasterOrdinals[i];
+            GetRasterVulkan().Completed = GetRasterVulkan().Ordinals[i];
         }
     }
-    return gRasterCompleted;
+    return GetRasterVulkan().Completed;
 }
 void WaitRasterSubmissions() noexcept
 {
-    for (const auto& texture : gRasterTextures)
+    for (const RasterVulkanTexture& texture : GetRasterVulkan().Textures)
     {
         // This fence is retained only after an accepted asynchronous upload.
         if (texture.Fence != VK_NULL_HANDLE)
         {
-            (void)Check(vkWaitForFences(gDevice, 1, &texture.Fence, VK_TRUE, UINT64_MAX));
+            (void)Check(vkWaitForFences(GetVulkan().Device, 1, &texture.Fence, VK_TRUE, UINT64_MAX));
         }
     }
 }
 void RasterReset() noexcept
 {
     DrainNativePreparation();
-    hasPreparationDeviceLoss = false;
-    gRasterHdrProbed = gRasterHdr = false;
+    GetRasterVulkan().HasPreparationDeviceLoss = false;
+    GetRasterVulkan().IsHdrProbed = GetRasterVulkan().HasHdr = false;
     WaitIdle();
-    for (auto& frame : gRasterAdvancedFrames)
+    for (RasterVkFramebuffer& frame : GetRasterVulkan().AdvancedFrames)
     {
-        if (gDevice != VK_NULL_HANDLE)
+        if (GetVulkan().Device != VK_NULL_HANDLE)
         {
-            vkDestroyFramebuffer(gDevice, frame.Object, nullptr);
+            vkDestroyFramebuffer(GetVulkan().Device, frame.Object, nullptr);
         }
         frame = {};
     }
-    for (auto& ordinal : gRasterOrdinals)
+    for (uint64& ordinal : GetRasterVulkan().Ordinals)
     {
         ordinal = 0;
     }
-    gRasterCompleted = 0;
+    GetRasterVulkan().Completed = 0;
 }
 void RasterShutdown() noexcept
 {
-    for (auto& pass : gRasterPasses)
+    for (RasterVkPass& pass : GetRasterVulkan().Passes)
     {
-        if (gDevice != VK_NULL_HANDLE)
+        if (GetVulkan().Device != VK_NULL_HANDLE)
         {
-            vkDestroyRenderPass(gDevice, pass.Object, nullptr);
+            vkDestroyRenderPass(GetVulkan().Device, pass.Object, nullptr);
         }
         pass = {};
     }
-    if (gRasterAllocator != nullptr)
+    if (GetRasterVulkan().Allocator != nullptr)
     {
-        vmaDestroyAllocator(gRasterAllocator);
-        gRasterAllocator = nullptr;
+        vmaDestroyAllocator(GetRasterVulkan().Allocator);
+        GetRasterVulkan().Allocator = nullptr;
     }
 }
 
@@ -2725,32 +2778,34 @@ RasterStatus RasterGrow(internal::RasterKind kind, usize count) noexcept
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            return gRasterBuffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().Buffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Texture:
-            return gRasterTextures.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().Textures.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::View:
-            return gRasterViews.EnsureSlots(count) && gRasterViewDepths.EnsureSlots(count) ? RasterStatus::Ready
-                                                                                           : internal::StorageFailure();
+            return GetRasterVulkan().Views.EnsureSlots(count) && GetRasterVulkan().ViewDepths.EnsureSlots(count)
+                       ? RasterStatus::Ready
+                       : internal::StorageFailure();
         case internal::RasterKind::Sampler:
-            return gRasterSamplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().Samplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Shader:
-            return gRasterShaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().Shaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Layout:
-            return gRasterLayouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().Layouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Set:
-            return gRasterSets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().Sets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Pipeline:
-            return gRasterPipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().Pipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::ComputePipeline:
-            return gComputePipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterVulkan().ComputePipelines.EnsureSlots(count) ? RasterStatus::Ready
+                                                                         : internal::StorageFailure();
         default:
             return RasterStatus::InvalidDescription;
     }
 }
 RasterStatus RasterPrepareStorage() noexcept
 {
-    return (gRasterPasses.EnsureSlots(internal::CurrentStorageLimits().RasterPassStates) &&
-            gRasterAdvancedFrames.EnsureSlots(internal::CurrentStorageLimits().RasterPassStates))
+    return (GetRasterVulkan().Passes.EnsureSlots(internal::CurrentStorageLimits().RasterPassStates) &&
+            GetRasterVulkan().AdvancedFrames.EnsureSlots(internal::CurrentStorageLimits().RasterPassStates))
                ? RasterStatus::Ready
                : internal::StorageFailure();
 }

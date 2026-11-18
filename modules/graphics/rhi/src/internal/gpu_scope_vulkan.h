@@ -33,18 +33,29 @@ struct ClockSample final
     internal::ClockCalibration Calibration{};
     uint64 MaxDeviationNanoseconds = 0;
 };
-internal::GpuPassTimingBuffer gPassTimings;
-VkQueryPool gPassQueryPool = VK_NULL_HANDLE;
-VkFence gPassFence = VK_NULL_HANDLE;
-uint64 gPassCpuStart = 0;
-internal::TimestampCounter gPassClock{};
-usize gActiveTimedPass = MAX_GPU_TIMED_PASSES;
-/// Untimed logical-pass labels open inside the current render pass.
-uint32 gPassLabelDepth = 0;
-/// Admitted at owned-device creation or from a borrowed device's declaration; null stays duration-only.
-PFN_vkGetCalibratedTimestampsKHR gGetCalibratedTimestampsOrNull = nullptr;
-ClockSample gPassBeginClock;
-bool hasPassBeginClock = false;
+/// Pass timestamp queries and clock calibration of one device owner (R14c).
+struct GpuScopeVulkanState final
+{
+    internal::GpuPassTimingBuffer Timings;
+    VkQueryPool QueryPool = VK_NULL_HANDLE;
+    VkFence Fence = VK_NULL_HANDLE;
+    uint64 CpuStart = 0;
+    internal::TimestampCounter Clock{};
+    usize ActiveTimedPass = MAX_GPU_TIMED_PASSES;
+    /// Untimed logical-pass labels open inside the current render pass.
+    uint32 LabelDepth = 0;
+    /// Admitted at owned-device creation or from a borrowed device's declaration; null stays duration-only.
+    PFN_vkGetCalibratedTimestampsKHR GetCalibratedTimestampsOrNull = nullptr;
+    ClockSample BeginClock;
+    bool HasBeginClock = false;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<GpuScopeVulkanState, MAX_DEVICE_OWNERS> gGpuScopeVulkanStates{};
+/// GpuScopeVulkanState of the bound owner slot.
+GpuScopeVulkanState& GetGpuScopeVulkan() noexcept
+{
+    return gGpuScopeVulkanStates[internal::GetBoundOwnerSlot()];
+}
 #if defined(LUDUS_PLATFORM_LINUX) || defined(LUDUS_PLATFORM_ANDROID)
 /// steady_clock, and therefore NowTicks, reads CLOCK_MONOTONIC nanoseconds on Linux.
 constexpr VkTimeDomainKHR HOST_TIME_DOMAIN = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
@@ -82,7 +93,7 @@ bool HasClockDomains(PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR getDomai
 /// around the call, which proves that the domain is the NowTicks clock.
 bool SampleClocks(ClockSample& outSample) noexcept
 {
-    if (gGetCalibratedTimestampsOrNull == nullptr)
+    if (GetGpuScopeVulkan().GetCalibratedTimestampsOrNull == nullptr)
     {
         return false;
     }
@@ -92,11 +103,11 @@ bool SampleClocks(ClockSample& outSample) noexcept
     StaticArray<uint64, CALIBRATED_DOMAIN_COUNT> timestamps;
     uint64 deviation = 0;
     const uint64 before = time::NowTicks();
-    const VkResult result = gGetCalibratedTimestampsOrNull(gDevice,
-                                                           CALIBRATED_DOMAIN_COUNT,
-                                                           domains.GetData(),
-                                                           timestamps.GetData(),
-                                                           &deviation);
+    const VkResult result = GetGpuScopeVulkan().GetCalibratedTimestampsOrNull(GetVulkan().Device,
+                                                                              CALIBRATED_DOMAIN_COUNT,
+                                                                              domains.GetData(),
+                                                                              timestamps.GetData(),
+                                                                              &deviation);
     const uint64 after = time::NowTicks();
     const uint64 host = timestamps[HOST_DOMAIN_INDEX];
     if (result != VK_SUCCESS || host < before || host > after)
@@ -135,7 +146,7 @@ bool IsCalibrationValid(const ClockSample& first, const ClockSample& last, uint6
     // Rejects windows of one counter period or more and devices running ahead of the host.
     if (internal::TimestampDuration(begin.DeviceTimestamp,
                                     end.DeviceTimestamp,
-                                    gPassClock,
+                                    GetGpuScopeVulkan().Clock,
                                     elapsedHost + static_cast<uint64>(tolerance),
                                     elapsedDevice) == false ||
         elapsedDevice + tolerance < static_cast<float64>(elapsedHost))
@@ -171,41 +182,41 @@ const char* AdmitClockCalibrationExtensionOrNull(VkPhysicalDevice physical,
 }
 void ConnectClockCalibration(const char* extensionOrNull) noexcept
 {
-    gGetCalibratedTimestampsOrNull = nullptr;
-    hasPassBeginClock = false;
+    GetGpuScopeVulkan().GetCalibratedTimestampsOrNull = nullptr;
+    GetGpuScopeVulkan().HasBeginClock = false;
     if (extensionOrNull == nullptr)
     {
         return;
     }
-    gGetCalibratedTimestampsOrNull = std::strcmp(extensionOrNull, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == 0
-                                         ? vkGetCalibratedTimestampsKHR
-                                         : vkGetCalibratedTimestampsEXT;
+    GetGpuScopeVulkan().GetCalibratedTimestampsOrNull =
+        std::strcmp(extensionOrNull, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == 0 ? vkGetCalibratedTimestampsKHR
+                                                                                       : vkGetCalibratedTimestampsEXT;
 }
 bool HasPassClockCalibration() noexcept
 {
-    return gGetCalibratedTimestampsOrNull != nullptr;
+    return GetGpuScopeVulkan().GetCalibratedTimestampsOrNull != nullptr;
 }
 void ResetPassTimings() noexcept
 {
-    if (gPassQueryPool != VK_NULL_HANDLE && gDevice != VK_NULL_HANDLE)
+    if (GetGpuScopeVulkan().QueryPool != VK_NULL_HANDLE && GetVulkan().Device != VK_NULL_HANDLE)
     {
-        vkDestroyQueryPool(gDevice, gPassQueryPool, nullptr);
+        vkDestroyQueryPool(GetVulkan().Device, GetGpuScopeVulkan().QueryPool, nullptr);
     }
-    gPassQueryPool = VK_NULL_HANDLE;
-    gPassFence = VK_NULL_HANDLE;
-    gActiveTimedPass = MAX_GPU_TIMED_PASSES;
-    gPassLabelDepth = 0;
-    hasPassBeginClock = false;
-    gPassTimings.Reset();
+    GetGpuScopeVulkan().QueryPool = VK_NULL_HANDLE;
+    GetGpuScopeVulkan().Fence = VK_NULL_HANDLE;
+    GetGpuScopeVulkan().ActiveTimedPass = MAX_GPU_TIMED_PASSES;
+    GetGpuScopeVulkan().LabelDepth = 0;
+    GetGpuScopeVulkan().HasBeginClock = false;
+    GetGpuScopeVulkan().Timings.Reset();
 }
 GpuPassTimings PollPassTimings() noexcept
 {
-    GpuPassTimings& report = gPassTimings.GetReport();
+    GpuPassTimings& report = GetGpuScopeVulkan().Timings.GetReport();
     if (report.State != GpuTimingState::Pending)
     {
         return report;
     }
-    const VkResult fence = vkGetFenceStatus(gDevice, gPassFence);
+    const VkResult fence = vkGetFenceStatus(GetVulkan().Device, GetGpuScopeVulkan().Fence);
     if (fence == VK_NOT_READY)
     {
         return report;
@@ -217,18 +228,18 @@ GpuPassTimings PollPassTimings() noexcept
         {
             report.Passes[index].Timing.State = GpuTimingState::Failed;
         }
-        hasPassBeginClock = false;
+        GetGpuScopeVulkan().HasBeginClock = false;
         if (fence == VK_ERROR_DEVICE_LOST)
         {
-            internal::Fail(gSession, StartupError::DeviceLost);
+            internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
         }
         return report;
     }
     constexpr usize QUERY_WORDS = MAX_GPU_TIMED_PASSES * 4;
     StaticArray<uint64, QUERY_WORDS> values;
     const uint32 count = static_cast<uint32>(report.Count * 2);
-    const VkResult result = vkGetQueryPoolResults(gDevice,
-                                                  gPassQueryPool,
+    const VkResult result = vkGetQueryPoolResults(GetVulkan().Device,
+                                                  GetGpuScopeVulkan().QueryPool,
                                                   0,
                                                   count,
                                                   count * sizeof(uint64) * 2,
@@ -238,31 +249,31 @@ GpuPassTimings PollPassTimings() noexcept
     const uint64 now = time::NowTicks();
     ClockSample completionClock;
     uint64 uncertainty = 0;
-    const bool isCalibrated = result == VK_SUCCESS && hasPassBeginClock == true &&
+    const bool isCalibrated = result == VK_SUCCESS && GetGpuScopeVulkan().HasBeginClock == true &&
                               SampleClocks(completionClock) == true &&
-                              IsCalibrationValid(gPassBeginClock, completionClock, uncertainty) == true;
+                              IsCalibrationValid(GetGpuScopeVulkan().BeginClock, completionClock, uncertainty) == true;
     constexpr usize WORDS_PER_PASS = 4;
     for (usize index = 0; index < report.Count; ++index)
     {
         const usize first = index * WORDS_PER_PASS;
         GpuPassTiming& pass = report.Passes[index];
         GpuTiming& timing = pass.Timing;
-        timing.TickNanoseconds = gPassClock.Tick;
-        timing.ValidBits = gPassClock.Bits;
+        timing.TickNanoseconds = GetGpuScopeVulkan().Clock.Tick;
+        timing.ValidBits = GetGpuScopeVulkan().Clock.Bits;
         timing.State = result == VK_SUCCESS && values[first + 1] != 0 && values[first + WORDS_PER_PASS - 1] != 0 &&
-                               now >= gPassCpuStart &&
+                               now >= GetGpuScopeVulkan().CpuStart &&
                                internal::TimestampDuration(values[first],
                                                            values[first + 2],
-                                                           gPassClock,
-                                                           now - gPassCpuStart,
+                                                           GetGpuScopeVulkan().Clock,
+                                                           now - GetGpuScopeVulkan().CpuStart,
                                                            timing.DurationNanoseconds) == true
                            ? GpuTimingState::Available
                            : GpuTimingState::Disjoint;
         internal::TimestampInterval ticks;
         if (isCalibrated == true && timing.State == GpuTimingState::Available &&
-            internal::MapCalibratedInterval(gPassBeginClock.Calibration,
+            internal::MapCalibratedInterval(GetGpuScopeVulkan().BeginClock.Calibration,
                                             completionClock.Calibration,
-                                            gPassClock.Bits,
+                                            GetGpuScopeVulkan().Clock.Bits,
                                             { .Start = values[first], .End = values[first + 2] },
                                             ticks) == true)
         {
@@ -272,43 +283,44 @@ GpuPassTimings PollPassTimings() noexcept
             report.ClockUncertaintyNanoseconds = uncertainty;
         }
     }
-    hasPassBeginClock = false;
+    GetGpuScopeVulkan().HasBeginClock = false;
     report.State = result == VK_SUCCESS ? GpuTimingState::Available : GpuTimingState::Failed;
     if (result == VK_ERROR_DEVICE_LOST)
     {
-        internal::Fail(gSession, StartupError::DeviceLost);
+        internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
     }
     return report;
 }
 RasterStatus ArmPassTimings() noexcept
 {
     static_cast<void>(PollPassTimings());
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
                                                                         : RasterStatus::Failed;
     }
-    if (gPassTimings.CanArm() == false)
+    if (GetGpuScopeVulkan().Timings.CanArm() == false)
     {
         return RasterStatus::InvalidState;
     }
     uint32 count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(gPhysical, &count, nullptr);
+    vkGetPhysicalDeviceQueueFamilyProperties(GetVulkan().Physical, &count, nullptr);
     if (count > MAX_TIMESTAMP_QUEUE_FAMILIES)
     {
-        gPassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
+        GetGpuScopeVulkan().Timings.GetReport() = { .State = GpuTimingState::Unavailable };
         return RasterStatus::Unsupported;
     }
     StaticArray<VkQueueFamilyProperties, MAX_TIMESTAMP_QUEUE_FAMILIES> families;
-    vkGetPhysicalDeviceQueueFamilyProperties(gPhysical, &count, families.GetData());
+    vkGetPhysicalDeviceQueueFamilyProperties(GetVulkan().Physical, &count, families.GetData());
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
-    if (gFamily >= count || families[gFamily].timestampValidBits == 0 || properties.limits.timestampPeriod <= 0)
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
+    if (GetVulkan().Family >= count || families[GetVulkan().Family].timestampValidBits == 0 ||
+        properties.limits.timestampPeriod <= 0)
     {
-        gPassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
+        GetGpuScopeVulkan().Timings.GetReport() = { .State = GpuTimingState::Unavailable };
         return RasterStatus::Unsupported;
     }
-    if (gPassQueryPool == VK_NULL_HANDLE)
+    if (GetGpuScopeVulkan().QueryPool == VK_NULL_HANDLE)
     {
         const VkQueryPoolCreateInfo description
         {
@@ -316,13 +328,14 @@ RasterStatus ArmPassTimings() noexcept
             .queryType = VK_QUERY_TYPE_TIMESTAMP,
             .queryCount = PASS_QUERY_COUNT,
         };
-        const VkResult result = vkCreateQueryPool(gDevice, &description, nullptr, &gPassQueryPool);
+        const VkResult result =
+            vkCreateQueryPool(GetVulkan().Device, &description, nullptr, &GetGpuScopeVulkan().QueryPool);
         if (result != VK_SUCCESS)
         {
-            gPassQueryPool = VK_NULL_HANDLE;
+            GetGpuScopeVulkan().QueryPool = VK_NULL_HANDLE;
             if (result == VK_ERROR_DEVICE_LOST)
             {
-                internal::Fail(gSession, StartupError::DeviceLost);
+                internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
                 return RasterStatus::DeviceLost;
             }
             return result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY
@@ -330,8 +343,9 @@ RasterStatus ArmPassTimings() noexcept
                        : RasterStatus::Failed;
         }
     }
-    gPassClock = {families[gFamily].timestampValidBits, static_cast<float64>(properties.limits.timestampPeriod)};
-    gPassTimings.Arm();
+    GetGpuScopeVulkan().Clock = {families[GetVulkan().Family].timestampValidBits,
+                                 static_cast<float64>(properties.limits.timestampPeriod)};
+    GetGpuScopeVulkan().Timings.Arm();
     return RasterStatus::Ready;
 }
 // Thanks to Khronos, Vulkan Guide, "VK_EXT_debug_utils", command-buffer labels:
@@ -341,7 +355,8 @@ RasterStatus ArmPassTimings() noexcept
 // every region still open is ended before the frame's command buffer is.
 bool HasCommandLabels() noexcept
 {
-    return hasDebugLabels == true && vkCmdBeginDebugUtilsLabelEXT != nullptr && vkCmdEndDebugUtilsLabelEXT != nullptr;
+    return GetVulkan().HasDebugLabels == true && vkCmdBeginDebugUtilsLabelEXT != nullptr &&
+           vkCmdEndDebugUtilsLabelEXT != nullptr;
 }
 void BeginCommandLabel(const char* name) noexcept
 {
@@ -350,11 +365,11 @@ void BeginCommandLabel(const char* name) noexcept
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
         .pLabelName = name,
     };
-    vkCmdBeginDebugUtilsLabelEXT(gFrames[gFrame].Command, &label);
+    vkCmdBeginDebugUtilsLabelEXT(GetVulkan().Frames[GetVulkan().FrameIndex].Command, &label);
 }
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
-    if (gPassTimings.BeginScope(scope) == false)
+    if (GetGpuScopeVulkan().Timings.BeginScope(scope) == false)
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -366,39 +381,39 @@ RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 }
 RasterStatus EndScope() noexcept
 {
-    if (gPassTimings.EndScope() == false)
+    if (GetGpuScopeVulkan().Timings.EndScope() == false)
     {
         return RasterStatus::InvalidState;
     }
     if (HasCommandLabels() == true)
     {
-        vkCmdEndDebugUtilsLabelEXT(gFrames[gFrame].Command);
+        vkCmdEndDebugUtilsLabelEXT(GetVulkan().Frames[GetVulkan().FrameIndex].Command);
     }
     return RasterStatus::Ready;
 }
 internal::GpuScopePosition GetScopePosition() noexcept
 {
-    return gPassTimings.GetPosition();
+    return GetGpuScopeVulkan().Timings.GetPosition();
 }
 void BeginPassLabel(const char* name) noexcept
 {
-    if (gEncoding == true && HasCommandLabels() == true)
+    if (GetVulkan().IsEncoding == true && HasCommandLabels() == true)
     {
         BeginCommandLabel(name);
-        ++gPassLabelDepth;
+        ++GetGpuScopeVulkan().LabelDepth;
     }
 }
 void EndPassLabel() noexcept
 {
-    if (gPassLabelDepth != 0)
+    if (GetGpuScopeVulkan().LabelDepth != 0)
     {
-        --gPassLabelDepth;
-        vkCmdEndDebugUtilsLabelEXT(gFrames[gFrame].Command);
+        --GetGpuScopeVulkan().LabelDepth;
+        vkCmdEndDebugUtilsLabelEXT(GetVulkan().Frames[GetVulkan().FrameIndex].Command);
     }
 }
 void ClosePassLabels() noexcept
 {
-    while (gPassLabelDepth != 0)
+    while (GetGpuScopeVulkan().LabelDepth != 0)
     {
         EndPassLabel();
     }
@@ -406,53 +421,56 @@ void ClosePassLabels() noexcept
 void CloseScopeLabels() noexcept
 {
     ClosePassLabels();
-    const uint32 closed = gPassTimings.CloseScopes();
+    const uint32 closed = GetGpuScopeVulkan().Timings.CloseScopes();
     for (uint32 index = 0; index < closed && HasCommandLabels() == true; ++index)
     {
-        vkCmdEndDebugUtilsLabelEXT(gFrames[gFrame].Command);
+        vkCmdEndDebugUtilsLabelEXT(GetVulkan().Frames[GetVulkan().FrameIndex].Command);
     }
 }
 void BeginPassTimingFrame() noexcept
 {
-    gPassTimings.BeginFrame();
-    gActiveTimedPass = MAX_GPU_TIMED_PASSES;
-    gPassLabelDepth = 0;
-    if (gPassTimings.GetReport().State == GpuTimingState::Armed)
+    GetGpuScopeVulkan().Timings.BeginFrame();
+    GetGpuScopeVulkan().ActiveTimedPass = MAX_GPU_TIMED_PASSES;
+    GetGpuScopeVulkan().LabelDepth = 0;
+    if (GetGpuScopeVulkan().Timings.GetReport().State == GpuTimingState::Armed)
     {
-        gPassCpuStart = time::NowTicks();
+        GetGpuScopeVulkan().CpuStart = time::NowTicks();
         // Sampled before recording, so no timed operation of this frame can precede it.
-        hasPassBeginClock = SampleClocks(gPassBeginClock);
-        vkCmdResetQueryPool(gFrames[gFrame].Command, gPassQueryPool, 0, PASS_QUERY_COUNT);
+        GetGpuScopeVulkan().HasBeginClock = SampleClocks(GetGpuScopeVulkan().BeginClock);
+        vkCmdResetQueryPool(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
+                            GetGpuScopeVulkan().QueryPool,
+                            0,
+                            PASS_QUERY_COUNT);
     }
 }
 void SubmitPassTimings() noexcept
 {
-    if (gPassTimings.GetReport().State == GpuTimingState::Armed)
+    if (GetGpuScopeVulkan().Timings.GetReport().State == GpuTimingState::Armed)
     {
-        gPassFence = gFrames[gFrame].Fence;
+        GetGpuScopeVulkan().Fence = GetVulkan().Frames[GetVulkan().FrameIndex].Fence;
     }
-    gPassTimings.Submit();
+    GetGpuScopeVulkan().Timings.Submit();
 }
 void BeginPhysicalPassTiming(GpuPassKind kind) noexcept
 {
-    gActiveTimedPass = gPassTimings.AddPass(kind);
-    if (gActiveTimedPass < MAX_GPU_TIMED_PASSES)
+    GetGpuScopeVulkan().ActiveTimedPass = GetGpuScopeVulkan().Timings.AddPass(kind);
+    if (GetGpuScopeVulkan().ActiveTimedPass < MAX_GPU_TIMED_PASSES)
     {
-        vkCmdWriteTimestamp(gFrames[gFrame].Command,
+        vkCmdWriteTimestamp(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                            gPassQueryPool,
-                            static_cast<uint32>(gActiveTimedPass * 2));
+                            GetGpuScopeVulkan().QueryPool,
+                            static_cast<uint32>(GetGpuScopeVulkan().ActiveTimedPass * 2));
     }
 }
 void EndPhysicalPassTiming() noexcept
 {
-    if (gActiveTimedPass < MAX_GPU_TIMED_PASSES)
+    if (GetGpuScopeVulkan().ActiveTimedPass < MAX_GPU_TIMED_PASSES)
     {
-        vkCmdWriteTimestamp(gFrames[gFrame].Command,
+        vkCmdWriteTimestamp(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            gPassQueryPool,
-                            static_cast<uint32>(gActiveTimedPass * 2 + 1));
-        gActiveTimedPass = MAX_GPU_TIMED_PASSES;
+                            GetGpuScopeVulkan().QueryPool,
+                            static_cast<uint32>(GetGpuScopeVulkan().ActiveTimedPass * 2 + 1));
+        GetGpuScopeVulkan().ActiveTimedPass = MAX_GPU_TIMED_PASSES;
     }
 }
 } // namespace ludus::graphics::rhi::backend

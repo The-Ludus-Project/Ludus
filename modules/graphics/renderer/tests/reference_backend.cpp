@@ -34,7 +34,7 @@ bool GetSelectedAdapter(AdapterInfo&) noexcept
     return false;
 }
 // R14c: the renderer's reference backend keeps one session.
-foundation::usize GetDeviceOwnerLimit() noexcept
+foundation::usize GetDeviceOwnerLimit(bool) noexcept
 {
     return 1;
 }

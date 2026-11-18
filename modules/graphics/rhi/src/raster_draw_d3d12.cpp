@@ -1,6 +1,7 @@
 #include "internal/d3d12_diagnostics.h"
 #include "internal/d3d12_raster.h"
 #include "internal/dxil_container.h"
+#include "internal/owner.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 
@@ -29,15 +30,26 @@ struct Pipeline final
     ComOwner<ID3D12PipelineState> State;
     RasterPipelineInfo Description;
 };
-StorageTable<Pipeline> gPipelines;
-// Surface depth survives pass boundaries and is replaced only after a queue drain.
-ComOwner<ID3D12Resource> gSurfaceDepth;
-ComOwner<ID3D12DescriptorHeap> gSurfaceDepthHeap;
-uint64 gSurfaceDepthBytes = 0;
-uint32 gSurfaceWidth = 0;
-uint32 gSurfaceHeight = 0;
-RasterArea gArea;
-bool isPassOpen = false;
+/// Raster pipelines, surface depth and the open pass of one device owner (R14c). Surface
+/// depth survives pass boundaries and is replaced only after a queue drain.
+struct DrawD3D12State final
+{
+    StorageTable<Pipeline> Pipelines;
+    ComOwner<ID3D12Resource> SurfaceDepth;
+    ComOwner<ID3D12DescriptorHeap> SurfaceDepthHeap;
+    uint64 SurfaceDepthBytes = 0;
+    uint32 SurfaceWidth = 0;
+    uint32 SurfaceHeight = 0;
+    RasterArea Area;
+    bool IsPassOpen = false;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<DrawD3D12State, MAX_DEVICE_OWNERS> gDrawD3D12States{};
+/// DrawD3D12State of the bound owner slot.
+DrawD3D12State& GetDrawD3D12() noexcept
+{
+    return gDrawD3D12States[internal::GetBoundOwnerSlot()];
+}
 
 [[nodiscard]] RasterStatus GetFailure(HRESULT result) noexcept
 {
@@ -78,7 +90,8 @@ bool isPassOpen = false;
 }
 [[nodiscard]] RasterStatus PrepareSurfaceDepth(uint32 width, uint32 height) noexcept
 {
-    if (gSurfaceDepth.Get() != nullptr && width == gSurfaceWidth && height == gSurfaceHeight)
+    if (GetDrawD3D12().SurfaceDepth.Get() != nullptr && width == GetDrawD3D12().SurfaceWidth &&
+        height == GetDrawD3D12().SurfaceHeight)
     {
         return RasterStatus::Ready;
     }
@@ -123,19 +136,19 @@ bool isPassOpen = false;
         ReleaseResourceStorage(bytes);
         return GetFailure(result);
     }
-    if (gSurfaceDepth.Get() != nullptr && WaitForQueue() == false)
+    if (GetDrawD3D12().SurfaceDepth.Get() != nullptr && WaitForQueue() == false)
     {
         ReleaseResourceStorage(bytes);
         return RasterStatus::DeviceLost;
     }
     const D3D12_CPU_DESCRIPTOR_HANDLE handle = descriptors->GetCPUDescriptorHandleForHeapStart();
     GetDeviceOrNull()->CreateDepthStencilView(depth.Get(), nullptr, handle);
-    gSurfaceDepth = Move(depth);
-    gSurfaceDepthHeap = Move(descriptors);
-    ReleaseResourceStorage(gSurfaceDepthBytes);
-    gSurfaceDepthBytes = bytes;
-    gSurfaceWidth = width;
-    gSurfaceHeight = height;
+    GetDrawD3D12().SurfaceDepth = Move(depth);
+    GetDrawD3D12().SurfaceDepthHeap = Move(descriptors);
+    ReleaseResourceStorage(GetDrawD3D12().SurfaceDepthBytes);
+    GetDrawD3D12().SurfaceDepthBytes = bytes;
+    GetDrawD3D12().SurfaceWidth = width;
+    GetDrawD3D12().SurfaceHeight = height;
     return RasterStatus::Ready;
 }
 } // namespace
@@ -225,7 +238,7 @@ RasterStatus RasterCreatePipeline(usize slot, const RasterPipelineInfo& info, ui
     {
         return GetFailure(result);
     }
-    gPipelines[slot] = {ComOwner<ID3D12PipelineState>(stateOrNull), info};
+    GetDrawD3D12().Pipelines[slot] = {ComOwner<ID3D12PipelineState>(stateOrNull), info};
     return RasterStatus::Ready;
 }
 RasterStatus RasterPreparePass(const RasterPassInfo& info) noexcept
@@ -278,8 +291,8 @@ RasterStatus RasterBeginPass(const RasterPassInfo& info) noexcept
         if (isSurface == true)
         {
             attachment = GetSurfaceAttachment();
-            attachment.DepthOrNull = gSurfaceDepth.Get();
-            attachment.Depth = gSurfaceDepthHeap->GetCPUDescriptorHandleForHeapStart();
+            attachment.DepthOrNull = GetDrawD3D12().SurfaceDepth.Get();
+            attachment.Depth = GetDrawD3D12().SurfaceDepthHeap->GetCPUDescriptorHandleForHeapStart();
         }
         else
         {
@@ -320,8 +333,8 @@ RasterStatus RasterBeginPass(const RasterPassInfo& info) noexcept
                                               nullptr);
     }
     commandsOrNull->OMSetRenderTargets(static_cast<UINT>(count), targets.GetData(), FALSE, &first.Depth);
-    gArea = area;
-    isPassOpen = true;
+    GetDrawD3D12().Area = area;
+    GetDrawD3D12().IsPassOpen = true;
     return RasterStatus::Ready;
 }
 void RasterEndPass() noexcept
@@ -329,16 +342,16 @@ void RasterEndPass() noexcept
     // Validity for Discard belongs to the facade; preserving native bits is legal.
     // CPU RTV/DSV handles are consumed during recording and never rewritten.
     ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
-    if (isPassOpen == true && commandsOrNull != nullptr)
+    if (GetDrawD3D12().IsPassOpen == true && commandsOrNull != nullptr)
     {
         ClosePassLabels(*commandsOrNull);
         EndPhysicalPassTiming(*commandsOrNull);
     }
-    isPassOpen = false;
+    GetDrawD3D12().IsPassOpen = false;
 }
 RasterStatus RasterDraw(const RasterPacket& packet) noexcept
 {
-    if (isPassOpen == false)
+    if (GetDrawD3D12().IsPassOpen == false)
     {
         RasterPassInfo surface;
         surface.Description.ColorLoad = RasterLoad::Load;
@@ -348,11 +361,11 @@ RasterStatus RasterDraw(const RasterPacket& packet) noexcept
             return status;
         }
     }
-    if (gArea.Empty == true)
+    if (GetDrawD3D12().Area.Empty == true)
     {
         return RasterStatus::Ready;
     }
-    const Pipeline& pipeline = gPipelines[packet.Pipeline];
+    const Pipeline& pipeline = GetDrawD3D12().Pipelines[packet.Pipeline];
     const RasterPipelineInfo& info = pipeline.Description;
     ID3D12GraphicsCommandList* commands = GetCommandsOrNull();
     commands->SetGraphicsRootSignature(GetSignature(info.Layout));
@@ -378,8 +391,8 @@ RasterStatus RasterDraw(const RasterPacket& packet) noexcept
         commands->IASetIndexBuffer(&indices);
     }
     commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    const RasterRectangle& viewport = gArea.Viewport;
-    const RasterRectangle& scissor = gArea.Scissor;
+    const RasterRectangle& viewport = GetDrawD3D12().Area.Viewport;
+    const RasterRectangle& scissor = GetDrawD3D12().Area.Scissor;
     const D3D12_VIEWPORT nativeViewport{static_cast<float32>(viewport.X),
                                         static_cast<float32>(viewport.Y),
                                         static_cast<float32>(viewport.Width),
@@ -418,21 +431,21 @@ namespace d3d12
 {
 RasterStatus GrowPipelines(usize count) noexcept
 {
-    return gPipelines.EnsureSlots(count) == true ? RasterStatus::Ready : StorageFailure();
+    return GetDrawD3D12().Pipelines.EnsureSlots(count) == true ? RasterStatus::Ready : StorageFailure();
 }
 void DestroyPipeline(usize slot) noexcept
 {
-    gPipelines[slot] = {};
+    GetDrawD3D12().Pipelines[slot] = {};
 }
 void ResetRasterPasses() noexcept
 {
-    isPassOpen = false;
-    gSurfaceDepth.Reset();
-    gSurfaceDepthHeap.Reset();
-    ReleaseResourceStorage(gSurfaceDepthBytes);
-    gSurfaceDepthBytes = 0;
-    gSurfaceWidth = 0;
-    gSurfaceHeight = 0;
+    GetDrawD3D12().IsPassOpen = false;
+    GetDrawD3D12().SurfaceDepth.Reset();
+    GetDrawD3D12().SurfaceDepthHeap.Reset();
+    ReleaseResourceStorage(GetDrawD3D12().SurfaceDepthBytes);
+    GetDrawD3D12().SurfaceDepthBytes = 0;
+    GetDrawD3D12().SurfaceWidth = 0;
+    GetDrawD3D12().SurfaceHeight = 0;
 }
 } // namespace d3d12
 } // namespace ludus::graphics::rhi::backend

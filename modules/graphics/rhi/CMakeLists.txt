@@ -196,7 +196,8 @@ endif()
 
 if(LUDUS_BUILD_TESTS AND WIN32)
     target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
-    add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp tests/d3d12_native_interop_tests.cpp tests/d3d12_diagnostics_tests.cpp tests/d3d12_resource_tests.cpp tests/d3d12_transfer_tests.cpp tests/portable_transfer_conformance_tests.cpp)
+    add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp tests/d3d12_native_interop_tests.cpp tests/d3d12_diagnostics_tests.cpp tests/d3d12_resource_tests.cpp tests/d3d12_transfer_tests.cpp tests/portable_transfer_conformance_tests.cpp
+        tests/portable_device_owner_conformance_tests.cpp)
     target_include_directories(ludus_rhi_d3d12_tests PRIVATE src)
     target_link_libraries(ludus_rhi_d3d12_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationLogging Catch2::Catch2WithMain user32)
     ludus_attach_d3d12_agility(ludus_rhi_d3d12_tests "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
@@ -316,6 +317,10 @@ endif()
 
 if(TARGET ludus_rhi_render_tests)
     target_sources(ludus_rhi_render_tests PRIVATE tests/portable_transfer_conformance_tests.cpp)
+    if(NOT WIN32)
+        # R14c concurrent device owners; Windows runs them in ludus_rhi_d3d12_tests.
+        target_sources(ludus_rhi_render_tests PRIVATE tests/portable_device_owner_conformance_tests.cpp)
+    endif()
     if(NOT APPLE AND NOT WIN32)
         # R13a: Vulkan whole-buffer control versus the opt-in buffer-range trial, with the
         # backend-private synchronization trace (docs/architecture/rhi-gdi.md#synchronization-evidence).
