@@ -363,6 +363,8 @@ void MainWindow::BuildUi()
     setupLayout->addWidget(mSetupDetailsOrNull);
     QHBoxLayout* setupActions = new QHBoxLayout;
     setupActions->setSpacing(design::SPACING_SMALL);
+    // The object name precedes the visible label, matching every call below.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     const auto button = [setupActions](QWidget* parent, const QString& name, const QString& text) {
         QPushButton* action = new QPushButton(text, parent);
         action->setObjectName(name);
