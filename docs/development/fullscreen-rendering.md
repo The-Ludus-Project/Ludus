@@ -392,7 +392,15 @@ backend refusals, loss isolation, slot reuse under a new identity, stale and
 cross-session rejection, and destruction after device loss. The macOS Metal
 suite clears and reads back two headless surfaces at different, independently
 resized extents, checks render completion, and retires one while the other keeps
-rendering. With `LUDUS_TEST_COCOA=1` it also presents to two Cocoa windows,
+rendering. On Apple GPUs with memoryless texture support, Metal uses tile
+memory for surface depth when a physical pass clears or discards on entry and
+discards on exit. A pass that loads or stores depth uses a lazily allocated
+private texture, which also serves as the fallback on other Metal devices.
+Offscreen depth keeps its existing storage and access rules. The Metal suite
+checks native allocation sizes and reads back depth-tested color for both
+storage paths. See [Apple's storage-mode guidance](https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus).
+
+With `LUDUS_TEST_COCOA=1` the suite also presents to two Cocoa windows,
 loses the second when its content view is replaced, verifies the restored layer
 and keeps presenting the first. The shared native render suite draws one
 pipeline into two headless surfaces of a device and compares the images, then
