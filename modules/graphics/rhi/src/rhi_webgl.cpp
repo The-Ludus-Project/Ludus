@@ -1,6 +1,7 @@
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
+#include "internal/owner.h"
 #include "internal/raster.h"
 #include "internal/resources.h"
 #include <ludus/foundation/base/core.h>
@@ -34,13 +35,27 @@ namespace
 using namespace ludus::foundation;
 constexpr logging::LogCategory LOG_RHI{"RHI-WebGL2"};
 constexpr uint32 UNIFORM_BINDING = 0;
+/// Bytes of a canvas selector the backend copies, including its terminator.
+constexpr usize SELECTOR_CAPACITY = 256;
 
-EMSCRIPTEN_WEBGL_CONTEXT_HANDLE gContext = 0;
-uint32 gSession = 0;
-uint32 gMaxDimension = 0;
-FrameTarget gTarget;
-FrameInfo gFrameInfo;
-char gSelector[256]{};
+/// @brief WebGL 2 context, canvas selector and frame target of one device owner (R14c).
+struct WebGlState final
+{
+    EMSCRIPTEN_WEBGL_CONTEXT_HANDLE Context = 0;
+    uint32 Session = 0;
+    uint32 MaxDimension = 0;
+    FrameTarget Target;
+    FrameInfo Frame;
+    /// Copied selector of the canvas; the context-loss listener is registered under it.
+    foundation::StaticArray<char, SELECTOR_CAPACITY> Selector{};
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<WebGlState, MAX_DEVICE_OWNERS> gWebGlStates{};
+/// WebGlState of the bound owner slot.
+WebGlState& GetWebGl() noexcept
+{
+    return gWebGlStates[internal::GetBoundOwnerSlot()];
+}
 
 // A WebGL context on a canvas is the commitment point: a canvas that already
 // holds a WebGPU context cannot acquire WebGL. The dispatcher only attempts this
@@ -83,7 +98,7 @@ EM_BOOL ContextLost(int, const void*, void* userdata) noexcept
 
 bool ClampDimension(uint32 value) noexcept
 {
-    return value <= gMaxDimension;
+    return value <= GetWebGl().MaxDimension;
 }
 bool ValidColor(float64 value) noexcept
 {
@@ -114,12 +129,12 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
         return StartupError::InvalidWindow;
     }
     const auto length = std::string_view(window.CanvasSelector).size();
-    if (length == 0 || length >= sizeof(gSelector))
+    if (length == 0 || length >= GetWebGl().Selector.GetSize())
     {
         return StartupError::InvalidWindow;
     }
-    std::memcpy(gSelector, window.CanvasSelector, length);
-    gSelector[length] = '\0';
+    std::memcpy(GetWebGl().Selector.GetData(), window.CanvasSelector, length);
+    GetWebGl().Selector[length] = '\0';
 
     EmscriptenWebGLContextAttributes attributes;
     emscripten_webgl_init_context_attributes(&attributes);
@@ -135,16 +150,16 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
     attributes.powerPreference = EM_WEBGL_POWER_PREFERENCE_DEFAULT;
     // Acquiring the context commits the live canvas; this is the point of no
     // return for context ownership on this canvas.
-    gContext = emscripten_webgl_create_context(gSelector, &attributes);
-    if (gContext <= 0)
+    GetWebGl().Context = emscripten_webgl_create_context(GetWebGl().Selector.GetData(), &attributes);
+    if (GetWebGl().Context <= 0)
     {
-        gContext = 0;
+        GetWebGl().Context = 0;
         return StartupError::AdapterUnavailable;
     }
-    if (emscripten_webgl_make_context_current(gContext) != EMSCRIPTEN_RESULT_SUCCESS)
+    if (emscripten_webgl_make_context_current(GetWebGl().Context) != EMSCRIPTEN_RESULT_SUCCESS)
     {
-        emscripten_webgl_destroy_context(gContext);
-        gContext = 0;
+        emscripten_webgl_destroy_context(GetWebGl().Context);
+        GetWebGl().Context = 0;
         return StartupError::DeviceUnavailable;
     }
     GLint maxDimension = 0;
@@ -158,48 +173,59 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
     }
     if (maxDimension <= 0)
     {
-        emscripten_webgl_destroy_context(gContext);
-        gContext = 0;
+        emscripten_webgl_destroy_context(GetWebGl().Context);
+        GetWebGl().Context = 0;
         return StartupError::DeviceUnavailable;
     }
     GLint maxUniformSize = 0;
     glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE, &maxUniformSize);
     if (maxUniformSize < 16)
     {
-        emscripten_webgl_destroy_context(gContext);
-        gContext = 0;
+        emscripten_webgl_destroy_context(GetWebGl().Context);
+        GetWebGl().Context = 0;
         return StartupError::DeviceUnavailable;
     }
-    gMaxDimension = static_cast<uint32>(maxDimension);
-    gSession = token;
-    emscripten_set_webglcontextlost_callback(gSelector, Userdata(token), EM_FALSE, ContextLost);
+    GetWebGl().MaxDimension = static_cast<uint32>(maxDimension);
+    GetWebGl().Session = token;
+    emscripten_set_webglcontextlost_callback(GetWebGl().Selector.GetData(), Userdata(token), EM_FALSE, ContextLost);
     // WebGL creation is synchronous; the session is immediately usable.
-    internal::Complete(
-        token,
-        StartupError::None,
-        { .MaxFrameDimension2D = gMaxDimension, .MaxUniformBufferSize = static_cast<uint32>(maxUniformSize) });
+    internal::Complete(token,
+                       StartupError::None,
+                       {
+                           .MaxFrameDimension2D = GetWebGl().MaxDimension,
+                           .MaxUniformBufferSize = static_cast<uint32>(maxUniformSize),
+                       });
     return StartupError::None;
 }
 
+void MakeContextCurrent() noexcept
+{
+    const EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context = GetWebGl().Context;
+    if (context > 0 && emscripten_webgl_get_current_context() != context)
+    {
+        // A context that cannot become current is lost; Begin reports it before drawing.
+        (void)emscripten_webgl_make_context_current(context);
+    }
+}
 void Shutdown() noexcept
 {
     // The facade invalidates callback tokens before this runs, so a late context
     // loss cannot re-enter. Unregister listeners and release the context.
-    if (gSelector[0] != '\0')
+    if (GetWebGl().Selector[0] != '\0')
     {
-        emscripten_set_webglcontextlost_callback(gSelector, nullptr, EM_FALSE, nullptr);
+        emscripten_set_webglcontextlost_callback(GetWebGl().Selector.GetData(), nullptr, EM_FALSE, nullptr);
     }
-    if (gContext > 0)
+    if (GetWebGl().Context > 0)
     {
-        emscripten_webgl_make_context_current(gContext);
-        emscripten_webgl_destroy_context(gContext);
+        emscripten_webgl_make_context_current(GetWebGl().Context);
+        emscripten_webgl_destroy_context(GetWebGl().Context);
     }
-    gContext = 0;
-    gSession = 0;
-    gMaxDimension = 0;
-    gTarget = {};
-    gFrameInfo = {};
-    gSelector[0] = '\0';
+    GetWebGl().Context = 0;
+    GetWebGl().Session = 0;
+    GetWebGl().MaxDimension = 0;
+    GetWebGl().Target = {};
+    GetWebGl().Frame = {};
+    GetWebGl().Selector[0] = '\0';
 }
 bool Initialize(const ApplicationInfo&) noexcept
 {
@@ -230,66 +256,76 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::InvalidState;
     }
-    gTarget = target;
+    GetWebGl().Target = target;
     return FrameStatus::Ready;
 }
 FrameStatus Begin() noexcept
 {
-    if (gTarget.Width == 0 || gTarget.Height == 0)
+    if (GetWebGl().Target.Width == 0 || GetWebGl().Target.Height == 0)
     {
         return FrameStatus::Skipped;
     }
-    if (gContext <= 0 || emscripten_is_webgl_context_lost(gContext))
+    if (GetWebGl().Context <= 0 || emscripten_is_webgl_context_lost(GetWebGl().Context))
     {
-        internal::Fail(gSession, StartupError::DeviceLost);
+        internal::Fail(GetWebGl().Session, StartupError::DeviceLost);
         return FrameStatus::Failed;
     }
-    if (emscripten_webgl_make_context_current(gContext) != EMSCRIPTEN_RESULT_SUCCESS)
+    if (emscripten_webgl_make_context_current(GetWebGl().Context) != EMSCRIPTEN_RESULT_SUCCESS)
     {
-        internal::Fail(gSession, StartupError::RenderingUnavailable);
+        internal::Fail(GetWebGl().Session, StartupError::RenderingUnavailable);
         return FrameStatus::Failed;
     }
     TimingBegin();
-    if (gTarget.ShouldPresentToSurface == false)
+    if (GetWebGl().Target.ShouldPresentToSurface == false)
     {
         // Thanks to Khronos, "WebGL 2.0 Specification", section 2.2 (the drawing buffer):
         // https://registry.khronos.org/webgl/specs/latest/1.0/#2.2
         // The browser presents the drawing buffer only after it is drawn or cleared, so an
         // offscreen-only frame that never binds framebuffer 0 keeps the last presented image.
         // Texture passes bind their own framebuffers; surface passes are rejected.
-        gFrameInfo = { .Width = gTarget.Width, .Height = gTarget.Height, .Encoding = SurfaceEncoding::Unorm };
+        GetWebGl().Frame =
+        {
+            .Width = GetWebGl().Target.Width,
+            .Height = GetWebGl().Target.Height,
+            .Encoding = SurfaceEncoding::Unorm,
+        };
         return FrameStatus::Ready;
     }
     // Default framebuffer (the canvas). Resize is a viewport change; the backing
     // store is sized by Platform's resize observer, which the app mirrors into
     // the FrameTarget width/height. A canvas outside Platform is sized by its owner.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, static_cast<GLsizei>(gTarget.Width), static_cast<GLsizei>(gTarget.Height));
+    glViewport(0, 0, static_cast<GLsizei>(GetWebGl().Target.Width), static_cast<GLsizei>(GetWebGl().Target.Height));
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
-    glClearColor(static_cast<GLfloat>(gTarget.Red),
-                 static_cast<GLfloat>(gTarget.Green),
-                 static_cast<GLfloat>(gTarget.Blue),
-                 static_cast<GLfloat>(gTarget.Alpha));
+    glClearColor(static_cast<GLfloat>(GetWebGl().Target.Red),
+                 static_cast<GLfloat>(GetWebGl().Target.Green),
+                 static_cast<GLfloat>(GetWebGl().Target.Blue),
+                 static_cast<GLfloat>(GetWebGl().Target.Alpha));
     glDisable(GL_BLEND);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_TRUE);
     glClearDepthf(1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    gFrameInfo = { .Width = gTarget.Width, .Height = gTarget.Height, .Encoding = SurfaceEncoding::Unorm };
+    GetWebGl().Frame =
+    {
+        .Width = GetWebGl().Target.Width,
+        .Height = GetWebGl().Target.Height,
+        .Encoding = SurfaceEncoding::Unorm,
+    };
     return FrameStatus::Ready;
 }
 FrameStatus End() noexcept
 {
     TimingEnd();
-    if (gContext <= 0 || emscripten_is_webgl_context_lost(gContext))
+    if (GetWebGl().Context <= 0 || emscripten_is_webgl_context_lost(GetWebGl().Context))
     {
         return FrameStatus::Failed;
     }
     if (glGetError() != GL_NO_ERROR)
     {
-        internal::Fail(gSession, StartupError::RenderingUnavailable);
+        internal::Fail(GetWebGl().Session, StartupError::RenderingUnavailable);
         return FrameStatus::Failed;
     }
     // The browser presents the default framebuffer after the frame callback
@@ -300,7 +336,7 @@ FrameStatus End() noexcept
 }
 FrameInfo GetFrameInfo() noexcept
 {
-    return gFrameInfo;
+    return GetWebGl().Frame;
 }
 
 namespace
@@ -324,9 +360,20 @@ struct Pipeline final
     usize UniformSlot = 0;
     bool Ok = false;
 };
-Shader gShaders[internal::RESOURCE_CAPACITY];
-Uniform gUniforms[internal::RESOURCE_CAPACITY];
-Pipeline gPipelines[internal::RESOURCE_CAPACITY];
+/// @brief Fullscreen shader, uniform and pipeline slots of one device owner (R14c).
+struct WebGlResourceState final
+{
+    foundation::StaticArray<Shader, internal::RESOURCE_CAPACITY> Shaders{};
+    foundation::StaticArray<Uniform, internal::RESOURCE_CAPACITY> Uniforms{};
+    foundation::StaticArray<Pipeline, internal::RESOURCE_CAPACITY> Pipelines{};
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<WebGlResourceState, MAX_DEVICE_OWNERS> gWebGlResourceStates{};
+/// WebGlResourceState of the bound owner slot.
+WebGlResourceState& GetWebGlResources() noexcept
+{
+    return gWebGlResourceStates[internal::GetBoundOwnerSlot()];
+}
 
 GLuint Compile(GLenum type, std::string_view source) noexcept
 {
@@ -362,7 +409,7 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
 {
     // Compile the generated GLSL ES stage now; linking happens at pipeline time
     // when both stages are known. Diagnostics route through the engine logger.
-    auto& shader = gShaders[slot];
+    Shader& shader = GetWebGlResources().Shaders[slot];
     shader = {};
     shader.Stage = description.Stage;
     const GLenum type = description.Stage == ShaderStage::Vertex ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER;
@@ -373,7 +420,7 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
 }
 ResourceStatus CreateUniform(usize slot, const backend::UniformDescription& description, uint32 id) noexcept
 {
-    auto& uniform = gUniforms[slot];
+    Uniform& uniform = GetWebGlResources().Uniforms[slot];
     uniform = {};
     uniform.Size = description.Size;
     glGenBuffers(1, &uniform.Buffer);
@@ -392,7 +439,7 @@ ResourceStatus CreateUniform(usize slot, const backend::UniformDescription& desc
 }
 ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& resources, uint32 id) noexcept
 {
-    auto& pipeline = gPipelines[slot];
+    Pipeline& pipeline = GetWebGlResources().Pipelines[slot];
     pipeline = {};
     pipeline.UniformSlot = resources.Uniform;
     pipeline.Program = glCreateProgram();
@@ -401,8 +448,8 @@ ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& reso
         internal::ResourceComplete(id, ResourceStatus::Failed);
         return ResourceStatus::Failed;
     }
-    glAttachShader(pipeline.Program, gShaders[resources.Vertex].Object);
-    glAttachShader(pipeline.Program, gShaders[resources.Fragment].Object);
+    glAttachShader(pipeline.Program, GetWebGlResources().Shaders[resources.Vertex].Object);
+    glAttachShader(pipeline.Program, GetWebGlResources().Shaders[resources.Fragment].Object);
     glLinkProgram(pipeline.Program);
     GLint linked = GL_FALSE;
     glGetProgramiv(pipeline.Program, GL_LINK_STATUS, &linked);
@@ -431,7 +478,7 @@ ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& reso
     }
     GLint blockSize = 0;
     glGetActiveUniformBlockiv(pipeline.Program, resolved, GL_UNIFORM_BLOCK_DATA_SIZE, &blockSize);
-    if (blockSize <= 0 || static_cast<usize>(blockSize) > gUniforms[resources.Uniform].Size)
+    if (blockSize <= 0 || static_cast<usize>(blockSize) > GetWebGlResources().Uniforms[resources.Uniform].Size)
     {
         LUDUS_LOG_WARN(LOG_RHI, "GLSL ES block size {} exceeds uniform buffer", blockSize);
         glDeleteProgram(pipeline.Program);
@@ -460,23 +507,23 @@ ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& reso
 }
 void DestroyShader(usize slot) noexcept
 {
-    if (gShaders[slot].Object != 0)
+    if (GetWebGlResources().Shaders[slot].Object != 0)
     {
-        glDeleteShader(gShaders[slot].Object);
+        glDeleteShader(GetWebGlResources().Shaders[slot].Object);
     }
-    gShaders[slot] = {};
+    GetWebGlResources().Shaders[slot] = {};
 }
 void DestroyUniform(usize slot) noexcept
 {
-    if (gUniforms[slot].Buffer != 0)
+    if (GetWebGlResources().Uniforms[slot].Buffer != 0)
     {
-        glDeleteBuffers(1, &gUniforms[slot].Buffer);
+        glDeleteBuffers(1, &GetWebGlResources().Uniforms[slot].Buffer);
     }
-    gUniforms[slot] = {};
+    GetWebGlResources().Uniforms[slot] = {};
 }
 void DestroyPipeline(usize slot) noexcept
 {
-    auto& pipeline = gPipelines[slot];
+    Pipeline& pipeline = GetWebGlResources().Pipelines[slot];
     if (pipeline.VertexArray != 0)
     {
         glDeleteVertexArrays(1, &pipeline.VertexArray);
@@ -490,16 +537,16 @@ void DestroyPipeline(usize slot) noexcept
 void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
     // Snapshot into the CPU shadow; the next draw uploads it. No allocation.
-    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
+    std::memcpy(GetWebGlResources().Uniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 ResourceStatus Draw(usize slot) noexcept
 {
-    if (gTarget.ShouldPresentToSurface == false)
+    if (GetWebGl().Target.ShouldPresentToSurface == false)
     {
         return ResourceStatus::InvalidState;
     }
-    const auto& pipeline = gPipelines[slot];
-    const auto& uniform = gUniforms[pipeline.UniformSlot];
+    const Pipeline& pipeline = GetWebGlResources().Pipelines[slot];
+    const Uniform& uniform = GetWebGlResources().Uniforms[pipeline.UniformSlot];
     glBindBuffer(GL_UNIFORM_BUFFER, uniform.Buffer);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, static_cast<GLsizeiptr>(uniform.Size), uniform.Bytes);
     glBindBufferBase(GL_UNIFORM_BUFFER, UNIFORM_BINDING, uniform.Buffer);

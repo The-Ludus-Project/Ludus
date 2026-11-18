@@ -37,33 +37,46 @@ struct RasterGlCompletion final
     uint64 Ordinal = 0;
     bool Reserved = false;
 };
-internal::StorageTable<GLuint> gRasterBuffers;
-internal::StorageTable<GLuint> gRasterTextures;
-internal::StorageTable<TextureDescription> gRasterTextureDescriptions;
-internal::StorageTable<GLuint> gRasterFramebuffers;
-internal::StorageTable<GLuint> gRasterRenderTextures;
-internal::StorageTable<GLuint> gRasterSampleFramebuffers;
-internal::RasterPassInfo gRasterGlPass;
-bool gRasterGlPassOpen = false;
-bool gRasterHdrProbed = false, gRasterHdr = false;
-internal::StorageTable<GLuint> gRasterDepths;
-internal::StorageTable<GLuint> gRasterMsaaColors;
-GLuint gRasterMrtFramebuffer = 0, gRasterResolveFramebuffer = 0;
 struct RasterGlView final
 {
     GLuint Object = 0;
     GLenum Target = GL_TEXTURE_2D;
     bool Owned = false;
 };
-internal::StorageTable<RasterGlView> gRasterViews;
-internal::StorageTable<GLuint> gRasterSamplers;
-internal::StorageTable<RasterGlShader> gRasterShaders;
-internal::StorageTable<internal::RasterLayout> gRasterLayouts;
-internal::StorageTable<internal::RasterSet> gRasterSets;
-internal::StorageTable<RasterGlPipeline> gRasterPipelines;
-internal::StorageTable<RasterGlCompletion> gRasterCompletions;
-RasterGlCompletion* gRasterReserved = nullptr;
-uint64 gRasterCompleted = 0;
+/// @brief Portable raster objects, open pass and completions of one device owner (R14c).
+struct RasterWebGlState final
+{
+    internal::StorageTable<GLuint> Buffers;
+    internal::StorageTable<GLuint> Textures;
+    internal::StorageTable<TextureDescription> TextureDescriptions;
+    internal::StorageTable<GLuint> Framebuffers;
+    internal::StorageTable<GLuint> RenderTextures;
+    internal::StorageTable<GLuint> SampleFramebuffers;
+    internal::RasterPassInfo Pass;
+    bool IsPassOpen = false;
+    bool IsHdrProbed = false;
+    bool IsHdrSupported = false;
+    internal::StorageTable<GLuint> Depths;
+    internal::StorageTable<GLuint> MsaaColors;
+    GLuint MrtFramebuffer = 0;
+    GLuint ResolveFramebuffer = 0;
+    internal::StorageTable<RasterGlView> Views;
+    internal::StorageTable<GLuint> Samplers;
+    internal::StorageTable<RasterGlShader> Shaders;
+    internal::StorageTable<internal::RasterLayout> Layouts;
+    internal::StorageTable<internal::RasterSet> Sets;
+    internal::StorageTable<RasterGlPipeline> Pipelines;
+    internal::StorageTable<RasterGlCompletion> Completions;
+    RasterGlCompletion* ReservedOrNull = nullptr;
+    uint64 Completed = 0;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<RasterWebGlState, MAX_DEVICE_OWNERS> gRasterWebGlStates{};
+/// RasterWebGlState of the bound owner slot.
+RasterWebGlState& GetRasterWebGl() noexcept
+{
+    return gRasterWebGlStates[internal::GetBoundOwnerSlot()];
+}
 GLenum RasterGlTextureTarget(TextureDimension dimension) noexcept
 {
     return dimension == TextureDimension::D2Array ? GL_TEXTURE_2D_ARRAY
@@ -127,8 +140,8 @@ bool RasterGlInterface(GLuint program, const internal::RasterShaderInfo& shader,
 }
 bool RasterGlProgram(GLuint program, RasterGlPipeline& pipeline) noexcept
 {
-    const auto& vertex = gRasterShaders[pipeline.Info.Vertex].Info;
-    const auto& fragment = gRasterShaders[pipeline.Info.Fragment].Info;
+    const internal::RasterShaderInfo& vertex = GetRasterWebGl().Shaders[pipeline.Info.Vertex].Info;
+    const internal::RasterShaderInfo& fragment = GetRasterWebGl().Shaders[pipeline.Info.Fragment].Info;
     if (RasterGlInterface(program, vertex, pipeline) == false ||
         RasterGlInterface(program, fragment, pipeline) == false)
     {
@@ -317,7 +330,7 @@ BindingCapabilities BindingLimits() noexcept
 }
 RasterCapabilities RasterLimits() noexcept
 {
-    if (gContext <= 0)
+    if (GetWebGl().Context <= 0)
     {
         return {};
     }
@@ -342,10 +355,11 @@ RasterCapabilities RasterLimits() noexcept
     {
         return {};
     }
-    if (gRasterHdrProbed == false)
+    if (GetRasterWebGl().IsHdrProbed == false)
     {
-        gRasterHdr = emscripten_webgl_enable_extension(gContext, "EXT_color_buffer_float") == EM_TRUE;
-        gRasterHdrProbed = true;
+        GetRasterWebGl().IsHdrSupported =
+            emscripten_webgl_enable_extension(GetWebGl().Context, "EXT_color_buffer_float") == EM_TRUE;
+        GetRasterWebGl().IsHdrProbed = true;
     }
     // WebGL has no queryable buffer-size maximum; retain a signed-32-bit API bound,
     // independently intersected with the caller-configured logical resource budget.
@@ -357,7 +371,7 @@ RasterCapabilities RasterLimits() noexcept
             internal::CurrentStorageLimits().ResourcesPerKind,
             internal::CurrentStorageLimits().DrawsPerFrame,
             static_cast<uint32>(attributes < 16 ? attributes : 16),
-            gRasterHdr,
+            GetRasterWebGl().IsHdrSupported,
             bufferBytes};
 }
 // Thanks to Khronos Group, "WebGL 2.0 Specification", texture formats and GLES 3.0 constraints.
@@ -366,7 +380,7 @@ RasterCapabilities RasterLimits() noexcept
 // no storage/copy/MSAA or R8/RG8 attachment path is advertised.
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
-    if (gContext <= 0 || internal::CompressedTexture(format))
+    if (GetWebGl().Context <= 0 || internal::CompressedTexture(format))
     {
         return {};
     }
@@ -390,9 +404,9 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
             {
                 result.MaxAttachmentDimension2D = depthDimension;
             }
-            if (gMaxDimension < result.MaxAttachmentDimension2D)
+            if (GetWebGl().MaxDimension < result.MaxAttachmentDimension2D)
             {
-                result.MaxAttachmentDimension2D = gMaxDimension;
+                result.MaxAttachmentDimension2D = GetWebGl().MaxDimension;
             }
         }
         result.MaxAttachmentMipLevels = 1;
@@ -450,8 +464,8 @@ RasterStatus RasterCreateBuffer(usize slot,
     {
         glBindVertexArray(0);
     }
-    glGenBuffers(1, &gRasterBuffers[slot]);
-    glBindBuffer(target, gRasterBuffers[slot]);
+    glGenBuffers(1, &GetRasterWebGl().Buffers[slot]);
+    glBindBuffer(target, GetRasterWebGl().Buffers[slot]);
     glBufferData(target, static_cast<GLsizeiptr>(bytes.GetSize()), bytes.GetDataOrNull(), GL_STATIC_DRAW);
     glBindBuffer(target, 0);
     return RasterGlResult();
@@ -459,10 +473,10 @@ RasterStatus RasterCreateBuffer(usize slot,
 RasterStatus
 RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpload& upload, uint32) noexcept
 {
-    gRasterTextureDescriptions[slot] = info;
-    glGenTextures(1, &gRasterTextures[slot]);
+    GetRasterWebGl().TextureDescriptions[slot] = info;
+    glGenTextures(1, &GetRasterWebGl().Textures[slot]);
     const auto target = RasterGlTextureTarget(info.Dimension);
-    glBindTexture(target, gRasterTextures[slot]);
+    glBindTexture(target, GetRasterWebGl().Textures[slot]);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     uint32 width = info.Width, height = info.Height;
     for (uint32 level = 0; level < info.MipLevels; ++level)
@@ -521,8 +535,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     {
         if (info.SampleCount == 1)
         {
-            glGenTextures(1, &gRasterRenderTextures[slot]);
-            glBindTexture(GL_TEXTURE_2D, gRasterRenderTextures[slot]);
+            glGenTextures(1, &GetRasterWebGl().RenderTextures[slot]);
+            glBindTexture(GL_TEXTURE_2D, GetRasterWebGl().RenderTextures[slot]);
             glTexStorage2D(GL_TEXTURE_2D,
                            1,
                            info.Format == RasterFormat::Rgba16Float  ? GL_RGBA16F
@@ -531,8 +545,8 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                            static_cast<GLsizei>(info.Width),
                            static_cast<GLsizei>(info.Height));
         }
-        glGenRenderbuffers(1, &gRasterDepths[slot]);
-        glBindRenderbuffer(GL_RENDERBUFFER, gRasterDepths[slot]);
+        glGenRenderbuffers(1, &GetRasterWebGl().Depths[slot]);
+        glBindRenderbuffer(GL_RENDERBUFFER, GetRasterWebGl().Depths[slot]);
         if (info.SampleCount == 4)
         {
             glRenderbufferStorageMultisample(GL_RENDERBUFFER,
@@ -548,31 +562,38 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                                   static_cast<GLsizei>(info.Width),
                                   static_cast<GLsizei>(info.Height));
         }
-        glGenFramebuffers(1, &gRasterFramebuffers[slot]);
-        glBindFramebuffer(GL_FRAMEBUFFER, gRasterFramebuffers[slot]);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gRasterRenderTextures[slot], 0);
+        glGenFramebuffers(1, &GetRasterWebGl().Framebuffers[slot]);
+        glBindFramebuffer(GL_FRAMEBUFFER, GetRasterWebGl().Framebuffers[slot]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,
+                               GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D,
+                               GetRasterWebGl().RenderTextures[slot],
+                               0);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER,
                                   info.Stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
                                   GL_RENDERBUFFER,
-                                  gRasterDepths[slot]);
+                                  GetRasterWebGl().Depths[slot]);
         if (info.SampleCount == 4)
         {
-            glGenRenderbuffers(1, &gRasterMsaaColors[slot]);
-            glBindRenderbuffer(GL_RENDERBUFFER, gRasterMsaaColors[slot]);
+            glGenRenderbuffers(1, &GetRasterWebGl().MsaaColors[slot]);
+            glBindRenderbuffer(GL_RENDERBUFFER, GetRasterWebGl().MsaaColors[slot]);
             glRenderbufferStorageMultisample(GL_RENDERBUFFER,
                                              4,
                                              RasterGlTextureFormat(info.Format),
                                              static_cast<GLsizei>(info.Width),
                                              static_cast<GLsizei>(info.Height));
-            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, gRasterMsaaColors[slot]);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER,
+                                      GL_COLOR_ATTACHMENT0,
+                                      GL_RENDERBUFFER,
+                                      GetRasterWebGl().MsaaColors[slot]);
         }
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         {
             return RasterStatus::Unsupported;
         }
-        glGenFramebuffers(1, &gRasterSampleFramebuffers[slot]);
-        glBindFramebuffer(GL_FRAMEBUFFER, gRasterSampleFramebuffers[slot]);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gRasterTextures[slot], 0);
+        glGenFramebuffers(1, &GetRasterWebGl().SampleFramebuffers[slot]);
+        glBindFramebuffer(GL_FRAMEBUFFER, GetRasterWebGl().SampleFramebuffers[slot]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, GetRasterWebGl().Textures[slot], 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         {
             return RasterStatus::Unsupported;
@@ -587,20 +608,20 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
 // framebuffer reads; source retention prevents any mutable transfer until retirement.
 RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& source, uint32) noexcept
 {
-    const auto& info = gRasterTextureDescriptions[source.Texture];
+    const TextureDescription& info = GetRasterWebGl().TextureDescriptions[source.Texture];
     const auto& range = source.View;
     if (range.Attachment)
     {
-        gRasterViews[slot].Object = gRasterRenderTextures[source.Texture];
+        GetRasterWebGl().Views[slot].Object = GetRasterWebGl().RenderTextures[source.Texture];
         return RasterStatus::Ready;
     }
-    auto& view = gRasterViews[slot];
+    RasterGlView& view = GetRasterWebGl().Views[slot];
     view.Target = RasterGlTextureTarget(range.Dimension);
     const uint32 layers = info.Dimension == TextureDimension::D3 ? 1U : info.DepthOrLayers;
     if (range.BaseMip == 0 && range.MipCount == info.MipLevels && range.BaseLayer == 0 && range.LayerCount == layers &&
         range.Dimension == info.Dimension)
     {
-        view.Object = gRasterTextures[source.Texture];
+        view.Object = GetRasterWebGl().Textures[source.Texture];
         return RasterStatus::Ready;
     }
     view.Owned = true;
@@ -657,7 +678,7 @@ RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& sour
             {
                 glFramebufferTextureLayer(GL_FRAMEBUFFER,
                                           GL_COLOR_ATTACHMENT0,
-                                          gRasterTextures[source.Texture],
+                                          GetRasterWebGl().Textures[source.Texture],
                                           static_cast<GLint>(mip),
                                           static_cast<GLint>(range.BaseLayer + slice));
             }
@@ -669,7 +690,7 @@ RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& sour
                 glFramebufferTexture2D(GL_FRAMEBUFFER,
                                        GL_COLOR_ATTACHMENT0,
                                        target,
-                                       gRasterTextures[source.Texture],
+                                       GetRasterWebGl().Textures[source.Texture],
                                        static_cast<GLint>(mip));
             }
             if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
@@ -714,8 +735,8 @@ RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& sour
 }
 RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& info, uint32) noexcept
 {
-    glGenSamplers(1, &gRasterSamplers[slot]);
-    const GLuint sampler = gRasterSamplers[slot];
+    glGenSamplers(1, &GetRasterWebGl().Samplers[slot]);
+    const GLuint sampler = GetRasterWebGl().Samplers[slot];
     const auto filter = info.Filter == RasterFilter::Nearest ? GL_NEAREST : GL_LINEAR;
     const auto minFilter =
         info.MipFilter == RasterMipFilter::None ? filter
@@ -736,32 +757,32 @@ RasterStatus RasterCreateShader(usize slot,
                                 const internal::RasterShaderInfo& metadata,
                                 uint32) noexcept
 {
-    auto& shader = gRasterShaders[slot];
+    RasterGlShader& shader = GetRasterWebGl().Shaders[slot];
     shader.Info = metadata;
     shader.Object = Compile(info.Stage == ShaderStage::Vertex ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER, info.GlslEs);
     return shader.Object != 0 ? RasterGlResult() : RasterStatus::Failed;
 }
 RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, uint32) noexcept
 {
-    gRasterLayouts[slot] = info;
+    GetRasterWebGl().Layouts[slot] = info;
     return RasterStatus::Ready;
 }
 RasterStatus
 RasterCreateSet(usize slot, const internal::RasterLayout&, const internal::RasterSet& info, uint32) noexcept
 {
-    return gRasterSets[slot].TryCopyFrom(info) == true ? RasterStatus::Ready : internal::StorageFailure();
+    return GetRasterWebGl().Sets[slot].TryCopyFrom(info) == true ? RasterStatus::Ready : internal::StorageFailure();
 }
 RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo& info, uint32) noexcept
 {
-    auto& pipeline = gRasterPipelines[slot];
+    RasterGlPipeline& pipeline = GetRasterWebGl().Pipelines[slot];
     pipeline.Info = info;
     pipeline.Object = glCreateProgram();
     if (pipeline.Object == 0)
     {
         return RasterStatus::OutOfMemory;
     }
-    glAttachShader(pipeline.Object, gRasterShaders[info.Vertex].Object);
-    glAttachShader(pipeline.Object, gRasterShaders[info.Fragment].Object);
+    glAttachShader(pipeline.Object, GetRasterWebGl().Shaders[info.Vertex].Object);
+    glAttachShader(pipeline.Object, GetRasterWebGl().Shaders[info.Fragment].Object);
     glLinkProgram(pipeline.Object);
     GLint linked = 0;
     glGetProgramiv(pipeline.Object, GL_LINK_STATUS, &linked);
@@ -785,46 +806,46 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            glDeleteBuffers(1, &gRasterBuffers[slot]);
-            gRasterBuffers[slot] = 0;
+            glDeleteBuffers(1, &GetRasterWebGl().Buffers[slot]);
+            GetRasterWebGl().Buffers[slot] = 0;
             break;
         case internal::RasterKind::Texture:
-            glDeleteFramebuffers(1, &gRasterSampleFramebuffers[slot]);
-            glDeleteTextures(1, &gRasterRenderTextures[slot]);
-            gRasterSampleFramebuffers[slot] = gRasterRenderTextures[slot] = 0;
-            glDeleteFramebuffers(1, &gRasterFramebuffers[slot]);
-            glDeleteRenderbuffers(1, &gRasterDepths[slot]);
-            glDeleteRenderbuffers(1, &gRasterMsaaColors[slot]);
-            gRasterMsaaColors[slot] = 0;
-            gRasterFramebuffers[slot] = gRasterDepths[slot] = 0;
-            glDeleteTextures(1, &gRasterTextures[slot]);
-            gRasterTextures[slot] = 0;
+            glDeleteFramebuffers(1, &GetRasterWebGl().SampleFramebuffers[slot]);
+            glDeleteTextures(1, &GetRasterWebGl().RenderTextures[slot]);
+            GetRasterWebGl().SampleFramebuffers[slot] = GetRasterWebGl().RenderTextures[slot] = 0;
+            glDeleteFramebuffers(1, &GetRasterWebGl().Framebuffers[slot]);
+            glDeleteRenderbuffers(1, &GetRasterWebGl().Depths[slot]);
+            glDeleteRenderbuffers(1, &GetRasterWebGl().MsaaColors[slot]);
+            GetRasterWebGl().MsaaColors[slot] = 0;
+            GetRasterWebGl().Framebuffers[slot] = GetRasterWebGl().Depths[slot] = 0;
+            glDeleteTextures(1, &GetRasterWebGl().Textures[slot]);
+            GetRasterWebGl().Textures[slot] = 0;
             break;
         case internal::RasterKind::View:
-            if (gRasterViews[slot].Owned)
+            if (GetRasterWebGl().Views[slot].Owned)
             {
-                glDeleteTextures(1, &gRasterViews[slot].Object);
+                glDeleteTextures(1, &GetRasterWebGl().Views[slot].Object);
             }
-            gRasterViews[slot] = {};
+            GetRasterWebGl().Views[slot] = {};
             break;
         case internal::RasterKind::Sampler:
-            glDeleteSamplers(1, &gRasterSamplers[slot]);
-            gRasterSamplers[slot] = 0;
+            glDeleteSamplers(1, &GetRasterWebGl().Samplers[slot]);
+            GetRasterWebGl().Samplers[slot] = 0;
             break;
         case internal::RasterKind::Shader:
-            glDeleteShader(gRasterShaders[slot].Object);
-            gRasterShaders[slot] = {};
+            glDeleteShader(GetRasterWebGl().Shaders[slot].Object);
+            GetRasterWebGl().Shaders[slot] = {};
             break;
         case internal::RasterKind::Layout:
-            gRasterLayouts[slot] = {};
+            GetRasterWebGl().Layouts[slot] = {};
             break;
         case internal::RasterKind::Set:
-            gRasterSets[slot] = {};
+            GetRasterWebGl().Sets[slot] = {};
             break;
         case internal::RasterKind::Pipeline:
-            glDeleteProgram(gRasterPipelines[slot].Object);
-            glDeleteVertexArrays(1, &gRasterPipelines[slot].Array);
-            gRasterPipelines[slot] = {};
+            glDeleteProgram(GetRasterWebGl().Pipelines[slot].Object);
+            glDeleteVertexArrays(1, &GetRasterWebGl().Pipelines[slot].Array);
+            GetRasterWebGl().Pipelines[slot] = {};
             break;
         case internal::RasterKind::ComputePipeline:
         case internal::RasterKind::RayGeometry:
@@ -838,17 +859,17 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 }
 RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 {
-    const auto& pipeline = gRasterPipelines[packet.Pipeline];
+    const RasterGlPipeline& pipeline = GetRasterWebGl().Pipelines[packet.Pipeline];
     const auto& info = pipeline.Info;
-    const auto& set = gRasterSets[packet.Set];
-    const auto& layout = gRasterLayouts[set.Layout];
+    const internal::RasterSet& set = GetRasterWebGl().Sets[packet.Set];
+    const internal::RasterLayout& layout = GetRasterWebGl().Layouts[set.Layout];
     glUseProgram(pipeline.Object);
     glBindVertexArray(pipeline.Array);
     for (usize i = 0; i < info.AttributeCount; ++i)
     {
         const auto& attribute = info.Attributes[i];
         const auto& stream = info.Streams[attribute.Stream];
-        glBindBuffer(GL_ARRAY_BUFFER, gRasterBuffers[packet.Vertices[attribute.Stream]]);
+        glBindBuffer(GL_ARRAY_BUFFER, GetRasterWebGl().Buffers[packet.Vertices[attribute.Stream]]);
         const GLint components = attribute.Format == RasterVertexFormat::Float2   ? 2
                                  : attribute.Format == RasterVertexFormat::Float3 ? 3
                                                                                   : 4;
@@ -871,7 +892,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
         {
             glBindBufferRange(GL_UNIFORM_BUFFER,
                               entry.Binding,
-                              gRasterBuffers[set.Slots[i]],
+                              GetRasterWebGl().Buffers[set.Slots[i]],
                               static_cast<GLintptr>(set.Offsets[i] + packet.BindingOffsets.Bytes[entry.Binding]),
                               static_cast<GLsizeiptr>(set.Sizes[i]));
         }
@@ -883,11 +904,11 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
             {
                 if (layout.Entries[j].Kind == RasterBindingKind::Sampler && layout.Entries[j].Binding == sampler)
                 {
-                    object = gRasterSamplers[set.Slots[j]];
+                    object = GetRasterWebGl().Samplers[set.Slots[j]];
                 }
             }
             glActiveTexture(GL_TEXTURE0 + entry.Binding);
-            const auto& view = gRasterViews[set.Slots[i]];
+            const RasterGlView& view = GetRasterWebGl().Views[set.Slots[i]];
             glBindTexture(view.Target, view.Object);
             glBindSampler(entry.Binding, object);
             glUniform1i(pipeline.Textures[entry.Binding], static_cast<GLint>(entry.Binding));
@@ -903,11 +924,12 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     }
     const GLenum comparisons[]{GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL, GL_ALWAYS};
     internal::RasterArea area;
-    const auto& pass = gRasterGlPass;
-    const bool isSurface = gRasterGlPassOpen == false || pass.Texture == internal::RASTER_INVALID;
-    const uint32 width = isSurface ? gTarget.Width : gRasterTextureDescriptions[pass.Texture].Width;
-    const uint32 height = isSurface ? gTarget.Height : gRasterTextureDescriptions[pass.Texture].Height;
-    if (internal::RasterResolveArea(gRasterGlPassOpen ? pass.Description : RasterPassDescription{},
+    const internal::RasterPassInfo& pass = GetRasterWebGl().Pass;
+    const bool isSurface = GetRasterWebGl().IsPassOpen == false || pass.Texture == internal::RASTER_INVALID;
+    const uint32 width = isSurface ? GetWebGl().Target.Width : GetRasterWebGl().TextureDescriptions[pass.Texture].Width;
+    const uint32 height =
+        isSurface ? GetWebGl().Target.Height : GetRasterWebGl().TextureDescriptions[pass.Texture].Height;
+    if (internal::RasterResolveArea(GetRasterWebGl().IsPassOpen ? pass.Description : RasterPassDescription{},
                                     width,
                                     height,
                                     area) == false)
@@ -969,7 +991,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     }
     glBlendEquation(GL_FUNC_ADD);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gRasterBuffers[packet.Indices]);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, GetRasterWebGl().Buffers[packet.Indices]);
     // GL interprets this pointer-shaped argument as an element-buffer byte offset.
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     const void* indexOffset = reinterpret_cast<const void*>(packet.IndexOffset);
@@ -991,7 +1013,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 }
 uint64 RasterCompleted() noexcept
 {
-    for (auto& completion : gRasterCompletions)
+    for (RasterGlCompletion& completion : GetRasterWebGl().Completions)
     {
         if (completion.Sync == nullptr)
         {
@@ -1000,67 +1022,67 @@ uint64 RasterCompleted() noexcept
         const auto status = glClientWaitSync(completion.Sync, 0, 0);
         if (status == GL_WAIT_FAILED)
         {
-            internal::Fail(gSession,
-                           emscripten_is_webgl_context_lost(gContext) ? StartupError::DeviceLost
-                                                                      : StartupError::RenderingUnavailable);
-            return gRasterCompleted;
+            internal::Fail(GetWebGl().Session,
+                           emscripten_is_webgl_context_lost(GetWebGl().Context) ? StartupError::DeviceLost
+                                                                                : StartupError::RenderingUnavailable);
+            return GetRasterWebGl().Completed;
         }
         if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED)
         {
-            if (completion.Ordinal > gRasterCompleted)
+            if (completion.Ordinal > GetRasterWebGl().Completed)
             {
-                gRasterCompleted = completion.Ordinal;
+                GetRasterWebGl().Completed = completion.Ordinal;
             }
             glDeleteSync(completion.Sync);
             completion = {};
         }
     }
-    return gRasterCompleted;
+    return GetRasterWebGl().Completed;
 }
 void RasterEndPass() noexcept
 {
     glDisable(GL_SCISSOR_TEST);
-    if (gRasterGlPassOpen == false)
+    if (GetRasterWebGl().IsPassOpen == false)
     {
         return;
     }
-    const auto& pass = gRasterGlPass;
+    const internal::RasterPassInfo& pass = GetRasterWebGl().Pass;
     if (pass.ColorCount != 0)
     {
         const auto width = static_cast<GLint>(pass.Width), height = static_cast<GLint>(pass.Height);
         for (usize i = 0; i < pass.ColorCount; ++i)
         {
             const auto& c = pass.Colors[i];
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, gRasterMrtFramebuffer);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, GetRasterWebGl().MrtFramebuffer);
             glReadBuffer(GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i));
             usize destination = internal::RASTER_INVALID;
             if (c.ResolveTexture != internal::RASTER_INVALID)
             {
                 destination = c.ResolveTexture;
                 // First resolve without flipping, then normalize orientation in a single-sample blit.
-                const auto resolve = gRasterResolveFramebuffer;
+                const GLuint resolve = GetRasterWebGl().ResolveFramebuffer;
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, resolve);
                 glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,
                                        GL_COLOR_ATTACHMENT0,
                                        GL_TEXTURE_2D,
-                                       gRasterRenderTextures[destination],
+                                       GetRasterWebGl().RenderTextures[destination],
                                        0);
                 glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, resolve);
                 glReadBuffer(GL_COLOR_ATTACHMENT0);
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gRasterSampleFramebuffers[destination]);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GetRasterWebGl().SampleFramebuffers[destination]);
                 glBlitFramebuffer(0, 0, width, height, 0, height, width, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
             }
             if (c.Store == RasterStore::Store && pass.SampleCount == 1)
             {
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, gRasterMrtFramebuffer);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, GetRasterWebGl().MrtFramebuffer);
                 glReadBuffer(GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i));
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gRasterSampleFramebuffers[c.Texture]);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GetRasterWebGl().SampleFramebuffers[c.Texture]);
                 glBlitFramebuffer(0, 0, width, height, 0, height, width, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
             }
         }
-        glBindFramebuffer(GL_FRAMEBUFFER, gRasterMrtFramebuffer);
-        gRasterGlPassOpen = false;
+        glBindFramebuffer(GL_FRAMEBUFFER, GetRasterWebGl().MrtFramebuffer);
+        GetRasterWebGl().IsPassOpen = false;
         return;
     }
     if (pass.Texture != internal::RASTER_INVALID && pass.Description.ColorStore == RasterStore::Store)
@@ -1068,12 +1090,12 @@ void RasterEndPass() noexcept
         // GL framebuffer rows run bottom-up; uploaded/sampled texture rows in
         // the portable API run top-down. A private flipped blit preserves the
         // same UV convention as Metal, Vulkan and WebGPU, including Load passes.
-        const auto& texture = gRasterTextureDescriptions[pass.Texture];
+        const TextureDescription& texture = GetRasterWebGl().TextureDescriptions[pass.Texture];
         const auto width = static_cast<GLint>(texture.Width), height = static_cast<GLint>(texture.Height);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, gRasterFramebuffers[pass.Texture]);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gRasterSampleFramebuffers[pass.Texture]);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, GetRasterWebGl().Framebuffers[pass.Texture]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GetRasterWebGl().SampleFramebuffers[pass.Texture]);
         glBlitFramebuffer(0, 0, width, height, 0, height, width, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        glBindFramebuffer(GL_FRAMEBUFFER, gRasterFramebuffers[pass.Texture]);
+        glBindFramebuffer(GL_FRAMEBUFFER, GetRasterWebGl().Framebuffers[pass.Texture]);
     }
     GLenum discard[2]{};
     GLsizei count = 0;
@@ -1090,17 +1112,18 @@ void RasterEndPass() noexcept
     {
         glInvalidateFramebuffer(GL_FRAMEBUFFER, count, discard);
     }
-    gRasterGlPassOpen = false;
+    GetRasterWebGl().IsPassOpen = false;
 }
 void RasterTextureBarrier(usize, RasterTextureUse) noexcept {}
 RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 {
     // An offscreen-only frame never touches the drawing buffer (see Begin).
-    if (gTarget.ShouldPresentToSurface == false && info.Texture == internal::RASTER_INVALID && info.ColorCount == 0)
+    if (GetWebGl().Target.ShouldPresentToSurface == false && info.Texture == internal::RASTER_INVALID &&
+        info.ColorCount == 0)
     {
         return RasterStatus::InvalidState;
     }
-    if (info.Texture == internal::RASTER_INVALID || gRasterFramebuffers[info.Texture] != 0)
+    if (info.Texture == internal::RASTER_INVALID || GetRasterWebGl().Framebuffers[info.Texture] != 0)
     {
         return RasterStatus::Ready;
     }
@@ -1113,18 +1136,18 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     {
         return admitted;
     }
-    gRasterGlPass = info;
-    gRasterGlPassOpen = true;
+    GetRasterWebGl().Pass = info;
+    GetRasterWebGl().IsPassOpen = true;
     const auto& state = info.Description;
     const bool surface = info.Texture == internal::RASTER_INVALID;
-    glBindFramebuffer(GL_FRAMEBUFFER, surface ? 0 : gRasterFramebuffers[info.Texture]);
+    glBindFramebuffer(GL_FRAMEBUFFER, surface ? 0 : GetRasterWebGl().Framebuffers[info.Texture]);
     if (info.ColorCount != 0)
     {
-        if (gRasterMrtFramebuffer == 0)
+        if (GetRasterWebGl().MrtFramebuffer == 0)
         {
-            glGenFramebuffers(1, &gRasterMrtFramebuffer);
+            glGenFramebuffers(1, &GetRasterWebGl().MrtFramebuffer);
         }
-        glBindFramebuffer(GL_FRAMEBUFFER, gRasterMrtFramebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, GetRasterWebGl().MrtFramebuffer);
         GLenum outputs[4]{};
         for (usize i = 0; i < 4; ++i)
         {
@@ -1137,11 +1160,18 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
                 outputs[i] = attachment;
                 if (info.SampleCount == 4)
                 {
-                    glFramebufferRenderbuffer(GL_FRAMEBUFFER, attachment, GL_RENDERBUFFER, gRasterMsaaColors[slot]);
+                    glFramebufferRenderbuffer(GL_FRAMEBUFFER,
+                                              attachment,
+                                              GL_RENDERBUFFER,
+                                              GetRasterWebGl().MsaaColors[slot]);
                 }
                 else
                 {
-                    glFramebufferTexture2D(GL_FRAMEBUFFER, attachment, GL_TEXTURE_2D, gRasterRenderTextures[slot], 0);
+                    glFramebufferTexture2D(GL_FRAMEBUFFER,
+                                           attachment,
+                                           GL_TEXTURE_2D,
+                                           GetRasterWebGl().RenderTextures[slot],
+                                           0);
                 }
             }
         }
@@ -1149,15 +1179,15 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
         glFramebufferRenderbuffer(GL_FRAMEBUFFER,
                                   info.Stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
                                   GL_RENDERBUFFER,
-                                  gRasterDepths[info.Texture]);
+                                  GetRasterWebGl().Depths[info.Texture]);
         glDrawBuffers(static_cast<GLsizei>(info.ColorCount), outputs);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         {
             return RasterStatus::Failed;
         }
     }
-    const auto width = surface ? gTarget.Width : info.Width;
-    const auto height = surface ? gTarget.Height : info.Height;
+    const uint32 width = surface ? GetWebGl().Target.Width : info.Width;
+    const uint32 height = surface ? GetWebGl().Target.Height : info.Height;
     glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
@@ -1199,17 +1229,17 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
 RasterStatus RasterReserveSubmission() noexcept
 {
     (void)RasterCompleted();
-    if (gRasterReserved != nullptr)
+    if (GetRasterWebGl().ReservedOrNull != nullptr)
     {
         return RasterStatus::Ready;
     }
     for (usize i = 0; i < internal::CurrentStorageLimits().Submissions; ++i)
     {
-        auto& completion = gRasterCompletions[i];
+        RasterGlCompletion& completion = GetRasterWebGl().Completions[i];
         if (completion.Sync == nullptr && completion.Reserved == false)
         {
             completion.Reserved = true;
-            gRasterReserved = &completion;
+            GetRasterWebGl().ReservedOrNull = &completion;
             return RasterStatus::Ready;
         }
     }
@@ -1217,35 +1247,35 @@ RasterStatus RasterReserveSubmission() noexcept
 }
 void RasterSubmit(uint64 ordinal) noexcept
 {
-    if (gRasterReserved == nullptr)
+    if (GetRasterWebGl().ReservedOrNull == nullptr)
     {
         return;
     }
-    auto& completion = *gRasterReserved;
-    gRasterReserved = nullptr;
+    RasterGlCompletion& completion = *GetRasterWebGl().ReservedOrNull;
+    GetRasterWebGl().ReservedOrNull = nullptr;
     completion.Reserved = false;
     completion.Ordinal = ordinal;
     completion.Sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     glFlush();
     if (completion.Sync == nullptr)
     {
-        internal::Fail(gSession, StartupError::RenderingUnavailable);
+        internal::Fail(GetWebGl().Session, StartupError::RenderingUnavailable);
     }
 }
 void RasterReset() noexcept
 {
-    glDeleteFramebuffers(1, &gRasterMrtFramebuffer);
-    gRasterMrtFramebuffer = 0;
-    glDeleteFramebuffers(1, &gRasterResolveFramebuffer);
-    gRasterResolveFramebuffer = 0;
-    gRasterGlPassOpen = false;
-    gRasterGlPass = {};
-    gRasterHdrProbed = gRasterHdr = false;
-    if (gContext > 0 && emscripten_is_webgl_context_lost(gContext) == false)
+    glDeleteFramebuffers(1, &GetRasterWebGl().MrtFramebuffer);
+    GetRasterWebGl().MrtFramebuffer = 0;
+    glDeleteFramebuffers(1, &GetRasterWebGl().ResolveFramebuffer);
+    GetRasterWebGl().ResolveFramebuffer = 0;
+    GetRasterWebGl().IsPassOpen = false;
+    GetRasterWebGl().Pass = {};
+    GetRasterWebGl().IsHdrProbed = GetRasterWebGl().IsHdrSupported = false;
+    if (GetWebGl().Context > 0 && emscripten_is_webgl_context_lost(GetWebGl().Context) == false)
     {
         glFinish();
     }
-    for (auto& completion : gRasterCompletions)
+    for (RasterGlCompletion& completion : GetRasterWebGl().Completions)
     {
         if (completion.Sync != nullptr)
         {
@@ -1253,8 +1283,8 @@ void RasterReset() noexcept
         }
         completion = {};
     }
-    gRasterReserved = nullptr;
-    gRasterCompleted = 0;
+    GetRasterWebGl().ReservedOrNull = nullptr;
+    GetRasterWebGl().Completed = 0;
 }
 void RasterShutdown() noexcept {}
 
@@ -1263,26 +1293,28 @@ RasterStatus RasterGrow(internal::RasterKind kind, usize count) noexcept
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            return gRasterBuffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGl().Buffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Texture:
-            return gRasterTextures.EnsureSlots(count) && gRasterTextureDescriptions.EnsureSlots(count) &&
-                           gRasterFramebuffers.EnsureSlots(count) && gRasterRenderTextures.EnsureSlots(count) &&
-                           gRasterSampleFramebuffers.EnsureSlots(count) && gRasterDepths.EnsureSlots(count) &&
-                           gRasterMsaaColors.EnsureSlots(count)
+            return GetRasterWebGl().Textures.EnsureSlots(count) &&
+                           GetRasterWebGl().TextureDescriptions.EnsureSlots(count) &&
+                           GetRasterWebGl().Framebuffers.EnsureSlots(count) &&
+                           GetRasterWebGl().RenderTextures.EnsureSlots(count) &&
+                           GetRasterWebGl().SampleFramebuffers.EnsureSlots(count) &&
+                           GetRasterWebGl().Depths.EnsureSlots(count) && GetRasterWebGl().MsaaColors.EnsureSlots(count)
                        ? RasterStatus::Ready
                        : internal::StorageFailure();
         case internal::RasterKind::View:
-            return gRasterViews.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGl().Views.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Sampler:
-            return gRasterSamplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGl().Samplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Shader:
-            return gRasterShaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGl().Shaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Layout:
-            return gRasterLayouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGl().Layouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Set:
-            return gRasterSets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGl().Sets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Pipeline:
-            return gRasterPipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterWebGl().Pipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::ComputePipeline:
             return RasterStatus::Unsupported;
         default:
@@ -1293,22 +1325,22 @@ RasterStatus RasterPrepareStorage() noexcept
 {
     // Frame storage admission precedes Begin(), so preserve synchronous loss
     // before querying GL errors or allocating the R10 framebuffer objects.
-    if (gContext <= 0 || emscripten_is_webgl_context_lost(gContext))
+    if (GetWebGl().Context <= 0 || emscripten_is_webgl_context_lost(GetWebGl().Context))
     {
-        internal::Fail(gSession, StartupError::DeviceLost);
+        internal::Fail(GetWebGl().Session, StartupError::DeviceLost);
         return RasterStatus::DeviceLost;
     }
-    if (gRasterCompletions.EnsureSlots(internal::CurrentStorageLimits().Submissions) == false)
+    if (GetRasterWebGl().Completions.EnsureSlots(internal::CurrentStorageLimits().Submissions) == false)
     {
         return internal::StorageFailure();
     }
-    if (gRasterMrtFramebuffer == 0)
+    if (GetRasterWebGl().MrtFramebuffer == 0)
     {
-        glGenFramebuffers(1, &gRasterMrtFramebuffer);
+        glGenFramebuffers(1, &GetRasterWebGl().MrtFramebuffer);
     }
-    if (gRasterResolveFramebuffer == 0)
+    if (GetRasterWebGl().ResolveFramebuffer == 0)
     {
-        glGenFramebuffers(1, &gRasterResolveFramebuffer);
+        glGenFramebuffers(1, &GetRasterWebGl().ResolveFramebuffer);
     }
     return RasterGlResult();
 }

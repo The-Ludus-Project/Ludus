@@ -6,7 +6,18 @@ namespace ludus::graphics::rhi::LUDUS_RHI_WEBGL_NAMESPACE
 {
 namespace
 {
-GpuTiming gTiming;
+/// @brief Frame timer-query sample state of one device owner (R14c).
+struct MeasurementWebGlState final
+{
+    GpuTiming Timing;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<MeasurementWebGlState, MAX_DEVICE_OWNERS> gMeasurementWebGlStates{};
+/// MeasurementWebGlState of the bound owner slot.
+MeasurementWebGlState& GetMeasurementWebGl() noexcept
+{
+    return gMeasurementWebGlStates[internal::GetBoundOwnerSlot()];
+}
 // clang-format off
 EM_JS(void, TimingGlAdapter, (char* name, uint32 capacity), {
     const gl = GL.currentContext?.GLctx;
@@ -14,7 +25,8 @@ EM_JS(void, TimingGlAdapter, (char* name, uint32 capacity), {
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
     stringToUTF8(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), name, capacity);
 });
-EM_JS(int32, TimingGlArm, (), {
+// R14c: each owner keeps its own query, keyed by its owner slot in Module.ludusTimings.
+EM_JS(int32, TimingGlArm, (uint32 owner), {
     const gl = GL.currentContext?.GLctx;
     if (!gl) return 0;
     const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
@@ -23,19 +35,20 @@ EM_JS(int32, TimingGlArm, (), {
     if (!bits) return 0;
     const query = gl.createQuery();
     if (!query) return -1;
-    if (Module.ludusTiming) Module.ludusTiming.gl.deleteQuery(Module.ludusTiming.query);
+    const timings = Module.ludusTimings || (Module.ludusTimings = []);
+    if (timings[owner]) timings[owner].gl.deleteQuery(timings[owner].query);
     // Clear an earlier disjoint notification before beginning this sample.
     gl.getParameter(ext.GPU_DISJOINT_EXT);
-    Module.ludusTiming = {gl, ext, query, open:false}; return bits;
+    timings[owner] = {gl, ext, query, open:false}; return bits;
 });
-EM_JS(void, TimingGlBegin, (), {
-    const t = Module.ludusTiming; t.gl.beginQuery(t.ext.TIME_ELAPSED_EXT, t.query); t.open=true;
+EM_JS(void, TimingGlBegin, (uint32 owner), {
+    const t = Module.ludusTimings[owner]; t.gl.beginQuery(t.ext.TIME_ELAPSED_EXT, t.query); t.open=true;
 });
-EM_JS(void, TimingGlEnd, (), {
-    const t = Module.ludusTiming; t.gl.endQuery(t.ext.TIME_ELAPSED_EXT); t.open=false;
+EM_JS(void, TimingGlEnd, (uint32 owner), {
+    const t = Module.ludusTimings[owner]; t.gl.endQuery(t.ext.TIME_ELAPSED_EXT); t.open=false;
 });
-EM_JS(int32, TimingGlPoll, (foundation::float64* duration), {
-    const t = Module.ludusTiming;
+EM_JS(int32, TimingGlPoll, (uint32 owner, foundation::float64* duration), {
+    const t = Module.ludusTimings?.[owner];
     if (!t || t.gl.isContextLost()) return 3;
     if (t.gl.getParameter(t.ext.GPU_DISJOINT_EXT)) return 2;
     if (!t.gl.getQueryParameter(t.query, t.gl.QUERY_RESULT_AVAILABLE)) return 0;
@@ -43,12 +56,17 @@ EM_JS(int32, TimingGlPoll, (foundation::float64* duration), {
     if (!Number.isSafeInteger(value) || value < 0) return 2;
     HEAPF64[duration/8] = value; return 1;
 });
-EM_JS(void, TimingGlReset, (), {
-    const t = Module.ludusTiming;
+EM_JS(void, TimingGlReset, (uint32 owner), {
+    const t = Module.ludusTimings?.[owner];
     if (t) { if(t.open && !t.gl.isContextLost()) t.gl.endQuery(t.ext.TIME_ELAPSED_EXT); t.gl.deleteQuery(t.query); }
-    delete Module.ludusTiming;
+    if (t) delete Module.ludusTimings[owner];
 });
 // clang-format on
+/// Key of the bound owner's timer query in Module.ludusTimings.
+uint32 GetTimingOwner() noexcept
+{
+    return static_cast<uint32>(internal::GetBoundOwnerSlot());
+}
 } // namespace
 bool AllocatorBlockBytes(uint64& bytes) noexcept
 {
@@ -63,28 +81,28 @@ MeasurementAdapter TimingAdapter() noexcept
 }
 void TimingReset() noexcept
 {
-    TimingGlReset();
-    gTiming = {};
+    TimingGlReset(GetTimingOwner());
+    GetMeasurementWebGl().Timing = {};
 }
 GpuTiming TimingPoll() noexcept
 {
-    if (gTiming.State == GpuTimingState::Pending)
+    if (GetMeasurementWebGl().Timing.State == GpuTimingState::Pending)
     {
-        const auto result = TimingGlPoll(&gTiming.DurationNanoseconds);
+        const int32 result = TimingGlPoll(GetTimingOwner(), &GetMeasurementWebGl().Timing.DurationNanoseconds);
         if (result == 1)
         {
-            gTiming.State = GpuTimingState::Available;
+            GetMeasurementWebGl().Timing.State = GpuTimingState::Available;
         }
         else if (result == 2)
         {
-            gTiming.State = GpuTimingState::Disjoint;
+            GetMeasurementWebGl().Timing.State = GpuTimingState::Disjoint;
         }
         else if (result == 3)
         {
-            gTiming.State = GpuTimingState::Failed;
+            GetMeasurementWebGl().Timing.State = GpuTimingState::Failed;
         }
     }
-    return gTiming;
+    return GetMeasurementWebGl().Timing;
 }
 RasterStatus TimingArm() noexcept
 {
@@ -93,31 +111,31 @@ RasterStatus TimingArm() noexcept
     {
         return RasterStatus::InvalidState;
     }
-    const auto result = TimingGlArm();
+    const int32 result = TimingGlArm(GetTimingOwner());
     if (result < 0)
     {
         return RasterStatus::OutOfMemory;
     }
-    gTiming = { .State = result > 0 ? GpuTimingState::Armed : GpuTimingState::Unavailable };
+    GetMeasurementWebGl().Timing = { .State = result > 0 ? GpuTimingState::Armed : GpuTimingState::Unavailable };
     if (result > 0)
     {
-        gTiming.ValidBits = static_cast<uint32>(result);
+        GetMeasurementWebGl().Timing.ValidBits = static_cast<uint32>(result);
     }
     return result > 0 ? RasterStatus::Ready : result == 0 ? RasterStatus::Unsupported : RasterStatus::OutOfMemory;
 }
 void TimingBegin() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementWebGl().Timing.State == GpuTimingState::Armed)
     {
-        TimingGlBegin();
+        TimingGlBegin(GetTimingOwner());
     }
 }
 void TimingEnd() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementWebGl().Timing.State == GpuTimingState::Armed)
     {
-        TimingGlEnd();
-        gTiming.State = GpuTimingState::Pending;
+        TimingGlEnd(GetTimingOwner());
+        GetMeasurementWebGl().Timing.State = GpuTimingState::Pending;
     }
 }
 void TimingSubmitted() noexcept {}

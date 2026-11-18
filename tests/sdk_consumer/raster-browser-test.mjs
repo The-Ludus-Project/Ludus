@@ -11,7 +11,7 @@ const {PNG} = require('pngjs');
 const root = resolve(process.argv[2]);
 const output = resolve(process.argv[3] || 'out/raster-browser');
 await mkdir(output, {recursive:true});
-for (const name of ['raster.html','raster.js','raster.wasm','r6.html','r6.js','r6.wasm','r8.html','r8.js','r8.wasm','r9.html','r9.js','r9.wasm','r10.html','r10.js','r10.wasm','r11.html','r11.js','r11.wasm','r18c.html','r18c.js','r18c.wasm']) await access(resolve(root,name));
+for (const name of ['raster.html','raster.js','raster.wasm','r6.html','r6.js','r6.wasm','r8.html','r8.js','r8.wasm','r9.html','r9.js','r9.wasm','r10.html','r10.js','r10.wasm','r11.html','r11.js','r11.wasm','r18c.html','r18c.js','r18c.wasm','r14c.html','r14c.js','r14c.wasm']) await access(resolve(root,name));
 const server = createServer(async (request, response) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
   const path = resolve(root, '.' + pathname);
@@ -430,6 +430,41 @@ try {
     assert.equal(status.frames,backend === 'webgpu' ? '3' : '2'); assert.deepEqual(errors,[]);
     assert.equal(status.compute,backend === 'webgpu' ? 'passed' : 'unavailable');
     report.cases.push({scenario:`r11-${backend}`,frames:Number(status.frames),pixelReadbacks:2,compute:status.compute});
+    await context.close();
+  }
+
+  // R14c: two device owners present to two canvases on each API and on one of each. Each
+  // reads back its own buffer and clears its canvas; an alias of a live canvas is refused;
+  // one owner retires while the other draws, and a replacement starts on its canvas.
+  const r14cCenter = async (page,selector) => {
+    const image = PNG.sync.read(await page.locator(selector).screenshot());
+    const offset = (Math.floor(image.height/2)*image.width + Math.floor(image.width/2))*4;
+    return [...image.data.subarray(offset,offset+3)];
+  };
+  for (const mode of ['webgpu','webgl2','mixed']) {
+    const context = await browser.newContext({deviceScaleFactor:1});
+    const page = await context.newPage(); lastPage = page;
+    const errors = [];
+    page.on('pageerror', error => errors.push(String(error)));
+    page.on('console', message => report.console.push({scenario:`r14c-${mode}`,type:message.type(),text:message.text()}));
+    await page.goto(`http://127.0.0.1:${server.address().port}/r14c.html?mode=${mode}`);
+    const settle = state => page.waitForFunction(expected => [expected,'failed'].includes(document.querySelector('#status')?.dataset.state),state,{timeout:30000});
+    await settle('drawn');
+    let status = await page.locator('#status').evaluate(node => ({...node.dataset}));
+    assert.equal(status.state,'drawn',JSON.stringify(status));
+    // Backend values: 1 WebGPU, 2 WebGL 2.
+    const backends = mode === 'webgpu' ? ['1','1'] : mode === 'webgl2' ? ['2','2'] : ['1','2'];
+    assert.deepEqual([status.owner0,status.owner1],backends);
+    assert.deepEqual(await r14cCenter(page,'#first'),[255,0,0]);
+    assert.deepEqual(await r14cCenter(page,'#second'),[0,255,0]);
+    await page.evaluate(() => { window.__r14cResume = true; });
+    await settle('passed');
+    status = await page.locator('#status').evaluate(node => ({...node.dataset}));
+    assert.equal(status.state,'passed',JSON.stringify(status));
+    assert.deepEqual(await r14cCenter(page,'#first'),[0,0,255]);
+    assert.deepEqual(await r14cCenter(page,'#second'),[0,255,0]);
+    assert.deepEqual(errors,[]);
+    report.cases.push({scenario:`r14c-${mode}`,owners:2,backends,aliasRejected:true,replacement:true});
     await context.close();
   }
 

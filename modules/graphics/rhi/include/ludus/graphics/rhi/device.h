@@ -244,13 +244,15 @@ struct DeviceInfo final
 /// interop teardown still pending returns InvalidState without changing them. A target
 /// that a live surface of any device already borrows returns InvalidDescription.
 /// Descriptions are copied; backend artifact inputs continue to use their existing contracts.
-/// @note Metal, Vulkan and Direct3D 12 host up to MAX_DEVICE_OWNERS concurrent owners
-/// (R14c); each owner has its own native device and queue and may select its own
-/// catalog adapter. When they are all live, CreateDevice returns CapacityExceeded.
+/// @note Metal, Vulkan, Direct3D 12, WebGPU and WebGL 2 host up to MAX_DEVICE_OWNERS
+/// concurrent owners (R14c); each owner has its own device and queue (a WebGL 2 owner,
+/// its own context), and a native owner may select its own catalog adapter. When they
+/// are all live, CreateDevice returns CapacityExceeded.
 /// Vulkan owners share one VkInstance, described by the first owner's application
 /// metadata; a Vulkan device adopted by CreateNativeDevice is hosted only alone, so
-/// CreateDevice returns InvalidState while it lives. The browser backends host one
-/// owner: a second CreateDevice returns InvalidState while the first lives.
+/// CreateDevice returns InvalidState while it lives. In the browser each owner binds its
+/// own sub-backend and canvas; a selector that names a canvas another owner presents to,
+/// even through a different string, fails startup with StartupError::InvalidWindow.
 /// Device-less facade calls (Start, BeginFrame(), CreateShader without a device, ...)
 /// address the owner in the first slot, which is the device created while no other
 /// device was live, so a single-device program behaves as before.

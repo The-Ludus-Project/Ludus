@@ -19,7 +19,22 @@ struct LifetimeWebTransfer final
     bool Mapped = false;
     bool Abandoned = false;
 };
-LifetimeWebTransfer gLifetimeWeb[2][internal::LIFETIME_TRANSFERS];
+/// @brief Upload (0) and readback (1) transfer cells of one device owner (R14c).
+///
+/// Cells are never reset while callbacks reference them; see LifetimeWebCompleted.
+struct LifetimeWebGpuState final
+{
+    foundation::StaticArray<foundation::StaticArray<LifetimeWebTransfer, internal::LIFETIME_TRANSFERS>,
+                            internal::LIFETIME_DIRECTIONS>
+        Transfers{};
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<LifetimeWebGpuState, MAX_DEVICE_OWNERS> gLifetimeWebGpuStates{};
+/// LifetimeWebGpuState of the bound owner slot.
+LifetimeWebGpuState& GetLifetimeWebGpu() noexcept
+{
+    return gLifetimeWebGpuStates[internal::GetBoundOwnerSlot()];
+}
 void LifetimeWebDrop(LifetimeWebTransfer& transfer) noexcept
 {
     auto buffer = transfer.Staging;
@@ -89,8 +104,8 @@ void LifetimeWebPop(LifetimeWebTransfer& transfer) noexcept
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = LifetimeWebValidated;
     callback.userdata1 = &transfer;
-    (void)wgpuDevicePopErrorScope(gDevice, callback);
-    (void)wgpuDevicePopErrorScope(gDevice, callback);
+    (void)wgpuDevicePopErrorScope(GetWebGpu().Device, callback);
+    (void)wgpuDevicePopErrorScope(GetWebGpu().Device, callback);
 }
 RasterStatus LifetimeWebStage(LifetimeWebTransfer& transfer, bool readback) noexcept
 {
@@ -98,7 +113,7 @@ RasterStatus LifetimeWebStage(LifetimeWebTransfer& transfer, bool readback) noex
     {
         return RasterStatus::CapacityExceeded;
     }
-    transfer.Session = gSession;
+    transfer.Session = GetWebGpu().Session;
     transfer.Result = RasterStatus::Ready;
     transfer.Abandoned = false;
     if (transfer.Staging == nullptr)
@@ -107,14 +122,14 @@ RasterStatus LifetimeWebStage(LifetimeWebTransfer& transfer, bool readback) noex
         buffer.size = internal::CurrentStorageLimits().TransferBytes;
         buffer.usage = readback ? WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst
                                 : WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
-        transfer.Staging = wgpuDeviceCreateBuffer(gDevice, &buffer);
+        transfer.Staging = wgpuDeviceCreateBuffer(GetWebGpu().Device, &buffer);
     }
     return transfer.Staging != nullptr ? RasterStatus::Ready : RasterStatus::OutOfMemory;
 }
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    const auto& transfer = gLifetimeWeb[readback ? 1 : 0][slot];
+    const LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[readback ? 1 : 0][slot];
     return transfer.Busy == false && transfer.Callbacks == 0;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
@@ -126,7 +141,7 @@ RasterStatus LifetimeUpload(usize transferSlot,
     const auto bufferSlot = uploadTarget.Buffer;
     const auto request = uploadTarget.Request;
 
-    auto& transfer = gLifetimeWeb[0][transferSlot];
+    LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[0][transferSlot];
     if (transfer.Busy || transfer.Callbacks != 0)
     {
         return RasterStatus::CapacityExceeded;
@@ -140,22 +155,22 @@ RasterStatus LifetimeUpload(usize transferSlot,
                    (info.Role == BufferRole::Uniform  ? WGPUBufferUsage_Uniform
                     : info.Role == BufferRole::Vertex ? WGPUBufferUsage_Vertex
                                                       : WGPUBufferUsage_Index);
-    gRasterBuffers[bufferSlot] = wgpuDeviceCreateBuffer(gDevice, &buffer);
-    if (ready != RasterStatus::Ready || gRasterBuffers[bufferSlot] == nullptr)
+    GetRasterWebGpu().Buffers[bufferSlot] = wgpuDeviceCreateBuffer(GetWebGpu().Device, &buffer);
+    if (ready != RasterStatus::Ready || GetRasterWebGpu().Buffers[bufferSlot] == nullptr)
     {
         transfer.Result = RasterStatus::OutOfMemory;
         internal::RasterFail(request, RasterStatus::OutOfMemory);
         return RasterPop(request);
     }
-    auto encoder = wgpuDeviceCreateCommandEncoder(gDevice, nullptr);
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(GetWebGpu().Device, nullptr);
     if (encoder == nullptr)
     {
         transfer.Result = RasterStatus::OutOfMemory;
         internal::RasterFail(request, RasterStatus::OutOfMemory);
         return RasterPop(request);
     }
-    wgpuQueueWriteBuffer(gQueue, transfer.Staging, 0, bytes, size);
-    wgpuCommandEncoderCopyBufferToBuffer(encoder, transfer.Staging, 0, gRasterBuffers[bufferSlot], 0, size);
+    wgpuQueueWriteBuffer(GetWebGpu().Queue, transfer.Staging, 0, bytes, size);
+    wgpuCommandEncoderCopyBufferToBuffer(encoder, transfer.Staging, 0, GetRasterWebGpu().Buffers[bufferSlot], 0, size);
     auto command = wgpuCommandEncoderFinish(encoder, nullptr);
     wgpuCommandEncoderRelease(encoder);
     if (command == nullptr)
@@ -164,14 +179,14 @@ RasterStatus LifetimeUpload(usize transferSlot,
         internal::RasterFail(request, RasterStatus::OutOfMemory);
         return RasterPop(request);
     }
-    wgpuQueueSubmit(gQueue, 1, &command);
+    wgpuQueueSubmit(GetWebGpu().Queue, 1, &command);
     wgpuCommandBufferRelease(command);
     transfer.Callbacks = 1;
     WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = LifetimeWebDone;
     callback.userdata1 = &transfer;
-    (void)wgpuQueueOnSubmittedWorkDone(gQueue, callback);
+    (void)wgpuQueueOnSubmittedWorkDone(GetWebGpu().Queue, callback);
     return RasterPop(request);
 }
 RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::LifetimeCopyRange& range) noexcept
@@ -179,13 +194,13 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
     const auto bufferSlot = range.Buffer;
     const auto offset = range.Offset;
     const auto size = range.Size;
-    auto& transfer = gLifetimeWeb[1][transferSlot];
+    LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[1][transferSlot];
     if (transfer.Busy || transfer.Callbacks != 0)
     {
         return RasterStatus::CapacityExceeded;
     }
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_OutOfMemory);
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_OutOfMemory);
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_Validation);
     const auto ready = LifetimeWebStage(transfer, true);
     transfer.Busy = true;
     transfer.Callbacks = 2;
@@ -195,14 +210,19 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
         LifetimeWebPop(transfer);
         return RasterStatus::Pending;
     }
-    auto encoder = wgpuDeviceCreateCommandEncoder(gDevice, nullptr);
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(GetWebGpu().Device, nullptr);
     if (encoder == nullptr)
     {
         transfer.Result = RasterStatus::OutOfMemory;
         LifetimeWebPop(transfer);
         return RasterStatus::Pending;
     }
-    wgpuCommandEncoderCopyBufferToBuffer(encoder, gRasterBuffers[bufferSlot], offset, transfer.Staging, 0, size);
+    wgpuCommandEncoderCopyBufferToBuffer(encoder,
+                                         GetRasterWebGpu().Buffers[bufferSlot],
+                                         offset,
+                                         transfer.Staging,
+                                         0,
+                                         size);
     auto command = wgpuCommandEncoderFinish(encoder, nullptr);
     wgpuCommandEncoderRelease(encoder);
     if (command == nullptr)
@@ -211,7 +231,7 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
         LifetimeWebPop(transfer);
         return RasterStatus::Pending;
     }
-    wgpuQueueSubmit(gQueue, 1, &command);
+    wgpuQueueSubmit(GetWebGpu().Queue, 1, &command);
     wgpuCommandBufferRelease(command);
     // A failed map is not proof that the submitted copy completed. Track queue
     // retirement independently so cancellation cannot recycle its slice/source.
@@ -220,7 +240,7 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
     done.mode = WGPUCallbackMode_AllowSpontaneous;
     done.callback = LifetimeWebDone;
     done.userdata1 = &transfer;
-    (void)wgpuQueueOnSubmittedWorkDone(gQueue, done);
+    (void)wgpuQueueOnSubmittedWorkDone(GetWebGpu().Queue, done);
     WGPUBufferMapCallbackInfo callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
     callback.callback = LifetimeWebMapped;
@@ -243,14 +263,14 @@ void LifetimeWebCommit(LifetimeWebTransfer& transfer, WGPUCommandEncoder encoder
         LifetimeWebPop(transfer);
         return;
     }
-    wgpuQueueSubmit(gQueue, 1, &command);
+    wgpuQueueSubmit(GetWebGpu().Queue, 1, &command);
     wgpuCommandBufferRelease(command);
     transfer.Callbacks += readback ? 2U : 1U;
     WGPUQueueWorkDoneCallbackInfo done = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
     done.mode = WGPUCallbackMode_AllowSpontaneous;
     done.callback = LifetimeWebDone;
     done.userdata1 = &transfer;
-    (void)wgpuQueueOnSubmittedWorkDone(gQueue, done);
+    (void)wgpuQueueOnSubmittedWorkDone(GetWebGpu().Queue, done);
     if (readback)
     {
         WGPUBufferMapCallbackInfo mapped = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
@@ -267,8 +287,8 @@ RasterStatus LifetimeWebBeginMutable(LifetimeWebTransfer& transfer, bool readbac
     {
         return RasterStatus::CapacityExceeded;
     }
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_OutOfMemory);
-    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_OutOfMemory);
+    wgpuDevicePushErrorScope(GetWebGpu().Device, WGPUErrorFilter_Validation);
     const auto ready = LifetimeWebStage(transfer, readback);
     transfer.Busy = true;
     transfer.Callbacks = 2;
@@ -278,7 +298,7 @@ RasterStatus LifetimeWebBeginMutable(LifetimeWebTransfer& transfer, bool readbac
         LifetimeWebPop(transfer);
         return RasterStatus::Pending;
     }
-    encoder = wgpuDeviceCreateCommandEncoder(gDevice, nullptr);
+    encoder = wgpuDeviceCreateCommandEncoder(GetWebGpu().Device, nullptr);
     if (encoder == nullptr)
     {
         transfer.Result = RasterStatus::OutOfMemory;
@@ -289,7 +309,7 @@ RasterStatus LifetimeWebBeginMutable(LifetimeWebTransfer& transfer, bool readbac
 WGPUTexelCopyTextureInfo LifetimeWebTexture(usize slot, const TextureRegion& region) noexcept
 {
     WGPUTexelCopyTextureInfo texture = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    texture.texture = gRasterTextures[slot];
+    texture.texture = GetRasterWebGpu().Textures[slot];
     texture.mipLevel = region.Mip;
     texture.origin = {region.X, region.Y, 0};
     return texture;
@@ -298,16 +318,16 @@ WGPUTexelCopyTextureInfo LifetimeWebTexture(usize slot, const TextureRegion& reg
 RasterStatus
 LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& range, const uint8* bytes) noexcept
 {
-    auto& transfer = gLifetimeWeb[0][slot];
+    LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[0][slot];
     WGPUCommandEncoder encoder = nullptr;
     const auto result = LifetimeWebBeginMutable(transfer, false, encoder);
     if (encoder != nullptr)
     {
-        wgpuQueueWriteBuffer(gQueue, transfer.Staging, 0, bytes, range.Size);
+        wgpuQueueWriteBuffer(GetWebGpu().Queue, transfer.Staging, 0, bytes, range.Size);
         wgpuCommandEncoderCopyBufferToBuffer(encoder,
                                              transfer.Staging,
                                              0,
-                                             gRasterBuffers[range.Buffer],
+                                             GetRasterWebGpu().Buffers[range.Buffer],
                                              range.Offset,
                                              range.Size);
         LifetimeWebCommit(transfer, encoder, false, 0);
@@ -317,7 +337,7 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
 RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer& info, const uint8* bytes) noexcept
 {
     const bool readback = info.Operation == internal::TextureTransferOperation::Readback;
-    auto& transfer = gLifetimeWeb[readback ? 1 : 0][slot];
+    LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[readback ? 1 : 0][slot];
     WGPUCommandEncoder encoder = nullptr;
     const auto result = LifetimeWebBeginMutable(transfer, readback, encoder);
     if (encoder == nullptr)
@@ -333,7 +353,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     if (info.Operation == internal::TextureTransferOperation::Update)
     {
         const WGPUExtent3D extent{info.DestinationRegion.Width, info.DestinationRegion.Height, 1};
-        wgpuQueueWriteBuffer(gQueue, transfer.Staging, 0, bytes, info.Size);
+        wgpuQueueWriteBuffer(GetWebGpu().Queue, transfer.Staging, 0, bytes, info.Size);
         wgpuCommandEncoderCopyBufferToTexture(encoder, &buffer, &destination, &extent);
     }
     else
@@ -353,8 +373,8 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 }
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
-    auto& transfer = gLifetimeWeb[readback ? 1 : 0][slot];
-    if (transfer.Busy == false || transfer.Session != gSession)
+    LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[readback ? 1 : 0][slot];
+    if (transfer.Busy == false || transfer.Session != GetWebGpu().Session)
     {
         return RasterStatus::Failed;
     }
@@ -375,7 +395,7 @@ RasterStatus LifetimeCopyReadback(usize slot, uint8* output, usize size) noexcep
     {
         return ready;
     }
-    auto& transfer = gLifetimeWeb[1][slot];
+    LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[1][slot];
     const void* mapped = wgpuBufferGetConstMappedRange(transfer.Staging, 0, size);
     if (mapped == nullptr)
     {
@@ -386,7 +406,7 @@ RasterStatus LifetimeCopyReadback(usize slot, uint8* output, usize size) noexcep
 }
 void LifetimeReleaseTransfer(bool readback, usize slot) noexcept
 {
-    auto& transfer = gLifetimeWeb[readback ? 1 : 0][slot];
+    LifetimeWebTransfer& transfer = GetLifetimeWebGpu().Transfers[readback ? 1 : 0][slot];
     if (transfer.Mapped)
     {
         wgpuBufferUnmap(transfer.Staging);
@@ -396,7 +416,8 @@ void LifetimeReleaseTransfer(bool readback, usize slot) noexcept
 }
 void LifetimeReset() noexcept
 {
-    for (auto& direction : gLifetimeWeb)
+    for (foundation::StaticArray<LifetimeWebTransfer, internal::LIFETIME_TRANSFERS>& direction :
+         GetLifetimeWebGpu().Transfers)
     {
         for (auto& transfer : direction)
         {
@@ -418,10 +439,10 @@ void LifetimeReset() noexcept
 }
 void RasterDiscardSubmission() noexcept
 {
-    if (gRasterReserved != nullptr)
+    if (GetRasterWebGpu().ReservedOrNull != nullptr)
     {
-        *gRasterReserved = {};
-        gRasterReserved = nullptr;
+        *GetRasterWebGpu().ReservedOrNull = {};
+        GetRasterWebGpu().ReservedOrNull = nullptr;
     }
 }
 } // namespace ludus::graphics::rhi::LUDUS_RHI_WEBGPU_NAMESPACE
