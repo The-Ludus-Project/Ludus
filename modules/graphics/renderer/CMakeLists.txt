@@ -930,6 +930,19 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_SHARED_RAY_${configuration_definition}_DIRECTORY=\"${shared_ray_package_directory}\"")
     endforeach()
+    # The hair coverage probe uses the same traversal configurations with query-outcome callbacks.
+    set(hair_card_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/hair_card_ray")
+    ludus_stage_render_graph_fixture("${shared_ray_source}" "${hair_card_ray_staged}" callbacks.slang)
+    configure_file(tests/hair_card_visibility.slang "${hair_card_ray_staged}/main_shaders/callbacks.slang" COPYONLY)
+    foreach(configuration IN ITEMS Default Native ComputeBvh)
+        string(TOLOWER "${configuration}" configuration_suffix)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_hair_card_ray_${configuration_suffix}
+            MANIFEST "${hair_card_ray_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_hair_card_ray_${configuration_suffix}_RUNTIME_PACKAGE PARENT_PATH hair_card_ray_directory)
+        string(TOUPPER "${configuration}" configuration_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_HAIR_CARD_RAY_${configuration_definition}_DIRECTORY=\"${hair_card_ray_directory}\"")
+    endforeach()
     # The traversal parity callbacks written in LUSL against the generated scene declarations.
     set(traversal_parity_lusl_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/traversal_parity_lusl")
     ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/traversal_parity_lusl"

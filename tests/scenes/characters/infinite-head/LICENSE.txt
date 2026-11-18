@@ -34,6 +34,9 @@ Changes made for Ludus:
 - infinite-head-lit.gltf is infinite-head.gltf over the same buffer and maps,
   with the head raised to stand on the ground plane and a warm key and a cool
   fill directional light (KHR_lights_punctual) for the skin benchmark.
+- infinite-head-hair.gltf uses the same lit bust, with the original Ludus hair
+  ribbon mesh (hair-cards.bin) and RGBA strand texture (hair-cards.png) added
+  under the engine's MIT license. The original scan and maps retain CC BY 3.0.
 - Map-COL.jpg and Infinite-Level_02_Tangent_SmoothUV.jpg are unchanged.
 
 Thank you to Lee Perry-Smith and Infinite-Realities for making the scan
