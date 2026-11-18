@@ -467,6 +467,11 @@ by the committed and fingerprint-checked `config/apt/apt.llvm.org.asc`
 its newest 23.1.x build. The macOS setup action installs `llvm@23` and `lld@23`
 from Homebrew; init rejects either if `brew upgrade` moved it to another major.
 
+The Linux native setup retries package index updates and package downloads with
+a deadline per attempt. After the packages are cached, APT installs them locally
+under the job's overall timeout. This keeps the network deadline from interrupting
+dpkg while it unpacks or configures packages.
+
 ### macOS runner images
 
 Native jobs use `macos-15` arm64. Host and documentation tooling separately check
