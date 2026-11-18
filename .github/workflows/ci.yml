@@ -74,7 +74,10 @@ jobs:
     permissions:
       contents: read
       actions: read
+      packages: read
     outputs:
+      native_image: ${{ steps.image.outputs.image }}
+      image_recipe_changed: ${{ steps.image.outputs.recipe_changed }}
       native_required: ${{ steps.scope.outputs.native_required }}
       validation_tier: ${{ steps.scope.outputs.validation_tier }}
       validated_by: ${{ steps.scope.outputs.validated_by }}
@@ -86,6 +89,13 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/change-scope
         id: scope
+      - name: Find the native PR image for this revision
+        id: image
+        if: steps.scope.outputs.validation_tier == 'integration' && steps.scope.outputs.native_required == 'true' && steps.scope.outputs.validated_by == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash .github/actions/native-image/image.sh resolve
 
   develop-health:
     # While develop's latest validated batch is red, admit only fixes proven on
@@ -755,6 +765,10 @@ jobs:
           ./scripts/localization-corpus validate --manifest modules/localization/corpus/release.json
       - name: Test S1 manifest and cook admission contracts
         run: python3 -m unittest discover -s tools/script-cook -p 'test_*.py' -v
+
+      - name: Build the changed native image recipe
+        if: needs.changes.outputs.image_recipe_changed == 'true'
+        run: bash .github/actions/native-image/image.sh verify
 
   debug-runtime:
     needs: changes
@@ -1483,6 +1497,19 @@ jobs:
       matrix:
         shard: [0, 1]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    # Thanks to GitHub, "Running jobs in a container", for the job image and Bash default.
+    # https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/run-jobs-in-a-container
+    container:
+      image: ${{ needs.changes.outputs.native_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 60
     env:
       LUDUS_TIDY_JOBS: "4"
@@ -1537,6 +1564,17 @@ jobs:
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == ''
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.changes.outputs.native_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
     env:
       LUDUS_TIDY_JOBS: "4"
       # Compile the editor without its precompiled headers from the first
@@ -1551,13 +1589,13 @@ jobs:
         with:
           preset: linux-clang-development
           editor: 'true'
+          configure-editor-only: 'true'
           cache-variant: editor
           conan-cache-writer: 'false'
           # Pull-request caches would evict the batch's main-scope baseline.
           compiler-cache-writer: ${{ needs.changes.outputs.validation_tier == 'integration' && 'false' || 'true' }}
-      - name: Prepare and configure trusted authoring shaders
+      - name: Configure the shader worker with verified authoring tools
         run: |
-          ./scripts/shader-probe bootstrap
           out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_EDITOR_PRECOMPILED_HEADERS=OFF -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
       # Compile authoring and live reload once per combined batch, including all
       # default targets previously built separately on every integration PR.
