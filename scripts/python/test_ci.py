@@ -59,6 +59,32 @@ class WindowsClosureTests(unittest.TestCase):
         self.assertLess(modules.index("modules/platform"), modules.index("modules/graphics/rhi"))
 
 
+class RenderGraphVulkanEvidenceTests(unittest.TestCase):
+    """Development and SDK runs ludus_renderer_render_tests '[render-graph]' on llvmpipe and rejects skips."""
+    ROOT = Path(__file__).resolve().parents[2]
+    GATE = "ludus_renderer_render_tests '[render-graph]'"
+
+    def render_test_sources(self) -> list[Path]:
+        text = (self.ROOT / "modules/graphics/renderer/CMakeLists.txt").read_text(encoding="utf-8")
+        lists = re.findall(r"(?:add_executable|target_sources)\(ludus_renderer_render_tests\b([^)]*)\)", text)
+        sources = sorted({name for listed in lists for name in re.findall(r"tests/[\w/]+\.cpp", listed)})
+        self.assertIn("tests/hybrid_reflection_tests.cpp", sources)
+        return [self.ROOT / "modules/graphics/renderer" / name for name in sources]
+
+    def test_render_graph_evidence_has_no_native_ray_query_cases(self):
+        # llvmpipe has no ray queries, so such a case skips and fails the gate (batch 44231568980).
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn(self.GATE, workflow)
+        self.assertIn('"skipped" not in text', workflow.split(self.GATE, 1)[1].split("\n", 3)[1])
+        case = re.compile(r'TEST_CASE\(((?:\s*"(?:[^"\\]|\\.)*")+)\s*,\s*"([^"]*)"', re.S)
+        offending = []
+        for path in self.render_test_sources():
+            for name, tags in case.findall(path.read_text(encoding="utf-8")):
+                if "[render-graph]" in tags and "[native-ray-queries]" in tags:
+                    offending.append(f"{path.name}: {name.strip()}")
+        self.assertEqual(offending, [], "drop [render-graph] from native-query cases; ludus_renderer_pixels runs them")
+
+
 class ToolchainPinTests(unittest.TestCase):
     """Copies of the LLVM pin that cannot read config/tool_versions.json must agree with it."""
     ROOT = Path(__file__).resolve().parents[2]
