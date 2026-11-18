@@ -41,6 +41,10 @@ public:
         return mStatus;
     }
 
+Q_SIGNALS:
+    /// The status line's text changed; the host shows the line only while it says something.
+    void StatusTextChanged();
+
 private:
     void setStatus(const QString& message);
     void prepare();

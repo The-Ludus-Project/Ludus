@@ -52,12 +52,20 @@ CodeStructureView::CodeStructureView(CodeEditor* editor, const CodeSyntaxService
     navigation->addWidget(mOutline);
     navigation->addWidget(mBreadcrumbs, 1);
     navigation->addWidget(mFoldStatus);
+    navigation->addStretch();
     mFoldStatus->setToolTip(tr("This document exceeds the number of ranges the editor can fold."));
     mFoldStatus->hide();
     layout->addLayout(navigation);
     layout->addWidget(mSticky, 0, Qt::AlignLeft);
     mOutline->setText(tr("Outline"));
     mOutline->setObjectName(QStringLiteral("codeSyntaxOutline"));
+    mOutline->setToolTip(tr("Go to a symbol in this file"));
+    // The outline is a compact button at the start of the breadcrumb row. Without scopes to show it must not
+    // stretch into a full-width centred bar above the code.
+    mOutline->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    // It opens a list of symbols, so it carries a disclosure arrow rather than reading as a heading.
+    mOutline->setArrowType(Qt::DownArrow);
+    mOutline->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     mBreadcrumbs->setObjectName(QStringLiteral("codeSyntaxBreadcrumbs"));
     mSticky->setObjectName(QStringLiteral("codeSyntaxSticky"));
     mBreadcrumbs->setAccessibleName(tr("Current syntax scopes"));

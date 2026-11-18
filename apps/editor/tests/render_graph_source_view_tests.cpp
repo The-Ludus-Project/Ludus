@@ -235,6 +235,20 @@ TEST_CASE("The Source view header is compact and the code editor gets most of th
     const int editorBottom = sourceOrNull->mapTo(&workspace, QPoint(0, sourceOrNull->height())).y();
     CHECK(status->mapTo(&workspace, QPoint(0, 0)).y() >= editorBottom);
     CHECK(assistance->mapTo(&workspace, QPoint(0, 0)).y() >= editorBottom);
+    // The source state, the shader assistance and the graph status share one status row under the code.
+    REQUIRE(status->parentWidget() != nullptr);
+    CHECK(status->parentWidget()->objectName() == QStringLiteral("renderGraphStatusRow"));
+    CHECK(assistance->parentWidget() == status->parentWidget());
+    if (assistance->isVisible() == true)
+    {
+        CHECK(status->mapTo(&workspace, QPoint(0, 0)).y() == assistance->mapTo(&workspace, QPoint(0, 0)).y());
+    }
+    // The outline is a compact button, never a full-width bar above the code.
+    QWidget* outlineOrNull = sourceOrNull->findChild<QWidget*>(QStringLiteral("codeSyntaxOutline"));
+    if (outlineOrNull != nullptr && outlineOrNull->isVisible() == true)
+    {
+        CHECK(outlineOrNull->width() <= outlineOrNull->sizeHint().width());
+    }
     // The graph views bring the commands back.
     QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
     REQUIRE(views != nullptr);
